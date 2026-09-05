@@ -9,6 +9,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
 from pinboard.application.actions import discover_actions
 from pinboard.application.queries import (
+    project_item_definition,
     project_item_status,
     project_overview,
     project_parallel_preview,
@@ -211,6 +212,17 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertIsInstance(missing, DecisionFailure)
         assert isinstance(missing, DecisionFailure)
         self.assertEqual(DecisionFailureCode.ITEM_NOT_FOUND, missing.code)
+
+    def test_item_definition_returns_every_preparation_revision_from_one_snapshot(self) -> None:
+        state = complete_sqlite_state()
+        item = next(value for value in state.lifecycle.work_items if value.item_id == ItemId("work-c"))
+
+        definition = expect_success(project_item_definition(state, item.item_id))
+
+        self.assertEqual(state.lifecycle.project.revision, definition.project_revision)
+        self.assertEqual(item.subject_revision, definition.item_subject_revision)
+        self.assertEqual(1, definition.definition_revision)
+        self.assertEqual(test_definition(item.item_id)[1], definition.definition_digest)
 
     def test_action_and_query_failure_matrix_is_stable_and_read_only(self) -> None:
         state = complete_sqlite_state()

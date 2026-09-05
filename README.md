@@ -109,6 +109,8 @@ pinboard item definition-history --item-id <item> --limit 20 --json
 pinboard item revise --file <pinboard-item-revision-v1.json> --task-id <task> --host-id <host> --json
 ```
 
+The current-definition read returns the project revision, item subject revision, definition revision, and definition digest from one snapshot. Preparation acquisition accepts those exact values, and a rejected stale request identifies which observed precondition changed.
+
 Revision files replace the whole `pinboard-work-item-definition/v1`; partial patches are rejected. Blocking can only name dependencies already present in that definition and never changes accepted dependencies itself.
 
 Run `pinboard handover --json` to materialize the strict `pinboard-project-handover/v1` document. The command reads one validated SQLite snapshot, verifies every accepted immutable artifact, embeds its exact bytes as UTF-8 text or base64, and writes nothing unless the complete exported project-facts subset is ready. Coordination, preparation, and attempt leases stay in the local ledger; the handover document does not transfer live authority.

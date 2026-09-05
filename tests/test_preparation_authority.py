@@ -17,7 +17,7 @@ from pinboard.application.queries import project_overview, project_parallel_prev
 from pinboard.application.service import create_proposal, decide_and_commit_preparation_authority_change
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.authority_decisions import decide_preparation_authority
-from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import HostId, ItemId, LeaseId, ProposalId, TaskId
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, reject_table_inserts
@@ -100,6 +100,94 @@ class PreparationAuthorityTest(unittest.TestCase):
             (decision.proposed_replacement.definition_revision, decision.proposed_replacement.definition_digest),
         )
         self.assertEqual(authority_models.PreparationLeaseStatus.ACTIVE, decision.proposed_replacement.state)
+
+    def test_initial_acquisition_names_each_mismatched_observed_precondition(self) -> None:
+        snapshot = project_decision_snapshot(complete_sqlite_state(), SQLITE_NOW)
+        acquisition = self._acquisition(complete_sqlite_state())
+        item = snapshot.item(ItemId("work-c"))
+        assert item is not None
+        not_ready = replace(item, state=work_models.WorkState.ACTIVE)
+        blocked = replace(item, depends_on=(ItemId("work-a"),))
+        cases = (
+            (
+                "project revision",
+                snapshot,
+                replace(acquisition, expected_project_revision="stale"),
+                "Project revision differs from the initial preparation request.",
+            ),
+            (
+                "missing item",
+                replace(snapshot, items=tuple(value for value in snapshot.items if value.item != item.item)),
+                acquisition,
+                "Item 'work-c' does not exist.",
+            ),
+            (
+                "item revision",
+                snapshot,
+                replace(acquisition, expected_item_subject_revision="stale"),
+                "Item 'work-c' subject revision differs from the initial preparation request.",
+            ),
+            (
+                "not ready",
+                replace(
+                    snapshot, items=tuple(not_ready if value.item == item.item else value for value in snapshot.items)
+                ),
+                acquisition,
+                "Item 'work-c' is not ready.",
+            ),
+            (
+                "live dependency",
+                replace(
+                    snapshot, items=tuple(blocked if value.item == item.item else value for value in snapshot.items)
+                ),
+                acquisition,
+                "Item 'work-c' has live dependencies.",
+            ),
+            (
+                "missing definition",
+                replace(
+                    snapshot,
+                    definitions=tuple(value for value in snapshot.definitions if value.item != item.item),
+                ),
+                acquisition,
+                "Item 'work-c' has no accepted definition.",
+            ),
+            (
+                "definition revision",
+                snapshot,
+                replace(acquisition, expected_definition_revision=2),
+                "Item 'work-c' definition revision differs from the initial preparation request.",
+            ),
+            (
+                "definition digest",
+                snapshot,
+                replace(acquisition, expected_definition_digest="stale"),
+                "Item 'work-c' definition digest differs from the initial preparation request.",
+            ),
+        )
+
+        for label, observed, requested, message in cases:
+            with self.subTest(precondition=label):
+                before = observed
+                decision = decide_preparation_authority(None, 0, requested, observed, SQLITE_NOW)
+
+                self.assertEqual(DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, message), decision)
+                self.assertEqual(before, observed)
+
+    def test_initial_acquisition_keeps_internal_host_epoch_rejection(self) -> None:
+        state = complete_sqlite_state()
+        snapshot = project_decision_snapshot(state, SQLITE_NOW)
+        acquisition = replace(self._acquisition(state), host_epoch=snapshot.host_epoch + 1)
+
+        decision = decide_preparation_authority(None, 0, acquisition, snapshot, SQLITE_NOW)
+
+        self.assertEqual(
+            DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                "Initial preparation requires the exact dependency-satisfied ready item and definition.",
+            ),
+            decision,
+        )
 
     def test_renew_and_release_require_the_exact_live_token(self) -> None:
         current = authority_models.PreparationLeaseAuthority(

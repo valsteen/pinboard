@@ -491,20 +491,44 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                 return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation requires ledger state.")
             item_value = snapshot.item(item)
             definition = snapshot.definition(item)
-            if (
-                snapshot.host_epoch != host_epoch
-                or snapshot.revision != expected_project_revision
-                or snapshot.subject_revision(item) != expected_item_subject_revision
-                or item_value is None
-                or item_value.state != work_models.WorkState.READY
-                or any(dependency in snapshot.items_by_id() for dependency in item_value.depends_on)
-                or definition is None
-                or (definition.revision, definition.digest)
-                != (expected_definition_revision, expected_definition_digest)
-            ):
+            if snapshot.host_epoch != host_epoch:
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     "Initial preparation requires the exact dependency-satisfied ready item and definition.",
+                )
+            if snapshot.revision != expected_project_revision:
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    "Project revision differs from the initial preparation request.",
+                )
+            if item_value is None:
+                return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item}' does not exist.")
+            if snapshot.subject_revision(item) != expected_item_subject_revision:
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    f"Item '{item}' subject revision differs from the initial preparation request.",
+                )
+            if item_value.state != work_models.WorkState.READY:
+                return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item}' is not ready.")
+            if any(dependency in snapshot.items_by_id() for dependency in item_value.depends_on):
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    f"Item '{item}' has live dependencies.",
+                )
+            if definition is None:
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    f"Item '{item}' has no accepted definition.",
+                )
+            if definition.revision != expected_definition_revision:
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    f"Item '{item}' definition revision differs from the initial preparation request.",
+                )
+            if definition.digest != expected_definition_digest:
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    f"Item '{item}' definition digest differs from the initial preparation request.",
                 )
             if (failure := _validate_coordination(snapshot.coordination_lease, supplied_coordination, now)) is not None:
                 return failure

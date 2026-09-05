@@ -626,6 +626,20 @@ class CliTest(unittest.TestCase):
         self.assertIsNone(second_page["next_before_revision"])
         self.assertEqual(1, self.json_object(self.json_list(second_page["revisions"])[0])["revision"])
 
+    def test_item_definition_emits_every_preparation_revision_in_json_and_text(self) -> None:
+        state = complete_sqlite_state()
+        item = next(value for value in state.lifecycle.work_items if value.item_id == ItemId("work-c"))
+        project, work, _store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work), "item", "definition", "--item-id", "work-c")
+
+        definition = self.run_json_cli(*common)
+        result, stdout, stderr = self.run_cli(*common)
+
+        self.assertEqual(state.lifecycle.project.revision, definition["project_revision"])
+        self.assertEqual(item.subject_revision, definition["item_subject_revision"])
+        self.assertEqual(0, result, stderr)
+        self.assertIn(f"item_subject_revision={item.subject_revision}", stdout)
+
     def test_item_revise_rejections_preserve_sqlite_and_generated_views(self) -> None:
         project, work, store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))
@@ -1159,7 +1173,6 @@ class CliTest(unittest.TestCase):
             "60",
         )
         definition = self.run_json_cli(*common, "item", "definition", "--item-id", "work-c")
-        status = self.run_json_cli(*common, "item", "status", "--item-id", "work-c")
         prepared = self.run_json_cli(
             *common,
             "preparation",
@@ -1167,9 +1180,9 @@ class CliTest(unittest.TestCase):
             "--item-id",
             "work-c",
             "--expected-project-revision",
-            str(status["revision"]),
+            str(definition["project_revision"]),
             "--expected-item-subject-revision",
-            "7",
+            str(definition["item_subject_revision"]),
             "--expected-definition-revision",
             str(definition["definition_revision"]),
             "--expected-definition-digest",
@@ -1358,7 +1371,6 @@ class CliTest(unittest.TestCase):
         coordination = store.snapshot().authority.coordination
         assert coordination is not None
         definition = self.run_json_cli(*common, "item", "definition", "--item-id", "work-c")
-        status = self.run_json_cli(*common, "item", "status", "--item-id", "work-c")
         acquired = self.run_json_cli(
             *common,
             "preparation",
@@ -1366,9 +1378,9 @@ class CliTest(unittest.TestCase):
             "--item-id",
             "work-c",
             "--expected-project-revision",
-            str(status["revision"]),
+            str(definition["project_revision"]),
             "--expected-item-subject-revision",
-            "7",
+            str(definition["item_subject_revision"]),
             "--expected-definition-revision",
             str(definition["definition_revision"]),
             "--expected-definition-digest",

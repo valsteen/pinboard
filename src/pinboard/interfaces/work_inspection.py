@@ -263,6 +263,7 @@ def show_item_definition(
     else:
         print(
             f"OK ITEM_DEFINITION item={definition_projection.item_id} "
+            f"item_subject_revision={definition_projection.item_subject_revision} "
             f"definition_revision={definition_projection.definition_revision} "
             f"definition_digest={definition_projection.definition_digest} "
             f"project_revision={definition_projection.project_revision}"

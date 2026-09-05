@@ -156,6 +156,7 @@ class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     authority: Literal["sqlite-v3"]
     project_revision: int
     item_id: str
+    item_subject_revision: int
     definition_revision: int
     definition_digest: str
     definition: WorkItemDefinitionView

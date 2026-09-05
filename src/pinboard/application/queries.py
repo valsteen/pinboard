@@ -243,7 +243,8 @@ def project_item_definition(
     state: stored_state.StoredWorkState,
     item_id: ItemId,
 ) -> DecisionResult[query_models.ItemDefinition]:
-    if not any(item.item_id == item_id for item in state.lifecycle.work_items):
+    item = next((value for value in state.lifecycle.work_items if value.item_id == item_id), None)
+    if item is None:
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.")
     current_definition = next(
         (value for value in reversed(state.lifecycle.definition_revisions) if value.item_id == item_id),
@@ -259,6 +260,7 @@ def project_item_definition(
         "sqlite-v3",
         state.lifecycle.project.revision,
         item_id,
+        item.subject_revision,
         current_definition.revision,
         current_definition.digest,
         _project_definition(current_definition.definition),

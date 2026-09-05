@@ -187,7 +187,7 @@ def _section(lines: list[str], heading: str, values: tuple[str, ...]) -> None:
     lines.append("")
 
 
-def render_work_brief_markdown(brief: work_brief_models.WorkBrief, database_revision: int | None = None) -> bytes:
+def render_work_brief_markdown(brief: work_brief_models.WorkBrief) -> bytes:
     checkpoint = brief.checkpoint
     lines = [
         "---",
@@ -201,7 +201,6 @@ def render_work_brief_markdown(brief: work_brief_models.WorkBrief, database_revi
         f"accepted_scope_revision: {brief.accepted_scope.revision}",
         f"accepted_scope_digest: {brief.accepted_scope.digest}",
         f"artifact_revision: {brief.artifact_revision}",
-        *((f"database_revision: {database_revision}",) if database_revision is not None else ()),
         "---",
         "",
         "> Generated projection; canonical JSON is authoritative.",
@@ -367,5 +366,5 @@ def build_attempt_brief_views(state: stored_state.StoredWorkState, artifacts: Ar
         )
         if observed != expected:
             raise _invalid(f"Live attempt '{attempt.attempt_id}' brief identity does not match SQLite.")
-        result[attempt.attempt_id] = render_work_brief_markdown(brief, state.lifecycle.project.revision)
+        result[attempt.attempt_id] = render_work_brief_markdown(brief)
     return result

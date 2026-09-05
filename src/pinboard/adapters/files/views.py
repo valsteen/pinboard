@@ -24,8 +24,8 @@ def _dependency_key(value: stored_state.ItemDependency) -> tuple[str, int]:
     return str(value.item_id), value.position
 
 
-def _render_header(kind: str, revision: int) -> str:
-    return f"---\nkind: {kind}\ndatabase_revision: {revision}\nauthority: sqlite-v3\n---\n\n> {NOTICE}\n\n"
+def _render_header(kind: str) -> str:
+    return f"---\nkind: {kind}\nauthority: sqlite-v3\n---\n\n> {NOTICE}\n\n"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,9 +49,9 @@ def _project_view_inputs(state: stored_state.StoredWorkState, now: datetime) -> 
     )
 
 
-def _render_queue(project_revision: int, overview: query_models.WorkOverview) -> bytes:
+def _render_queue(overview: query_models.WorkOverview) -> bytes:
     lines = [
-        _render_header("work-queue-view", project_revision),
+        _render_header("work-queue-view"),
         "# Work Queue\n\n",
         "| Position | Item | State | Preparation | Eligible | Review | Attempt | Next action |\n",
         "| --- | --- | --- | --- | --- | --- | --- | --- |\n",
@@ -72,7 +72,7 @@ def _render_queue(project_revision: int, overview: query_models.WorkOverview) ->
 def _render_current_focus(state: stored_state.StoredWorkState) -> bytes:
     focus = state.focus
     return (
-        _render_header("work-current-view", state.lifecycle.project.revision)
+        _render_header("work-current-view")
         + "# Current Work\n\n"
         + f"- Item: {focus.item_id or 'none'}\n"
         + f"- Attempt: {focus.attempt_id or 'none'}\n"
@@ -81,7 +81,6 @@ def _render_current_focus(state: stored_state.StoredWorkState) -> bytes:
 
 
 def _render_item(
-    project_revision: int,
     item: stored_state.StoredWorkItem,
     dependencies: tuple[ItemId, ...],
     overview_item: query_models.OverviewItem | None,
@@ -102,7 +101,7 @@ def _render_item(
     )
     accepted = definition.definition
     return (
-        _render_header("work-item-view", project_revision)
+        _render_header("work-item-view")
         + f"# {accepted.title}\n\n"
         + f"- Item: {item.item_id}\n"
         + f"- State: {item.state.value}\n"
@@ -129,14 +128,13 @@ def _render_item(
 
 
 def _render_attempt(
-    state: stored_state.StoredWorkState,
     attempt: stored_state.StoredAttempt,
     attempt_briefs: Mapping[AttemptId, bytes],
 ) -> bytes:
     if (brief := attempt_briefs.get(attempt.attempt_id)) is not None:
         return brief
     return (
-        _render_header("work-attempt-view", state.lifecycle.project.revision)
+        _render_header("work-attempt-view")
         + f"# Attempt {attempt.attempt_id}\n\n"
         + f"- Item: {attempt.item_id}\n"
         + f"- State: {attempt.state.value}\n"
@@ -156,7 +154,7 @@ def _render_history_row(receipt: stored_state.StoredTransitionReceipt) -> str:
 
 def _render_history(state: stored_state.StoredWorkState) -> bytes:
     return (
-        _render_header("work-history-view", state.lifecycle.project.revision)
+        _render_header("work-history-view")
         + "# Transition History\n\n"
         + "| History | Revision | Action receipt | Recorded outcome | Subject | Committed |\n"
         + "| --- | --- | --- | --- | --- | --- |\n"
@@ -184,7 +182,7 @@ def _write_selected_views(
     item_root = ensure_child_directory(view_root, "items")
     attempt_root = ensure_child_directory(view_root, "attempts")
     if affected.queue:
-        atomic_replace(view_root / "queue.md", _render_queue(state.lifecycle.project.revision, view_inputs.overview))
+        atomic_replace(view_root / "queue.md", _render_queue(view_inputs.overview))
     if affected.current_focus:
         atomic_replace(view_root / "current.md", _render_current_focus(state))
     if affected.history:
@@ -196,7 +194,6 @@ def _write_selected_views(
             atomic_replace(
                 item_root / f"{item_id}.md",
                 _render_item(
-                    state.lifecycle.project.revision,
                     item,
                     view_inputs.dependencies[item_id],
                     view_inputs.overview_items.get(str(item_id)),
@@ -207,7 +204,7 @@ def _write_selected_views(
     for attempt_id in affected.attempts:
         attempt = attempts.get(attempt_id)
         if attempt is not None:
-            atomic_replace(attempt_root / f"{attempt_id}.md", _render_attempt(state, attempt, attempt_briefs))
+            atomic_replace(attempt_root / f"{attempt_id}.md", _render_attempt(attempt, attempt_briefs))
 
 
 def refresh_state(
@@ -241,7 +238,7 @@ def derive_expected_view_bytes(
 
     view_inputs = _project_view_inputs(state, now)
     expected_views = {
-        "queue.md": _render_queue(state.lifecycle.project.revision, view_inputs.overview),
+        "queue.md": _render_queue(view_inputs.overview),
         "current.md": _render_current_focus(state),
         "history.md": _render_history(state),
     }
@@ -249,7 +246,6 @@ def derive_expected_view_bytes(
         (
             f"items/{item.item_id}.md",
             _render_item(
-                state.lifecycle.project.revision,
                 item,
                 view_inputs.dependencies[item.item_id],
                 view_inputs.overview_items.get(str(item.item_id)),
@@ -259,7 +255,7 @@ def derive_expected_view_bytes(
         for item in state.lifecycle.work_items
     )
     expected_views.update(
-        (f"attempts/{attempt.attempt_id}.md", _render_attempt(state, attempt, attempt_briefs or {}))
+        (f"attempts/{attempt.attempt_id}.md", _render_attempt(attempt, attempt_briefs or {}))
         for attempt in state.lifecycle.attempts
     )
     return expected_views

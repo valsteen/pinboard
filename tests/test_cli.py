@@ -3892,6 +3892,60 @@ Not launchable:
                 self.assertEqual(0, applied, stderr)
                 assert_partial_matches_full(work, common, ("items/zz-proposal-a.md",))
 
+    def test_attempt_renewal_preserves_semantically_unchanged_view_files(self) -> None:
+        state = complete_sqlite_state()
+        now = datetime.now(UTC)
+        state = replace(
+            state,
+            authority=replace(
+                state.authority,
+                attempt_leases=tuple(
+                    replace(value, expires_at=now + timedelta(minutes=5)) for value in state.authority.attempt_leases
+                ),
+            ),
+        )
+        project, work, store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        rebuilt, _stdout, stderr = self.run_cli(*common, "views", "rebuild")
+        self.assertEqual(0, rebuilt, stderr)
+        selectors = ("queue.md", "current.md", "history.md")
+
+        def snapshots() -> dict[str, tuple[bytes, int, int]]:
+            return {
+                selector: (
+                    (path := work / "views" / selector).read_bytes(),
+                    path.stat().st_ino,
+                    path.stat().st_mtime_ns,
+                )
+                for selector in selectors
+            }
+
+        before = snapshots()
+        renewed, _stdout, stderr = self.run_cli(
+            *common,
+            "attempt",
+            "renew",
+            "--attempt-id",
+            "work-a-1",
+            "--lease-id",
+            "attempt-lease-a",
+            "--generation",
+            "3",
+            "--ttl-seconds",
+            "600",
+        )
+
+        self.assertEqual(0, renewed, stderr)
+        self.assertEqual(state.lifecycle.project.revision + 1, store.snapshot().lifecycle.project.revision)
+        after_renewal = snapshots()
+        self.assertEqual(before["queue.md"], after_renewal["queue.md"])
+        self.assertEqual(before["current.md"], after_renewal["current.md"])
+        self.assertNotEqual(before["history.md"][0], after_renewal["history.md"][0])
+        self.assertNotEqual(before["history.md"][1], after_renewal["history.md"][1])
+        rebuilt, _stdout, stderr = self.run_cli(*common, "views", "rebuild")
+        self.assertEqual(0, rebuilt, stderr)
+        self.assertEqual(after_renewal, snapshots())
+
     def test_proposal_file_failure_is_stable(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))

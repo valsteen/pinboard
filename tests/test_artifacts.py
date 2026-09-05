@@ -53,14 +53,21 @@ class ArtifactPersistenceTest(unittest.TestCase):
         artifact = NewArtifact(work_models.ArtifactKind.BRIEF, "attempt-a", 1, ".json", b"{}\n")
 
         reference = write_revision(roots, artifact)
+        path = roots.work_root / reference.selector
+        initial_metadata = path.stat()
 
         self.assertEqual("artifacts/briefs/attempt-a/1.json", reference.selector)
         self.assertEqual(reference, write_revision(roots, artifact))
+        reused_metadata = path.stat()
+        self.assertEqual(
+            (initial_metadata.st_ino, initial_metadata.st_mtime_ns),
+            (reused_metadata.st_ino, reused_metadata.st_mtime_ns),
+        )
         verify_reference(roots.work_root, reference)
         with self.assertRaises(ArtifactError) as collision:
             write_revision(roots, NewArtifact(work_models.ArtifactKind.BRIEF, "attempt-a", 1, ".json", b"different\n"))
         self.assertEqual(ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION, collision.exception.code)
-        self.assertEqual(b"{}\n", (roots.work_root / reference.selector).read_bytes())
+        self.assertEqual(b"{}\n", path.read_bytes())
 
     def test_reference_verification_rejects_escape_size_and_digest(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

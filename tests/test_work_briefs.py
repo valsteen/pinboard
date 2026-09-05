@@ -296,6 +296,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         self.assertIn("owner_task_id: 01a04020-7d81-7602-a49e-b2d4f3ed6230", rendered)
         self.assertIn("accepted_scope_revision: 1", rendered)
         self.assertIn(f"accepted_scope_digest: {'b' * 64}", rendered)
+        self.assertNotIn("database_revision:", rendered)
         self.assertIn("typed-json-cutover", rendered)
         self.assertIn("Strict typed JSON remains canonical.", rendered)
         self.assertIn("uv run --locked pyrefly check", rendered)

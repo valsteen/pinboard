@@ -151,6 +151,11 @@ def create_immutable(path: Path, content: bytes) -> None:
 
 def atomic_replace(path: Path, content: bytes) -> None:
     parent = _verified_directory(path.parent, label="Replacement-file parent")
+    try:
+        if path.is_file(follow_symlinks=False) and path.read_bytes() == content:
+            return
+    except OSError:
+        pass
     staging = parent / f".pinboard-stage-{secrets.token_hex(16)}"
     try:
         _write_and_sync(staging, content)

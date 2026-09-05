@@ -8,7 +8,7 @@ from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.files.models import AffectedViews
-from pinboard.adapters.files.views import rebuild_state, refresh_state
+from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_state, refresh_state
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.artifacts import NewArtifact
@@ -28,10 +28,11 @@ class GeneratedViewsTest(unittest.TestCase):
         initialize_store(store, complete_sqlite_state())
         return roots.work_root, store
 
-    def test_rebuild_creates_revision_stamped_non_authoritative_views(self) -> None:
+    def test_generated_views_are_stable_across_unrelated_project_revisions(self) -> None:
         work_root, store = self._state()
+        state = store.snapshot()
 
-        result = rebuild_state(store.snapshot(), work_root, now=SQLITE_NOW)
+        result = rebuild_state(state, work_root, now=SQLITE_NOW)
 
         self.assertIsNone(result.warning)
         for selector in (
@@ -42,9 +43,17 @@ class GeneratedViewsTest(unittest.TestCase):
             "views/history.md",
         ):
             text = (work_root / selector).read_text(encoding="utf-8")
-            self.assertIn("database_revision: 12", text)
+            self.assertNotIn("database_revision:", text)
         history = (work_root / "views" / "history.md").read_text(encoding="utf-8")
         self.assertIn("| Accepted test definition. | test-source |", history)
+        advanced = replace(
+            state,
+            lifecycle=replace(state.lifecycle, project=replace(state.lifecycle.project, revision=13)),
+        )
+        self.assertEqual(
+            derive_expected_view_bytes(state, now=SQLITE_NOW),
+            derive_expected_view_bytes(advanced, now=SQLITE_NOW),
+        )
 
     def test_post_commit_refresh_failure_is_a_repairable_warning(self) -> None:
         work_root, store = self._state()
@@ -90,7 +99,7 @@ class GeneratedViewsTest(unittest.TestCase):
         self.assertIsNone(result.warning)
         path = roots.work_root / "views" / "attempts" / "work-a-1.md"
         text = path.read_text(encoding="utf-8")
-        self.assertIn("database_revision: 12", text)
+        self.assertNotIn("database_revision:", text)
         self.assertIn("typed-json-cutover", text)
         path.unlink()
         rebuild_state(

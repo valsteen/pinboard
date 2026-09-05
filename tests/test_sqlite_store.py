@@ -500,10 +500,19 @@ class SQLiteStoreTest(unittest.TestCase):
         self.assertEqual(b"accepted evidence", immutable.read_bytes())
         with self.assertRaises(FileIOError):
             create_immutable(immutable, b"replacement")
-        atomic_replace(external.artifacts_root / "view.md", b"revision one")
-        self.assertEqual(b"revision one", (external.artifacts_root / "view.md").read_bytes())
-        atomic_replace(external.artifacts_root / "view.md", b"revision two")
-        self.assertEqual(b"revision two", (external.artifacts_root / "view.md").read_bytes())
+        replaceable = external.artifacts_root / "view.md"
+        atomic_replace(replaceable, b"revision one")
+        initial_metadata = replaceable.stat()
+        atomic_replace(replaceable, b"revision one")
+        unchanged_metadata = replaceable.stat()
+        self.assertEqual(b"revision one", replaceable.read_bytes())
+        self.assertEqual(
+            (initial_metadata.st_ino, initial_metadata.st_mtime_ns),
+            (unchanged_metadata.st_ino, unchanged_metadata.st_mtime_ns),
+        )
+        atomic_replace(replaceable, b"revision two")
+        self.assertEqual(b"revision two", replaceable.read_bytes())
+        self.assertNotEqual(initial_metadata.st_ino, replaceable.stat().st_ino)
 
         immutable_staging = external.artifacts_root / "staged-evidence.md"
         with (

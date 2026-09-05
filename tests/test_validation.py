@@ -133,9 +133,7 @@ class SQLiteValidationTest(unittest.TestCase):
         self.assertFalse(staging.exists())
         self.assertFalse(staging_journal.exists())
         attempt_view = first.work_root / "views" / "attempts" / "work-a-1.md"
-        self.assertEqual(
-            render_work_brief_markdown(brief, before.lifecycle.project.revision), attempt_view.read_bytes()
-        )
+        self.assertEqual(render_work_brief_markdown(brief), attempt_view.read_bytes())
 
     def test_initialization_rejects_conflicting_publication_residue_without_mutation(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

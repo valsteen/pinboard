@@ -13,16 +13,20 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.application import stored_state
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.identifiers import AttemptId, ItemId
 
 
-def validate_attempt_authority(state: stored_state.StoredWorkState, error_code: StorageErrorCode) -> None:
-    attempt_counters = {value.attempt_id: value.generation_high_water for value in state.authority.attempt_counters}
-    for anchor in state.authority.attempt_generations:
+def _validate_authority_records(
+    authority: stored_state.AuthorityRecords,
+    error_code: StorageErrorCode,
+) -> None:
+    attempt_counters = {value.attempt_id: value.generation_high_water for value in authority.attempt_counters}
+    for anchor in authority.attempt_generations:
         high_water = attempt_counters.get(anchor.attempt_id)
         if high_water is None or anchor.generation > high_water:
             raise StorageError(error_code, "An attempt generation exceeds its retained counter.")
-    attempt_anchors = {(anchor.attempt_id, anchor.generation) for anchor in state.authority.attempt_generations}
-    for lease in state.authority.attempt_leases:
+    attempt_anchors = {(anchor.attempt_id, anchor.generation) for anchor in authority.attempt_generations}
+    for lease in authority.attempt_leases:
         high_water = attempt_counters.get(lease.attempt_id)
         if (
             high_water is None
@@ -30,15 +34,13 @@ def validate_attempt_authority(state: stored_state.StoredWorkState, error_code: 
             or (lease.attempt_id, lease.generation) not in attempt_anchors
         ):
             raise StorageError(error_code, "The current attempt lease does not match its retained counter.")
-    preparation_counters = {
-        value.item_id: value.generation_high_water for value in state.authority.preparation_counters
-    }
-    for anchor in state.authority.preparation_generations:
+    preparation_counters = {value.item_id: value.generation_high_water for value in authority.preparation_counters}
+    for anchor in authority.preparation_generations:
         high_water = preparation_counters.get(anchor.item_id)
         if high_water is None or anchor.generation > high_water:
             raise StorageError(error_code, "A preparation generation exceeds its retained counter.")
-    preparation_anchors = {(anchor.item_id, anchor.generation) for anchor in state.authority.preparation_generations}
-    for lease in state.authority.preparation_leases:
+    preparation_anchors = {(anchor.item_id, anchor.generation) for anchor in authority.preparation_generations}
+    for lease in authority.preparation_leases:
         high_water = preparation_counters.get(lease.item_id)
         if (
             high_water is None
@@ -48,7 +50,11 @@ def validate_attempt_authority(state: stored_state.StoredWorkState, error_code: 
             raise StorageError(error_code, "The current preparation lease does not match its retained counter.")
 
 
-def read_authority(connection: sqlite3.Connection) -> stored_state.AuthorityRecords:
+def validate_attempt_authority(state: stored_state.StoredWorkState, error_code: StorageErrorCode) -> None:
+    _validate_authority_records(state.authority, error_code)
+
+
+def _read_coordination_authority(connection: sqlite3.Connection) -> stored_state.StoredCoordinationLease | None:
     coordination_rows = tuple(
         connection.execute(
             """
@@ -60,7 +66,11 @@ def read_authority(connection: sqlite3.Connection) -> stored_state.AuthorityReco
     )
     if len(coordination_rows) > 1:
         raise StorageError(StorageErrorCode.INVALID_STATE, "The database has multiple coordination leases.")
-    coordination = decode_row(coordination_rows[0], stored_state.StoredCoordinationLease) if coordination_rows else None
+    return decode_row(coordination_rows[0], stored_state.StoredCoordinationLease) if coordination_rows else None
+
+
+def read_authority(connection: sqlite3.Connection) -> stored_state.AuthorityRecords:
+    coordination = _read_coordination_authority(connection)
     counters = tuple(
         decode_row(row, stored_state.AttemptLeaseCounter)
         for row in connection.execute(
@@ -123,6 +133,103 @@ def read_authority(connection: sqlite3.Connection) -> stored_state.AuthorityReco
         preparation_generations,
         preparation_leases,
     )
+
+
+def read_live_authority(
+    connection: sqlite3.Connection,
+    attempt_ids: tuple[AttemptId, ...],
+    item_ids: tuple[ItemId, ...],
+) -> stored_state.AuthorityRecords:
+    """Read current authority and only the live graph's current generation anchors."""
+
+    coordination = _read_coordination_authority(connection)
+
+    attempt_counters: tuple[stored_state.AttemptLeaseCounter, ...] = ()
+    attempt_generations: tuple[stored_state.AttemptLeaseGeneration, ...] = ()
+    attempt_leases: tuple[stored_state.StoredAttemptLease, ...] = ()
+    if attempt_ids:
+        placeholders = ", ".join("?" for _value in attempt_ids)
+        attempt_counters = tuple(
+            decode_row(row, stored_state.AttemptLeaseCounter)
+            for row in connection.execute(
+                f"SELECT attempt_id, generation_high_water FROM attempt_lease_counters WHERE attempt_id IN ({placeholders}) ORDER BY attempt_id",
+                attempt_ids,
+            ).fetchall()
+        )
+        attempt_leases = tuple(
+            decode_row(row, stored_state.StoredAttemptLease)
+            for row in connection.execute(
+                f"SELECT attempt_id, generation, acquired_at, expires_at, status AS state FROM attempt_leases WHERE attempt_id IN ({placeholders}) ORDER BY attempt_id",
+                attempt_ids,
+            ).fetchall()
+        )
+        attempt_generations = tuple(
+            decode_row(row, stored_state.AttemptLeaseGeneration)
+            for row in connection.execute(
+                f"""
+                SELECT generation.attempt_id, generation.generation, generation.lease_id,
+                       generation.task_id, generation.host_id
+                FROM attempt_lease_generations AS generation
+                JOIN attempt_leases AS lease
+                  ON lease.attempt_id = generation.attempt_id AND lease.generation = generation.generation
+                WHERE generation.attempt_id IN ({placeholders})
+                ORDER BY generation.attempt_id
+                """,
+                attempt_ids,
+            ).fetchall()
+        )
+
+    preparation_counters: tuple[stored_state.PreparationLeaseCounter, ...] = ()
+    preparation_generations: tuple[stored_state.PreparationLeaseGeneration, ...] = ()
+    preparation_leases: tuple[stored_state.StoredPreparationLease, ...] = ()
+    if item_ids:
+        placeholders = ", ".join("?" for _value in item_ids)
+        preparation_counters = tuple(
+            decode_row(row, stored_state.PreparationLeaseCounter)
+            for row in connection.execute(
+                f"SELECT item_id, generation_high_water FROM preparation_lease_counters WHERE item_id IN ({placeholders}) ORDER BY item_id",
+                item_ids,
+            ).fetchall()
+        )
+        preparation_leases = tuple(
+            decode_row(row, stored_state.StoredPreparationLease)
+            for row in connection.execute(
+                f"""
+                SELECT item_id, generation, definition_revision, definition_digest,
+                       acquired_at, expires_at, status AS state
+                FROM preparation_leases
+                WHERE item_id IN ({placeholders})
+                ORDER BY item_id
+                """,
+                item_ids,
+            ).fetchall()
+        )
+        preparation_generations = tuple(
+            decode_row(row, stored_state.PreparationLeaseGeneration)
+            for row in connection.execute(
+                f"""
+                SELECT generation.item_id, generation.generation, generation.lease_id,
+                       generation.task_id, generation.host_id
+                FROM preparation_lease_generations AS generation
+                JOIN preparation_leases AS lease
+                  ON lease.item_id = generation.item_id AND lease.generation = generation.generation
+                WHERE generation.item_id IN ({placeholders})
+                ORDER BY generation.item_id
+                """,
+                item_ids,
+            ).fetchall()
+        )
+    authority = stored_state.AuthorityRecords(
+        coordination,
+        attempt_counters,
+        attempt_generations,
+        attempt_leases,
+        preparation_counters,
+        preparation_generations,
+        preparation_leases,
+    )
+    _validate_authority_records(authority, StorageErrorCode.INVALID_STATE)
+    return authority
 
 
 def fence_attempt_authority(

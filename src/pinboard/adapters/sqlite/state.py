@@ -12,22 +12,31 @@ from itertools import pairwise
 
 import msgspec
 
-from pinboard.adapters.sqlite.artifacts import read_artifacts
-from pinboard.adapters.sqlite.authority import read_authority, validate_attempt_authority
+from pinboard.adapters.sqlite.artifacts import read_artifacts, read_latest_artifact, read_selected_artifacts
+from pinboard.adapters.sqlite.authority import read_authority, read_live_authority, validate_attempt_authority
 from pinboard.adapters.sqlite.database import decode_row
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.adapters.sqlite.lifecycle import read_focus, read_lifecycle
-from pinboard.adapters.sqlite.proposals import read_proposals
+from pinboard.adapters.sqlite.lifecycle import (
+    read_attempt_lifecycle,
+    read_focus,
+    read_item_definition_lifecycle,
+    read_item_status_lifecycle,
+    read_lifecycle,
+    read_live_lifecycle,
+)
+from pinboard.adapters.sqlite.proposals import read_live_proposals, read_proposals
 from pinboard.application import stored_state
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import (
     ActionId,
     ArtifactRefId,
+    AttemptId,
     HistoryId,
     HistorySubjectId,
     HostId,
     ItemId,
+    ProposalId,
     TaskId,
 )
 
@@ -76,7 +85,11 @@ class _StoredTransitionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
         )
 
 
-def _read_project(connection: sqlite3.Connection) -> stored_state.ProjectRecord:
+class _AttemptIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+
+
+def read_project(connection: sqlite3.Connection) -> stored_state.ProjectRecord:
     rows = tuple(
         connection.execute(
             """
@@ -102,6 +115,43 @@ def _read_history(connection: sqlite3.Connection) -> tuple[stored_state.StoredTr
             FROM transition_history
             ORDER BY history_id
             """
+        ).fetchall()
+    )
+
+
+def _read_latest_history(connection: sqlite3.Connection) -> tuple[stored_state.StoredTransitionReceipt, ...]:
+    row = connection.execute(
+        """
+        SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
+               authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
+               input_json, outcome_schema, outcome_json, committed_at
+        FROM transition_history
+        ORDER BY history_id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return () if row is None else (decode_row(row, _StoredTransitionRow).receipt(),)
+
+
+def read_selected_history(
+    connection: sqlite3.Connection,
+    history_ids: tuple[HistoryId, ...],
+) -> tuple[stored_state.StoredTransitionReceipt, ...]:
+    if not history_ids:
+        return ()
+    placeholders = ", ".join("?" for _value in history_ids)
+    return tuple(
+        decode_row(row, _StoredTransitionRow).receipt()
+        for row in connection.execute(
+            f"""
+            SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
+                   authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
+                   input_json, outcome_schema, outcome_json, committed_at
+            FROM transition_history
+            WHERE history_id IN ({placeholders})
+            ORDER BY history_id
+            """,
+            history_ids,
         ).fetchall()
     )
 
@@ -194,7 +244,7 @@ def _validate_current_state(state: stored_state.StoredWorkState, error_code: Sto
 
 
 def read_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
-    project = _read_project(connection)
+    project = read_project(connection)
     state = stored_state.StoredWorkState(
         read_lifecycle(connection, project),
         read_proposals(connection),
@@ -205,6 +255,194 @@ def read_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
     )
     _validate_current_state(state, StorageErrorCode.INVALID_STATE)
     return state
+
+
+def read_item_definition_state(
+    connection: sqlite3.Connection,
+    item_id: ItemId,
+    *,
+    history_limit: int = 1,
+    before_revision: int | None = None,
+) -> stored_state.StoredWorkState:
+    """Read one item and only its requested bounded definition window."""
+
+    project = read_project(connection)
+    return stored_state.StoredWorkState(
+        read_item_definition_lifecycle(
+            connection,
+            project,
+            item_id,
+            history_limit=history_limit,
+            before_revision=before_revision,
+        ),
+        stored_state.ProposalRecords(),
+        (),
+        stored_state.AuthorityRecords(),
+        (),
+        stored_state.StoredFocus(None, None, "select", 0),
+    )
+
+
+def _read_current_state(
+    connection: sqlite3.Connection,
+    selected_artifact_ref_ids: tuple[ArtifactRefId, ...],
+    subject_item_ids: tuple[ItemId, ...],
+    subject_attempt_ids: tuple[AttemptId, ...],
+    subject_proposal_ids: tuple[ProposalId, ...],
+) -> stored_state.StoredWorkState:
+    project = read_project(connection)
+    lifecycle = read_live_lifecycle(
+        connection,
+        project,
+        subject_item_ids=subject_item_ids,
+        subject_attempt_ids=subject_attempt_ids,
+    )
+    item_ids = tuple(item.item_id for item in lifecycle.work_items)
+    proposal_item_ids = tuple(
+        dict.fromkeys((*item_ids, *(dependency.dependency_id for dependency in lifecycle.dependencies)))
+    )
+    attempt_ids = tuple(attempt.attempt_id for attempt in lifecycle.attempts)
+    artifact_ref_ids = tuple(
+        dict.fromkeys(
+            (
+                *selected_artifact_ref_ids,
+                *(
+                    reference
+                    for attempt in lifecycle.attempts
+                    for reference in (attempt.brief_artifact_ref_id, attempt.result_artifact_ref_id)
+                    if reference is not None
+                ),
+            )
+        )
+    )
+    selected_artifacts = read_selected_artifacts(connection, artifact_ref_ids)
+    latest_artifact = read_latest_artifact(connection)
+    artifact_references = tuple(
+        dict.fromkeys((*selected_artifacts, *((latest_artifact,) if latest_artifact is not None else ())))
+    )
+    return stored_state.StoredWorkState(
+        lifecycle,
+        read_live_proposals(connection, proposal_item_ids, subject_proposal_ids),
+        artifact_references,
+        read_live_authority(connection, attempt_ids, item_ids),
+        _read_latest_history(connection),
+        read_focus(connection),
+    )
+
+
+def read_live_state(
+    connection: sqlite3.Connection,
+    selected_artifact_ref_ids: tuple[ArtifactRefId, ...] = (),
+) -> stored_state.StoredWorkState:
+    """Read the current live graph without append-only history or terminal rows."""
+
+    return _read_current_state(
+        connection,
+        selected_artifact_ref_ids,
+        (),
+        (),
+        (),
+    )
+
+
+def read_decision_state(
+    connection: sqlite3.Connection,
+    selected_artifact_ref_ids: tuple[ArtifactRefId, ...] = (),
+    *,
+    subject_item_ids: tuple[ItemId, ...] = (),
+    subject_attempt_ids: tuple[AttemptId, ...] = (),
+    subject_proposal_ids: tuple[ProposalId, ...] = (),
+) -> stored_state.StoredWorkState:
+    """Read live decision rows plus exact operation subjects."""
+
+    return _read_current_state(
+        connection,
+        selected_artifact_ref_ids,
+        subject_item_ids,
+        subject_attempt_ids,
+        subject_proposal_ids,
+    )
+
+
+def read_status_facts(connection: sqlite3.Connection) -> stored_state.StatusFacts:
+    """Read compact status aggregates without materializing work or history rows."""
+
+    project = read_project(connection)
+    active_attempts = tuple(
+        decode_row(row, _AttemptIdentity).attempt_id
+        for row in connection.execute(
+            "SELECT attempt_id FROM attempts WHERE state = 'active' ORDER BY attempt_id"
+        ).fetchall()
+    )
+    counts = tuple(
+        decode_row(row, stored_state.WorkStateCount)
+        for row in connection.execute(
+            "SELECT state, COUNT(*) AS count FROM work_items GROUP BY state ORDER BY state"
+        ).fetchall()
+    )
+    authority = read_live_authority(connection, active_attempts, ())
+    return stored_state.StatusFacts(project, read_focus(connection), active_attempts, counts, authority.coordination)
+
+
+def read_item_status_state(connection: sqlite3.Connection, item_id: ItemId) -> stored_state.StoredWorkState:
+    """Read one item's status facts without unrelated items or histories."""
+
+    project = read_project(connection)
+    lifecycle = read_item_status_lifecycle(connection, project, item_id)
+    attempt_ids = tuple(attempt.attempt_id for attempt in lifecycle.attempts)
+    return stored_state.StoredWorkState(
+        lifecycle,
+        stored_state.ProposalRecords(),
+        (),
+        read_live_authority(connection, attempt_ids, (item_id,)),
+        (),
+        stored_state.StoredFocus(None, None, "select", 0),
+    )
+
+
+def read_coordination_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
+    project = read_project(connection)
+    return stored_state.StoredWorkState(
+        stored_state.LifecycleRecords(project),
+        stored_state.ProposalRecords(),
+        (),
+        read_live_authority(connection, (), ()),
+        _read_latest_history(connection),
+        stored_state.StoredFocus(None, None, "select", 0),
+    )
+
+
+def read_attempt_authority_state(
+    connection: sqlite3.Connection,
+    attempt_id: AttemptId,
+) -> stored_state.StoredWorkState:
+    project = read_project(connection)
+    lifecycle = read_attempt_lifecycle(connection, project, attempt_id)
+    item_ids = tuple(value.item_id for value in lifecycle.work_items)
+    artifact_ids = tuple(value.brief_artifact_ref_id for value in lifecycle.attempts)
+    return stored_state.StoredWorkState(
+        lifecycle,
+        stored_state.ProposalRecords(),
+        read_selected_artifacts(connection, artifact_ids),
+        read_live_authority(connection, (attempt_id,), item_ids),
+        _read_latest_history(connection),
+        stored_state.StoredFocus(None, None, "select", 0),
+    )
+
+
+def read_preparation_authority_state(
+    connection: sqlite3.Connection,
+    item_id: ItemId,
+) -> stored_state.StoredWorkState:
+    project = read_project(connection)
+    return stored_state.StoredWorkState(
+        read_item_definition_lifecycle(connection, project, item_id),
+        stored_state.ProposalRecords(),
+        (),
+        read_live_authority(connection, (), (item_id,)),
+        (),
+        stored_state.StoredFocus(None, None, "select", 0),
+    )
 
 
 def _json_text(value: work_models.CanonicalJson | None) -> str | None:

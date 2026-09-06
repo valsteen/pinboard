@@ -219,6 +219,63 @@ def read_proposals(connection: sqlite3.Connection) -> stored_state.ProposalRecor
     return stored_state.ProposalRecords(proposals, evidence, freshness)
 
 
+def read_live_proposals(
+    connection: sqlite3.Connection,
+    item_ids: tuple[ItemId, ...],
+    subject_proposal_ids: tuple[ProposalId, ...] = (),
+) -> stored_state.ProposalRecords:
+    """Read live-graph proposals plus exact operation subjects."""
+
+    proposal_ids = tuple(dict.fromkeys((*(ProposalId(value) for value in item_ids), *subject_proposal_ids)))
+    if not proposal_ids:
+        return stored_state.ProposalRecords()
+    placeholders = ", ".join("?" for _value in proposal_ids)
+    proposals = tuple(
+        decode_row(row, _StoredProposalRow).proposal()
+        for row in connection.execute(
+            f"""
+            SELECT proposal_id, created_at, recorded_at, source_task_id, user_label, trigger,
+                   why_it_matters, relation_kind, relation_item_id, effect, unlock, urgency_evidence,
+                   disposition, disposition_target_item_id, disposition_reason, subject_revision,
+                   disposition_recorded_at
+            FROM proposals
+            WHERE proposal_id IN ({placeholders})
+            ORDER BY proposal_id
+            """,
+            proposal_ids,
+        ).fetchall()
+    )
+    proposal_ids = tuple(proposal.proposal_id for proposal in proposals)
+    if not proposal_ids:
+        return stored_state.ProposalRecords()
+    proposal_placeholders = ", ".join("?" for _value in proposal_ids)
+    evidence = tuple(
+        decode_row(row, stored_state.ProposalEvidence)
+        for row in connection.execute(
+            f"""
+            SELECT proposal_id, position, selector
+            FROM proposal_evidence
+            WHERE proposal_id IN ({proposal_placeholders})
+            ORDER BY proposal_id, position
+            """,
+            proposal_ids,
+        ).fetchall()
+    )
+    freshness = tuple(
+        decode_row(row, stored_state.ProposalFreshness)
+        for row in connection.execute(
+            f"""
+            SELECT proposal_id, position, assumption
+            FROM proposal_freshness
+            WHERE proposal_id IN ({proposal_placeholders})
+            ORDER BY proposal_id, position
+            """,
+            proposal_ids,
+        ).fetchall()
+    )
+    return stored_state.ProposalRecords(proposals, evidence, freshness)
+
+
 def set_proposal_disposition(
     connection: sqlite3.Connection,
     proposal_id: ProposalId,

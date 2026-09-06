@@ -70,22 +70,25 @@ def create_proposal(
         decoded_proposal.position,
     )
     store = SQLiteWorkStore(roots.work / "state.sqlite3")
-    creation_result = service.create_proposal(
+    creation_result = service.create_proposal_with_effect(
         store,
         domain_proposal_models.CreateProposalOperation(requested_intake),
         datetime.now(UTC),
     )
     if isinstance(creation_result, DecisionFailure):
         return ProposalFailure(creation_result.code, creation_result.message)
-    committed_state = store.snapshot()
-    changed_items = [ItemId(decoded_proposal.proposal_id)]
-    if isinstance(decoded_proposal.relation, proposal_models.PrerequisiteProposalRelation):
-        changed_items.append(ItemId(decoded_proposal.relation.item))
+    committed_state = creation_result.view_state
+    rendered_at = datetime.now(UTC)
     view_result = work_views.refresh(
         roots,
-        store,
-        file_models.AffectedViews(queue=True, history=True, items=tuple(changed_items)),
-        datetime.now(UTC),
+        committed_state,
+        file_models.AffectedViews(
+            current_focus=creation_result.affected.current_focus,
+            items=creation_result.affected.items,
+            attempts=creation_result.affected.attempts,
+            history_receipts=(creation_result.receipt.history_id,),
+        ),
+        rendered_at,
     )
     if view_result.warning is not None:
         print(view_result.warning.message, file=sys.stderr)

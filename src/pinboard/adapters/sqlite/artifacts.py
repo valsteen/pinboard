@@ -1,16 +1,15 @@
 """Read and accept artifact records on a supplied connection.
 
-Artifact acceptance verifies the supplied filesystem reference; no other
-operation reads files. This module never commits, rolls back, closes the
-connection, calls callbacks, or obtains time. Expected stale CAS writes return a
-``DecisionFailure``; SQLite and persisted-invariant failures remain exceptional.
+Artifact acceptance records the exact reference returned by the trusted immutable
+publisher and never reads artifact files. Transaction control and time belong to
+the caller. Expected stale writes return a ``DecisionFailure``; malformed
+persisted state remains exceptional.
 """
 
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 
-from pinboard.adapters.files.artifacts import verify_reference
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.application import stored_state
@@ -19,8 +18,14 @@ from pinboard.application.artifacts import (
     EvidenceArtifactRef,
     ResultArtifactRef,
 )
+from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId
+
+
+@dataclass(frozen=True, slots=True)
+class _ProjectRevision:
+    revision: int
 
 
 def _find_accepted_artifact(
@@ -73,6 +78,61 @@ def read_artifacts(connection: sqlite3.Connection) -> tuple[stored_state.Artifac
     )
 
 
+def read_selected_artifacts(
+    connection: sqlite3.Connection,
+    artifact_ref_ids: tuple[ArtifactRefId, ...],
+) -> tuple[stored_state.ArtifactReference, ...]:
+    """Read only accepted references named by the current operation facts."""
+
+    if not artifact_ref_ids:
+        return ()
+    placeholders = ", ".join("?" for _value in artifact_ref_ids)
+    return tuple(
+        decode_row(row, stored_state.ArtifactReference)
+        for row in connection.execute(
+            f"""
+            SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+                   relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
+            FROM artifact_refs
+            WHERE artifact_ref_id IN ({placeholders})
+            ORDER BY artifact_ref_id
+            """,
+            artifact_ref_ids,
+        ).fetchall()
+    )
+
+
+def read_latest_artifact(connection: sqlite3.Connection) -> stored_state.ArtifactReference | None:
+    row = connection.execute(
+        """
+        SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+               relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
+        FROM artifact_refs
+        ORDER BY artifact_ref_id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return None if row is None else decode_row(row, stored_state.ArtifactReference)
+
+
+def read_artifact_by_identity(
+    connection: sqlite3.Connection,
+    kind: work_models.ArtifactKind,
+    key: str,
+    revision: int,
+) -> stored_state.ArtifactReference | None:
+    row = connection.execute(
+        """
+        SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+               relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
+        FROM artifact_refs
+        WHERE kind = ? AND artifact_key = ? AND artifact_revision = ?
+        """,
+        (kind.value, key, revision),
+    ).fetchone()
+    return None if row is None else decode_row(row, stored_state.ArtifactReference)
+
+
 def accept_checkpoint_artifact(
     connection: sqlite3.Connection,
     state: stored_state.StoredWorkState,
@@ -112,15 +172,12 @@ def accept_checkpoint_artifact(
 
 def accept_artifact_reference(
     connection: sqlite3.Connection,
-    before: stored_state.StoredWorkState,
-    work_root: Path,
     published: ArtifactRef,
     accepted_at: datetime,
 ) -> DecisionResult[stored_state.ArtifactReference]:
-    """Accept one verified reference; the caller owns transaction and readback."""
+    """Accept a publisher-verified reference; the caller owns transaction and readback."""
 
-    verify_reference(work_root, published)
-    existing = _find_accepted_artifact(before, published)
+    existing = read_artifact_by_identity(connection, published.kind, published.key, published.revision)
     if existing is not None:
         if (
             existing.selector,
@@ -132,18 +189,23 @@ def accept_artifact_reference(
                 "An accepted artifact identity already names different bytes.",
             )
         return existing
+    latest = read_latest_artifact(connection)
+    project_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "The database has no project record.")
+    project_revision = decode_row(project_row, _ProjectRevision).revision
     reference = stored_state.ArtifactReference(
-        ArtifactRefId(1 + max((int(value.artifact_ref_id) for value in before.artifact_references), default=0)),
+        ArtifactRefId(1 if latest is None else int(latest.artifact_ref_id) + 1),
         published.key,
         published.revision,
         published.kind,
         published.selector,
         published.content_sha256,
         published.size_bytes,
-        before.lifecycle.project.revision + 1,
+        project_revision + 1,
         accepted_at,
     )
-    revision = before.lifecycle.project.revision + 1
+    revision = project_revision + 1
     _insert_artifact(connection, reference)
     if (
         failure := require_one_changed_row(
@@ -153,7 +215,7 @@ def accept_artifact_reference(
                 SET revision = ?, updated_at = ?
                 WHERE singleton = 1 AND revision = ?
                 """,
-                (revision, accepted_at.isoformat(), before.lifecycle.project.revision),
+                (revision, accepted_at.isoformat(), project_revision),
             ),
             "The project revision changed before artifact acceptance.",
         )

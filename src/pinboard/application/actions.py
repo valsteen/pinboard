@@ -5,13 +5,57 @@ snapshot into domain decision facts and asks the domain for legal actions.
 """
 
 from datetime import datetime
+from typing import assert_never
 
 from pinboard.application import stored_state
 from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import available_actions
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import AttemptId, LeaseId
+from pinboard.domain.identifiers import AttemptId, ItemId, LeaseId, ProposalId
+
+
+def action_subject_ids(
+    action: decision_models.Action,
+) -> tuple[tuple[ItemId, ...], tuple[AttemptId, ...], tuple[ProposalId, ...]]:
+    """Return the exact persisted subject family selected by one action."""
+
+    match action:
+        case (
+            decision_models.AcceptCheckpointAction(capability=capability)
+            | decision_models.AcceptReviewAndContinueAction(capability=capability)
+            | decision_models.BlockAttemptAction(capability=capability)
+            | decision_models.CompleteAction(capability=capability)
+            | decision_models.ContinueAction(capability=capability)
+            | decision_models.DispatchAction(capability=capability)
+            | decision_models.PauseAction(capability=capability)
+            | decision_models.ReportBlockerAction(capability=capability)
+            | decision_models.ReturnForCorrectionAction(capability=capability)
+            | decision_models.SubmitReviewAction(capability=capability)
+        ):
+            return (), (capability.subject,), ()
+        case (
+            decision_models.ActivateAction(capability=capability)
+            | decision_models.BlockItemAction(capability=capability)
+            | decision_models.CloseAction(capability=capability)
+            | decision_models.DeferAction(capability=capability)
+            | decision_models.MarkReadyAction(capability=capability)
+            | decision_models.ReopenAction(capability=capability)
+            | decision_models.ResumeAction(capability=capability)
+            | decision_models.ReviseItemAction(capability=capability)
+        ):
+            return (capability.subject,), (), ()
+        case (
+            decision_models.AcceptProposalAction(capability=capability)
+            | decision_models.MergeProposalAction(capability=capability)
+            | decision_models.RejectProposalAction(capability=capability)
+            | decision_models.ReturnProposalAction(capability=capability)
+        ):
+            return (), (), (capability.subject,)
+        case decision_models.InspectAction() | decision_models.TransferCoordinatorAction():
+            return (), (), ()
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _select_worker_attempts(

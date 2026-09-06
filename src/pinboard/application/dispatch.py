@@ -26,6 +26,7 @@ class SelectedDispatch:
 class AcceptedDispatchReview:
     reference: stored_state.ArtifactReference
     own_publication_revision: int | None
+    content: bytes
 
 
 def _rediscover_dispatch_action(
@@ -34,7 +35,7 @@ def _rediscover_dispatch_action(
     now: datetime,
 ) -> DispatchResult[decision_models.Action | None]:
     capability = supplied.capability
-    state = store.snapshot()
+    state = store.decision_state(subject_attempt_ids=(capability.subject,))
     actions = discover_actions(
         state,
         decision_models.Role.COORDINATOR,
@@ -88,8 +89,8 @@ def select_dispatch(
     current = _current_dispatch_action(store, action, now)
     if isinstance(current, DispatchFailure):
         return current
-    state = store.snapshot()
     attempt_id = current.capability.subject
+    state = store.decision_state(subject_attempt_ids=(attempt_id,))
     attempt = next((value for value in state.lifecycle.attempts if value.attempt_id == attempt_id), None)
     if attempt is None or attempt.state != work_models.AttemptState.ACTIVE:
         return DispatchFailure(DispatchRejectionCode.ATTEMPT_NOT_ACTIVE, f"Attempt '{attempt_id}' is not active.")
@@ -112,14 +113,7 @@ def _find_ready_review_reference(
     checkpoint_sha256: str,
 ) -> stored_state.ArtifactReference | None:
     key = f"{attempt_id}-brief-review-{checkpoint_sha256}"
-    return next(
-        (
-            value
-            for value in store.snapshot().artifact_references
-            if value.kind == work_models.ArtifactKind.EVIDENCE and value.key == key and value.revision == 1
-        ),
-        None,
-    )
+    return store.artifact_reference(work_models.ArtifactKind.EVIDENCE, key, 1)
 
 
 def find_dispatch_review(
@@ -145,9 +139,9 @@ def publish_dispatch_review(
     key = f"{attempt_id}-brief-review-{checkpoint_sha256}"
     existing = _find_ready_review_reference(store, attempt_id, checkpoint_sha256)
     if existing is not None:
-        artifacts.verify(existing)
-        if artifacts.path(existing).read_bytes() == candidate:
-            return AcceptedDispatchReview(existing, None)
+        existing_content = artifacts.read(existing)
+        if existing_content == candidate:
+            return AcceptedDispatchReview(existing, None, existing_content)
         rejected = artifacts.publish(
             NewArtifact(
                 work_models.ArtifactKind.EVIDENCE,
@@ -158,7 +152,6 @@ def publish_dispatch_review(
             )
         )
         rejected_acceptance = store.accept_artifact_reference(
-            artifacts.work_root,
             rejected,
             accepted_at,
         )
@@ -170,13 +163,12 @@ def publish_dispatch_review(
         )
     published = artifacts.publish(NewArtifact(work_models.ArtifactKind.EVIDENCE, key, 1, ".json", candidate))
     accepted = store.accept_artifact_reference(
-        artifacts.work_root,
         published,
         accepted_at,
     )
     if isinstance(accepted, DecisionFailure):
         return DispatchFailure(DispatchRejectionCode.STALE_ACTION, accepted.message)
-    return AcceptedDispatchReview(accepted, accepted.accepted_revision)
+    return AcceptedDispatchReview(accepted, accepted.accepted_revision, candidate)
 
 
 def recheck_dispatch_authority(

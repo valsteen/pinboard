@@ -4,6 +4,8 @@ import unittest
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+from typing import Literal
+from unittest.mock import patch
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import lifecycle, proposals
@@ -23,6 +25,7 @@ from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, ItemId, ProposalId
+from pinboard.interfaces.work_state import read_state_for_validation
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 
 
@@ -69,6 +72,305 @@ class SQLiteEffectContractTest(unittest.TestCase):
                     SQLITE_NOW,
                 )
             self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, conflicting.exception.code)
+        finally:
+            connection.close()
+
+    def test_integrity_scans_are_explicit_validation_work(self) -> None:
+        path, _store = self._store()
+        statements: list[str] = []
+        connect = sqlite3.connect
+
+        def traced_connect(
+            database: str,
+            timeout: float = 5.0,
+            isolation_level: Literal["DEFERRED", "EXCLUSIVE", "IMMEDIATE"] | None = "DEFERRED",
+            *,
+            uri: bool = False,
+        ) -> sqlite3.Connection:
+            connection = connect(
+                database,
+                timeout=timeout,
+                isolation_level=isolation_level,
+                uri=uri,
+            )
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch("pinboard.adapters.sqlite.database.sqlite3.connect", side_effect=traced_connect):
+            connection = open_database(path, OpenMode.READ_ONLY)
+            connection.close()
+        self.assertFalse(any("quick_check" in statement for statement in statements))
+        self.assertFalse(any("foreign_key_check" in statement for statement in statements))
+
+        statements.clear()
+        with patch("pinboard.adapters.sqlite.database.sqlite3.connect", side_effect=traced_connect):
+            validated = read_state_for_validation(path.parent)
+        self.assertNotIsInstance(validated, StorageError)
+        self.assertTrue(any("quick_check" in statement for statement in statements))
+        self.assertTrue(any("foreign_key_check" in statement for statement in statements))
+
+    def test_exact_definition_work_is_stable_as_unrelated_histories_grow(self) -> None:
+        path, _store = self._store()
+
+        def inspect() -> tuple[tuple[str, ...], int, int]:
+            tables: set[str] = set()
+            progress_steps = 0
+
+            def authorize(
+                action: int,
+                table: str | None,
+                _column: str | None,
+                _database: str | None,
+                _trigger: str | None,
+            ) -> int:
+                if action == sqlite3.SQLITE_READ and table is not None:
+                    tables.add(table)
+                return sqlite3.SQLITE_OK
+
+            def count_progress() -> int:
+                nonlocal progress_steps
+                progress_steps += 1
+                return 0
+
+            connection = open_database(path, OpenMode.READ_ONLY)
+            try:
+                connection.set_authorizer(authorize)
+                connection.set_progress_handler(count_progress, 1)
+                selected = sqlite_state.read_item_definition_state(connection, ItemId("work-a"))
+            finally:
+                connection.close()
+            return tuple(sorted(tables)), progress_steps, selected.lifecycle.definition_revisions[-1].revision
+
+        baseline = inspect()
+        connection = open_database(path, OpenMode.READ_WRITE)
+        try:
+            with write_transaction(connection):
+                definition_revision = int(
+                    connection.execute(
+                        "SELECT MAX(definition_revision) FROM work_item_definition_revisions WHERE item_id = 'work-c'"
+                    ).fetchone()[0]
+                )
+                connection.execute(
+                    """
+                    WITH RECURSIVE growth(number) AS (
+                        SELECT 1
+                        UNION ALL
+                        SELECT number + 1 FROM growth WHERE number < 400
+                    ), template AS (
+                        SELECT definition_digest, definition_json, reason, source_task_id,
+                               after_digest, accepted_project_revision, accepted_at
+                        FROM work_item_definition_revisions
+                        WHERE item_id = 'work-c'
+                        ORDER BY definition_revision DESC
+                        LIMIT 1
+                    )
+                    INSERT INTO work_item_definition_revisions (
+                        item_id, definition_revision, definition_digest, definition_json, reason,
+                        source_task_id, before_digest, after_digest, accepted_project_revision, accepted_at
+                    )
+                    SELECT 'work-c', ? + number, definition_digest, definition_json, reason,
+                           source_task_id, definition_digest, after_digest, accepted_project_revision, accepted_at
+                    FROM growth CROSS JOIN template
+                    """,
+                    (definition_revision,),
+                )
+                history_id, project_revision = connection.execute(
+                    "SELECT MAX(history_id), MAX(project_revision) FROM transition_history"
+                ).fetchone()
+                connection.execute(
+                    """
+                    WITH RECURSIVE growth(number) AS (
+                        SELECT 1
+                        UNION ALL
+                        SELECT number + 1 FROM growth WHERE number < 400
+                    ), template AS (
+                        SELECT action_kind, subject_id, artifact_ref_id, artifact_kind,
+                               authorization_kind, actor_task_id, actor_host_id, input_schema,
+                               input_json, outcome_schema, outcome_json, committed_at
+                        FROM transition_history
+                        ORDER BY history_id
+                        LIMIT 1
+                    )
+                    INSERT INTO transition_history (
+                        history_id, project_revision, action_id, action_kind, subject_id,
+                        artifact_ref_id, artifact_kind, authorization_kind, actor_task_id,
+                        actor_host_id, input_schema, input_json, outcome_schema, outcome_json, committed_at
+                    )
+                    SELECT ? + number, ? + number, 'unrelated-growth-' || number, action_kind, subject_id,
+                           artifact_ref_id, artifact_kind, authorization_kind, actor_task_id,
+                           actor_host_id, input_schema, input_json, outcome_schema, outcome_json, committed_at
+                    FROM growth CROSS JOIN template
+                    """,
+                    (history_id, project_revision),
+                )
+                connection.execute(
+                    "UPDATE project_meta SET revision = ? WHERE singleton = 1",
+                    (int(project_revision) + 400,),
+                )
+        finally:
+            connection.close()
+
+        grown = inspect()
+        self.assertEqual(baseline, grown)
+        self.assertEqual(
+            ("project_meta", "work_item_definition_revisions", "work_items"),
+            grown[0],
+        )
+
+    def test_live_decision_work_is_stable_as_terminal_items_grow(self) -> None:
+        path, store = self._store()
+
+        def inspect() -> tuple[int, int]:
+            progress_steps = 0
+
+            def count_progress() -> int:
+                nonlocal progress_steps
+                progress_steps += 1
+                return 0
+
+            connection = open_database(path, OpenMode.READ_ONLY)
+            try:
+                connection.set_progress_handler(count_progress, 1)
+                selected = sqlite_state.read_decision_state(
+                    connection,
+                    subject_item_ids=(ItemId("work-b"),),
+                )
+            finally:
+                connection.close()
+            return progress_steps, len(selected.lifecycle.work_items)
+
+        baseline = inspect()
+        connection = open_database(path, OpenMode.READ_WRITE)
+        try:
+            with write_transaction(connection):
+                connection.execute(
+                    """
+                    WITH RECURSIVE growth(number) AS (
+                        SELECT 1
+                        UNION ALL
+                        SELECT number + 1 FROM growth WHERE number < 400
+                    )
+                    INSERT INTO work_items (
+                        item_id, state, timing, source, outcome_evidence, next_action, notes,
+                        subject_revision, recorded_at, updated_at, queue_position
+                    )
+                    SELECT 'terminal-growth-' || number, 'done', NULL, NULL, 'complete', NULL, NULL,
+                           1, ?, ?, NULL
+                    FROM growth
+                    """,
+                    (SQLITE_NOW.isoformat(), SQLITE_NOW.isoformat()),
+                )
+                connection.execute(
+                    """
+                    WITH RECURSIVE growth(number) AS (
+                        SELECT 1
+                        UNION ALL
+                        SELECT number + 1 FROM growth WHERE number < 400
+                    ), template AS (
+                        SELECT definition_digest, definition_json, reason, source_task_id,
+                               after_digest, accepted_project_revision, accepted_at
+                        FROM work_item_definition_revisions
+                        WHERE item_id = 'work-c'
+                        ORDER BY definition_revision DESC
+                        LIMIT 1
+                    )
+                    INSERT INTO work_item_definition_revisions (
+                        item_id, definition_revision, definition_digest, definition_json, reason,
+                        source_task_id, before_digest, after_digest, accepted_project_revision, accepted_at
+                    )
+                    SELECT 'terminal-growth-' || number, 1, definition_digest, definition_json, reason,
+                           source_task_id, NULL, after_digest, accepted_project_revision, accepted_at
+                    FROM growth CROSS JOIN template
+                    """
+                )
+        finally:
+            connection.close()
+
+        grown = inspect()
+        self.assertEqual(baseline, grown)
+        self.assertEqual(len(store.live_state().lifecycle.work_items) + 1, grown[1])
+
+    def test_live_proposal_work_is_stable_as_disposed_proposals_grow(self) -> None:
+        path, store = self._store()
+
+        def inspect() -> tuple[int, int]:
+            progress_steps = 0
+            connect = sqlite3.connect
+
+            def count_progress() -> int:
+                nonlocal progress_steps
+                progress_steps += 1
+                return 0
+
+            def traced_connect(
+                database: str,
+                timeout: float = 5.0,
+                isolation_level: Literal["DEFERRED", "EXCLUSIVE", "IMMEDIATE"] | None = "DEFERRED",
+                *,
+                uri: bool = False,
+            ) -> sqlite3.Connection:
+                connection = connect(database, timeout=timeout, isolation_level=isolation_level, uri=uri)
+                connection.set_progress_handler(count_progress, 1)
+                return connection
+
+            with patch("pinboard.adapters.sqlite.database.sqlite3.connect", side_effect=traced_connect):
+                selected = store.live_state()
+            return progress_steps, len(selected.proposals.proposals)
+
+        baseline = inspect()
+        self.assertEqual(1, baseline[1])
+        connection = open_database(path, OpenMode.READ_WRITE)
+        try:
+            with write_transaction(connection):
+                connection.execute(
+                    """
+                    WITH RECURSIVE growth(number) AS (
+                        SELECT 1
+                        UNION ALL
+                        SELECT number + 1 FROM growth WHERE number < 400
+                    )
+                    INSERT INTO proposals (
+                        proposal_id, created_at, recorded_at, source_task_id, user_label, trigger,
+                        why_it_matters, relation_kind, relation_item_id, effect, unlock,
+                        urgency_evidence, disposition, disposition_target_item_id, disposition_reason,
+                        subject_revision, disposition_recorded_at
+                    )
+                    SELECT 'disposed-growth-' || number, ?, ?, 'source-task', 'Disposed growth',
+                           'Unrelated history', 'Unrelated history', 'independent', NULL,
+                           'No current effect', 'No current unlock', 'Already disposed',
+                           'rejected', NULL, 'No longer relevant', 2, ?
+                    FROM growth
+                    """,
+                    (SQLITE_NOW.isoformat(), SQLITE_NOW.isoformat(), SQLITE_NOW.isoformat()),
+                )
+        finally:
+            connection.close()
+
+        grown = inspect()
+        self.assertEqual(baseline, grown)
+
+    def test_unchanged_dependencies_are_not_rewritten(self) -> None:
+        path, store = self._store()
+        state = store.snapshot()
+        item_id = state.lifecycle.dependencies[0].item_id
+        dependencies = tuple(link.dependency_id for link in state.lifecycle.dependencies if link.item_id == item_id)
+        self.assertTrue(dependencies)
+
+        connection = open_database(path, OpenMode.READ_WRITE)
+        try:
+            connection.execute(
+                """
+                CREATE TEMP TRIGGER reject_dependency_rewrite
+                BEFORE DELETE ON item_dependencies
+                WHEN OLD.item_id = 'work-a'
+                BEGIN
+                    SELECT RAISE(ABORT, 'unchanged dependencies were rewritten');
+                END
+                """
+            )
+            lifecycle.replace_dependencies(connection, item_id, dependencies)
+            with self.assertRaises(sqlite3.IntegrityError):
+                lifecycle.replace_dependencies(connection, item_id, ())
         finally:
             connection.close()
 

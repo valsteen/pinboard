@@ -1,10 +1,11 @@
 """Read accepted brief content and refresh replaceable generated views.
 
-Each refresh or rebuild reads one SQLite snapshot, derives complete attempt
-brief projections from verified artifacts, and then writes only generated view
-files. SQLite and accepted artifacts remain authoritative.
+An ordinary refresh receives committed state, reads only selected attempt briefs,
+and writes only selected generated files. Explicit rebuild derives the complete
+projection. SQLite and accepted artifacts remain authoritative.
 """
 
+from collections.abc import Mapping
 from datetime import datetime
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
@@ -23,22 +24,29 @@ from pinboard.interfaces.work_briefs import build_attempt_brief_views
 def read_attempt_brief_views(
     roots: cli_commands.ResolvedRoots,
     state: stored_state.StoredWorkState,
+    attempt_ids: tuple[AttemptId, ...] | None = None,
 ) -> dict[AttemptId, bytes]:
     return build_attempt_brief_views(
         state,
         ArtifactRepository(resolve_durable_roots(roots.shared_repository, roots.work)),
+        attempt_ids,
     )
 
 
 def refresh(
     roots: cli_commands.ResolvedRoots,
-    store: SQLiteWorkStore,
+    current_state: stored_state.StoredWorkState,
     affected: AffectedViews,
     now: datetime,
+    attempt_briefs: Mapping[AttemptId, bytes] | None = None,
 ) -> ViewRefreshResult:
-    current_state = store.snapshot()
     try:
-        attempt_briefs = read_attempt_brief_views(roots, current_state)
+        supplied_briefs = {} if attempt_briefs is None else attempt_briefs
+        missing_attempts = tuple(attempt for attempt in affected.attempts if attempt not in supplied_briefs)
+        rendered_briefs = {
+            **read_attempt_brief_views(roots, current_state, missing_attempts),
+            **supplied_briefs,
+        }
     except WorkBriefError as error:
         return ViewRefreshResult(
             current_state.lifecycle.project.revision,
@@ -48,17 +56,7 @@ def refresh(
                 "Run 'pinboard views rebuild'.",
             ),
         )
-    return refresh_file_views(current_state, roots.work, affected, attempt_briefs, now=now)
-
-
-def refresh_shared_authority_views(
-    roots: cli_commands.ResolvedRoots,
-    store: SQLiteWorkStore,
-    now: datetime,
-) -> ViewRefreshResult:
-    """Refresh the queue, focus, and history affected by shared authority changes."""
-
-    return refresh(roots, store, AffectedViews(queue=True, current_focus=True, history=True), now)
+    return refresh_file_views(current_state, roots.work, affected, rendered_briefs, now=now)
 
 
 def rebuild(roots: cli_commands.ResolvedRoots, store: SQLiteWorkStore, now: datetime) -> ViewRefreshResult:

@@ -11,6 +11,7 @@ from unittest.mock import patch
 import msgspec
 from msgspec.structs import replace
 
+from pinboard.adapters.files import artifacts as artifact_files
 from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -397,17 +398,11 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                         DecisionFailure,
                     )
                 with (
-                    patch.object(ArtifactRepository, "verify"),
-                    patch.object(ArtifactRepository, "path", return_value=project / "missing-accepted-brief.json"),
+                    patch.object(ArtifactRepository, "read", side_effect=OSError("missing accepted brief")),
                     self.assertRaises(OSError),
                 ):
                     read_transition_work_brief_identity(state, command, artifacts)
-                invalid = project / "invalid-accepted-brief.json"
-                invalid.write_bytes(b"{}")
-                with (
-                    patch.object(ArtifactRepository, "verify"),
-                    patch.object(ArtifactRepository, "path", return_value=invalid),
-                ):
+                with patch.object(ArtifactRepository, "read", return_value=b"{}"):
                     invalid_identity = read_transition_work_brief_identity(state, command, artifacts)
                 self.assertIsInstance(invalid_identity, DecisionFailure)
                 assert isinstance(invalid_identity, DecisionFailure)
@@ -415,7 +410,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 self.assertIn("not a valid canonical typed work brief", invalid_identity.message)
                 with (
                     patch(
-                        "pinboard.interfaces.work_briefs.decode_work_brief_identity",
+                        "pinboard.interfaces.work_briefs.decode_canonical_work_brief",
                         side_effect=ValueError("unrelated value failure"),
                     ),
                     self.assertRaisesRegex(ValueError, "unrelated value failure"),
@@ -473,11 +468,19 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         artifact = work / receipt["selector"]
         self.assertEqual(canonical_work_brief_bytes(example_work_brief()), artifact.read_bytes())
 
-        retry_result, retry_stdout, retry_stderr = self.run_cli(
-            *common, "brief", "publish", "--file", str(candidate), "--json"
-        )
+        with patch(
+            "pinboard.adapters.files.artifacts.read_reference",
+            wraps=artifact_files.read_reference,
+        ) as read_artifact:
+            retry_result, retry_stdout, retry_stderr = self.run_cli(
+                *common, "brief", "publish", "--file", str(candidate), "--json"
+            )
         self.assertEqual(0, retry_result, retry_stderr)
         self.assertEqual(receipt, msgspec.json.decode(retry_stdout.encode()))
+        self.assertEqual(
+            [artifact],
+            [call.args[0] / call.args[1].selector for call in read_artifact.call_args_list],
+        )
         self.assertEqual(after, SQLiteWorkStore(work / "state.sqlite3").snapshot())
 
         candidate.write_bytes(canonical_work_brief_bytes(replace(example_work_brief(), title="Different title")))

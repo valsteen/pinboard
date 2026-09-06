@@ -99,7 +99,7 @@ Private working state stays in ignored local files:
   views/                      # generated human-readable projections
 ```
 
-SQLite is the current ledger authority. Commands read its complete typed state, then commit only the relations named by one accepted mutation; stale or failed changes leave the prior ledger intact. Immutable artifacts retain long-form contracts and review evidence; generated views are convenient projections, not fallback state. The [architecture map](ARCHITECTURE.md) explains package ownership, persistence boundaries, and failure semantics for contributors and agents.
+SQLite is the current ledger authority. Ordinary commands read only the exact subject, bounded page, or live graph facts they need, then commit only changed rows and carry compact affected facts into generated-view refresh. Stale or failed changes leave the prior ledger intact. Explicit validation, view rebuild, and handover intentionally traverse the complete project. Immutable artifacts retain long-form contracts and review evidence; generated views are convenient projections, not fallback state. The [architecture map](ARCHITECTURE.md) explains package ownership, persistence boundaries, and failure semantics for contributors and agents.
 
 The installed definition commands are:
 
@@ -109,7 +109,7 @@ pinboard item definition-history --item-id <item> --limit 20 --json
 pinboard item revise --file <pinboard-item-revision-v1.json> --task-id <task> --host-id <host> --json
 ```
 
-The current-definition read returns the project revision, item subject revision, definition revision, and definition digest from one snapshot. Preparation acquisition accepts those exact values, and a rejected stale request identifies which observed precondition changed.
+The current-definition read returns the project revision, item subject revision, definition revision, and definition digest from one exact keyed read. Preparation acquisition accepts those exact values, and a rejected stale request identifies which observed precondition changed.
 
 Revision files replace the whole `pinboard-work-item-definition/v1`; partial patches are rejected. Blocking can only name dependencies already present in that definition and never changes accepted dependencies itself.
 

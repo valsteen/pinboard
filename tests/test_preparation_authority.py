@@ -18,7 +18,7 @@ from pinboard.application.service import create_proposal, decide_and_commit_prep
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.authority_decisions import decide_preparation_authority
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.domain.identifiers import HostId, ItemId, LeaseId, ProposalId, TaskId
+from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, ProposalId, TaskId
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, reject_table_inserts
 
@@ -322,11 +322,15 @@ class PreparationAuthorityTest(unittest.TestCase):
         assert not isinstance(at_parallel, query_models.ParallelSelectionInvalid)
         self.assertFalse(before_parallel.safe)
         self.assertTrue(at_parallel.safe)
-        before_views = derive_expected_view_bytes(reloaded, now=expires_at - timedelta(microseconds=1))
-        at_views = derive_expected_view_bytes(reloaded, now=expires_at)
+        attempt_briefs = {AttemptId("work-a-1"): b"accepted brief\n"}
+        before_views = derive_expected_view_bytes(
+            reloaded,
+            attempt_briefs,
+            now=expires_at - timedelta(microseconds=1),
+        )
+        at_views = derive_expected_view_bytes(reloaded, attempt_briefs, now=expires_at)
         self.assertIn(b"- Preparation: active", before_views["items/work-c.md"])
         self.assertIn(b"- Preparation: expired", at_views["items/work-c.md"])
-        self.assertNotEqual(before_views["queue.md"], at_views["queue.md"])
 
     def test_live_preparation_rejects_prerequisite_proposal_atomically_then_expiry_admits_it(self) -> None:
         store, database_path = self._store()

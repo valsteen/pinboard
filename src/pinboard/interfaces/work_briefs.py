@@ -1,11 +1,12 @@
 import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
 
 import msgspec
 
 from pinboard.application import stored_state
-from pinboard.application.artifact_publication import ArtifactReader, transition_work_brief_reference
+from pinboard.application.artifact_publication import ArtifactContentReader, transition_work_brief_reference
 from pinboard.application.artifacts import WorkBriefIdentity
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
@@ -307,6 +308,10 @@ def read_work_brief(path: Path, *, canonical: bool = True) -> work_brief_models.
 
 def decode_work_brief_identity(data: bytes) -> WorkBriefIdentity:
     brief = decode_canonical_work_brief(data)
+    return _work_brief_identity(brief)
+
+
+def _work_brief_identity(brief: work_brief_models.WorkBrief) -> WorkBriefIdentity:
     return WorkBriefIdentity(
         brief.attempt_id,
         brief.item_id,
@@ -317,28 +322,59 @@ def decode_work_brief_identity(data: bytes) -> WorkBriefIdentity:
     )
 
 
-def read_transition_work_brief_identity(
+@dataclass(frozen=True, slots=True)
+class TransitionWorkBrief:
+    identity: WorkBriefIdentity
+    attempt_id: AttemptId
+    rendered_view: bytes
+
+
+def read_transition_work_brief(
     state: stored_state.StoredWorkState,
     command: decision_models.TransitionCommand,
-    artifacts: ArtifactReader,
-) -> DecisionResult[WorkBriefIdentity | None]:
+    artifacts: ArtifactContentReader,
+) -> DecisionResult[TransitionWorkBrief | None]:
     reference = transition_work_brief_reference(state, command)
     if reference is None:
         return None
-    artifacts.verify(reference)
     try:
-        return decode_work_brief_identity(artifacts.path(reference).read_bytes())
+        brief = decode_canonical_work_brief(artifacts.read(reference))
     except WorkBriefError as error:
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             f"The selected brief artifact is not a valid canonical typed work brief: {error}",
         )
+    return TransitionWorkBrief(
+        _work_brief_identity(brief),
+        AttemptId(brief.attempt_id),
+        render_work_brief_markdown(brief),
+    )
 
 
-def build_attempt_brief_views(state: stored_state.StoredWorkState, artifacts: ArtifactReader) -> dict[AttemptId, bytes]:
+def read_transition_work_brief_identity(
+    state: stored_state.StoredWorkState,
+    command: decision_models.TransitionCommand,
+    artifacts: ArtifactContentReader,
+) -> DecisionResult[WorkBriefIdentity | None]:
+    brief = read_transition_work_brief(state, command, artifacts)
+    if isinstance(brief, DecisionFailure) or brief is None:
+        return brief
+    return brief.identity
+
+
+def build_attempt_brief_views(
+    state: stored_state.StoredWorkState,
+    artifacts: ArtifactContentReader,
+    attempt_ids: tuple[AttemptId, ...] | None = None,
+) -> dict[AttemptId, bytes]:
     result: dict[AttemptId, bytes] = {}
     references = {value.artifact_ref_id: value for value in state.artifact_references}
-    for attempt in state.lifecycle.attempts:
+    selected_attempts = (
+        state.lifecycle.attempts
+        if attempt_ids is None
+        else tuple(attempt for attempt in state.lifecycle.attempts if attempt.attempt_id in attempt_ids)
+    )
+    for attempt in selected_attempts:
         if attempt.state == work_models.AttemptState.DONE:
             continue
         reference = references.get(attempt.brief_artifact_ref_id)
@@ -346,8 +382,7 @@ def build_attempt_brief_views(state: stored_state.StoredWorkState, artifacts: Ar
             raise _invalid(f"Live attempt '{attempt.attempt_id}' has no accepted brief reference.")
         if not reference.selector.endswith(".json"):
             raise _invalid(f"Live attempt '{attempt.attempt_id}' accepted brief is not canonical v2 JSON.")
-        artifacts.verify(reference)
-        brief = read_work_brief(artifacts.path(reference))
+        brief = decode_canonical_work_brief(artifacts.read(reference))
         expected = (
             str(attempt.attempt_id),
             str(attempt.item_id),

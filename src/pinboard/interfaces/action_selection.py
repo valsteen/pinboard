@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from typing import assert_never
 
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application.actions import discover_actions
+from pinboard.application.actions import action_subject_ids, discover_actions
 from pinboard.domain import decision_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import AttemptId, ItemId, LedgerId, ProposalId, SubjectId
@@ -131,7 +131,12 @@ def select_current_action(
     supplied_action = supplied.action
     supplied_capability = supplied_action.capability
     operation_time = datetime.now(UTC)
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    item_ids, attempt_ids, proposal_ids = action_subject_ids(supplied_action)
+    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").decision_state(
+        subject_item_ids=item_ids,
+        subject_attempt_ids=attempt_ids,
+        subject_proposal_ids=proposal_ids,
+    )
     current_actions = discover_actions(
         current_state,
         supplied.role,

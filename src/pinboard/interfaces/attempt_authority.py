@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import assert_never
 from uuid import uuid4
 
+from pinboard.adapters.files.models import AffectedViews
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.application.decision_projection import (
@@ -54,7 +55,7 @@ def _present_latest_attempt_authority(
 def show_attempt_authority_status(
     roots: cli_commands.ResolvedRoots, command: cli_commands.AttemptStatusCommand
 ) -> CommandResult[int]:
-    latest_committed_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    latest_committed_state = SQLiteWorkStore(roots.work / "state.sqlite3").attempt_authority_state(command.attempt_id)
     return _present_latest_attempt_authority(latest_committed_state, command.attempt_id, json=command.json)
 
 
@@ -202,7 +203,7 @@ def change_attempt_authority(
     command: AttemptAuthorityCommand,
 ) -> CommandResult[int]:
     store = SQLiteWorkStore(roots.work / "state.sqlite3")
-    observed_state = store.snapshot()
+    observed_state = store.attempt_authority_state(command.attempt_id)
     attempt_record = _find_attempt_record(observed_state, command.attempt_id)
     if isinstance(attempt_record, CommandFailure):
         return attempt_record
@@ -213,8 +214,13 @@ def change_attempt_authority(
     commit_result = decide_and_commit_attempt_authority_change(store, requested_change)
     if isinstance(commit_result, DecisionFailure):
         return CommandFailure(commit_result.code, commit_result.message)
-    refresh_result = work_views.refresh_shared_authority_views(roots, store, datetime.now(UTC))
+    latest_committed_state = store.attempt_authority_state(command.attempt_id)
+    refresh_result = work_views.refresh(
+        roots,
+        latest_committed_state,
+        AffectedViews(history_receipts=(commit_result.history_id,)),
+        datetime.now(UTC),
+    )
     if refresh_result.warning is not None:
         print(refresh_result.warning.message, file=sys.stderr)
-    latest_committed_state = store.snapshot()
     return _present_latest_attempt_authority(latest_committed_state, command.attempt_id, json=command.json)

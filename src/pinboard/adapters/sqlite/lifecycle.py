@@ -32,6 +32,21 @@ class _DefinitionRevisionRow:
     accepted_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class _DependencyId:
+    dependency_id: ItemId
+
+
+@dataclass(frozen=True, slots=True)
+class _AttemptItem:
+    item_id: ItemId
+
+
+def _item_order(value: stored_state.StoredWorkItem) -> tuple[bool, int, str]:
+    position = 0 if value.queue_position is None else value.queue_position
+    return value.queue_position is not None, position, str(value.item_id)
+
+
 def _definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionRevision:
     value = decode_row(row, _DefinitionRevisionRow)
     definition = decode_work_item_definition(value.definition_json)
@@ -117,6 +132,242 @@ def read_lifecycle(
     return stored_state.LifecycleRecords(project, items, dependencies, attempts, definitions)
 
 
+def read_item_definition_lifecycle(
+    connection: sqlite3.Connection,
+    project: stored_state.ProjectRecord,
+    item_id: ItemId,
+    *,
+    history_limit: int = 1,
+    before_revision: int | None = None,
+) -> stored_state.LifecycleRecords:
+    """Read one item and a bounded newest-first window of its definitions."""
+
+    item_rows = connection.execute(
+        """
+        SELECT item_id, state, timing, source, outcome_evidence, next_action, notes, subject_revision,
+               recorded_at, updated_at, queue_position
+        FROM work_items
+        WHERE item_id = ?
+        """,
+        (item_id,),
+    ).fetchall()
+    items = tuple(decode_row(row, stored_state.StoredWorkItem) for row in item_rows)
+    parameters: tuple[ItemId | int, ...]
+    if before_revision is None:
+        revision_filter = ""
+        parameters = (item_id, history_limit)
+    else:
+        revision_filter = "AND definition_revision < ?"
+        parameters = (item_id, before_revision, history_limit)
+    definitions = tuple(
+        reversed(
+            tuple(
+                _definition_revision(row)
+                for row in connection.execute(
+                    f"""
+                    SELECT item_id, definition_revision AS revision, definition_digest AS digest,
+                           definition_json, reason, source_task_id, before_digest, after_digest,
+                           accepted_project_revision, accepted_at
+                    FROM work_item_definition_revisions
+                    WHERE item_id = ? {revision_filter}
+                    ORDER BY definition_revision DESC
+                    LIMIT ?
+                    """,
+                    parameters,
+                ).fetchall()
+            )
+        )
+    )
+    return stored_state.LifecycleRecords(project, items, (), (), definitions)
+
+
+def read_live_lifecycle(
+    connection: sqlite3.Connection,
+    project: stored_state.ProjectRecord,
+    *,
+    subject_item_ids: tuple[ItemId, ...] = (),
+    subject_attempt_ids: tuple[AttemptId, ...] = (),
+) -> stored_state.LifecycleRecords:
+    """Read the live graph plus exact operation subjects, without unrelated terminal rows."""
+
+    live_items = tuple(
+        decode_row(row, stored_state.StoredWorkItem)
+        for row in connection.execute(
+            """
+            SELECT item_id, state, timing, source, outcome_evidence, next_action, notes, subject_revision,
+                   recorded_at, updated_at, queue_position
+            FROM work_items
+            WHERE queue_position IS NOT NULL
+            ORDER BY queue_position, item_id
+            """
+        ).fetchall()
+    )
+    attempt_item_ids: tuple[ItemId, ...] = ()
+    if subject_attempt_ids:
+        placeholders = ", ".join("?" for _value in subject_attempt_ids)
+        attempt_item_ids = tuple(
+            decode_row(row, _AttemptItem).item_id
+            for row in connection.execute(
+                f"SELECT item_id FROM attempts WHERE attempt_id IN ({placeholders}) ORDER BY attempt_id",
+                subject_attempt_ids,
+            ).fetchall()
+        )
+    exact_item_ids = tuple(dict.fromkeys((*subject_item_ids, *attempt_item_ids)))
+    exact_items: tuple[stored_state.StoredWorkItem, ...] = ()
+    if exact_item_ids:
+        placeholders = ", ".join("?" for _value in exact_item_ids)
+        exact_items = tuple(
+            decode_row(row, stored_state.StoredWorkItem)
+            for row in connection.execute(
+                f"""
+                SELECT item_id, state, timing, source, outcome_evidence, next_action, notes, subject_revision,
+                       recorded_at, updated_at, queue_position
+                FROM work_items
+                WHERE item_id IN ({placeholders})
+                ORDER BY item_id
+                """,
+                exact_item_ids,
+            ).fetchall()
+        )
+    items_by_id = {value.item_id: value for value in live_items}
+    items_by_id.update((value.item_id, value) for value in exact_items)
+    items = tuple(sorted(items_by_id.values(), key=_item_order))
+    item_ids = tuple(item.item_id for item in items)
+    if not item_ids:
+        return stored_state.LifecycleRecords(project)
+    placeholders = ", ".join("?" for _value in item_ids)
+    dependencies = tuple(
+        decode_row(row, stored_state.ItemDependency)
+        for row in connection.execute(
+            f"""
+            SELECT item_id, dependency_id, position
+            FROM item_dependencies
+            WHERE item_id IN ({placeholders})
+            ORDER BY item_id, position
+            """,
+            item_ids,
+        ).fetchall()
+    )
+    live_attempts = tuple(
+        decode_row(row, stored_state.StoredAttempt)
+        for row in connection.execute(
+            f"""
+            SELECT attempt_id, item_id, state, branch, base_revision, provenance, brief_artifact_ref_id,
+                   result_artifact_ref_id, candidate_revision, candidate_recorded_at,
+                   accepted_scope_revision, accepted_scope_digest, subject_revision, recorded_at, updated_at
+            FROM attempts
+            WHERE item_id IN ({placeholders}) AND state != 'done'
+            ORDER BY attempt_id
+            """,
+            item_ids,
+        ).fetchall()
+    )
+    exact_attempts: tuple[stored_state.StoredAttempt, ...] = ()
+    if subject_attempt_ids:
+        subject_placeholders = ", ".join("?" for _value in subject_attempt_ids)
+        exact_attempts = tuple(
+            decode_row(row, stored_state.StoredAttempt)
+            for row in connection.execute(
+                f"""
+                SELECT attempt_id, item_id, state, branch, base_revision, provenance, brief_artifact_ref_id,
+                       result_artifact_ref_id, candidate_revision, candidate_recorded_at,
+                       accepted_scope_revision, accepted_scope_digest, subject_revision, recorded_at, updated_at
+                FROM attempts
+                WHERE attempt_id IN ({subject_placeholders})
+                ORDER BY attempt_id
+                """,
+                subject_attempt_ids,
+            ).fetchall()
+        )
+    attempts_by_id = {value.attempt_id: value for value in live_attempts}
+    attempts_by_id.update((value.attempt_id, value) for value in exact_attempts)
+    attempts = tuple(attempts_by_id[value] for value in sorted(attempts_by_id, key=str))
+    definitions = tuple(
+        _definition_revision(row)
+        for row in connection.execute(
+            f"""
+            SELECT revision.item_id, revision.definition_revision AS revision,
+                   revision.definition_digest AS digest, revision.definition_json, revision.reason,
+                   revision.source_task_id, revision.before_digest, revision.after_digest,
+                   revision.accepted_project_revision, revision.accepted_at
+            FROM work_item_definition_revisions AS revision
+            JOIN (
+                SELECT item_id, MAX(definition_revision) AS definition_revision
+                FROM work_item_definition_revisions
+                WHERE item_id IN ({placeholders})
+                GROUP BY item_id
+            ) AS latest
+            ON latest.item_id = revision.item_id
+               AND latest.definition_revision = revision.definition_revision
+            ORDER BY revision.item_id
+            """,
+            item_ids,
+        ).fetchall()
+    )
+    return stored_state.LifecycleRecords(project, items, dependencies, attempts, definitions)
+
+
+def read_item_status_lifecycle(
+    connection: sqlite3.Connection,
+    project: stored_state.ProjectRecord,
+    item_id: ItemId,
+) -> stored_state.LifecycleRecords:
+    """Read one item, its current definition, and its own attempt history."""
+
+    lifecycle = read_item_definition_lifecycle(connection, project, item_id)
+    attempts = tuple(
+        decode_row(row, stored_state.StoredAttempt)
+        for row in connection.execute(
+            """
+            SELECT attempt_id, item_id, state, branch, base_revision, provenance, brief_artifact_ref_id,
+                   result_artifact_ref_id, candidate_revision, candidate_recorded_at,
+                   accepted_scope_revision, accepted_scope_digest, subject_revision, recorded_at, updated_at
+            FROM attempts
+            WHERE item_id = ?
+            ORDER BY attempt_id
+            """,
+            (item_id,),
+        ).fetchall()
+    )
+    return stored_state.LifecycleRecords(
+        lifecycle.project,
+        lifecycle.work_items,
+        (),
+        attempts,
+        lifecycle.definition_revisions,
+    )
+
+
+def read_attempt_lifecycle(
+    connection: sqlite3.Connection,
+    project: stored_state.ProjectRecord,
+    attempt_id: AttemptId,
+) -> stored_state.LifecycleRecords:
+    """Read one retained attempt and its current item definition."""
+
+    row = connection.execute(
+        """
+        SELECT attempt_id, item_id, state, branch, base_revision, provenance, brief_artifact_ref_id,
+               result_artifact_ref_id, candidate_revision, candidate_recorded_at,
+               accepted_scope_revision, accepted_scope_digest, subject_revision, recorded_at, updated_at
+        FROM attempts
+        WHERE attempt_id = ?
+        """,
+        (attempt_id,),
+    ).fetchone()
+    if row is None:
+        return stored_state.LifecycleRecords(project)
+    attempt = decode_row(row, stored_state.StoredAttempt)
+    lifecycle = read_item_definition_lifecycle(connection, project, attempt.item_id)
+    return stored_state.LifecycleRecords(
+        project,
+        lifecycle.work_items,
+        (),
+        (attempt,),
+        lifecycle.definition_revisions,
+    )
+
+
 def read_focus(connection: sqlite3.Connection) -> stored_state.StoredFocus:
     rows = tuple(
         connection.execute(
@@ -145,7 +396,9 @@ def require_stored_attempt(state: stored_state.StoredWorkState, attempt_id: Atte
 
 
 def _queue_position(value: stored_state.StoredWorkItem) -> int:
-    return value.queue_position or 0
+    if value.queue_position is None:
+        raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "A queued work item is missing its position.")
+    return value.queue_position
 
 
 def compact_queue(
@@ -161,9 +414,7 @@ def compact_queue(
         ),
         key=_queue_position,
     ):
-        position = value.queue_position
-        if position is None:  # pragma: no cover - narrowed by the collection filter
-            continue
+        position = _queue_position(value)
         if (
             failure := require_one_changed_row(
                 connection.execute(
@@ -191,9 +442,7 @@ def make_queue_space(
         key=_queue_position,
         reverse=True,
     ):
-        current = value.queue_position
-        if current is None:  # pragma: no cover - narrowed by the collection filter
-            continue
+        current = _queue_position(value)
         if (
             failure := require_one_changed_row(
                 connection.execute(
@@ -311,6 +560,20 @@ def set_attempt_state(
 
 
 def replace_dependencies(connection: sqlite3.Connection, item_id: ItemId, dependencies: tuple[ItemId, ...]) -> None:
+    current = tuple(
+        decode_row(row, _DependencyId).dependency_id
+        for row in connection.execute(
+            """
+            SELECT dependency_id
+            FROM item_dependencies
+            WHERE item_id = ?
+            ORDER BY position
+            """,
+            (item_id,),
+        ).fetchall()
+    )
+    if current == dependencies:
+        return
     connection.execute("DELETE FROM item_dependencies WHERE item_id = ?", (item_id,))
     connection.executemany(
         "INSERT INTO item_dependencies (item_id, dependency_id, position) VALUES (?, ?, ?)",

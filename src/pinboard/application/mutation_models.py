@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from pinboard.application import stored_state
+from pinboard.application import stored_state, view_effects
 from pinboard.application.artifacts import EvidenceArtifactRef, ResultArtifactRef
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.identifiers import ArtifactRefId, HistoryId, HistorySubjectId, HostId, TaskId
@@ -22,6 +22,15 @@ class MutationReceipt:
     actor_host_id: HostId | None
     input_schema: str
     input_payload: work_models.CanonicalJson
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedEffect:
+    """One mutation receipt with only its affected generated-view facts."""
+
+    receipt: MutationReceipt
+    view_state: stored_state.StoredWorkState
+    affected: view_effects.AffectedRecordIds
 
 
 @dataclass(frozen=True, slots=True)

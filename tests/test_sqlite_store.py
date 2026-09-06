@@ -22,6 +22,7 @@ from pinboard.adapters.sqlite.database import (
     open_database,
     read_operation,
     read_schema_bytes,
+    validate_database_integrity,
     write_transaction,
 )
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
@@ -183,6 +184,9 @@ class SQLiteStoreTest(unittest.TestCase):
         with self.assertRaises(StorageError) as attempt_error:
             store.snapshot()
         self.assertEqual(StorageErrorCode.INVALID_STATE, attempt_error.exception.code)
+        with self.assertRaises(StorageError) as focused_attempt_error:
+            store.attempt_authority_state(AttemptId("work-a-1"))
+        self.assertEqual(StorageErrorCode.INVALID_STATE, focused_attempt_error.exception.code)
 
         state = complete_sqlite_state()
         definition = next(value for value in state.lifecycle.definition_revisions if value.item_id == ItemId("work-c"))
@@ -218,6 +222,9 @@ class SQLiteStoreTest(unittest.TestCase):
         with self.assertRaises(StorageError) as preparation_error:
             preparation_store.snapshot()
         self.assertEqual(StorageErrorCode.INVALID_STATE, preparation_error.exception.code)
+        with self.assertRaises(StorageError) as focused_preparation_error:
+            preparation_store.preparation_authority_state(ItemId("work-c"))
+        self.assertEqual(StorageErrorCode.INVALID_STATE, focused_preparation_error.exception.code)
 
     def test_directory_sync_requires_the_platform_directory_flag(self) -> None:
         directory_flag = os.O_DIRECTORY
@@ -264,9 +271,25 @@ class SQLiteStoreTest(unittest.TestCase):
             connection.commit()
         finally:
             connection.close()
-        with self.assertRaises(StorageError) as malformed_error:
-            open_database(malformed, OpenMode.READ_WRITE)
+        reopened = open_database(malformed, OpenMode.READ_WRITE)
+        try:
+            with self.assertRaises(StorageError) as malformed_error:
+                validate_database_integrity(reopened)
+        finally:
+            reopened.close()
         self.assertEqual(StorageErrorCode.INVALID_STATE, malformed_error.exception.code)
+
+    def test_existing_accepted_schema_v3_database_reopens(self) -> None:
+        path, _store = self._store(populated=False)
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("DROP INDEX IF EXISTS proposal_relation_item")
+            connection.commit()
+        finally:
+            connection.close()
+
+        reopened = open_database(path, OpenMode.READ_ONLY)
+        reopened.close()
 
     def test_unsupported_wal_schema_is_rejected_without_mutation(self) -> None:
         newer_wal, _ = self._store(populated=False)
@@ -784,8 +807,8 @@ class SQLiteStoreTest(unittest.TestCase):
         mutation = project_transition_mutation(initial, decision)
 
         with store.write() as transaction:
-            self.assertEqual(initial, transaction.snapshot())
-            receipt = expect_success(transaction.commit(mutation))
+            self.assertEqual(initial.lifecycle.project, transaction.decision_state().lifecycle.project)
+            receipt = expect_success(transaction.commit(transaction.decision_state(), mutation))
         committed = store.snapshot()
         self.assertEqual(decision_models.ActionKind.PAUSE.value, receipt.transition.outcome)
         self.assertEqual(13, committed.lifecycle.project.revision)
@@ -794,7 +817,7 @@ class SQLiteStoreTest(unittest.TestCase):
         self.assertEqual(decision_models.ActionKind.PAUSE, committed.transition_receipts[-1].action_kind)
 
         with store.write() as transaction:
-            stale = transaction.commit(mutation)
+            stale = transaction.commit(transaction.decision_state(), mutation)
         self._assert_action_not_available(stale)
         self.assertEqual(committed, store.snapshot())
 
@@ -810,7 +833,9 @@ class SQLiteStoreTest(unittest.TestCase):
             ),
         )
         with store.write() as transaction:
-            stale_subject = transaction.commit(replace(mutation, decision=stale_subject_decision))
+            stale_subject = transaction.commit(
+                transaction.decision_state(), replace(mutation, decision=stale_subject_decision)
+            )
         self._assert_action_not_available(stale_subject)
         self.assertEqual(committed, store.snapshot())
 
@@ -848,7 +873,7 @@ class SQLiteStoreTest(unittest.TestCase):
         finally:
             connection.close()
         with self.assertRaises(StorageError), failed_store.write() as transaction:
-            transaction.commit(failed_mutation)
+            transaction.commit(transaction.decision_state(), failed_mutation)
         cleanup = sqlite3.connect(failed_path)
         try:
             cleanup.execute("DROP TRIGGER reject_test_history")
@@ -885,7 +910,7 @@ class SQLiteStoreTest(unittest.TestCase):
             self.assertRaises(RuntimeError) as propagated,
             store.write() as transaction,
         ):
-            transaction.commit(mutation)
+            transaction.commit(transaction.decision_state(), mutation)
 
         self.assertIs(application_error, propagated.exception)
         with self.assertRaises(sqlite3.ProgrammingError):
@@ -918,7 +943,7 @@ class SQLiteStoreTest(unittest.TestCase):
                 BEGIN SELECT RAISE(ABORT, 'unrelated artifact relation was rewritten'); END
                 """
             )
-            transaction.commit(project_transition_mutation(before, decision))
+            transaction.commit(before, project_transition_mutation(before, decision))
             transaction.connection.execute("DROP TRIGGER reject_unrelated_artifact_rewrite")
 
         reopened = SQLiteWorkStore(path).snapshot()
@@ -948,7 +973,7 @@ class SQLiteStoreTest(unittest.TestCase):
         )
 
         with store.write() as transaction:
-            receipt = expect_success(transaction.commit(project_transition_mutation(before, decision)))
+            receipt = expect_success(transaction.commit(before, project_transition_mutation(before, decision)))
 
         completed = store.snapshot()
         item = next(value for value in completed.lifecycle.work_items if value.item_id == ItemId("work-a"))
@@ -995,7 +1020,7 @@ class SQLiteStoreTest(unittest.TestCase):
         )
 
         with store.write() as transaction:
-            transaction.commit(project_transition_mutation(before, decision))
+            transaction.commit(before, project_transition_mutation(before, decision))
 
         committed = store.snapshot()
         attempt = committed.lifecycle.attempts[0]
@@ -1041,7 +1066,7 @@ class SQLiteStoreTest(unittest.TestCase):
         )
 
         with store.write() as transaction:
-            transaction.commit(project_transition_mutation(review_state, decision))
+            transaction.commit(review_state, project_transition_mutation(review_state, decision))
 
         returned = store.snapshot()
         returned_attempt = returned.lifecycle.attempts[0]

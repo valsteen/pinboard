@@ -69,7 +69,7 @@ def _commit_same_pause(
     mutation = project_transition_mutation(before, decision)
     barrier.wait()
     with store.write() as transaction:
-        result = transaction.commit(mutation)
+        result = transaction.commit(transaction.decision_state(), mutation)
     results.put(result.code.value if isinstance(result, DecisionFailure) else "committed")
 
 
@@ -119,7 +119,7 @@ def _commit_same_checkpoint(
     mutation = project_checkpoint_acceptance_mutation(before, decision, artifacts)
     barrier.wait()
     with store.write() as transaction:
-        result = transaction.commit(mutation)
+        result = transaction.commit(transaction.decision_state(), mutation)
     results.put(result.code.value if isinstance(result, DecisionFailure) else "committed")
 
 
@@ -163,7 +163,7 @@ def _commit_same_definition_revision(
     mutation = project_transition_mutation(before, decision)
     barrier.wait()
     with store.write() as transaction:
-        result = transaction.commit(mutation)
+        result = transaction.commit(transaction.decision_state(), mutation)
     results.put(result.code.value if isinstance(result, DecisionFailure) else "committed")
 
 
@@ -475,7 +475,8 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         submit_decision = expect_success(decide(snapshot, submit_command, SQLITE_NOW))
         assert isinstance(submit_decision, decision_models.TransitionDecision)
         with store.write() as transaction:
-            transaction.commit(project_transition_mutation(transaction.snapshot(), submit_decision))
+            current = transaction.decision_state()
+            transaction.commit(current, project_transition_mutation(current, submit_decision))
         state = store.snapshot()
 
         context = multiprocessing.get_context("spawn")

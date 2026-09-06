@@ -256,10 +256,12 @@ class MutationPersistenceTest(unittest.TestCase):
         )
         before_commit = store.snapshot()
         with reject_table_inserts("attempts"), self.assertRaises(StorageError), store.write() as transaction:
-            transaction.commit(project_transition_mutation(transaction.snapshot(), decision))
+            current = transaction.decision_state()
+            transaction.commit(current, project_transition_mutation(current, decision))
         self.assertEqual(before_commit, store.snapshot())
         with reject_table_deletes("work_items"), store.write() as transaction:
-            transaction.commit(project_transition_mutation(transaction.snapshot(), decision))
+            current = transaction.decision_state()
+            transaction.commit(current, project_transition_mutation(current, decision))
 
         reopened = store.snapshot()
         attempt = next(value for value in reopened.lifecycle.attempts if value.attempt_id == AttemptId("work-c-1"))
@@ -350,7 +352,8 @@ class MutationPersistenceTest(unittest.TestCase):
         )
 
         with store.write() as transaction:
-            committed = transaction.commit(project_transition_mutation(transaction.snapshot(), decision))
+            current = transaction.decision_state()
+            committed = transaction.commit(current, project_transition_mutation(current, decision))
 
         self.assertNotIsInstance(committed, DecisionFailure)
         assert not isinstance(committed, DecisionFailure)
@@ -449,7 +452,8 @@ class MutationPersistenceTest(unittest.TestCase):
         )
 
         with store.write() as transaction:
-            transaction.commit(project_transition_mutation(transaction.snapshot(), decision))
+            current = transaction.decision_state()
+            transaction.commit(current, project_transition_mutation(current, decision))
 
         persisted = next(
             value for value in store.snapshot().lifecycle.attempts if value.attempt_id == attempt.attempt_id
@@ -488,7 +492,8 @@ class MutationPersistenceTest(unittest.TestCase):
 
         self.assertIsInstance(decision.change, decision_models.AcceptedProposalChange)
         with reject_table_deletes("work_items"), store.write() as transaction:
-            transaction.commit(project_transition_mutation(transaction.snapshot(), decision))
+            current = transaction.decision_state()
+            transaction.commit(current, project_transition_mutation(current, decision))
 
         reopened = store.snapshot()
         item = next(value for value in reopened.lifecycle.work_items if value.item_id == ItemId("zz-proposal-a"))
@@ -543,7 +548,7 @@ class MutationPersistenceTest(unittest.TestCase):
             self._coordination_decision(before),
         )
         with first.write() as transaction:
-            transaction.commit(first_mutation)
+            transaction.commit(transaction.decision_state(), first_mutation)
 
         stale_receipt, stale_after = self._receipt_state(before, "inspect:stale-attempt-authority")
         stale_mutation = AttemptAuthorityMutation(
@@ -551,7 +556,7 @@ class MutationPersistenceTest(unittest.TestCase):
             self._attempt_renewal_decision(before),
         )
         with second.write() as transaction:
-            rejected = transaction.commit(stale_mutation)
+            rejected = transaction.commit(transaction.decision_state(), stale_mutation)
         self.assertIsInstance(rejected, DecisionFailure)
         assert isinstance(rejected, DecisionFailure)
         self.assertEqual(DecisionFailureCode.ACTION_NOT_AVAILABLE, rejected.code)
@@ -601,7 +606,8 @@ class MutationPersistenceTest(unittest.TestCase):
                     SQLITE_NOW + timedelta(seconds=1),
                 )
                 with store.write() as transaction:
-                    transaction.commit(project_transition_mutation(transaction.snapshot(), decision))
+                    current = transaction.decision_state()
+                    transaction.commit(current, project_transition_mutation(current, decision))
                 proposal = store.snapshot().proposals.proposals[0]
                 self.assertEqual(expected, proposal.disposition)
 
@@ -626,7 +632,8 @@ class MutationPersistenceTest(unittest.TestCase):
             SQLITE_NOW + timedelta(seconds=1),
         )
         with store.write() as transaction:
-            transaction.commit(project_transition_mutation(transaction.snapshot(), decision))
+            current = transaction.decision_state()
+            transaction.commit(current, project_transition_mutation(current, decision))
         reopened = store.snapshot()
         self.assertEqual(stored_state.StoredWorkItemState.DEFERRED, reopened.lifecycle.work_items[0].state)
         self.assertEqual("reopen", reopened.focus.next_action)
@@ -751,7 +758,7 @@ class MutationPersistenceTest(unittest.TestCase):
                     patch("pinboard.adapters.sqlite.store.open_database", return_value=connection),
                     store.write() as transaction,
                 ):
-                    result = transaction.commit(mutation)
+                    result = transaction.commit(transaction.decision_state(), mutation)
 
                 self.assertIsInstance(result, DecisionFailure)
                 assert isinstance(result, DecisionFailure)

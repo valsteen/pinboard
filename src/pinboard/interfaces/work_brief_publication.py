@@ -2,12 +2,11 @@
 
 The command function reads the selected candidate, strictly decodes and
 cross-validates it, canonicalizes its bytes, publishes the immutable artifact,
-accepts its reference in SQLite, rebuilds generated views, and presents that
-stable reference. It returns advertised decision failures and lets filesystem,
+accepts its reference in SQLite, and presents that stable reference. It returns
+advertised decision failures and lets filesystem,
 storage, and malformed boundary data remain exact exceptions.
 """
 
-import sys
 from datetime import UTC, datetime
 
 import msgspec
@@ -18,7 +17,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import artifact_publication, artifacts
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
-from pinboard.interfaces import cli_commands, work_briefs, work_views
+from pinboard.interfaces import cli_commands, work_briefs
 from pinboard.interfaces.cli_output import write_json
 from pinboard.interfaces.errors import CommandFailure, CommandResult, WorkBriefError, WorkBriefErrorCode
 
@@ -62,9 +61,6 @@ def publish_brief(
     )
     if isinstance(accepted_reference, DecisionFailure):
         return CommandFailure(accepted_reference.code, accepted_reference.message)
-    rebuilt_views = work_views.rebuild(roots, store, datetime.now(UTC))
-    if rebuilt_views.warning is not None:
-        print(rebuilt_views.warning.message, rebuilt_views.warning.repair, sep="\n", file=sys.stderr)
     publication_view = BriefPublicationView(
         int(accepted_reference.artifact_ref_id),
         accepted_reference.kind.value,

@@ -20,6 +20,7 @@ from pinboard.adapters.sqlite.artifacts import (
 )
 from pinboard.adapters.sqlite.artifacts import (
     accept_checkpoint_artifact,
+    read_artifact_by_identity,
 )
 from pinboard.adapters.sqlite.authority import (
     consume_preparation_authority,
@@ -44,11 +45,12 @@ from pinboard.adapters.sqlite.lifecycle import (
 )
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.proposals import accept_proposal, create_proposal, set_proposal_disposition
-from pinboard.application import stored_state
+from pinboard.application import stored_state, view_effects
 from pinboard.application.artifacts import ArtifactRef
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     CheckpointAcceptanceMutation,
+    CommittedEffect,
     CoordinationAuthorityMutation,
     MutationReceipt,
     PreparationAuthorityMutation,
@@ -60,7 +62,7 @@ from pinboard.application.mutations import stored_transition_receipt
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import ItemId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, ItemId, ProposalId
 
 
 def _persist_definition_revision(
@@ -636,16 +638,67 @@ class _SQLiteWorkTransaction:
             self._rejected = True
         return result
 
-    def snapshot(self) -> stored_state.StoredWorkState:
-        return sqlite_state.read_state(self.connection)
+    def decision_state(
+        self,
+        selected_artifact_ref_ids: tuple[ArtifactRefId, ...] = (),
+        *,
+        subject_item_ids: tuple[ItemId, ...] = (),
+        subject_attempt_ids: tuple[AttemptId, ...] = (),
+        subject_proposal_ids: tuple[ProposalId, ...] = (),
+    ) -> stored_state.StoredWorkState:
+        """Read current decision facts on the already-locked connection."""
 
-    def commit(self, mutation: StoredStateMutation) -> DecisionResult[MutationReceipt]:
+        return sqlite_state.read_decision_state(
+            self.connection,
+            selected_artifact_ref_ids,
+            subject_item_ids=subject_item_ids,
+            subject_attempt_ids=subject_attempt_ids,
+            subject_proposal_ids=subject_proposal_ids,
+        )
+
+    def coordination_state(self) -> stored_state.StoredWorkState:
+        return sqlite_state.read_coordination_state(self.connection)
+
+    def attempt_authority_state(self, attempt_id: AttemptId) -> stored_state.StoredWorkState:
+        return sqlite_state.read_attempt_authority_state(self.connection, attempt_id)
+
+    def commit_with_effect(
+        self,
+        state: stored_state.StoredWorkState,
+        mutation: StoredStateMutation,
+    ) -> DecisionResult[CommittedEffect]:
         connection = self.connection
-        current = sqlite_state.read_state(connection)
-        if (failure := _persist(connection, current, mutation)) is not None:
+        if (failure := _persist(connection, state, mutation)) is not None:
             return self._select(failure)
-        sqlite_state.read_state(connection)
-        return self._select(mutation.receipt)
+        subject_item_ids = tuple(value.item_id for value in state.lifecycle.work_items)
+        subject_proposal_ids = tuple(value.proposal_id for value in state.proposals.proposals)
+        if isinstance(mutation, ProposalCreationMutation):
+            subject_item_ids = (*subject_item_ids, mutation.decision.intake_item.item_id)
+            subject_proposal_ids = (*subject_proposal_ids, mutation.decision.proposal.proposal_id)
+        after = sqlite_state.read_decision_state(
+            connection,
+            subject_item_ids=tuple(dict.fromkeys(subject_item_ids)),
+            subject_attempt_ids=tuple(value.attempt_id for value in state.lifecycle.attempts),
+            subject_proposal_ids=tuple(dict.fromkeys(subject_proposal_ids)),
+        )
+        affected = view_effects.affected_record_ids(state, after, now=mutation.receipt.transition.decided_at)
+        context_items = (mutation.decision.item,) if isinstance(mutation, PreparationAuthorityMutation) else ()
+        return self._select(
+            CommittedEffect(
+                mutation.receipt,
+                view_effects.compact_view_state(after, affected, context_items),
+                affected,
+            )
+        )
+
+    def commit(
+        self,
+        state: stored_state.StoredWorkState,
+        mutation: StoredStateMutation,
+    ) -> DecisionResult[MutationReceipt]:
+        if (failure := _persist(self.connection, state, mutation)) is not None:
+            return self._select(failure)
+        return mutation.receipt
 
 
 class SQLiteWorkStore:
@@ -660,12 +713,136 @@ class SQLiteWorkStore:
         finally:
             connection.close()
 
+    def coordination_state(self) -> stored_state.StoredWorkState:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return sqlite_state.read_coordination_state(connection)
+        finally:
+            connection.close()
+
+    def attempt_authority_state(self, attempt_id: AttemptId) -> stored_state.StoredWorkState:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return sqlite_state.read_attempt_authority_state(connection, attempt_id)
+        finally:
+            connection.close()
+
+    def preparation_authority_state(self, item_id: ItemId) -> stored_state.StoredWorkState:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return sqlite_state.read_preparation_authority_state(connection, item_id)
+        finally:
+            connection.close()
+
+    # jscpd:ignore-start
+    # The standalone store and locked transaction deliberately expose the same exact read scope.
+    def decision_state(
+        self,
+        selected_artifact_ref_ids: tuple[ArtifactRefId, ...] = (),
+        *,
+        subject_item_ids: tuple[ItemId, ...] = (),
+        subject_attempt_ids: tuple[AttemptId, ...] = (),
+        subject_proposal_ids: tuple[ProposalId, ...] = (),
+    ) -> stored_state.StoredWorkState:
+        """Read current decision facts without accumulated historical rows."""
+
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return sqlite_state.read_decision_state(
+                    connection,
+                    selected_artifact_ref_ids,
+                    subject_item_ids=subject_item_ids,
+                    subject_attempt_ids=subject_attempt_ids,
+                    subject_proposal_ids=subject_proposal_ids,
+                )
+        finally:
+            connection.close()
+
+    # jscpd:ignore-end
+
+    def item_definition_state(
+        self,
+        item_id: ItemId,
+        *,
+        history_limit: int = 1,
+        before_revision: int | None = None,
+    ) -> stored_state.StoredWorkState:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return sqlite_state.read_item_definition_state(
+                    connection,
+                    item_id,
+                    history_limit=history_limit,
+                    before_revision=before_revision,
+                )
+        finally:
+            connection.close()
+
+    def live_state(self) -> stored_state.StoredWorkState:
+        """Read only current live-graph facts for overview-style operations."""
+
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return sqlite_state.read_live_state(connection)
+        finally:
+            connection.close()
+
+    def item_status_state(self, item_id: ItemId) -> stored_state.StoredWorkState:
+        """Read only one item's current status and retained attempts."""
+
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return sqlite_state.read_item_status_state(connection, item_id)
+        finally:
+            connection.close()
+
+    def status_facts(self) -> stored_state.StatusFacts:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return sqlite_state.read_status_facts(connection)
+        finally:
+            connection.close()
+
+    def artifact_reference(
+        self,
+        kind: work_models.ArtifactKind,
+        key: str,
+        revision: int,
+    ) -> stored_state.ArtifactReference | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_artifact_by_identity(connection, kind, key, revision)
+        finally:
+            connection.close()
+
+    def history_receipts(self, history_ids: tuple[HistoryId, ...]) -> tuple[stored_state.StoredTransitionReceipt, ...]:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return sqlite_state.read_selected_history(connection, history_ids)
+        finally:
+            connection.close()
+
+    @staticmethod
+    def read_complete_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
+        """Read the complete ledger for explicit validation, rebuild, or export."""
+
+        return sqlite_state.read_state(connection)
+
     def write(self) -> _SQLiteWorkTransaction:
         return _SQLiteWorkTransaction(self._path)
 
     def accept_artifact_reference(
         self,
-        work_root: Path,
         published: ArtifactRef,
         accepted_at: datetime,
     ) -> DecisionResult[stored_state.ArtifactReference]:
@@ -673,12 +850,9 @@ class SQLiteWorkStore:
             connection = transaction.connection
             result = write_artifact_reference(
                 connection,
-                sqlite_state.read_state(connection),
-                work_root,
                 published,
                 accepted_at,
             )
             if isinstance(result, DecisionFailure):
                 return transaction._select(result)
-            sqlite_state.read_state(connection)
             return transaction._select(result)

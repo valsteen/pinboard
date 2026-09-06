@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import assert_never
 from uuid import uuid4
 
+from pinboard.adapters.files.models import AffectedViews
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.application.service import decide_and_commit_coordination_authority_change
@@ -50,7 +51,7 @@ def _present_latest_coordination_authority(state: stored_state.StoredWorkState, 
 def show_coordination_authority_status(
     roots: cli_commands.ResolvedRoots, command: cli_commands.CoordinationStatusCommand
 ) -> int:
-    latest_committed_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    latest_committed_state = SQLiteWorkStore(roots.work / "state.sqlite3").coordination_state()
     return _present_latest_coordination_authority(latest_committed_state, json=command.json)
 
 
@@ -129,7 +130,7 @@ def change_coordination_authority(
     command: CoordinationAuthorityCommand,
 ) -> CommandResult[int]:
     store = SQLiteWorkStore(roots.work / "state.sqlite3")
-    observed_state = store.snapshot()
+    observed_state = store.coordination_state()
     requested_at = datetime.now(UTC)
     requested_change = _resolve_requested_coordination_change(observed_state, command, requested_at)
     if isinstance(requested_change, CommandFailure):
@@ -137,8 +138,13 @@ def change_coordination_authority(
     commit_result = decide_and_commit_coordination_authority_change(store, requested_change)
     if isinstance(commit_result, DecisionFailure):
         return CommandFailure(commit_result.code, commit_result.message)
-    refresh_result = work_views.refresh_shared_authority_views(roots, store, datetime.now(UTC))
+    latest_committed_state = store.coordination_state()
+    refresh_result = work_views.refresh(
+        roots,
+        latest_committed_state,
+        AffectedViews(history_receipts=(commit_result.history_id,)),
+        datetime.now(UTC),
+    )
     if refresh_result.warning is not None:
         print(refresh_result.warning.message, file=sys.stderr)
-    latest_committed_state = store.snapshot()
     return _present_latest_coordination_authority(latest_committed_state, json=command.json)

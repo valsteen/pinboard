@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import assert_never, overload
 
 from pinboard.application import stored_state
+from pinboard.application.actions import action_subject_ids
 from pinboard.application.artifact_publication import validate_transition_work_brief
 from pinboard.application.artifacts import CheckpointArtifacts, WorkBriefIdentity
 from pinboard.application.decision_projection import (
@@ -9,6 +10,7 @@ from pinboard.application.decision_projection import (
 )
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
+    CommittedEffect,
     CoordinationAuthorityMutation,
     MutationReceipt,
     PreparationAuthorityMutation,
@@ -18,7 +20,7 @@ from pinboard.application.mutations import (
     project_checkpoint_acceptance_mutation,
     project_transition_mutation,
 )
-from pinboard.application.ports import WorkStore
+from pinboard.application.ports import WorkStore, WorkTransaction
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.authority_decisions import (
     decide_attempt_authority,
@@ -29,10 +31,12 @@ from pinboard.domain.decisions import decide, validate_supplied_action
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import (
     ActionId,
+    ArtifactRefId,
     AttemptId,
     HistoryId,
     HistorySubjectId,
     ItemId,
+    ProposalId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.domain.proposal_decisions import decide_proposal_creation
@@ -43,6 +47,53 @@ from pinboard.domain.proposal_models import (
 
 def _next_history_id(state: stored_state.StoredWorkState) -> HistoryId:
     return HistoryId(1 + max((int(value.history_id) for value in state.transition_receipts), default=0))
+
+
+def _mutation_receipt(committed: DecisionResult[CommittedEffect]) -> DecisionResult[MutationReceipt]:
+    if isinstance(committed, DecisionFailure):
+        return committed
+    return committed.receipt
+
+
+def _transition_artifact_refs(command: decision_models.TransitionCommand) -> tuple[ArtifactRefId, ...]:
+    match command:
+        case decision_models.ActivateCommand(value=value):
+            return (value.brief_artifact_ref_id,)
+        case decision_models.ResumeCommand(value=value) if value.brief_artifact_ref_id is not None:
+            return (value.brief_artifact_ref_id,)
+        case _:
+            return ()
+
+
+def _transition_read_subjects(
+    command: decision_models.TransitionCommand,
+) -> tuple[tuple[ItemId, ...], tuple[AttemptId, ...], tuple[ProposalId, ...]]:
+    item_ids, attempt_ids, proposal_ids = action_subject_ids(command.action)
+    match command:
+        case decision_models.BlockCommand(value=value) | decision_models.BlockItemCommand(value=value):
+            item_ids = (*item_ids, *value.depends_on)
+        case decision_models.AcceptProposalCommand(value=value):
+            item_ids = (*item_ids, value.item, *value.depends_on)
+        case decision_models.MergeProposalCommand(value=value):
+            item_ids = (*item_ids, value.target)
+        case decision_models.ReviseItemCommand(value=value):
+            item_ids = (*item_ids, value.item_id, *value.definition.dependencies)
+        case _:
+            pass
+    return tuple(dict.fromkeys(item_ids)), attempt_ids, proposal_ids
+
+
+def _read_transition_state(
+    transaction: WorkTransaction,
+    command: decision_models.TransitionCommand,
+) -> stored_state.StoredWorkState:
+    item_ids, attempt_ids, proposal_ids = _transition_read_subjects(command)
+    return transaction.decision_state(
+        _transition_artifact_refs(command),
+        subject_item_ids=item_ids,
+        subject_attempt_ids=attempt_ids,
+        subject_proposal_ids=proposal_ids,
+    )
 
 
 def decide_and_commit_coordination_authority_change(
@@ -67,7 +118,7 @@ def decide_and_commit_coordination_authority_change(
         case _ as unreachable:
             assert_never(unreachable)
     with store.write() as transaction:
-        locked_state = transaction.snapshot()
+        locked_state = transaction.coordination_state()
         decision_context = project_decision_snapshot(locked_state, decided_at)
         decision_result = decide_coordination_authority(
             retained=decision_context.coordination_lease,
@@ -101,7 +152,7 @@ def decide_and_commit_coordination_authority_change(
             receipt=mutation_receipt,
             decision=accepted_decision,
         )
-        return transaction.commit(focused_mutation)
+        return transaction.commit(locked_state, focused_mutation)
 
 
 def _project_retained_attempt_authority(
@@ -160,7 +211,7 @@ def decide_and_commit_attempt_authority_change(
         case _ as unreachable:
             assert_never(unreachable)
     with store.write() as transaction:
-        locked_state = transaction.snapshot()
+        locked_state = transaction.attempt_authority_state(attempt_id)
         decision_context = project_decision_snapshot(locked_state, decided_at)
         generation_before = next(
             (
@@ -217,7 +268,7 @@ def decide_and_commit_attempt_authority_change(
             receipt=mutation_receipt,
             decision=accepted_decision,
         )
-        return transaction.commit(focused_mutation)
+        return transaction.commit(locked_state, focused_mutation)
 
 
 def _project_retained_preparation_authority(
@@ -249,6 +300,13 @@ def decide_and_commit_preparation_authority_change(
     store: WorkStore,
     requested_change: authority_models.PreparationAuthorityOperation,
 ) -> DecisionResult[MutationReceipt]:
+    return _mutation_receipt(decide_and_commit_preparation_authority_change_with_effect(store, requested_change))
+
+
+def decide_and_commit_preparation_authority_change_with_effect(
+    store: WorkStore,
+    requested_change: authority_models.PreparationAuthorityOperation,
+) -> DecisionResult[CommittedEffect]:
     """Reread locked state, decide, and commit one preparation-authority change."""
 
     match requested_change:
@@ -273,7 +331,7 @@ def decide_and_commit_preparation_authority_change(
         case _ as unreachable:
             assert_never(unreachable)
     with store.write() as transaction:
-        locked_state = transaction.snapshot()
+        locked_state = transaction.decision_state(subject_item_ids=(item_id,))
         decision_context = project_decision_snapshot(locked_state, decided_at)
         generation_before = next(
             (
@@ -315,7 +373,7 @@ def decide_and_commit_preparation_authority_change(
             input_payload=work_models.CanonicalJson(b"{}"),
         )
         focused_mutation = PreparationAuthorityMutation(receipt=mutation_receipt, decision=accepted_decision)
-        return transaction.commit(focused_mutation)
+        return transaction.commit_with_effect(locked_state, focused_mutation)
 
 
 def create_proposal(
@@ -323,10 +381,29 @@ def create_proposal(
     operation: CreateProposalOperation,
     now: datetime,
 ) -> DecisionResult[MutationReceipt]:
+    return _mutation_receipt(create_proposal_with_effect(store, operation, now))
+
+
+def create_proposal_with_effect(
+    store: WorkStore,
+    operation: CreateProposalOperation,
+    now: datetime,
+) -> DecisionResult[CommittedEffect]:
     """Reread locked state, decide, and commit proposal facts plus their intake item."""
 
     with store.write() as transaction:
-        locked_state = transaction.snapshot()
+        relation_item = operation.intake.relation.item
+        locked_state = transaction.decision_state(
+            subject_item_ids=tuple(
+                dict.fromkeys(
+                    (
+                        ItemId(operation.intake.proposal_id),
+                        *((relation_item,) if relation_item is not None else ()),
+                    )
+                )
+            ),
+            subject_proposal_ids=(operation.intake.proposal_id,),
+        )
         project = locked_state.lifecycle.project
         decision_result = decide_proposal_creation(
             project_decision_snapshot(locked_state, now),
@@ -357,7 +434,7 @@ def create_proposal(
             work_models.CanonicalJson(b"{}"),
         )
         focused_mutation = ProposalCreationMutation(mutation_receipt, accepted_decision)
-        return transaction.commit(focused_mutation)
+        return transaction.commit_with_effect(locked_state, focused_mutation)
 
 
 def _resolve_actor_authority(
@@ -478,10 +555,27 @@ def decide_and_commit_transition(
     *,
     transition_brief_identity: WorkBriefIdentity | None = None,
 ) -> DecisionResult[MutationReceipt]:
+    return _mutation_receipt(
+        decide_and_commit_transition_with_effect(
+            store,
+            command,
+            now,
+            transition_brief_identity=transition_brief_identity,
+        )
+    )
+
+
+def decide_and_commit_transition_with_effect(
+    store: WorkStore,
+    command: decision_models.NonCheckpointTransitionCommand,
+    now: datetime,
+    *,
+    transition_brief_identity: WorkBriefIdentity | None = None,
+) -> DecisionResult[CommittedEffect]:
     """Validate, decide, and commit one lifecycle mutation under one write lock."""
 
     with store.write() as transaction:
-        locked_state = transaction.snapshot()
+        locked_state = _read_transition_state(transaction, command)
         decision_result = _validate_supplied_transition_and_decide(
             locked_state, command, now, transition_brief_identity
         )
@@ -489,7 +583,7 @@ def decide_and_commit_transition(
             return decision_result
         accepted_decision = decision_result
         focused_mutation = project_transition_mutation(locked_state, accepted_decision)
-        return transaction.commit(focused_mutation)
+        return transaction.commit_with_effect(locked_state, focused_mutation)
 
 
 def decide_and_commit_checkpoint_acceptance(
@@ -500,10 +594,29 @@ def decide_and_commit_checkpoint_acceptance(
     *,
     transition_brief_identity: WorkBriefIdentity | None = None,
 ) -> DecisionResult[MutationReceipt]:
+    return _mutation_receipt(
+        decide_and_commit_checkpoint_acceptance_with_effect(
+            store,
+            command,
+            now,
+            checkpoint_artifacts,
+            transition_brief_identity=transition_brief_identity,
+        )
+    )
+
+
+def decide_and_commit_checkpoint_acceptance_with_effect(
+    store: WorkStore,
+    command: decision_models.AcceptCheckpointCommand,
+    now: datetime,
+    checkpoint_artifacts: CheckpointArtifacts,
+    *,
+    transition_brief_identity: WorkBriefIdentity | None = None,
+) -> DecisionResult[CommittedEffect]:
     """Validate, decide, and commit checkpoint acceptance with its required artifacts."""
 
     with store.write() as transaction:
-        locked_state = transaction.snapshot()
+        locked_state = _read_transition_state(transaction, command)
         decision_result = _validate_supplied_transition_and_decide(
             locked_state, command, now, transition_brief_identity
         )
@@ -511,4 +624,4 @@ def decide_and_commit_checkpoint_acceptance(
             return decision_result
         accepted_decision = decision_result
         focused_mutation = project_checkpoint_acceptance_mutation(locked_state, accepted_decision, checkpoint_artifacts)
-        return transaction.commit(focused_mutation)
+        return transaction.commit_with_effect(locked_state, focused_mutation)

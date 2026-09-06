@@ -38,9 +38,9 @@ from pinboard.interfaces.errors import (
 from pinboard.interfaces.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_work_brief_review_bytes,
+    decode_canonical_work_brief,
     decode_canonical_work_brief_review,
     decode_work_brief_review,
-    read_work_brief,
     validate_reviewed_authority_digests,
     validate_work_brief_review,
 )
@@ -202,7 +202,7 @@ def _validate_dispatch_identity(
 
 
 def _read_dispatch_brief(
-    attempt_path: Path,
+    accepted_brief: bytes,
     attempt_id: str,
     attempt_branch: str,
     source_checkout_root: Path,
@@ -213,7 +213,7 @@ def _read_dispatch_brief(
     accepted_scope_digest: str | None,
 ) -> DispatchResult[work_brief_models.WorkBrief]:
     try:
-        brief = read_work_brief(attempt_path)
+        brief = decode_canonical_work_brief(accepted_brief)
     except WorkBriefError as error:
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, error.message)
     if (
@@ -337,10 +337,9 @@ def prepare_dispatch(
     assert isinstance(action, decision_models.DispatchAction)
     attempt = selected_dispatch.attempt
     accepted_brief_reference = selected_dispatch.brief_reference
-    artifacts.verify(accepted_brief_reference)
     accepted_brief_path = artifacts.path(accepted_brief_reference)
     validated_brief = _read_dispatch_brief(
-        accepted_brief_path,
+        artifacts.read(accepted_brief_reference),
         str(selected_dispatch.attempt.attempt_id),
         selected_dispatch.attempt.branch,
         source_checkout_root,
@@ -364,8 +363,7 @@ def prepare_dispatch(
             accepted_review_reference = find_dispatch_review(store, attempt.attempt_id, checkpoint_sha256)
             if isinstance(accepted_review_reference, ApplicationDispatchFailure):
                 return _dispatch_failure(accepted_review_reference)
-            artifacts.verify(accepted_review_reference)
-            accepted_review_bytes = artifacts.path(accepted_review_reference).read_bytes()
+            accepted_review_bytes = artifacts.read(accepted_review_reference)
         case PublishSuppliedDispatchReview(
             checkpoint_sha256=checkpoint_sha256,
             candidate=candidate,
@@ -384,8 +382,7 @@ def prepare_dispatch(
                 return _dispatch_failure(accepted_review)
             accepted_review_reference = accepted_review.reference
             own_review_publication_revision = accepted_review.own_publication_revision
-            artifacts.verify(accepted_review_reference)
-            accepted_review_bytes = artifacts.path(accepted_review_reference).read_bytes()
+            accepted_review_bytes = accepted_review.content
         case _ as unreachable:
             assert_never(unreachable)
     rendered_prompt = _render_dispatch_prompt(

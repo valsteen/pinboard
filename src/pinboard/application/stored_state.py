@@ -258,6 +258,21 @@ class StoredFocus:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkStateCount:
+    state: StoredWorkItemState
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class StatusFacts:
+    project: ProjectRecord
+    focus: StoredFocus
+    active_attempts: tuple[AttemptId, ...]
+    counts: tuple[WorkStateCount, ...]
+    coordination: StoredCoordinationLease | None
+
+
+@dataclass(frozen=True, slots=True)
 class StoredTransitionReceipt:
     history_id: HistoryId
     project_revision: int

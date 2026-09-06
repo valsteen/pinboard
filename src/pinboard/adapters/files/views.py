@@ -10,11 +10,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from pinboard.adapters.files.errors import FileIOError
-from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory
+from pinboard.adapters.files.errors import FileIOError, ViewProjectionError
+from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory, remove_replaceable
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
-from pinboard.application import query_models, stored_state
+from pinboard.application import query_models, stored_state, view_effects
 from pinboard.application.queries import project_overview
+from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, ItemId
 
 NOTICE = "Generated projection; SQLite is authoritative."
@@ -49,24 +50,24 @@ def _project_view_inputs(state: stored_state.StoredWorkState, now: datetime) -> 
     )
 
 
-def _render_queue(overview: query_models.WorkOverview) -> bytes:
-    lines = [
-        _render_header("work-queue-view"),
-        "# Work Queue\n\n",
-        "| Position | Item | State | Preparation | Eligible | Review | Attempt | Next action |\n",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |\n",
-    ]
-    lines.extend(
-        (
-            f"| {item.position} | {item.item_id} | {item.state.value} | "
-            f"{item.preparation.status.value if item.preparation is not None else '—'} | "
-            f"{'yes' if item.eligible else 'no'} | "
-            f"{', '.join(flag.kind.value for flag in item.review_flags) or '—'} | "
-            f"{item.attempt_id or '—'} | {item.next_action or '—'} |\n"
-        )
-        for item in overview.items
-    )
-    return "".join(lines).encode()
+def changed_item_views(
+    before: stored_state.StoredWorkState,
+    after: stored_state.StoredWorkState,
+    *,
+    now: datetime,
+) -> tuple[ItemId, ...]:
+    """Select item projections whose rendered facts differ between snapshots."""
+
+    return view_effects.affected_record_ids(before, after, now=now).items
+
+
+def changed_attempt_views(
+    before: stored_state.StoredWorkState,
+    after: stored_state.StoredWorkState,
+) -> tuple[AttemptId, ...]:
+    """Select attempt projections whose rendered or accepted-brief facts differ."""
+
+    return view_effects.affected_record_ids(before, after, now=after.lifecycle.project.updated_at).attempts
 
 
 def _render_current_focus(state: stored_state.StoredWorkState) -> bytes:
@@ -133,8 +134,13 @@ def _render_attempt(
     attempt: stored_state.StoredAttempt,
     attempt_briefs: Mapping[AttemptId, bytes],
 ) -> bytes:
-    if (brief := attempt_briefs.get(attempt.attempt_id)) is not None:
-        return brief
+    if attempt.state != work_models.AttemptState.DONE:
+        try:
+            return attempt_briefs[attempt.attempt_id]
+        except KeyError:
+            raise ViewProjectionError(
+                f"Active attempt {attempt.attempt_id} is missing its accepted brief projection."
+            ) from None
     return (
         _render_header("work-attempt-view")
         + f"# Attempt {attempt.attempt_id}\n\n"
@@ -154,21 +160,13 @@ def _render_history_row(receipt: stored_state.StoredTransitionReceipt) -> str:
     )
 
 
-def _render_history(state: stored_state.StoredWorkState) -> bytes:
+def _render_history(receipt: stored_state.StoredTransitionReceipt) -> bytes:
     return (
-        _render_header("work-history-view")
-        + "# Transition History\n\n"
+        _render_header("work-history-receipt-view")
+        + f"# Transition {receipt.history_id}\n\n"
         + "| History | Revision | Action receipt | Recorded outcome | Subject | Committed |\n"
         + "| --- | --- | --- | --- | --- | --- |\n"
-        + "".join(_render_history_row(receipt) for receipt in state.transition_receipts)
-        + "\n## Definition History\n\n"
-        + "| Item | Revision | Digest | Reason | Source task | Accepted revision | Accepted at |\n"
-        + "| --- | --- | --- | --- | --- | --- | --- |\n"
-        + "".join(
-            f"| {value.item_id} | {value.revision} | {value.digest} | {value.reason} | "
-            f"{value.source_task_id} | {value.accepted_project_revision} | {value.accepted_at.isoformat()} |\n"
-            for value in state.lifecycle.definition_revisions
-        )
+        + _render_history_row(receipt)
     ).encode()
 
 
@@ -179,20 +177,18 @@ def _write_selected_views(
     attempt_briefs: Mapping[AttemptId, bytes],
     now: datetime,
 ) -> None:
-    view_inputs = _project_view_inputs(state, now)
     view_root = ensure_child_directory(work_root, "views")
-    item_root = ensure_child_directory(view_root, "items")
-    attempt_root = ensure_child_directory(view_root, "attempts")
-    if affected.queue:
-        atomic_replace(view_root / "queue.md", _render_queue(view_inputs.overview))
     if affected.current_focus:
         atomic_replace(view_root / "current.md", _render_current_focus(state))
-    if affected.history:
-        atomic_replace(view_root / "history.md", _render_history(state))
-    items = {item.item_id: item for item in state.lifecycle.work_items}
-    for item_id in affected.items:
-        item = items.get(item_id)
-        if item is not None:
+    if affected.items:
+        view_inputs = _project_view_inputs(state, now)
+        item_root = ensure_child_directory(view_root, "items")
+        items = {item.item_id: item for item in state.lifecycle.work_items}
+        for item_id in affected.items:
+            try:
+                item = items[item_id]
+            except KeyError:
+                raise ViewProjectionError(f"Affected item {item_id} is missing from refresh state.") from None
             atomic_replace(
                 item_root / f"{item_id}.md",
                 _render_item(
@@ -202,11 +198,26 @@ def _write_selected_views(
                     view_inputs.definitions[item_id],
                 ),
             )
-    attempts = {attempt.attempt_id: attempt for attempt in state.lifecycle.attempts}
-    for attempt_id in affected.attempts:
-        attempt = attempts.get(attempt_id)
-        if attempt is not None:
+    if affected.attempts:
+        attempt_root = ensure_child_directory(view_root, "attempts")
+        attempts = {attempt.attempt_id: attempt for attempt in state.lifecycle.attempts}
+        for attempt_id in affected.attempts:
+            try:
+                attempt = attempts[attempt_id]
+            except KeyError:
+                raise ViewProjectionError(f"Affected attempt {attempt_id} is missing from refresh state.") from None
             atomic_replace(attempt_root / f"{attempt_id}.md", _render_attempt(attempt, attempt_briefs))
+    if affected.history_receipts:
+        history_root = ensure_child_directory(view_root, "history")
+        receipts = {receipt.history_id: receipt for receipt in state.transition_receipts}
+        for history_id in affected.history_receipts:
+            try:
+                receipt = receipts[history_id]
+            except KeyError:
+                raise ViewProjectionError(
+                    f"Affected history receipt {history_id} is missing from refresh state."
+                ) from None
+            atomic_replace(history_root / f"{history_id}.md", _render_history(receipt))
 
 
 def refresh_state(
@@ -218,8 +229,8 @@ def refresh_state(
     now: datetime,
 ) -> ViewRefreshResult:
     try:
-        _write_selected_views(work_root, state, affected, attempt_briefs or {}, now)
-    except FileIOError as error:
+        _write_selected_views(work_root, state, affected, {} if attempt_briefs is None else attempt_briefs, now)
+    except (FileIOError, ViewProjectionError) as error:
         return ViewRefreshResult(
             state.lifecycle.project.revision,
             ViewWarning(
@@ -240,9 +251,7 @@ def derive_expected_view_bytes(
 
     view_inputs = _project_view_inputs(state, now)
     expected_views = {
-        "queue.md": _render_queue(view_inputs.overview),
         "current.md": _render_current_focus(state),
-        "history.md": _render_history(state),
     }
     expected_views.update(
         (
@@ -257,8 +266,14 @@ def derive_expected_view_bytes(
         for item in state.lifecycle.work_items
     )
     expected_views.update(
-        (f"attempts/{attempt.attempt_id}.md", _render_attempt(attempt, attempt_briefs or {}))
+        (
+            f"attempts/{attempt.attempt_id}.md",
+            _render_attempt(attempt, {} if attempt_briefs is None else attempt_briefs),
+        )
         for attempt in state.lifecycle.attempts
+    )
+    expected_views.update(
+        (f"history/{receipt.history_id}.md", _render_history(receipt)) for receipt in state.transition_receipts
     )
     return expected_views
 
@@ -271,20 +286,22 @@ def rebuild_state(
     now: datetime,
 ) -> ViewRefreshResult:
     try:
+        view_root = ensure_child_directory(work_root, "views")
+        remove_replaceable(view_root / "queue.md")
+        remove_replaceable(view_root / "history.md")
         _write_selected_views(
             work_root,
             state,
             AffectedViews(
-                queue=True,
                 current_focus=True,
-                history=True,
                 items=tuple(item.item_id for item in state.lifecycle.work_items),
                 attempts=tuple(attempt.attempt_id for attempt in state.lifecycle.attempts),
+                history_receipts=tuple(receipt.history_id for receipt in state.transition_receipts),
             ),
-            attempt_briefs or {},
+            {} if attempt_briefs is None else attempt_briefs,
             now,
         )
-    except FileIOError as error:
+    except (FileIOError, ViewProjectionError) as error:
         return ViewRefreshResult(
             state.lifecycle.project.revision,
             ViewWarning(

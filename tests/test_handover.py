@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import msgspec
 
+from pinboard.adapters.files import artifacts as artifact_files
 from pinboard.adapters.files.artifacts import write_revision
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import state as sqlite_state
@@ -303,8 +304,16 @@ class HandoverTest(unittest.TestCase):
         }
         state_before = store.snapshot()
 
-        result, stdout, stderr = self.run_cli(*common)
+        with patch(
+            "pinboard.adapters.files.artifacts.read_reference",
+            wraps=artifact_files.read_reference,
+        ) as read_artifact:
+            result, stdout, stderr = self.run_cli(*common)
         self.assertEqual(0, result, stderr)
+        self.assertEqual(
+            [reference.selector for reference in references],
+            [call.args[1].selector for call in read_artifact.call_args_list],
+        )
         handover = self.decode_handover(stdout)
         self.assertEqual("pinboard-project-handover/v1", handover.schema)
         self.assertEqual("sqlite-v3", handover.authority)
@@ -398,7 +407,7 @@ class HandoverTest(unittest.TestCase):
         project_read = threading.Event()
         writer_finished = threading.Event()
         writer_errors: list[AssertionError | sqlite3.Error] = []
-        original_read_project = sqlite_state._read_project
+        original_read_project = sqlite_state.read_project
 
         def read_project_then_wait(connection: sqlite3.Connection) -> stored_state.ProjectRecord:
             record = original_read_project(connection)
@@ -413,7 +422,7 @@ class HandoverTest(unittest.TestCase):
         )
         writer.start()
         try:
-            with patch("pinboard.adapters.sqlite.state._read_project", side_effect=read_project_then_wait):
+            with patch("pinboard.adapters.sqlite.state.read_project", side_effect=read_project_then_wait):
                 result, stdout, stderr = self.run_cli(
                     "--project-root",
                     str(project),

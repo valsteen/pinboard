@@ -12,6 +12,7 @@ from unittest.mock import patch
 import msgspec
 from msgspec.structs import replace
 
+from pinboard.adapters.files import artifacts as artifact_files
 from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
@@ -68,7 +69,7 @@ def prepare_dispatch_from_artifact(
     accepted_review: bytes | None = None,
 ) -> DispatchResult[str]:
     brief = _read_dispatch_brief(
-        attempt_path,
+        attempt_path.read_bytes(),
         attempt_id,
         attempt_branch,
         source_checkout_root,
@@ -431,17 +432,21 @@ class DispatchTest(unittest.TestCase):
         project, roots, store, value, action, environment = self.initialized()
         first_review = ready_review(value)
 
-        prompt = expect_dispatch_success(
-            prepare_dispatch(
-                store,
-                ArtifactRepository(roots),
-                project,
-                action(),
-                CHECKPOINT_ID,
-                environment,
-                supplied_review=SuppliedDispatchReview(first_review, ReviewId("first-review")),
+        with patch(
+            "pinboard.adapters.files.artifacts.read_reference",
+            wraps=artifact_files.read_reference,
+        ) as read_artifact:
+            prompt = expect_dispatch_success(
+                prepare_dispatch(
+                    store,
+                    ArtifactRepository(roots),
+                    project,
+                    action(),
+                    CHECKPOINT_ID,
+                    environment,
+                    supplied_review=SuppliedDispatchReview(first_review, ReviewId("first-review")),
+                )
             )
-        )
 
         self.assertIn(f"Checkpoint: {CHECKPOINT_ID}", prompt)
         after_first = store.snapshot()
@@ -452,32 +457,52 @@ class DispatchTest(unittest.TestCase):
         )
         self.assertEqual(1, len(ready))
         self.assertTrue(ready[0].selector.endswith(".json"))
-
-        reused = expect_dispatch_success(
-            prepare_dispatch(
-                store,
-                ArtifactRepository(roots),
-                project,
-                action(),
-                CHECKPOINT_ID,
-                environment,
-            )
+        self.assertEqual(
+            [after_first.artifact_references[0].selector],
+            [call.args[1].selector for call in read_artifact.call_args_list],
         )
+
+        with patch(
+            "pinboard.adapters.files.artifacts.read_reference",
+            wraps=artifact_files.read_reference,
+        ) as read_artifact:
+            reused = expect_dispatch_success(
+                prepare_dispatch(
+                    store,
+                    ArtifactRepository(roots),
+                    project,
+                    action(),
+                    CHECKPOINT_ID,
+                    environment,
+                )
+            )
         self.assertEqual(prompt, reused)
+        self.assertEqual(
+            [after_first.artifact_references[0].selector, ready[0].selector],
+            [call.args[1].selector for call in read_artifact.call_args_list],
+        )
         self.assertEqual(after_first, store.snapshot())
 
-        identical_retry = expect_dispatch_success(
-            prepare_dispatch(
-                store,
-                ArtifactRepository(roots),
-                project,
-                action(),
-                CHECKPOINT_ID,
-                environment,
-                supplied_review=SuppliedDispatchReview(first_review, ReviewId("identical-review")),
+        with patch(
+            "pinboard.adapters.files.artifacts.read_reference",
+            wraps=artifact_files.read_reference,
+        ) as read_artifact:
+            identical_retry = expect_dispatch_success(
+                prepare_dispatch(
+                    store,
+                    ArtifactRepository(roots),
+                    project,
+                    action(),
+                    CHECKPOINT_ID,
+                    environment,
+                    supplied_review=SuppliedDispatchReview(first_review, ReviewId("identical-review")),
+                )
             )
-        )
         self.assertEqual(prompt, identical_retry)
+        self.assertEqual(
+            [after_first.artifact_references[0].selector, ready[0].selector],
+            [call.args[1].selector for call in read_artifact.call_args_list],
+        )
         self.assertEqual(after_first, store.snapshot())
 
         collision = prepare_dispatch(
@@ -520,7 +545,6 @@ class DispatchTest(unittest.TestCase):
             )
             expect_success(
                 store.accept_artifact_reference(
-                    roots.work_root,
                     write_revision(
                         roots,
                         NewArtifact(
@@ -559,13 +583,11 @@ class DispatchTest(unittest.TestCase):
         accept_reference = store.accept_artifact_reference
 
         def accept_after_unrelated_revision(
-            work_root: Path,
             published: ArtifactRef,
             accepted_at: datetime,
         ) -> DecisionResult[stored_state.ArtifactReference]:
             expect_success(
                 accept_reference(
-                    work_root,
                     write_revision(
                         roots,
                         NewArtifact(
@@ -579,7 +601,7 @@ class DispatchTest(unittest.TestCase):
                     accepted_at,
                 )
             )
-            return accept_reference(work_root, published, accepted_at)
+            return accept_reference(published, accepted_at)
 
         with patch.object(store, "accept_artifact_reference", side_effect=accept_after_unrelated_revision):
             result = prepare_dispatch(
@@ -600,7 +622,6 @@ class DispatchTest(unittest.TestCase):
         selected = action()
         expect_success(
             store.accept_artifact_reference(
-                roots.work_root,
                 write_revision(
                     roots, NewArtifact(work_models.ArtifactKind.EVIDENCE, "revision-bump", 1, ".json", b"{}\n")
                 ),

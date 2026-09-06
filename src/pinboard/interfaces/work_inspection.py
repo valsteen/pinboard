@@ -6,7 +6,6 @@ authority, refresh generated views, obtain a lease, or own a transaction.
 """
 
 import sys
-from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import assert_never
@@ -120,26 +119,25 @@ def project_parallel_preview(
 
 
 def compose_status(
-    state: stored_state.StoredWorkState,
+    facts: stored_state.StatusFacts,
     work: Path,
     source_checkout: Path,
     shared_repository: Path,
-    now: datetime,
 ) -> work_inspection_models.StatusView:
-    overview_value = queries.project_overview(state, now)
-    coordinator = state.authority.coordination
+    coordinator = facts.coordination
+    counts = {value.state.value: value.count for value in facts.counts}
     return work_inspection_models.StatusView(
         stored_state_opened=True,
         source_checkout_root=str(source_checkout),
         shared_repository_root=str(shared_repository),
         work_root=str(work),
-        revision=str(state.lifecycle.project.revision),
-        focus_item=overview_value.focus_item,
-        focus_attempt=overview_value.focus_attempt,
-        active_attempts=overview_value.active_attempts,
-        next_action=state.focus.next_action,
-        counts=dict(Counter(item.state.value for item in state.lifecycle.work_items)),
-        intake_item_count=sum(1 for item in overview_value.items if item.state == work_models.WorkState.INTAKE),
+        revision=str(facts.project.revision),
+        focus_item=None if facts.focus.item_id is None else str(facts.focus.item_id),
+        focus_attempt=None if facts.focus.attempt_id is None else str(facts.focus.attempt_id),
+        active_attempts=tuple(str(value) for value in facts.active_attempts),
+        next_action=facts.focus.next_action,
+        counts=counts,
+        intake_item_count=counts.get(stored_state.StoredWorkItemState.INTAKE.value, 0),
         coordinator=(
             work_inspection_models.CoordinatorView(
                 str(coordinator.task_id),
@@ -157,11 +155,8 @@ def compose_status(
 
 
 def show_status(roots: cli_commands.ResolvedRoots, command: cli_commands.StatusCommand) -> int:
-    operation_time = datetime.now(UTC)
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
-    status_projection = compose_status(
-        current_state, roots.work, roots.source_checkout, roots.shared_repository, operation_time
-    )
+    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").status_facts()
+    status_projection = compose_status(current_state, roots.work, roots.source_checkout, roots.shared_repository)
     if command.json:
         write_json(status_projection)
     else:
@@ -176,7 +171,7 @@ def show_status(roots: cli_commands.ResolvedRoots, command: cli_commands.StatusC
 
 def show_overview(roots: cli_commands.ResolvedRoots, command: cli_commands.OverviewCommand) -> int:
     operation_time = datetime.now(UTC)
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").live_state()
     overview_projection = queries.project_overview(current_state, operation_time)
     if command.json:
         write_json(overview_projection)
@@ -214,7 +209,7 @@ def show_item_status(
     command: cli_commands.ItemStatusCommand,
 ) -> errors.CommandResult[int]:
     operation_time = datetime.now(UTC)
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").item_status_state(command.item_id)
     item_projection = queries.project_item_status(current_state, command.item_id, operation_time)
     if isinstance(item_projection, domain_errors.DecisionFailure):
         return errors.CommandFailure(item_projection.code, item_projection.message)
@@ -258,7 +253,7 @@ def show_item_definition(
     roots: cli_commands.ResolvedRoots,
     command: cli_commands.ItemDefinitionCommand,
 ) -> errors.CommandResult[int]:
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").item_definition_state(command.item_id)
     definition_projection = queries.project_item_definition(current_state, command.item_id)
     if isinstance(definition_projection, domain_errors.DecisionFailure):
         return errors.CommandFailure(definition_projection.code, definition_projection.message)
@@ -280,7 +275,11 @@ def show_item_definition_history(
     roots: cli_commands.ResolvedRoots,
     command: cli_commands.ItemDefinitionHistoryCommand,
 ) -> errors.CommandResult[int]:
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").item_definition_state(
+        command.item_id,
+        history_limit=command.limit + 1,
+        before_revision=command.before_revision,
+    )
     history_projection = queries.project_item_definition_history(
         current_state,
         command.item_id,
@@ -317,7 +316,7 @@ def show_actions(
         case _ as unreachable:
             assert_never(unreachable)
     operation_time = datetime.now(UTC)
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").live_state()
     available_actions = action_queries.discover_actions(
         current_state,
         command.role,
@@ -395,7 +394,7 @@ def show_parallel_preview(
     command: cli_commands.ParallelPreviewCommand,
 ) -> errors.CommandResult[int]:
     operation_time = datetime.now(UTC)
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").live_state()
     preview = queries.project_parallel_preview(
         current_state,
         selected=tuple(command.item),

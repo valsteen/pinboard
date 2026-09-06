@@ -132,9 +132,6 @@ class ArtifactRepository:
     def work_root(self) -> Path:
         return self.roots.work_root
 
-    def verify(self, reference: stored_state.ArtifactReference) -> None:
-        verify_reference(self.work_root, reference)
-
     def read(self, reference: stored_state.ArtifactReference) -> bytes:
         return read_reference(self.work_root, reference)
 

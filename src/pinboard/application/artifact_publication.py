@@ -10,15 +10,14 @@ from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, Decisio
 
 
 class ArtifactPublisher(Protocol):
-    @property
-    def work_root(self) -> Path: ...
-
     def publish(self, artifact: NewArtifact) -> ArtifactRef: ...
 
 
-class ArtifactReader(Protocol):
-    def verify(self, reference: stored_state.ArtifactReference) -> None: ...
+class ArtifactContentReader(Protocol):
+    def read(self, reference: stored_state.ArtifactReference) -> bytes: ...
 
+
+class ArtifactReader(ArtifactContentReader, Protocol):
     def path(self, reference: stored_state.ArtifactReference) -> Path: ...
 
 
@@ -28,10 +27,10 @@ def publish_accepted_artifact(
     artifact: NewArtifact,
     accepted_at: datetime,
 ) -> DecisionResult[stored_state.ArtifactReference]:
-    """Publish immutable bytes, then accept their verified reference in SQLite."""
+    """Publish immutable bytes, then accept the publisher-verified reference."""
 
     published_reference = publisher.publish(artifact)
-    return store.accept_artifact_reference(publisher.work_root, published_reference, accepted_at)
+    return store.accept_artifact_reference(published_reference, accepted_at)
 
 
 def validate_transition_work_brief(

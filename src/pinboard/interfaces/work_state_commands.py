@@ -5,22 +5,19 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode, RootError, RootErrorCode
+from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, RootError, RootErrorCode
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.interfaces import cli_commands, work_views
 from pinboard.interfaces.cli_output import write_json
-from pinboard.interfaces.errors import WorkBriefError
 from pinboard.interfaces.work_state import (
     initialize_work_state,
     read_state_for_validation,
     validate_loaded_work_state,
 )
 from pinboard.interfaces.work_state_models import (
-    Diagnostic,
     DiagnosticView,
     RootView,
-    Severity,
     ValidationReport,
     ValidationView,
 )
@@ -70,22 +67,7 @@ def validate_state(roots: cli_commands.ResolvedRoots, command: cli_commands.Vali
         validation_report = loaded_state
     else:
         current_state = loaded_state
-        brief_error: WorkBriefError | None = None
-        try:
-            attempt_briefs = work_views.read_attempt_brief_views(roots, current_state)
-        except WorkBriefError as error:
-            brief_error = error
-            attempt_briefs = None
-        except ArtifactError:
-            attempt_briefs = None
-        validation_report = validate_loaded_work_state(roots.work, current_state, attempt_briefs, now=operation_time)
-        if brief_error is not None:
-            validation_report = ValidationReport(
-                (
-                    *validation_report.diagnostics,
-                    Diagnostic(brief_error.code.value, Severity.ERROR, roots.work, brief_error.message),
-                )
-            )
+        validation_report = validate_loaded_work_state(roots.work, current_state, now=operation_time)
     if command.json:
         write_json(_project_validation(validation_report))
     else:

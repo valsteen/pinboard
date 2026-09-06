@@ -31,8 +31,8 @@ DIAGRAM = Diagram(
     slug="journey",
     title="One change tells one ordered story",
     description=(
-        "A preparation-authority request is decoded, observed, resolved, decided against locked state, projected into "
-        "a focused mutation, committed atomically, followed by repairable view refresh, an independent SQLite reread, "
+        "A preparation-authority request is decoded, observed, resolved, decided against locked purpose-specific facts, "
+        "projected into a focused mutation, committed atomically, and returned as a compact effect for exact view refresh "
         "and presentation."
     ),
     width=1400,
@@ -54,7 +54,7 @@ DIAGRAM = Diagram(
         Connector(((520, 130), (550, 130)), "command", "observed", "observe", (535, 116)),
         Connector(((730, 130), (760, 130)), "observed", "requested", "resolve", (745, 116)),
         Connector(((855, 172), (855, 214), (670, 214), (670, 244)), "requested", "locked"),
-        Connector(((670, 346), (670, 370), (620, 370), (620, 430)), "locked", "decision", "current state", (662, 358)),
+        Connector(((670, 346), (670, 370), (620, 370), (620, 430)), "locked", "decision", "focused facts", (662, 358)),
         Connector(((520, 472), (430, 472)), "decision", "rejection", "rejected", (475, 458)),
         Connector(((620, 430), (620, 388), (920, 388), (920, 346)), "decision", "mutation", "accepted", (760, 376)),
         Connector(((920, 346), (920, 578), (870, 578), (870, 620)), "mutation", "transaction", "commit", (950, 510)),
@@ -65,8 +65,14 @@ DIAGRAM = Diagram(
             "stale",
             (650, 738),
         ),
-        Connector(((965, 671), (1000, 671)), "transaction", "views", "interface refresh", (982, 659)),
-        Connector(((1090, 620), (1090, 172)), "views", "latest", "reread", (1125, 410)),
+        Connector(
+            ((965, 671), (980, 671), (980, 770), (1200, 770), (1200, 200), (1090, 200), (1090, 172)),
+            "transaction",
+            "latest",
+            "compact effect",
+            (1065, 758),
+        ),
+        Connector(((1090, 172), (1090, 620)), "latest", "views", "affected facts", (1125, 410)),
         Connector(((1190, 130), (1210, 130)), "latest", "result", "present", (1200, 116)),
     ),
     boxes=(
@@ -82,7 +88,7 @@ DIAGRAM = Diagram(
             170,
             84,
         ),
-        Box("observed", "Observed context", "Unlocked snapshot", (), ("not authoritative",), 550, 88, 180, 84),
+        Box("observed", "Observed context", "Focused read", (), ("not authoritative",), 550, 88, 180, 84),
         Box(
             "requested",
             "Requested change",
@@ -94,12 +100,12 @@ DIAGRAM = Diagram(
             190,
             84,
         ),
-        Box("latest", "Latest state", "Reread SQLite", (), ("authoritative",), 990, 88, 200, 84),
-        Box("result", "Presented result", "Return status", (), ("latest state",), 1210, 88, 170, 84),
+        Box("latest", "Committed effect", "Affected records", (), ("authoritative receipt",), 990, 88, 200, 84),
+        Box("result", "Presented result", "Return status", (), ("exact receipt",), 1210, 88, 170, 84),
         Box(
             "locked",
             "Application use case",
-            "Reread locked state",
+            "Read locked facts",
             ("open write transaction",),
             ("authoritative",),
             560,
@@ -167,7 +173,7 @@ DIAGRAM = Diagram(
     ),
     notes=(
         Note(
-            "Only the application reread authorizes. SQLite commits before the interface refreshes replaceable file views and presents latest state.",
+            "Only the application locked read authorizes. SQLite returns compact affected facts before the interface refreshes replaceable views and presents the exact receipt.",
             190,
             783,
             12,

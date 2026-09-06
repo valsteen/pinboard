@@ -24,7 +24,7 @@ from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 
 
 class ArtifactPersistenceTest(unittest.TestCase):
-    def test_accepting_transaction_verifies_bytes_and_fresh_reload_contains_reference(self) -> None:
+    def test_accepting_publisher_verified_reference_survives_fresh_reload(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         roots = resolve_durable_roots(project)
         initialize_database(roots, SQLITE_NOW)
@@ -37,7 +37,6 @@ class ArtifactPersistenceTest(unittest.TestCase):
 
         accepted = expect_success(
             store.accept_artifact_reference(
-                roots.work_root,
                 published,
                 SQLITE_NOW,
             )
@@ -131,7 +130,6 @@ class ArtifactPersistenceTest(unittest.TestCase):
         )
         accepted = expect_success(
             store.accept_artifact_reference(
-                roots.work_root,
                 published,
                 SQLITE_NOW,
             )
@@ -139,7 +137,7 @@ class ArtifactPersistenceTest(unittest.TestCase):
         before_retry = store.snapshot()
         self.assertEqual(
             accepted,
-            expect_success(store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW)),
+            expect_success(store.accept_artifact_reference(published, SQLITE_NOW)),
         )
         self.assertEqual(before_retry, store.snapshot())
 
@@ -165,7 +163,7 @@ class ArtifactPersistenceTest(unittest.TestCase):
             """
         )
         with patch("pinboard.adapters.sqlite.store.open_database", return_value=connection):
-            result = store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW)
+            result = store.accept_artifact_reference(published, SQLITE_NOW)
 
         self.assertIsInstance(result, DecisionFailure)
         assert isinstance(result, DecisionFailure)

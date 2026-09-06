@@ -5,9 +5,11 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from msgspec.structs import replace as struct_replace
 
+from pinboard.adapters.files import artifacts as artifact_files
 from pinboard.adapters.files.artifacts import write_revision
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
@@ -16,7 +18,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.artifacts import NewArtifact
 from pinboard.domain import work_models
 from pinboard.interfaces.cli import main
-from pinboard.interfaces.work_briefs import canonical_work_brief_bytes, render_work_brief_markdown
+from pinboard.interfaces.work_briefs import canonical_work_brief_bytes
 from pinboard.interfaces.work_state import initialize_work_state
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.work_brief_support import work_a_brief
@@ -63,7 +65,7 @@ class SQLiteValidationTest(unittest.TestCase):
             "--project-root", str(project), "--work-root", str(receipt.work_root), "validate"
         )
         self.assertEqual(0, stale_result, stale_stderr)
-        self.assertIn("VIEW_REFRESH_REQUIRED", stale_stdout)
+        self.assertIn("LEGACY_VIEW_RESIDUE", stale_stdout)
         self.assertIn("pinboard views rebuild", stale_stdout)
 
     def test_missing_database_and_missing_accepted_artifacts_are_errors(self) -> None:
@@ -133,7 +135,7 @@ class SQLiteValidationTest(unittest.TestCase):
         self.assertFalse(staging.exists())
         self.assertFalse(staging_journal.exists())
         attempt_view = first.work_root / "views" / "attempts" / "work-a-1.md"
-        self.assertEqual(render_work_brief_markdown(brief), attempt_view.read_bytes())
+        self.assertFalse(attempt_view.exists())
 
     def test_initialization_rejects_conflicting_publication_residue_without_mutation(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
@@ -248,6 +250,58 @@ class SQLiteValidationTest(unittest.TestCase):
 
                 self.assertEqual(10, result, stderr)
                 self.assertIn("WORK_BRIEF_INVALID", stdout)
+
+    def test_validation_reads_each_accepted_artifact_once(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        roots = resolve_durable_roots(project)
+        initialize_database(roots, SQLITE_NOW)
+        state = complete_sqlite_state()
+        brief = work_a_brief(project)
+        references = []
+        for index, reference in enumerate(state.artifact_references):
+            content = canonical_work_brief_bytes(brief) if index == 0 else b"evidence\n"
+            key = brief.attempt_id if index == 0 else reference.key
+            suffix = ".json" if index == 0 else Path(reference.selector).suffix
+            published = write_revision(
+                roots,
+                NewArtifact(
+                    reference.kind,
+                    key,
+                    reference.revision,
+                    suffix,
+                    content,
+                ),
+            )
+            references.append(
+                replace(
+                    reference,
+                    key=published.key,
+                    revision=published.revision,
+                    selector=published.selector,
+                    content_sha256=published.content_sha256,
+                    size_bytes=published.size_bytes,
+                )
+            )
+        state = replace(state, artifact_references=tuple(references))
+        initialize_store(SQLiteWorkStore(roots.database_path), state)
+
+        with patch(
+            "pinboard.interfaces.work_state.read_reference",
+            wraps=artifact_files.read_reference,
+        ) as read_artifact:
+            result, stdout, stderr = self.run_cli(
+                "--project-root",
+                str(project),
+                "--work-root",
+                str(roots.work_root),
+                "validate",
+            )
+
+        self.assertEqual(0, result, stdout or stderr)
+        self.assertEqual(
+            [reference.selector for reference in references],
+            [call.args[1].selector for call in read_artifact.call_args_list],
+        )
 
 
 if __name__ == "__main__":

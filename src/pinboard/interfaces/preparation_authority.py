@@ -15,7 +15,7 @@ from pinboard.adapters.files.models import AffectedViews
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.application.decision_projection import project_decision_snapshot
-from pinboard.application.service import decide_and_commit_preparation_authority_change
+from pinboard.application.service import decide_and_commit_preparation_authority_change_with_effect
 from pinboard.domain import authority_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import ItemId, LeaseId
@@ -66,7 +66,7 @@ def show_preparation_authority_status(
     roots: cli_commands.ResolvedRoots, command: cli_commands.PreparationStatusCommand
 ) -> CommandResult[int]:
     presented_at = datetime.now(UTC)
-    latest_committed_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    latest_committed_state = SQLiteWorkStore(roots.work / "state.sqlite3").preparation_authority_state(command.item_id)
     return _present_latest_preparation_authority(
         latest_committed_state, command.item_id, presented_at, json=command.json
     )
@@ -220,24 +220,30 @@ def change_preparation_authority(
     ),
 ) -> CommandResult[int]:
     store = SQLiteWorkStore(roots.work / "state.sqlite3")
-    observed_state = store.snapshot()
+    observed_state = store.decision_state(subject_item_ids=(command.item_id,))
     requested_at = datetime.now(UTC)
     requested_change = _resolve_requested_preparation_change(observed_state, command, requested_at)
     if isinstance(requested_change, CommandFailure):
         return requested_change
-    commit_result = decide_and_commit_preparation_authority_change(store, requested_change)
+    commit_result = decide_and_commit_preparation_authority_change_with_effect(store, requested_change)
     if isinstance(commit_result, DecisionFailure):
         return CommandFailure(commit_result.code, commit_result.message)
+    latest_committed_state = commit_result.view_state
+    rendered_at = datetime.now(UTC)
     refresh_result = work_views.refresh(
         roots,
-        store,
-        AffectedViews(queue=True, items=(command.item_id,), current_focus=True, history=True),
-        datetime.now(UTC),
+        latest_committed_state,
+        AffectedViews(
+            current_focus=commit_result.affected.current_focus,
+            items=commit_result.affected.items,
+            attempts=commit_result.affected.attempts,
+            history_receipts=(commit_result.receipt.history_id,),
+        ),
+        rendered_at,
     )
     if refresh_result.warning is not None:
         print(refresh_result.warning.message, file=sys.stderr)
     presented_at = datetime.now(UTC)
-    latest_committed_state = store.snapshot()
     return _present_latest_preparation_authority(
         latest_committed_state, command.item_id, presented_at, json=command.json
     )

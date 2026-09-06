@@ -4,6 +4,7 @@ import base64
 from pathlib import PurePosixPath
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import handover, stored_state
@@ -39,7 +40,13 @@ def _read_and_encode_artifacts(
     encoded_contents: list[handover.HandoverArtifactContent] = []
     for reference in state.artifact_references:
         suffix = PurePosixPath(reference.selector).suffix.lower()
-        media_type = MEDIA_TYPE_BY_SUFFIX.get(suffix, "application/octet-stream")
+        try:
+            media_type = MEDIA_TYPE_BY_SUFFIX[suffix]
+        except KeyError as error:
+            raise ArtifactError(
+                ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION,
+                f"Unsupported artifact media suffix: {suffix or '<none>'}",
+            ) from error
         verified_bytes = artifacts.read(reference)
         projected_references.append(handover.project_artifact_reference(reference, media_type=media_type))
         encoded_contents.append(_encode_artifact_content(int(reference.artifact_ref_id), verified_bytes))

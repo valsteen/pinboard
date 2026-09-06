@@ -56,6 +56,8 @@ class SQLiteQueriesTest(unittest.TestCase):
             ("intake-work", "work-a", "work-c", "zz-proposal-a"),
             tuple(item.item_id for item in overview.items),
         )
+        self.assertIsNone(overview.items[0].source)
+        self.assertIsNone(overview.items[0].notes)
         proposal = overview.items[-1]
         self.assertEqual((4, False, ("work-c",)), (proposal.position, proposal.eligible, proposal.depends_on))
         self.assertEqual("work-c", proposal.dependency_reasons[0].item_id)
@@ -114,6 +116,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             timing=work_models.Timing.SAFE_TO_DEFER,
             outcome_evidence="accepted completion",
             next_action=None,
+            source=None,
             notes=None,
         )
         done_attempts = (
@@ -153,7 +156,9 @@ class SQLiteQueriesTest(unittest.TestCase):
                 work_models.Timing.MUST_NOW,
                 None,
                 "continue",
+                "accepted requirement",
                 "Current work remains bounded.",
+                2,
                 (query_models.ItemStatusAttempt("work-a-1", work_models.AttemptState.ACTIVE, None),),
             ),
             live,
@@ -169,7 +174,9 @@ class SQLiteQueriesTest(unittest.TestCase):
                 work_models.Timing.SAFE_TO_DEFER,
                 "accepted completion",
                 None,
-                "",
+                None,
+                None,
+                None,
                 (query_models.ItemStatusAttempt("work-b-z", work_models.AttemptState.DONE, "candidate-z"),),
             ),
             done,
@@ -202,7 +209,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                 status = expect_success(project_item_status(store.snapshot(), terminal_item.item_id, SQLITE_NOW))
                 self.assertEqual(terminal.value, status.state.value)
                 self.assertEqual((), status.attempts)
-                self.assertEqual("", status.notes)
+                self.assertIsNone(status.notes)
 
     def test_item_status_rejects_an_unknown_canonical_identity(self) -> None:
         store = self._store()

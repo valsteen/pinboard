@@ -46,6 +46,14 @@ class GeneratedViewsTest(unittest.TestCase):
             self.assertNotIn("database_revision:", text)
         history = (work_root / "views" / "history.md").read_text(encoding="utf-8")
         self.assertIn("| Accepted test definition. | test-source |", history)
+        sparse_item = (work_root / "views" / "items" / "intake-work.md").read_text(encoding="utf-8")
+        self.assertIn("- Source: none", sparse_item)
+        self.assertIn("- Notes: none", sparse_item)
+        populated_item = (work_root / "views" / "items" / "work-a.md").read_text(encoding="utf-8")
+        self.assertIn("- Source: accepted requirement", populated_item)
+        self.assertIn("- Notes: Current work remains bounded.", populated_item)
+        terminal_item = (work_root / "views" / "items" / "work-b.md").read_text(encoding="utf-8")
+        self.assertIn("- Queue position: none", terminal_item)
         advanced = replace(
             state,
             lifecycle=replace(state.lifecycle, project=replace(state.lifecycle.project, revision=13)),

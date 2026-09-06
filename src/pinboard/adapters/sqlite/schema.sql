@@ -79,7 +79,7 @@ CREATE TABLE attempts (
     base_revision TEXT NOT NULL,
     provenance TEXT NOT NULL,
     brief_artifact_ref_id INTEGER NOT NULL,
-    brief_artifact_kind TEXT NOT NULL DEFAULT 'brief' CHECK (brief_artifact_kind = 'brief'),
+    brief_artifact_kind TEXT NOT NULL CHECK (brief_artifact_kind = 'brief'),
     result_artifact_ref_id INTEGER,
     result_artifact_kind TEXT CHECK (result_artifact_kind = 'result'),
     candidate_revision TEXT,

@@ -11,7 +11,11 @@ from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import (
     atomic_replace,
     create_immutable,
+    ensure_child_directory,
     resolve_durable_roots,
+)
+from pinboard.adapters.sqlite.database import (
+    _sync_directory as sync_database_directory,
 )
 from pinboard.adapters.sqlite.database import (
     initialize_database,
@@ -162,8 +166,73 @@ class SQLiteStoreTest(unittest.TestCase):
         try:
             self.assertEqual(1, connection.execute("PRAGMA foreign_keys").fetchone()[0])
             self.assertEqual("delete", connection.execute("PRAGMA journal_mode").fetchone()[0])
+            attempts = {row[1]: row for row in connection.execute("PRAGMA table_info(attempts)")}
+            self.assertIsNone(attempts["brief_artifact_kind"][4])
         finally:
             connection.close()
+
+    def test_retained_leases_require_their_exact_generation_anchor(self) -> None:
+        path, store = self._store()
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("DELETE FROM attempt_lease_generations WHERE attempt_id = ?", ("work-a-1",))
+            connection.commit()
+        finally:
+            connection.close()
+        with self.assertRaises(StorageError) as attempt_error:
+            store.snapshot()
+        self.assertEqual(StorageErrorCode.INVALID_STATE, attempt_error.exception.code)
+
+        state = complete_sqlite_state()
+        definition = next(value for value in state.lifecycle.definition_revisions if value.item_id == ItemId("work-c"))
+        preparation_authority = replace(
+            state.authority,
+            preparation_counters=(stored_state.PreparationLeaseCounter(ItemId("work-c"), 1),),
+            preparation_generations=(
+                stored_state.PreparationLeaseGeneration(
+                    ItemId("work-c"), 1, LeaseId("preparation-c"), TaskId("preparer-c"), HostId("host-a")
+                ),
+            ),
+            preparation_leases=(
+                stored_state.StoredPreparationLease(
+                    ItemId("work-c"),
+                    1,
+                    definition.revision,
+                    definition.digest,
+                    SQLITE_NOW,
+                    SQLITE_NOW + timedelta(minutes=5),
+                    authority_models.PreparationLeaseStatus.ACTIVE,
+                ),
+            ),
+        )
+        preparation_path, preparation_store = self._store(populated=False)
+        initialize_store(preparation_store, replace(state, authority=preparation_authority))
+        connection = sqlite3.connect(preparation_path)
+        try:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("DELETE FROM preparation_lease_generations WHERE item_id = ?", ("work-c",))
+            connection.commit()
+        finally:
+            connection.close()
+        with self.assertRaises(StorageError) as preparation_error:
+            preparation_store.snapshot()
+        self.assertEqual(StorageErrorCode.INVALID_STATE, preparation_error.exception.code)
+
+    def test_directory_sync_requires_the_platform_directory_flag(self) -> None:
+        directory_flag = os.O_DIRECTORY
+        del os.O_DIRECTORY
+        try:
+            parent = Path(tempfile.mkdtemp()).resolve()
+            with self.assertRaises(FileIOError) as file_error:
+                ensure_child_directory(parent, "child")
+            self.assertEqual(FileIOErrorCode.DIRECTORY_SYNC_FAILED, file_error.exception.code)
+
+            with self.assertRaises(StorageError) as database_error:
+                sync_database_directory(parent)
+            self.assertEqual(StorageErrorCode.IO_ERROR, database_error.exception.code)
+        finally:
+            os.O_DIRECTORY = directory_flag
 
         for field, value, expected in (
             ("application", "wrong-application", StorageErrorCode.INVALID_STATE),

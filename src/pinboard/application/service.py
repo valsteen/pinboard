@@ -32,10 +32,7 @@ from pinboard.domain.identifiers import (
     AttemptId,
     HistoryId,
     HistorySubjectId,
-    HostId,
     ItemId,
-    LeaseId,
-    TaskId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.domain.proposal_decisions import decide_proposal_creation
@@ -117,15 +114,10 @@ def _project_retained_attempt_authority(
         return None
     lease, anchor = retained
     if anchor is None:
-        if lease.generation != 0:
-            return None
-        lease_id = LeaseId("unclaimed")
-        task_id = TaskId("unclaimed")
-        host_id = HostId("unclaimed")
-    else:
-        lease_id = anchor.lease_id
-        task_id = anchor.task_id
-        host_id = anchor.host_id
+        return None
+    lease_id = anchor.lease_id
+    task_id = anchor.task_id
+    host_id = anchor.host_id
     return authority_models.AttemptLeaseAuthority(
         host_epoch=state.lifecycle.project.host_epoch,
         attempt=attempt_id,

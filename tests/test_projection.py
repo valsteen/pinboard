@@ -16,6 +16,9 @@ class DecisionProjectionTest(unittest.TestCase):
         )
         self.assertEqual((ItemId("work-c"),), snapshot.items_by_id()[ItemId("work-a")].depends_on)
         self.assertEqual((1, 2, 3, 4), tuple(item.queue_position for item in snapshot.items))
+        sparse_item = snapshot.items_by_id()[ItemId("intake-work")]
+        self.assertIsNone(sparse_item.source)
+        self.assertIsNone(sparse_item.notes)
         self.assertEqual(LeaseId("attempt-lease-a"), snapshot.attempt_authorities[0].lease_id)
         self.assertEqual(ItemId("work-a"), snapshot.focus_item)
 

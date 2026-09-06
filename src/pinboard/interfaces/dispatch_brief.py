@@ -2,7 +2,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import assert_never
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -26,6 +26,7 @@ from pinboard.domain import decision_models
 from pinboard.domain.errors import DecisionFailureCode
 from pinboard.domain.identifiers import ReviewId
 from pinboard.interfaces import action_selection, cli_commands, work_brief_models
+from pinboard.interfaces.cli_output import write_json
 from pinboard.interfaces.errors import (
     CliResult,
     CommandFailure,
@@ -65,6 +66,27 @@ class PublishSuppliedDispatchReview:
 
 
 type DispatchReviewChoice = ReuseAcceptedDispatchReview | PublishSuppliedDispatchReview
+
+
+class DispatchReadyView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-dispatch-ready/v1"]
+    status: Literal["ready"]
+    prompt: str | None
+
+
+def _present_dispatch_ready(rendered_prompt: str, *, supplied_prompt: bool, json: bool) -> None:
+    if json:
+        write_json(
+            DispatchReadyView(
+                "pinboard-dispatch-ready/v1",
+                "ready",
+                None if supplied_prompt else rendered_prompt,
+            )
+        )
+    elif supplied_prompt:
+        print("OK DISPATCH_READY")
+    else:
+        print(rendered_prompt, end="")
 
 
 def read_dispatch_environment(path: Path) -> DispatchResult[DispatchEnvironment]:
@@ -124,7 +146,7 @@ def _dispatch_failure(failure: ApplicationDispatchFailure) -> DispatchFailure:
             code = DispatchErrorCode.STALE_ACTION
         case _ as unreachable:
             assert_never(unreachable)
-    return DispatchFailure(code, failure.message)
+    return DispatchFailure(code, failure.message, failure.details)
 
 
 def _canonical_prompt(
@@ -468,8 +490,5 @@ def prepare_dispatch_command(
     )
     if isinstance(rendered_prompt, DispatchFailure):
         return rendered_prompt
-    if supplied_prompt_bytes is None:
-        print(rendered_prompt, end="")
-    else:
-        print("OK DISPATCH_READY")
+    _present_dispatch_ready(rendered_prompt, supplied_prompt=supplied_prompt_bytes is not None, json=command.json)
     return 0

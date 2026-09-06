@@ -91,7 +91,7 @@ def _resolve_requested_attempt_acquisition(
         )
     inactive = project_inactive_attempt_authority(observed_state, attempt_id, requested_at)
     if isinstance(inactive, DecisionFailure):
-        return CommandFailure(inactive.code, inactive.message)
+        return CommandFailure(inactive.code, inactive.message, inactive.details)
     return authority_models.TransferAttemptAuthority(
         inactive,
         command.task_id,
@@ -174,7 +174,7 @@ def change_attempt_authority(
         return requested_change
     commit_result = decide_and_commit_attempt_authority_change(store, requested_change)
     if isinstance(commit_result, DecisionFailure):
-        return CommandFailure(commit_result.code, commit_result.message)
+        return CommandFailure(commit_result.code, commit_result.message, commit_result.details)
     refresh_result = work_views.refresh_shared_authority_views(roots, store, datetime.now(UTC))
     if refresh_result.warning is not None:
         print(refresh_result.warning.message, file=sys.stderr)

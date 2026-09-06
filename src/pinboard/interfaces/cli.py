@@ -5,22 +5,26 @@ of typed failures. Command grammar and use-case composition live with their
 thematic interface owners; this root performs no storage or domain work itself.
 """
 
+import contextlib
+import io
 import sys
 from collections.abc import Sequence
 from typing import assert_never
 
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, RootError
 from pinboard.adapters.sqlite.errors import StorageError
-from pinboard.domain.errors import DecisionFailureCode
+from pinboard.domain.errors import DecisionFailureCode, FailureDetails, RetryDisposition
 from pinboard.interfaces import (
     attempt_authority,
     brief_source_commands,
     cli_commands,
+    cli_output,
     cli_parser,
     dispatch_brief,
     preparation_authority,
     project_handover,
     proposal_commands,
+    tool_contract,
     transitions,
     work_brief_publication,
     work_inspection,
@@ -30,6 +34,7 @@ from pinboard.interfaces.errors import (
     BriefSourceError,
     CliResult,
     CommandFailure,
+    CommittedEffectError,
     DispatchFailure,
     ProposalFailure,
     WorkBriefError,
@@ -43,6 +48,8 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
 ) -> CliResult[int]:
     if isinstance(invocation.command, cli_commands.InputContractCommand):
         return work_inspection.show_input_contract(invocation.command)
+    if isinstance(invocation.command, cli_commands.ToolContractCommand):
+        return tool_contract.show_tool_contract(invocation.command)
     roots = work_state_commands.resolve_roots(invocation.roots)
     match invocation.command:
         case cli_commands.RootCommand() as command:
@@ -116,33 +123,122 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
             assert_never(unreachable)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _parse_arguments(
+    arguments: tuple[str, ...],
+    *,
+    json_requested: bool,
+) -> cli_commands.CliInvocation | int:
+    if not json_requested:
+        return cli_parser.parse_invocation(arguments)
+    parser_stderr = io.StringIO()
     try:
-        result = _dispatch(cli_parser.parse_invocation(argv))
-        match result:
-            case int():
-                return result
-            case CommandFailure():
-                exit_code = 11
-            case ProposalFailure(code=DecisionFailureCode.PROPOSAL_INVALID):
-                exit_code = 2
-            case ProposalFailure():
-                exit_code = 13
-            case DispatchFailure():
-                exit_code = 14
-            case _ as unreachable:
-                assert_never(unreachable)
-        print(str(result), file=sys.stderr)
+        with contextlib.redirect_stderr(parser_stderr):
+            return cli_parser.parse_invocation(arguments)
+    except SystemExit as error:
+        if error.code == 0:
+            raise
+        cli_output.write_argument_rejection(arguments, parser_stderr.getvalue().strip())
+        return 2
+
+
+def _failure_exit_code(result: CliResult[int]) -> int:
+    match result:
+        case int():
+            return result
+        case CommandFailure():
+            return 11
+        case ProposalFailure(code=DecisionFailureCode.PROPOSAL_INVALID):
+            return 2
+        case ProposalFailure():
+            return 13
+        case DispatchFailure():
+            return 14
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _present_expected_result(result: CliResult[int], operation: str, *, json_requested: bool) -> int:
+    exit_code = _failure_exit_code(result)
+    if isinstance(result, int):
         return exit_code
+    if json_requested:
+        cli_output.write_rejected_operation(operation, result)
+    else:
+        print(str(result), file=sys.stderr)
+    return exit_code
+
+
+def _run_invocation(  # noqa: PLR0912 - one visible final process-error router
+    invocation: cli_commands.CliInvocation,
+    operation: str,
+    *,
+    json_requested: bool,
+) -> int:
+    try:
+        return _present_expected_result(_dispatch(invocation), operation, json_requested=json_requested)
+    except CommittedEffectError as error:
+        if json_requested:
+            cli_output.write_operation_rejection(operation, error.code, error.message, error.details)
+        else:
+            print(str(error), file=sys.stderr)
+        return 12
     except (RootError, OSError) as error:
-        print(str(error), file=sys.stderr)
+        if json_requested:
+            code = error.code.value if isinstance(error, RootError) else "CLI_IO_ERROR"
+            cli_output.write_operation_rejection(
+                operation,
+                code,
+                str(error),
+                FailureDetails(retry=RetryDisposition.CORRECT_INPUT),
+            )
+        else:
+            print(str(error), file=sys.stderr)
         return 2
     except (StorageError, ArtifactError, FileIOError) as error:
-        print(str(error), file=sys.stderr)
+        if json_requested:
+            retry = (
+                RetryDisposition.RETRY_SAME_INPUT
+                if isinstance(error, StorageError) and error.retryable
+                else RetryDisposition.DO_NOT_RETRY
+            )
+            cli_output.write_operation_rejection(
+                operation,
+                error.code.value,
+                str(error),
+                FailureDetails(retry=retry),
+            )
+        else:
+            print(str(error), file=sys.stderr)
         return 12
     except BriefSourceError as error:
-        print(str(error), file=sys.stderr)
+        if json_requested:
+            cli_output.write_operation_rejection(
+                operation,
+                error.code.value,
+                error.message,
+                FailureDetails(retry=RetryDisposition.CORRECT_INPUT),
+            )
+        else:
+            print(str(error), file=sys.stderr)
         return 15
     except WorkBriefError as error:
-        print(str(error), file=sys.stderr)
+        if json_requested:
+            cli_output.write_operation_rejection(
+                operation,
+                error.code.value,
+                error.message,
+                FailureDetails(retry=RetryDisposition.CORRECT_INPUT),
+            )
+        else:
+            print(str(error), file=sys.stderr)
         return 16
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = tuple(sys.argv[1:] if argv is None else argv)
+    json_requested = "--json" in arguments
+    invocation = _parse_arguments(arguments, json_requested=json_requested)
+    if isinstance(invocation, int):
+        return invocation
+    operation = tool_contract.operation_identity(invocation.command)
+    return _run_invocation(invocation, operation, json_requested=json_requested)

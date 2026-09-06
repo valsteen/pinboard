@@ -87,7 +87,7 @@ def start_preparation(
         expires_at=requested_at + timedelta(seconds=command.ttl_seconds),
     )
     if isinstance(committed, DecisionFailure):
-        return CommandFailure(committed.code, committed.message)
+        return CommandFailure(committed.code, committed.message, committed.details)
     refreshed = work_views.refresh(
         roots, store, AffectedViews(queue=True, items=(command.item_id,), history=True), datetime.now(UTC)
     )
@@ -235,7 +235,7 @@ def change_preparation_authority(
         return requested_change
     commit_result = decide_and_commit_preparation_authority_change(store, requested_change)
     if isinstance(commit_result, DecisionFailure):
-        return CommandFailure(commit_result.code, commit_result.message)
+        return CommandFailure(commit_result.code, commit_result.message, commit_result.details)
     refresh_result = work_views.refresh(
         roots,
         store,

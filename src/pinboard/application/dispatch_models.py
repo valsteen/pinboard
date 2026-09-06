@@ -5,7 +5,7 @@ from typing import Annotated, Literal, Protocol
 import msgspec
 
 from pinboard.application.artifact_publication import ArtifactPublisher, ArtifactReader
-from pinboard.domain.errors import DecisionFailureCode
+from pinboard.domain.errors import DecisionFailureCode, FailureDetails
 
 type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\n]+\z")]
 
@@ -26,6 +26,7 @@ class DispatchRejectionCode(Enum):
 class DispatchFailure:
     code: DispatchRejectionCode | DecisionFailureCode
     message: str
+    details: FailureDetails | None = None
 
 
 type DispatchResult[T] = T | DispatchFailure

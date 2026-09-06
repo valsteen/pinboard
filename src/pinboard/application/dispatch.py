@@ -12,7 +12,15 @@ from pinboard.application.dispatch_models import (
 )
 from pinboard.application.ports import WorkStore
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.errors import (
+    ChangedSurface,
+    DecisionFailure,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    FailureMismatch,
+    RetryDisposition,
+)
 from pinboard.domain.identifiers import AttemptId, ReviewId
 
 
@@ -40,7 +48,7 @@ def _rediscover_dispatch_action(
         now=now,
     )
     if isinstance(actions, DecisionFailure):
-        return DispatchFailure(actions.code, actions.message)
+        return DispatchFailure(actions.code, actions.message, actions.details)
     return next(
         (value for value in actions if decision_models.action_id(value) == decision_models.action_id(supplied)), None
     )
@@ -64,6 +72,16 @@ def _current_dispatch_action(
             return DispatchFailure(
                 DispatchRejectionCode.STALE_ACTION,
                 "The work ledger changed after this dispatch action was selected.",
+                FailureDetails(
+                    mismatches=(
+                        FailureMismatch(
+                            "expected_revision",
+                            current.capability.expected_revision,
+                            supplied.capability.expected_revision,
+                        ),
+                    ),
+                    retry=RetryDisposition.REFRESH_ACTION,
+                ),
             )
         return DispatchFailure(
             DispatchRejectionCode.ACTION_INVALID,
@@ -160,10 +178,32 @@ def publish_dispatch_review(
             accepted_at,
         )
         if isinstance(rejected_acceptance, DecisionFailure):
-            return DispatchFailure(DispatchRejectionCode.STALE_ACTION, rejected_acceptance.message)
+            return DispatchFailure(
+                DispatchRejectionCode.STALE_ACTION,
+                rejected_acceptance.message,
+                FailureDetails(
+                    observed=(FailureFact("published_artifact_selector", rejected.selector),),
+                    retry=RetryDisposition.DO_NOT_RETRY,
+                    effect=EffectDisposition.COMMITTED,
+                    changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+                ),
+            )
         return DispatchFailure(
             DispatchRejectionCode.REVIEW_COLLISION,
             f"Ready review already differs; later evidence is preserved at '{rejected.selector}'.",
+            FailureDetails(
+                observed=(
+                    FailureFact("published_artifact_selector", rejected.selector),
+                    FailureFact("accepted_revision", rejected_acceptance.accepted_revision),
+                ),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.COMMITTED,
+                changed_surfaces=(
+                    ChangedSurface.IMMUTABLE_ARTIFACT,
+                    ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE,
+                    ChangedSurface.LEDGER,
+                ),
+            ),
         )
     published = artifacts.publish(NewArtifact(work_models.ArtifactKind.EVIDENCE, key, 1, ".json", candidate))
     accepted = store.accept_artifact_reference(
@@ -172,7 +212,16 @@ def publish_dispatch_review(
         accepted_at,
     )
     if isinstance(accepted, DecisionFailure):
-        return DispatchFailure(DispatchRejectionCode.STALE_ACTION, accepted.message)
+        return DispatchFailure(
+            DispatchRejectionCode.STALE_ACTION,
+            accepted.message,
+            FailureDetails(
+                observed=(FailureFact("published_artifact_selector", published.selector),),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.COMMITTED,
+                changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+            ),
+        )
     return AcceptedDispatchReview(accepted, accepted.accepted_revision)
 
 
@@ -203,4 +252,33 @@ def recheck_dispatch_authority(
     return DispatchFailure(
         DispatchRejectionCode.ACTION_UNAVAILABLE,
         "Dispatch authority changed during prompt preparation.",
+        FailureDetails(
+            observed=(FailureFact("accepted_review_publication_revision", own_review_publication_revision),),
+            mismatches=(
+                FailureMismatch(
+                    "expected_revision",
+                    None if current is None else current.capability.expected_revision,
+                    capability.expected_revision,
+                ),
+            ),
+            retry=(
+                RetryDisposition.DO_NOT_RETRY
+                if own_review_publication_revision is not None
+                else RetryDisposition.REFRESH_ACTION
+            ),
+            effect=(
+                EffectDisposition.COMMITTED
+                if own_review_publication_revision is not None
+                else EffectDisposition.UNCHANGED
+            ),
+            changed_surfaces=(
+                (
+                    ChangedSurface.IMMUTABLE_ARTIFACT,
+                    ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE,
+                    ChangedSurface.LEDGER,
+                )
+                if own_review_publication_revision is not None
+                else ()
+            ),
+        ),
     )

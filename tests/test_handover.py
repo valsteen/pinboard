@@ -23,6 +23,7 @@ from pinboard.domain import work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import ArtifactRefId, ItemId, ProposalId, TaskId
 from pinboard.interfaces.cli import main
+from pinboard.interfaces.cli_output import RejectedOperationView
 
 from .support import SQLITE_NOW, complete_sqlite_state, initialize_store, test_definition
 
@@ -443,7 +444,7 @@ class HandoverTest(unittest.TestCase):
             next(value.next_action for value in handover.work_items if value.item_id == "work-a"),
         )
 
-    def test_artifact_failure_emits_no_stdout_and_changes_no_state(self) -> None:
+    def test_artifact_failure_reports_structured_rejection_and_changes_no_state(self) -> None:
         for failure in ("missing", "digest-mismatch"):
             with self.subTest(failure=failure):
                 project, work, store, references = self.initialized_project()
@@ -459,8 +460,10 @@ class HandoverTest(unittest.TestCase):
                 result, stdout, stderr = self.run_cli(*common)
 
                 self.assertEqual(12, result)
-                self.assertEqual("", stdout)
-                self.assertIn("STORAGE_INVARIANT_VIOLATION", stderr)
+                self.assertEqual("", stderr)
+                rejection = msgspec.json.decode(stdout, type=RejectedOperationView)
+                self.assertEqual("STORAGE_INVARIANT_VIOLATION", rejection.code)
+                self.assertFalse(rejection.state_changed)
                 self.assertEqual(database_before, (work / "state.sqlite3").read_bytes())
                 self.assertEqual(before, store.snapshot())
 
@@ -482,8 +485,11 @@ class HandoverTest(unittest.TestCase):
         )
 
         self.assertEqual(12, result)
-        self.assertEqual("", stdout)
-        self.assertIn("Unsupported artifact media suffix: .bin", stderr)
+        self.assertEqual("", stderr)
+        rejection = msgspec.json.decode(stdout, type=RejectedOperationView)
+        self.assertEqual("STORAGE_INVARIANT_VIOLATION", rejection.code)
+        self.assertIn("Unsupported artifact media suffix: .bin", rejection.message)
+        self.assertFalse(rejection.state_changed)
         self.assertEqual(before, store.snapshot())
 
 

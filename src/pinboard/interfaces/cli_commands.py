@@ -103,6 +103,16 @@ class InputContractCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     json: bool = False
 
 
+class ToolContractCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    operation: str | None = None
+    action_kind: decision_models.ActionKind | None = None
+    json: bool = False
+
+    def __post_init__(self) -> None:
+        if self.operation is not None and self.action_kind is not None:
+            raise ValueError("--operation and --action-kind are mutually exclusive")
+
+
 class BriefSourcesPlanCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     file: Path
     max_batch_bytes: PositiveInt = 24_000
@@ -178,6 +188,7 @@ class ProjectDispatchCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=
     checkpoint: str
     environment: Path
     prompt: Path | None = None
+    json: bool = False
 
 
 class ProjectReviewedDispatchCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -190,6 +201,7 @@ class ProjectReviewedDispatchCommand(msgspec.Struct, frozen=True, forbid_unknown
     brief_review: Path
     review_id: KebabReviewId
     prompt: Path | None = None
+    json: bool = False
 
 
 type DispatchCommand = ProjectDispatchCommand | ProjectReviewedDispatchCommand
@@ -347,6 +359,7 @@ type CliCommand = (
     | CloseCommand
     | ActionQueryCommand
     | InputContractCommand
+    | ToolContractCommand
     | BriefSourcesPlanCommand
     | BriefSourcesEmitCommand
     | BriefPublishCommand

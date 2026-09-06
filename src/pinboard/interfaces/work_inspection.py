@@ -80,7 +80,7 @@ def read_attempt_continuation(
         owner_task_id = TaskId(brief.owner_task_id)
     continuation = queries.project_attempt_continuation(state, attempt_id, owner_task_id, now)
     if isinstance(continuation, domain_errors.DecisionFailure):
-        return errors.CommandFailure(continuation.code, continuation.message)
+        return errors.CommandFailure(continuation.code, continuation.message, continuation.details)
     return continuation
 
 
@@ -114,7 +114,7 @@ def show_review_job(
         state, command.attempt_id, TaskId(brief.owner_task_id), datetime.now(UTC)
     )
     if isinstance(continuation, domain_errors.DecisionFailure):
-        return errors.CommandFailure(continuation.code, continuation.message)
+        return errors.CommandFailure(continuation.code, continuation.message, continuation.details)
     operation = continuation.next_operation
     if (
         not isinstance(operation, query_models.ReviewContinuation)
@@ -359,7 +359,7 @@ def show_item_status(
     current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
     item_projection = queries.project_item_status(current_state, command.item_id, operation_time)
     if isinstance(item_projection, domain_errors.DecisionFailure):
-        return errors.CommandFailure(item_projection.code, item_projection.message)
+        return errors.CommandFailure(item_projection.code, item_projection.message, item_projection.details)
     if command.json:
         write_json(item_projection)
         return 0
@@ -403,7 +403,9 @@ def show_item_definition(
     current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
     definition_projection = queries.project_item_definition(current_state, command.item_id)
     if isinstance(definition_projection, domain_errors.DecisionFailure):
-        return errors.CommandFailure(definition_projection.code, definition_projection.message)
+        return errors.CommandFailure(
+            definition_projection.code, definition_projection.message, definition_projection.details
+        )
     if command.json:
         write_json(definition_projection)
     else:
@@ -430,7 +432,7 @@ def show_item_definition_history(
         before_revision=command.before_revision,
     )
     if isinstance(history_projection, domain_errors.DecisionFailure):
-        return errors.CommandFailure(history_projection.code, history_projection.message)
+        return errors.CommandFailure(history_projection.code, history_projection.message, history_projection.details)
     if command.json:
         write_json(history_projection)
     else:
@@ -468,7 +470,7 @@ def show_actions(
         now=operation_time,
     )
     if isinstance(available_actions, domain_errors.DecisionFailure):
-        return errors.CommandFailure(available_actions.code, available_actions.message)
+        return errors.CommandFailure(available_actions.code, available_actions.message, available_actions.details)
     exact_action_id = command.action_id
     if exact_action_id is not None:
         available_actions = tuple(
@@ -484,7 +486,7 @@ def show_actions(
         for action in available_actions:
             projected_action = project_action(action, include_input_contract=exact_action_id is not None)
             if isinstance(projected_action, errors.TransitionInputFailure):
-                return errors.CommandFailure(projected_action.code, projected_action.message)
+                return errors.CommandFailure(projected_action.code, projected_action.message, projected_action.details)
             action_views.append(projected_action)
         write_json(work_inspection_models.ActionsView(tuple(action_views)))
     elif not available_actions:
@@ -500,7 +502,7 @@ def show_input_contract(
 ) -> errors.CommandResult[int]:
     contract = describe_input_contract(command.action_kind)
     if isinstance(contract, errors.TransitionInputFailure):
-        return errors.CommandFailure(contract.code, contract.message)
+        return errors.CommandFailure(contract.code, contract.message, contract.details)
     if command.json:
         write_json(contract)
     else:

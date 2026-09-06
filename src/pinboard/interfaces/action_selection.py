@@ -3,9 +3,17 @@ from datetime import UTC, datetime
 from typing import assert_never
 
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.application import stored_state
 from pinboard.application.actions import discover_actions
 from pinboard.domain import decision_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
+from pinboard.domain.errors import (
+    DecisionFailure,
+    FailureAction,
+    FailureDetails,
+    FailureFact,
+    FailureMismatch,
+    RetryDisposition,
+)
 from pinboard.domain.identifiers import AttemptId, ItemId, LedgerId, ProposalId, SubjectId
 from pinboard.interfaces import cli_commands
 from pinboard.interfaces.errors import CommandErrorCode, CommandFailure, CommandResult
@@ -18,17 +26,106 @@ class ParsedActionReceipt:
     generation: int
 
 
+def _failure_alternatives(
+    actions: tuple[decision_models.Action, ...],
+    supplied: ParsedActionReceipt,
+) -> tuple[FailureAction, ...]:
+    subject = supplied.action.capability.subject
+    alternatives: list[FailureAction] = []
+    for action in actions:
+        capability = action.capability
+        if capability.subject != subject:
+            continue
+        generation = (
+            capability.command_authority.generation
+            if capability.command_authority is not None
+            else capability.preparation_authority.generation
+            if capability.preparation_authority is not None
+            else None
+        )
+        alternatives.append(
+            FailureAction(
+                decision_models.action_id(action),
+                supplied.role.value,
+                capability.expected_revision,
+                capability.subject_revision,
+                None if capability.authorization is None else capability.authorization.value,
+                None if capability.lease_id is None else str(capability.lease_id),
+                generation,
+            )
+        )
+    return tuple(alternatives)
+
+
+def with_current_alternatives(
+    roots: cli_commands.ResolvedRoots,
+    supplied: ParsedActionReceipt,
+    failure: CommandFailure,
+) -> CommandFailure:
+    """Attach fresh same-subject actions after a locked execution rejection."""
+    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    current_actions = discover_actions(
+        current_state,
+        supplied.role,
+        lease_id=supplied.action.capability.lease_id,
+        generation=supplied.generation,
+        now=datetime.now(UTC),
+    )
+    if isinstance(current_actions, DecisionFailure):
+        return failure
+    details = FailureDetails() if failure.details is None else failure.details
+    return CommandFailure(
+        failure.code,
+        failure.message,
+        FailureDetails(
+            observed=details.observed,
+            mismatches=details.mismatches,
+            retry=details.retry,
+            effect=details.effect,
+            changed_surfaces=details.changed_surfaces,
+            alternatives=_failure_alternatives(current_actions, supplied),
+        ),
+    )
+
+
+def _malformed_action_id_failure(action_id: str, message: str) -> CommandFailure:
+    return CommandFailure(
+        CommandErrorCode.ACTION_ID_MALFORMED,
+        message,
+        FailureDetails(
+            observed=(FailureFact("action_id", action_id),),
+            mismatches=(FailureMismatch("action_id", "kind:subject", action_id),),
+            retry=RetryDisposition.CORRECT_INPUT,
+        ),
+    )
+
+
 def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
     command: cli_commands.TransitionCommand | cli_commands.DispatchCommand,
 ) -> CommandResult[ParsedActionReceipt]:
     selected_action_id = command.action_id
     if ":" not in selected_action_id:
-        return CommandFailure(CommandErrorCode.ACTION_ID_INVALID, "Action identity must be 'kind:subject'.")
+        return _malformed_action_id_failure(
+            str(selected_action_id),
+            "Action identity must be 'kind:subject'.",
+        )
     kind_value, subject = selected_action_id.split(":", 1)
+    if not kind_value or not subject:
+        return _malformed_action_id_failure(
+            str(selected_action_id),
+            "Action identity must contain a non-empty kind and subject.",
+        )
     try:
         kind = decision_models.ActionKind(kind_value)
-    except ValueError as error:
-        return CommandFailure(CommandErrorCode.ACTION_ID_INVALID, f"Unknown action kind: {error}.")
+    except ValueError:
+        return CommandFailure(
+            CommandErrorCode.ACTION_KIND_UNKNOWN,
+            f"Unknown action kind: {kind_value!r}.",
+            FailureDetails(
+                mismatches=(FailureMismatch("action_kind", "known action kind", kind_value),),
+                retry=RetryDisposition.CORRECT_INPUT,
+            ),
+        )
     match command:
         case cli_commands.ProjectTransitionCommand(subject_revision=subject_revision):
             authorization = decision_models.AuthorizationKind.PROJECT
@@ -118,6 +215,155 @@ def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
     return ParsedActionReceipt(action, role, generation)
 
 
+def _wrong_authority_failure(
+    supplied: ParsedActionReceipt,
+    expected_generation: int | None,
+    expected_lease_id: str | None,
+) -> CommandFailure:
+    supplied_lease_id = supplied.action.capability.lease_id
+    mismatches = tuple(
+        mismatch
+        for mismatch in (
+            FailureMismatch("generation", expected_generation, supplied.generation),
+            FailureMismatch(
+                "lease_id",
+                expected_lease_id,
+                None if supplied_lease_id is None else str(supplied_lease_id),
+            ),
+        )
+        if mismatch.expected != mismatch.observed
+    )
+    return CommandFailure(
+        CommandErrorCode.ACTION_AUTHORITY_WRONG,
+        f"Action '{decision_models.action_id(supplied.action)}' does not carry current authority.",
+        FailureDetails(
+            observed=(
+                FailureFact(
+                    "authorization",
+                    None
+                    if supplied.action.capability.authorization is None
+                    else supplied.action.capability.authorization.value,
+                ),
+            ),
+            mismatches=mismatches,
+            retry=RetryDisposition.REFRESH_ACTION,
+        ),
+    )
+
+
+def _inactive_authority_failure(
+    action_id: str,
+    status: str,
+    *,
+    expired: bool,
+    expires_at: datetime,
+    operation_time: datetime,
+) -> CommandFailure:
+    if expired:
+        code = CommandErrorCode.ACTION_AUTHORITY_EXPIRED
+        observed_status = "expired"
+    elif status == "released":
+        code = CommandErrorCode.ACTION_AUTHORITY_RELEASED
+        observed_status = status
+    else:
+        code = CommandErrorCode.ACTION_AUTHORITY_WRONG
+        observed_status = status
+    return CommandFailure(
+        code,
+        f"Action '{action_id}' authority is {observed_status}.",
+        FailureDetails(
+            observed=(
+                FailureFact("authority_status", observed_status),
+                FailureFact("authority_expires_at", expires_at.isoformat()),
+                FailureFact("operation_time", operation_time.isoformat()),
+            ),
+            mismatches=(FailureMismatch("authority_status", "active-unexpired", observed_status),),
+            retry=RetryDisposition.REACQUIRE_AUTHORITY,
+        ),
+    )
+
+
+def _retained_authority_failure(
+    supplied: ParsedActionReceipt,
+    current_generation: int,
+    current_lease_id: str | None,
+    status: str,
+    expires_at: datetime,
+    operation_time: datetime,
+) -> CommandFailure | None:
+    supplied_lease_id = supplied.action.capability.lease_id
+    if (
+        supplied.generation != current_generation
+        or (None if supplied_lease_id is None else str(supplied_lease_id)) != current_lease_id
+    ):
+        return _wrong_authority_failure(supplied, current_generation, current_lease_id)
+    if status == "active" and expires_at > operation_time:
+        return None
+    return _inactive_authority_failure(
+        str(decision_models.action_id(supplied.action)),
+        status,
+        expired=status == "expired" or (status == "active" and expires_at <= operation_time),
+        expires_at=expires_at,
+        operation_time=operation_time,
+    )
+
+
+def _authority_failure(
+    state: stored_state.StoredWorkState,
+    supplied: ParsedActionReceipt,
+    operation_time: datetime,
+) -> CommandFailure | None:
+    capability = supplied.action.capability
+    match supplied.role:
+        case decision_models.Role.PROJECT:
+            return None
+        case decision_models.Role.WORKER:
+            retained = stored_state.retained_attempt(state, AttemptId(str(capability.subject)))
+            if retained is None:
+                return _wrong_authority_failure(supplied, None, None)
+            lease, anchor = retained
+            current_generation = lease.generation
+            current_lease_id = None if anchor is None else str(anchor.lease_id)
+            status = lease.state.value
+            expires_at = lease.expires_at
+        case decision_models.Role.PREPARER:
+            retained = stored_state.retained_preparation(state, ItemId(str(capability.subject)))
+            if retained is None:
+                return _wrong_authority_failure(supplied, None, None)
+            lease, anchor = retained
+            current_generation = lease.generation
+            current_lease_id = None if anchor is None else str(anchor.lease_id)
+            status = lease.state.value
+            expires_at = lease.expires_at
+    return _retained_authority_failure(
+        supplied,
+        current_generation,
+        current_lease_id,
+        status,
+        expires_at,
+        operation_time,
+    )
+
+
+def _subject_state(state: stored_state.StoredWorkState, action: decision_models.Action) -> str | None:
+    subject = str(action.capability.subject)
+    match decision_models.action_semantics(action.kind).subject_kind:
+        case decision_models.ActionSubjectKind.ATTEMPT:
+            attempt = next(
+                (value for value in state.lifecycle.attempts if str(value.attempt_id) == subject),
+                None,
+            )
+            return None if attempt is None else attempt.state.value
+        case decision_models.ActionSubjectKind.ITEM | decision_models.ActionSubjectKind.PROPOSAL:
+            item = next(
+                (value for value in state.lifecycle.work_items if str(value.item_id) == subject),
+                None,
+            )
+            return None if item is None else item.state.value
+        case decision_models.ActionSubjectKind.LEDGER:
+            return "valid"
+
+
 def select_current_action(
     roots: cli_commands.ResolvedRoots,
     supplied: ParsedActionReceipt,
@@ -126,6 +372,8 @@ def select_current_action(
     supplied_capability = supplied_action.capability
     operation_time = datetime.now(UTC)
     current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    if (authority_failure := _authority_failure(current_state, supplied, operation_time)) is not None:
+        return authority_failure
     current_actions = discover_actions(
         current_state,
         supplied.role,
@@ -134,7 +382,7 @@ def select_current_action(
         now=operation_time,
     )
     if isinstance(current_actions, DecisionFailure):
-        return CommandFailure(current_actions.code, current_actions.message)
+        return CommandFailure(current_actions.code, current_actions.message, current_actions.details)
     current_action = next(
         (
             value
@@ -143,14 +391,43 @@ def select_current_action(
         ),
         None,
     )
+    alternatives = _failure_alternatives(current_actions, supplied)
     if current_action is None:
+        semantics = decision_models.action_semantics(supplied_action.kind)
+        observed_state = _subject_state(current_state, supplied_action)
         return CommandFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            CommandErrorCode.ACTION_LIFECYCLE_UNAVAILABLE,
             f"Action '{decision_models.action_id(supplied_action)}' is not currently legal.",
+            FailureDetails(
+                observed=(FailureFact("subject_state", observed_state),),
+                mismatches=(
+                    FailureMismatch(
+                        "lifecycle_precondition",
+                        semantics.lifecycle_precondition.value,
+                        observed_state,
+                    ),
+                ),
+                retry=RetryDisposition.REFRESH_ACTION,
+                alternatives=alternatives,
+            ),
         )
     current_capability = current_action.capability
     if current_capability.expected_revision != supplied_capability.expected_revision:
-        return CommandFailure(CommandErrorCode.STALE_ACTION, "The work ledger changed after this action was selected.")
+        return CommandFailure(
+            CommandErrorCode.ACTION_REVISION_STALE,
+            "The work ledger changed after this action was selected.",
+            FailureDetails(
+                mismatches=(
+                    FailureMismatch(
+                        "expected_revision",
+                        current_capability.expected_revision,
+                        supplied_capability.expected_revision,
+                    ),
+                ),
+                retry=RetryDisposition.REFRESH_ACTION,
+                alternatives=alternatives,
+            ),
+        )
     supplied_authority = (
         supplied_capability.subject_revision,
         supplied_capability.authorization,
@@ -162,8 +439,34 @@ def select_current_action(
         current_capability.lease_id,
     )
     if current_authority != supplied_authority:
+        mismatches = tuple(
+            mismatch
+            for mismatch in (
+                FailureMismatch(
+                    "subject_revision",
+                    current_capability.subject_revision,
+                    supplied_capability.subject_revision,
+                ),
+                FailureMismatch(
+                    "authorization",
+                    None if current_capability.authorization is None else current_capability.authorization.value,
+                    None if supplied_capability.authorization is None else supplied_capability.authorization.value,
+                ),
+                FailureMismatch(
+                    "lease_id",
+                    None if current_capability.lease_id is None else str(current_capability.lease_id),
+                    None if supplied_capability.lease_id is None else str(supplied_capability.lease_id),
+                ),
+            )
+            if mismatch.expected != mismatch.observed
+        )
         return CommandFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            CommandErrorCode.ACTION_AUTHORITY_WRONG,
             f"Action '{decision_models.action_id(supplied_action)}' no longer has exact current authority.",
+            FailureDetails(
+                mismatches=mismatches,
+                retry=RetryDisposition.REFRESH_ACTION,
+                alternatives=alternatives,
+            ),
         )
     return current_action

@@ -125,8 +125,8 @@ DIAGRAM = Diagram(
             "rejection",
             "Expected rejection",
             "No stored change",
-            ("domain legality · stale guard",),
-            (),
+            ("code · facts · retry",),
+            ("fresh alternatives",),
             220,
             430,
             210,
@@ -170,7 +170,7 @@ DIAGRAM = Diagram(
     ),
     notes=(
         Note(
-            "The application selects the current definition and claim operation under the write lock. SQLite commits before the interface refreshes replaceable views and presents that exact claim.",
+            "Locked selection rejects with fresh alternatives. Accepted SQLite changes precede repairable view refresh and exact presentation.",
             190,
             783,
             12,

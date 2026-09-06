@@ -61,7 +61,7 @@ def publish_brief(
         datetime.now(UTC),
     )
     if isinstance(accepted_reference, DecisionFailure):
-        return CommandFailure(accepted_reference.code, accepted_reference.message)
+        return CommandFailure(accepted_reference.code, accepted_reference.message, accepted_reference.details)
     rebuilt_views = work_views.rebuild(roots, store, datetime.now(UTC))
     if rebuilt_views.warning is not None:
         print(rebuilt_views.warning.message, rebuilt_views.warning.repair, sep="\n", file=sys.stderr)

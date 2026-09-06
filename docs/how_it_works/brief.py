@@ -1,4 +1,4 @@
-from pinboard.interfaces import work_brief_models, work_briefs
+from pinboard.interfaces import work_brief_contract, work_brief_models, work_briefs
 
 from .model import Box, Diagram, Guide, Note, Section
 
@@ -56,6 +56,7 @@ SOURCE_SYMBOL_NAMES: dict[str, str] = {
     "CrossBoundaryCheckpoint": work_brief_models.CrossBoundaryCheckpoint.__name__,
     "decode_work_brief": work_briefs.decode_work_brief.__name__,
     "canonical_work_brief_bytes": work_briefs.canonical_work_brief_bytes.__name__,
+    "WorkBriefContract": work_brief_contract.WorkBriefContract.__name__,
 }
 
 
@@ -83,8 +84,9 @@ DIAGRAM = Diagram(
         "A document-anatomy view of the canonical work brief. Artifact identity and accepted-scope identity anchor the "
         "whole-work definition. A cross-boundary checkpoint then names its boundary and outcome before expanding into "
         "acceptance criteria, architecture impact, reviewed authorities, contracts, coverage, lifecycle distinctions, "
-        "verification, and deferrals. Humans and language models interpret those named relationships, while Pinboard "
-        "code validates the envelope and stable artifact identity."
+        "verification, and deferrals. Static discovery provides complete unresolved starters without choosing their "
+        "meaning. Humans and language models interpret those named relationships, while Pinboard code validates the "
+        "completed envelope and stable artifact identity."
     ),
     width=1200,
     height=1040,
@@ -111,8 +113,8 @@ DIAGRAM = Diagram(
             "brief",
             "pinboard-work-brief/v2",
             "One accepted artifact",
-            ("same hierarchy · exact bytes · stable identity",),
-            ("WorkBrief",),
+            ("unresolved starter → completed brief",),
+            ("WorkBriefContract · WorkBrief",),
             400,
             70,
             400,
@@ -267,10 +269,10 @@ DIAGRAM = Diagram(
         ),
         Box(
             "validation",
-            "Pinboard code responsibility",
-            "Verify the envelope",
-            ("decode · cross-check · canonicalize · bind bytes",),
-            ("structural guarantees",),
+            "Pinboard tool + code responsibility",
+            "Guide and verify the envelope",
+            ("starter · schema · decode · cross-check",),
+            ("canonicalize · bind bytes",),
             615,
             900,
             550,

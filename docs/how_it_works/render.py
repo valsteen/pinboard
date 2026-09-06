@@ -50,6 +50,7 @@ For one short, isolated change, Codex already supplies the planning, implementat
   - [What every transition preserves](#what-every-transition-preserves)
 - [Command stories](#command-stories)
   - [Read, validate, initialize, and repair](#read-validate-initialize-and-repair)
+  - [Discover and recover an exact operation](#discover-and-recover-an-exact-operation)
   - [Follow one change](#follow-one-change)
   - [Apply one project change](#apply-one-project-change)
   - [Carry the project into another tool](#carry-the-project-into-another-tool)
@@ -92,7 +93,7 @@ Pinboard gives both sides a stable reference. The implementer rereads the accept
 
 {_picture("brief", "The canonical work brief organized into artifact identity, accepted scope, whole-work definition, and a checkpoint containing criteria, architecture impact, reviewed authorities, contracts, coverage, lifecycle distinctions, verification, and deferrals")}
 
-**Code checks the envelope; humans and models interpret the meaning.** The canonical work brief is strict JSON and the sole semantic brief. Pinboard rejects unknown fields and cross-checks identities, references, coverage, and canonical bytes. It cannot prove that prose under `scope` is truly in scope or that a `non_goals` entry expresses the human's intent. The model interprets those meanings, the human accepts the product decision, and independent review challenges the compiled result. The schema makes distinct reasoning jobs difficult to omit and stable across stages without pretending to replace judgment.
+**Code checks the envelope; humans and models interpret the meaning.** The canonical work brief is strict JSON and the sole semantic brief. Static contract discovery provides generated schemas and complete local and cross-boundary starters whose semantic values remain unresolved. Pinboard rejects unknown fields and cross-checks identities, references, coverage, and canonical bytes after those values are filled. It cannot choose those values or prove that prose under `scope` is truly in scope or that a `non_goals` entry expresses the human's intent. The model interprets those meanings, the human accepts the product decision, and independent review challenges the compiled result. The schema makes distinct reasoning jobs difficult to omit and stable across stages without pretending to replace judgment.
 
 **Project impact remains a judgment too.** Pinboard has no rule saying that a visitor-facing decision must also change a workflow guide or a durable design principle. Structured scope, provenance, reviewed authorities, and coverage help Codex reason toward affected surfaces without a hard-coded file map or an exhaustive reread. The model can still miss or invent a connection; human acceptance and independent review decide whether it is real. This is information architecture refined through experience, not a semantic consistency engine.
 
@@ -123,7 +124,7 @@ The lifecycle is accompanied by four guarantees:
 - **Work survives conversations.** A later task can continue from accepted scope and evidence instead of reconstructing intent from chat history.
 - **Mutation ownership is current.** An expired or replaced worker cannot apply an action it discovered earlier.
 - **Review is about one candidate.** Correction, checkpoint acceptance, continuation, and terminal completion preserve different outcomes without changing which work they belong to.
-- **Each authoritative change is atomic.** An accepted change updates its related facts and history together; a rejected or failed change leaves the previous ledger intact.
+- **Each authoritative change is atomic.** An accepted change updates its related facts and history together; a rejected or failed change leaves the previous ledger intact. When immutable evidence was published before a later failure, that separate committed surface is reported explicitly instead of being mislabeled as unchanged.
 
 These guarantees explain why seemingly similar words remain distinct.
 
@@ -141,6 +142,12 @@ The command stories move from observation and repair to an ordinary mutation and
 
 - **Plan reviewed sources without opening the ledger.** `brief-sources` reads one strict manifest, selects whole files or unique Markdown headings from the chosen source checkout, rejects overlaps and oversized lines, assigns every selected byte to one ordered segment and batch, and presents the complete plan or one requested batch. It never edits the project.
 
+### Discover and recover an exact operation
+
+`tool-contract` reads no project state. Its compact index is derived from every installed parser leaf, the exact command union, and every lifecycle action. Selecting one operation or action exposes its purpose, effect class, role and authority, subject, lifecycle precondition, generated strict input or artifact schema, success postcondition, and retry rule. Brief publication also includes unresolved local and cross-boundary starters plus the relational constraints that a completed brief must satisfy. Structural tags are fixed, while identity, scope, authority, and verification stay `null` until accepted and reviewed facts supply them.
+
+Explicit JSON failures use `pinboard-rejected-operation/v1`. An unchanged rejection reports its stable code, observations, mismatches, retry disposition, and any fresh same-subject action receipts after the locked check. A committed-effect result instead names the immutable artifact, accepted reference, or ledger surface already changed before the operation stopped. The caller inspects current state rather than replaying that mutation. This makes command mechanics discoverable and recoverable without making product meaning, source authority, independent review, or unavailable runtime capabilities mechanical.
+
 ### Follow one change
 
 **Start from current accepted state.** Ordinary preparation begins with an item, task, host, and lifetime. The interface samples the operation time and the application opens one write transaction. Inside that transaction it reads the current ready definition and chooses either initial acquisition or transfer of an inactive retained claim. Exact acquire and transfer commands remain available for recovery and diagnosis.
@@ -156,7 +163,7 @@ The command stories move from observation and repair to an ordinary mutation and
 Project actions are direct atomic ledger changes. The task applying the change supplies its task and host identity, and SQLite protects the authoritative transition. Rebinding is one such action: it changes the accepted scope identity, stored Git lineage, and accepted brief atomically, never the source checkout itself.
 
 1. **Prepare exact input.** `close` builds its terminal payload, item revision validates a complete proposed definition, and `transition` reads the selected action receipt and its matching payload.
-2. **Reread, select, and commit.** The application opens one write transaction, rereads current state, reselects the exact legal action, decides it, and commits the change with the invoking task and host identity. A stale or illegal action returns without changing the ledger.
+2. **Reread, select, and commit.** The application opens one write transaction, rereads current state, reselects the exact legal action, decides it, and commits the change with the invoking task and host identity. A stale or illegal action returns without changing the ledger; JSON output may carry fresh legal alternatives from the post-rejection snapshot.
 3. **Refresh replaceable views.** A successful commit refreshes only the affected projections. A warning leaves the authoritative transition stored for `pinboard views rebuild`. Presentation identifies that transition's exact revision.
 
 ### Carry the project into another tool
@@ -183,7 +190,7 @@ The relational ledger groups sixteen tables into six kinds of memory: current wo
 
 1. **Brief publication** strictly decodes and cross-validates the selected candidate, canonicalizes and publishes its bytes, accepts the stable reference in SQLite, and rebuilds generated views. Activation, resume, or rebind then selects that accepted brief for the attempt.
 2. **Dispatch preparation** validates the environment, optional prompt or review files, exact current action, accepted brief identity, and reviewed sources before choosing the local, existing-review, or new-review path. It may publish or reuse independent ready-review evidence by exact identity, renders the prompt, rechecks authority, and only then emits it. Dispatch prepares a prompt; it does not create a task. Declared permissions remain brief declarations, not grants enforced by Pinboard.
-3. **Checkpoint acceptance** publishes the exact result and independent review, then atomically records the attempt result, accepted review evidence, lifecycle change, and receipt. Publication alone changes no lifecycle state; rejection or rollback preserves the previous relationships.
+3. **Checkpoint acceptance** publishes the exact result and independent review, then atomically records the attempt result, accepted review evidence, lifecycle change, and receipt. Publication alone changes no lifecycle state; rejection or rollback preserves the previous relationships and reports a committed immutable-artifact effect when that invocation created the evidence before stopping.
 
 Once submission protects a candidate, `review-job` is a separate read-only projection. It verifies the accepted brief, reads nonempty current result evidence, and emits paths, render-time digests, the exact outcome owner, and a bounded prompt. The Codex runtime—not Pinboard—creates the fresh reviewer. If that runtime cannot create a subagent, the candidate stays in review with its evidence intact; another user-owned task is not used as a substitute.
 

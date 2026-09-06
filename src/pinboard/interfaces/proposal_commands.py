@@ -78,7 +78,7 @@ def create_proposal(
         actor_host_id=command.host_id,
     )
     if isinstance(creation_result, DecisionFailure):
-        return ProposalFailure(creation_result.code, creation_result.message)
+        return ProposalFailure(creation_result.code, creation_result.message, creation_result.details)
     committed_state = store.snapshot()
     changed_items = [ItemId(decoded_proposal.proposal_id)]
     if isinstance(decoded_proposal.relation, proposal_models.PrerequisiteProposalRelation):

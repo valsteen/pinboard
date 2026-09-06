@@ -8,6 +8,7 @@ roots, open resources, dispatch commands, or perform product decisions.
 
 import argparse
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import assert_never
@@ -29,11 +30,20 @@ class _CompoundCommand(Enum):
 class _RawCliArguments(argparse.Namespace):
     command_selection: type[cli_commands.CliCommand] | _CompoundCommand | None
     selected_parser: argparse.ArgumentParser | None
+    contract_variants: tuple[tuple[str, type[cli_commands.CliCommand]], ...]
 
     def __init__(self) -> None:
         super().__init__()
         self.command_selection = None
         self.selected_parser = None
+        self.contract_variants = ()
+
+
+@dataclass(frozen=True, slots=True)
+class InstalledCommandVariant:
+    operation_id: str
+    variant: str
+    command_type: type[cli_commands.CliCommand]
 
 
 class _BriefSourcesArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -121,6 +131,7 @@ class _DispatchArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     prompt: Path | None
     brief_review: Path | None
     review_id: cli_commands.KebabReviewId | None
+    json: bool
 
     def __post_init__(self) -> None:
         if (self.brief_review is None) != (self.review_id is None):
@@ -201,6 +212,7 @@ def _decode_dispatch[RawT](values: dict[str, RawT]) -> cli_commands.DispatchComm
             checkpoint=arguments.checkpoint,
             environment=arguments.environment,
             prompt=arguments.prompt,
+            json=arguments.json,
         )
     assert arguments.review_id is not None
     return cli_commands.ProjectReviewedDispatchCommand(
@@ -213,6 +225,7 @@ def _decode_dispatch[RawT](values: dict[str, RawT]) -> cli_commands.DispatchComm
         brief_review=arguments.brief_review,
         prompt=arguments.prompt,
         review_id=arguments.review_id,
+        json=arguments.json,
     )
 
 
@@ -239,7 +252,38 @@ def _select_command(
     parser: argparse.ArgumentParser,
     command_selection: type[cli_commands.CliCommand] | _CompoundCommand,
 ) -> None:
-    parser.set_defaults(command_selection=command_selection, selected_parser=parser)
+    if isinstance(command_selection, type):
+        variants = (("default", command_selection),)
+    else:
+        match command_selection:
+            case _CompoundCommand.ACTIONS:
+                variants = (
+                    ("unleased", cli_commands.ActionsCommand),
+                    ("leased", cli_commands.LeasedActionsCommand),
+                )
+            case _CompoundCommand.BRIEF_SOURCES:
+                variants = (
+                    ("plan", cli_commands.BriefSourcesPlanCommand),
+                    ("emit", cli_commands.BriefSourcesEmitCommand),
+                )
+            case _CompoundCommand.DISPATCH:
+                variants = (
+                    ("without-review", cli_commands.ProjectDispatchCommand),
+                    ("with-review", cli_commands.ProjectReviewedDispatchCommand),
+                )
+            case _CompoundCommand.TRANSITION:
+                variants = (
+                    ("project", cli_commands.ProjectTransitionCommand),
+                    ("attempt", cli_commands.AttemptTransitionCommand),
+                    ("preparation", cli_commands.PreparationTransitionCommand),
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
+    parser.set_defaults(
+        command_selection=command_selection,
+        selected_parser=parser,
+        contract_variants=variants,
+    )
 
 
 def _add_attempt_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -410,6 +454,14 @@ def _add_inspection_parsers(commands: argparse._SubParsersAction[argparse.Argume
     input_contract.add_argument("action_kind", choices=transition_input.INPUT_CONTRACT_ACTION_KINDS)
     input_contract.add_argument("--json", action="store_true")
     _select_command(input_contract, cli_commands.InputContractCommand)
+    tool_contract = commands.add_parser(
+        "tool-contract", help="Discover installed command and action contracts without opening project state."
+    )
+    selection = tool_contract.add_mutually_exclusive_group()
+    selection.add_argument("--operation", help="Installed operation ID, optionally followed by :variant.")
+    selection.add_argument("--action-kind", choices=transition_input.INPUT_CONTRACT_ACTION_KINDS)
+    tool_contract.add_argument("--json", action="store_true")
+    _select_command(tool_contract, cli_commands.ToolContractCommand)
     brief_sources = commands.add_parser(
         "brief-sources",
         help="Plan or emit deterministic context-bounded authority source batches.",
@@ -498,6 +550,7 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - complete top-l
         "--review-id",
         help="Kebab-case identity used only when preserving a differing later review.",
     )
+    dispatch.add_argument("--json", action="store_true")
     _select_command(dispatch, _CompoundCommand.DISPATCH)
     _add_attempt_parser(commands)
     _add_preparation_parser(commands)
@@ -517,7 +570,7 @@ def _decode_invocation(
     if selected_parser is None or command_selection is None:
         parser.error("the selected command has no decoder")
     untyped_values = vars(raw).copy()
-    for metadata_name in ("command_selection", "selected_parser"):
+    for metadata_name in ("command_selection", "selected_parser", "contract_variants"):
         untyped_values.pop(metadata_name, None)
     try:
         root_values = {
@@ -536,3 +589,25 @@ def parse_invocation(argv: Sequence[str] | None = None) -> cli_commands.CliInvoc
     parser = build_parser()
     raw = parser.parse_args(argv, namespace=_RawCliArguments())
     return _decode_invocation(parser, raw)
+
+
+def installed_command_variants() -> tuple[InstalledCommandVariant, ...]:
+    """Read exact decoded variants from the installed parser leaves."""
+
+    discovered: list[InstalledCommandVariant] = []
+
+    def visit(parser: argparse.ArgumentParser) -> None:
+        variants = parser.get_default("contract_variants")
+        if variants:
+            operation_id = parser.prog.removeprefix("pinboard ").replace(" ", "/")
+            discovered.extend(
+                InstalledCommandVariant(operation_id, variant, command_type) for variant, command_type in variants
+            )
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for child in action.choices.values():
+                    if isinstance(child, argparse.ArgumentParser):
+                        visit(child)
+
+    visit(build_parser())
+    return tuple(discovered)

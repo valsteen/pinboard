@@ -41,6 +41,8 @@ This conditional authority does not authorize a prerequisite relation, admission
 
 ## Prepare one proposal
 
+If any proposal field or relation shape is uncertain, read `pinboard tool-contract --operation proposal --json` and construct the artifact from its strict generated schema. This static read does not open the ledger. Do not infer the schema from an old example or inspect Pinboard source.
+
 Create a bounded JSON proposal containing:
 
 - `schema`: `pinboard-proposal/v1`;
@@ -52,14 +54,14 @@ Create a bounded JSON proposal containing:
 - bounded `evidence` selectors;
 - `why_it_matters`;
 - `relation.kind`: `independent`, `prerequisite`, `follow-up`, `duplicate`, `contradiction`, or `clarification`;
-- related item identity or `null`;
+- `relation.item`: the related item identity for `prerequisite`, `follow-up`, `duplicate`, and `contradiction`; `null` for `independent` and `clarification`;
 - current product or repository `effect`;
 - exact `unlock`;
 - observed `urgency_evidence`, never an invented priority;
 - freshness-sensitive assumptions in `freshness_assumptions`;
 - optional one-based `position`; omit it to place the intake item at the back of live work.
 
-Use `follow-up` when the new intake item depends on the related item. Use `prerequisite` when the live related item depends on the new intake item; persistence advances that target item's immutable definition history as well as its relational dependency projection. Use `duplicate`, `contradiction`, or `clarification` to expose a review flag rather than inventing a dependency. `independent` and `clarification` omit the related item; the other relations require it. Every new proposal also creates definition revision 1 from its immutable facts, so do not add parallel semantic prose after intake.
+Use `follow-up` when the new intake item depends on the related item. Use `prerequisite` when the live related item depends on the new intake item; persistence advances that target item's immutable definition history as well as its relational dependency projection. Use `duplicate`, `contradiction`, or `clarification` to expose a review flag rather than inventing a dependency. Encode `relation.item` as JSON `null` for `independent` and `clarification`; the other relations require a string identity. Every new proposal also creates definition revision 1 from its immutable facts, so do not add parallel semantic prose after intake.
 
 Do not create work merely because a question was asked. Require an explicit request to preserve or submit the concern.
 
@@ -74,6 +76,8 @@ Before creating a proposal, distinguish exact prior coverage from a merely relat
 5. Read `references/codex-transport.md` only when the user explicitly requested delivery to another task and Codex task messaging is available.
 6. Notify the requested eligible task with the proposal ID and shared work root. Repository persistence, not messaging, is the correctness boundary.
 7. Report delivery only when the user requested it or when its outcome materially changes confidence, current work, or the next action.
+
+When a JSON-capable operation returns `pinboard-rejected-operation/v1`, use its stable code, mismatch facts, effect disposition, and retry classification. An unchanged rejection may be corrected or refreshed as directed. A committed-effect result must be inspected rather than replayed, even though the requested operation did not finish.
 
 For embedded intake, resume the invoking task before the surrounding turn ends. If context compaction obscured the conversation, re-read the anchor's active or paused item, attempt, proposal, or exact selector rather than inventing continuation state. Complete the promised action when it remains in scope; otherwise surface its exact blocker or durably defer it at an exact owner.
 

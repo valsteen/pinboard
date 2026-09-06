@@ -35,7 +35,7 @@ If the complete authority set plus working headroom cannot fit, stop before comp
 
 ## Compile canonical JSON
 
-Prepare a strict `pinboard-work-brief/v2` JSON candidate. Pinboard decodes it directly into frozen records with unknown fields forbidden, validates its cross-references, canonicalizes it with sorted object keys and one final LF, and publishes the immutable accepted `.json` artifact through `pinboard brief publish --file <candidate> --json`. This JSON artifact is the sole semantic brief. The generated Markdown attempt view is read-only output and must not be edited or parsed as input.
+Read `pinboard tool-contract --operation brief/publish --json`, select the local or cross-boundary unresolved starter, and prepare a strict `pinboard-work-brief/v2` JSON candidate. The starter fixes structural tags while leaving every semantic or identity value as `null`; replace those values only with accepted scope, reviewed authorities, observed consumers, and explicit verification. The generated schema and listed relational constraints are construction aids, not semantic evidence. Pinboard decodes the completed candidate directly into frozen records with unknown fields forbidden, validates its cross-references, canonicalizes it with sorted object keys and one final LF, and publishes the immutable accepted `.json` artifact through `pinboard brief publish --file <candidate> --json`. This JSON artifact is the sole semantic brief. The generated Markdown attempt view is read-only output and must not be edited or parsed as input.
 
 The root record contains:
 

@@ -141,5 +141,19 @@ class ArtifactRepository:
     def path(self, reference: stored_state.ArtifactReference) -> Path:
         return self.work_root / _validate_and_resolve_reference_path(reference)
 
+    def revision_exists(self, artifact: NewArtifact) -> bool:
+        """Return whether this exact immutable artifact revision already has a filesystem entry."""
+        selector = _build_selector(artifact.kind, artifact.key, artifact.revision, artifact.suffix)
+        try:
+            (self.work_root / selector).lstat()
+        except FileNotFoundError:
+            return False
+        except OSError as error:
+            raise ArtifactError(
+                ArtifactErrorCode.STORAGE_IO_ERROR,
+                "Artifact revision presence could not be inspected.",
+            ) from error
+        return True
+
     def publish(self, artifact: NewArtifact) -> ArtifactRef:
         return write_revision(self.roots, artifact)

@@ -1,11 +1,32 @@
 from dataclasses import dataclass
 from enum import Enum
 
-from pinboard.domain.errors import DecisionFailureCode
+from pinboard.domain.errors import DecisionFailureCode, FailureDetails
+
+
+class CommittedEffectError(RuntimeError):
+    """An operation failed after one or more durable surfaces were already changed."""
+
+    code: str
+    message: str
+    details: FailureDetails
+
+    def __init__(self, code: str, message: str, details: FailureDetails) -> None:
+        self.code = code
+        self.message = message
+        self.details = details
+        super().__init__(f"{code}: {message}")
 
 
 class CommandErrorCode(Enum):
     ACTION_ID_INVALID = "ACTION_ID_INVALID"
+    ACTION_ID_MALFORMED = "ACTION_ID_MALFORMED"
+    ACTION_KIND_UNKNOWN = "ACTION_KIND_UNKNOWN"
+    ACTION_REVISION_STALE = "ACTION_REVISION_STALE"
+    ACTION_AUTHORITY_WRONG = "ACTION_AUTHORITY_WRONG"
+    ACTION_AUTHORITY_EXPIRED = "ACTION_AUTHORITY_EXPIRED"
+    ACTION_AUTHORITY_RELEASED = "ACTION_AUTHORITY_RELEASED"
+    ACTION_LIFECYCLE_UNAVAILABLE = "ACTION_LIFECYCLE_UNAVAILABLE"
     PARALLEL_SELECTION_INVALID = "PARALLEL_SELECTION_INVALID"
     STALE_ACTION = "STALE_ACTION"
     WORK_STATE_INVALID = "WORK_STATE_INVALID"
@@ -18,6 +39,7 @@ type CommandFailureCode = CommandErrorCode | DecisionFailureCode
 class CommandFailure:
     code: CommandFailureCode
     message: str
+    details: FailureDetails | None = None
 
     def __str__(self) -> str:
         return f"{self.code.value}: {self.message}"
@@ -30,6 +52,7 @@ type CommandResult[T] = T | CommandFailure
 class ProposalFailure:
     code: DecisionFailureCode
     message: str
+    details: FailureDetails | None = None
 
     def __str__(self) -> str:
         return f"{self.code.value}: {self.message}"
@@ -42,6 +65,7 @@ type ProposalResult[T] = T | ProposalFailure
 class TransitionInputFailure:
     code: DecisionFailureCode
     message: str
+    details: FailureDetails | None = None
 
     def __str__(self) -> str:
         return f"{self.code.value}: {self.message}"
@@ -84,6 +108,7 @@ type DispatchFailureCode = DispatchErrorCode | DecisionFailureCode
 class DispatchFailure:
     code: DispatchFailureCode
     message: str
+    details: FailureDetails | None = None
 
     def __str__(self) -> str:
         return f"{self.code.value}: {self.message}"

@@ -1,6 +1,61 @@
 from dataclasses import dataclass
 from enum import Enum
 
+type FailureFactValue = str | int | bool | None
+
+
+class RetryDisposition(Enum):
+    CORRECT_INPUT = "correct-input"
+    REFRESH_ACTION = "refresh-action"
+    REACQUIRE_AUTHORITY = "reacquire-authority"
+    RETRY_SAME_INPUT = "retry-same-input"
+    DO_NOT_RETRY = "do-not-retry"
+
+
+class EffectDisposition(Enum):
+    UNCHANGED = "unchanged"
+    COMMITTED = "committed"
+
+
+class ChangedSurface(Enum):
+    IMMUTABLE_ARTIFACT = "immutable-artifact"
+    ACCEPTED_ARTIFACT_REFERENCE = "accepted-artifact-reference"
+    LEDGER = "ledger"
+
+
+@dataclass(frozen=True, slots=True)
+class FailureFact:
+    field: str
+    value: FailureFactValue
+
+
+@dataclass(frozen=True, slots=True)
+class FailureMismatch:
+    field: str
+    expected: FailureFactValue
+    observed: FailureFactValue
+
+
+@dataclass(frozen=True, slots=True)
+class FailureAction:
+    action_id: str
+    role: str
+    expected_revision: str
+    subject_revision: str | None
+    authorization: str | None
+    lease_id: str | None
+    generation: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class FailureDetails:
+    observed: tuple[FailureFact, ...] = ()
+    mismatches: tuple[FailureMismatch, ...] = ()
+    retry: RetryDisposition = RetryDisposition.DO_NOT_RETRY
+    effect: EffectDisposition = EffectDisposition.UNCHANGED
+    changed_surfaces: tuple[ChangedSurface, ...] = ()
+    alternatives: tuple[FailureAction, ...] = ()
+
 
 class DecisionFailureCode(Enum):
     ACTION_NOT_AVAILABLE = "ACTION_NOT_AVAILABLE"
@@ -29,6 +84,7 @@ class DecisionFailureCode(Enum):
 class DecisionFailure:
     code: DecisionFailureCode
     message: str
+    details: FailureDetails | None = None
 
 
 type DecisionResult[T] = T | DecisionFailure

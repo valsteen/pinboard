@@ -16,6 +16,33 @@ When an agent-facing artifact must survive several reasoning stages, prefer a st
 
 Let the agent use that structured context to propose which code, documentation, architecture, or durable principles a decision affects. Reviewed authorities and coverage should make likely owners discoverable without requiring every change to restart an exhaustive repository scan; read outward when the new prose exposes an owner the brief did not anticipate. That cross-surface mapping remains reasoning, not enforcement: the model can miss or invent a connection, and human acceptance and independent review confirm whether the relationship is real. Add a hard-coded impact map only when the repository owns an actual deterministic contract; otherwise it replaces useful judgment with a second source of truth.
 
+## Make architectural limitations explicit
+
+Treat a limitation as an implemented constraint or operating assumption with a practical consequence, not as a synonym for every tradeoff or possible improvement. Classify the condition before deciding what to do:
+
+- An **existing limitation** is already present. Preserve its current architecture entry and prior acknowledgement without interrupting the human again unless this change materially alters its consequence, affected boundary, or reopening condition.
+- An **introduced or widened limitation** is created or made materially more restrictive by the proposed change. Evaluate it before implementation, even when the requested feature itself is already authorized.
+- A **defect** violates accepted behavior, an invariant, or a supported contract. Fix or report it as a defect; do not relabel broken behavior as a deliberate limitation to obtain acceptance.
+- A **speculative risk** has no evidence-backed effect on a supported path. Keep it out of current architecture and mandatory work unless an observable trigger turns it into a real decision.
+
+A limitation is material when its consequence meaningfully changes supported scale, resource growth, correctness, durability, compatibility, deployment, platform support, trust, or the cost of removing a foundational constraint later. Use concrete evidence and the supported product boundary; do not invent numerical thresholds or adversarial scenarios.
+
+Before choosing a local remedy, trace the proposed change to the foundation that creates the pressure. A patch that preserves, masks, or deepens an unacknowledged material limitation still requires the architecture decision even if its own diff is small. For example, avoiding one unnecessary file timestamp change does not settle a command whose underlying state read and publication boundary remains project-wide. A genuinely bounded local correction that leaves the foundation and its consequences unchanged proceeds without a checkpoint.
+
+When a proposed change would introduce, widen, preserve, mask, or deepen an unacknowledged material limitation, the task that owns the outcome pauses before implementation and presents the decision in this order:
+
+**Architecture checkpoint**
+
+1. State the concrete current and proposed behavior, affected supported paths, operational or maintenance consequences, and observable reopening condition.
+2. Distinguish what the decision enables from what remains outside accepted scope.
+3. Give a recommendation and its evidence.
+
+**Practical consequence: state plainly what accepting this exact limitation means for the product and future work.**
+
+Ask a familiar approval question about that exact decision, such as “Do you want me to proceed with this limitation?” An ordinary explicit answer is sufficient; never require the human to repeat a legalistic acknowledgement phrase. Silence or generic authority for the surrounding task is not acceptance. Approval covers only the stated limitation and does not authorize adjacent features, hardening, or cleanup.
+
+Once accepted, record the limitation as current truth in `ARCHITECTURE.md` in the same candidate that implements or preserves it, including its consequence and reopening condition. Keep the reusable method here and automatic routing in `AGENTS.md`; do not duplicate the limitations inventory or full procedure in those layers. Reopen an accepted limitation only when its recorded consequence or trigger changes materially.
+
 ## Separate decisions, conversions, and effects
 
 A decision determines whether an operation is legal and what accepted change it describes. It should not read files, issue SQL, obtain time, or depend on a concrete adapter.

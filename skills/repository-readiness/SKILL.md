@@ -15,6 +15,8 @@ Use **whole-repository mode** only when the user explicitly asks for complete co
 
 Assessment is read-only unless the user has also asked for improvements. Treat audit findings as evidence, not mutation authority.
 
+Within either mode, inventory only the evidence-backed limitations and operating assumptions visible in the selected boundary. Representative evidence supports claims about that path and its traced neighbors, not the whole repository. Do not invent limitations from generic risk lists or treat the assessment as permission to add features, hardening, compatibility, or cleanup.
+
 ## Establish current authority
 
 Start from the user's requested outcome and the repository's current product, architecture, contributor, and agent guidance. Then verify supported entry points through package metadata, runtime registration, configuration, generators, and actual consumers.
@@ -29,6 +31,8 @@ Classify relevant material as:
 - historical, transitional, dead, or uncertain.
 
 Code proves implementation, tests prove observed behavior, and documentation proves a claim only after its ownership is established. None of them alone proves product intent. Prefer improving an existing trustworthy map over creating a competing one.
+
+Find the project's current-truth owner for deliberate limitations, if one exists. For each selected limitation, record the implemented boundary, practical consequence, affected supported paths and owners, evidence, deliberate reason, and observable reopening condition. Distinguish an acknowledged existing limitation from an introduced or widened limitation, a defect against accepted behavior, and a speculative risk. Report missing or conflicting ownership instead of filling it with inference.
 
 ## Trace authority to validation
 
@@ -51,6 +55,7 @@ Scale the result to the selected mode. Include:
 - the authority → consumers → projections → validation map;
 - a walkthrough from the user request to the owning implementation and checks;
 - evidence-backed risks and misleading alternatives;
+- evidence-backed current limitations and operating assumptions within the selected boundary, including consequences and reopening conditions;
 - unresolved human decisions;
 - small safe improvements and larger follow-ups kept separate; and
 - awkward structures that evidence says should remain alone.
@@ -62,6 +67,10 @@ Do not produce a readiness score or certification. A useful result makes evidenc
 When the user has asked for improvements, apply the smallest changes whose authority and complete footprint are established. Good candidates include correcting an existing map, adding a local pointer from a misleading projection, exposing an existing generator, reconciling stale explanatory documentation, or removing a clearly deceptive obsolete path with no supported consumer.
 
 When agents are supported consumers, leave the selected change path usable by a fresh agent with less repository familiarity. Prefer an installed self-describing command, generated strict schema or starter, typed mismatch with safe retry semantics, and one representative production trace over a prose-only inventory or a need to inspect implementation source. Exercise at least one wrong input, stale observation, and partial-effect failure when those outcomes exist. This does not make semantic judgment mechanical: document where product meaning, source authority, independent review, or runtime capability still requires a stronger model or a human decision.
+
+When authorized improvement includes durable limitation handling, establish complementary owners rather than copied boilerplate: current architecture or equivalent documentation owns implemented facts; a design authority owns the reusable classification, materiality, acknowledgement, and reopening method; scoped agent guidance provides only the automatic route; and specialized workflows retain only their boundary-specific behavior. Use the target repository's vocabulary and evidence. Do not copy Pinboard-specific limitations into another project.
+
+Before implementing an improvement that would introduce, widen, preserve, mask, or deepen an unacknowledged material limitation, present one architecture checkpoint using the target project's method. Begin with **Architecture checkpoint**, give numbered consequences and a recommendation, place a bold practical-consequence summary immediately before an ordinary approval question, and proceed only after an explicit answer to that exact decision. Do not require a forced phrase, treat generic improvement authority as acknowledgement, or let the answer expand the authorized improvement scope. Do not repeat an unchanged acknowledged limitation unless its consequence changes materially.
 
 Pause for a human decision when outward behavior, compatibility, persisted data, product identity, or architectural responsibility remains ambiguous. Validate every changed authority, consumer, and projection through the repository's existing checks. Stop when the selected change path is discoverable and another edit would merely restyle clear work or settle unsupported intent.
 

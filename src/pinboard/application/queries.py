@@ -21,7 +21,7 @@ def _dependency_position(value: stored_state.ItemDependency) -> int:
 
 
 def _item_key(value: stored_state.StoredWorkItem) -> tuple[int, str]:
-    return value.queue_position or 0, str(value.item_id)
+    return value.queue_position if value.queue_position is not None else 0, str(value.item_id)
 
 
 def _select_live_items(
@@ -147,7 +147,7 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
             str(item.item_id),
             definitions[item.item_id].title,
             live_state,
-            item.queue_position or 0,
+            item.queue_position,
             not any(link.dependency_id in live_ids for link in dependency_links[item.item_id]),
             item.timing.value if item.timing is not None else None,
             tuple(str(link.dependency_id) for link in dependency_links[item.item_id]),
@@ -155,7 +155,8 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
             review_flags(item.item_id),
             str(attempts[item.item_id]) if item.item_id in attempts else None,
             item.next_action,
-            item.notes or "",
+            item.source,
+            item.notes,
             _project_preparation_status(preparations.get(item.item_id), now),
         )
         for item, live_state in live_items
@@ -217,7 +218,9 @@ def project_item_status(
         item.timing,
         item.outcome_evidence,
         item.next_action,
-        item.notes or "",
+        item.source,
+        item.notes,
+        item.queue_position,
         attempts,
         _project_preparation_status(stored_state.retained_preparation(state, item_id), now),
     )

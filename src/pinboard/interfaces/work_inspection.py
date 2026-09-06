@@ -185,6 +185,7 @@ def show_overview(roots: cli_commands.ResolvedRoots, command: cli_commands.Overv
     if not overview_projection.items:
         print("live_work=none")
     for item in overview_projection.items:
+        position = item.position if item.position is not None else "none"
         attempt = f" attempt={item.attempt_id}" if item.attempt_id is not None else ""
         preparation = (
             " preparation=none"
@@ -198,7 +199,7 @@ def show_overview(roots: cli_commands.ResolvedRoots, command: cli_commands.Overv
         )
         next_action = item.next_action or "none"
         print(
-            f"{item.position}\t{item.item_id}\t{item.state.value}\teligible={str(item.eligible).lower()}"
+            f"{position}\t{item.item_id}\t{item.state.value}\teligible={str(item.eligible).lower()}"
             f"\tnext={next_action}{attempt}{preparation}\t{item.label}"
         )
     print(
@@ -227,9 +228,12 @@ def show_item_status(
     print(
         f"label={item_projection.label} "
         f"timing={item_projection.timing.value if item_projection.timing is not None else 'none'} "
+        f"queue_position={item_projection.queue_position if item_projection.queue_position is not None else 'none'} "
         f"next_action={item_projection.next_action or 'none'}"
     )
-    print(f"outcome_evidence={item_projection.outcome_evidence or 'none'} notes={item_projection.notes or 'none'}")
+    print(
+        f"outcome_evidence={item_projection.outcome_evidence or 'none'} source={item_projection.source or 'none'} notes={item_projection.notes or 'none'}"
+    )
     if item_projection.preparation is None:
         print("preparation=none")
     else:

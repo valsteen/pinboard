@@ -262,7 +262,7 @@ class HandoverTest(unittest.TestCase):
                     work_models.ArtifactKind.REQUIREMENTS,
                     "work-a-requirements",
                     1,
-                    ".bin",
+                    ".txt",
                     b"\x00\xffrequirements",
                 ),
             ),
@@ -357,6 +357,11 @@ class HandoverTest(unittest.TestCase):
             )
             self.assertEqual((work / reference.selector).read_bytes(), decoded)
         self.assertEqual(ContentEncoding.BASE64, contents[2].encoding)
+        sparse_item = next(value for value in handover.work_items if value.item_id == "intake-work")
+        self.assertIsNone(sparse_item.source)
+        self.assertIsNone(sparse_item.notes)
+        terminal_item = next(value for value in handover.work_items if value.item_id == "terminal-done")
+        self.assertIsNone(terminal_item.queue_position)
         self.assertEqual({"request": {"mode": "complete"}}, msgspec.json.decode(handover.transitions[0].input))
         self.assertEqual(
             {"accepted": True, "checks": ["focused", "fresh-store"]},
@@ -450,6 +455,28 @@ class HandoverTest(unittest.TestCase):
                 self.assertIn("STORAGE_INVARIANT_VIOLATION", stderr)
                 self.assertEqual(database_before, (work / "state.sqlite3").read_bytes())
                 self.assertEqual(before, store.snapshot())
+
+    def test_unsupported_artifact_media_type_is_rejected_without_output(self) -> None:
+        project, work, store, references = self.initialized_project()
+        connection = sqlite3.connect(work / "state.sqlite3")
+        try:
+            connection.execute(
+                "UPDATE artifact_refs SET relative_path = ? WHERE artifact_ref_id = ?",
+                ("artifacts/requirements/work-a-requirements/1.bin", int(references[1].artifact_ref_id)),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        before = store.snapshot()
+
+        result, stdout, stderr = self.run_cli(
+            "--project-root", str(project), "--work-root", str(work), "handover", "--json"
+        )
+
+        self.assertEqual(12, result)
+        self.assertEqual("", stdout)
+        self.assertIn("Unsupported artifact media suffix: .bin", stderr)
+        self.assertEqual(before, store.snapshot())
 
 
 if __name__ == "__main__":

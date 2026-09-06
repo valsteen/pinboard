@@ -180,7 +180,9 @@ def read_schema_bytes() -> bytes:
 
 
 def _sync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    if not hasattr(os, "O_DIRECTORY"):
+        raise StorageError(StorageErrorCode.IO_ERROR, "Directory synchronization is unsupported on this platform.")
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(descriptor)
     finally:

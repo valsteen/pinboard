@@ -66,10 +66,10 @@ def _project_work_item(
         value.timing.value if value.timing is not None else None,
         (),
         attempt_by_item.get(value.item_id),
-        value.source or "",
+        value.source,
         value.next_action,
-        value.notes or "",
-        value.queue_position if value.queue_position is not None else 0,
+        value.notes,
+        value.queue_position,
         value.outcome_evidence,
     )
 

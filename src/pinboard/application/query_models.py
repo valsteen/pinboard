@@ -38,7 +38,9 @@ class ItemStatus(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     timing: work_models.Timing | None
     outcome_evidence: str | None
     next_action: str | None
-    notes: str
+    source: str | None
+    notes: str | None
+    queue_position: int | None
     attempts: tuple[ItemStatusAttempt, ...]
     preparation: PreparationStatusView | None = None
 
@@ -78,7 +80,7 @@ class OverviewItem:
     item_id: str
     label: str
     state: work_models.WorkState
-    position: int
+    position: int | None
     eligible: bool
     timing: str | None
     depends_on: tuple[str, ...]
@@ -86,7 +88,8 @@ class OverviewItem:
     review_flags: tuple[ReviewFlag, ...]
     attempt_id: str | None
     next_action: str | None
-    notes: str
+    source: str | None
+    notes: str | None
     preparation: PreparationStatusView | None = None
 
 

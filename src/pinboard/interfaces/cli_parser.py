@@ -561,7 +561,7 @@ def build_parser() -> argparse.ArgumentParser:
     transition.add_argument(
         "--authorization",
         choices=("coordinator", "coordination", "attempt", "preparation"),
-        default="coordinator",
+        required=True,
     )
     transition.add_argument("--payload", required=True, type=Path)
     _select_command(transition, _CompoundCommand.TRANSITION)

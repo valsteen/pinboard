@@ -1943,6 +1943,13 @@ class CliTest(unittest.TestCase):
         self.assertIn("intake_items=2", status_stdout)
         overview = self.run_json_cli(*common, "overview")
         self.assertEqual("12", overview["revision"])
+        intake_item = next(
+            self.json_object(value)
+            for value in self.json_list(overview["items"])
+            if self.json_object(value)["item_id"] == "intake-work"
+        )
+        self.assertIsNone(intake_item["source"])
+        self.assertIsNone(intake_item["notes"])
         actions = self.json_list(
             self.run_json_cli(
                 *common,
@@ -4041,6 +4048,7 @@ Not launchable:
             timing=work_models.Timing.SAFE_TO_DEFER,
             outcome_evidence="accepted completion",
             next_action=None,
+            source=None,
             notes=None,
         )
         done_attempt = replace(
@@ -4085,7 +4093,9 @@ Not launchable:
                 "timing": "safe-to-defer",
                 "outcome_evidence": "accepted completion",
                 "next_action": None,
-                "notes": "",
+                "source": None,
+                "notes": None,
+                "queue_position": None,
                 "attempts": [{"attempt_id": "work-b-1", "state": "done", "candidate_revision": "candidate-b"}],
                 "preparation": None,
             },
@@ -4102,7 +4112,9 @@ Not launchable:
                 "timing": "must-now",
                 "outcome_evidence": None,
                 "next_action": "continue",
+                "source": "accepted requirement",
                 "notes": "Current work remains bounded.",
+                "queue_position": 2,
                 "attempts": [{"attempt_id": "work-a-1", "state": "active", "candidate_revision": None}],
                 "preparation": None,
             },
@@ -4111,7 +4123,9 @@ Not launchable:
         result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", "work-b")
         self.assertEqual(0, result, stderr)
         self.assertIn("OK ITEM_STATUS item=work-b state=done revision=12 authority=sqlite-v3", stdout)
+        self.assertIn("queue_position=none", stdout)
         self.assertIn("outcome_evidence=accepted completion", stdout)
+        self.assertIn("source=none notes=none", stdout)
         self.assertIn("attempt=work-b-1 state=done candidate=candidate-b", stdout)
 
     def test_item_status_rejects_missing_and_malformed_identities(self) -> None:
@@ -4242,6 +4256,21 @@ Not launchable:
                 stderr = self.run_cli_parse_error(*arguments)
                 self.assertIn(route, stderr)
 
+    def test_transition_requires_explicit_authorization(self) -> None:
+        stderr = self.run_cli_parse_error(
+            "transition",
+            "--action-id",
+            "pause:attempt-a",
+            "--expected-revision",
+            "1",
+            "--generation",
+            "1",
+            "--payload",
+            "payload.json",
+        )
+
+        self.assertIn("the following arguments are required: --authorization", stderr)
+
     def test_custom_command_decoders_preserve_identifier_constraints(self) -> None:
         cases = (
             (("actions", "--role", "observer", "--action-id", "bad/id"), "$.action_id"),
@@ -4270,6 +4299,8 @@ Not launchable:
                     "1",
                     "--generation",
                     "1",
+                    "--authorization",
+                    "coordinator",
                     "--payload",
                     "payload.json",
                 ),

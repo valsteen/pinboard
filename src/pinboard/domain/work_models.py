@@ -163,10 +163,10 @@ class WorkItem:
     timing: str | None
     depends_on: tuple[ItemId, ...]
     attempt: AttemptId | None
-    source: str
+    source: str | None
     next_action: str | None
-    notes: str
-    queue_position: int
+    notes: str | None
+    queue_position: int | None
     outcome_evidence: str | None = None
 
 

@@ -56,8 +56,12 @@ def resolve_durable_roots(shared_repository_root: Path, external_work_root: Path
 
 
 def _sync_directory(path: Path) -> None:
+    if not hasattr(os, "O_DIRECTORY"):
+        raise FileIOError(
+            FileIOErrorCode.DIRECTORY_SYNC_FAILED, "Directory synchronization is unsupported on this platform."
+        )
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(descriptor)
         finally:

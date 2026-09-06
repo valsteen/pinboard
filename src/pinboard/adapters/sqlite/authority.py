@@ -21,9 +21,14 @@ def validate_attempt_authority(state: stored_state.StoredWorkState, error_code: 
         high_water = attempt_counters.get(anchor.attempt_id)
         if high_water is None or anchor.generation > high_water:
             raise StorageError(error_code, "An attempt generation exceeds its retained counter.")
+    attempt_anchors = {(anchor.attempt_id, anchor.generation) for anchor in state.authority.attempt_generations}
     for lease in state.authority.attempt_leases:
         high_water = attempt_counters.get(lease.attempt_id)
-        if high_water is None or lease.generation != high_water:
+        if (
+            high_water is None
+            or lease.generation != high_water
+            or (lease.attempt_id, lease.generation) not in attempt_anchors
+        ):
             raise StorageError(error_code, "The current attempt lease does not match its retained counter.")
     preparation_counters = {
         value.item_id: value.generation_high_water for value in state.authority.preparation_counters
@@ -32,9 +37,14 @@ def validate_attempt_authority(state: stored_state.StoredWorkState, error_code: 
         high_water = preparation_counters.get(anchor.item_id)
         if high_water is None or anchor.generation > high_water:
             raise StorageError(error_code, "A preparation generation exceeds its retained counter.")
+    preparation_anchors = {(anchor.item_id, anchor.generation) for anchor in state.authority.preparation_generations}
     for lease in state.authority.preparation_leases:
         high_water = preparation_counters.get(lease.item_id)
-        if high_water is None or lease.generation != high_water:
+        if (
+            high_water is None
+            or lease.generation != high_water
+            or (lease.item_id, lease.generation) not in preparation_anchors
+        ):
             raise StorageError(error_code, "The current preparation lease does not match its retained counter.")
 
 

@@ -1,6 +1,6 @@
-# Pinboard Task Transport
+# Codex task transport
 
-Use this adapter only when the user explicitly requested delivery to another task and [the coding-agent runtime adapters](../../pinboard/references/runtime-adapters.md) identify a native messaging capability. Task existence, project match, or lease ownership never substitutes for that request.
+Use this Codex-only adapter when the user explicitly requested delivery to another Codex task. Task existence, project match, or lease ownership never substitutes for that request. Claude Code delivery is owned entirely by the shared coding-agent runtime adapters and must not route through this leaf.
 
 1. Confirm that the explicit request identifies the intended task.
 2. Resolve the exact task the user requested through native task discovery and verify that it belongs to the same project root or project identity. If the target is ambiguous, absent, or belongs elsewhere, stop instead of selecting an alternative.

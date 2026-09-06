@@ -63,8 +63,8 @@ Before creating a proposal, distinguish exact prior coverage from a merely relat
 2. Run `pinboard proposal --file <path> --task-id <current-task> --host-id <current-host>`.
 3. Treat `OK PROPOSAL_CREATED <proposal-id> position=<n> state=intake` as proof that both the proposal facts and intake item persisted.
 4. After that success, mention the generated item summary once as the readable accepted-definition view only when `<work-root>/views/items/<proposal-id>.md` is confirmed available, using a concise purpose label and a native clickable link. If the command reports a generated-view warning or the file is unavailable, preserve the successful intake receipt without a broken link; after a successful refresh or rebuild confirms availability, mention the link once. Do not re-announce it after an unchanged refresh.
-5. Read `references/codex-transport.md` only when the user explicitly requested delivery to another task and the runtime adapters identify an available transport.
-6. Notify the requested eligible task with the proposal ID and shared work root. Repository persistence, not messaging, is the correctness boundary.
+5. For explicitly requested delivery in Codex, read and follow the Codex-only `references/codex-transport.md`. For explicitly requested delivery in Claude Code, follow only the bounded optional-messaging behavior in the shared runtime adapters; do not read or apply the Codex transport leaf.
+6. Notify the requested eligible task or teammate with the proposal ID and shared work root. Repository persistence, not messaging, is the correctness boundary.
 7. Report delivery only when the user requested it or when its outcome materially changes confidence, current work, or the next action.
 
 For embedded intake, resume the invoking task before the surrounding turn ends. If context compaction obscured the conversation, re-read the anchor's active or paused item, attempt, proposal, or exact selector rather than inventing continuation state. Complete the promised action when it remains in scope; otherwise surface its exact blocker or durably defer it at an exact owner.

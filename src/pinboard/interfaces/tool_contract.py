@@ -46,6 +46,13 @@ class OperationIndexEntry(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     detail_selector: str
 
 
+class OperationVariantIndex(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-agent-tool-operation-variants/v1"]
+    operation_id: str
+    variants: tuple[OperationIndexEntry, ...]
+    selection_rule: str
+
+
 class ActionIndexEntry(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_kind: str
     mutation_class: MutationClass
@@ -124,7 +131,11 @@ class PresentationContract(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
 
 
 type ToolContractDetail = (
-    OperationContract | ActionContract | PresentationContract | work_brief_contract.WorkBriefStarterContract
+    OperationContract
+    | OperationVariantIndex
+    | ActionContract
+    | PresentationContract
+    | work_brief_contract.WorkBriefStarterContract
 )
 type OperationDetail = OperationContract | PresentationContract
 type OperationKey = tuple[str, str]
@@ -433,6 +444,15 @@ def _operation_contract(variant: cli_parser.InstalledCommandVariant) -> Operatio
     )
 
 
+def _operation_index_entry(variant: cli_parser.InstalledCommandVariant) -> OperationIndexEntry:
+    return OperationIndexEntry(
+        variant.operation_id,
+        variant.variant,
+        _mutation_class(variant.command_type),
+        f"--operation {variant.operation_id}{'' if variant.variant == 'default' else f':{variant.variant}'}",
+    )
+
+
 def _action_mutation_class(kind: decision_models.ActionKind) -> MutationClass:
     if kind == decision_models.ActionKind.DISPATCH:
         return "may-publish-and-record-artifact"
@@ -587,15 +607,7 @@ def installed_tool_contract() -> ToolContractIndex:
         )
     if duplicate_type is not None:
         raise ValueError(f"duplicate parser command classification: {duplicate_type.__name__}")
-    operations = tuple(
-        OperationIndexEntry(
-            variant.operation_id,
-            variant.variant,
-            _mutation_class(variant.command_type),
-            f"--operation {variant.operation_id}{'' if variant.variant == 'default' else f':{variant.variant}'}",
-        )
-        for variant in installed
-    )
+    operations = tuple(_operation_index_entry(variant) for variant in installed)
     actions = tuple(
         ActionIndexEntry(
             kind.value,
@@ -637,6 +649,22 @@ def describe_operation(operation_id: str, variant: str) -> OperationDetail:
     return _operation_contract(selected[0])
 
 
+def describe_operation_selector(operation_id: str) -> OperationContract | OperationVariantIndex:
+    selected = tuple(
+        candidate for candidate in cli_parser.installed_command_variants() if candidate.operation_id == operation_id
+    )
+    if len(selected) == 1 and selected[0].variant == "default":
+        return _operation_contract(selected[0])
+    if selected:
+        return OperationVariantIndex(
+            "pinboard-agent-tool-operation-variants/v1",
+            operation_id,
+            tuple(_operation_index_entry(candidate) for candidate in selected),
+            "Choose the detail_selector whose variant matches the action authority or artifact path, then request it exactly.",
+        )
+    raise UnknownToolContractSelector(f"unknown installed operation: {operation_id}")
+
+
 def operation_identity(command: cli_commands.CliCommand) -> str:
     """Return the installed operation selector for one already decoded command."""
     selected = tuple(
@@ -656,7 +684,7 @@ def select_tool_contract(command: cli_commands.ToolContractCommand) -> ToolContr
     if command.operation is None:
         return installed_tool_contract()
     operation_id, separator, variant = command.operation.partition(":")
-    return describe_operation(operation_id, variant if separator else "default")
+    return describe_operation(operation_id, variant) if separator else describe_operation_selector(operation_id)
 
 
 def show_tool_contract(command: cli_commands.ToolContractCommand) -> CommandResult[int]:
@@ -673,6 +701,9 @@ def show_tool_contract(command: cli_commands.ToolContractCommand) -> CommandResu
             f"presentations={len(selected.presentations)}"
         )
         print("Use --json for the compact index and one returned detail selector for exact execution facts.")
+    elif isinstance(selected, OperationVariantIndex):
+        print(f"OK TOOL_CONTRACT_VARIANTS operation={selected.operation_id} variants={len(selected.variants)}")
+        print("selectors=" + ",".join(variant.detail_selector for variant in selected.variants))
     else:
         if isinstance(selected, ActionContract):
             identity = selected.action_kind

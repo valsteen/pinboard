@@ -164,6 +164,28 @@ class ToolContractTest(unittest.TestCase):
         self.assertIn("deferrals", payload["starter"]["checkpoint"])
         self.assertLess(len(stdout.getvalue()), 10_000)
 
+    def test_bare_multi_variant_operation_returns_exact_selectors(self) -> None:
+        expected = {
+            "transition": {"attempt", "preparation", "project"},
+            "dispatch": {"with-review", "without-review"},
+        }
+        for operation, variants in expected.items():
+            with self.subTest(operation=operation):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = main(("tool-contract", "--operation", operation, "--json"))
+
+                self.assertEqual(0, result, stderr.getvalue())
+                payload = json.loads(stdout.getvalue())
+                self.assertEqual("pinboard-agent-tool-operation-variants/v1", payload["schema"])
+                self.assertEqual(operation, payload["operation_id"])
+                self.assertEqual(variants, {entry["variant"] for entry in payload["variants"]})
+                self.assertEqual(
+                    {f"--operation {operation}:{variant}" for variant in variants},
+                    {entry["detail_selector"] for entry in payload["variants"]},
+                )
+
     def test_completeness_rejects_missing_duplicate_and_unknown_classification(self) -> None:
         installed = cli_parser.installed_command_variants()
         operation_keys = tuple((variant.operation_id, variant.variant) for variant in installed)

@@ -105,6 +105,7 @@ The installed command describes its own supported operations without opening pro
 
 ```sh
 pinboard tool-contract --json
+pinboard tool-contract --operation transition --json
 pinboard tool-contract --operation transition:attempt --json
 pinboard tool-contract --action-kind submit-review --json
 pinboard tool-contract --brief-starter local --json

@@ -120,7 +120,11 @@ def initialize_state(roots: cli_commands.ResolvedRoots, command: cli_commands.In
     optional_next_skills = (
         () if receipt.resumed else ("repository-readiness", "slop-cleanup", "maintaining-agent-guidance")
     )
-    recommendation = None if receipt.resumed else _read_user_config_and_recommend_body_after_prefix()
+    recommendation = (
+        None
+        if receipt.resumed or os.environ.get("PINBOARD_RUNTIME") == "claude"
+        else _read_user_config_and_recommend_body_after_prefix()
+    )
     view = InitializationView(
         "pinboard-work-state-initialized/v1",
         str(receipt.work_root),

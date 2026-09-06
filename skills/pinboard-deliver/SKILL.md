@@ -7,6 +7,8 @@ description: Deliver exactly one active pinboard attempt from its accepted brief
 
 Deliver the accepted checkpoint of one active attempt: implement its complete scope, verify it, leave a durable result, and return it accurately for review.
 
+Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) for identity, checkout isolation, worker and reviewer launch, permission declarations, and waiting. This skill continues to own delivery semantics.
+
 Direct human invocation to start a named Pinboard item is not an attempt-establishment failure. When no already prepared active attempt was supplied, follow the main skill's [human task-start route](../pinboard/SKILL.md#route-human-task-starts-through-pinboard): give its one gentle clarification, suggest ordinary Pinboard wording, and continue through Pinboard when the item and outcome are clear. Do not enter the worker checks merely to surface missing internal preparation, and do not stop after explaining the route when Pinboard can continue.
 
 ## Establish the attempt
@@ -106,10 +108,10 @@ When the accepted checkpoint is one of several recorded for the item, report its
 
 After the owning task submits the exact candidate, run `pinboard attempt inspect --attempt-id <attempt> --json` and follow its derived continuation. When it names review, run `pinboard review-job --attempt-id <attempt> --candidate-revision <candidate> --json` and launch its prompt unchanged as one fresh-context, candidate-read-only subagent. The job binds the current candidate, canonical accepted brief, outcome owner, and current nonempty `result.md` path and digest; the reviewer verifies those identities again before use. Rendering it is read-only and does not accept or complete the candidate.
 
-Apply the [current-responsibility review route](../pinboard/SKILL.md#coordinate-review-responsibility-and-checkout-use). By default, the task that owns this outcome commissions that reviewer and processes its complete verdict. The review result returns automatically to the owning task. In user-facing updates, call this `review by a separate Codex reviewer`; reserve `ready for your review` for an actual human review request. An exact `source_thread_id`, prior dispatch, scope clarification, or earlier message is not sufficient reason to wake another task.
+Apply the [current-responsibility review route](../pinboard/SKILL.md#coordinate-review-responsibility-and-checkout-use) and use its coding-agent runtime adapter for the native launch and wait operations. By default, the task that owns this outcome commissions that reviewer and processes its complete verdict. The review result returns automatically to the owning task. In user-facing updates, call this `review by a separate Codex reviewer` or `review by a separate Claude Code reviewer`, matching the current runtime; reserve `ready for your review` for an actual human review request. An exact source task identity, prior dispatch, scope clarification, or earlier message is not sufficient reason to wake another task.
 
 Do not send a task-to-task completion or review message for subordinate work. If this attempt belongs to a separate task because it is a genuinely independent outcome, report its result and request decisions in that task's own conversation. If subagent creation is unavailable, leave the exact candidate in review and report the missing runtime capability; do not create or wake a user-owned task, hand routine ownership to a parent task, or substitute the implementer as reviewer.
 
 Do not claim canonical completion until the owning task applies the completion transition after review.
 
-If the attempt was returned for correction, report the new candidate normally. Do not present the return itself as a new concern or imply that the earlier review was accepted. The compact human outcome is: `Correction ready — <candidate>; the same attempt has been resubmitted for review by a separate Codex reviewer.`
+If the attempt was returned for correction, report the new candidate normally. Do not present the return itself as a new concern or imply that the earlier review was accepted. The compact human outcome names the current runtime, for example: `Correction ready — <candidate>; the same attempt has been resubmitted for review by a separate Claude Code reviewer.`

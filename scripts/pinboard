@@ -2,7 +2,8 @@
 set -eu
 
 plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+export PYTHONDONTWRITEBYTECODE=1
 if [ -x "$plugin_root/.venv/bin/pinboard" ]; then
     exec "$plugin_root/.venv/bin/pinboard" "$@"
 fi
-exec uv run --locked --no-dev --project "$plugin_root" pinboard "$@"
+exec uv run --isolated --locked --no-dev --project "$plugin_root" pinboard "$@"

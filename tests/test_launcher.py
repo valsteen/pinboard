@@ -34,7 +34,7 @@ class LauncherTest(unittest.TestCase):
             source = subprocess.run(
                 ["/bin/sh", str(launcher), "status"], env=environment, capture_output=True, text=True, check=True
             )
-            self.assertEqual(f"uv:run --locked --no-dev --project {root} pinboard status\n", source.stdout)
+            self.assertEqual(f"uv:run --isolated --locked --no-dev --project {root} pinboard status\n", source.stdout)
 
 
 if __name__ == "__main__":

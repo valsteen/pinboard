@@ -2,15 +2,15 @@
 
 # How Pinboard works
 
-Pinboard adds one repository-local ledger of proposals, accepted work, attempts, and evidence to long-running Codex work. It preserves what the human requested, what an agent proposed, what the project accepted, which execution is acting on it, and what evidence a reviewer can trust later.
+Pinboard adds one repository-local ledger of proposals, accepted work, attempts, and evidence to long-running coding-agent work. It preserves what the human requested, what an agent proposed, what the project accepted, which execution is acting on it, and what evidence a reviewer can trust later. Codex is the primary, stress-tested integration; Claude Code support is experimental.
 
-For one short, isolated change, Codex already supplies the planning, implementation, testing, and review loop. Pinboard adds deliberate steps when the project must remain coherent across discoveries, parallel tasks, interruptions, and later iterations.
+For one short, isolated change, a coding agent already supplies the planning, implementation, testing, and review loop. Pinboard adds deliberate steps when the project must remain coherent across discoveries, parallel tasks, interruptions, and later iterations.
 
 ## Contents
 
 - [Workflow at a glance](#workflow-at-a-glance)
-- [Why Pinboard changes the Codex loop](#why-pinboard-changes-the-codex-loop)
-  - [Codex already iterates](#codex-already-iterates)
+- [Why Pinboard changes the coding-agent loop](#why-pinboard-changes-the-coding-agent-loop)
+  - [Coding agents already iterate](#coding-agents-already-iterate)
   - [Strict shape, semantic judgment](#strict-shape-semantic-judgment)
 - [The product model](#the-product-model)
   - [Work items and attempts](#work-items-and-attempts)
@@ -35,24 +35,24 @@ The practical path is short enough to tell without the data model:
 4. **Implement that brief.** Activation binds the accepted brief to one attempt. The worker claims the attempt, rereads the brief, and changes the ordinary repository in its assigned checkout.
 5. **Reconcile late direction.** Before candidate presentation or acceptance, the owning task accounts for user direction and repository changes since the accepted brief. A changed product target replaces the complete definition and brief, invalidates stale candidate or review identity, and requires another exact candidate and review.
 6. **Submit one candidate.** The worker records the exact candidate and its evidence. Submission protects that identity instead of asking review to infer what changed from the latest files.
-7. **Review the same decision.** Current ledger state derives the next operation. For review, a read-only job binds the exact candidate, accepted brief owner, and current result evidence for a separate Codex reviewer. The owning task processes the verdict, then asks the human to choose repository disposition and confirm completion before the work becomes terminal.
+7. **Review the same decision.** Current ledger state derives the next operation. For review, a read-only job binds the exact candidate, accepted brief owner, and current result evidence for a separate reviewer in the current coding-agent runtime. The owning task processes the verdict, then asks the human to choose repository disposition and confirm completion before the work becomes terminal.
 8. **Recover without retelling.** Pause and block preserve the attempt and its evidence. Rebind atomically accepts the item's current definition with a matching brief and corrected branch and base revision for an active or paused attempt, preserves its lifecycle state and evidence, and fences its previous worker. Resume keeps the accepted Git lineage and remains unavailable while dependencies are live.
 
-This normally takes more turns than asking Codex to implement and review a prompt directly. The extra work is the mechanism: discoveries remain proposals, implementation rereads accepted scope, and review receives the exact brief and candidate. Pinboard trades first-delivery speed for a durable boundary between the product you accepted and the plausible additions an agent could otherwise accumulate.
+This normally takes more turns than asking a coding agent to implement and review a prompt directly. The extra work is the mechanism: discoveries remain proposals, implementation rereads accepted scope, and review receives the exact brief and candidate. Pinboard trades first-delivery speed for a durable boundary between the product you accepted and the plausible additions an agent could otherwise accumulate.
 
 Conditional follow-up requests stay narrow. “If this proves to be a production defect, follow it up” first requires evidence for that condition. A false or unproved condition writes nothing, exact existing coverage is reused, and a proved new concern creates at most one follow-up or independent intake item. It does not authorize making that item a prerequisite, starting it, implementing it, or notifying another task.
 
-## Why Pinboard changes the Codex loop
+## Why Pinboard changes the coding-agent loop
 
-### Codex already iterates
+### Coding agents already iterate
 
-A coding harness turns prose into code through interpretation. An implementer reads the request and repository, produces a change, and a reviewer interprets the request and result again. Review findings become new prose for another implementation pass. Codex already supplies this productive back-and-forth.
+A coding harness turns prose into code through interpretation. An implementer reads the request and repository, produces a change, and a reviewer interprets the request and result again. Review findings become new prose for another implementation pass. The coding agent already supplies this productive back-and-forth.
 
 When the only shared target is the evolving conversation and latest diff, each pass can give new weight to an implementation detail or useful reviewer suggestion. That does not make every untracked loop drift. The risk grows when work crosses more turns, tasks, interruptions, and adjacent discoveries.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works/review-loop-dark.svg">
-  <img src="assets/how-it-works/review-loop.svg" alt="An ordinary Codex implementation and review loop beside the same loop anchored by one accepted Pinboard brief, exact candidate, and evidence">
+  <img src="assets/how-it-works/review-loop.svg" alt="An ordinary coding-agent implementation and review loop beside the same loop anchored by one accepted Pinboard brief, exact candidate, and evidence">
 </picture>
 
 Pinboard gives both sides a stable reference. The implementer rereads the accepted brief and submits one exact candidate with evidence. A read-only review job records that candidate, the canonical brief path and digest, and the current `result.md` path and digest for a separate reviewer to verify before use. Correction returns to the same attempt, with blocking findings tied to accepted scope, criteria, or reviewed project authority. If later accepted direction changes the target, the old candidate and review no longer qualify for wrap-up: the complete definition and brief are replaced before another exact candidate and review. The loop still depends on LLM and human judgment and can still be wrong; its corrections remain aimed at an explicit accepted target instead of whatever prose happens to be most recent.
@@ -68,7 +68,7 @@ Pinboard gives both sides a stable reference. The implementer rereads the accept
 
 **Code checks the envelope; humans and models interpret the meaning.** The canonical work brief is strict JSON and the sole semantic brief. Static contract discovery provides generated schemas and complete local and cross-boundary starters whose semantic values remain unresolved. Pinboard rejects unknown fields and cross-checks identities, references, coverage, and canonical bytes after those values are filled. It cannot choose those values or prove that prose under `scope` is truly in scope or that a `non_goals` entry expresses the human's intent. The model interprets those meanings, the human accepts the product decision, and independent review challenges the compiled result. The schema makes distinct reasoning jobs difficult to omit and stable across stages without pretending to replace judgment.
 
-**Project impact remains a judgment too.** Pinboard has no rule saying that a visitor-facing decision must also change a workflow guide or a durable design principle. Structured scope, provenance, reviewed authorities, and coverage help Codex reason toward affected surfaces without a hard-coded file map or an exhaustive reread. The model can still miss or invent a connection; human acceptance and independent review decide whether it is real. This is information architecture refined through experience, not a semantic consistency engine.
+**Project impact remains a judgment too.** Pinboard has no rule saying that a visitor-facing decision must also change a workflow guide or a durable design principle. Structured scope, provenance, reviewed authorities, and coverage help the coding agent reason toward affected surfaces without a hard-coded file map or an exhaustive reread. The model can still miss or invent a connection; human acceptance and independent review decide whether it is real. This is information architecture refined through experience, not a semantic consistency engine.
 
 **Local means the whole changed path is locally observable.** A lightweight local checkpoint is appropriate only when ownership and dependency direction, stored and wire identities, and independently owned consumers remain unchanged, and one production entry point can exercise the complete path. Otherwise the checkpoint uses the cross-boundary contract and review shape.
 
@@ -114,7 +114,7 @@ The command stories move from observation and repair to an ordinary mutation and
 
 - **Validate before repairing.** `status` is a bounded summary of one current snapshot, not the full integrity check. `validate` verifies accepted brief content, every accepted artifact identity, and every replaceable generated view against the bytes that snapshot should produce. Authoritative defects are errors; missing or stale generated views are warnings because SQLite and accepted artifacts remain the source of truth. Validation only reports. `views rebuild` separately derives and replaces every queue, item, attempt, and history projection from one snapshot and verified brief content.
 
-- **Initialize through a verified publication.** A new ledger is built and verified in a staging file before atomic publication. A returning ledger is schema-checked before Pinboard reconciles only its own same-file publication residue and ensures its directories. Both routes use explicit roots and one operation time, then verify accepted brief content, rebuild generated views, and present the receipt. A failed rebuild leaves the authoritative database available for retry. After a successful first initialization, the interface points once to the optional `$repository-readiness`, `$slop-cleanup`, and `$maintaining-agent-guidance` skills without running them or creating work. It may separately recommend one absent Codex long-task default; neither path writes configuration or claims to override trusted project settings. Resumed and failed initialization stay quiet, while unreadable or malformed user config suppresses only the setting recommendation.
+- **Initialize through a verified publication.** A new ledger is built and verified in a staging file before atomic publication. A returning ledger is schema-checked before Pinboard reconciles only its own same-file publication residue and ensures its directories. Both routes use explicit roots and one operation time, then verify accepted brief content, rebuild generated views, and present the receipt. A failed rebuild leaves the authoritative database available for retry. After a successful first initialization, the interface points once to the optional `$repository-readiness`, `$slop-cleanup`, and `$maintaining-agent-guidance` skills without running them or creating work. The default Codex runtime may separately recommend one absent Codex long-task default; the explicit Claude runtime suppresses only that line. Neither path writes configuration or claims to override trusted project settings. Resumed and failed initialization stay quiet, while unreadable or malformed user config suppresses only the setting recommendation.
 
 - **Plan reviewed sources without opening the ledger.** `brief-sources` reads one strict manifest, selects whole files or unique Markdown headings from the chosen source checkout, rejects overlaps and oversized lines, assigns every selected byte to one ordered segment and batch, and presents the complete plan or one requested batch. It never edits the project.
 

@@ -7,6 +7,8 @@ description: Preserve one newly proposed piece of project work as an intake item
 
 Convert one explicit concern into immutable proposal facts and a same-identity intake item. Do not claim that intake made it ready, active, or current work.
 
+Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) for coding-agent identity and optional messaging. Intake persistence remains the correctness boundary.
+
 Intake may be standalone or embedded in ongoing Pinboard work. Standalone intake may end after its persistence receipt only when the user did not also ask to begin the new work. Before embedded intake, retain a compact continuation anchor containing the pre-intake objective, the next promised action, and the exact durable owner selector. Intake changes queue state but preserves active attempts, so return control to that anchor after persistence and any explicitly requested notification handling.
 
 ## Preserve immediate-start intent
@@ -73,8 +75,8 @@ Before creating a proposal, distinguish exact prior coverage from a merely relat
 2. Run `pinboard proposal --file <path> --task-id <current-task> --host-id <current-host> --json`.
 3. Treat the returned `pinboard-proposal-created/v1` record as proof that both the proposal facts and intake item persisted. Use its exact `proposal_id`, `position`, `state`, and `committed_revision`; do not scrape human output.
 4. After that success, mention the generated item summary once as the readable accepted-definition view only when `<work-root>/views/items/<proposal-id>.md` is confirmed available, using a concise purpose label and a native clickable link. If the command reports a generated-view warning or the file is unavailable, preserve the successful intake receipt without a broken link; after a successful refresh or rebuild confirms availability, mention the link once. Do not re-announce it after an unchanged refresh.
-5. Read `references/codex-transport.md` only when the user explicitly requested delivery to another task and Codex task messaging is available.
-6. Notify the requested eligible task with the proposal ID and shared work root. Repository persistence, not messaging, is the correctness boundary.
+5. For explicitly requested delivery in Codex, read and follow the Codex-only `references/codex-transport.md`. For explicitly requested delivery in Claude Code, follow only the bounded optional-messaging behavior in the shared runtime adapters; do not read or apply the Codex transport leaf.
+6. Notify the requested eligible task or teammate with the proposal ID and shared work root. Repository persistence, not messaging, is the correctness boundary.
 7. Report delivery only when the user requested it or when its outcome materially changes confidence, current work, or the next action.
 
 When a JSON-capable operation returns `pinboard-rejected-operation/v1`, use its stable code, mismatch facts, effect disposition, and retry classification. An unchanged rejection may be corrected or refreshed as directed. A committed-effect result must be inspected rather than replayed, even though the requested operation did not finish.

@@ -8,6 +8,8 @@ Use this workflow for requests such as:
 
 Do not use it merely because more than one item exists. Ordinary next-work selection stays in the main skill.
 
+Use [the coding-agent runtime adapters](runtime-adapters.md) for native task, subagent, worktree, permission, and waiting operations. This reference owns only the shared selection and launch decisions.
+
 ## Build the preview
 
 1. Require authority `sqlite-v4`.

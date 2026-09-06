@@ -162,7 +162,7 @@ The relational ledger groups sixteen tables into six kinds of memory: current wo
 
 **Immutable artifacts enter through three paths:**
 
-1. **Brief publication** strictly decodes and cross-validates the selected candidate, canonicalizes and publishes its bytes, accepts the stable reference in SQLite, and rebuilds generated views. Activation or resume then selects that accepted brief for the attempt.
+1. **Brief publication** strictly decodes and cross-validates the selected candidate, canonicalizes and publishes its bytes, accepts the stable reference in SQLite, and rebuilds generated views. Activation, resume, or rebind then selects that accepted brief for the attempt.
 2. **Dispatch preparation** validates the environment, optional prompt or review files, exact current action, accepted brief identity, and reviewed sources before choosing the local, existing-review, or new-review path. It may publish or reuse independent ready-review evidence by exact identity, renders the prompt, rechecks authority, and only then emits it. Dispatch prepares a prompt; it does not create a task. Declared permissions remain brief declarations, not grants enforced by Pinboard.
 3. **Checkpoint acceptance** publishes the exact result and independent review, then atomically records the attempt result, accepted review evidence, lifecycle change, and receipt. Publication alone changes no lifecycle state; rejection or rollback preserves the previous relationships.
 

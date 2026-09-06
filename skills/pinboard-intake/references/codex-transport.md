@@ -1,6 +1,6 @@
 # Pinboard Task Transport
 
-Use this adapter only when the user explicitly requested delivery to another task and the current Codex environment exposes task discovery and task-to-task messaging. Task existence, project match, or lease ownership never substitutes for that request.
+Use this adapter only when the user explicitly requested delivery to another task and [the coding-agent runtime adapters](../../pinboard/references/runtime-adapters.md) identify a native messaging capability. Task existence, project match, or lease ownership never substitutes for that request.
 
 1. Confirm that the explicit request identifies the intended task.
 2. Resolve the exact task the user requested through native task discovery and verify that it belongs to the same project root or project identity. If the target is ambiguous, absent, or belongs elsewhere, stop instead of selecting an alternative.

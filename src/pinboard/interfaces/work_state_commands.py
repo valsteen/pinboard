@@ -122,7 +122,10 @@ def initialize_state(roots: cli_commands.ResolvedRoots, _command: cli_commands.I
             "Optional next steps: $repository-readiness maps safe change paths; $slop-cleanup removes unsupported "
             "residue; $maintaining-agent-guidance places durable AI guidance."
         )
-        if (recommendation := _read_user_config_and_recommend_body_after_prefix()) is not None:
+        if (
+            os.environ.get("PINBOARD_RUNTIME") != "claude"
+            and (recommendation := _read_user_config_and_recommend_body_after_prefix()) is not None
+        ):
             print(recommendation)
     return 0
 

@@ -1141,6 +1141,25 @@ class CliTest(unittest.TestCase):
                 else:
                     self.assertEqual(config_contents, config.read_text(encoding="utf-8"))
 
+    def test_explicit_claude_runtime_omits_only_codex_configuration_advice(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        work = project / ".codex" / "work"
+        codex_home = Path(tempfile.mkdtemp()).resolve()
+
+        with patch.dict(os.environ, {"CODEX_HOME": str(codex_home), "PINBOARD_RUNTIME": "claude"}):
+            result, stdout, stderr = self.run_cli(
+                "--project-root",
+                str(project),
+                "--work-root",
+                str(work),
+                "init",
+            )
+
+        self.assertEqual(0, result, stderr)
+        self.assertNotIn("model_auto_compact_token_limit_scope", stdout)
+        self.assert_repository_care_pointer(stdout, present=True)
+        self.assertTrue((work / "state.sqlite3").is_file())
+
     def test_first_init_config_recommendation_is_only_about_the_user_default(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         project_config = project / ".codex" / "config.toml"

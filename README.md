@@ -5,11 +5,11 @@
 [![uv](https://img.shields.io/badge/managed%20with-uv-DE5FE9?logo=uv)](https://docs.astral.sh/uv/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Keep Codex building the product you meant
+## Keep your coding agent building the product you meant
 
 <img align="right" width="430" src="assets/pinboard-investigation-board.png" alt="Fantasy adventurer explaining an investigation board covered with maps, clues, portraits, and red thread">
 
-Pinboard is a repository-local work ledger for long-running Codex projects, built first for solo developers whose requirements arrive while they build. It preserves the difference between what you requested, what an agent proposed, what you accepted, what was implemented, and what was reviewed.
+Pinboard is a repository-local work ledger for long-running coding-agent projects, built first for solo developers whose requirements arrive while they build. It preserves the difference between what you requested, what an agent proposed, what you accepted, what was implemented, and what was reviewed. Codex is the primary, stress-tested integration; Claude Code support is experimental.
 
 <br clear="right">
 
@@ -19,29 +19,29 @@ A clear prompt can produce an impressive first version. The trouble often starts
 
 Human requests, agent suggestions, technical hypotheses, and accepted product decisions gradually blend together. The code can remain tested and technically plausible while the product grows away from what you meant to build. AI does not create this problem, but it can turn a familiar slow accumulation of product and code slop into a large diff within hours.
 
-## Codex already runs the development loop
+## Coding agents already run the development loop
 
-Codex can plan, delegate, implement, test, review, use isolated worktrees, and carry a task over time. Pinboard does not replace that harness or make the model more capable. It gives those activities one repository-local ledger of proposals, accepted work, attempts, and evidence shared across tasks and interruptions.
+A coding agent can plan, delegate, implement, test, review, use isolated worktrees, and carry a task over time. Pinboard does not replace that harness or make the model more capable. It gives those activities one repository-local ledger of proposals, accepted work, attempts, and evidence shared across tasks and interruptions.
 
-With Pinboard, a discovery can remain a proposal instead of quietly joining the feature. An implementation attempt stays tied to an exact accepted definition and brief. Current ownership is explicit, stale actions are rejected, and review examines one exact candidate with its evidence. In AI-native SDLC terms, Codex performs the work; Pinboard keeps planning, implementation, and review about the same product decision.
+With Pinboard, a discovery can remain a proposal instead of quietly joining the feature. An implementation attempt stays tied to an exact accepted definition and brief. Current ownership is explicit, stale actions are rejected, and review examines one exact candidate with its evidence. The coding agent performs the work; Pinboard keeps planning, implementation, and review about the same product decision.
 
-Pinboard is Codex-only today. It does not decide the product, choose priorities, or create Codex tasks. It makes the human and agent decisions around those capabilities durable and distinguishable.
+Pinboard uses one engine and one SQLite ledger from both integrations. Codex remains primary and stress-tested. Claude Code can load the same repository-local plugin experimentally; authenticated skill selection and model invocation remain experimental. Pinboard does not decide the product, choose priorities, or create coding-agent tasks.
 
 ## The format is strict. The meaning is still yours.
 
 A Pinboard brief has named places for the outcome, accepted scope, provenance, non-goals, acceptance criteria, reviewed sources, verification, and remaining work. Code enforces the shape, cross-references, identity, and exact artifact bytes. It cannot know whether a sentence filed under `non_goals` truly belongs there or route that sentence to the right file.
 
-The model interprets the words, the human accepts the product decision, and an independent reviewer challenges the result. The structure keeps those distinctions stable. Alongside named reviewed sources and coverage, it lets Codex reason from new prose to the project surfaces that appear to be affected—for example, from a visitor-facing decision to a workflow guide and a durable design principle—without Pinboard encoding an impact graph or requiring every file to be revisited. Human acceptance and review decide whether that connection is real. That is information architecture refined through experience, not semantic enforcement.
+The model interprets the words, the human accepts the product decision, and an independent reviewer challenges the result. The structure keeps those distinctions stable. Alongside named reviewed sources and coverage, it lets the coding agent reason from new prose to the project surfaces that appear to be affected—for example, from a visitor-facing decision to a workflow guide and a durable design principle—without Pinboard encoding an impact graph or requiring every file to be revisited. Human acceptance and review decide whether that connection is real. That is information architecture refined through experience, not semantic enforcement.
 
 ## Pinboard makes the first delivery slower
 
-Pinboard usually makes managed work take longer than sending the same request directly to Codex. It spends additional turns preserving discoveries, agreeing on exact scope, acquiring work, rereading the brief before implementation, recording evidence, and reviewing one exact candidate against that brief. That overhead is real.
+Pinboard usually makes managed work take longer than sending the same request directly to a coding agent. It spends additional turns preserving discoveries, agreeing on exact scope, acquiring work, rereading the brief before implementation, recording evidence, and reviewing one exact candidate against that brief. That overhead is real.
 
-Pinboard is not designed to win the first-prompt race. It is designed for the fifth, fifteenth, and fiftieth change, when losing or confusing a decision can lead to long sessions reconstructing intent, separating accepted requirements from agent suggestions, removing incidental features, and rebuilding trust in the code. Use Codex directly when that risk costs less than the process.
+Pinboard is not designed to win the first-prompt race. It is designed for the fifth, fifteenth, and fiftieth change, when losing or confusing a decision can lead to long sessions reconstructing intent, separating accepted requirements from agent suggestions, removing incidental features, and rebuilding trust in the code. Use the coding agent directly when that risk costs less than the process.
 
 ## A campaign that keeps discoveries out of the feature
 
-Imagine you are building *Ashfall Keep*, a small action RPG. While one Codex task works on the dragon boss's second phase, two useful but distracting discoveries arrive: save games capture temporary animation state, and controller mappings identify abilities by inventory position.
+Imagine you are building *Ashfall Keep*, a small action RPG. While one coding-agent task works on the dragon boss's second phase, two useful but distracting discoveries arrive: save games capture temporary animation state, and controller mappings identify abilities by inventory position.
 
 <img width="20" height="20" src="assets/quest-scroll.png" alt="Sealed quest scroll"> **Capture an idea without expanding the feature.** `$pinboard-intake` records the save-game concern with its trigger, evidence, and likely consequence. It enters intake without becoming ready or interrupting the dragon attempt.
 
@@ -53,9 +53,9 @@ Imagine you are building *Ashfall Keep*, a small action RPG. While one Codex tas
 
 <img width="20" height="20" src="assets/safe-camp.png" alt="Campfire and bedroll checkpoint"> **Resume the decision, not the conversation.** If stable ability IDs become a real prerequisite, the dragon attempt records where it stopped and what must change. The same attempt later resumes from its accepted brief and evidence.
 
-<img width="20" height="20" src="assets/ready-to-build.png" alt="Crossed sword and blacksmith hammer"> **Review what was approved, not merely what now exists.** `$pinboard-deliver` is the implementer route for an already prepared active attempt: it follows the exact definition and brief, records the candidate and evidence, and returns them for review by a separate Codex reviewer. If later accepted direction changes the target, the complete definition and brief change too, and the resulting exact candidate receives a new review before wrap-up.
+<img width="20" height="20" src="assets/ready-to-build.png" alt="Crossed sword and blacksmith hammer"> **Review what was approved, not merely what now exists.** `$pinboard-deliver` is the implementer route for an already prepared active attempt: it follows the exact definition and brief, records the candidate and evidence, and returns them for review by a separate reviewer in the current coding agent. If later accepted direction changes the target, the complete definition and brief change too, and the resulting exact candidate receives a new review before wrap-up.
 
-The code, branch, and conversation remain ordinary Codex work. Pinboard keeps their product decisions connected. [How Pinboard works](HOW_IT_WORKS.md) starts with this workflow, then follows it into the detailed lifecycle, persistence model, and package boundaries.
+The code, branch, and conversation remain ordinary coding-agent work. Pinboard keeps their product decisions connected. [How Pinboard works](HOW_IT_WORKS.md) starts with this workflow, then follows it into the detailed lifecycle, persistence model, and package boundaries.
 
 ## Pinboard became its own use case
 
@@ -77,7 +77,7 @@ That makes this codebase one concrete case study, not proof that Pinboard elimin
 - **Execution:** give each accepted attempt an exact brief and independent renewable ownership.
 - **Interruption and recovery:** block, deliberately pause otherwise runnable work, rebind current accepted scope with a corrected Git baseline, resume, or recover without rebuilding context from chat history or silently changing the checkout.
 - **Parallel work:** preview independent items and recheck the group as each attempt starts, without creating tasks on the user's behalf.
-- **Review:** keep the submitted candidate and its evidence exact, then use a separate Codex reviewer—normally a subagent that returns to the owning task—to accept it or return it for correction.
+- **Review:** keep the submitted candidate and its evidence exact, then use a separate reviewer in the current coding agent—normally a subagent that returns to the owning task—to accept it or return it for correction.
 - **Wrap-up:** reconcile later accepted direction and repository changes before candidate presentation or acceptance, then let the human choose the repository disposition and confirm terminal completion.
 - **Handover:** export one revision-stamped JSON package of supported project facts—admitted work, pending proposals, relationships, decisions, and verified review evidence—without choosing a team-tool vendor. Live lease authority remains local.
 - **Repository readiness:** use `$repository-readiness` to map the real authority, consumers, projections, and validation behind a representative change before improving an unfamiliar repository; select whole-repository coverage explicitly.
@@ -119,7 +119,7 @@ Run `pinboard handover --json` to materialize the strict `pinboard-project-hando
 
 The plugin currently supports macOS and Linux. It uses [uv](https://docs.astral.sh/uv/) to provide its Python 3.14 runtime and installed command.
 
-Add this repository as a Codex marketplace, then install the plugin:
+For the primary Codex integration, add this repository as a marketplace, then install the plugin:
 
 ```sh
 codex plugin marketplace add valsteen/pinboard
@@ -129,6 +129,16 @@ codex plugin add pinboard@pinboard
 Start a Codex task in the repository and ask:
 
 > Set up the pinboard here and explain how I can use it from one chat or several chats.
+
+For the experimental Claude Code integration, clone this repository, validate the local plugin without model use, then point one session at it:
+
+```sh
+claude plugin validate /path/to/pinboard --strict
+cd /path/to/your-project
+claude --plugin-dir /path/to/pinboard
+```
+
+Ask Claude Code to set up the Pinboard in the opened project. The shared skills invoke the same `pinboard` CLI and `.codex/pinboard` SQLite authority. This is local `--plugin-dir` support, not an Anthropic marketplace installation or a claim of live Codex/Claude sharing. The free Claude chat plan and Claude Code access are separate product surfaces; check [Anthropic's current authentication options](https://code.claude.com/docs/en/authentication) before the authenticated smoke because access can change.
 
 After the first successful setup, Pinboard prints one optional next-steps pointer to `$repository-readiness`, `$slop-cleanup`, and `$maintaining-agent-guidance`. It does not run a skill, create work, or change configuration, and reopening an existing Pinboard or a failed setup does not print it.
 

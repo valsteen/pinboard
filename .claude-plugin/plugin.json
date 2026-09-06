@@ -1,0 +1,17 @@
+{
+  "name": "pinboard",
+  "description": "Coordinate repository work with canonical execution briefs and validated state transitions.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Vincent Alsteen",
+    "url": "https://github.com/valsteen"
+  },
+  "homepage": "https://github.com/valsteen/pinboard#readme",
+  "repository": "https://github.com/valsteen/pinboard",
+  "license": "MIT",
+  "keywords": [
+    "coding-agent",
+    "project-coordination",
+    "coordination"
+  ]
+}

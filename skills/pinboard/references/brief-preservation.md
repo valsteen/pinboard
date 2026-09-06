@@ -1,5 +1,7 @@
 # Cross-boundary brief preservation
 
+Use [the coding-agent runtime adapters](runtime-adapters.md) for fresh reviewer launch and waiting. The source-closure and review contract below is shared across integrations.
+
 Use this procedure only for a typed `cross-boundary` checkpoint. It projects named architecture, plans, and accepted evidence into a reviewable execution contract before implementation. A `local` checkpoint does not add contracts, reviewed-authority coverage, lifecycle declarations, or an independent brief review.
 
 For broad autonomous work, require the Pinboard workflow's short human-facing scope confirmation before preparation begins. Compile the canonical brief to preserve that stated outcome, principal read and touch surfaces, approximate magnitude, and surprising exclusions; never use the private brief to introduce a consequential narrowing or widening that the human did not see. The confirmation is declarative and does not repeat an authorization question already answered.

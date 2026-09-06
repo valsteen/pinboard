@@ -92,6 +92,17 @@ class PluginManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     interface: PluginInterface
 
 
+class ClaudePluginManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    name: str
+    description: str
+    version: str
+    author: PluginAuthor
+    homepage: str
+    repository: str
+    license: str
+    keywords: tuple[str, ...]
+
+
 class ProjectMetadata(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     name: str
     version: str
@@ -188,6 +199,19 @@ def validate_plugin() -> None:
         raise ValueError("plugin repository or homepage is invalid")
 
 
+def validate_claude_plugin() -> None:
+    path = ROOT / ".claude-plugin" / "plugin.json"
+    value = msgspec.json.decode(path.read_bytes(), type=ClaudePluginManifest)
+    if (value.name, value.version) != (PLUGIN_NAME, PROJECT_VERSION):
+        raise ValueError("Claude plugin manifest identity or version is invalid")
+    if value.license != "MIT" or value.author.name != "Vincent Alsteen":
+        raise ValueError("Claude plugin author or license is invalid")
+    if value.repository != "https://github.com/valsteen/pinboard" or value.homepage != f"{value.repository}#readme":
+        raise ValueError("Claude plugin repository or homepage is invalid")
+    if not (ROOT / "skills").is_dir():
+        raise ValueError("Claude plugin must use the shared repository-root skills directory")
+
+
 def validate_project_metadata() -> None:
     path = ROOT / "pyproject.toml"
     value = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -249,6 +273,7 @@ def main() -> None:
     if (ROOT / "LICENSE").read_text(encoding="utf-8") != EXPECTED_LICENSE_TEXT:
         raise ValueError("repository license must exactly match the canonical MIT license text")
     validate_plugin()
+    validate_claude_plugin()
     validate_project_metadata()
     validate_marketplace()
     skill_paths = tuple(sorted((ROOT / "skills").glob("*/SKILL.md")))
@@ -259,7 +284,7 @@ def main() -> None:
         )
     for path in skill_paths:
         validate_skill(path)
-    print(f"validated plugin marketplace and {len(skill_paths)} skills")
+    print(f"validated Codex and Claude plugins, Codex marketplace, and {len(skill_paths)} skills")
 
 
 if __name__ == "__main__":

@@ -39,7 +39,7 @@ DIAGRAM = Diagram(
     width=1400,
     height=800,
     sections=(
-        Section("Codex already iterates", "available prose + code are interpreted each pass", 28, 44),
+        Section("Coding agents already iterate", "available prose + code are interpreted each pass", 28, 44),
         Section("Pinboard anchors the same loop", "accepted target + exact candidate + evidence", 730, 44),
     ),
     guides=(
@@ -76,7 +76,7 @@ DIAGRAM = Diagram(
             "Starting context",
             "Prose request",
             ("human intent in words",),
-            ("ordinary Codex input",),
+            ("coding-agent input",),
             50,
             110,
             180,

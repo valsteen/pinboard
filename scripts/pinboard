@@ -2,4 +2,5 @@
 set -eu
 
 plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-exec uv run --locked --no-dev --project "$plugin_root" pinboard "$@"
+export PYTHONDONTWRITEBYTECODE=1
+exec uv run --isolated --locked --no-dev --project "$plugin_root" pinboard "$@"

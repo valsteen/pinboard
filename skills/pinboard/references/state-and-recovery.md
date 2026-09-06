@@ -1,5 +1,7 @@
 # State and recovery
 
+Use [the coding-agent runtime adapters](runtime-adapters.md) for trusted identity and runtime-native waiting or recovery operations. SQLite remains the only lifecycle authority.
+
 ## Contents
 
 - [Authoritative state](#authoritative-state)

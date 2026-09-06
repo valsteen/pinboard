@@ -238,7 +238,62 @@ class LifecycleDecisionTest(unittest.TestCase):
                 self.assertEqual(4, accepted.change.authority_change.after.generation)
                 self.assertIsNone(accepted.change.authority_change.after.lease_id)
 
-    def test_rebind_rejects_unsupported_or_stale_attempts_and_requires_exact_authority(self) -> None:
+    def test_definition_stale_active_or_paused_attempt_advertises_rebind_to_current_scope(self) -> None:
+        authority = work_models.AttemptAuthority(AttemptId("target-1"), ItemId("target"), LeaseId("worker-lease"), 3)
+        brief = work_models.ArtifactRecord(ArtifactRefId(7), work_models.ArtifactKind.BRIEF)
+        prerequisite = item("prerequisite", work_models.WorkState.READY)
+
+        for state, attempt_state in (
+            (work_models.WorkState.ACTIVE, work_models.AttemptState.ACTIVE),
+            (work_models.WorkState.PAUSED, work_models.AttemptState.PAUSED),
+        ):
+            with self.subTest(state=state):
+                target = replace_dataclass(
+                    item("target", state, attempt="target-1"),
+                    depends_on=(ItemId("prerequisite"),),
+                )
+                snapshot = LedgerSnapshot(
+                    "revision",
+                    (target, prerequisite),
+                    attempts=(AttemptRecord("target-1", "target", attempt_state, 1, DIGEST_A),),
+                    artifacts=(brief,),
+                    definitions=(definition_anchor("target", 2, DIGEST_B, target.depends_on),),
+                    attempt_authorities=(authority,),
+                )
+                advertised = available_actions(
+                    snapshot,
+                    decision_models.ActorAuthority(
+                        decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
+                    ),
+                )
+                selected = next(
+                    value for value in advertised if value.kind == decision_models.ActionKind.REBIND_ATTEMPT
+                )
+                self.assertNotIn(
+                    decision_models.ActionKind.RESUME,
+                    {value.kind for value in advertised},
+                )
+                assert isinstance(selected, decision_models.RebindAttemptAction)
+
+                accepted = decide(
+                    snapshot,
+                    decision_models.RebindAttemptCommand(
+                        selected,
+                        work_models.RebindAttemptInput(
+                            AttemptId("target-1"), "codex/corrected", "correct-base", ArtifactRefId(7)
+                        ),
+                    ),
+                    NOW,
+                )
+
+                self.assertIsInstance(accepted.change, decision_models.RebindAttemptChange)
+                assert isinstance(accepted.change, decision_models.RebindAttemptChange)
+                self.assertEqual(
+                    (2, DIGEST_B),
+                    (accepted.change.accepted_scope_revision, accepted.change.accepted_scope_digest),
+                )
+
+    def test_rebind_rejects_unsupported_attempts_and_requires_exact_authority(self) -> None:
         definition = definition_anchor("target", 1, DIGEST_A)
         brief = work_models.ArtifactRecord(ArtifactRefId(7), work_models.ArtifactKind.BRIEF)
         authority = work_models.AttemptAuthority(AttemptId("target-1"), ItemId("target"), LeaseId("lease"), 2)
@@ -279,17 +334,6 @@ class LifecycleDecisionTest(unittest.TestCase):
                     attempt_authorities=(authority,),
                 ),
                 DecisionFailureCode.ATTEMPT_NOT_FOUND,
-            ),
-            (
-                LedgerSnapshot(
-                    "r",
-                    (item("target", work_models.WorkState.ACTIVE, attempt="target-1"),),
-                    attempts=(AttemptRecord("target-1", "target", work_models.AttemptState.ACTIVE, 1, DIGEST_A),),
-                    artifacts=(brief,),
-                    definitions=(definition_anchor("target", 2, DIGEST_B),),
-                    attempt_authorities=(authority,),
-                ),
-                DecisionFailureCode.ITEM_DEFINITION_STALE,
             ),
             (
                 LedgerSnapshot(

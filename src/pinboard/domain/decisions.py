@@ -122,13 +122,13 @@ def _project_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory)
                         decision_models.DispatchAction(
                             factory.make(item.attempt, f"Prepare a worker launch for {item.item}")
                         ),
-                        decision_models.RebindAttemptAction(
-                            factory.make(item.attempt, f"Rebind the Git baseline for {item.item}")
-                        ),
                     )
                 )
             result.extend(
                 (
+                    decision_models.RebindAttemptAction(
+                        factory.make(item.attempt, f"Rebind the accepted scope and Git baseline for {item.item}")
+                    ),
                     decision_models.PauseAction(factory.make(item.attempt, f"Pause and preserve {item.item}")),
                     decision_models.BlockAttemptAction(
                         factory.make(item.attempt, f"Block active attempt for {item.item}")
@@ -179,13 +179,11 @@ def _item_actions(
         ]
     dependencies_live = any(dependency in snapshot.items_by_id() for dependency in item.depends_on)
     if item.state == work_models.WorkState.PAUSED and item.attempt is not None:
-        result: list[decision_models.Action] = []
-        if not _definition_stale(snapshot, item):
-            result.append(
-                decision_models.RebindAttemptAction(
-                    factory.make(item.attempt, f"Rebind the Git baseline for {item.item}")
-                )
+        result: list[decision_models.Action] = [
+            decision_models.RebindAttemptAction(
+                factory.make(item.attempt, f"Rebind the accepted scope and Git baseline for {item.item}")
             )
+        ]
         if not dependencies_live:
             result.append(decision_models.ResumeAction(factory.make(item.item, f"Return {item.item} to active")))
         return [*result, close]
@@ -700,15 +698,10 @@ def _rebind_attempt(
             "Only an active or paused attempt can be rebound.",
         )
     definition = snapshot.definition(item.item)
-    if (
-        definition is None
-        or attempt.accepted_scope_revision is None
-        or attempt.accepted_scope_digest is None
-        or (attempt.accepted_scope_revision, attempt.accepted_scope_digest) != (definition.revision, definition.digest)
-    ):
+    if definition is None or attempt.accepted_scope_revision is None or attempt.accepted_scope_digest is None:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_STALE,
-            "The attempt has not accepted the item's current definition.",
+            "The attempt has no accepted definition identity to replace.",
         )
     artifact = next(
         (candidate for candidate in snapshot.artifacts if candidate.artifact_ref_id == value.brief_artifact_ref_id),

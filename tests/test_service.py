@@ -34,6 +34,7 @@ from pinboard.domain.decisions import (
     available_actions,
 )
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
+from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import (
     ActionId,
     ArtifactRefId,
@@ -242,6 +243,25 @@ class ServiceTest(unittest.TestCase):
         ):
             with self.subTest(item_state=item_state):
                 state = complete_sqlite_state()
+                accepted_definition = next(
+                    value for value in state.lifecycle.definition_revisions if value.item_id == ItemId("work-a")
+                )
+                current_definition_value = replace(
+                    accepted_definition.definition,
+                    objective="Accept current scope while correcting the Git lineage.",
+                )
+                current_digest = work_item_definition_digest(current_definition_value)
+                assert isinstance(current_digest, str)
+                current_definition = replace(
+                    accepted_definition,
+                    revision=accepted_definition.revision + 1,
+                    digest=current_digest,
+                    definition=current_definition_value,
+                    reason="Exercise definition-stale rebinding.",
+                    before_digest=accepted_definition.digest,
+                    after_digest=current_digest,
+                    accepted_project_revision=state.lifecycle.project.revision,
+                )
                 protected_result = replace(
                     state.artifact_references[2],
                     artifact_ref_id=ArtifactRefId(98),
@@ -270,6 +290,7 @@ class ServiceTest(unittest.TestCase):
                             for value in state.lifecycle.work_items
                         ),
                         attempts=(replace(current_attempt, state=attempt_state),),
+                        definition_revisions=(*state.lifecycle.definition_revisions, current_definition),
                     ),
                     artifact_references=(*state.artifact_references, protected_result, replacement),
                 )
@@ -291,8 +312,8 @@ class ServiceTest(unittest.TestCase):
                     "work-a",
                     "codex/corrected-work-a",
                     "corrected-base",
-                    1,
-                    current_attempt.accepted_scope_digest or "",
+                    current_definition.revision,
+                    current_definition.digest,
                 )
                 before = store.snapshot()
                 for mismatch in (
@@ -300,7 +321,7 @@ class ServiceTest(unittest.TestCase):
                     replace(identity, item_id="work-c"),
                     replace(identity, branch="codex/other"),
                     replace(identity, base_revision="other-base"),
-                    replace(identity, accepted_scope_revision=2),
+                    replace(identity, accepted_scope_revision=identity.accepted_scope_revision + 1),
                     replace(identity, accepted_scope_digest="f" * 64),
                 ):
                     mismatched = self._commit_transition(
@@ -329,6 +350,8 @@ class ServiceTest(unittest.TestCase):
                         branch="codex/corrected-work-a",
                         base_revision="corrected-base",
                         brief_artifact_ref_id=replacement.artifact_ref_id,
+                        accepted_scope_revision=current_definition.revision,
+                        accepted_scope_digest=current_definition.digest,
                         subject_revision=13,
                         updated_at=SQLITE_NOW + timedelta(seconds=1),
                     ),

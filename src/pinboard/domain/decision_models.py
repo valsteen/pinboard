@@ -53,6 +53,7 @@ class ActionSubjectKind(Enum):
 class ActionLifecyclePrecondition(Enum):
     ACTIVE_ATTEMPT = "active-attempt"
     ACTIVE_ATTEMPT_CURRENT_SCOPE = "active-attempt-current-scope"
+    ACTIVE_OR_PAUSED_ATTEMPT = "active-or-paused-attempt"
     ACTIVE_OR_PAUSED_ATTEMPT_CURRENT_SCOPE = "active-or-paused-attempt-current-scope"
     ACTIVE_OR_REVIEW_ATTEMPT_CURRENT_SCOPE = "active-or-review-attempt-current-scope"
     DEFERRED_ITEM = "deferred-item"
@@ -270,12 +271,12 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.REBIND_ATTEMPT:
             return ActionSemantics(
-                "Correct an active or paused attempt's Git lineage without restarting it.",
+                "Accept current scope and correct an active or paused attempt's Git lineage without restarting it.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
-                ActionLifecyclePrecondition.ACTIVE_OR_PAUSED_ATTEMPT_CURRENT_SCOPE,
-                "Replace the accepted branch, base revision, and brief while preserving lifecycle state and fencing prior worker authority.",
+                ActionLifecyclePrecondition.ACTIVE_OR_PAUSED_ATTEMPT,
+                "Replace the accepted scope, branch, base revision, and brief while preserving lifecycle state and fencing prior worker authority.",
             )
         case ActionKind.RESUME:
             return ActionSemantics(

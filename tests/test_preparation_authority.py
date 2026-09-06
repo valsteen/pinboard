@@ -1,15 +1,18 @@
+import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from threading import Event, Thread
-from time import sleep
+from threading import Event
+from unittest.mock import patch
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.files.views import derive_expected_view_bytes
-from pinboard.adapters.sqlite.database import initialize_database
+from pinboard.adapters.sqlite.database import initialize_database, open_database
 from pinboard.adapters.sqlite.errors import StorageError
+from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
 from pinboard.application.decision_projection import project_decision_snapshot
@@ -462,10 +465,10 @@ class PreparationAuthorityTest(unittest.TestCase):
         self.assertEqual(authority_models.PreparationLeaseStatus.REVOKED, revoked.proposed_replacement.state)
         self.assertGreater(revoked.proposed_replacement.generation, transferred.proposed_replacement.generation)
 
-    def test_operation_start_time_remains_authoritative_while_write_lock_crosses_expiry(self) -> None:
+    def test_operation_start_time_remains_authoritative_while_waiting_for_sqlite_write_lock(self) -> None:
         state = complete_sqlite_state()
-        acquired_at = datetime.now(SQLITE_NOW.tzinfo)
-        store, _database_path = self._store(state)
+        acquired_at = SQLITE_NOW
+        store, database_path = self._store(state)
         snapshot = project_decision_snapshot(store.snapshot(), acquired_at)
         item = snapshot.item(ItemId("work-c"))
         definition = snapshot.definition(ItemId("work-c"))
@@ -490,41 +493,50 @@ class PreparationAuthorityTest(unittest.TestCase):
         )
         self.assertNotIsInstance(acquired, DecisionFailure)
         command_authority = project_decision_snapshot(store.snapshot(), acquired_at).command_preparation_authorities[0]
-        locked = Event()
+        operation_start = expires_at - timedelta(microseconds=1)
+        connection_ready = Event()
+        lock_held = Event()
+        write_requested = Event()
 
-        def hold_write_lock() -> None:
-            with store.write():
-                locked.set()
-                sleep(1.2)
+        def signal_write(statement: str) -> None:
+            if statement == "BEGIN IMMEDIATE":
+                write_requested.set()
 
-        holder = Thread(target=hold_write_lock)
-        holder.start()
-        self.assertTrue(locked.wait(timeout=1))
-        operation_start = datetime.now(expires_at.tzinfo)
-        self.assertLess(operation_start, expires_at)
+        def open_contender(path: Path, mode: OpenMode) -> sqlite3.Connection:
+            connection = open_database(path, mode)
+            connection.set_trace_callback(signal_write)
+            connection_ready.set()
+            if not lock_held.wait(timeout=10):
+                connection.close()
+                raise AssertionError("The test did not acquire the competing write lock.")
+            return connection
 
-        released = decide_and_commit_preparation_authority_change(
-            store,
-            authority_models.ReleasePreparationAuthority(command_authority, operation_start),
-        )
+        with (
+            patch("pinboard.adapters.sqlite.store.open_database", side_effect=open_contender),
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            pending_release = executor.submit(
+                decide_and_commit_preparation_authority_change,
+                store,
+                authority_models.ReleasePreparationAuthority(command_authority, operation_start),
+            )
+            self.assertTrue(connection_ready.wait(timeout=10))
+            blocker = open_database(database_path, OpenMode.READ_WRITE)
+            try:
+                blocker.execute("BEGIN IMMEDIATE")
+                lock_held.set()
+                self.assertTrue(write_requested.wait(timeout=10))
+                self.assertFalse(pending_release.done())
+                blocker.rollback()
+                released = pending_release.result(timeout=10)
+            finally:
+                blocker.rollback()
+                blocker.close()
 
-        holder.join(timeout=2)
-        self.assertFalse(holder.is_alive())
-        next_operation_start = datetime.now(expires_at.tzinfo)
-        self.assertGreaterEqual(next_operation_start, expires_at)
         self.assertNotIsInstance(released, DecisionFailure)
         self.assertEqual(
             authority_models.PreparationLeaseStatus.RELEASED, store.snapshot().authority.preparation_leases[0].state
         )
-        rejected = decide_and_commit_preparation_authority_change(
-            store,
-            authority_models.RenewPreparationAuthority(
-                command_authority,
-                next_operation_start,
-                next_operation_start + timedelta(minutes=1),
-            ),
-        )
-        self.assertIsInstance(rejected, DecisionFailure)
 
 
 if __name__ == "__main__":

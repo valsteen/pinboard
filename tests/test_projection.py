@@ -20,7 +20,7 @@ class DecisionProjectionTest(unittest.TestCase):
         self.assertIsNone(sparse_item.source)
         self.assertIsNone(sparse_item.notes)
         self.assertEqual(LeaseId("attempt-lease-a"), snapshot.attempt_authorities[0].lease_id)
-        self.assertEqual(ItemId("work-a"), snapshot.focus_item)
+        self.assertEqual(2, snapshot.host_epoch)
 
     def test_terminal_work_is_history_not_live_work(self) -> None:
         snapshot = project_decision_snapshot(complete_sqlite_state(), SQLITE_NOW)

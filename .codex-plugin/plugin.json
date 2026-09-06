@@ -28,7 +28,7 @@
     ],
     "defaultPrompt": [
       "Show the legal next project actions.",
-      "Preserve this proposed work for the next coordination pass.",
+      "Preserve this proposed work for later selection.",
       "Assess whether this unfamiliar repository can be changed reliably.",
       "Trace and plan a recursive cleanup of dead, test-only, and abandoned feature residue.",
       "Find the smallest durable owner for this project's AI-facing guidance."

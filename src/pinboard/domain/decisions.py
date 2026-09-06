@@ -27,7 +27,6 @@ class ActionCapabilityFactory:
             subject=subject,
             label=label,
             expected_revision=self.revision,
-            coordinator_generation=self.actor.generation,
             subject_revision=subject_revision,
             authorization=self.actor.authorization,
             lease_id=self.actor.lease_id,
@@ -110,9 +109,7 @@ def _preparer_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory
     return tuple(result)
 
 
-def _active_coordinator_actions(
-    snapshot: LedgerSnapshot, factory: ActionCapabilityFactory
-) -> list[decision_models.Action]:
+def _project_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory) -> list[decision_models.Action]:
     result: list[decision_models.Action] = []
     for item in snapshot.items:
         if item.state not in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW} or item.attempt is None:
@@ -139,10 +136,7 @@ def _active_coordinator_actions(
             result.append(
                 decision_models.CompleteAction(factory.make(item.attempt, f"Accept and complete {item.item}"))
             )
-        if (
-            item.state == work_models.WorkState.REVIEW
-            and factory.actor.authorization == decision_models.AuthorizationKind.COORDINATION
-        ):
+        if item.state == work_models.WorkState.REVIEW:
             attempt = snapshot.attempt(item.attempt)
             result.append(
                 decision_models.ReturnForCorrectionAction(
@@ -198,7 +192,7 @@ def _item_actions(
     return []
 
 
-def available_actions(  # noqa: PLR0912
+def available_actions(
     snapshot: LedgerSnapshot, actor: decision_models.ActionActorAuthority
 ) -> DecisionResult[tuple[decision_models.Action, ...]]:
     revision = snapshot.revision if actor.revision_scoped else ""
@@ -210,7 +204,6 @@ def available_actions(  # noqa: PLR0912
                         LedgerId("ledger"),
                         "Inspect current work",
                         revision,
-                        actor.generation,
                         authorization=actor.authorization,
                     )
                 ),
@@ -234,8 +227,8 @@ def available_actions(  # noqa: PLR0912
                             "The supplied preparation lease is not current for a ready item.",
                         )
                     return result
-                case decision_models.Role.COORDINATOR:
-                    result = _active_coordinator_actions(snapshot, factory)
+                case decision_models.Role.PROJECT:
+                    result = _project_actions(snapshot, factory)
                     for item in snapshot.items:
                         if any(authority.item == item.item for authority in snapshot.command_preparation_authorities):
                             continue
@@ -278,12 +271,6 @@ def available_actions(  # noqa: PLR0912
                                 ),
                             )
                         )
-                    if snapshot.can_transfer_coordinator:
-                        result.append(
-                            decision_models.TransferCoordinatorAction(
-                                factory.make(LedgerId("ledger"), "Transfer coordinator ownership")
-                            )
-                        )
                     return tuple(result)
                 case _ as unreachable:
                     assert_never(unreachable)
@@ -320,7 +307,6 @@ def validate_supplied_action(
     }:
         capability_matches = (
             supplied_capability.label == current_capability.label
-            and supplied_capability.coordinator_generation == current_capability.coordinator_generation
             and supplied_capability.subject_revision == current_capability.subject_revision
             and supplied_capability.authorization == current_capability.authorization
             and supplied_capability.lease_id == current_capability.lease_id
@@ -1038,35 +1024,6 @@ def _dispose_proposal(
     )
 
 
-def _transfer(
-    snapshot: LedgerSnapshot, command: decision_models.TransferCoordinatorCommand, now: datetime
-) -> DecisionResult[decision_models.TransitionDecision]:
-    action = command.action
-    if not snapshot.can_transfer_coordinator:
-        return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE, "This ledger does not use transferable coordinator ownership."
-        )
-    before = snapshot.coordination_lease
-    if before is None:
-        return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            "The transferable coordination lease is unavailable.",
-        )
-    if before.state != work_models.CoordinationLeaseStatus.ACTIVE or before.expires_at <= now:
-        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "The coordination lease is not active.")
-    value = command.value
-    return _accepted_transition_decision(
-        action,
-        now,
-        decision_models.CoordinatorTransferChange(
-            decision_models.CoordinatorAuthorityChange(
-                before,
-                replace(before, task_id=value.task_id, host_id=value.host_id, generation=before.generation + 1),
-            )
-        ),
-    )
-
-
 def _revise_item(
     snapshot: LedgerSnapshot,
     command: decision_models.ReviseItemCommand,
@@ -1146,7 +1103,5 @@ def decide(  # noqa: C901, PLR0912
             return _dispose_proposal(snapshot, command, now)
         case decision_models.ReviseItemCommand():
             return _revise_item(snapshot, command, now)
-        case decision_models.TransferCoordinatorCommand():
-            return _transfer(snapshot, command, now)
         case _ as unreachable:
             assert_never(unreachable)

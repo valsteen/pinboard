@@ -237,7 +237,7 @@ class SQLiteStoreTest(unittest.TestCase):
         for field, value, expected in (
             ("application", "wrong-application", StorageErrorCode.INVALID_STATE),
             ("schema_version", 0, StorageErrorCode.SCHEMA_UNSUPPORTED),
-            ("schema_version", 4, StorageErrorCode.SCHEMA_UNSUPPORTED),
+            ("schema_version", 5, StorageErrorCode.SCHEMA_UNSUPPORTED),
         ):
             tampered, _ = self._store(populated=False)
             connection = sqlite3.connect(tampered)
@@ -255,12 +255,7 @@ class SQLiteStoreTest(unittest.TestCase):
         connection = sqlite3.connect(malformed)
         try:
             connection.execute("PRAGMA foreign_keys = OFF")
-            connection.execute(
-                """
-                INSERT INTO current_focus (singleton, item_id, attempt_id, next_action, subject_revision)
-                VALUES (1, 'missing', 'missing-1', 'continue', 1)
-                """
-            )
+            connection.execute("DROP TABLE transition_history")
             connection.commit()
         finally:
             connection.close()
@@ -274,7 +269,7 @@ class SQLiteStoreTest(unittest.TestCase):
         try:
             self.assertEqual("wal", connection.execute("PRAGMA journal_mode = WAL").fetchone()[0])
             connection.execute("PRAGMA ignore_check_constraints = ON")
-            connection.execute("UPDATE project_meta SET schema_version = 4")
+            connection.execute("UPDATE project_meta SET schema_version = 5")
             connection.commit()
         finally:
             connection.close()
@@ -330,7 +325,7 @@ class SQLiteStoreTest(unittest.TestCase):
         connection = open_database(path, OpenMode.READ_WRITE)
         try:
             with self.assertRaises(StorageError) as invariant_error, write_transaction(connection):
-                connection.execute("INSERT INTO current_focus VALUES (1, 'missing', 'missing-1', 'continue', 1)")
+                connection.execute("INSERT INTO item_dependencies VALUES ('missing', 'missing', 0)")
             self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, invariant_error.exception.code)
             self.assertEqual(0, connection.execute("SELECT revision FROM project_meta").fetchone()[0])
 
@@ -378,7 +373,7 @@ class SQLiteStoreTest(unittest.TestCase):
             connection.execute(
                 "CREATE TABLE project_meta (singleton INTEGER, application TEXT, schema_version INTEGER)"
             )
-            connection.execute("INSERT INTO project_meta VALUES (1, 'pinboard', 3)")
+            connection.execute("INSERT INTO project_meta VALUES (1, 'pinboard', 4)")
             connection.commit()
         finally:
             connection.close()
@@ -390,7 +385,7 @@ class SQLiteStoreTest(unittest.TestCase):
         invalid_types_connection = sqlite3.connect(invalid_types)
         try:
             invalid_types_connection.execute("CREATE TABLE project_meta (application, schema_version)")
-            invalid_types_connection.execute("INSERT INTO project_meta VALUES (7, 'sqlite-v3')")
+            invalid_types_connection.execute("INSERT INTO project_meta VALUES (7, 'sqlite-v4')")
             invalid_types_connection.commit()
         finally:
             invalid_types_connection.close()
@@ -663,7 +658,7 @@ class SQLiteStoreTest(unittest.TestCase):
             ).fetchone()[0]
         finally:
             connection.close()
-        self.assertEqual(18, table_count)
+        self.assertEqual(16, table_count)
         review_items = list(state.lifecycle.work_items)
         review_items[1] = replace(review_items[1], state=stored_state.StoredWorkItemState.REVIEW)
         review_attempt = replace(state.lifecycle.attempts[0], state=work_models.AttemptState.REVIEW)
@@ -671,11 +666,7 @@ class SQLiteStoreTest(unittest.TestCase):
             state,
             lifecycle=replace(state.lifecycle, work_items=tuple(review_items), attempts=(review_attempt,)),
         )
-        mismatched_focus = replace(state, focus=replace(state.focus, item_id=ItemId("work-c")))
-        for name, candidate in (
-            ("review candidate", review_without_candidate),
-            ("focus ownership", mismatched_focus),
-        ):
+        for name, candidate in (("review candidate", review_without_candidate),):
             self._assert_state_rejected(name, candidate)
 
         collected_anchors = replace(
@@ -770,7 +761,7 @@ class SQLiteStoreTest(unittest.TestCase):
         initial = store.snapshot()
         snapshot = project_decision_snapshot(initial, SQLITE_NOW)
         actor = decision_models.ActorAuthority(
-            decision_models.Role.COORDINATOR, decision_models.AuthorizationKind.COORDINATOR, snapshot.generation
+            decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
         )
         action = next(
             value for value in available_actions(snapshot, actor) if value.kind == decision_models.ActionKind.PAUSE
@@ -822,9 +813,9 @@ class SQLiteStoreTest(unittest.TestCase):
             for value in available_actions(
                 failed_snapshot,
                 decision_models.ActorAuthority(
-                    decision_models.Role.COORDINATOR,
-                    decision_models.AuthorizationKind.COORDINATOR,
-                    failed_snapshot.generation,
+                    decision_models.Role.PROJECT,
+                    decision_models.AuthorizationKind.PROJECT,
+                    0,
                 ),
             )
             if value.kind == decision_models.ActionKind.PAUSE
@@ -862,9 +853,9 @@ class SQLiteStoreTest(unittest.TestCase):
         before = store.snapshot()
         snapshot = project_decision_snapshot(before, SQLITE_NOW)
         actor = decision_models.ActorAuthority(
-            decision_models.Role.COORDINATOR,
-            decision_models.AuthorizationKind.COORDINATOR,
-            snapshot.generation,
+            decision_models.Role.PROJECT,
+            decision_models.AuthorizationKind.PROJECT,
+            0,
         )
         action = next(
             value for value in available_actions(snapshot, actor) if value.kind == decision_models.ActionKind.PAUSE
@@ -897,7 +888,7 @@ class SQLiteStoreTest(unittest.TestCase):
         before = store.snapshot()
         snapshot = project_decision_snapshot(before, SQLITE_NOW)
         actor = decision_models.ActorAuthority(
-            decision_models.Role.COORDINATOR, decision_models.AuthorizationKind.COORDINATOR, snapshot.generation
+            decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
         )
         action = next(
             value for value in available_actions(snapshot, actor) if value.kind == decision_models.ActionKind.PAUSE
@@ -925,7 +916,6 @@ class SQLiteStoreTest(unittest.TestCase):
         self.assertEqual(before.artifact_references, reopened.artifact_references)
         self.assertEqual(stored_state.StoredWorkItemState.PAUSED, reopened.lifecycle.work_items[1].state)
         self.assertEqual(work_models.AttemptState.PAUSED, reopened.lifecycle.attempts[0].state)
-        self.assertEqual("resume", reopened.focus.next_action)
         self.assertEqual(before.lifecycle.project.revision + 1, reopened.lifecycle.project.revision)
         self.assertEqual(len(before.transition_receipts) + 1, len(reopened.transition_receipts))
         self.assertEqual(decision_models.ActionKind.PAUSE, reopened.transition_receipts[-1].action_kind)
@@ -935,7 +925,7 @@ class SQLiteStoreTest(unittest.TestCase):
         before = store.snapshot()
         snapshot = project_decision_snapshot(before, SQLITE_NOW)
         actor = decision_models.ActorAuthority(
-            decision_models.Role.COORDINATOR, decision_models.AuthorizationKind.COORDINATOR, snapshot.generation
+            decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
         )
         action = next(
             value for value in available_actions(snapshot, actor) if value.kind == decision_models.ActionKind.COMPLETE
@@ -966,8 +956,6 @@ class SQLiteStoreTest(unittest.TestCase):
         )
         self.assertEqual(4, completed.authority.attempt_counters[0].generation_high_water)
         self.assertEqual(authority_models.AttemptLeaseStatus.REVOKED, completed.authority.attempt_leases[0].state)
-        self.assertIsNone(completed.focus.item_id)
-        self.assertIsNone(completed.focus.attempt_id)
 
     def test_review_submission_commits_exact_caller_supplied_candidate(self) -> None:
         _path, store = self._store()
@@ -1020,13 +1008,10 @@ class SQLiteStoreTest(unittest.TestCase):
         _path, store = self._store(populated=False)
         initialize_store(store, review_state)
         snapshot = project_decision_snapshot(store.snapshot(), SQLITE_NOW)
-        coordination = review_state.authority.coordination
-        assert coordination is not None
         actor = decision_models.ActorAuthority(
-            decision_models.Role.COORDINATOR,
-            decision_models.AuthorizationKind.COORDINATION,
-            coordination.generation,
-            coordination.lease_id,
+            decision_models.Role.PROJECT,
+            decision_models.AuthorizationKind.PROJECT,
+            0,
         )
         action = next(
             value

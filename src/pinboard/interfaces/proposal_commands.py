@@ -74,6 +74,8 @@ def create_proposal(
         store,
         domain_proposal_models.CreateProposalOperation(requested_intake),
         datetime.now(UTC),
+        actor_task_id=command.task_id,
+        actor_host_id=command.host_id,
     )
     if isinstance(creation_result, DecisionFailure):
         return ProposalFailure(creation_result.code, creation_result.message)

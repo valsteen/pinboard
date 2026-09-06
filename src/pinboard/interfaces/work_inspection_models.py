@@ -5,29 +5,16 @@ import msgspec
 from pinboard.application import query_models
 
 
-class CoordinatorView(msgspec.Struct, frozen=True):
-    task_id: str
-    host_id: str
-    generation: int
-    lease_id: str
-    expires_at: str
-    status: str
-
-
 class StatusView(msgspec.Struct, frozen=True):
     stored_state_opened: bool = msgspec.field(name="valid")
     source_checkout_root: str
     shared_repository_root: str
     work_root: str
     revision: str
-    focus_item: str | None
-    focus_attempt: str | None
     active_attempts: tuple[str, ...]
-    next_action: str
     counts: dict[str, int]
     intake_item_count: int
-    coordinator: CoordinatorView | None
-    authority: str = "v1"
+    authority: str = "v2"
 
 
 class ActionSemanticsView(msgspec.Struct, frozen=True):
@@ -51,10 +38,10 @@ class ActionView(msgspec.Struct, frozen=True, omit_defaults=True):
     subject: str
     label: str
     expected_revision: str
-    coordinator_generation: int
     subject_revision: str
     authorization: str
     lease_id: str
+    generation: int
     semantics: ActionSemanticsView
     input_contract: InputContractView | None = None
 

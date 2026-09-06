@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 
-from pinboard.application import stored_state
 from pinboard.application.artifacts import EvidenceArtifactRef, ResultArtifactRef
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.identifiers import ArtifactRefId, HistoryId, HistorySubjectId, HostId, TaskId
@@ -48,7 +47,6 @@ class TransitionMutation:
 
     decision: decision_models.TransitionDecision
     receipt: MutationReceipt
-    focus_after: stored_state.StoredFocus | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,16 +55,7 @@ class CheckpointAcceptanceMutation:
 
     decision: decision_models.CheckpointAcceptanceDecision
     receipt: MutationReceipt
-    focus_after: stored_state.StoredFocus | None
     checkpoint_artifacts: CheckpointArtifactChanges
-
-
-@dataclass(frozen=True, slots=True)
-class CoordinationAuthorityMutation:
-    """Persists an authorized coordination change without deciding its legality."""
-
-    receipt: MutationReceipt
-    decision: authority_models.CoordinationAuthorityDecision
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +78,6 @@ type StoredStateMutation = (
     TransitionMutation
     | CheckpointAcceptanceMutation
     | ProposalCreationMutation
-    | CoordinationAuthorityMutation
     | AttemptAuthorityMutation
     | PreparationAuthorityMutation
 )

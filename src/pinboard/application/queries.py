@@ -172,11 +172,9 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
         )
     )
     return query_models.WorkOverview(
-        "pinboard-overview/v2",
-        "sqlite-v3",
+        "pinboard-overview/v3",
+        "sqlite-v4",
         str(state.lifecycle.project.revision),
-        str(state.focus.item_id) if state.focus.item_id is not None else None,
-        str(state.focus.attempt_id) if state.focus.attempt_id is not None else None,
         tuple(
             str(attempt.attempt_id)
             for attempt in sorted(state.lifecycle.attempts, key=_attempt_key)
@@ -210,7 +208,7 @@ def project_item_status(
     )
     return query_models.ItemStatus(
         "pinboard-item-status/v1",
-        "sqlite-v3",
+        "sqlite-v4",
         str(state.lifecycle.project.revision),
         str(item.item_id),
         definition.title,
@@ -260,7 +258,7 @@ def project_item_definition(
         )
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
-        "sqlite-v3",
+        "sqlite-v4",
         state.lifecycle.project.revision,
         item_id,
         item.subject_revision,
@@ -301,7 +299,7 @@ def project_item_definition_history(
     )
     return query_models.ItemDefinitionHistory(
         "pinboard-item-definition-history/v1",
-        "sqlite-v3",
+        "sqlite-v4",
         state.lifecycle.project.revision,
         item_id,
         rows,

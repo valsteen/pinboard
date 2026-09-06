@@ -146,7 +146,7 @@ def _canonical_prompt(
         f"- Branch: {environment.branch}\n"
         f"- Starting revision: {environment.starting_revision}\n"
         f"- Declared permissions: {permissions}\n\n"
-        "Pinboard validates the checkout and branch. The starting revision and permissions are coordinator "
+        "Pinboard validates the checkout and branch. The starting revision and permissions are task "
         "declarations for the worker; they neither grant authority nor enforce the environment.\n"
     )
 
@@ -429,9 +429,7 @@ def prepare_dispatch_command(
                 f"Cannot read '{command.prompt}': {error}",
             )
     match command:
-        case cli_commands.CoordinatorReviewedDispatchCommand(brief_review=brief_review_path, review_id=review_id) | (
-            cli_commands.CoordinationReviewedDispatchCommand(brief_review=brief_review_path, review_id=review_id)
-        ):
+        case cli_commands.ProjectReviewedDispatchCommand(brief_review=brief_review_path, review_id=review_id):
             try:
                 supplied_review = SuppliedDispatchReview(brief_review_path.read_bytes(), review_id)
             except OSError as error:
@@ -439,7 +437,7 @@ def prepare_dispatch_command(
                     DispatchErrorCode.DISPATCH_BRIEF_REVIEW_INVALID,
                     f"Cannot read '{brief_review_path}': {error}",
                 )
-        case cli_commands.CoordinatorDispatchCommand() | cli_commands.CoordinationDispatchCommand():
+        case cli_commands.ProjectDispatchCommand():
             supplied_review = None
         case _ as unreachable:
             assert_never(unreachable)

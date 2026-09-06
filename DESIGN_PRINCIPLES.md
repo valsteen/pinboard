@@ -93,6 +93,10 @@ Supported typed code must not represent impossible states through exceptions, re
 
 A clean strict type check is evidence for invariants expressed by those types. Do not add runtime guards or malformed-object tests solely to execute a state that supported typed code cannot construct. Runtime validation and failure surfaces remain necessary where the fact is genuinely runtime-owned: deserialization and other external input, `Any` or cast boundaries, persisted relational state, filesystem and database effects, concurrency and staleness, and infrastructure failure.
 
+Do not fabricate required persisted state in a read fallback. A fallback is valid only when absence is an explicit supported value in the owning contract; otherwise the read boundary rejects the missing invariant. Making malformed storage appear usable merely postpones the failure until a writer relies on the fact that the reader concealed.
+
+The database initialization owner that creates a schema also owns every row required for that schema's valid empty state and seeds those rows in the same initialization transaction. When a schema change or feature introduces required seed data, update that owner and prove the invariant from fresh initialization rather than relying on populated fixtures.
+
 Validate structured input once, in the boundary record that deserializes or converts it. Put field-local and shape constraints in its annotations, and put invariants among fields of that record in its post-init validation when they cannot be expressed declaratively. After successful conversion, consumers trust those facts instead of repeating them. Later validation is justified when it combines independent sources or current external state, such as database identity or revision, time, filesystem state, or agreement between artifacts.
 
 Production code decodes or converts strict boundary records; it does not manually instantiate them as internal data-transfer objects. Decoder constraints are part of the boundary contract, so direct construction can create a value without proving the same facts. Use plain domain or application records for internal values after the boundary conversion.

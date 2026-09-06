@@ -57,16 +57,14 @@ def _commit_same_pause(
     store = SQLiteWorkStore(Path(database_path))
     before = store.snapshot()
     snapshot = project_decision_snapshot(before, SQLITE_NOW)
-    actor = decision_models.ActorAuthority(
-        decision_models.Role.COORDINATOR, decision_models.AuthorizationKind.COORDINATOR, snapshot.generation
-    )
+    actor = decision_models.ActorAuthority(decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0)
     actions = expect_success(available_actions(snapshot, actor))
     action = next(value for value in actions if value.kind == decision_models.ActionKind.PAUSE)
     assert isinstance(action, decision_models.PauseAction)
     selected_command = decision_models.PauseCommand(action, work_models.ReasonInput("Concurrent pause."))
     decision = expect_success(decide(snapshot, selected_command, SQLITE_NOW))
     assert isinstance(decision, decision_models.TransitionDecision)
-    mutation = project_transition_mutation(before, decision)
+    mutation = project_transition_mutation(before, decision, TaskId("project-task"), HostId("host-a"))
     barrier.wait()
     with store.write() as transaction:
         result = transaction.commit(mutation)
@@ -83,13 +81,10 @@ def _commit_same_checkpoint(
     store = SQLiteWorkStore(Path(database_path))
     before = store.snapshot()
     snapshot = project_decision_snapshot(before, SQLITE_NOW)
-    coordination = snapshot.coordination_authority
-    assert coordination is not None
     actor = decision_models.ActorAuthority(
-        decision_models.Role.COORDINATOR,
-        decision_models.AuthorizationKind.COORDINATION,
-        coordination.generation,
-        coordination.lease_id,
+        decision_models.Role.PROJECT,
+        decision_models.AuthorizationKind.PROJECT,
+        0,
     )
     actions = expect_success(available_actions(snapshot, actor))
     action = next(value for value in actions if value.kind == decision_models.ActionKind.ACCEPT_CHECKPOINT)
@@ -116,7 +111,9 @@ def _commit_same_checkpoint(
         ResultArtifactRef(result.key, result.revision, result.selector, result.content_sha256, result.size_bytes),
         EvidenceArtifactRef(review.key, review.revision, review.selector, review.content_sha256, review.size_bytes),
     )
-    mutation = project_checkpoint_acceptance_mutation(before, decision, artifacts)
+    mutation = project_checkpoint_acceptance_mutation(
+        before, decision, artifacts, TaskId("project-task"), HostId("host-a")
+    )
     barrier.wait()
     with store.write() as transaction:
         result = transaction.commit(mutation)
@@ -131,9 +128,7 @@ def _commit_same_definition_revision(
     store = SQLiteWorkStore(Path(database_path))
     before = store.snapshot()
     snapshot = project_decision_snapshot(before, SQLITE_NOW)
-    actor = decision_models.ActorAuthority(
-        decision_models.Role.COORDINATOR, decision_models.AuthorizationKind.COORDINATOR, snapshot.generation
-    )
+    actor = decision_models.ActorAuthority(decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0)
     actions = expect_success(available_actions(snapshot, actor))
     action = next(
         value
@@ -160,7 +155,7 @@ def _commit_same_definition_revision(
     )
     decision = expect_success(decide(snapshot, selected_command, SQLITE_NOW))
     assert isinstance(decision, decision_models.TransitionDecision)
-    mutation = project_transition_mutation(before, decision)
+    mutation = project_transition_mutation(before, decision, TaskId("project-task"), HostId("host-a"))
     barrier.wait()
     with store.write() as transaction:
         result = transaction.commit(mutation)
@@ -177,10 +172,8 @@ def _acquire_same_preparation(
     snapshot = project_decision_snapshot(store.snapshot(), SQLITE_NOW)
     item = snapshot.item(ItemId("work-c"))
     definition = snapshot.definition(ItemId("work-c"))
-    coordination = snapshot.coordination_authority
     assert item is not None
     assert definition is not None
-    assert coordination is not None
     operation = authority_models.AcquireInitialPreparationAuthority(
         snapshot.host_epoch,
         item.item,
@@ -188,7 +181,6 @@ def _acquire_same_preparation(
         snapshot.subject_revision(item.item) or "",
         definition.revision,
         definition.digest,
-        coordination,
         TaskId(f"preparer-{lease_id}"),
         HostId("host-a"),
         LeaseId(lease_id),
@@ -211,10 +203,8 @@ def _race_preparation_and_prerequisite_proposal(
         snapshot = project_decision_snapshot(store.snapshot(), SQLITE_NOW)
         item = snapshot.item(ItemId("work-c"))
         definition = snapshot.definition(ItemId("work-c"))
-        coordination = snapshot.coordination_authority
         assert item is not None
         assert definition is not None
-        assert coordination is not None
         operation = authority_models.AcquireInitialPreparationAuthority(
             snapshot.host_epoch,
             item.item,
@@ -222,7 +212,6 @@ def _race_preparation_and_prerequisite_proposal(
             snapshot.subject_revision(item.item) or "",
             definition.revision,
             definition.digest,
-            coordination,
             TaskId("preparer"),
             HostId("host-a"),
             LeaseId("preparation-a"),
@@ -240,14 +229,20 @@ def _race_preparation_and_prerequisite_proposal(
             "Work C needs one newly discovered prerequisite.",
             "The dependency must be preserved before activation.",
             "Record the prerequisite and relationship.",
-            "A coordinator can evaluate it.",
+            "A task can evaluate it.",
             work_models.PrerequisiteProposalRelation(ItemId("work-c")),
             "The relationship is current.",
             ("source:local",),
             ("Work C remains ready.",),
         )
         barrier.wait()
-        result = create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW)
+        result = create_proposal(
+            store,
+            CreateProposalOperation(intake),
+            SQLITE_NOW,
+            actor_task_id=TaskId("discovering-task"),
+            actor_host_id=HostId("host-a"),
+        )
     results.put(result.code.value if isinstance(result, DecisionFailure) else "committed")
 
 
@@ -293,6 +288,8 @@ def _activate_same_prepared_item(
         store,
         selected_command,
         SQLITE_NOW + timedelta(seconds=1),
+        actor_task_id=None,
+        actor_host_id=None,
         transition_brief_identity=identity,
     )
     results.put(result.code.value if isinstance(result, DecisionFailure) else f"committed:{state_artifact_ref_id}")

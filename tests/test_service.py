@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,11 +22,11 @@ from pinboard.application.decision_projection import (
     project_decision_snapshot,
     project_inactive_attempt_authority,
 )
+from pinboard.application.mutation_models import MutationReceipt
 from pinboard.application.service import (
     create_proposal,
     decide_and_commit_attempt_authority_change,
     decide_and_commit_checkpoint_acceptance,
-    decide_and_commit_coordination_authority_change,
     decide_and_commit_transition,
 )
 from pinboard.domain import authority_models, decision_models, work_models
@@ -93,17 +93,14 @@ class ServiceTest(unittest.TestCase):
         initialize_store(store, state)
         return store, roots.database_path
 
-    def _coordinator_action[ActionT: decision_models.Action](
+    def _project_action[ActionT: decision_models.Action](
         self, store: SQLiteWorkStore, action_type: type[ActionT], subject: str | None = None
     ) -> ActionT:
         snapshot = project_decision_snapshot(store.snapshot(), SQLITE_NOW)
-        authority = snapshot.coordination_authority
-        assert authority is not None
         actor = decision_models.ActorAuthority(
-            decision_models.Role.COORDINATOR,
-            decision_models.AuthorizationKind.COORDINATION,
-            authority.generation,
-            LeaseId(authority.lease_id),
+            decision_models.Role.PROJECT,
+            decision_models.AuthorizationKind.PROJECT,
+            0,
         )
         result = available_actions(snapshot, actor)
         self.assertIsInstance(result, tuple)
@@ -114,6 +111,35 @@ class ServiceTest(unittest.TestCase):
         )
         assert isinstance(selected, action_type)
         return selected
+
+    def _commit_transition(
+        self,
+        store: SQLiteWorkStore,
+        command: decision_models.NonCheckpointTransitionCommand,
+        now: datetime,
+        *,
+        transition_brief_identity: WorkBriefIdentity | None = None,
+    ) -> DecisionFailure | MutationReceipt:
+        is_project = command.action.capability.authorization == decision_models.AuthorizationKind.PROJECT
+        return decide_and_commit_transition(
+            store,
+            command,
+            now,
+            actor_task_id=TaskId("project-task") if is_project else None,
+            actor_host_id=HostId("host-a") if is_project else None,
+            transition_brief_identity=transition_brief_identity,
+        )
+
+    def _create_proposal(
+        self, store: SQLiteWorkStore, operation: CreateProposalOperation, now: datetime
+    ) -> DecisionFailure | MutationReceipt:
+        return create_proposal(
+            store,
+            operation,
+            now,
+            actor_task_id=TaskId("discovering-task"),
+            actor_host_id=HostId("host-a"),
+        )
 
     def _worker_action[ActionT: decision_models.Action](
         self, store: SQLiteWorkStore, action_type: type[ActionT]
@@ -137,12 +163,12 @@ class ServiceTest(unittest.TestCase):
     def test_decide_and_commit_transition_uses_one_locked_snapshot(self) -> None:
         store = self._store()
         before = store.snapshot()
-        action = self._coordinator_action(store, decision_models.PauseAction)
+        action = self._project_action(store, decision_models.PauseAction)
         result = non_checkpoint_command(
             decision_models.PauseCommand(action, work_models.ReasonInput("Pause at a stable checkpoint."))
         )
 
-        outcome = decide_and_commit_transition(store, result, SQLITE_NOW + timedelta(seconds=1))
+        outcome = self._commit_transition(store, result, SQLITE_NOW + timedelta(seconds=1))
 
         self.assertNotIsInstance(outcome, DecisionFailure)
         after = store.snapshot()
@@ -169,7 +195,7 @@ class ServiceTest(unittest.TestCase):
         )
         state = with_definition_dependencies(state, ItemId("work-a"), ())
         store, _database = self._store_with_state(state)
-        action = self._coordinator_action(store, decision_models.ResumeAction)
+        action = self._project_action(store, decision_models.ResumeAction)
         command = non_checkpoint_command(
             decision_models.ResumeCommand(action, work_models.ResumeInput(state.artifact_references[0].artifact_ref_id))
         )
@@ -197,7 +223,7 @@ class ServiceTest(unittest.TestCase):
 
         for mismatch in mismatches:
             with self.subTest(mismatch=mismatch):
-                result = decide_and_commit_transition(
+                result = self._commit_transition(
                     store,
                     command,
                     SQLITE_NOW + timedelta(seconds=1),
@@ -215,7 +241,7 @@ class ServiceTest(unittest.TestCase):
         command = non_checkpoint_command(
             decision_models.SubmitReviewCommand(action, work_models.SubmitReviewInput(CandidateId("candidate-review")))
         )
-        committed_mutation = decide_and_commit_transition(store, command, SQLITE_NOW + timedelta(seconds=1))
+        committed_mutation = self._commit_transition(store, command, SQLITE_NOW + timedelta(seconds=1))
         self.assertNotIsInstance(committed_mutation, DecisionFailure)
         assert not isinstance(committed_mutation, DecisionFailure)
         self.assertEqual(before.lifecycle.project.revision + 1, committed_mutation.project_revision)
@@ -260,13 +286,13 @@ class ServiceTest(unittest.TestCase):
                 command = non_checkpoint_command(
                     expect_transition_command(
                         parse_transition_command(
-                            self._coordinator_action(store, action_type, "intake-work"),
+                            self._project_action(store, action_type, "intake-work"),
                             payload,
                         )
                     )
                 )
 
-                result = decide_and_commit_transition(store, command, SQLITE_NOW + timedelta(seconds=1))
+                result = self._commit_transition(store, command, SQLITE_NOW + timedelta(seconds=1))
 
                 self.assertNotIsInstance(result, DecisionFailure)
                 reloaded = SQLiteWorkStore(database_path).snapshot()
@@ -292,11 +318,11 @@ class ServiceTest(unittest.TestCase):
                 store, database_path = self._store_with_state(complete_sqlite_state())
                 command = non_checkpoint_command(
                     expect_transition_command(
-                        parse_transition_command(self._coordinator_action(store, action_type), payload)
+                        parse_transition_command(self._project_action(store, action_type), payload)
                     )
                 )
 
-                result = decide_and_commit_transition(store, command, SQLITE_NOW + timedelta(seconds=1))
+                result = self._commit_transition(store, command, SQLITE_NOW + timedelta(seconds=1))
 
                 self.assertNotIsInstance(result, DecisionFailure)
                 reloaded = SQLiteWorkStore(database_path).snapshot()
@@ -321,12 +347,12 @@ class ServiceTest(unittest.TestCase):
                 work_models.SubmitReviewInput(CandidateId("protected-candidate")),
             )
         )
-        submitted = decide_and_commit_transition(store, submit, SQLITE_NOW + timedelta(seconds=1))
+        submitted = self._commit_transition(store, submit, SQLITE_NOW + timedelta(seconds=1))
         self.assertNotIsInstance(submitted, DecisionFailure)
         submitted_store = SQLiteWorkStore(database_path)
         submitted_attempt = submitted_store.snapshot().lifecycle.attempts[0]
         self.assertEqual("protected-candidate", submitted_attempt.candidate_revision)
-        accept_action = self._coordinator_action(submitted_store, decision_models.AcceptCheckpointAction)
+        accept_action = self._project_action(submitted_store, decision_models.AcceptCheckpointAction)
         accept = checkpoint_command(
             decision_models.AcceptCheckpointCommand(
                 accept_action,
@@ -375,6 +401,8 @@ class ServiceTest(unittest.TestCase):
                 accept,
                 SQLITE_NOW + timedelta(seconds=2),
                 checkpoint_artifacts,
+                actor_task_id=TaskId("project-task"),
+                actor_host_id=HostId("host-a"),
             )
 
         self.assertEqual(before_acceptance, SQLiteWorkStore(database_path).snapshot())
@@ -385,6 +413,8 @@ class ServiceTest(unittest.TestCase):
                 accept,
                 SQLITE_NOW + timedelta(seconds=2),
                 checkpoint_artifacts,
+                actor_task_id=TaskId("project-task"),
+                actor_host_id=HostId("host-a"),
             )
 
         self.assertNotIsInstance(accepted, DecisionFailure)
@@ -420,10 +450,10 @@ class ServiceTest(unittest.TestCase):
                 work_models.SubmitReviewInput(CandidateId("protected-candidate")),
             )
         )
-        submitted = decide_and_commit_transition(store, submit, SQLITE_NOW + timedelta(seconds=1))
+        submitted = self._commit_transition(store, submit, SQLITE_NOW + timedelta(seconds=1))
         self.assertNotIsInstance(submitted, DecisionFailure)
         submitted_store = SQLiteWorkStore(database_path)
-        mismatch_action = self._coordinator_action(submitted_store, decision_models.AcceptReviewAndContinueAction)
+        mismatch_action = self._project_action(submitted_store, decision_models.AcceptReviewAndContinueAction)
         mismatch = non_checkpoint_command(
             decision_models.AcceptReviewAndContinueCommand(
                 mismatch_action,
@@ -431,11 +461,11 @@ class ServiceTest(unittest.TestCase):
             )
         )
         before_mismatch = submitted_store.snapshot()
-        rejected = decide_and_commit_transition(submitted_store, mismatch, SQLITE_NOW + timedelta(seconds=2))
+        rejected = self._commit_transition(submitted_store, mismatch, SQLITE_NOW + timedelta(seconds=2))
         self.assertIsInstance(rejected, DecisionFailure)
         self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected.code)
         self.assertEqual(before_mismatch, submitted_store.snapshot())
-        accept_action = self._coordinator_action(submitted_store, decision_models.AcceptReviewAndContinueAction)
+        accept_action = self._project_action(submitted_store, decision_models.AcceptReviewAndContinueAction)
         accept = non_checkpoint_command(
             decision_models.AcceptReviewAndContinueCommand(
                 accept_action,
@@ -446,7 +476,7 @@ class ServiceTest(unittest.TestCase):
             )
         )
 
-        accepted = decide_and_commit_transition(submitted_store, accept, SQLITE_NOW + timedelta(seconds=3))
+        accepted = self._commit_transition(submitted_store, accept, SQLITE_NOW + timedelta(seconds=3))
 
         self.assertNotIsInstance(accepted, DecisionFailure)
         reloaded = SQLiteWorkStore(database_path).snapshot()
@@ -459,7 +489,6 @@ class ServiceTest(unittest.TestCase):
         self.assertIsNone(attempt.candidate_recorded_at)
         self.assertEqual(authority_models.AttemptLeaseStatus.REVOKED, authority.state)
         self.assertEqual(4, authority.generation)
-        self.assertEqual("continue", reloaded.focus.next_action)
         receipt = reloaded.transition_receipts[-1]
         self.assertEqual(decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE, receipt.action_kind)
         self.assertEqual("transition-receipt/v1", receipt.outcome_schema)
@@ -491,7 +520,7 @@ class ServiceTest(unittest.TestCase):
             ),
         )
         store, database_path = self._store_with_state(state)
-        close_action = self._coordinator_action(store, decision_models.CloseAction, "work-a")
+        close_action = self._project_action(store, decision_models.CloseAction, "work-a")
         close = non_checkpoint_command(
             decision_models.CloseCommand(
                 close_action,
@@ -499,7 +528,7 @@ class ServiceTest(unittest.TestCase):
             )
         )
 
-        closed = decide_and_commit_transition(store, close, SQLITE_NOW + timedelta(seconds=1))
+        closed = self._commit_transition(store, close, SQLITE_NOW + timedelta(seconds=1))
 
         self.assertNotIsInstance(closed, DecisionFailure)
         reloaded = SQLiteWorkStore(database_path).snapshot()
@@ -511,85 +540,6 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(work_models.AttemptState.DONE, attempt.state)
         self.assertEqual(authority_models.AttemptLeaseStatus.REVOKED, authority.state)
         self.assertEqual(4, authority.generation)
-        self.assertIsNone(reloaded.focus.attempt_id)
-
-    def test_coordination_authority_operations_are_pure_fenced_and_transactional(self) -> None:
-        state = complete_sqlite_state()
-        state = replace(
-            state,
-            authority=replace(state.authority, coordination=None),
-        )
-        store, _database_path = self._store_with_state(state)
-        acquired_at = SQLITE_NOW + timedelta(seconds=1)
-        with reject_table_deletes("work_items"):
-            acquired = decide_and_commit_coordination_authority_change(
-                store,
-                authority_models.AcquireCoordinationAuthority(
-                    state.lifecycle.project.host_epoch,
-                    TaskId("coordinator-a"),
-                    HostId("host-a"),
-                    LeaseId("coordination-a"),
-                    acquired_at,
-                    acquired_at + timedelta(minutes=2),
-                ),
-            )
-        self.assertNotIsInstance(acquired, DecisionFailure)
-        current = project_decision_snapshot(store.snapshot(), SQLITE_NOW).coordination_authority
-        assert current is not None
-
-        renewed = decide_and_commit_coordination_authority_change(
-            store,
-            authority_models.RenewCoordinationAuthority(
-                current,
-                acquired_at + timedelta(seconds=1),
-                acquired_at + timedelta(minutes=3),
-            ),
-        )
-
-        self.assertNotIsInstance(renewed, DecisionFailure)
-        after = store.snapshot()
-        assert after.authority.coordination is not None
-        self.assertEqual(acquired_at + timedelta(minutes=3), after.authority.coordination.expires_at)
-        self.assertEqual(state.lifecycle.project.revision + 2, after.lifecycle.project.revision)
-        self.assertEqual(len(state.transition_receipts) + 2, len(after.transition_receipts))
-        renewed_authority = project_decision_snapshot(after, SQLITE_NOW).coordination_authority
-        assert renewed_authority is not None
-        released = decide_and_commit_coordination_authority_change(
-            store,
-            authority_models.ReleaseCoordinationAuthority(renewed_authority, acquired_at + timedelta(seconds=2)),
-        )
-        self.assertNotIsInstance(released, DecisionFailure)
-        released_authority = store.snapshot().authority.coordination
-        assert released_authority is not None
-        self.assertEqual("released", released_authority.state.value)
-
-        revoke_store, _database_path = self._store_with_state(state)
-        acquired = decide_and_commit_coordination_authority_change(
-            revoke_store,
-            authority_models.AcquireCoordinationAuthority(
-                state.lifecycle.project.host_epoch,
-                TaskId("coordinator-b"),
-                HostId("host-a"),
-                LeaseId("coordination-b"),
-                acquired_at,
-                acquired_at + timedelta(minutes=2),
-            ),
-        )
-        self.assertNotIsInstance(acquired, DecisionFailure)
-        revoke_authority = project_decision_snapshot(revoke_store.snapshot(), SQLITE_NOW).coordination_authority
-        assert revoke_authority is not None
-        revoked = decide_and_commit_coordination_authority_change(
-            revoke_store,
-            authority_models.RevokeCoordinationAuthority(
-                revoke_authority.lease_id,
-                revoke_authority.generation,
-                acquired_at + timedelta(seconds=2),
-            ),
-        )
-        self.assertNotIsInstance(revoked, DecisionFailure)
-        revoked_authority = revoke_store.snapshot().authority.coordination
-        assert revoked_authority is not None
-        self.assertEqual("revoked", revoked_authority.state.value)
 
     def test_attempt_authority_renewal_and_release_persist_exact_generation(self) -> None:
         state = complete_sqlite_state()
@@ -649,8 +599,6 @@ class ServiceTest(unittest.TestCase):
         normal_store, _normal_database_path = self._store_with_state(normal_state)
         snapshot = project_decision_snapshot(normal_store.snapshot(), SQLITE_NOW)
         current = snapshot.command_attempt_authorities[0]
-        coordination = snapshot.coordination_authority
-        assert coordination is not None
         released = decide_and_commit_attempt_authority_change(
             normal_store,
             authority_models.ReleaseAttemptAuthority(current, SQLITE_NOW + timedelta(seconds=1)),
@@ -667,7 +615,6 @@ class ServiceTest(unittest.TestCase):
             normal_store,
             authority_models.TransferAttemptAuthority(
                 proof,
-                coordination,
                 TaskId("worker-next"),
                 HostId("host-a"),
                 LeaseId("attempt-next"),
@@ -683,7 +630,8 @@ class ServiceTest(unittest.TestCase):
                 next_authority.attempt,
                 next_authority.lease_id,
                 next_authority.generation,
-                coordination,
+                TaskId("project-task"),
+                HostId("host-a"),
                 SQLITE_NOW + timedelta(seconds=3),
             ),
         )
@@ -694,54 +642,31 @@ class ServiceTest(unittest.TestCase):
 
     def test_decide_and_commit_transition_rejects_stale_action_before_decision(self) -> None:
         store = self._store()
-        action = self._coordinator_action(store, decision_models.PauseAction)
+        action = self._project_action(store, decision_models.PauseAction)
         command = non_checkpoint_command(
             decision_models.PauseCommand(action, work_models.ReasonInput("Pause at a stable checkpoint."))
         )
 
-        first = decide_and_commit_transition(store, command, SQLITE_NOW + timedelta(seconds=1))
+        first = self._commit_transition(store, command, SQLITE_NOW + timedelta(seconds=1))
         self.assertNotIsInstance(first, DecisionFailure)
         committed = store.snapshot()
 
-        rejected = decide_and_commit_transition(store, command, SQLITE_NOW + timedelta(seconds=2))
+        rejected = self._commit_transition(store, command, SQLITE_NOW + timedelta(seconds=2))
 
         self.assertIsInstance(rejected, DecisionFailure)
         self.assertEqual(DecisionFailureCode.ACTION_NOT_AVAILABLE, rejected.code)
         self.assertEqual(committed, store.snapshot())
 
-    def test_decide_and_commit_transition_transfers_active_coordination_in_place(self) -> None:
-        store = self._store()
-        before = store.snapshot()
-        prior = before.authority.coordination
-        assert prior is not None
-        action = self._coordinator_action(store, decision_models.TransferCoordinatorAction)
-        command = non_checkpoint_command(
-            decision_models.TransferCoordinatorCommand(
-                action, work_models.TransferCoordinatorInput(TaskId("next-task"), HostId("next-host"))
-            )
-        )
-
-        receipt = decide_and_commit_transition(store, command, SQLITE_NOW + timedelta(seconds=1))
-
-        self.assertNotIsInstance(receipt, DecisionFailure)
-        current = store.snapshot().authority.coordination
-        assert current is not None
-        self.assertEqual(prior.lease_id, current.lease_id)
-        self.assertEqual(prior.acquired_at, current.acquired_at)
-        self.assertEqual(prior.expires_at, current.expires_at)
-        self.assertEqual(prior.generation + 1, current.generation)
-        self.assertEqual((TaskId("next-task"), HostId("next-host")), (current.task_id, current.host_id))
-
     def test_completion_fences_attempt_authority_atomically(self) -> None:
         store = self._store()
         before = store.snapshot()
         prior_attempt = before.authority.attempt_leases[0]
-        action = self._coordinator_action(store, decision_models.CompleteAction)
+        action = self._project_action(store, decision_models.CompleteAction)
         command = non_checkpoint_command(
             decision_models.CompleteCommand(action, work_models.EvidenceInput("The accepted outcome is complete."))
         )
 
-        receipt = decide_and_commit_transition(store, command, SQLITE_NOW + timedelta(seconds=1))
+        receipt = self._commit_transition(store, command, SQLITE_NOW + timedelta(seconds=1))
 
         self.assertNotIsInstance(receipt, DecisionFailure)
         after = store.snapshot()
@@ -751,11 +676,7 @@ class ServiceTest(unittest.TestCase):
 
     def test_sqlite_proposal_intake_is_placed_at_the_back_without_changing_current_work(self) -> None:
         state = complete_sqlite_state()
-        state = replace(
-            state,
-            proposals=replace(state.proposals, proposals=(), evidence=(), freshness=()),
-            authority=replace(state.authority, coordination=None),
-        )
+        state = replace(state, proposals=replace(state.proposals, proposals=(), evidence=(), freshness=()))
         store, _database_path = self._store_with_state(state)
         before = store.snapshot()
         created_at = SQLITE_NOW - timedelta(days=1)
@@ -765,10 +686,10 @@ class ServiceTest(unittest.TestCase):
             created_at,
             TaskId("discovering-task"),
             "SQLite proposal",
-            "A local observation needs coordination.",
+            "A local observation needs to be preserved.",
             "The proposal should be preserved immutably.",
             "A proposal row becomes available for disposition.",
-            "The coordinator can inspect it later.",
+            "A task can inspect it later.",
             work_models.IndependentProposalRelation(),
             "The evidence is current.",
             ("source:local",),
@@ -776,8 +697,8 @@ class ServiceTest(unittest.TestCase):
         )
 
         with reject_table_deletes("work_items"):
-            receipt = create_proposal(store, CreateProposalOperation(intake), recorded_at)
-        duplicate = create_proposal(store, CreateProposalOperation(intake), recorded_at + timedelta(seconds=1))
+            receipt = self._create_proposal(store, CreateProposalOperation(intake), recorded_at)
+        duplicate = self._create_proposal(store, CreateProposalOperation(intake), recorded_at + timedelta(seconds=1))
 
         self.assertNotIsInstance(receipt, DecisionFailure)
         self.assertIsInstance(duplicate, DecisionFailure)
@@ -792,7 +713,7 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(stored_state.StoredWorkItemState.INTAKE, intake_item.state)
         self.assertEqual(5, intake_item.queue_position)
         self.assertEqual("proposal:sqlite-proposal", intake_item.source)
-        self.assertEqual(before.focus, after.focus)
+        self.assertEqual(before.authority, after.authority)
         self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
         self.assertEqual(created_at, proposal.created_at)
         self.assertEqual(recorded_at, proposal.recorded_at)
@@ -812,7 +733,7 @@ class ServiceTest(unittest.TestCase):
             "Work C needs one newly discovered prerequisite.",
             "The dependency must be in intake before scheduling.",
             "Record the prerequisite candidate and relationship.",
-            "A coordinator can evaluate it in queue order.",
+            "A task can evaluate it in queue order.",
             work_models.PrerequisiteProposalRelation(ItemId("work-c")),
             "The relationship is current.",
             ("source:local",),
@@ -820,7 +741,7 @@ class ServiceTest(unittest.TestCase):
             2,
         )
 
-        receipt = create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW + timedelta(seconds=1))
+        receipt = self._create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW + timedelta(seconds=1))
 
         self.assertNotIsInstance(receipt, DecisionFailure)
         after = store.snapshot()
@@ -848,7 +769,7 @@ class ServiceTest(unittest.TestCase):
             ItemId("required-first"),
             tuple(value.dependency_id for value in after.lifecycle.dependencies if value.item_id == ItemId("work-c")),
         )
-        self.assertEqual(before.focus, after.focus)
+        self.assertEqual(before.authority, after.authority)
 
     def test_proposal_position_outside_the_live_queue_is_rejected_atomically(self) -> None:
         store = self._store()
@@ -869,7 +790,7 @@ class ServiceTest(unittest.TestCase):
         )
         before = store.snapshot()
 
-        result = create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW + timedelta(seconds=1))
+        result = self._create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW + timedelta(seconds=1))
 
         self.assertIsInstance(result, DecisionFailure)
         assert isinstance(result, DecisionFailure)
@@ -896,7 +817,7 @@ class ServiceTest(unittest.TestCase):
         )
         before = store.snapshot()
 
-        result = create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW + timedelta(seconds=1))
+        result = self._create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW + timedelta(seconds=1))
 
         self.assertIsInstance(result, DecisionFailure)
         self.assertEqual(DecisionFailureCode.ITEM_NOT_FOUND, result.code)
@@ -904,7 +825,7 @@ class ServiceTest(unittest.TestCase):
 
     def test_proposal_relationships_reject_missing_identities_before_sqlite(self) -> None:
         dependency_store = self._store()
-        accept = self._coordinator_action(dependency_store, decision_models.AcceptProposalAction)
+        accept = self._project_action(dependency_store, decision_models.AcceptProposalAction)
         dependency_command = non_checkpoint_command(
             decision_models.AcceptProposalCommand(
                 accept,
@@ -918,7 +839,7 @@ class ServiceTest(unittest.TestCase):
             ),
         )
         before = dependency_store.snapshot()
-        dependency_rejected = decide_and_commit_transition(
+        dependency_rejected = self._commit_transition(
             dependency_store,
             dependency_command,
             SQLITE_NOW + timedelta(seconds=1),
@@ -929,12 +850,12 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(before, dependency_store.snapshot())
 
         merge_store = self._store()
-        merge = self._coordinator_action(merge_store, decision_models.MergeProposalAction)
+        merge = self._project_action(merge_store, decision_models.MergeProposalAction)
         merge_command = non_checkpoint_command(
             decision_models.MergeProposalCommand(merge, work_models.MergeProposalInput(ItemId("missing-target")))
         )
         before = merge_store.snapshot()
-        merge_rejected = decide_and_commit_transition(merge_store, merge_command, SQLITE_NOW + timedelta(seconds=1))
+        merge_rejected = self._commit_transition(merge_store, merge_command, SQLITE_NOW + timedelta(seconds=1))
         self.assertIsInstance(merge_rejected, DecisionFailure)
         assert isinstance(merge_rejected, DecisionFailure)
         self.assertEqual(DecisionFailureCode.ITEM_NOT_FOUND, merge_rejected.code)
@@ -942,16 +863,15 @@ class ServiceTest(unittest.TestCase):
 
     def test_attempt_transfer_rejects_terminal_work_without_mutation(self) -> None:
         store = self._store()
-        complete_action = self._coordinator_action(store, decision_models.CompleteAction)
+        complete_action = self._project_action(store, decision_models.CompleteAction)
         complete_command = non_checkpoint_command(
             decision_models.CompleteCommand(
                 complete_action, work_models.EvidenceInput("Terminal transfer must stay fenced.")
             )
         )
-        completed = decide_and_commit_transition(store, complete_command, SQLITE_NOW + timedelta(seconds=1))
+        completed = self._commit_transition(store, complete_command, SQLITE_NOW + timedelta(seconds=1))
         self.assertNotIsInstance(completed, DecisionFailure)
         terminal = store.snapshot()
-        snapshot = project_decision_snapshot(terminal, SQLITE_NOW)
         proof = project_inactive_attempt_authority(
             terminal,
             AttemptId("work-a-1"),
@@ -959,14 +879,10 @@ class ServiceTest(unittest.TestCase):
         )
         self.assertNotIsInstance(proof, DecisionFailure)
         assert not isinstance(proof, DecisionFailure)
-        coordination = snapshot.coordination_authority
-        assert coordination is not None
-
         rejected = decide_and_commit_attempt_authority_change(
             store,
             authority_models.TransferAttemptAuthority(
                 proof,
-                coordination,
                 TaskId("terminal-worker"),
                 HostId("host-a"),
                 LeaseId("terminal-attempt"),

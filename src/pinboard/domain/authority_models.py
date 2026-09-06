@@ -6,50 +6,6 @@ from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
 
 
-@dataclass(frozen=True, slots=True)
-class AcquireCoordinationAuthority:
-    host_epoch: int
-    task_id: TaskId
-    host_id: HostId
-    lease_id: LeaseId
-    acquired_at: datetime
-    expires_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class RenewCoordinationAuthority:
-    authority: work_models.CoordinationCommandAuthority
-    renewed_at: datetime
-    expires_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class ReleaseCoordinationAuthority:
-    authority: work_models.CoordinationCommandAuthority
-    released_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class RevokeCoordinationAuthority:
-    lease_id: LeaseId
-    generation: int
-    revoked_at: datetime
-
-
-type CoordinationAuthorityOperation = (
-    AcquireCoordinationAuthority
-    | RenewCoordinationAuthority
-    | ReleaseCoordinationAuthority
-    | RevokeCoordinationAuthority
-)
-
-
-@dataclass(frozen=True, slots=True)
-class CoordinationAuthorityDecision:
-    expected_retained: work_models.CoordinationLeaseAuthority | None
-    proposed_replacement: work_models.CoordinationLeaseAuthority
-
-
 class AttemptLeaseStatus(Enum):
     ACTIVE = "active"
     RELEASED = "released"
@@ -101,7 +57,6 @@ class AcquireInitialPreparationAuthority:
     expected_item_subject_revision: str
     expected_definition_revision: int
     expected_definition_digest: str
-    coordination: work_models.CoordinationCommandAuthority
     task_id: TaskId
     host_id: HostId
     lease_id: LeaseId
@@ -112,7 +67,6 @@ class AcquireInitialPreparationAuthority:
 @dataclass(frozen=True, slots=True)
 class TransferPreparationAuthority:
     current: InactivePreparationAuthority
-    coordination: work_models.CoordinationCommandAuthority
     task_id: TaskId
     host_id: HostId
     lease_id: LeaseId
@@ -138,7 +92,8 @@ class RevokePreparationAuthority:
     item: ItemId
     lease_id: LeaseId
     generation: int
-    coordination: work_models.CoordinationCommandAuthority
+    task_id: TaskId
+    host_id: HostId
     revoked_at: datetime
 
 
@@ -202,7 +157,6 @@ class AcquireInitialAttemptAuthority:
 @dataclass(frozen=True, slots=True)
 class TransferAttemptAuthority:
     current: InactiveAttemptAuthority
-    coordination: work_models.CoordinationCommandAuthority
     task_id: TaskId
     host_id: HostId
     lease_id: LeaseId
@@ -228,7 +182,8 @@ class RevokeAttemptAuthority:
     attempt: AttemptId
     lease_id: LeaseId
     generation: int
-    coordination: work_models.CoordinationCommandAuthority
+    task_id: TaskId
+    host_id: HostId
     revoked_at: datetime
 
 

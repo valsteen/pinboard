@@ -33,13 +33,10 @@ def _rediscover_dispatch_action(
     supplied: decision_models.DispatchAction,
     now: datetime,
 ) -> DispatchResult[decision_models.Action | None]:
-    capability = supplied.capability
     state = store.snapshot()
     actions = discover_actions(
         state,
-        decision_models.Role.COORDINATOR,
-        lease_id=capability.lease_id,
-        generation=capability.coordinator_generation,
+        decision_models.Role.PROJECT,
         now=now,
     )
     if isinstance(actions, DecisionFailure):

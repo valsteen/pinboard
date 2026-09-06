@@ -117,30 +117,17 @@ def read_lifecycle(
     return stored_state.LifecycleRecords(project, items, dependencies, attempts, definitions)
 
 
-def read_focus(connection: sqlite3.Connection) -> stored_state.StoredFocus:
-    rows = tuple(
-        connection.execute(
-            "SELECT item_id, attempt_id, next_action, subject_revision FROM current_focus ORDER BY singleton"
-        ).fetchall()
-    )
-    if len(rows) > 1:
-        raise StorageError(StorageErrorCode.INVALID_STATE, "The database has multiple focus records.")
-    if not rows:
-        return stored_state.StoredFocus(None, None, "select", 0)
-    return decode_row(rows[0], stored_state.StoredFocus)
-
-
 def require_stored_item(state: stored_state.StoredWorkState, item_id: ItemId) -> stored_state.StoredWorkItem:
     value = next((candidate for candidate in state.lifecycle.work_items if candidate.item_id == item_id), None)
     if value is None:
-        raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "The focused mutation item is missing.")
+        raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "The targeted mutation item is missing.")
     return value
 
 
 def require_stored_attempt(state: stored_state.StoredWorkState, attempt_id: AttemptId) -> stored_state.StoredAttempt:
     value = next((candidate for candidate in state.lifecycle.attempts if candidate.attempt_id == attempt_id), None)
     if value is None:
-        raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "The focused mutation attempt is missing.")
+        raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "The targeted mutation attempt is missing.")
     return value
 
 
@@ -242,7 +229,7 @@ def set_item_state(
                     current.subject_revision,
                 ),
             ),
-            "The focused item mutation is stale.",
+            "The targeted item mutation is stale.",
         )
     ) is not None:
         return failure
@@ -306,7 +293,7 @@ def set_attempt_state(
                 current.subject_revision,
             ),
         ),
-        "The focused attempt mutation is stale.",
+        "The targeted attempt mutation is stale.",
     )
 
 
@@ -411,22 +398,4 @@ def insert_attempt(
             ),
         ),
         "The activation attempt already exists.",
-    )
-
-
-def update_focus(
-    connection: sqlite3.Connection,
-    before: stored_state.StoredFocus,
-    after: stored_state.StoredFocus,
-) -> DecisionFailure | None:
-    return require_one_changed_row(
-        connection.execute(
-            """
-            UPDATE current_focus
-            SET item_id = ?, attempt_id = ?, next_action = ?, subject_revision = ?
-            WHERE singleton = 1 AND subject_revision = ?
-            """,
-            (after.item_id, after.attempt_id, after.next_action, after.subject_revision, before.subject_revision),
-        ),
-        "The focused mutation no longer matches current focus.",
     )

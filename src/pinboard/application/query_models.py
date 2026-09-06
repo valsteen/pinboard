@@ -8,7 +8,7 @@ from pinboard.application import stored_state
 from pinboard.domain import authority_models, work_models
 
 type ItemStatusSchema = Literal["pinboard-item-status/v1"]
-type ItemStatusAuthority = Literal["sqlite-v3"]
+type ItemStatusAuthority = Literal["sqlite-v4"]
 
 
 class ItemStatusAttempt(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -98,8 +98,6 @@ class WorkOverview:
     schema: str
     authority: str
     revision: str
-    focus_item: str | None
-    focus_attempt: str | None
     active_attempts: tuple[str, ...]
     items: tuple[OverviewItem, ...]
     immediate_options: tuple[str, ...]
@@ -156,7 +154,7 @@ class WorkItemDefinitionView(msgspec.Struct, frozen=True, forbid_unknown_fields=
 
 class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition/v1"]
-    authority: Literal["sqlite-v3"]
+    authority: Literal["sqlite-v4"]
     project_revision: int
     item_id: str
     item_subject_revision: int
@@ -179,7 +177,7 @@ class ItemDefinitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_field
 
 class ItemDefinitionHistory(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition-history/v1"]
-    authority: Literal["sqlite-v3"]
+    authority: Literal["sqlite-v4"]
     project_revision: int
     item_id: str
     revisions: tuple[ItemDefinitionHistoryRow, ...]

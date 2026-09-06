@@ -303,7 +303,6 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         self.assertIn("later-work", rendered)
 
     def test_activation_and_resume_reject_mismatched_typed_brief_identity(self) -> None:
-        capability_values = ("label", "expected", 1, None, decision_models.AuthorizationKind.COORDINATOR, None, None)
         for name in ("activate", "resume"):
             with self.subTest(name=name):
                 project = Path(tempfile.mkdtemp()).resolve()
@@ -323,7 +322,9 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     )
                     capability = decision_models.MutationActionCapability(
                         ItemId("work-c"),
-                        *capability_values,
+                        "label",
+                        "expected",
+                        subject_revision="1",
                         preparation_authority=preparation,
                     )
                     command = decision_models.ActivateCommand(
@@ -338,7 +339,9 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     )
                 else:
                     value = work_a_brief(project)
-                    capability = decision_models.MutationActionCapability(ItemId("work-a"), *capability_values)
+                    capability = decision_models.MutationActionCapability(
+                        ItemId("work-a"), "label", "expected", subject_revision="1"
+                    )
                     command = decision_models.ResumeCommand(
                         decision_models.ResumeAction(capability), work_models.ResumeInput(ArtifactRefId(1))
                     )
@@ -468,7 +471,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         self.assertEqual("artifacts/briefs/make-canonical-briefs-typed-json-1/1.json", receipt["selector"])
         after = SQLiteWorkStore(work / "state.sqlite3").snapshot()
         self.assertEqual(before.lifecycle.work_items, after.lifecycle.work_items)
-        self.assertEqual(before.focus, after.focus)
+        self.assertEqual(before.authority, after.authority)
         self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
         artifact = work / receipt["selector"]
         self.assertEqual(canonical_work_brief_bytes(example_work_brief()), artifact.read_bytes())

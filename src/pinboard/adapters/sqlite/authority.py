@@ -49,18 +49,6 @@ def validate_attempt_authority(state: stored_state.StoredWorkState, error_code: 
 
 
 def read_authority(connection: sqlite3.Connection) -> stored_state.AuthorityRecords:
-    coordination_rows = tuple(
-        connection.execute(
-            """
-            SELECT lease_id, task_id, host_id, generation, acquired_at, expires_at, status AS state
-            FROM coordination_lease
-            ORDER BY singleton
-            """
-        ).fetchall()
-    )
-    if len(coordination_rows) > 1:
-        raise StorageError(StorageErrorCode.INVALID_STATE, "The database has multiple coordination leases.")
-    coordination = decode_row(coordination_rows[0], stored_state.StoredCoordinationLease) if coordination_rows else None
     counters = tuple(
         decode_row(row, stored_state.AttemptLeaseCounter)
         for row in connection.execute(
@@ -115,7 +103,6 @@ def read_authority(connection: sqlite3.Connection) -> stored_state.AuthorityReco
         ).fetchall()
     )
     return stored_state.AuthorityRecords(
-        coordination,
         counters,
         generations,
         leases,
@@ -183,62 +170,6 @@ def fence_attempt_authority(
         (before.attempt, after.generation, anchor["lease_id"], anchor["task_id"], anchor["host_id"]),
     )
     return None
-
-
-def write_coordination_authority(
-    connection: sqlite3.Connection,
-    expected_retained: work_models.CoordinationLeaseAuthority | None,
-    proposed_replacement: work_models.CoordinationLeaseAuthority,
-    stale_message: str,
-) -> DecisionFailure | None:
-    if expected_retained is None:
-        return require_one_changed_row(
-            connection.execute(
-                """
-                INSERT INTO coordination_lease (
-                    singleton, lease_id, task_id, host_id, generation, acquired_at, expires_at, status
-                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(singleton) DO NOTHING
-                """,
-                (
-                    proposed_replacement.lease_id,
-                    proposed_replacement.task_id,
-                    proposed_replacement.host_id,
-                    proposed_replacement.generation,
-                    proposed_replacement.acquired_at.isoformat(),
-                    proposed_replacement.expires_at.isoformat(),
-                    proposed_replacement.state.value,
-                ),
-            ),
-            stale_message,
-        )
-    return require_one_changed_row(
-        connection.execute(
-            """
-            UPDATE coordination_lease
-            SET lease_id = ?, task_id = ?, host_id = ?, generation = ?, acquired_at = ?, expires_at = ?, status = ?
-            WHERE singleton = 1 AND lease_id = ? AND task_id = ? AND host_id = ? AND generation = ?
-                AND acquired_at = ? AND expires_at = ? AND status = ?
-            """,
-            (
-                proposed_replacement.lease_id,
-                proposed_replacement.task_id,
-                proposed_replacement.host_id,
-                proposed_replacement.generation,
-                proposed_replacement.acquired_at.isoformat(),
-                proposed_replacement.expires_at.isoformat(),
-                proposed_replacement.state.value,
-                expected_retained.lease_id,
-                expected_retained.task_id,
-                expected_retained.host_id,
-                expected_retained.generation,
-                expected_retained.acquired_at.isoformat(),
-                expected_retained.expires_at.isoformat(),
-                expected_retained.state.value,
-            ),
-        ),
-        stale_message,
-    )
 
 
 def write_attempt_authority(

@@ -21,7 +21,6 @@ from pinboard.interfaces import cli_commands, transition_input
 
 class _CompoundCommand(Enum):
     ACTIONS = "actions"
-    ATTEMPT_ACQUIRE = "attempt-acquire"
     BRIEF_SOURCES = "brief-sources"
     DISPATCH = "dispatch"
     TRANSITION = "transition"
@@ -63,29 +62,21 @@ class _ActionsArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
 class _TransitionArguments(msgspec.Struct, frozen=True):
     action_id: cli_commands.StableActionId
     expected_revision: str
-    generation: int
     payload: Path
     subject_revision: str | None
 
 
-class _CoordinatorTransitionArguments(
+class _ProjectTransitionArguments(
     _TransitionArguments,
-    tag="coordinator",
+    tag="project",
     tag_field="authorization",
     frozen=True,
     forbid_unknown_fields=True,
 ):
+    task_id: cli_commands.StableTaskId
+    host_id: cli_commands.StableHostId
     lease_id: None
-
-
-class _CoordinationTransitionArguments(
-    _TransitionArguments,
-    tag="coordination",
-    tag_field="authorization",
-    frozen=True,
-    forbid_unknown_fields=True,
-):
-    lease_id: cli_commands.StableLeaseId
+    generation: None
 
 
 class _AttemptTransitionArguments(
@@ -96,6 +87,9 @@ class _AttemptTransitionArguments(
     forbid_unknown_fields=True,
 ):
     lease_id: cli_commands.StableLeaseId
+    generation: int
+    task_id: None
+    host_id: None
 
 
 class _PreparationTransitionArguments(
@@ -106,23 +100,23 @@ class _PreparationTransitionArguments(
     forbid_unknown_fields=True,
 ):
     lease_id: cli_commands.StableLeaseId
+    generation: int
+    task_id: None
+    host_id: None
 
 
 type _ExactTransitionArguments = (
-    _CoordinatorTransitionArguments
-    | _CoordinationTransitionArguments
-    | _AttemptTransitionArguments
-    | _PreparationTransitionArguments
+    _ProjectTransitionArguments | _AttemptTransitionArguments | _PreparationTransitionArguments
 )
 
 
 class _DispatchArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_id: cli_commands.StableActionId
     expected_revision: str
-    generation: int
+    task_id: cli_commands.StableTaskId
+    host_id: cli_commands.StableHostId
     checkpoint: str
     environment: Path
-    lease_id: cli_commands.StableLeaseId | None
     prompt: Path | None
     brief_review: Path | None
     review_id: cli_commands.KebabReviewId | None
@@ -130,20 +124,6 @@ class _DispatchArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     def __post_init__(self) -> None:
         if (self.brief_review is None) != (self.review_id is None):
             raise ValueError("--brief-review and --review-id must be supplied together")
-
-
-class _AttemptAcquireArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    attempt_id: cli_commands.StableAttemptId
-    task_id: cli_commands.StableTaskId
-    host_id: cli_commands.StableHostId
-    ttl_seconds: int
-    coordination_lease_id: cli_commands.StableLeaseId | None
-    coordination_generation: int | None
-    json: bool
-
-    def __post_init__(self) -> None:
-        if (self.coordination_lease_id is None) != (self.coordination_generation is None):
-            raise ValueError("--coordination-lease-id and --coordination-generation must be supplied together")
 
 
 def _decode_brief_sources[RawT](
@@ -175,21 +155,13 @@ def _decode_actions[RawT](values: dict[str, RawT]) -> cli_commands.ActionsComman
 def _decode_transition[RawT](values: dict[str, RawT]) -> cli_commands.TransitionCommand:
     arguments = msgspec.convert(values, type=_ExactTransitionArguments, strict=True)
     match arguments:
-        case _CoordinatorTransitionArguments():
-            return cli_commands.CoordinatorTransitionCommand(
+        case _ProjectTransitionArguments():
+            return cli_commands.ProjectTransitionCommand(
                 action_id=arguments.action_id,
                 expected_revision=arguments.expected_revision,
-                generation=arguments.generation,
                 payload=arguments.payload,
-                subject_revision=arguments.subject_revision,
-            )
-        case _CoordinationTransitionArguments():
-            return cli_commands.CoordinationTransitionCommand(
-                action_id=arguments.action_id,
-                expected_revision=arguments.expected_revision,
-                generation=arguments.generation,
-                payload=arguments.payload,
-                lease_id=arguments.lease_id,
+                task_id=arguments.task_id,
+                host_id=arguments.host_id,
                 subject_revision=arguments.subject_revision,
             )
         case _AttemptTransitionArguments():
@@ -216,71 +188,27 @@ def _decode_transition[RawT](values: dict[str, RawT]) -> cli_commands.Transition
 
 def _decode_dispatch[RawT](values: dict[str, RawT]) -> cli_commands.DispatchCommand:
     arguments = msgspec.convert(values, type=_DispatchArguments, strict=True)
-    if arguments.lease_id is None:
-        if arguments.brief_review is None:
-            return cli_commands.CoordinatorDispatchCommand(
-                action_id=arguments.action_id,
-                expected_revision=arguments.expected_revision,
-                generation=arguments.generation,
-                checkpoint=arguments.checkpoint,
-                environment=arguments.environment,
-                prompt=arguments.prompt,
-            )
-        assert arguments.review_id is not None
-        return cli_commands.CoordinatorReviewedDispatchCommand(
-            action_id=arguments.action_id,
-            expected_revision=arguments.expected_revision,
-            generation=arguments.generation,
-            checkpoint=arguments.checkpoint,
-            environment=arguments.environment,
-            brief_review=arguments.brief_review,
-            prompt=arguments.prompt,
-            review_id=arguments.review_id,
-        )
     if arguments.brief_review is None:
-        return cli_commands.CoordinationDispatchCommand(
+        return cli_commands.ProjectDispatchCommand(
             action_id=arguments.action_id,
             expected_revision=arguments.expected_revision,
-            generation=arguments.generation,
-            lease_id=arguments.lease_id,
+            task_id=arguments.task_id,
+            host_id=arguments.host_id,
             checkpoint=arguments.checkpoint,
             environment=arguments.environment,
             prompt=arguments.prompt,
         )
     assert arguments.review_id is not None
-    return cli_commands.CoordinationReviewedDispatchCommand(
+    return cli_commands.ProjectReviewedDispatchCommand(
         action_id=arguments.action_id,
         expected_revision=arguments.expected_revision,
-        generation=arguments.generation,
-        lease_id=arguments.lease_id,
+        task_id=arguments.task_id,
+        host_id=arguments.host_id,
         checkpoint=arguments.checkpoint,
         environment=arguments.environment,
         brief_review=arguments.brief_review,
         prompt=arguments.prompt,
         review_id=arguments.review_id,
-    )
-
-
-def _decode_attempt_acquire[RawT](
-    values: dict[str, RawT],
-) -> cli_commands.AttemptAcquireCommand | cli_commands.CoordinatedAttemptAcquireCommand:
-    arguments = msgspec.convert(values, type=_AttemptAcquireArguments, strict=True)
-    if arguments.coordination_lease_id is None or arguments.coordination_generation is None:
-        return cli_commands.AttemptAcquireCommand(
-            attempt_id=arguments.attempt_id,
-            task_id=arguments.task_id,
-            host_id=arguments.host_id,
-            ttl_seconds=arguments.ttl_seconds,
-            json=arguments.json,
-        )
-    return cli_commands.CoordinatedAttemptAcquireCommand(
-        attempt_id=arguments.attempt_id,
-        task_id=arguments.task_id,
-        host_id=arguments.host_id,
-        ttl_seconds=arguments.ttl_seconds,
-        coordination_lease_id=arguments.coordination_lease_id,
-        coordination_generation=arguments.coordination_generation,
-        json=arguments.json,
     )
 
 
@@ -293,8 +221,6 @@ def _decode_selected_command[RawT](
     match command_selection:
         case _CompoundCommand.ACTIONS:
             return _decode_actions(values)
-        case _CompoundCommand.ATTEMPT_ACQUIRE:
-            return _decode_attempt_acquire(values)
         case _CompoundCommand.BRIEF_SOURCES:
             return _decode_brief_sources(values)
         case _CompoundCommand.DISPATCH:
@@ -312,42 +238,6 @@ def _select_command(
     parser.set_defaults(command_selection=command_selection, selected_parser=parser)
 
 
-def _add_coordination_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    coordination = commands.add_parser("coordination", help="Borrow or manage temporary graph-wide authority.")
-    operations = coordination.add_subparsers(required=True)
-    apply = operations.add_parser("apply", help="Borrow coordination for one exact transition and release it.")
-    apply.add_argument("--task-id", required=True)
-    apply.add_argument("--host-id", required=True)
-    apply.add_argument("--action-id", required=True)
-    apply.add_argument("--payload", required=True, type=Path)
-    apply.add_argument("--ttl-seconds", type=int, default=60)
-    apply.add_argument("--json", action="store_true")
-    _select_command(apply, cli_commands.CoordinationApplyCommand)
-    acquire = operations.add_parser("acquire")
-    acquire.add_argument("--task-id", required=True)
-    acquire.add_argument("--host-id", required=True)
-    acquire.add_argument("--ttl-seconds", required=True, type=int)
-    acquire.add_argument("--json", action="store_true")
-    _select_command(acquire, cli_commands.CoordinationAcquireCommand)
-    renew = operations.add_parser("renew")
-    renew.add_argument("--lease-id", required=True)
-    renew.add_argument("--generation", required=True, type=int)
-    renew.add_argument("--ttl-seconds", required=True, type=int)
-    renew.add_argument("--json", action="store_true")
-    _select_command(renew, cli_commands.CoordinationRenewCommand)
-    release = operations.add_parser("release")
-    release.add_argument("--lease-id", required=True)
-    release.add_argument("--generation", required=True, type=int)
-    release.add_argument("--json", action="store_true")
-    _select_command(release, cli_commands.CoordinationReleaseCommand)
-    revoke = operations.add_parser("revoke")
-    revoke.add_argument("--json", action="store_true")
-    _select_command(revoke, cli_commands.CoordinationRevokeCommand)
-    status = operations.add_parser("status")
-    status.add_argument("--json", action="store_true")
-    _select_command(status, cli_commands.CoordinationStatusCommand)
-
-
 def _add_attempt_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     attempt = commands.add_parser("attempt", help="Manage a renewable attempt ownership claim.")
     operations = attempt.add_subparsers(required=True)
@@ -355,11 +245,9 @@ def _add_attempt_parser(commands: argparse._SubParsersAction[argparse.ArgumentPa
     acquire.add_argument("--attempt-id", required=True)
     acquire.add_argument("--task-id", required=True)
     acquire.add_argument("--host-id", required=True)
-    acquire.add_argument("--coordination-lease-id")
-    acquire.add_argument("--coordination-generation", type=int)
     acquire.add_argument("--ttl-seconds", required=True, type=int)
     acquire.add_argument("--json", action="store_true")
-    _select_command(acquire, _CompoundCommand.ATTEMPT_ACQUIRE)
+    _select_command(acquire, cli_commands.AttemptAcquireCommand)
     renew = operations.add_parser("renew")
     renew.add_argument("--attempt-id", required=True)
     renew.add_argument("--lease-id", required=True)
@@ -377,8 +265,8 @@ def _add_attempt_parser(commands: argparse._SubParsersAction[argparse.ArgumentPa
     revoke.add_argument("--attempt-id", required=True)
     revoke.add_argument("--lease-id", required=True)
     revoke.add_argument("--generation", required=True, type=int)
-    revoke.add_argument("--coordination-lease-id", required=True)
-    revoke.add_argument("--coordination-generation", required=True, type=int)
+    revoke.add_argument("--task-id", required=True)
+    revoke.add_argument("--host-id", required=True)
     revoke.add_argument("--json", action="store_true")
     _select_command(revoke, cli_commands.AttemptRevokeCommand)
     status = operations.add_parser("status")
@@ -399,19 +287,15 @@ def _add_preparation_parser(commands: argparse._SubParsersAction[argparse.Argume
     acquire.add_argument("--task-id", required=True)
     acquire.add_argument("--host-id", required=True)
     acquire.add_argument("--ttl-seconds", required=True, type=int)
-    acquire.add_argument("--coordination-lease-id", required=True)
-    acquire.add_argument("--coordination-generation", required=True, type=int)
     acquire.add_argument("--json", action="store_true")
-    _select_command(acquire, cli_commands.CoordinatorPreparationAcquireCommand)
+    _select_command(acquire, cli_commands.PreparationAcquireCommand)
     transfer = operations.add_parser("transfer")
     transfer.add_argument("--item-id", required=True)
     transfer.add_argument("--task-id", required=True)
     transfer.add_argument("--host-id", required=True)
     transfer.add_argument("--ttl-seconds", required=True, type=int)
-    transfer.add_argument("--coordination-lease-id", required=True)
-    transfer.add_argument("--coordination-generation", required=True, type=int)
     transfer.add_argument("--json", action="store_true")
-    _select_command(transfer, cli_commands.CoordinatedPreparationTransferCommand)
+    _select_command(transfer, cli_commands.PreparationTransferCommand)
     renew = operations.add_parser("renew")
     renew.add_argument("--item-id", required=True)
     renew.add_argument("--lease-id", required=True)
@@ -429,8 +313,8 @@ def _add_preparation_parser(commands: argparse._SubParsersAction[argparse.Argume
     revoke.add_argument("--item-id", required=True)
     revoke.add_argument("--lease-id", required=True)
     revoke.add_argument("--generation", required=True, type=int)
-    revoke.add_argument("--coordination-lease-id", required=True)
-    revoke.add_argument("--coordination-generation", required=True, type=int)
+    revoke.add_argument("--task-id", required=True)
+    revoke.add_argument("--host-id", required=True)
     revoke.add_argument("--json", action="store_true")
     _select_command(revoke, cli_commands.PreparationRevokeCommand)
     status = operations.add_parser("status")
@@ -450,7 +334,6 @@ def _add_item_parser(commands: argparse._SubParsersAction[argparse.ArgumentParse
     revise.add_argument("--file", required=True, type=Path)
     revise.add_argument("--task-id", required=True)
     revise.add_argument("--host-id", required=True)
-    revise.add_argument("--ttl-seconds", type=int, default=60)
     revise.add_argument("--json", action="store_true")
     _select_command(revise, cli_commands.ItemReviseCommand)
     definition = operations.add_parser("definition", help="Show one item's complete current accepted definition.")
@@ -484,7 +367,6 @@ def _add_chat_parser(commands: argparse._SubParsersAction[argparse.ArgumentParse
     close.add_argument("--reason", required=True)
     close.add_argument("--task-id", required=True)
     close.add_argument("--host-id", required=True)
-    close.add_argument("--ttl-seconds", type=int, default=60)
     close.add_argument("--json", action="store_true")
     _select_command(close, cli_commands.CloseCommand)
 
@@ -549,27 +431,31 @@ def build_parser() -> argparse.ArgumentParser:
     _add_brief_parser(commands)
     proposal = commands.add_parser("proposal", help="Create one intake item without activating it.")
     proposal.add_argument("--file", type=Path, required=True)
+    proposal.add_argument("--task-id", required=True)
+    proposal.add_argument("--host-id", required=True)
     _select_command(proposal, cli_commands.ProposalCommand)
     transition = commands.add_parser(
         "transition", help="Apply one selected lifecycle-changing action returned by the actions command."
     )
     transition.add_argument("--action-id", required=True)
     transition.add_argument("--expected-revision", required=True)
-    transition.add_argument("--generation", required=True, type=int)
+    transition.add_argument("--generation", type=int)
     transition.add_argument("--subject-revision")
     transition.add_argument("--lease-id")
+    transition.add_argument("--task-id")
+    transition.add_argument("--host-id")
     transition.add_argument(
         "--authorization",
-        choices=("coordinator", "coordination", "attempt", "preparation"),
+        choices=("project", "attempt", "preparation"),
         required=True,
     )
     transition.add_argument("--payload", required=True, type=Path)
     _select_command(transition, _CompoundCommand.TRANSITION)
     dispatch = commands.add_parser("dispatch", help="Prepare or verify a canonical worker launch.")
-    dispatch.add_argument("--action-id", required=True, help="Exact dispatch action returned by coordinator actions.")
+    dispatch.add_argument("--action-id", required=True, help="Exact dispatch action returned by project actions.")
     dispatch.add_argument("--expected-revision", required=True, help="Ledger revision from the dispatch action.")
-    dispatch.add_argument("--generation", required=True, type=int, help="Coordinator generation from the action.")
-    dispatch.add_argument("--lease-id", help="Current coordination lease identity.")
+    dispatch.add_argument("--task-id", required=True)
+    dispatch.add_argument("--host-id", required=True)
     dispatch.add_argument("--checkpoint", required=True, help="Stable checkpoint ID in the canonical work brief.")
     dispatch.add_argument(
         "--environment",
@@ -592,7 +478,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Kebab-case identity used only when preserving a differing later review.",
     )
     _select_command(dispatch, _CompoundCommand.DISPATCH)
-    _add_coordination_parser(commands)
     _add_attempt_parser(commands)
     _add_preparation_parser(commands)
     _add_parallel_parser(commands)

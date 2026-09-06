@@ -1,4 +1,4 @@
 interface:
   display_name: "Pinboard: Deliver"
   short_description: "Implement one prepared Pinboard attempt"
-  default_prompt: "Use $pinboard-deliver to complete an already prepared active repository attempt without widening its scope, leave the durable result, and report review delivery accurately. If I invoke it to start named Pinboard work before an active attempt exists, briefly suggest ordinary Pinboard wording and continue through coordination when possible."
+  default_prompt: "Use $pinboard-deliver to complete an already prepared active repository attempt without widening its scope, leave the durable result, and report review delivery accurately. If I invoke it to start named Pinboard work before an active attempt exists, briefly suggest ordinary Pinboard wording and continue through Pinboard when possible."

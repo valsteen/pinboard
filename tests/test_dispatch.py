@@ -131,8 +131,6 @@ class DispatchTest(unittest.TestCase):
         )
         state = complete_sqlite_state()
         now = datetime.now(UTC)
-        assert state.authority.coordination is not None
-        coordination = dataclass_replace(state.authority.coordination, expires_at=now + timedelta(minutes=5))
         leases = tuple(
             dataclass_replace(value, expires_at=now + timedelta(minutes=5)) for value in state.authority.attempt_leases
         )
@@ -147,7 +145,7 @@ class DispatchTest(unittest.TestCase):
         state = dataclass_replace(
             state,
             artifact_references=(reference, *state.artifact_references[1:]),
-            authority=dataclass_replace(state.authority, coordination=coordination, attempt_leases=leases),
+            authority=dataclass_replace(state.authority, attempt_leases=leases),
         )
         store = SQLiteWorkStore(roots.database_path)
         initialize_store(store, state)
@@ -156,9 +154,7 @@ class DispatchTest(unittest.TestCase):
             actions = expect_success(
                 discover_actions(
                     store.snapshot(),
-                    decision_models.Role.COORDINATOR,
-                    lease_id=coordination.lease_id,
-                    generation=coordination.generation,
+                    decision_models.Role.PROJECT,
                     now=SQLITE_NOW,
                 )
             )
@@ -254,65 +250,6 @@ class DispatchTest(unittest.TestCase):
 
         self.assertIn(f"Checkpoint: {CHECKPOINT_ID}", prompt)
         self.assertEqual(3, clock.now.call_count)
-
-    def test_installed_dispatch_observes_authority_expiry_boundary(self) -> None:
-        for label, offset, accepted in (
-            ("before", timedelta(microseconds=-1), True),
-            ("at", timedelta(), False),
-            ("after", timedelta(microseconds=1), False),
-        ):
-            with self.subTest(label=label):
-                project, roots, store, value, action, environment = self.initialized()
-                selected = action()
-                coordination = store.snapshot().authority.coordination
-                assert coordination is not None
-                observed_at = coordination.expires_at + offset
-                selection_time = coordination.expires_at - timedelta(microseconds=2)
-                publication_time = coordination.expires_at - timedelta(microseconds=1)
-                environment_path = project / "environment.json"
-                environment_path.write_bytes(msgspec.json.encode(environment))
-                review_path = project / "review.json"
-                review_path.write_bytes(ready_review(value))
-                before = store.snapshot()
-                with (
-                    patch("pinboard.interfaces.action_selection.datetime") as action_clock,
-                    patch("pinboard.interfaces.dispatch_brief.datetime") as dispatch_clock,
-                ):
-                    action_clock.now.return_value = selection_time
-                    dispatch_clock.now.side_effect = (selection_time, publication_time, observed_at)
-                    result, prompt, stderr = self.run_cli(
-                        "--project-root",
-                        str(project),
-                        "--work-root",
-                        str(roots.work_root),
-                        "dispatch",
-                        "--action-id",
-                        str(decision_models.action_id(selected)),
-                        "--expected-revision",
-                        selected.capability.expected_revision,
-                        "--generation",
-                        str(selected.capability.coordinator_generation),
-                        "--lease-id",
-                        str(selected.capability.lease_id),
-                        "--checkpoint",
-                        CHECKPOINT_ID,
-                        "--environment",
-                        str(environment_path),
-                        "--brief-review",
-                        str(review_path),
-                        "--review-id",
-                        f"expiry-{label}",
-                    )
-                self.assertEqual(0, result, stderr) if accepted else self.assertNotEqual(0, result)
-                self.assertEqual(1, action_clock.now.call_count)
-                self.assertEqual(3, dispatch_clock.now.call_count)
-                if accepted:
-                    self.assertIn(f"Checkpoint: {CHECKPOINT_ID}", prompt)
-                else:
-                    self.assertIn("COORDINATION_LEASE_REQUIRED", stderr)
-                    after = store.snapshot()
-                    self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
-                    self.assertEqual(before.authority.coordination, after.authority.coordination)
 
     def test_identity_review_and_environment_failure_matrix_is_stable(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
@@ -632,10 +569,10 @@ class DispatchTest(unittest.TestCase):
             str(decision_models.action_id(selected)),
             "--expected-revision",
             selected.capability.expected_revision,
-            "--generation",
-            str(selected.capability.coordinator_generation),
-            "--lease-id",
-            str(selected.capability.lease_id),
+            "--task-id",
+            "project-task",
+            "--host-id",
+            "host-a",
             "--checkpoint",
             CHECKPOINT_ID,
             "--environment",
@@ -702,10 +639,10 @@ class DispatchTest(unittest.TestCase):
                 str(decision_models.action_id(selected)),
                 "--expected-revision",
                 selected.capability.expected_revision,
-                "--generation",
-                str(selected.capability.coordinator_generation),
-                "--lease-id",
-                str(selected.capability.lease_id),
+                "--task-id",
+                "project-task",
+                "--host-id",
+                "host-a",
                 "--checkpoint",
                 CHECKPOINT_ID,
                 "--environment",
@@ -767,10 +704,10 @@ class DispatchTest(unittest.TestCase):
             str(decision_models.action_id(selected)),
             "--expected-revision",
             selected.capability.expected_revision,
-            "--generation",
-            str(selected.capability.coordinator_generation),
-            "--lease-id",
-            str(selected.capability.lease_id),
+            "--task-id",
+            "project-task",
+            "--host-id",
+            "host-a",
             "--checkpoint",
             CHECKPOINT_ID,
         )

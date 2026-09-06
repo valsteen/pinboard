@@ -18,16 +18,9 @@ class ContentEncoding(Enum):
 
 class HandoverProject(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     application: Literal["pinboard"]
-    schema_version: Literal[3]
+    schema_version: Literal[4]
     created_at: str
     updated_at: str
-
-
-class HandoverFocus(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    item_id: str | None
-    attempt_id: str | None
-    next_action: str
-    subject_revision: int
 
 
 class HandoverWorkItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -216,11 +209,10 @@ class HandoverArtifactContent(msgspec.Struct, frozen=True, forbid_unknown_fields
 
 
 class ProjectHandover(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-project-handover/v1"]
-    authority: Literal["sqlite-v3"]
+    schema: Literal["pinboard-project-handover/v2"]
+    authority: Literal["sqlite-v4"]
     revision: int
     project: HandoverProject
-    focus: HandoverFocus
     work_items: tuple[HandoverWorkItem, ...]
     definition_revisions: tuple[HandoverDefinitionRevision, ...]
     dependencies: tuple[HandoverDependency, ...]
@@ -337,20 +329,14 @@ def project_handover_from_state(
         proposal_id: tuple(assumptions) for proposal_id, assumptions in proposal_freshness_groups.items()
     }
     return ProjectHandover(
-        "pinboard-project-handover/v1",
-        "sqlite-v3",
+        "pinboard-project-handover/v2",
+        "sqlite-v4",
         state.lifecycle.project.revision,
         HandoverProject(
             state.lifecycle.project.application,
             state.lifecycle.project.schema_version,
             state.lifecycle.project.created_at.isoformat(),
             state.lifecycle.project.updated_at.isoformat(),
-        ),
-        HandoverFocus(
-            None if state.focus.item_id is None else str(state.focus.item_id),
-            None if state.focus.attempt_id is None else str(state.focus.attempt_id),
-            state.focus.next_action,
-            state.focus.subject_revision,
         ),
         tuple(
             HandoverWorkItem(

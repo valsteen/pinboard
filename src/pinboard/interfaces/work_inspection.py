@@ -69,10 +69,16 @@ def project_action(
         subject=capability.subject,
         label=capability.label,
         expected_revision=capability.expected_revision,
-        coordinator_generation=capability.coordinator_generation,
         subject_revision=capability.subject_revision or "",
         authorization="observer" if capability.authorization is None else capability.authorization.value,
         lease_id=capability.lease_id or "",
+        generation=(
+            capability.command_authority.generation
+            if capability.command_authority is not None
+            else capability.preparation_authority.generation
+            if capability.preparation_authority is not None
+            else 0
+        ),
         semantics=_project_action_semantics(decision_models.action_semantics(action.kind)),
         input_contract=input_contract,
     )
@@ -127,32 +133,16 @@ def compose_status(
     now: datetime,
 ) -> work_inspection_models.StatusView:
     overview_value = queries.project_overview(state, now)
-    coordinator = state.authority.coordination
     return work_inspection_models.StatusView(
         stored_state_opened=True,
         source_checkout_root=str(source_checkout),
         shared_repository_root=str(shared_repository),
         work_root=str(work),
         revision=str(state.lifecycle.project.revision),
-        focus_item=overview_value.focus_item,
-        focus_attempt=overview_value.focus_attempt,
         active_attempts=overview_value.active_attempts,
-        next_action=state.focus.next_action,
         counts=dict(Counter(item.state.value for item in state.lifecycle.work_items)),
         intake_item_count=sum(1 for item in overview_value.items if item.state == work_models.WorkState.INTAKE),
-        coordinator=(
-            work_inspection_models.CoordinatorView(
-                str(coordinator.task_id),
-                str(coordinator.host_id),
-                coordinator.generation,
-                str(coordinator.lease_id),
-                coordinator.expires_at.isoformat(),
-                coordinator.state.value,
-            )
-            if coordinator is not None
-            else None
-        ),
-        authority="sqlite-v3",
+        authority="sqlite-v4",
     )
 
 
@@ -166,11 +156,8 @@ def show_status(roots: cli_commands.ResolvedRoots, command: cli_commands.StatusC
         write_json(status_projection)
     else:
         print(f"OK WORK_STATE_VALID revision={status_projection.revision}")
-        print(
-            f"focus_item={status_projection.focus_item or 'none'} "
-            f"focus_attempt={status_projection.focus_attempt or 'none'}"
-        )
-        print(f"next_action={status_projection.next_action} intake_items={status_projection.intake_item_count}")
+        print(f"active_attempts={','.join(status_projection.active_attempts) or 'none'}")
+        print(f"intake_items={status_projection.intake_item_count}")
     return 0
 
 

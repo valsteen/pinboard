@@ -81,7 +81,6 @@ class TypedTransitionContractTest(unittest.TestCase):
         )
         snapshot = LedgerSnapshot(
             "project-revision",
-            1,
             (ready,),
             artifacts=(
                 work_models.ArtifactRecord(ArtifactRefId(1), work_models.ArtifactKind.BRIEF),
@@ -117,7 +116,7 @@ class TypedTransitionContractTest(unittest.TestCase):
                 ItemId("ready-item"),
                 "activate",
                 "project-revision",
-                1,
+                "1",
                 authorization=decision_models.AuthorizationKind.PREPARATION,
                 lease_id=preparation.lease_id,
                 preparation_authority=preparation,
@@ -150,7 +149,6 @@ class TypedTransitionContractTest(unittest.TestCase):
     def test_resume_may_replace_the_attempt_brief_with_one_existing_brief_reference(self) -> None:
         without_attempt = LedgerSnapshot(
             "project-revision",
-            1,
             (
                 work_models.WorkItem(
                     ItemId("ready-item"),
@@ -189,7 +187,6 @@ class TypedTransitionContractTest(unittest.TestCase):
         )
         snapshot = LedgerSnapshot(
             "project-revision",
-            1,
             (paused,),
             attempts=(
                 work_models.AttemptRecord(

@@ -8,128 +8,6 @@ from pinboard.domain.identifiers import AttemptId, ItemId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
-def _coordination_token(value: work_models.CoordinationLeaseAuthority) -> work_models.CoordinationCommandAuthority:
-    return work_models.CoordinationCommandAuthority(
-        host_epoch=value.host_epoch,
-        task_id=value.task_id,
-        host_id=value.host_id,
-        lease_id=value.lease_id,
-        generation=value.generation,
-        expires_at=value.expires_at,
-    )
-
-
-def _current_coordination_authority(
-    retained: work_models.CoordinationLeaseAuthority | None,
-    authority: work_models.CoordinationCommandAuthority,
-    observed_at: datetime,
-) -> DecisionResult[work_models.CoordinationLeaseAuthority]:
-    if retained is None:
-        return DecisionFailure(
-            DecisionFailureCode.COORDINATION_LEASE_REQUIRED,
-            "Coordination authority does not exist.",
-        )
-    if retained.state != work_models.CoordinationLeaseStatus.ACTIVE or _coordination_token(retained) != authority:
-        return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Coordination authority is fenced.")
-    if retained.expires_at <= observed_at:
-        return DecisionFailure(
-            DecisionFailureCode.COORDINATION_LEASE_REQUIRED,
-            "Coordination authority has expired.",
-        )
-    return retained
-
-
-def decide_coordination_authority(
-    retained: work_models.CoordinationLeaseAuthority | None,
-    operation: authority_models.CoordinationAuthorityOperation,
-) -> DecisionResult[authority_models.CoordinationAuthorityDecision]:
-    match operation:
-        case authority_models.AcquireCoordinationAuthority(
-            host_epoch=host_epoch,
-            task_id=task_id,
-            host_id=host_id,
-            lease_id=lease_id,
-            acquired_at=acquired_at,
-            expires_at=expires_at,
-        ):
-            if expires_at <= acquired_at:
-                return DecisionFailure(
-                    DecisionFailureCode.TRANSITION_INPUT_INVALID,
-                    "Coordination authority requires a positive bounded interval.",
-                )
-            if (
-                retained is not None
-                and retained.state == work_models.CoordinationLeaseStatus.ACTIVE
-                and retained.expires_at > acquired_at
-            ):
-                return DecisionFailure(
-                    DecisionFailureCode.COORDINATION_LEASE_BUSY,
-                    "Another task retains live coordination authority.",
-                )
-            generation = 1 if retained is None else retained.generation + 1
-            return authority_models.CoordinationAuthorityDecision(
-                expected_retained=retained,
-                proposed_replacement=work_models.CoordinationLeaseAuthority(
-                    host_epoch=host_epoch,
-                    task_id=task_id,
-                    host_id=host_id,
-                    lease_id=lease_id,
-                    generation=generation,
-                    acquired_at=acquired_at,
-                    expires_at=expires_at,
-                    state=work_models.CoordinationLeaseStatus.ACTIVE,
-                ),
-            )
-        case authority_models.RenewCoordinationAuthority(
-            authority=authority, renewed_at=renewed_at, expires_at=expires_at
-        ):
-            current = _current_coordination_authority(retained, authority, renewed_at)
-            if isinstance(current, DecisionFailure):
-                return current
-            if expires_at <= renewed_at or expires_at <= current.expires_at:
-                return DecisionFailure(
-                    DecisionFailureCode.TRANSITION_INPUT_INVALID,
-                    "Coordination renewal must extend its bounded expiry.",
-                )
-            return authority_models.CoordinationAuthorityDecision(
-                expected_retained=current,
-                proposed_replacement=replace(current, expires_at=expires_at),
-            )
-        case authority_models.ReleaseCoordinationAuthority(authority=authority, released_at=released_at):
-            current = _current_coordination_authority(retained, authority, released_at)
-            if isinstance(current, DecisionFailure):
-                return current
-            return authority_models.CoordinationAuthorityDecision(
-                expected_retained=current,
-                proposed_replacement=replace(
-                    current,
-                    expires_at=released_at,
-                    state=work_models.CoordinationLeaseStatus.RELEASED,
-                ),
-            )
-        case authority_models.RevokeCoordinationAuthority(
-            lease_id=lease_id, generation=generation, revoked_at=revoked_at
-        ):
-            if retained is None:
-                return DecisionFailure(
-                    DecisionFailureCode.COORDINATION_LEASE_REQUIRED,
-                    "Coordination authority does not exist.",
-                )
-            if (retained.lease_id, retained.generation) != (lease_id, generation):
-                return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Coordination authority is fenced.")
-            return authority_models.CoordinationAuthorityDecision(
-                expected_retained=retained,
-                proposed_replacement=replace(
-                    retained,
-                    generation=retained.generation + 1,
-                    expires_at=revoked_at,
-                    state=work_models.CoordinationLeaseStatus.REVOKED,
-                ),
-            )
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
 def _attempt_token(value: authority_models.AttemptLeaseAuthority) -> work_models.CommandAttemptAuthority:
     return work_models.CommandAttemptAuthority(
         host_epoch=value.host_epoch,
@@ -174,7 +52,6 @@ def decide_attempt_authority(  # noqa: C901, PLR0912
     retained: authority_models.AttemptLeaseAuthority | None,
     counter: int,
     operation: authority_models.AttemptAuthorityOperation,
-    coordination: work_models.CoordinationLeaseAuthority | None,
     *,
     live_attempt: tuple[AttemptId, ItemId] | None = None,
     transferable_attempt: tuple[AttemptId, ItemId] | None = None,
@@ -229,7 +106,6 @@ def decide_attempt_authority(  # noqa: C901, PLR0912
             )
         case authority_models.TransferAttemptAuthority(
             current=current,
-            coordination=supplied_coordination,
             task_id=task_id,
             host_id=host_id,
             lease_id=lease_id,
@@ -242,8 +118,6 @@ def decide_attempt_authority(  # noqa: C901, PLR0912
                     "Attempt transfer requires the exact retained nonterminal attempt.",
                 )
             if (failure := _validate_attempt_transfer(retained, current, acquired_at)) is not None:
-                return failure
-            if (failure := _validate_coordination(coordination, supplied_coordination, acquired_at)) is not None:
                 return failure
             assert retained is not None
             if expires_at <= acquired_at:
@@ -305,11 +179,8 @@ def decide_attempt_authority(  # noqa: C901, PLR0912
             attempt=attempt,
             lease_id=lease_id,
             generation=generation,
-            coordination=supplied_coordination,
             revoked_at=revoked_at,
         ):
-            if (failure := _validate_coordination(coordination, supplied_coordination, revoked_at)) is not None:
-                return failure
             if retained is None or (retained.attempt, retained.lease_id, retained.generation) != (
                 attempt,
                 lease_id,
@@ -380,21 +251,6 @@ def _validate_attempt_transfer(
     )
     if current != expected:
         return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Attempt authority is fenced.")
-    return None
-
-
-def _validate_coordination(
-    retained: work_models.CoordinationLeaseAuthority | None,
-    current: work_models.CoordinationCommandAuthority,
-    now: datetime,
-) -> DecisionFailure | None:
-    if (
-        retained is None
-        or retained.state != work_models.CoordinationLeaseStatus.ACTIVE
-        or _coordination_token(retained) != current
-        or retained.expires_at <= now
-    ):
-        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Coordination authority is not current.")
     return None
 
 
@@ -480,7 +336,6 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
             expected_item_subject_revision=expected_item_subject_revision,
             expected_definition_revision=expected_definition_revision,
             expected_definition_digest=expected_definition_digest,
-            coordination=supplied_coordination,
             task_id=task_id,
             host_id=host_id,
             lease_id=lease_id,
@@ -530,8 +385,6 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     f"Item '{item}' definition digest differs from the initial preparation request.",
                 )
-            if (failure := _validate_coordination(snapshot.coordination_lease, supplied_coordination, now)) is not None:
-                return failure
             if counter != 0 or retained is not None:
                 return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Initial preparation is already claimed.")
             if expires_at <= acquired_at:
@@ -561,7 +414,6 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
             )
         case authority_models.TransferPreparationAuthority(
             current=current,
-            coordination=supplied_coordination,
             task_id=task_id,
             host_id=host_id,
             lease_id=lease_id,
@@ -571,8 +423,6 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
             if snapshot is None or retained is None:
                 return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation transfer is unavailable.")
             if (failure := _validate_preparation_transfer(retained, current, now)) is not None:
-                return failure
-            if (failure := _validate_coordination(snapshot.coordination_lease, supplied_coordination, now)) is not None:
                 return failure
             item_value = snapshot.item(retained.item)
             definition = snapshot.definition(retained.item)
@@ -639,15 +489,12 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
             item=item,
             lease_id=lease_id,
             generation=generation,
-            coordination=supplied_coordination,
             revoked_at=revoked_at,
         ):
             if snapshot is None:
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation revocation is unavailable."
                 )
-            if (failure := _validate_coordination(snapshot.coordination_lease, supplied_coordination, now)) is not None:
-                return failure
             if retained is None or (retained.item, retained.lease_id, retained.generation) != (
                 item,
                 lease_id,

@@ -8,9 +8,9 @@ from datetime import datetime
 
 from pinboard.application import stored_state
 from pinboard.application.decision_projection import project_decision_snapshot
-from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain import authority_models, decision_models
 from pinboard.domain.decisions import available_actions
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.errors import DecisionResult
 from pinboard.domain.identifiers import AttemptId, LeaseId
 
 
@@ -43,29 +43,13 @@ def discover_actions(
     now: datetime,
 ) -> DecisionResult[tuple[decision_models.Action, ...]]:
     snapshot = project_decision_snapshot(state, now)
-    selected_generation = generation if generation is not None else snapshot.generation
+    selected_generation = generation if generation is not None else 0
     match role:
         case decision_models.Role.OBSERVER:
             actor = decision_models.ObserverActorAuthority()
-        case decision_models.Role.COORDINATOR:
-            coordination = state.authority.coordination
-            if lease_id is not None:
-                if (
-                    coordination is None
-                    or coordination.state != work_models.CoordinationLeaseStatus.ACTIVE
-                    or coordination.lease_id != lease_id
-                    or coordination.generation != selected_generation
-                    or coordination.expires_at <= now
-                ):
-                    return DecisionFailure(
-                        DecisionFailureCode.COORDINATION_LEASE_REQUIRED,
-                        "The coordination lease is not current.",
-                    )
-                authorization = decision_models.AuthorizationKind.COORDINATION
-            else:
-                authorization = decision_models.AuthorizationKind.COORDINATOR
+        case decision_models.Role.PROJECT:
             actor = decision_models.ActorAuthority(
-                decision_models.Role.COORDINATOR, authorization, selected_generation, lease_id
+                decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
             )
         case decision_models.Role.WORKER:
             attempts = _select_worker_attempts(state, lease_id, selected_generation, now)

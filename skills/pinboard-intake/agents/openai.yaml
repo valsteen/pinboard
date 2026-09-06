@@ -1,4 +1,4 @@
 interface:
   display_name: "Pinboard: Intake"
   short_description: "Preserve proposed work as an intake item"
-  default_prompt: "Use $pinboard-intake to preserve this proposed work. If I also ask to start, begin, or work on it now, continue through $pinboard coordination and $pinboard-deliver instead of stopping after intake; for broad work, confirm scope and magnitude once without asking redundant permission."
+  default_prompt: "Use $pinboard-intake to preserve this proposed work. If I also ask to start, begin, or work on it now, continue through $pinboard and $pinboard-deliver instead of stopping after intake; for broad work, confirm scope and magnitude once without asking redundant permission."

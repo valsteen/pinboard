@@ -8,7 +8,6 @@ from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.identifiers import (
     AttemptId,
     CandidateId,
-    HostId,
     ItemId,
     ProposalId,
     SubjectId,
@@ -32,7 +31,14 @@ def action[SubjectT: SubjectId, ActionT](
     constructor: Callable[[decision_models.MutationActionCapability[SubjectT]], ActionT],
     subject: SubjectT,
 ) -> ActionT:
-    return constructor(decision_models.MutationActionCapability(subject, "test action", "rev", 1))
+    return constructor(
+        decision_models.MutationActionCapability(
+            subject=subject,
+            label="test action",
+            expected_revision="rev",
+            subject_revision="1",
+        )
+    )
 
 
 def expect_transition_command(
@@ -91,7 +97,3 @@ def accept_proposal_input(
 
 def defer_input(timing: str, reopen_condition: str) -> work_models.DeferInput:
     return work_models.DeferInput(work_models.Timing(timing), reopen_condition)
-
-
-def transfer_coordinator_input(task_id: str, host_id: str) -> work_models.TransferCoordinatorInput:
-    return work_models.TransferCoordinatorInput(TaskId(task_id), HostId(host_id))

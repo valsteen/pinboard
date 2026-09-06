@@ -44,7 +44,6 @@ ACTION_GROUPS: dict[decision_models.ActionKind, str] = {
     decision_models.ActionKind.RETURN_FOR_CORRECTION: "review",
     decision_models.ActionKind.RETURN_PROPOSAL: "proposal",
     decision_models.ActionKind.SUBMIT_REVIEW: "review",
-    decision_models.ActionKind.TRANSFER_COORDINATOR: "authority",
 }
 
 
@@ -230,7 +229,7 @@ DIAGRAM = Diagram(
             "authority",
             "Mutation ownership",
             "Who may act now",
-            ("coordination · preparation · attempt",),
+            ("preparation · attempt",),
             (),
             610,
             780,

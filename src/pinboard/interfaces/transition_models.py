@@ -86,11 +86,6 @@ class MergeProposalInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fiel
     target: Identity
 
 
-class TransferCoordinatorInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    task_id: NonEmptyLine
-    host_id: NonEmptyLine
-
-
 class ReviseItemInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-revision/v1"]
     item_id: Identity
@@ -114,7 +109,6 @@ type InputPayload = (
     | DeferInputPayload
     | AcceptProposalInputPayload
     | MergeProposalInputPayload
-    | TransferCoordinatorInputPayload
     | ReviseItemInputPayload
 )
 type InputModel = type[InputPayload]
@@ -124,11 +118,6 @@ class CloseView(msgspec.Struct, frozen=True):
     item_id: str
     outcome: str
     reason: str
-    revision: str
-
-
-class CoordinatedTransitionView(msgspec.Struct, frozen=True):
-    action_id: str
     revision: str
 
 

@@ -7,7 +7,6 @@ from pinboard.domain.identifiers import AttemptId, ItemId, LeaseId, ProposalId
 @dataclass(frozen=True, slots=True)
 class LedgerSnapshot:
     revision: str
-    generation: int
     items: tuple[work_models.WorkItem, ...]
     attempts: tuple[work_models.AttemptRecord, ...] = ()
     artifacts: tuple[work_models.ArtifactRecord, ...] = ()
@@ -17,14 +16,9 @@ class LedgerSnapshot:
     command_attempt_authorities: tuple[work_models.CommandAttemptAuthority, ...] = ()
     preparation_authorities: tuple[work_models.PreparationAuthority, ...] = ()
     command_preparation_authorities: tuple[work_models.PreparationCommandAuthority, ...] = ()
-    coordination_authority: work_models.CoordinationCommandAuthority | None = None
     history_items: tuple[ItemId, ...] = ()
     definitions: tuple[work_models.DefinitionAnchor, ...] = ()
     host_epoch: int = 0
-    focus_item: ItemId | None = None
-    focus_attempt: AttemptId | None = None
-    can_transfer_coordinator: bool = False
-    coordination_lease: work_models.CoordinationLeaseAuthority | None = None
 
     def items_by_id(self) -> dict[ItemId, work_models.WorkItem]:
         return {item.item: item for item in self.items}

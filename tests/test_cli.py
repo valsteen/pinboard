@@ -2081,7 +2081,7 @@ Not launchable:
             self.json_object(reopen_contract["semantics"])["practical_result"],
         )
 
-    def test_paused_current_attempt_with_live_dependency_can_rebind_but_not_resume(self) -> None:
+    def test_paused_definition_stale_attempt_with_live_dependency_can_rebind_but_not_resume(self) -> None:
         state = complete_sqlite_state()
         state = replace(
             state,
@@ -2098,14 +2098,32 @@ Not launchable:
         )
         project, work, _store = self.initialized_state(state)
         common = ("--project-root", str(project), "--work-root", str(work))
+        definition, digest = test_definition(ItemId("work-a"))
+        revision = self.write_item_revision(
+            project / "paused-stale-item-revision.json",
+            ItemId("work-a"),
+            1,
+            digest,
+            definition,
+            objective="Accept a corrected definition while the attempt remains paused.",
+        )
+        revision_action = self.project_action(common, "revise-item:work-a")
+        revision_result, _revision_stdout, revision_stderr = self.run_transition(common, revision_action, revision)
+        self.assertEqual(0, revision_result, revision_stderr)
 
-        action_ids = {
-            str(self.json_object(value)["action_id"])
+        actions = tuple(
+            self.json_object(value)
             for value in self.json_list(self.run_json_cli(*common, "actions", "--role", "project")["actions"])
-        }
+        )
+        action_ids = {str(value["action_id"]) for value in actions}
 
         self.assertIn("rebind-attempt:work-a-1", action_ids)
         self.assertNotIn("resume:work-a", action_ids)
+        rebind = next(value for value in actions if value["action_id"] == "rebind-attempt:work-a-1")
+        self.assertEqual(
+            "active-or-paused-attempt",
+            self.json_object(rebind["semantics"])["lifecycle_precondition"],
+        )
 
     def test_active_attempt_blocker_flow_persists_dependencies_and_resumes_through_commands(self) -> None:
         state = complete_sqlite_state()
@@ -2392,15 +2410,50 @@ Not launchable:
         )
         project, work, store = self.initialized_state(state)
         common = ("--project-root", str(project), "--work-root", str(work))
+        definition, digest = test_definition(ItemId("work-a"))
+        revision = self.write_item_revision(
+            project / "rebind-item-revision.json",
+            ItemId("work-a"),
+            1,
+            digest,
+            definition,
+            objective="Accept current scope while correcting the Git lineage.",
+        )
+        revision_action = self.project_action(common, "revise-item:work-a")
+        revision_result, _revision_stdout, revision_stderr = self.run_transition(common, revision_action, revision)
+        self.assertEqual(0, revision_result, revision_stderr)
         original = store.snapshot()
         original_attempt = original.lifecycle.attempts[0]
         original_counter = original.authority.attempt_counters[0]
+        current_definition = next(
+            value for value in reversed(original.lifecycle.definition_revisions) if value.item_id == ItemId("work-a")
+        )
 
+        replacement_checkpoint = work_a_brief(project).checkpoint
+        self.assertIsInstance(replacement_checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        assert isinstance(replacement_checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        authorization = work_brief_models.AcceptedScopeAuthorization("work-a", current_definition.revision)
+        replacement_checkpoint = replace_struct(
+            replacement_checkpoint,
+            contracts=tuple(
+                replace_struct(contract, authorization_basis=authorization)
+                for contract in replacement_checkpoint.contracts
+            ),
+            verification=tuple(
+                replace_struct(obligation, authorization_basis=authorization)
+                for obligation in replacement_checkpoint.verification
+            ),
+        )
         replacement = replace_struct(
             work_a_brief(project),
             artifact_revision=2,
             branch="codex/corrected-work-a",
             base_revision="corrected-base-revision",
+            accepted_scope=work_brief_models.AcceptedScope(
+                current_definition.revision,
+                current_definition.digest,
+            ),
+            checkpoint=replacement_checkpoint,
         )
         brief_path = project / "work-a-brief-2.json"
         brief_path.write_bytes(canonical_work_brief_bytes(replacement))
@@ -2439,8 +2492,8 @@ Not launchable:
                 publication["artifact_ref_id"],
                 original_attempt.result_artifact_ref_id,
                 original_attempt.candidate_revision,
-                original_attempt.accepted_scope_revision,
-                original_attempt.accepted_scope_digest,
+                current_definition.revision,
+                current_definition.digest,
                 rebound.lifecycle.project.revision,
             ),
             (

@@ -198,7 +198,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             rejected,
         )
 
-    def test_revised_active_attempt_loses_progress_and_acceptance_actions_but_keeps_pause_and_blocker_paths(
+    def test_revised_active_attempt_loses_progress_and_acceptance_actions_but_keeps_recovery_paths(
         self,
     ) -> None:
         accepted = definition()
@@ -257,7 +257,15 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
 
         project_ids = {decision_models.action_id(value) for value in project}
         worker_ids = {decision_models.action_id(value) for value in worker}
-        self.assertTrue({"pause:build-map-1", "block:build-map-1", "revise-item:build-map"} <= project_ids)
+        self.assertTrue(
+            {
+                "rebind-attempt:build-map-1",
+                "pause:build-map-1",
+                "block:build-map-1",
+                "revise-item:build-map",
+            }
+            <= project_ids
+        )
         self.assertTrue(
             {"continue:build-map-1", "dispatch:build-map-1", "complete:build-map-1"}.isdisjoint(project_ids)
         )

@@ -477,6 +477,21 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         initialize_database(roots, SQLITE_NOW)
         store = SQLiteWorkStore(roots.database_path)
         state = complete_sqlite_state()
+        current_definition = next(
+            value
+            for value in state.lifecycle.definition_revisions
+            if value.item_id == ItemId("work-a") and value.revision == 1
+        )
+        revised_definition = replace(current_definition.definition, title="Revised work A")
+        revised_digest = expect_success(work_item_definition_digest(revised_definition))
+        current_definition = replace(
+            current_definition,
+            revision=2,
+            digest=revised_digest,
+            definition=revised_definition,
+            before_digest=current_definition.digest,
+            after_digest=revised_digest,
+        )
         replacement = replace(
             state.artifact_references[0],
             artifact_ref_id=ArtifactRefId(99),
@@ -484,7 +499,15 @@ class SQLiteConcurrencyTest(unittest.TestCase):
             selector="artifacts/briefs/work-a-rebound-brief/1.opaque",
             content_sha256="b" * 64,
         )
-        initialize_store(store, replace(state, artifact_references=(*state.artifact_references, replacement)))
+        state = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                definition_revisions=(*state.lifecycle.definition_revisions, current_definition),
+            ),
+            artifact_references=(*state.artifact_references, replacement),
+        )
+        initialize_store(store, state)
 
         context = multiprocessing.get_context("spawn")
         barrier = context.Barrier(2)
@@ -504,11 +527,13 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         rebound = SQLiteWorkStore(roots.database_path).snapshot()
         self.assertEqual(13, rebound.lifecycle.project.revision)
         self.assertEqual(
-            ("codex/corrected-work-a", "corrected-base", 99),
+            ("codex/corrected-work-a", "corrected-base", 99, 2, revised_digest),
             (
                 rebound.lifecycle.attempts[0].branch,
                 rebound.lifecycle.attempts[0].base_revision,
                 rebound.lifecycle.attempts[0].brief_artifact_ref_id,
+                rebound.lifecycle.attempts[0].accepted_scope_revision,
+                rebound.lifecycle.attempts[0].accepted_scope_digest,
             ),
         )
         self.assertEqual(4, rebound.authority.attempt_counters[0].generation_high_water)

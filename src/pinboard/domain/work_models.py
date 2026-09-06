@@ -245,12 +245,6 @@ class MergeProposalInput:
 
 
 @dataclass(frozen=True, slots=True)
-class TransferCoordinatorInput:
-    task_id: TaskId
-    host_id: HostId
-
-
-@dataclass(frozen=True, slots=True)
 class WorkItemDefinition:
     title: str
     objective: str
@@ -288,12 +282,6 @@ class DefinitionAnchor:
     definition: WorkItemDefinition
 
 
-class CoordinationLeaseStatus(Enum):
-    ACTIVE = "active"
-    RELEASED = "released"
-    REVOKED = "revoked"
-
-
 @dataclass(frozen=True, slots=True)
 class CommandAttemptAuthority:
     host_epoch: int
@@ -319,28 +307,6 @@ class PreparationCommandAuthority:
     lease_id: LeaseId
     generation: int
     expires_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class CoordinationCommandAuthority:
-    host_epoch: int
-    task_id: TaskId
-    host_id: HostId
-    lease_id: LeaseId
-    generation: int
-    expires_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class CoordinationLeaseAuthority:
-    host_epoch: int
-    task_id: TaskId
-    host_id: HostId
-    lease_id: LeaseId
-    generation: int
-    acquired_at: datetime
-    expires_at: datetime
-    state: CoordinationLeaseStatus
 
 
 @dataclass(frozen=True, slots=True)

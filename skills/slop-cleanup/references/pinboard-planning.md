@@ -1,13 +1,13 @@
 # Plan slop cleanup with Pinboard
 
-Read this reference only when the user chooses Pinboard for cleanup planning or the current cleanup already belongs to Pinboard. The universal cleanup practices and fixed-point contract remain in `../SKILL.md`; this file only maps them into Pinboard coordination.
+Read this reference only when the user chooses Pinboard for cleanup planning or the current cleanup already belongs to Pinboard. The universal cleanup practices and fixed-point contract remain in `../SKILL.md`; this file only maps them into Pinboard work.
 
 ## Anchor in current Pinboard state
 
 1. Use `$pinboard` to inspect the live work overview and the exact related items or requirements. Treat current Pinboard state as authoritative over branches, old plans, transcript memory, or topic notes.
 2. Reuse an existing exact cleanup item when it already owns the cleanup candidate. Otherwise create one cleanup objective through the normal Pinboard workflow and preserve the accepted user dispositions there.
-3. Do not widen an active attempt with cleanup unless its canonical brief already covers that cleanup. Record a discovered prerequisite or materially different product decision through the normal intake and coordination path.
-4. Never edit generated Pinboard views or lifecycle state directly. Let `$pinboard` select and apply the legal coordination action.
+3. Do not widen an active attempt with cleanup unless its canonical brief already covers that cleanup. Record a discovered prerequisite or materially different product decision through the normal intake and project-transition path.
+4. Never edit generated Pinboard views or lifecycle state directly. Let `$pinboard` select and apply the legal project action.
 
 ## Shape the cleanup item
 
@@ -38,7 +38,7 @@ Use checkpoints in this semantic order when they are independently reviewable:
 
 The sequence is a planning aid, not a fixed number of implementation checkpoints. Combine neighboring work when separate checkpoints would create ceremonial boundaries.
 
-## Coordinate discoveries and delivery
+## Handle discoveries and delivery
 
 Keep direct orphan chains inside the accepted cleanup item. When recursion reaches an ambiguous feature, supported persisted data, an external compatibility promise, or a distinct product decision, preserve that exact concern and stop that branch until the user decides.
 

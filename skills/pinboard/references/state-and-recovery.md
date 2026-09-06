@@ -20,7 +20,7 @@ The project-local work root contains one SQLite authority and generated or immut
 
 Resolve the project through Git's shared common directory. A linked worktree therefore uses the primary checkout's `.codex/pinboard`, not a competing ignored root. Default initialization adds only the anchored `/.codex/pinboard/` entry to that shared repository's local Git exclude file; it does not edit committed ignore files or hide unrelated `.codex` content. An explicit `--work-root` remains at the exact selected path.
 
-Require `authority: sqlite-v3` from the executable. `state.sqlite3` owns lifecycle, focus, dependencies, attempts, leases, proposals, history, and accepted artifact references. `views/` is replaceable output and never a fallback authority. Do not reconstruct state from other files.
+Require `authority: sqlite-v4` from the executable. `state.sqlite3` owns lifecycle, dependencies, attempts, preparation and attempt leases, proposals, history, and accepted artifact references. `views/` is replaceable output and never a fallback authority. Do not reconstruct state from other files.
 
 Use these nonterminal states:
 
@@ -36,9 +36,7 @@ Terminal state remains queryable as history and does not appear as live work.
 
 ## Leases and revocation
 
-Coordination is a short-lived exclusive SQLite lease, not a permanent task role. Prefer the one-shot command that borrows it for one exact mutation and releases it before returning. Its 60-second default is an upper recovery bound, not permission to retain authority between steps. Another task may acquire it after release or expiry.
-
-The ledger remains transactionally safe during ordinary contention: an exact transition commits completely or the prior revision remains. A manual lease retained for minutes can still block timely preparation and make visible item state lag actual work; treat that delay as a flow defect even when the ledger remains valid.
+Project transitions are direct atomic SQLite changes authorized by the invoking task and host identity. They do not acquire or retain a project-wide lease. During contention, one exact transition commits completely or the prior revision remains; stale actions must be refreshed rather than replayed.
 
 Attempt ownership is renewable and fenced. A worker presents its current attempt lease for item-local transitions. Replacing the attempt owner fences actions retained by the previous owner.
 
@@ -65,9 +63,9 @@ For a task interrupted around a mutation:
 
 1. Run `pinboard validate --json`.
 2. Run one `pinboard status --json` or `pinboard overview --json` read. If the intended item still has its prior state, no transition committed. If it has the intended next state, the SQLite transition committed completely even if the task stopped before reporting it.
-3. If coordination is still active for the interrupted task, retry silently only within the bounded short-recovery window. One-shot coordinated transitions default to 60 seconds and perform best-effort release; do not interpret that upper bound as a normal planned wait.
-4. Use forced revocation only with explicit user authority when waiting is unsuitable.
-5. Acquire fresh coordination only after release, expiry, or authorized revocation. Its higher generation fences actions retained by the interrupted task.
+3. For an interrupted project transition, select the exact action again from current state and continue only if its semantics and payload are unchanged.
+4. For interrupted preparation or attempt work, acquire or transfer the exact lease through its supported command. A higher generation fences actions retained by the interrupted task.
+5. Use forced lease revocation only with explicit user authority when the recorded holder cannot release it or has demonstrably abandoned it.
 6. Resume from the authoritative item and attempt state. Never reconstruct ownership from the stopped task's prose, generated views, archived files, or temporary payloads.
 
 The observable transaction contract remains binary: the previous valid revision or one complete new revision. Report any counterexample as a current SQLite defect rather than routing around it.

@@ -1,11 +1,17 @@
 ---
 name: slop-cleanup
-description: Guide recursive repository cleanup after abandoned or repeatedly revised features leave dead production paths, test-only APIs, stale variants, archaeological names, or stale documentation and tooling. Use for campaigns that must trace provenance and recurse until no new cleanup candidates remain. Do not use for one known unused symbol, a localized refactor, or a general repository-readiness assessment.
+description: Remove code or features cleanly by finding and collapsing every orphaned production path, test-only API, stale variant, archaeological name, document, dependency, and tool. Use for any code cleanup that deletes behavior or structure, scaling from a local residue check to a repository-wide fixed-point pass. Do not use for additive work, formatting-only changes, routine prose corrections, or a general repository-readiness assessment.
 ---
 
 # Clean repository slop recursively
 
 Turn accumulated implementation residue into deliberate cleanup whose deletions, retained exceptions, and stopping condition remain reviewable. Treat this as product-scope recovery as well as dead-code removal: a well-tested subsystem can still be premature, abandoned, or unreachable from the supported product.
+
+## Scale every code removal
+
+For every code cleanup that removes production behavior or structure, use this skill or explicitly perform its residue pass before completion. Trace the removed concept through producers, consumers, stored state, commands, variants, tests, documentation, generated artifacts, dependencies, and tooling, then recurse through anything newly orphaned.
+
+Scale the pass to the deletion. For one known symbol or a localized refactor, inspect adjacent references and affected surfaces, run targeted checks, and stop when another local pass finds no new residue. For a feature, subsystem, abandoned implementation, or repeatedly revised design, use the production-root inventory and repository-wide fixed-point workflow below.
 
 ## Start from current product authority
 

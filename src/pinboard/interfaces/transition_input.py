@@ -9,7 +9,6 @@ from pinboard.domain.identifiers import (
     AttemptId,
     CandidateId,
     CheckpointId,
-    HostId,
     ItemId,
     TaskId,
 )
@@ -51,8 +50,6 @@ def _input_model_or_none(kind: decision_models.ActionKind) -> transition_models.
             return transition_models.ReviseItemInputPayload
         case decision_models.ActionKind.SUBMIT_REVIEW:
             return transition_models.SubmitReviewInputPayload
-        case decision_models.ActionKind.TRANSFER_COORDINATOR:
-            return transition_models.TransferCoordinatorInputPayload
         case (
             decision_models.ActionKind.CONTINUE
             | decision_models.ActionKind.DISPATCH
@@ -119,7 +116,7 @@ def parse_item_revision_input(data: bytes | str) -> TransitionInputResult[work_m
     return _revise_item_input(payload)
 
 
-def parse_transition_command(  # noqa: C901, PLR0912, PLR0915 - one visible exhaustive action-to-command boundary
+def parse_transition_command(  # noqa: C901, PLR0912 - one visible exhaustive action-to-command boundary
     action: decision_models.Action,
     data: bytes | str,
 ) -> TransitionInputResult[decision_models.TransitionCommand]:
@@ -251,14 +248,6 @@ def parse_transition_command(  # noqa: C901, PLR0912, PLR0915 - one visible exha
                 return payload
             return decision_models.SubmitReviewCommand(
                 action, work_models.SubmitReviewInput(CandidateId(payload.candidate))
-            )
-        case decision_models.TransferCoordinatorAction():
-            if isinstance(
-                payload := _decode(data, transition_models.TransferCoordinatorInputPayload), TransitionInputFailure
-            ):
-                return payload
-            return decision_models.TransferCoordinatorCommand(
-                action, work_models.TransferCoordinatorInput(TaskId(payload.task_id), HostId(payload.host_id))
             )
         case (
             decision_models.ContinueAction()

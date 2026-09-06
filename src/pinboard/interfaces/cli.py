@@ -17,7 +17,6 @@ from pinboard.interfaces import (
     brief_source_commands,
     cli_commands,
     cli_parser,
-    coordination_authority,
     dispatch_brief,
     preparation_authority,
     project_handover,
@@ -77,35 +76,17 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
         case cli_commands.ProposalCommand() as command:
             return proposal_commands.create_proposal(roots, command)
         case (
-            cli_commands.CoordinatorTransitionCommand()
-            | cli_commands.CoordinationTransitionCommand()
+            cli_commands.ProjectTransitionCommand()
             | cli_commands.AttemptTransitionCommand()
             | cli_commands.PreparationTransitionCommand()
         ) as command:
             return transitions.transition(roots, command)
-        case (
-            cli_commands.CoordinatorDispatchCommand()
-            | cli_commands.CoordinatorReviewedDispatchCommand()
-            | cli_commands.CoordinationDispatchCommand()
-            | cli_commands.CoordinationReviewedDispatchCommand()
-        ) as command:
+        case (cli_commands.ProjectDispatchCommand() | cli_commands.ProjectReviewedDispatchCommand()) as command:
             return dispatch_brief.prepare_dispatch_command(roots, command)
-        case cli_commands.CoordinationApplyCommand() as command:
-            return transitions.coordinated_transition(roots, command)
-        case cli_commands.CoordinationStatusCommand() as command:
-            return coordination_authority.show_coordination_authority_status(roots, command)
-        case (
-            cli_commands.CoordinationAcquireCommand()
-            | cli_commands.CoordinationRenewCommand()
-            | cli_commands.CoordinationReleaseCommand()
-            | cli_commands.CoordinationRevokeCommand()
-        ) as command:
-            return coordination_authority.change_coordination_authority(roots, command)
         case cli_commands.AttemptStatusCommand() as command:
             return attempt_authority.show_attempt_authority_status(roots, command)
         case (
             cli_commands.AttemptAcquireCommand()
-            | cli_commands.CoordinatedAttemptAcquireCommand()
             | cli_commands.AttemptRenewCommand()
             | cli_commands.AttemptReleaseCommand()
             | cli_commands.AttemptRevokeCommand()
@@ -114,8 +95,8 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
         case cli_commands.PreparationStatusCommand() as command:
             return preparation_authority.show_preparation_authority_status(roots, command)
         case (
-            cli_commands.CoordinatorPreparationAcquireCommand()
-            | cli_commands.CoordinatedPreparationTransferCommand()
+            cli_commands.PreparationAcquireCommand()
+            | cli_commands.PreparationTransferCommand()
             | cli_commands.PreparationRenewCommand()
             | cli_commands.PreparationReleaseCommand()
             | cli_commands.PreparationRevokeCommand()

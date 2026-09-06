@@ -57,7 +57,6 @@ class ItemReviseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     file: Path
     task_id: StableTaskId
     host_id: StableHostId
-    ttl_seconds: int = 60
     json: bool = False
 
 
@@ -79,7 +78,6 @@ class CloseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     reason: str
     task_id: StableTaskId
     host_id: StableHostId
-    ttl_seconds: int = 60
     json: bool = False
 
 
@@ -135,22 +133,16 @@ class InitializeCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
 
 class ProposalCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     file: Path
+    task_id: StableTaskId
+    host_id: StableHostId
 
 
-class CoordinatorTransitionCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ProjectTransitionCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_id: StableActionId
     expected_revision: str
-    generation: int
     payload: Path
-    subject_revision: str | None = None
-
-
-class CoordinationTransitionCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    action_id: StableActionId
-    expected_revision: str
-    generation: int
-    payload: Path
-    lease_id: StableLeaseId
+    task_id: StableTaskId
+    host_id: StableHostId
     subject_revision: str | None = None
 
 
@@ -172,27 +164,24 @@ class PreparationTransitionCommand(msgspec.Struct, frozen=True, forbid_unknown_f
     subject_revision: str | None = None
 
 
-type TransitionCommand = (
-    CoordinatorTransitionCommand
-    | CoordinationTransitionCommand
-    | AttemptTransitionCommand
-    | PreparationTransitionCommand
-)
+type TransitionCommand = ProjectTransitionCommand | AttemptTransitionCommand | PreparationTransitionCommand
 
 
-class CoordinatorDispatchCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ProjectDispatchCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_id: StableActionId
     expected_revision: str
-    generation: int
+    task_id: StableTaskId
+    host_id: StableHostId
     checkpoint: str
     environment: Path
     prompt: Path | None = None
 
 
-class CoordinatorReviewedDispatchCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ProjectReviewedDispatchCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_id: StableActionId
     expected_revision: str
-    generation: int
+    task_id: StableTaskId
+    host_id: StableHostId
     checkpoint: str
     environment: Path
     brief_review: Path
@@ -200,81 +189,7 @@ class CoordinatorReviewedDispatchCommand(msgspec.Struct, frozen=True, forbid_unk
     prompt: Path | None = None
 
 
-class CoordinationDispatchCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    action_id: StableActionId
-    expected_revision: str
-    generation: int
-    lease_id: StableLeaseId
-    checkpoint: str
-    environment: Path
-    prompt: Path | None = None
-
-
-class CoordinationReviewedDispatchCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    action_id: StableActionId
-    expected_revision: str
-    generation: int
-    lease_id: StableLeaseId
-    checkpoint: str
-    environment: Path
-    brief_review: Path
-    review_id: KebabReviewId
-    prompt: Path | None = None
-
-
-type DispatchCommand = (
-    CoordinatorDispatchCommand
-    | CoordinatorReviewedDispatchCommand
-    | CoordinationDispatchCommand
-    | CoordinationReviewedDispatchCommand
-)
-
-
-class CoordinationApplyCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    task_id: StableTaskId
-    host_id: StableHostId
-    action_id: StableActionId
-    payload: Path
-    ttl_seconds: int = 60
-    json: bool = False
-
-
-class CoordinationAcquireCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    task_id: StableTaskId
-    host_id: StableHostId
-    ttl_seconds: int
-    json: bool = False
-
-
-class CoordinationRenewCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    lease_id: StableLeaseId
-    generation: int
-    ttl_seconds: int
-    json: bool = False
-
-
-class CoordinationReleaseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    lease_id: StableLeaseId
-    generation: int
-    json: bool = False
-
-
-class CoordinationRevokeCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    json: bool = False
-
-
-class CoordinationStatusCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    json: bool = False
-
-
-type CoordinationCommand = (
-    CoordinationApplyCommand
-    | CoordinationAcquireCommand
-    | CoordinationRenewCommand
-    | CoordinationReleaseCommand
-    | CoordinationRevokeCommand
-    | CoordinationStatusCommand
-)
+type DispatchCommand = ProjectDispatchCommand | ProjectReviewedDispatchCommand
 
 
 class AttemptAcquireCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -282,16 +197,6 @@ class AttemptAcquireCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     task_id: StableTaskId
     host_id: StableHostId
     ttl_seconds: int
-    json: bool = False
-
-
-class CoordinatedAttemptAcquireCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    attempt_id: StableAttemptId
-    task_id: StableTaskId
-    host_id: StableHostId
-    ttl_seconds: int
-    coordination_lease_id: StableLeaseId
-    coordination_generation: int
     json: bool = False
 
 
@@ -314,8 +219,8 @@ class AttemptRevokeCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     attempt_id: StableAttemptId
     lease_id: StableLeaseId
     generation: int
-    coordination_lease_id: StableLeaseId
-    coordination_generation: int
+    task_id: StableTaskId
+    host_id: StableHostId
     json: bool = False
 
 
@@ -325,16 +230,11 @@ class AttemptStatusCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
 
 
 type AttemptCommand = (
-    AttemptAcquireCommand
-    | CoordinatedAttemptAcquireCommand
-    | AttemptRenewCommand
-    | AttemptReleaseCommand
-    | AttemptRevokeCommand
-    | AttemptStatusCommand
+    AttemptAcquireCommand | AttemptRenewCommand | AttemptReleaseCommand | AttemptRevokeCommand | AttemptStatusCommand
 )
 
 
-class CoordinatorPreparationAcquireCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class PreparationAcquireCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: StableItemId
     expected_project_revision: str
     expected_item_subject_revision: str
@@ -343,18 +243,14 @@ class CoordinatorPreparationAcquireCommand(msgspec.Struct, frozen=True, forbid_u
     task_id: StableTaskId
     host_id: StableHostId
     ttl_seconds: int
-    coordination_lease_id: StableLeaseId
-    coordination_generation: int
     json: bool = False
 
 
-class CoordinatedPreparationTransferCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class PreparationTransferCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: StableItemId
     task_id: StableTaskId
     host_id: StableHostId
     ttl_seconds: int
-    coordination_lease_id: StableLeaseId
-    coordination_generation: int
     json: bool = False
 
 
@@ -377,8 +273,8 @@ class PreparationRevokeCommand(msgspec.Struct, frozen=True, forbid_unknown_field
     item_id: StableItemId
     lease_id: StableLeaseId
     generation: int
-    coordination_lease_id: StableLeaseId
-    coordination_generation: int
+    task_id: StableTaskId
+    host_id: StableHostId
     json: bool = False
 
 
@@ -388,8 +284,8 @@ class PreparationStatusCommand(msgspec.Struct, frozen=True, forbid_unknown_field
 
 
 type PreparationCommand = (
-    CoordinatorPreparationAcquireCommand
-    | CoordinatedPreparationTransferCommand
+    PreparationAcquireCommand
+    | PreparationTransferCommand
     | PreparationRenewCommand
     | PreparationReleaseCommand
     | PreparationRevokeCommand
@@ -430,7 +326,6 @@ type CliCommand = (
     | ProposalCommand
     | TransitionCommand
     | DispatchCommand
-    | CoordinationCommand
     | AttemptCommand
     | PreparationCommand
     | ParallelPreviewCommand

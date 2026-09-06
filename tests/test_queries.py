@@ -49,7 +49,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertIsInstance(preview, query_models.ParallelPreview)
         assert isinstance(preview, query_models.ParallelPreview)
 
-        self.assertEqual("sqlite-v3", overview.authority)
+        self.assertEqual("sqlite-v4", overview.authority)
         self.assertEqual("12", overview.revision)
         self.assertEqual(("work-a-1",), overview.active_attempts)
         self.assertEqual(
@@ -148,7 +148,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertEqual(
             query_models.ItemStatus(
                 "pinboard-item-status/v1",
-                "sqlite-v3",
+                "sqlite-v4",
                 "12",
                 "work-a",
                 "Work work-a",
@@ -166,7 +166,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertEqual(
             query_models.ItemStatus(
                 "pinboard-item-status/v1",
-                "sqlite-v3",
+                "sqlite-v4",
                 "12",
                 "work-b",
                 "Work work-b",
@@ -234,20 +234,9 @@ class SQLiteQueriesTest(unittest.TestCase):
     def test_action_and_query_failure_matrix_is_stable_and_read_only(self) -> None:
         state = complete_sqlite_state()
         store = self._store(state)
-        coordination = state.authority.coordination
-        assert coordination is not None
-
         loaded = store.snapshot()
         observer = expect_success(discover_actions(loaded, decision_models.Role.OBSERVER, now=SQLITE_NOW))
-        coordinator = expect_success(
-            discover_actions(
-                loaded,
-                decision_models.Role.COORDINATOR,
-                lease_id=coordination.lease_id,
-                generation=coordination.generation,
-                now=SQLITE_NOW,
-            )
-        )
+        project = expect_success(discover_actions(loaded, decision_models.Role.PROJECT, now=SQLITE_NOW))
         worker = expect_success(
             discover_actions(
                 loaded,
@@ -259,19 +248,9 @@ class SQLiteQueriesTest(unittest.TestCase):
         )
 
         self.assertEqual((decision_models.ActionKind.INSPECT,), tuple(action.kind for action in observer))
-        self.assertTrue(any(action.kind == decision_models.ActionKind.DISPATCH for action in coordinator))
-        self.assertFalse(any(action.kind == decision_models.ActionKind.ACTIVATE for action in coordinator))
+        self.assertTrue(any(action.kind == decision_models.ActionKind.DISPATCH for action in project))
+        self.assertFalse(any(action.kind == decision_models.ActionKind.ACTIVATE for action in project))
         self.assertTrue(any(action.kind == decision_models.ActionKind.CONTINUE for action in worker))
-        stale_coordination = discover_actions(
-            loaded,
-            decision_models.Role.COORDINATOR,
-            lease_id=LeaseId("wrong"),
-            generation=coordination.generation,
-            now=SQLITE_NOW,
-        )
-        self.assertIsInstance(stale_coordination, DecisionFailure)
-        assert isinstance(stale_coordination, DecisionFailure)
-        self.assertEqual(DecisionFailureCode.COORDINATION_LEASE_REQUIRED, stale_coordination.code)
         missing_worker = discover_actions(loaded, decision_models.Role.WORKER, now=SQLITE_NOW)
         self.assertIsInstance(missing_worker, DecisionFailure)
         assert isinstance(missing_worker, DecisionFailure)

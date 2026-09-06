@@ -72,24 +72,6 @@ def show_preparation_authority_status(
     )
 
 
-def _resolve_supplied_coordination_authority(
-    observed_state: stored_state.StoredWorkState,
-    lease_id: LeaseId,
-    generation: int,
-) -> CommandResult[work_models.CoordinationCommandAuthority]:
-    retained = observed_state.authority.coordination
-    if retained is None:
-        return CommandFailure(DecisionFailureCode.COORDINATION_LEASE_REQUIRED, "Coordination authority is absent.")
-    return work_models.CoordinationCommandAuthority(
-        host_epoch=observed_state.lifecycle.project.host_epoch,
-        task_id=retained.task_id,
-        host_id=retained.host_id,
-        lease_id=lease_id,
-        generation=generation,
-        expires_at=retained.expires_at,
-    )
-
-
 def _resolve_supplied_preparation_authority(
     observed_state: stored_state.StoredWorkState,
     item_id: ItemId,
@@ -110,11 +92,11 @@ def _resolve_supplied_preparation_authority(
     return replace(observed_authority, lease_id=lease_id, generation=generation)
 
 
-def _resolve_requested_preparation_change(  # noqa: C901, PLR0912
+def _resolve_requested_preparation_change(
     observed_state: stored_state.StoredWorkState,
     command: (
-        cli_commands.CoordinatorPreparationAcquireCommand
-        | cli_commands.CoordinatedPreparationTransferCommand
+        cli_commands.PreparationAcquireCommand
+        | cli_commands.PreparationTransferCommand
         | cli_commands.PreparationRenewCommand
         | cli_commands.PreparationReleaseCommand
         | cli_commands.PreparationRevokeCommand
@@ -122,12 +104,7 @@ def _resolve_requested_preparation_change(  # noqa: C901, PLR0912
     requested_at: datetime,
 ) -> CommandResult[authority_models.PreparationAuthorityOperation]:
     match command:
-        case cli_commands.CoordinatorPreparationAcquireCommand():
-            coordination = _resolve_supplied_coordination_authority(
-                observed_state, command.coordination_lease_id, command.coordination_generation
-            )
-            if isinstance(coordination, CommandFailure):
-                return coordination
+        case cli_commands.PreparationAcquireCommand():
             return authority_models.AcquireInitialPreparationAuthority(
                 host_epoch=observed_state.lifecycle.project.host_epoch,
                 item=command.item_id,
@@ -135,25 +112,19 @@ def _resolve_requested_preparation_change(  # noqa: C901, PLR0912
                 expected_item_subject_revision=command.expected_item_subject_revision,
                 expected_definition_revision=command.expected_definition_revision,
                 expected_definition_digest=command.expected_definition_digest,
-                coordination=coordination,
                 task_id=command.task_id,
                 host_id=command.host_id,
                 lease_id=LeaseId(uuid4().hex),
                 acquired_at=requested_at,
                 expires_at=requested_at + timedelta(seconds=command.ttl_seconds),
             )
-        case cli_commands.CoordinatedPreparationTransferCommand():
+        case cli_commands.PreparationTransferCommand():
             retained = _find_retained_preparation_claim(observed_state, command.item_id, requested_at)
             if isinstance(retained, CommandFailure):
                 return retained
             lease, anchor = retained
             if lease.state == authority_models.PreparationLeaseStatus.ACTIVE:
                 return CommandFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority remains live.")
-            coordination = _resolve_supplied_coordination_authority(
-                observed_state, command.coordination_lease_id, command.coordination_generation
-            )
-            if isinstance(coordination, CommandFailure):
-                return coordination
             return authority_models.TransferPreparationAuthority(
                 current=authority_models.InactivePreparationAuthority(
                     host_epoch=observed_state.lifecycle.project.host_epoch,
@@ -167,7 +138,6 @@ def _resolve_requested_preparation_change(  # noqa: C901, PLR0912
                     expires_at=lease.expires_at,
                     state=lease.state,
                 ),
-                coordination=coordination,
                 task_id=command.task_id,
                 host_id=command.host_id,
                 lease_id=LeaseId(uuid4().hex),
@@ -193,16 +163,12 @@ def _resolve_requested_preparation_change(  # noqa: C901, PLR0912
                 return supplied_authority
             return authority_models.ReleasePreparationAuthority(current=supplied_authority, released_at=requested_at)
         case cli_commands.PreparationRevokeCommand():
-            coordination = _resolve_supplied_coordination_authority(
-                observed_state, command.coordination_lease_id, command.coordination_generation
-            )
-            if isinstance(coordination, CommandFailure):
-                return coordination
             return authority_models.RevokePreparationAuthority(
                 item=command.item_id,
                 lease_id=command.lease_id,
                 generation=command.generation,
-                coordination=coordination,
+                task_id=command.task_id,
+                host_id=command.host_id,
                 revoked_at=requested_at,
             )
         case _ as unreachable:
@@ -212,8 +178,8 @@ def _resolve_requested_preparation_change(  # noqa: C901, PLR0912
 def change_preparation_authority(
     roots: cli_commands.ResolvedRoots,
     command: (
-        cli_commands.CoordinatorPreparationAcquireCommand
-        | cli_commands.CoordinatedPreparationTransferCommand
+        cli_commands.PreparationAcquireCommand
+        | cli_commands.PreparationTransferCommand
         | cli_commands.PreparationRenewCommand
         | cli_commands.PreparationReleaseCommand
         | cli_commands.PreparationRevokeCommand
@@ -231,7 +197,7 @@ def change_preparation_authority(
     refresh_result = work_views.refresh(
         roots,
         store,
-        AffectedViews(queue=True, items=(command.item_id,), current_focus=True, history=True),
+        AffectedViews(queue=True, items=(command.item_id,), history=True),
         datetime.now(UTC),
     )
     if refresh_result.warning is not None:

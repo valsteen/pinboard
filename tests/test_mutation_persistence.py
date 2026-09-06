@@ -15,7 +15,6 @@ from pinboard.application import stored_state
 from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
-    CoordinationAuthorityMutation,
     MutationReceipt,
 )
 from pinboard.application.mutations import project_transition_mutation
@@ -87,19 +86,6 @@ class MutationPersistenceTest(unittest.TestCase):
         initialize_store(store, state)
         return store
 
-    def _coordination_decision(
-        self,
-        before: stored_state.StoredWorkState,
-        *,
-        extension: timedelta = timedelta(minutes=1),
-    ) -> authority_models.CoordinationAuthorityDecision:
-        retained = project_decision_snapshot(before, SQLITE_NOW).coordination_lease
-        assert retained is not None
-        return authority_models.CoordinationAuthorityDecision(
-            expected_retained=retained,
-            proposed_replacement=replace(retained, expires_at=retained.expires_at + extension),
-        )
-
     def _attempt_renewal_decision(
         self, before: stored_state.StoredWorkState
     ) -> authority_models.AttemptAuthorityDecision:
@@ -138,7 +124,7 @@ class MutationPersistenceTest(unittest.TestCase):
             decision_models.ActionKind.INSPECT,
             HistorySubjectId("work-a"),
             None,
-            decision_models.AuthorizationKind.COORDINATOR,
+            decision_models.AuthorizationKind.PROJECT,
             None,
             None,
             "mutation/v1",
@@ -323,9 +309,9 @@ class MutationPersistenceTest(unittest.TestCase):
         )
         decided_at = SQLITE_NOW + timedelta(seconds=1)
         actor = decision_models.ActorAuthority(
-            decision_models.Role.COORDINATOR,
-            decision_models.AuthorizationKind.COORDINATOR,
-            snapshot.generation,
+            decision_models.Role.PROJECT,
+            decision_models.AuthorizationKind.PROJECT,
+            0,
         )
         action = next(
             value
@@ -350,7 +336,9 @@ class MutationPersistenceTest(unittest.TestCase):
         )
 
         with store.write() as transaction:
-            committed = transaction.commit(project_transition_mutation(transaction.snapshot(), decision))
+            committed = transaction.commit(
+                project_transition_mutation(transaction.snapshot(), decision, TaskId("project-task"), HostId("host-a"))
+            )
 
         self.assertNotIsInstance(committed, DecisionFailure)
         assert not isinstance(committed, DecisionFailure)
@@ -436,7 +424,7 @@ class MutationPersistenceTest(unittest.TestCase):
         store = self._store_with_state(state)
         snapshot = project_decision_snapshot(store.snapshot(), SQLITE_NOW)
         actor = decision_models.ActorAuthority(
-            decision_models.Role.COORDINATOR, decision_models.AuthorizationKind.COORDINATOR, snapshot.generation
+            decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
         )
         action = next(
             value for value in available_actions(snapshot, actor) if value.kind == decision_models.ActionKind.RESUME
@@ -449,7 +437,9 @@ class MutationPersistenceTest(unittest.TestCase):
         )
 
         with store.write() as transaction:
-            transaction.commit(project_transition_mutation(transaction.snapshot(), decision))
+            transaction.commit(
+                project_transition_mutation(transaction.snapshot(), decision, TaskId("project-task"), HostId("host-a"))
+            )
 
         persisted = next(
             value for value in store.snapshot().lifecycle.attempts if value.attempt_id == attempt.attempt_id
@@ -463,7 +453,7 @@ class MutationPersistenceTest(unittest.TestCase):
         store = self._store()
         snapshot = project_decision_snapshot(store.snapshot(), SQLITE_NOW)
         actor = decision_models.ActorAuthority(
-            decision_models.Role.COORDINATOR, decision_models.AuthorizationKind.COORDINATOR, snapshot.generation
+            decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
         )
         action = next(
             value
@@ -488,7 +478,9 @@ class MutationPersistenceTest(unittest.TestCase):
 
         self.assertIsInstance(decision.change, decision_models.AcceptedProposalChange)
         with reject_table_deletes("work_items"), store.write() as transaction:
-            transaction.commit(project_transition_mutation(transaction.snapshot(), decision))
+            transaction.commit(
+                project_transition_mutation(transaction.snapshot(), decision, TaskId("project-task"), HostId("host-a"))
+            )
 
         reopened = store.snapshot()
         item = next(value for value in reopened.lifecycle.work_items if value.item_id == ItemId("zz-proposal-a"))
@@ -528,22 +520,27 @@ class MutationPersistenceTest(unittest.TestCase):
         first, second = self._store_pair()
         before = first.snapshot()
         self.assertEqual(before, second.snapshot())
-        receipt, after = self._receipt_state(before, "inspect:first-writer")
-        coordination = before.authority.coordination
-        assert coordination is not None
-        after = replace(
-            after,
-            authority=replace(
-                before.authority,
-                coordination=replace(coordination, expires_at=coordination.expires_at + timedelta(minutes=1)),
+        snapshot = project_decision_snapshot(before, SQLITE_NOW)
+        actor = decision_models.ActorAuthority(
+            decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
+        )
+        action = next(
+            value
+            for value in available_actions(snapshot, actor)
+            if value.kind == decision_models.ActionKind.DEFER and value.capability.subject == ItemId("intake-work")
+        )
+        assert isinstance(action, decision_models.DeferAction)
+        first_decision = decide(
+            snapshot,
+            decision_models.DeferCommand(
+                action, work_models.DeferInput(work_models.Timing.SAFE_TO_DEFER, "First writer commits.")
             ),
+            SQLITE_NOW + timedelta(seconds=1),
         )
-        first_mutation = CoordinationAuthorityMutation(
-            self._mutation_receipt(receipt, after),
-            self._coordination_decision(before),
-        )
+        first_mutation = project_transition_mutation(before, first_decision, TaskId("first-task"), HostId("host-a"))
         with first.write() as transaction:
             transaction.commit(first_mutation)
+        after = first.snapshot()
 
         stale_receipt, stale_after = self._receipt_state(before, "inspect:stale-attempt-authority")
         stale_mutation = AttemptAuthorityMutation(
@@ -592,7 +589,7 @@ class MutationPersistenceTest(unittest.TestCase):
                 store = self._store()
                 snapshot = project_decision_snapshot(store.snapshot(), SQLITE_NOW)
                 actor = decision_models.ActorAuthority(
-                    decision_models.Role.COORDINATOR, decision_models.AuthorizationKind.COORDINATOR, snapshot.generation
+                    decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
                 )
                 action = next(value for value in available_actions(snapshot, actor) if isinstance(value, action_type))
                 decision = decide(
@@ -601,15 +598,19 @@ class MutationPersistenceTest(unittest.TestCase):
                     SQLITE_NOW + timedelta(seconds=1),
                 )
                 with store.write() as transaction:
-                    transaction.commit(project_transition_mutation(transaction.snapshot(), decision))
+                    transaction.commit(
+                        project_transition_mutation(
+                            transaction.snapshot(), decision, TaskId("project-task"), HostId("host-a")
+                        )
+                    )
                 proposal = store.snapshot().proposals.proposals[0]
                 self.assertEqual(expected, proposal.disposition)
 
-    def test_defer_decision_persists_reopen_focus(self) -> None:
+    def test_defer_decision_persists_reopen_state(self) -> None:
         store = self._store()
         snapshot = project_decision_snapshot(store.snapshot(), SQLITE_NOW)
         actor = decision_models.ActorAuthority(
-            decision_models.Role.COORDINATOR, decision_models.AuthorizationKind.COORDINATOR, snapshot.generation
+            decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
         )
         action = next(
             value
@@ -626,10 +627,11 @@ class MutationPersistenceTest(unittest.TestCase):
             SQLITE_NOW + timedelta(seconds=1),
         )
         with store.write() as transaction:
-            transaction.commit(project_transition_mutation(transaction.snapshot(), decision))
+            transaction.commit(
+                project_transition_mutation(transaction.snapshot(), decision, TaskId("project-task"), HostId("host-a"))
+            )
         reopened = store.snapshot()
         self.assertEqual(stored_state.StoredWorkItemState.DEFERRED, reopened.lifecycle.work_items[0].state)
-        self.assertEqual("reopen", reopened.focus.next_action)
 
     def test_real_stale_transition_effects_return_failure_and_roll_back(self) -> None:
         ignore_item_update = """
@@ -645,13 +647,6 @@ class MutationPersistenceTest(unittest.TestCase):
             BEGIN
                 UPDATE attempts SET subject_revision = subject_revision + 1
                 WHERE attempt_id = 'work-a-1';
-            END
-        """
-        stale_focus_after_attempt = """
-            CREATE TEMP TRIGGER arrange_real_transition_staleness
-            AFTER UPDATE OF state ON attempts
-            BEGIN
-                UPDATE current_focus SET subject_revision = subject_revision + 1;
             END
         """
         stale_proposal_after_item = f"""
@@ -681,11 +676,6 @@ class MutationPersistenceTest(unittest.TestCase):
                 decision_models.PauseAction,
                 b'{"reason":"Pause at the checkpoint boundary."}',
                 stale_attempt_after_item,
-            ),
-            (
-                decision_models.PauseAction,
-                b'{"reason":"Pause at the checkpoint boundary."}',
-                stale_focus_after_attempt,
             ),
             (
                 decision_models.AcceptProposalAction,
@@ -733,9 +723,9 @@ class MutationPersistenceTest(unittest.TestCase):
                 before = store.snapshot()
                 snapshot = project_decision_snapshot(before, SQLITE_NOW)
                 actor = decision_models.ActorAuthority(
-                    decision_models.Role.COORDINATOR,
-                    decision_models.AuthorizationKind.COORDINATOR,
-                    snapshot.generation,
+                    decision_models.Role.PROJECT,
+                    decision_models.AuthorizationKind.PROJECT,
+                    0,
                 )
                 action = next(value for value in available_actions(snapshot, actor) if isinstance(value, action_type))
                 decision = decide(
@@ -743,7 +733,7 @@ class MutationPersistenceTest(unittest.TestCase):
                     expect_transition_command(parse_transition_command(action, payload)),
                     SQLITE_NOW + timedelta(seconds=1),
                 )
-                mutation = project_transition_mutation(before, decision)
+                mutation = project_transition_mutation(before, decision, TaskId("project-task"), HostId("host-a"))
                 connection = open_database(roots.database_path, OpenMode.READ_WRITE)
                 connection.execute(trigger)
 

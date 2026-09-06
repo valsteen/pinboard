@@ -65,10 +65,10 @@ def test_definition(item: ItemId) -> tuple[work_models.WorkItemDefinition, str]:
             ("evidence:observation",),
             ("Record the follow-up.",),
             (),
-            ("A later coordinator can assess it.",),
+            ("A later task can assess it.",),
             (ItemId("work-c"),),
             "Record the follow-up.",
-            "A later coordinator can assess it.",
+            "A later task can assess it.",
         )
     else:
         definition = work_models.WorkItemDefinition(
@@ -156,7 +156,7 @@ def reject_table_deletes(table_name: str) -> Generator[None]:
 
 @contextmanager
 def reject_table_inserts(table_name: str) -> Generator[None]:
-    """Inject a SQLite failure when one focused relation is inserted."""
+    """Inject a SQLite failure when one targeted relation is inserted."""
 
     original_open = sqlite_store.open_database
 
@@ -248,7 +248,7 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
         SQLITE_NOW,
     )
     lifecycle = stored_state.LifecycleRecords(
-        stored_state.ProjectRecord("pinboard", 3, 12, 2, SQLITE_NOW, SQLITE_NOW),
+        stored_state.ProjectRecord("pinboard", 4, 12, 2, SQLITE_NOW, SQLITE_NOW),
         (
             _stored_item(intake_item, stored_state.StoredWorkItemState.INTAKE, sparse=True, queue_position=1),
             _stored_item(item_a, stored_state.StoredWorkItemState.ACTIVE, queue_position=2),
@@ -316,7 +316,7 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
                 "It may affect work C.",
                 work_models.FollowUpProposalRelation(item_c),
                 "Record the follow-up.",
-                "A later coordinator can assess it.",
+                "A later task can assess it.",
                 "No immediate scheduling impact.",
                 None,
                 4,
@@ -326,15 +326,6 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
         (stored_state.ProposalFreshness(proposal_id, 0, "Work C remains live."),),
     )
     authority = stored_state.AuthorityRecords(
-        stored_state.StoredCoordinationLease(
-            LeaseId("coordination-a"),
-            TaskId("coordinator"),
-            HostId("host-a"),
-            9,
-            SQLITE_NOW,
-            SQLITE_NOW + timedelta(minutes=5),
-            work_models.CoordinationLeaseStatus.ACTIVE,
-        ),
         (stored_state.AttemptLeaseCounter(attempt_id, 3),),
         (stored_state.AttemptLeaseGeneration(attempt_id, 3, attempt_lease_id, TaskId("worker"), HostId("host-a")),),
         (
@@ -367,5 +358,4 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
         (brief, requirements, evidence),
         authority,
         transition_receipts,
-        stored_state.StoredFocus(item_a, attempt_id, "continue", 6),
     )

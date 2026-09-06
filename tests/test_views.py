@@ -37,7 +37,6 @@ class GeneratedViewsTest(unittest.TestCase):
         self.assertIsNone(result.warning)
         for selector in (
             "views/queue.md",
-            "views/current.md",
             "views/items/work-a.md",
             "views/attempts/work-a-1.md",
             "views/history.md",
@@ -69,7 +68,7 @@ class GeneratedViewsTest(unittest.TestCase):
             "pinboard.adapters.files.views.atomic_replace",
             side_effect=FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "disk full"),
         ):
-            result = refresh_state(store.snapshot(), work_root, AffectedViews(current_focus=True), now=SQLITE_NOW)
+            result = refresh_state(store.snapshot(), work_root, AffectedViews(queue=True), now=SQLITE_NOW)
 
         self.assertEqual(12, result.database_revision)
         self.assertIsNotNone(result.warning)

@@ -87,7 +87,6 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
         revised = replace(current, objective="Add safe navigable routes")
         snapshot = LedgerSnapshot(
             "ledger-revision",
-            1,
             (item,),
             definitions=(work_models.DefinitionAnchor(item.item, 3, current_digest, current),),
             history_items=(ItemId("survey-west"), ItemId("survey-east")),
@@ -125,7 +124,6 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
         )
         snapshot = LedgerSnapshot(
             "ledger-revision",
-            1,
             (build, survey),
             definitions=(
                 work_models.DefinitionAnchor(build.item, 3, current_digest, current),
@@ -180,7 +178,6 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
         digest = expect_success(work_item_definition_digest(current))
         snapshot = LedgerSnapshot(
             "ledger-revision",
-            1,
             (),
             definitions=(work_models.DefinitionAnchor(ItemId("done"), 1, digest, current),),
             history_items=(ItemId("done"),),
@@ -230,18 +227,17 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
         authority = work_models.AttemptAuthority(attempt_id, item.item, LeaseId("worker-lease"), 1)
         snapshot = LedgerSnapshot(
             "revision",
-            1,
             (item,),
             attempts=(attempt,),
             attempt_authorities=(authority,),
             definitions=(work_models.DefinitionAnchor(item.item, 2, revised_digest, revised),),
         )
-        coordinator = expect_success(
+        project = expect_success(
             available_actions(
                 snapshot,
                 decision_models.ActorAuthority(
-                    decision_models.Role.COORDINATOR,
-                    decision_models.AuthorizationKind.COORDINATOR,
+                    decision_models.Role.PROJECT,
+                    decision_models.AuthorizationKind.PROJECT,
                     1,
                 ),
             )
@@ -259,15 +255,15 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             )
         )
 
-        coordinator_ids = {decision_models.action_id(value) for value in coordinator}
+        project_ids = {decision_models.action_id(value) for value in project}
         worker_ids = {decision_models.action_id(value) for value in worker}
-        self.assertTrue({"pause:build-map-1", "block:build-map-1", "revise-item:build-map"} <= coordinator_ids)
+        self.assertTrue({"pause:build-map-1", "block:build-map-1", "revise-item:build-map"} <= project_ids)
         self.assertTrue(
-            {"continue:build-map-1", "dispatch:build-map-1", "complete:build-map-1"}.isdisjoint(coordinator_ids)
+            {"continue:build-map-1", "dispatch:build-map-1", "complete:build-map-1"}.isdisjoint(project_ids)
         )
         self.assertEqual({"report-blocker:build-map-1"}, worker_ids)
 
-        capability = decision_models.MutationActionCapability(attempt_id, "complete", "revision", 1)
+        capability = decision_models.MutationActionCapability(attempt_id, "complete", "revision")
         rejected = decide(
             snapshot,
             decision_models.CompleteCommand(

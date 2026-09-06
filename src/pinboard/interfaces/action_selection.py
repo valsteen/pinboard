@@ -15,6 +15,7 @@ from pinboard.interfaces.errors import CommandErrorCode, CommandFailure, Command
 class ParsedActionReceipt:
     action: decision_models.Action
     role: decision_models.MutationRole
+    generation: int
 
 
 def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
@@ -29,31 +30,25 @@ def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
     except ValueError as error:
         return CommandFailure(CommandErrorCode.ACTION_ID_INVALID, f"Unknown action kind: {error}.")
     match command:
-        case cli_commands.CoordinatorTransitionCommand(subject_revision=subject_revision):
-            authorization = decision_models.AuthorizationKind.COORDINATOR
-            role = decision_models.Role.COORDINATOR
+        case cli_commands.ProjectTransitionCommand(subject_revision=subject_revision):
+            authorization = decision_models.AuthorizationKind.PROJECT
+            role = decision_models.Role.PROJECT
             lease_id = None
-        case cli_commands.CoordinationTransitionCommand(lease_id=lease_id, subject_revision=subject_revision):
-            authorization = decision_models.AuthorizationKind.COORDINATION
-            role = decision_models.Role.COORDINATOR
+            generation = 0
         case cli_commands.AttemptTransitionCommand(lease_id=lease_id, subject_revision=subject_revision):
             authorization = decision_models.AuthorizationKind.ATTEMPT
             role = decision_models.Role.WORKER
+            generation = command.generation
         case cli_commands.PreparationTransitionCommand(lease_id=lease_id, subject_revision=subject_revision):
             authorization = decision_models.AuthorizationKind.PREPARATION
             role = decision_models.Role.PREPARER
-        case cli_commands.CoordinatorDispatchCommand() | cli_commands.CoordinatorReviewedDispatchCommand():
-            authorization = decision_models.AuthorizationKind.COORDINATOR
-            role = decision_models.Role.COORDINATOR
+            generation = command.generation
+        case cli_commands.ProjectDispatchCommand() | cli_commands.ProjectReviewedDispatchCommand():
+            authorization = decision_models.AuthorizationKind.PROJECT
+            role = decision_models.Role.PROJECT
             lease_id = None
             subject_revision = None
-        case (
-            cli_commands.CoordinationDispatchCommand(lease_id=lease_id)
-            | cli_commands.CoordinationReviewedDispatchCommand(lease_id=lease_id)
-        ):
-            authorization = decision_models.AuthorizationKind.COORDINATION
-            role = decision_models.Role.COORDINATOR
-            subject_revision = None
+            generation = 0
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -61,13 +56,12 @@ def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
         subject_id: SubjectT,
     ) -> decision_models.MutationActionCapability[SubjectT]:
         return decision_models.MutationActionCapability(
-            subject_id,
-            str(selected_action_id),
-            command.expected_revision,
-            command.generation,
-            subject_revision,
-            authorization,
-            lease_id,
+            subject=subject_id,
+            label=str(selected_action_id),
+            expected_revision=command.expected_revision,
+            subject_revision=subject_revision,
+            authorization=authorization,
+            lease_id=lease_id,
         )
 
     match kind:
@@ -117,11 +111,9 @@ def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
             action = decision_models.ReviseItemAction(capability(ItemId(subject)))
         case decision_models.ActionKind.SUBMIT_REVIEW:
             action = decision_models.SubmitReviewAction(capability(AttemptId(subject)))
-        case decision_models.ActionKind.TRANSFER_COORDINATOR:
-            action = decision_models.TransferCoordinatorAction(capability(LedgerId(subject)))
         case _ as unreachable:
             assert_never(unreachable)
-    return ParsedActionReceipt(action, role)
+    return ParsedActionReceipt(action, role, generation)
 
 
 def select_current_action(
@@ -136,7 +128,7 @@ def select_current_action(
         current_state,
         supplied.role,
         lease_id=supplied_capability.lease_id,
-        generation=supplied_capability.coordinator_generation,
+        generation=supplied.generation,
         now=operation_time,
     )
     if isinstance(current_actions, DecisionFailure):
@@ -158,13 +150,11 @@ def select_current_action(
     if current_capability.expected_revision != supplied_capability.expected_revision:
         return CommandFailure(CommandErrorCode.STALE_ACTION, "The work ledger changed after this action was selected.")
     supplied_authority = (
-        supplied_capability.coordinator_generation,
         supplied_capability.subject_revision,
         supplied_capability.authorization,
         supplied_capability.lease_id,
     )
     current_authority = (
-        current_capability.coordinator_generation,
         current_capability.subject_revision,
         current_capability.authorization,
         current_capability.lease_id,

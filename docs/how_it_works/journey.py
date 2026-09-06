@@ -8,7 +8,7 @@ from pinboard.interfaces import cli_commands, preparation_authority, work_views
 from .model import Box, Connector, Diagram, Guide, Note, Section
 
 SOURCE_SYMBOL_NAMES: dict[str, str] = {
-    "CoordinatorPreparationAcquireCommand": cli_commands.CoordinatorPreparationAcquireCommand.__name__,
+    "PreparationAcquireCommand": cli_commands.PreparationAcquireCommand.__name__,
     "change_preparation_authority": preparation_authority.change_preparation_authority.__name__,
     "_resolve_requested_preparation_change": preparation_authority._resolve_requested_preparation_change.__name__,
     "AcquireInitialPreparationAuthority": authority_models.AcquireInitialPreparationAuthority.__name__,
@@ -32,7 +32,7 @@ DIAGRAM = Diagram(
     title="One change tells one ordered story",
     description=(
         "A preparation-authority request is decoded, observed, resolved, decided against locked state, projected into "
-        "a focused mutation, committed atomically, followed by repairable view refresh, an independent SQLite reread, "
+        "a targeted mutation, committed atomically, followed by repairable view refresh, an independent SQLite reread, "
         "and presentation."
     ),
     width=1400,
@@ -109,10 +109,10 @@ DIAGRAM = Diagram(
         ),
         Box(
             "mutation",
-            "Focused mutation",
+            "Targeted mutation",
             "Project accepted facts",
             ("receipt + authority delta",),
-            ("focused delta",),
+            ("targeted delta",),
             800,
             244,
             240,

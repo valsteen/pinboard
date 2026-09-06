@@ -32,7 +32,7 @@ type DispatchResult[T] = T | DispatchFailure
 
 
 class DispatchPermission(Enum):
-    """Coordinator-declared worker limits that Pinboard validates and forwards but does not grant or enforce."""
+    """Task-declared worker limits that Pinboard validates and forwards but does not grant or enforce."""
 
     REPOSITORY_READ = "repository-read"
     REPOSITORY_WRITE = "repository-write"

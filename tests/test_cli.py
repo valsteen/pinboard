@@ -14,7 +14,7 @@ from unittest.mock import patch
 from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files import views as file_views
-from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
+from pinboard.adapters.files.artifacts import write_revision
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
@@ -26,13 +26,13 @@ from pinboard.application.artifacts import NewArtifact, WorkBriefIdentity
 from pinboard.application.mutation_models import MutationReceipt
 from pinboard.application.ports import WorkStore
 from pinboard.domain import authority_models, decision_models, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
-from pinboard.interfaces import cli_commands, work_brief_models
 from pinboard.interfaces import transitions as transition_interface
+from pinboard.interfaces import work_brief_models
 from pinboard.interfaces.cli import build_parser, main
-from pinboard.interfaces.errors import CommandFailure, CommandResult, WorkBriefError, WorkBriefErrorCode
+from pinboard.interfaces.errors import WorkBriefError, WorkBriefErrorCode
 from pinboard.interfaces.work_briefs import canonical_work_brief_bytes
 
 from .domain_support import expect_success
@@ -99,8 +99,6 @@ class CliTest(unittest.TestCase):
             str(action["action_id"]),
             "--expected-revision",
             str(action["expected_revision"]),
-            "--generation",
-            str(action["coordinator_generation"]),
             "--authorization",
             str(action["authorization"]),
         ]
@@ -109,9 +107,18 @@ class CliTest(unittest.TestCase):
             arguments.extend(("--subject-revision", str(subject_revision)))
         lease_id = action.get("lease_id")
         if lease_id:
-            arguments.extend(("--lease-id", str(lease_id)))
+            arguments.extend(("--lease-id", str(lease_id), "--generation", str(action["generation"])))
+        else:
+            arguments.extend(("--task-id", "project-task", "--host-id", "studio"))
         arguments.extend(("--payload", str(payload)))
         return self.run_cli(*arguments)
+
+    def project_action(self, common: tuple[str, ...], action_id: str) -> JsonObject:
+        return self.json_object(
+            self.json_list(
+                self.run_json_cli(*common, "actions", "--role", "project", "--action-id", action_id)["actions"]
+            )[0]
+        )
 
     def assert_prepared_activation_rejections(
         self,
@@ -222,7 +229,7 @@ class CliTest(unittest.TestCase):
                 store.snapshot(),
                 decision_models.Role.PREPARER,
                 lease_id=LeaseId(str(action["lease_id"])),
-                generation=self.json_int(action["coordinator_generation"]),
+                generation=self.json_int(action["generation"]),
                 now=observed_at,
             )
         )
@@ -311,7 +318,7 @@ class CliTest(unittest.TestCase):
                         "--lease-id",
                         str(action["lease_id"]),
                         "--generation",
-                        str(action["coordinator_generation"]),
+                        str(action["generation"]),
                         "--action-id",
                         "activate:work-c",
                     )["actions"]
@@ -331,7 +338,7 @@ class CliTest(unittest.TestCase):
         store: SQLiteWorkStore,
     ) -> None:
         self.assertEqual(
-            decision_models.AuthorizationKind.COORDINATOR,
+            decision_models.AuthorizationKind.PREPARATION,
             store.snapshot().transition_receipts[-1].authorization,
         )
         overview = self.run_json_cli(*common, "overview")
@@ -483,8 +490,8 @@ class CliTest(unittest.TestCase):
             "proposal",
             "transition",
             "dispatch",
-            "coordination",
             "attempt",
+            "preparation",
             "parallel",
             "views",
         ):
@@ -564,7 +571,7 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual("work-a", value["item_id"])
         self.assertEqual(2, value["definition_revision"])
-        self.assertEqual("14", value["project_revision"])
+        self.assertEqual("13", value["project_revision"])
         reopened = store.snapshot()
         self.assertEqual(
             2,
@@ -671,7 +678,7 @@ class CliTest(unittest.TestCase):
                     *common,
                     "actions",
                     "--role",
-                    "coordinator",
+                    "project",
                     "--action-id",
                     f"revise-item:{item_id}",
                 )["actions"]
@@ -697,8 +704,6 @@ class CliTest(unittest.TestCase):
     def test_revised_review_attempt_rejects_every_acceptance_path_through_the_cli(self) -> None:
         state = complete_sqlite_state()
         now = datetime.now(UTC)
-        coordination = state.authority.coordination
-        assert coordination is not None
         state = replace(
             state,
             lifecycle=replace(
@@ -723,7 +728,6 @@ class CliTest(unittest.TestCase):
             ),
             authority=replace(
                 state.authority,
-                coordination=replace(coordination, acquired_at=now, expires_at=now + timedelta(minutes=5)),
                 attempt_leases=tuple(
                     replace(value, acquired_at=now, expires_at=now + timedelta(minutes=5))
                     for value in state.authority.attempt_leases
@@ -737,11 +741,7 @@ class CliTest(unittest.TestCase):
                 *common,
                 "actions",
                 "--role",
-                "coordinator",
-                "--lease-id",
-                "coordination-a",
-                "--generation",
-                "9",
+                "project",
             )["actions"]
         )
         before_actions = {
@@ -786,11 +786,7 @@ class CliTest(unittest.TestCase):
                     *common,
                     "actions",
                     "--role",
-                    "coordinator",
-                    "--lease-id",
-                    "coordination-a",
-                    "--generation",
-                    "9",
+                    "project",
                 )["actions"]
             )
         }
@@ -814,9 +810,7 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(after_revision, store.snapshot())
 
     def test_item_revise_post_commit_view_warning_preserves_receipt_and_repairs(self) -> None:
-        state = replace(
-            complete_sqlite_state(), authority=replace(complete_sqlite_state().authority, coordination=None)
-        )
+        state = complete_sqlite_state()
         project, work, store = self.initialized_state(state)
         common = ("--project-root", str(project), "--work-root", str(work))
         definition, digest = test_definition(ItemId("work-a"))
@@ -882,10 +876,10 @@ class CliTest(unittest.TestCase):
         self.assertFalse((work / "authority.json").exists())
         self.assertFalse((work / "queue.md").exists())
         self.assertTrue(self.run_json_cli(*common, "validate")["valid"])
-        self.assertEqual("sqlite-v3", self.run_json_cli(*common, "status")["authority"])
+        self.assertEqual("sqlite-v4", self.run_json_cli(*common, "status")["authority"])
         overview = self.run_json_cli(*common, "overview")
-        self.assertEqual("sqlite-v3", overview["authority"])
-        self.assertEqual("pinboard-overview/v2", overview["schema"])
+        self.assertEqual("sqlite-v4", overview["authority"])
+        self.assertEqual("pinboard-overview/v3", overview["schema"])
         actions = self.run_json_cli(*common, "actions", "--role", "observer")["actions"]
         self.assertIsInstance(actions, list)
         assert isinstance(actions, list)
@@ -902,12 +896,6 @@ class CliTest(unittest.TestCase):
             "pinboard-parallel-preview/v1",
             self.run_json_cli(*common, "parallel", "preview")["schema"],
         )
-
-        coordination = self.run_json_cli(*common, "coordination", "status")
-        self.assertIsNone(coordination["lease"])
-        result, stdout, stderr = self.run_cli(*common, "coordination", "status")
-        self.assertEqual(0, result, stderr)
-        self.assertIn("COORDINATION_AVAILABLE", stdout)
         result, stdout, stderr = self.run_cli(*common, "overview")
         self.assertEqual(0, result, stderr)
         self.assertIn("live_work=none", stdout)
@@ -916,19 +904,216 @@ class CliTest(unittest.TestCase):
         )
         self.assertEqual(11, exact_result)
         self.assertIn("ACTION_NOT_AVAILABLE", exact_stderr)
-        renew_result, _renew_stdout, renew_stderr = self.run_cli(
+
+    def test_fresh_init_accepts_a_proposal_and_rejects_its_stale_receipt_without_changes(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        work = project / ".codex" / "pinboard"
+        common = ("--project-root", str(project), "--work-root", str(work))
+        initialized, _stdout, stderr = self.run_cli(*common, "init")
+        self.assertEqual(0, initialized, stderr)
+
+        proposal: JsonObject = {
+            "schema": "pinboard-proposal/v1",
+            "proposal_id": "fresh-proposal",
+            "created_at": SQLITE_NOW.isoformat(),
+            "source_task_id": "project-task",
+            "user_label": "Fresh proposal",
+            "trigger": "Exercise proposal acceptance from the schema created by init.",
+            "evidence": ["source:fresh-init"],
+            "why_it_matters": "Required empty state must support its first transition.",
+            "relation": {"kind": "independent", "item": None},
+            "effect": "The proposal becomes ready work.",
+            "unlock": "The initialized ledger can begin work.",
+            "urgency_evidence": "This is the initialization regression.",
+            "freshness_assumptions": ["The ledger was initialized in this test."],
+        }
+        proposal_path = project / "fresh-proposal.json"
+        proposal_path.write_text(json.dumps(proposal), encoding="utf-8")
+        created, _stdout, stderr = self.run_cli(
             *common,
-            "coordination",
-            "renew",
-            "--lease-id",
-            "missing",
-            "--generation",
-            "1",
+            "proposal",
+            "--file",
+            str(proposal_path),
+            "--task-id",
+            "project-task",
+            "--host-id",
+            "studio",
+        )
+        self.assertEqual(0, created, stderr)
+        stale_action = self.project_action(common, "accept-proposal:fresh-proposal")
+
+        proposal["proposal_id"] = "intervening-proposal"
+        proposal["user_label"] = "Intervening proposal"
+        intervening_path = project / "intervening-proposal.json"
+        intervening_path.write_text(json.dumps(proposal), encoding="utf-8")
+        intervening, _stdout, stderr = self.run_cli(
+            *common,
+            "proposal",
+            "--file",
+            str(intervening_path),
+            "--task-id",
+            "project-task",
+            "--host-id",
+            "studio",
+        )
+        self.assertEqual(0, intervening, stderr)
+
+        payload = project / "accept-fresh-proposal.json"
+        payload.write_text(
+            json.dumps({"item": "fresh-proposal", "state": "ready", "next_action": "activate"}),
+            encoding="utf-8",
+        )
+        store = SQLiteWorkStore(work / "state.sqlite3")
+        before_stale = store.snapshot()
+        rejected, _stdout, rejected_stderr = self.run_transition(common, stale_action, payload)
+        self.assertEqual(11, rejected)
+        self.assertIn("STALE_ACTION", rejected_stderr)
+        self.assertEqual(before_stale, SQLiteWorkStore(work / "state.sqlite3").snapshot())
+
+        current_action = self.project_action(common, "accept-proposal:fresh-proposal")
+        accepted, stdout, stderr = self.run_transition(common, current_action, payload)
+        self.assertEqual(0, accepted, stderr)
+        self.assertIn("OK TRANSITION_APPLIED accept-proposal:fresh-proposal", stdout)
+        reloaded = SQLiteWorkStore(work / "state.sqlite3").snapshot()
+        accepted_item = next(
+            value for value in reloaded.lifecycle.work_items if value.item_id == ItemId("fresh-proposal")
+        )
+        self.assertEqual(stored_state.StoredWorkItemState.READY, accepted_item.state)
+
+    def test_preparation_lease_recovery_needs_no_global_coordination(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        common = ("--project-root", str(project), "--work-root", str(work))
+        definition = self.run_json_cli(*common, "item", "definition", "--item-id", "work-c")
+        acquired = self.run_json_cli(
+            *common,
+            "preparation",
+            "acquire",
+            "--item-id",
+            "work-c",
+            "--expected-project-revision",
+            str(definition["project_revision"]),
+            "--expected-item-subject-revision",
+            str(definition["item_subject_revision"]),
+            "--expected-definition-revision",
+            str(definition["definition_revision"]),
+            "--expected-definition-digest",
+            str(definition["definition_digest"]),
+            "--task-id",
+            "preparer-a",
+            "--host-id",
+            "studio",
             "--ttl-seconds",
             "60",
         )
-        self.assertEqual(11, renew_result)
-        self.assertIn("COORDINATION_LEASE_REQUIRED", renew_stderr)
+        released = self.run_json_cli(
+            *common,
+            "preparation",
+            "release",
+            "--item-id",
+            "work-c",
+            "--lease-id",
+            str(acquired["lease_id"]),
+            "--generation",
+            str(acquired["generation"]),
+        )
+        transferred = self.run_json_cli(
+            *common,
+            "preparation",
+            "transfer",
+            "--item-id",
+            "work-c",
+            "--task-id",
+            "preparer-b",
+            "--host-id",
+            "studio",
+            "--ttl-seconds",
+            "60",
+        )
+        revoked = self.run_json_cli(
+            *common,
+            "preparation",
+            "revoke",
+            "--item-id",
+            "work-c",
+            "--lease-id",
+            str(transferred["lease_id"]),
+            "--generation",
+            str(transferred["generation"]),
+            "--task-id",
+            "project-task",
+            "--host-id",
+            "studio",
+        )
+
+        self.assertEqual("released", released["status"])
+        self.assertEqual(("active", "preparer-b"), (transferred["status"], transferred["task_id"]))
+        self.assertEqual("revoked", revoked["status"])
+        retained = SQLiteWorkStore(work / "state.sqlite3").snapshot().authority.preparation_leases[0]
+        self.assertEqual(authority_models.PreparationLeaseStatus.REVOKED, retained.state)
+        self.assertEqual(revoked["generation"], retained.generation)
+
+    def test_attempt_lease_recovery_needs_no_global_coordination(self) -> None:
+        state = complete_sqlite_state()
+        state = replace(
+            state,
+            authority=replace(
+                state.authority,
+                attempt_counters=(),
+                attempt_generations=(),
+                attempt_leases=(),
+            ),
+        )
+        project, work, _store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        acquired = self.run_json_cli(
+            *common,
+            "attempt",
+            "acquire",
+            "--attempt-id",
+            "work-a-1",
+            "--task-id",
+            "worker-a",
+            "--host-id",
+            "studio",
+            "--ttl-seconds",
+            "60",
+        )
+        revoked = self.run_json_cli(
+            *common,
+            "attempt",
+            "revoke",
+            "--attempt-id",
+            "work-a-1",
+            "--lease-id",
+            str(acquired["lease_id"]),
+            "--generation",
+            str(acquired["generation"]),
+            "--task-id",
+            "project-task",
+            "--host-id",
+            "studio",
+        )
+        reacquired = self.run_json_cli(
+            *common,
+            "attempt",
+            "acquire",
+            "--attempt-id",
+            "work-a-1",
+            "--task-id",
+            "worker-b",
+            "--host-id",
+            "studio",
+            "--ttl-seconds",
+            "60",
+        )
+
+        self.assertEqual("active", acquired["status"])
+        self.assertEqual("revoked", revoked["status"])
+        self.assertEqual(("active", "worker-b"), (reacquired["status"], reacquired["task_id"]))
+        self.assertGreater(self.json_int(reacquired["generation"]), self.json_int(revoked["generation"]))
+        retained = SQLiteWorkStore(work / "state.sqlite3").snapshot().authority.attempt_leases[0]
+        self.assertEqual(authority_models.AttemptLeaseStatus.ACTIVE, retained.state)
+        self.assertEqual(reacquired["generation"], retained.generation)
 
     def test_first_init_recommends_body_after_prefix_once_when_user_setting_is_absent(self) -> None:
         for label, config_contents in (("missing-config", None), ("other-setting", 'model = "gpt-5"\n')):
@@ -1123,14 +1308,13 @@ class CliTest(unittest.TestCase):
         self.assertIn("ACTION_NOT_AVAILABLE", duplicate_stderr)
         self.assertEqual(activated_state, store.snapshot())
 
-    def test_coordination_and_attempt_lifecycle_use_sqlite(self) -> None:
+    def test_activation_requires_exact_preparation_and_brief_identity(self) -> None:
         project, work, store = self.initialized_state(complete_sqlite_state())
         state = store.snapshot()
         state = replace(
             state,
             authority=replace(
                 state.authority,
-                coordination=None,
                 attempt_counters=(),
                 attempt_generations=(),
                 attempt_leases=(),
@@ -1161,17 +1345,6 @@ class CliTest(unittest.TestCase):
             encoding="utf-8",
         )
 
-        coordination = self.run_json_cli(
-            *common,
-            "coordination",
-            "acquire",
-            "--task-id",
-            "coordinator-task",
-            "--host-id",
-            "studio",
-            "--ttl-seconds",
-            "60",
-        )
         definition = self.run_json_cli(*common, "item", "definition", "--item-id", "work-c")
         prepared = self.run_json_cli(
             *common,
@@ -1193,22 +1366,8 @@ class CliTest(unittest.TestCase):
             "studio",
             "--ttl-seconds",
             "60",
-            "--coordination-lease-id",
-            str(coordination["lease_id"]),
-            "--coordination-generation",
-            str(coordination["generation"]),
         )
         self.assert_installed_preparation_visibility(common, prepared, store)
-        self.run_json_cli(
-            *common,
-            "coordination",
-            "release",
-            "--lease-id",
-            str(coordination["lease_id"]),
-            "--generation",
-            str(coordination["generation"]),
-        )
-        self.assertEqual("released", self.run_json_cli(*common, "coordination", "status")["status"])
         activation = self.json_object(
             self.json_list(
                 self.run_json_cli(
@@ -1228,263 +1387,9 @@ class CliTest(unittest.TestCase):
         activation = self.assert_prepared_activation_rejections(common, activation, prepared, project, store, payload)
         self.assert_activation_commit_and_duplicate(common, activation, prepared, payload, store)
 
-        acquired = self.run_json_cli(
-            *common,
-            "attempt",
-            "acquire",
-            "--attempt-id",
-            "work-c-1",
-            "--task-id",
-            "worker-task",
-            "--host-id",
-            "studio",
-            "--ttl-seconds",
-            "60",
-        )
-        renewed = self.run_json_cli(
-            *common,
-            "attempt",
-            "renew",
-            "--attempt-id",
-            "work-c-1",
-            "--lease-id",
-            str(acquired["lease_id"]),
-            "--generation",
-            str(acquired["generation"]),
-            "--ttl-seconds",
-            "120",
-        )
-        released = self.run_json_cli(
-            *common,
-            "attempt",
-            "release",
-            "--attempt-id",
-            "work-c-1",
-            "--lease-id",
-            str(renewed["lease_id"]),
-            "--generation",
-            str(renewed["generation"]),
-        )
-        self.assertEqual("released", released["status"])
-
-        coordination = self.run_json_cli(
-            *common,
-            "coordination",
-            "acquire",
-            "--task-id",
-            "coordinator-task",
-            "--host-id",
-            "studio",
-            "--ttl-seconds",
-            "60",
-        )
-        coordination = self.run_json_cli(
-            *common,
-            "coordination",
-            "renew",
-            "--lease-id",
-            str(coordination["lease_id"]),
-            "--generation",
-            str(coordination["generation"]),
-            "--ttl-seconds",
-            "120",
-        )
-        reacquired = self.run_json_cli(
-            *common,
-            "attempt",
-            "acquire",
-            "--attempt-id",
-            "work-c-1",
-            "--task-id",
-            "worker-task-2",
-            "--host-id",
-            "studio",
-            "--coordination-lease-id",
-            str(coordination["lease_id"]),
-            "--coordination-generation",
-            str(coordination["generation"]),
-            "--ttl-seconds",
-            "60",
-        )
-        self.assertEqual("active", reacquired["status"])
-        revoked = self.run_json_cli(
-            *common,
-            "attempt",
-            "revoke",
-            "--attempt-id",
-            "work-c-1",
-            "--lease-id",
-            str(reacquired["lease_id"]),
-            "--generation",
-            str(reacquired["generation"]),
-            "--coordination-lease-id",
-            str(coordination["lease_id"]),
-            "--coordination-generation",
-            str(coordination["generation"]),
-        )
-        self.assertEqual("revoked", revoked["status"])
-        released_coordination = self.run_json_cli(
-            *common,
-            "coordination",
-            "release",
-            "--lease-id",
-            str(coordination["lease_id"]),
-            "--generation",
-            str(coordination["generation"]),
-        )
-        self.assertEqual("released", released_coordination["status"])
-        replacement = self.run_json_cli(
-            *common,
-            "coordination",
-            "acquire",
-            "--task-id",
-            "replacement-task",
-            "--host-id",
-            "studio",
-            "--ttl-seconds",
-            "60",
-        )
-        revoked_coordination = self.run_json_cli(*common, "coordination", "revoke")
-        self.assertGreater(
-            self.json_int(revoked_coordination["generation"]),
-            self.json_int(replacement["generation"]),
-        )
-
-    def test_preparation_renew_release_transfer_and_revoke_use_sqlite(self) -> None:
-        state = complete_sqlite_state()
-        coordination = state.authority.coordination
-        assert coordination is not None
-        current = datetime.now(UTC)
-        state = replace(
-            state,
-            authority=replace(
-                state.authority,
-                coordination=replace(
-                    coordination,
-                    acquired_at=current,
-                    expires_at=current + timedelta(minutes=5),
-                ),
-            ),
-        )
-        project, work, store = self.initialized_state(state)
-        common = ("--project-root", str(project), "--work-root", str(work))
-        coordination = store.snapshot().authority.coordination
-        assert coordination is not None
-        definition = self.run_json_cli(*common, "item", "definition", "--item-id", "work-c")
-        acquired = self.run_json_cli(
-            *common,
-            "preparation",
-            "acquire",
-            "--item-id",
-            "work-c",
-            "--expected-project-revision",
-            str(definition["project_revision"]),
-            "--expected-item-subject-revision",
-            str(definition["item_subject_revision"]),
-            "--expected-definition-revision",
-            str(definition["definition_revision"]),
-            "--expected-definition-digest",
-            str(definition["definition_digest"]),
-            "--task-id",
-            "preparer-a",
-            "--host-id",
-            "studio",
-            "--ttl-seconds",
-            "60",
-            "--coordination-lease-id",
-            str(coordination.lease_id),
-            "--coordination-generation",
-            str(coordination.generation),
-        )
-        renewed = self.run_json_cli(
-            *common,
-            "preparation",
-            "renew",
-            "--item-id",
-            "work-c",
-            "--lease-id",
-            str(acquired["lease_id"]),
-            "--generation",
-            str(acquired["generation"]),
-            "--ttl-seconds",
-            "120",
-        )
-        self.assertGreater(str(renewed["expires_at"]), str(acquired["expires_at"]))
-        released = self.run_json_cli(
-            *common,
-            "preparation",
-            "release",
-            "--item-id",
-            "work-c",
-            "--lease-id",
-            str(renewed["lease_id"]),
-            "--generation",
-            str(renewed["generation"]),
-        )
-        self.assertEqual("released", released["status"])
-        transferred = self.run_json_cli(
-            *common,
-            "preparation",
-            "transfer",
-            "--item-id",
-            "work-c",
-            "--task-id",
-            "preparer-b",
-            "--host-id",
-            "studio",
-            "--ttl-seconds",
-            "60",
-            "--coordination-lease-id",
-            str(coordination.lease_id),
-            "--coordination-generation",
-            str(coordination.generation),
-        )
-        self.assertEqual("active", transferred["status"])
-        self.assertEqual("preparer-b", transferred["task_id"])
-        self.assertGreater(self.json_int(transferred["generation"]), self.json_int(released["generation"]))
-        revoked = self.run_json_cli(
-            *common,
-            "preparation",
-            "revoke",
-            "--item-id",
-            "work-c",
-            "--lease-id",
-            str(transferred["lease_id"]),
-            "--generation",
-            str(transferred["generation"]),
-            "--coordination-lease-id",
-            str(coordination.lease_id),
-            "--coordination-generation",
-            str(coordination.generation),
-        )
-        self.assertEqual("revoked", revoked["status"])
-        self.assertEqual("ready", self.run_json_cli(*common, "item", "status", "--item-id", "work-c")["state"])
-
     def test_installed_authority_callers_sample_operation_refresh_and_preparation_render_separately(self) -> None:
         operation_time = SQLITE_NOW + timedelta(seconds=1)
         render_time = operation_time + timedelta(microseconds=1)
-        coordination_state = replace(
-            complete_sqlite_state(),
-            authority=replace(complete_sqlite_state().authority, coordination=None),
-        )
-        project, work, _store = self.initialized_state(coordination_state)
-        common = ("--project-root", str(project), "--work-root", str(work))
-        with patch("pinboard.interfaces.coordination_authority.datetime") as coordination_clock:
-            coordination_clock.now.side_effect = (operation_time, render_time)
-            acquired = self.run_json_cli(
-                *common,
-                "coordination",
-                "acquire",
-                "--task-id",
-                "coordinator",
-                "--host-id",
-                "studio",
-                "--ttl-seconds",
-                "60",
-            )
-        self.assertEqual(operation_time.isoformat(), acquired["acquired_at"])
-        self.assertEqual(2, coordination_clock.now.call_count)
-
         project, work, state_store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))
         attempt = state_store.snapshot().authority.attempt_leases[0]
@@ -1528,36 +1433,21 @@ class CliTest(unittest.TestCase):
         self.assertEqual((operation_time + timedelta(seconds=60)).isoformat(), renewed["expires_at"])
         self.assertEqual(3, preparation_clock.now.call_count)
 
-    def test_installed_coordinator_never_advertises_claimless_activation(self) -> None:
-        project, work, store = self.initialized_state(complete_sqlite_state())
+    def test_project_task_never_advertises_claimless_activation(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))
-        coordination = store.snapshot().authority.coordination
-        assert coordination is not None
-        for authority in (
-            (),
-            (
-                "--lease-id",
-                str(coordination.lease_id),
-                "--generation",
-                str(coordination.generation),
-            ),
-        ):
-            with (
-                self.subTest(authority=authority),
-                patch("pinboard.interfaces.work_inspection.datetime") as inspection_clock,
-            ):
-                inspection_clock.now.return_value = SQLITE_NOW
-                result, _stdout, stderr = self.run_cli(
-                    *common,
-                    "actions",
-                    "--role",
-                    "coordinator",
-                    *authority,
-                    "--action-id",
-                    "activate:work-c",
-                )
-                self.assertEqual(11, result)
-                self.assertIn("ACTION_NOT_AVAILABLE", stderr)
+        with patch("pinboard.interfaces.work_inspection.datetime") as inspection_clock:
+            inspection_clock.now.return_value = SQLITE_NOW
+            result, _stdout, stderr = self.run_cli(
+                *common,
+                "actions",
+                "--role",
+                "project",
+                "--action-id",
+                "activate:work-c",
+            )
+        self.assertEqual(11, result)
+        self.assertIn("ACTION_NOT_AVAILABLE", stderr)
 
     def test_installed_proposal_and_brief_publication_sample_commit_and_render_separately(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())
@@ -1588,7 +1478,16 @@ class CliTest(unittest.TestCase):
         with patch("pinboard.interfaces.proposal_commands.datetime") as proposal_clock:
             proposal_clock.fromisoformat.side_effect = datetime.fromisoformat
             proposal_clock.now.side_effect = (commit_time, render_time)
-            result, _stdout, stderr = self.run_cli(*common, "proposal", "--file", str(proposal_path))
+            result, _stdout, stderr = self.run_cli(
+                *common,
+                "proposal",
+                "--file",
+                str(proposal_path),
+                "--task-id",
+                "discoverer",
+                "--host-id",
+                "studio",
+            )
         self.assertEqual(0, result, stderr)
         self.assertEqual(2, proposal_clock.now.call_count)
 
@@ -1770,7 +1669,16 @@ class CliTest(unittest.TestCase):
                 with patch("pinboard.interfaces.proposal_commands.datetime") as clock:
                     clock.fromisoformat.side_effect = datetime.fromisoformat
                     clock.now.side_effect = (observed_at, observed_at)
-                    result, _stdout, stderr = self.run_cli(*common, "proposal", "--file", str(proposal_path))
+                    result, _stdout, stderr = self.run_cli(
+                        *common,
+                        "proposal",
+                        "--file",
+                        str(proposal_path),
+                        "--task-id",
+                        "discoverer",
+                        "--host-id",
+                        "studio",
+                    )
                 self.assertEqual(0 if accepted else 13, result, stderr)
                 self.assertEqual(2 if accepted else 1, clock.now.call_count)
                 if accepted:
@@ -1781,39 +1689,9 @@ class CliTest(unittest.TestCase):
                     self.assertIn("ACTION_NOT_AVAILABLE", stderr)
                     self.assertEqual(before, store.snapshot())
 
-    def test_pause_transition_round_trips_through_the_installed_command(self) -> None:
-        project, work, _store = self.initialized_state(complete_sqlite_state())
-        common = ("--project-root", str(project), "--work-root", str(work))
-        payload = project / "pause.json"
-        payload.write_text('{"reason":"Pause through the installed command."}\n', encoding="utf-8")
-
-        applied = self.run_json_cli(
-            *common,
-            "coordination",
-            "apply",
-            "--task-id",
-            "coordinator-task",
-            "--host-id",
-            "studio",
-            "--action-id",
-            "pause:work-a-1",
-            "--payload",
-            str(payload),
-        )
-
-        self.assertEqual("pause:work-a-1", applied["action_id"])
-        reopened = SQLiteWorkStore(work / "state.sqlite3").snapshot()
-        self.assertEqual(stored_state.StoredWorkItemState.PAUSED, reopened.lifecycle.work_items[1].state)
-        self.assertEqual(work_models.AttemptState.PAUSED, reopened.lifecycle.attempts[0].state)
-        self.assertEqual(
-            1,
-            sum(value.action_kind == decision_models.ActionKind.PAUSE for value in reopened.transition_receipts),
-        )
-
     def test_checkpoint_acceptance_archives_exact_attempt_receipts_in_one_transition(self) -> None:
         state = complete_sqlite_state()
         now = datetime.now(UTC)
-        assert state.authority.coordination is not None
         state = replace(
             state,
             lifecycle=replace(
@@ -1836,11 +1714,6 @@ class CliTest(unittest.TestCase):
                     for value in state.lifecycle.attempts
                 ),
             ),
-            authority=replace(
-                state.authority,
-                coordination=replace(state.authority.coordination, expires_at=now + timedelta(minutes=5)),
-            ),
-            focus=replace(state.focus, next_action="review"),
         )
         project, work, store = self.initialized_state(state)
         common = ("--project-root", str(project), "--work-root", str(work))
@@ -1861,11 +1734,7 @@ class CliTest(unittest.TestCase):
                     *common,
                     "actions",
                     "--role",
-                    "coordinator",
-                    "--lease-id",
-                    "coordination-a",
-                    "--generation",
-                    "9",
+                    "project",
                 )["actions"]
             )
             if self.json_object(value)["action_id"] == "accept-checkpoint:work-a-1"
@@ -1921,12 +1790,10 @@ class CliTest(unittest.TestCase):
     def test_current_read_surface_has_human_and_json_views(self) -> None:
         state = complete_sqlite_state()
         now = datetime.now(UTC)
-        assert state.authority.coordination is not None
         state = replace(
             state,
             authority=replace(
                 state.authority,
-                coordination=replace(state.authority.coordination, expires_at=now + timedelta(minutes=5)),
                 attempt_leases=tuple(
                     replace(value, expires_at=now + timedelta(minutes=5)) for value in state.authority.attempt_leases
                 ),
@@ -1936,7 +1803,7 @@ class CliTest(unittest.TestCase):
         common = ("--project-root", str(project), "--work-root", str(work))
 
         status = self.run_json_cli(*common, "status")
-        self.assertEqual("sqlite-v3", status["authority"])
+        self.assertEqual("sqlite-v4", status["authority"])
         self.assertEqual(2, status["intake_item_count"])
         status_result, status_stdout, status_stderr = self.run_cli(*common, "status")
         self.assertEqual(0, status_result, status_stderr)
@@ -1955,11 +1822,7 @@ class CliTest(unittest.TestCase):
                 *common,
                 "actions",
                 "--role",
-                "coordinator",
-                "--lease-id",
-                "coordination-a",
-                "--generation",
-                "9",
+                "project",
             )["actions"]
         )
         self.assertTrue(actions)
@@ -2071,12 +1934,10 @@ Not launchable:
     def test_blocker_actions_and_input_contracts_are_unambiguous(self) -> None:
         state = complete_sqlite_state()
         now = datetime.now(UTC)
-        assert state.authority.coordination is not None
         state = replace(
             state,
             authority=replace(
                 state.authority,
-                coordination=replace(state.authority.coordination, expires_at=now + timedelta(minutes=5)),
                 attempt_leases=tuple(
                     replace(value, expires_at=now + timedelta(minutes=5)) for value in state.authority.attempt_leases
                 ),
@@ -2084,16 +1945,12 @@ Not launchable:
         )
         project, work, _store = self.initialized_state(state)
         common = ("--project-root", str(project), "--work-root", str(work))
-        coordinator_actions = self.json_list(
+        project_actions = self.json_list(
             self.run_json_cli(
                 *common,
                 "actions",
                 "--role",
-                "coordinator",
-                "--lease-id",
-                "coordination-a",
-                "--generation",
-                "9",
+                "project",
             )["actions"]
         )
         worker_actions = self.json_list(
@@ -2113,7 +1970,7 @@ Not launchable:
                 "report-blocker:work-a-1",
                 "Prepare blocker report for work-a",
                 {
-                    "use_case": "Preserve blocker evidence for coordination.",
+                    "use_case": "Preserve blocker evidence for the project.",
                     "effect": "advisory",
                     "permitted_roles": ["worker"],
                     "subject_kind": "attempt",
@@ -2127,7 +1984,7 @@ Not launchable:
                 {
                     "use_case": "Stop an active attempt on dependencies already accepted in its definition.",
                     "effect": "mutating",
-                    "permitted_roles": ["coordinator"],
+                    "permitted_roles": ["project"],
                     "subject_kind": "attempt",
                     "lifecycle_precondition": "active-attempt",
                     "practical_result": "Move the item and attempt to blocked without changing accepted dependencies.",
@@ -2139,14 +1996,14 @@ Not launchable:
                 {
                     "use_case": "Stop unstarted intake work on dependencies already accepted in its definition.",
                     "effect": "mutating",
-                    "permitted_roles": ["coordinator"],
+                    "permitted_roles": ["project"],
                     "subject_kind": "item",
                     "lifecycle_precondition": "intake-item",
                     "practical_result": "Move the item to blocked without changing accepted dependencies or creating an attempt.",
                 },
             ),
         }
-        all_actions = tuple(self.json_object(action) for action in (*coordinator_actions, *worker_actions))
+        all_actions = tuple(self.json_object(action) for action in (*project_actions, *worker_actions))
         selected = {
             kind: next(action for action in all_actions if action["action_id"] == action_id)
             for kind, (action_id, _label, _semantics) in expected.items()
@@ -2166,10 +2023,10 @@ Not launchable:
                     self.assertIsInstance(contract["payload_schema"], dict)
 
         continue_contract = self.run_json_cli(*common, "input-contract", "continue")
-        self.assertEqual(["coordinator", "worker"], self.json_object(continue_contract["semantics"])["permitted_roles"])
+        self.assertEqual(["project", "worker"], self.json_object(continue_contract["semantics"])["permitted_roles"])
         self.assertIsNone(continue_contract["payload_schema"])
         continue_actions = tuple(action for action in all_actions if action["action_id"] == "continue:work-a-1")
-        self.assertEqual({"coordination", "attempt"}, {action["authorization"] for action in continue_actions})
+        self.assertEqual({"project", "attempt"}, {action["authorization"] for action in continue_actions})
         for action in continue_actions:
             self.assertEqual(continue_contract["semantics"], action["semantics"])
 
@@ -2195,14 +2052,14 @@ Not launchable:
             ),
             dependencies=tuple(value for value in state.lifecycle.dependencies if value.item_id != ItemId("work-a")),
         )
-        state = replace(state, lifecycle=lifecycle, focus=replace(state.focus, next_action="resume"))
+        state = replace(state, lifecycle=lifecycle)
         state = with_definition_dependencies(state, ItemId("work-a"), ())
         project, work, _store = self.initialized_state(state)
         common = ("--project-root", str(project), "--work-root", str(work))
 
         actions = {
             action["action_id"]: action
-            for value in self.json_list(self.run_json_cli(*common, "actions", "--role", "coordinator")["actions"])
+            for value in self.json_list(self.run_json_cli(*common, "actions", "--role", "project")["actions"])
             if (action := self.json_object(value))["action_id"]
             in {"resume:work-a", "resume:work-c", "reopen:intake-work"}
         }
@@ -2236,7 +2093,6 @@ Not launchable:
             lifecycle=lifecycle,
             authority=replace(
                 state.authority,
-                coordination=None,
                 attempt_leases=tuple(
                     replace(value, expires_at=now + timedelta(minutes=5)) for value in state.authority.attempt_leases
                 ),
@@ -2282,7 +2138,7 @@ Not launchable:
                     *common,
                     "actions",
                     "--role",
-                    "coordinator",
+                    "project",
                     "--action-id",
                     "block:work-a-1",
                 )["actions"]
@@ -2294,19 +2150,8 @@ Not launchable:
             '{"reason":"Waiting for the intake prerequisite.","depends_on":["intake-work"]}\n',
             encoding="utf-8",
         )
-        self.run_json_cli(
-            *common,
-            "coordination",
-            "apply",
-            "--task-id",
-            "coordinator-task",
-            "--host-id",
-            "studio",
-            "--action-id",
-            "block:work-a-1",
-            "--payload",
-            str(block_payload),
-        )
+        block_result, _block_stdout, block_stderr = self.run_transition(common, block, block_payload)
+        self.assertEqual(0, block_result, block_stderr)
 
         blocked = SQLiteWorkStore(work / "state.sqlite3").snapshot()
         blocked_item = next(value for value in blocked.lifecycle.work_items if value.item_id == ItemId("work-a"))
@@ -2333,7 +2178,7 @@ Not launchable:
             "--reason",
             "The prerequisite is satisfied.",
             "--task-id",
-            "coordinator-task",
+            "project-task",
             "--host-id",
             "studio",
         )
@@ -2343,7 +2188,7 @@ Not launchable:
                     *common,
                     "actions",
                     "--role",
-                    "coordinator",
+                    "project",
                     "--action-id",
                     "resume:work-a",
                 )["actions"]
@@ -2352,19 +2197,8 @@ Not launchable:
         self.assertEqual("resume:work-a", resume["action_id"])
         resume_payload = project / "resume.json"
         resume_payload.write_text("{}\n", encoding="utf-8")
-        self.run_json_cli(
-            *common,
-            "coordination",
-            "apply",
-            "--task-id",
-            "coordinator-task",
-            "--host-id",
-            "studio",
-            "--action-id",
-            "resume:work-a",
-            "--payload",
-            str(resume_payload),
-        )
+        resume_result, _resume_stdout, resume_stderr = self.run_transition(common, resume, resume_payload)
+        self.assertEqual(0, resume_result, resume_stderr)
         resumed = SQLiteWorkStore(work / "state.sqlite3").snapshot()
         resumed_item = next(value for value in resumed.lifecycle.work_items if value.item_id == ItemId("work-a"))
         resumed_attempt = next(
@@ -2386,7 +2220,6 @@ Not launchable:
             ),
             authority=replace(
                 state.authority,
-                coordination=None,
                 attempt_leases=tuple(
                     replace(value, expires_at=now + timedelta(minutes=5)) for value in state.authority.attempt_leases
                 ),
@@ -2400,19 +2233,9 @@ Not launchable:
         pause_payload = project / "pause.json"
         pause_payload.write_text('{"reason":"Pause before accepting revised scope."}\n', encoding="utf-8")
 
-        self.run_json_cli(
-            *common,
-            "coordination",
-            "apply",
-            "--task-id",
-            "coordinator-task",
-            "--host-id",
-            "studio",
-            "--action-id",
-            "pause:work-a-1",
-            "--payload",
-            str(pause_payload),
-        )
+        pause_action = self.project_action(common, "pause:work-a-1")
+        pause_result, _pause_stdout, pause_stderr = self.run_transition(common, pause_action, pause_payload)
+        self.assertEqual(0, pause_result, pause_stderr)
         proposal_path = project / "required-first.json"
         proposal_path.write_text(
             json.dumps(
@@ -2434,7 +2257,17 @@ Not launchable:
             ),
             encoding="utf-8",
         )
-        self.run_cli(*common, "proposal", "--file", str(proposal_path))
+        proposal_result, _proposal_stdout, proposal_stderr = self.run_cli(
+            *common,
+            "proposal",
+            "--file",
+            str(proposal_path),
+            "--task-id",
+            "discovering-task",
+            "--host-id",
+            "studio",
+        )
+        self.assertEqual(0, proposal_result, proposal_stderr)
         self.run_json_cli(
             *common,
             "close",
@@ -2444,7 +2277,7 @@ Not launchable:
             "--reason",
             "The prerequisite is satisfied.",
             "--task-id",
-            "coordinator-task",
+            "project-task",
             "--host-id",
             "studio",
         )
@@ -2477,19 +2310,9 @@ Not launchable:
             json.dumps({"brief_artifact_ref_id": publication["artifact_ref_id"]}), encoding="utf-8"
         )
 
-        resumed = self.run_json_cli(
-            *common,
-            "coordination",
-            "apply",
-            "--task-id",
-            "coordinator-task",
-            "--host-id",
-            "studio",
-            "--action-id",
-            "resume:work-a",
-            "--payload",
-            str(resume_payload),
-        )
+        resume_action = self.project_action(common, "resume:work-a")
+        resume_result, resume_stdout, resume_stderr = self.run_transition(common, resume_action, resume_payload)
+        self.assertEqual(0, resume_result, resume_stderr)
 
         reloaded = SQLiteWorkStore(work / "state.sqlite3").snapshot()
         reloaded_item = next(value for value in reloaded.lifecycle.work_items if value.item_id == ItemId("work-a"))
@@ -2515,14 +2338,14 @@ Not launchable:
                 reloaded_attempt.accepted_scope_digest,
             ),
         )
-        self.assertEqual(str(reloaded.lifecycle.project.revision - 1), resumed["revision"])
+        self.assertIn(f"revision={reloaded.lifecycle.project.revision}", resume_stdout)
         validation_result, validation_stdout, validation_stderr = self.run_cli(*common, "validate")
         self.assertEqual(0, validation_result, f"{validation_stdout}\n{validation_stderr}")
         self.assertIn("OK WORK_STATE_VALID", validation_stdout)
-        coordinator_actions = self.json_list(self.run_json_cli(*common, "actions", "--role", "coordinator")["actions"])
+        project_actions = self.json_list(self.run_json_cli(*common, "actions", "--role", "project")["actions"])
         self.assertIn(
             "dispatch:work-a-1",
-            tuple(str(self.json_object(value)["action_id"]) for value in coordinator_actions),
+            tuple(str(self.json_object(value)["action_id"]) for value in project_actions),
         )
 
     def test_revised_brief_identity_mismatches_reject_at_command_boundary_without_effects(self) -> None:
@@ -2568,8 +2391,6 @@ Not launchable:
         for name, mismatched_brief in mismatches:
             with self.subTest(identity=name):
                 state = complete_sqlite_state()
-                now = datetime.now(UTC)
-                assert state.authority.coordination is not None
                 state = replace(
                     state,
                     lifecycle=replace(
@@ -2585,10 +2406,6 @@ Not launchable:
                             value for value in state.lifecycle.dependencies if value.item_id != ItemId("work-a")
                         ),
                     ),
-                    authority=replace(
-                        state.authority,
-                        coordination=replace(state.authority.coordination, expires_at=now + timedelta(minutes=5)),
-                    ),
                 )
                 state = with_definition_dependencies(state, ItemId("work-a"), ())
                 project, work, _store = self.initialized_state(state)
@@ -2598,22 +2415,7 @@ Not launchable:
                 publication = self.run_json_cli(*common, "brief", "publish", "--file", str(brief_path))
                 rebuild_result, rebuild_stdout, rebuild_stderr = self.run_cli(*common, "views", "rebuild")
                 self.assertEqual(0, rebuild_result, f"{rebuild_stdout}\n{rebuild_stderr}")
-                action = self.json_object(
-                    self.json_list(
-                        self.run_json_cli(
-                            *common,
-                            "actions",
-                            "--role",
-                            "coordinator",
-                            "--lease-id",
-                            "coordination-a",
-                            "--generation",
-                            "9",
-                            "--action-id",
-                            "resume:work-a",
-                        )["actions"]
-                    )[0]
-                )
+                action = self.project_action(common, "resume:work-a")
                 payload = project / f"resume-{name}.json"
                 payload.write_text(
                     json.dumps({"brief_artifact_ref_id": publication["artifact_ref_id"]}), encoding="utf-8"
@@ -2641,47 +2443,6 @@ Not launchable:
                         if path.is_file()
                     ),
                 )
-
-    def test_post_commit_brief_projection_failure_keeps_borrowed_transition_receipt(self) -> None:
-        state = complete_sqlite_state()
-        state = replace(state, authority=replace(state.authority, coordination=None))
-        project, work, store = self.initialized_state(state)
-
-        with patch(
-            "pinboard.interfaces.work_views.read_attempt_brief_views",
-            side_effect=WorkBriefError(WorkBriefErrorCode.BRIEF_INVALID, "injected projection failure"),
-        ):
-            result, stdout, stderr = self.run_cli(
-                "--project-root",
-                str(project),
-                "--work-root",
-                str(work),
-                "close",
-                "work-c",
-                "--outcome",
-                "done",
-                "--reason",
-                "The prerequisite outcome is complete.",
-                "--task-id",
-                "coordinator-task",
-                "--host-id",
-                "studio",
-            )
-
-        self.assertEqual(0, result, stderr)
-        self.assertIn("OK WORK_ITEM_CLOSED item=work-c outcome=done revision=14", stdout)
-        self.assertIn("Generated views could not be rebuilt", stderr)
-        self.assertIn("injected projection failure", stderr)
-        self.assertIn("pinboard views rebuild", stderr)
-        reloaded = SQLiteWorkStore(work / "state.sqlite3").snapshot()
-        closed = next(value for value in reloaded.lifecycle.work_items if value.item_id == ItemId("work-c"))
-        self.assertEqual(stored_state.StoredWorkItemState.DONE, closed.state)
-        self.assertEqual(14, reloaded.transition_receipts[-2].project_revision)
-        self.assertEqual(15, store.snapshot().lifecycle.project.revision)
-        rebuild_result, rebuild_stdout, rebuild_stderr = self.run_cli(
-            "--project-root", str(project), "--work-root", str(work), "views", "rebuild"
-        )
-        self.assertEqual(0, rebuild_result, f"{rebuild_stdout}\n{rebuild_stderr}")
 
     def test_post_commit_brief_projection_failure_keeps_direct_transition_receipt(self) -> None:
         state = complete_sqlite_state()
@@ -2783,12 +2544,19 @@ Not launchable:
         invalid = project / "invalid.json"
         invalid.write_text("[]", encoding="utf-8")
         cases = (
-            (("proposal", "--file", str(invalid)), "PROPOSAL_INVALID"),
-            (("attempt", "status", "--attempt-id", "missing"), "ATTEMPT_LEASE_REQUIRED"),
             (
-                ("coordination", "renew", "--lease-id", "wrong", "--generation", "9", "--ttl-seconds", "60"),
-                "LEASE_FENCED",
+                (
+                    "proposal",
+                    "--file",
+                    str(invalid),
+                    "--task-id",
+                    "discovering-task",
+                    "--host-id",
+                    "studio",
+                ),
+                "PROPOSAL_INVALID",
             ),
+            (("attempt", "status", "--attempt-id", "missing"), "ATTEMPT_LEASE_REQUIRED"),
         )
         for arguments, code in cases:
             with self.subTest(arguments=arguments):
@@ -2798,8 +2566,10 @@ Not launchable:
 
         identifier_stderr = self.run_cli_parse_error(
             *common,
-            "coordination",
+            "attempt",
             "acquire",
+            "--attempt-id",
+            "work-a-1",
             "--task-id",
             "..",
             "--host-id",
@@ -2807,7 +2577,7 @@ Not launchable:
             "--ttl-seconds",
             "60",
         )
-        self.assertIn("pinboard coordination acquire", identifier_stderr)
+        self.assertIn("pinboard attempt acquire", identifier_stderr)
         self.assertIn("$.task_id", identifier_stderr)
 
     def test_direct_transition_selects_exact_worker_capability(self) -> None:
@@ -2894,11 +2664,9 @@ Not launchable:
                 self.assertEqual(11, invalid_result)
                 self.assertIn(code, invalid_stderr)
 
-    def test_review_acceptance_and_continuation_uses_the_exact_coordination_capability(self) -> None:
+    def test_review_acceptance_and_continuation_uses_the_exact_project_capability(self) -> None:
         state = complete_sqlite_state()
         now = datetime.now(UTC)
-        coordination = state.authority.coordination
-        assert coordination is not None
         state = replace(
             state,
             lifecycle=replace(
@@ -2923,11 +2691,6 @@ Not launchable:
             ),
             authority=replace(
                 state.authority,
-                coordination=replace(
-                    coordination,
-                    acquired_at=now,
-                    expires_at=now + timedelta(minutes=5),
-                ),
                 attempt_leases=tuple(
                     replace(value, expires_at=now + timedelta(minutes=5)) for value in state.authority.attempt_leases
                 ),
@@ -2940,11 +2703,7 @@ Not launchable:
                 *common,
                 "actions",
                 "--role",
-                "coordinator",
-                "--lease-id",
-                "coordination-a",
-                "--generation",
-                "9",
+                "project",
                 "--action-id",
                 "accept-review-and-continue:work-a-1",
             )["actions"]
@@ -2965,279 +2724,11 @@ Not launchable:
         self.assertEqual(work_models.AttemptState.ACTIVE, attempt.state)
         self.assertIsNone(attempt.candidate_revision)
 
-    def test_close_borrows_sqlite_coordination_and_records_terminal_history(self) -> None:
-        state = complete_sqlite_state()
-        state = replace(state, authority=replace(state.authority, coordination=None))
-        project, work, store = self.initialized_state(state)
-        common = ("--project-root", str(project), "--work-root", str(work))
-
-        missing_stderr = self.run_cli_parse_error(
-            *common,
-            "close",
-            "work-c",
-            "--outcome",
-            "done",
-            "--reason",
-            "The prerequisite outcome is already complete.",
-        )
-        self.assertIn("pinboard close", missing_stderr)
-        self.assertIn("--task-id, --host-id", missing_stderr)
-
-        closed = self.run_json_cli(
-            *common,
-            "close",
-            "work-c",
-            "--outcome",
-            "done",
-            "--reason",
-            "The prerequisite outcome is already complete.",
-            "--task-id",
-            "coordinator-task",
-            "--host-id",
-            "studio",
-        )
-        self.assertEqual("work-c", closed["item_id"])
-        self.assertEqual("done", closed["outcome"])
-        coordination = store.snapshot().authority.coordination
-        self.assertIsNotNone(coordination)
-        assert coordination is not None
-        self.assertEqual("released", coordination.state.value)
-
-    def test_borrowed_coordination_stops_without_cleanup_when_acquisition_is_rejected(self) -> None:
-        state = complete_sqlite_state()
-        retained_authority = state.authority.coordination
-        assert retained_authority is not None
-        state = replace(
-            state,
-            authority=replace(
-                state.authority,
-                coordination=replace(retained_authority, expires_at=datetime.now(UTC) + timedelta(minutes=5)),
-            ),
-        )
-        project, work, store = self.initialized_state(state)
-        before = store.snapshot()
-
-        with (
-            patch(
-                "pinboard.interfaces.transitions.decide_and_commit_coordination_authority_change",
-                wraps=transition_interface.decide_and_commit_coordination_authority_change,
-            ) as authority_commit,
-            patch("pinboard.interfaces.transitions.work_views.rebuild") as rebuild,
-        ):
-            result, _, stderr = self.run_cli(
-                "--project-root",
-                str(project),
-                "--work-root",
-                str(work),
-                "close",
-                "work-c",
-                "--outcome",
-                "done",
-                "--reason",
-                "The prerequisite outcome is already complete.",
-                "--task-id",
-                "borrowing-task",
-                "--host-id",
-                "borrowing-host",
-            )
-
-        self.assertEqual(11, result)
-        self.assertIn("COORDINATION_LEASE_BUSY", stderr)
-        self.assertEqual(1, authority_commit.call_count)
-        rebuild.assert_not_called()
-        self.assertEqual(before, store.snapshot())
-
-    def test_borrowed_coordination_rejects_retained_authority_transfer_and_releases_its_lease(self) -> None:
-        state = complete_sqlite_state()
-        state = replace(state, authority=replace(state.authority, coordination=None))
-        project, work, store = self.initialized_state(state)
-        payload = project / "transfer-coordinator.json"
-        payload.write_text('{"task_id":"next-task","host_id":"next-host"}\n', encoding="utf-8")
-        before = store.snapshot()
-
-        result, _, stderr = self.run_cli(
-            "--project-root",
-            str(project),
-            "--work-root",
-            str(work),
-            "coordination",
-            "apply",
-            "--task-id",
-            "borrowing-task",
-            "--host-id",
-            "borrowing-host",
-            "--action-id",
-            "transfer-coordinator:ledger",
-            "--payload",
-            str(payload),
-        )
-
-        self.assertEqual(11, result)
-        self.assertIn("ACTION_NOT_AVAILABLE: Borrowed coordination cannot transfer retained authority.", stderr)
-        current = store.snapshot()
-        coordination = current.authority.coordination
-        assert coordination is not None
-        self.assertEqual(work_models.CoordinationLeaseStatus.RELEASED, coordination.state)
-        self.assertEqual(before.lifecycle.work_items, current.lifecycle.work_items)
-        self.assertNotIn(
-            "transfer-coordinator",
-            tuple(receipt.action_kind.value for receipt in current.transition_receipts),
-        )
-
-    def test_borrowed_coordination_samples_acquire_discovery_execute_release_and_render_separately(self) -> None:
-        state = complete_sqlite_state()
-        state = replace(state, authority=replace(state.authority, coordination=None))
-        project, work, _store = self.initialized_state(state)
-        samples = tuple(SQLITE_NOW + timedelta(seconds=offset) for offset in range(5))
-
-        with (
-            patch("pinboard.interfaces.transitions.datetime") as clock,
-            patch(
-                "pinboard.interfaces.transitions.decide_and_commit_coordination_authority_change",
-                wraps=transition_interface.decide_and_commit_coordination_authority_change,
-            ) as authority_commit,
-            patch(
-                "pinboard.interfaces.transitions.discover_actions", wraps=transition_interface.discover_actions
-            ) as discovery,
-            patch(
-                "pinboard.interfaces.transitions.decide_and_commit_transition",
-                wraps=transition_interface.decide_and_commit_transition,
-            ) as transition_commit,
-            patch(
-                "pinboard.interfaces.transitions.work_views.rebuild", wraps=transition_interface.work_views.rebuild
-            ) as rebuild,
-        ):
-            clock.now.side_effect = samples
-            result, _stdout, stderr = self.run_cli(
-                "--project-root",
-                str(project),
-                "--work-root",
-                str(work),
-                "close",
-                "work-c",
-                "--outcome",
-                "done",
-                "--reason",
-                "The prerequisite outcome is already complete.",
-                "--task-id",
-                "coordinator-task",
-                "--host-id",
-                "studio",
-            )
-
-        self.assertEqual(0, result, stderr)
-        acquired_operation = authority_commit.call_args_list[0].args[1]
-        released_operation = authority_commit.call_args_list[1].args[1]
-        assert isinstance(acquired_operation, authority_models.AcquireCoordinationAuthority)
-        assert isinstance(released_operation, authority_models.ReleaseCoordinationAuthority)
-        self.assertEqual(samples[0], acquired_operation.acquired_at)
-        self.assertEqual(samples[1], discovery.call_args.kwargs["now"])
-        self.assertEqual(samples[2], transition_commit.call_args.args[2])
-        self.assertEqual(samples[3], released_operation.released_at)
-        self.assertEqual(samples[4], rebuild.call_args.args[2])
-
-    def test_borrowed_coordination_reports_its_transition_revision_across_a_disjoint_commit(self) -> None:
-        state = replace(
-            complete_sqlite_state(), authority=replace(complete_sqlite_state().authority, coordination=None)
-        )
-        project, work, store = self.initialized_state(state)
-        common = ("--project-root", str(project), "--work-root", str(work))
-        proposal_path = project / "interleaved-proposal.json"
-        proposal_path.write_text(
-            json.dumps(
-                {
-                    "schema": "pinboard-proposal/v1",
-                    "proposal_id": "interleaved-proposal",
-                    "created_at": "2026-08-25T12:00:00+02:00",
-                    "source_task_id": "discovering-task",
-                    "user_label": "Interleaved proposal",
-                    "trigger": "A disjoint commit must not change the wrapped transition receipt.",
-                    "evidence": ["source:cli"],
-                    "why_it_matters": "The command must report the revision it committed.",
-                    "relation": {"kind": "independent", "item": None},
-                    "effect": "The proposal commits between close and coordination release.",
-                    "unlock": "Prove exact revision attribution.",
-                    "urgency_evidence": "The borrowed command exposes a revision.",
-                    "freshness_assumptions": ["SQLite remains authoritative."],
-                }
-            ),
-            encoding="utf-8",
-        )
-        execute_transition = transition_interface._execute_transition_command
-
-        def execute_then_commit_disjoint_proposal(
-            selected_roots: cli_commands.ResolvedRoots,
-            selected_store: SQLiteWorkStore,
-            artifacts: ArtifactRepository,
-            command: decision_models.TransitionCommand,
-        ) -> CommandResult[MutationReceipt]:
-            transition_result = execute_transition(selected_roots, selected_store, artifacts, command)
-            if isinstance(transition_result, CommandFailure):
-                return transition_result
-            proposal_result, _, proposal_stderr = self.run_cli(*common, "proposal", "--file", str(proposal_path))
-            self.assertEqual(0, proposal_result, proposal_stderr)
-            return transition_result
-
-        with patch(
-            "pinboard.interfaces.transitions._execute_transition_command",
-            side_effect=execute_then_commit_disjoint_proposal,
-        ):
-            result, stdout, stderr = self.run_cli(
-                *common,
-                "close",
-                "work-c",
-                "--outcome",
-                "done",
-                "--reason",
-                "The prerequisite outcome is already complete.",
-                "--task-id",
-                "coordinator-task",
-                "--host-id",
-                "studio",
-            )
-
-        self.assertEqual(0, result, stderr)
-        self.assertIn("OK WORK_ITEM_CLOSED item=work-c outcome=done revision=14", stdout)
-        receipts = store.snapshot().transition_receipts
-        self.assertEqual(
-            (
-                (decision_models.ActionKind.CLOSE, 14),
-                (decision_models.ActionKind.INSPECT, 15),
-                (decision_models.ActionKind.CONTINUE, 16),
-            ),
-            tuple((receipt.action_kind, receipt.project_revision) for receipt in receipts[-3:]),
-        )
-
     def test_direct_transition_reports_its_own_revision_across_a_disjoint_commit(self) -> None:
         state = complete_sqlite_state()
-        now = datetime.now(UTC)
-        coordination = state.authority.coordination
-        assert coordination is not None
-        state = replace(
-            state,
-            authority=replace(
-                state.authority,
-                coordination=replace(coordination, acquired_at=now, expires_at=now + timedelta(minutes=5)),
-            ),
-        )
         project, work, store = self.initialized_state(state)
         common = ("--project-root", str(project), "--work-root", str(work))
-        action = self.json_object(
-            self.json_list(
-                self.run_json_cli(
-                    *common,
-                    "actions",
-                    "--role",
-                    "coordinator",
-                    "--lease-id",
-                    "coordination-a",
-                    "--generation",
-                    "9",
-                    "--action-id",
-                    "pause:work-a-1",
-                )["actions"]
-            )[0]
-        )
+        action = self.project_action(common, "pause:work-a-1")
         payload = project / "pause.json"
         payload.write_text('{"reason":"Pause at a stable checkpoint."}\n', encoding="utf-8")
         proposal_path = project / "interleaved-direct-proposal.json"
@@ -3268,17 +2759,30 @@ Not launchable:
             command: decision_models.NonCheckpointTransitionCommand,
             decided_at: datetime,
             *,
+            actor_task_id: TaskId | None,
+            actor_host_id: HostId | None,
             transition_brief_identity: WorkBriefIdentity | None = None,
         ) -> DecisionResult[MutationReceipt]:
             commit_result = commit_transition(
                 selected_store,
                 command,
                 decided_at,
+                actor_task_id=actor_task_id,
+                actor_host_id=actor_host_id,
                 transition_brief_identity=transition_brief_identity,
             )
             if isinstance(commit_result, DecisionFailure):
                 return commit_result
-            proposal_result, _, proposal_stderr = self.run_cli(*common, "proposal", "--file", str(proposal_path))
+            proposal_result, _, proposal_stderr = self.run_cli(
+                *common,
+                "proposal",
+                "--file",
+                str(proposal_path),
+                "--task-id",
+                "discovering-task",
+                "--host-id",
+                "studio",
+            )
             self.assertEqual(0, proposal_result, proposal_stderr)
             return commit_result
 
@@ -3298,418 +2802,6 @@ Not launchable:
             tuple(
                 (receipt.action_kind, receipt.project_revision) for receipt in store.snapshot().transition_receipts[-2:]
             ),
-        )
-
-    def test_borrowed_coordination_releases_the_exact_generation_committed_after_an_interleaving(self) -> None:
-        state = replace(
-            complete_sqlite_state(), authority=replace(complete_sqlite_state().authority, coordination=None)
-        )
-        project, work, store = self.initialized_state(state)
-        original = service.decide_and_commit_coordination_authority_change
-        interleaved = False
-
-        def rotate_before_requested_acquisition(
-            selected_store: WorkStore,
-            operation: authority_models.CoordinationAuthorityOperation,
-        ) -> DecisionResult[MutationReceipt]:
-            nonlocal interleaved
-            if isinstance(operation, authority_models.AcquireCoordinationAuthority) and not interleaved:
-                interleaved = True
-                interleaved_at = operation.acquired_at - timedelta(seconds=2)
-                acquired = original(
-                    selected_store,
-                    authority_models.AcquireCoordinationAuthority(
-                        operation.host_epoch,
-                        TaskId("interleaving-task"),
-                        HostId("interleaving-host"),
-                        LeaseId("interleaving-lease"),
-                        interleaved_at,
-                        interleaved_at + timedelta(minutes=1),
-                    ),
-                )
-                self.assertNotIsInstance(acquired, DecisionFailure)
-                retained = transition_interface.coordination_authority.find_retained_coordination_authority(
-                    selected_store.snapshot()
-                )
-                assert not isinstance(retained, CommandFailure)
-                current_state = selected_store.snapshot()
-                released = original(
-                    selected_store,
-                    authority_models.ReleaseCoordinationAuthority(
-                        work_models.CoordinationCommandAuthority(
-                            current_state.lifecycle.project.host_epoch,
-                            retained.task_id,
-                            retained.host_id,
-                            retained.lease_id,
-                            retained.generation,
-                            retained.expires_at,
-                        ),
-                        operation.acquired_at - timedelta(seconds=1),
-                    ),
-                )
-                self.assertNotIsInstance(released, DecisionFailure)
-            return original(selected_store, operation)
-
-        with patch(
-            "pinboard.interfaces.transitions.decide_and_commit_coordination_authority_change",
-            side_effect=rotate_before_requested_acquisition,
-        ):
-            result, stdout, stderr = self.run_cli(
-                "--project-root",
-                str(project),
-                "--work-root",
-                str(work),
-                "close",
-                "work-c",
-                "--outcome",
-                "done",
-                "--reason",
-                "The prerequisite outcome is already complete.",
-                "--task-id",
-                "borrowing-task",
-                "--host-id",
-                "borrowing-host",
-            )
-
-        self.assertEqual(0, result, stderr)
-        self.assertIn("OK WORK_ITEM_CLOSED item=work-c outcome=done", stdout)
-        retained = store.snapshot().authority.coordination
-        assert retained is not None
-        self.assertEqual(work_models.CoordinationLeaseStatus.RELEASED, retained.state)
-        self.assertEqual(2, retained.generation)
-
-    def test_borrowed_coordination_reports_release_failure_after_the_transition_applies(self) -> None:
-        state = complete_sqlite_state()
-        state = replace(state, authority=replace(state.authority, coordination=None))
-        project, work, store = self.initialized_state(state)
-        common = ("--project-root", str(project), "--work-root", str(work))
-        original = service.decide_and_commit_coordination_authority_change
-
-        def fail_release(
-            selected_store: WorkStore,
-            operation: authority_models.CoordinationAuthorityOperation,
-        ) -> DecisionResult[MutationReceipt]:
-            if isinstance(operation, authority_models.ReleaseCoordinationAuthority):
-                return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "injected release failure")
-            return original(selected_store, operation)
-
-        with patch(
-            "pinboard.interfaces.transitions.decide_and_commit_coordination_authority_change",
-            side_effect=fail_release,
-        ):
-            result, _, stderr = self.run_cli(
-                *common,
-                "close",
-                "work-c",
-                "--outcome",
-                "done",
-                "--reason",
-                "The prerequisite outcome is already complete.",
-                "--task-id",
-                "coordinator-task",
-                "--host-id",
-                "studio",
-            )
-
-        self.assertEqual(11, result)
-        self.assertIn(
-            "LEASE_FENCED: Borrowed coordination release failed after transition revision 14: injected release failure",
-            stderr,
-        )
-        current = store.snapshot()
-        closed = next(value for value in current.lifecycle.work_items if value.item_id == ItemId("work-c"))
-        self.assertEqual(stored_state.StoredWorkItemState.DONE, closed.state)
-        coordination = current.authority.coordination
-        assert coordination is not None
-        self.assertEqual(work_models.CoordinationLeaseStatus.ACTIVE, coordination.state)
-
-    def test_borrowed_coordination_reports_cleanup_rejection_over_transition_rejection(self) -> None:
-        state = replace(
-            complete_sqlite_state(), authority=replace(complete_sqlite_state().authority, coordination=None)
-        )
-        project, work, _store = self.initialized_state(state)
-        payload = project / "payload.json"
-        payload.write_text("{}\n", encoding="utf-8")
-        original = service.decide_and_commit_coordination_authority_change
-
-        def reject_release(
-            selected_store: WorkStore,
-            operation: authority_models.CoordinationAuthorityOperation,
-        ) -> DecisionResult[MutationReceipt]:
-            if isinstance(operation, authority_models.ReleaseCoordinationAuthority):
-                return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "cleanup rejected")
-            return original(selected_store, operation)
-
-        with (
-            patch(
-                "pinboard.interfaces.transitions._select_decode_and_commit_borrowed_transition",
-                return_value=CommandFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "transition rejected"),
-            ),
-            patch(
-                "pinboard.interfaces.transitions.decide_and_commit_coordination_authority_change",
-                side_effect=reject_release,
-            ),
-        ):
-            result, _, stderr = self.run_cli(
-                "--project-root",
-                str(project),
-                "--work-root",
-                str(work),
-                "coordination",
-                "apply",
-                "--task-id",
-                "borrowing-task",
-                "--host-id",
-                "borrowing-host",
-                "--action-id",
-                "close:work-c",
-                "--payload",
-                str(payload),
-            )
-
-        self.assertEqual(11, result)
-        self.assertIn(
-            "LEASE_FENCED: Borrowed coordination release failed after transition rejection "
-            "ACTION_NOT_AVAILABLE: transition rejected: cleanup rejected",
-            stderr,
-        )
-
-    def test_borrowed_coordination_keeps_transition_exception_primary_over_cleanup_rejection(self) -> None:
-        state = replace(
-            complete_sqlite_state(), authority=replace(complete_sqlite_state().authority, coordination=None)
-        )
-        project, work, _store = self.initialized_state(state)
-        payload = project / "payload.json"
-        payload.write_text("{}\n", encoding="utf-8")
-        original = service.decide_and_commit_coordination_authority_change
-
-        def reject_release(
-            selected_store: WorkStore,
-            operation: authority_models.CoordinationAuthorityOperation,
-        ) -> DecisionResult[MutationReceipt]:
-            if isinstance(operation, authority_models.ReleaseCoordinationAuthority):
-                return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "cleanup rejected")
-            return original(selected_store, operation)
-
-        with (
-            patch(
-                "pinboard.interfaces.transitions._select_decode_and_commit_borrowed_transition",
-                side_effect=RuntimeError("transition broke"),
-            ),
-            patch(
-                "pinboard.interfaces.transitions.decide_and_commit_coordination_authority_change",
-                side_effect=reject_release,
-            ),
-            self.assertRaises(RuntimeError) as raised,
-        ):
-            self.run_cli(
-                "--project-root",
-                str(project),
-                "--work-root",
-                str(work),
-                "coordination",
-                "apply",
-                "--task-id",
-                "borrowing-task",
-                "--host-id",
-                "borrowing-host",
-                "--action-id",
-                "close:work-c",
-                "--payload",
-                str(payload),
-            )
-
-        self.assertEqual("transition broke", str(raised.exception))
-        self.assertEqual(
-            ["Borrowed coordination cleanup failed with LEASE_FENCED: cleanup rejected"],
-            raised.exception.__notes__,
-        )
-
-    def test_borrowed_coordination_releases_after_a_transition_exception(self) -> None:
-        state = replace(
-            complete_sqlite_state(), authority=replace(complete_sqlite_state().authority, coordination=None)
-        )
-        project, work, store = self.initialized_state(state)
-        payload = project / "payload.json"
-        payload.write_text("{}\n", encoding="utf-8")
-
-        with (
-            patch(
-                "pinboard.interfaces.transitions._select_decode_and_commit_borrowed_transition",
-                side_effect=RuntimeError("transition broke"),
-            ),
-            patch("pinboard.interfaces.transitions.work_views.rebuild") as rebuild,
-            self.assertRaises(RuntimeError) as raised,
-        ):
-            self.run_cli(
-                "--project-root",
-                str(project),
-                "--work-root",
-                str(work),
-                "coordination",
-                "apply",
-                "--task-id",
-                "borrowing-task",
-                "--host-id",
-                "borrowing-host",
-                "--action-id",
-                "close:work-c",
-                "--payload",
-                str(payload),
-            )
-
-        self.assertEqual("transition broke", str(raised.exception))
-        self.assertEqual([], getattr(raised.exception, "__notes__", []))
-        retained_authority = store.snapshot().authority.coordination
-        assert retained_authority is not None
-        self.assertEqual(work_models.CoordinationLeaseStatus.RELEASED, retained_authority.state)
-        rebuild.assert_not_called()
-
-    def test_borrowed_coordination_raises_cleanup_exception_over_transition_rejection(self) -> None:
-        state = replace(
-            complete_sqlite_state(), authority=replace(complete_sqlite_state().authority, coordination=None)
-        )
-        project, work, _store = self.initialized_state(state)
-        payload = project / "payload.json"
-        payload.write_text("{}\n", encoding="utf-8")
-        original = service.decide_and_commit_coordination_authority_change
-
-        def raise_on_release(
-            selected_store: WorkStore,
-            operation: authority_models.CoordinationAuthorityOperation,
-        ) -> DecisionResult[MutationReceipt]:
-            if isinstance(operation, authority_models.ReleaseCoordinationAuthority):
-                raise RuntimeError("cleanup broke")
-            return original(selected_store, operation)
-
-        with (
-            patch(
-                "pinboard.interfaces.transitions._select_decode_and_commit_borrowed_transition",
-                return_value=CommandFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "transition rejected"),
-            ),
-            patch(
-                "pinboard.interfaces.transitions.decide_and_commit_coordination_authority_change",
-                side_effect=raise_on_release,
-            ),
-            self.assertRaises(RuntimeError) as raised,
-        ):
-            self.run_cli(
-                "--project-root",
-                str(project),
-                "--work-root",
-                str(work),
-                "coordination",
-                "apply",
-                "--task-id",
-                "borrowing-task",
-                "--host-id",
-                "borrowing-host",
-                "--action-id",
-                "close:work-c",
-                "--payload",
-                str(payload),
-            )
-
-        self.assertEqual("cleanup broke", str(raised.exception))
-        self.assertEqual(
-            ["Original transition rejection ACTION_NOT_AVAILABLE: transition rejected"],
-            raised.exception.__notes__,
-        )
-
-    def test_borrowed_coordination_keeps_transition_exception_primary_over_cleanup_exception(self) -> None:
-        state = replace(
-            complete_sqlite_state(), authority=replace(complete_sqlite_state().authority, coordination=None)
-        )
-        project, work, _store = self.initialized_state(state)
-        payload = project / "payload.json"
-        payload.write_text("{}\n", encoding="utf-8")
-        original = service.decide_and_commit_coordination_authority_change
-
-        def raise_on_release(
-            selected_store: WorkStore,
-            operation: authority_models.CoordinationAuthorityOperation,
-        ) -> DecisionResult[MutationReceipt]:
-            if isinstance(operation, authority_models.ReleaseCoordinationAuthority):
-                raise ValueError("cleanup broke")
-            return original(selected_store, operation)
-
-        with (
-            patch(
-                "pinboard.interfaces.transitions._select_decode_and_commit_borrowed_transition",
-                side_effect=RuntimeError("transition broke"),
-            ),
-            patch(
-                "pinboard.interfaces.transitions.decide_and_commit_coordination_authority_change",
-                side_effect=raise_on_release,
-            ),
-            self.assertRaises(RuntimeError) as raised,
-        ):
-            self.run_cli(
-                "--project-root",
-                str(project),
-                "--work-root",
-                str(work),
-                "coordination",
-                "apply",
-                "--task-id",
-                "borrowing-task",
-                "--host-id",
-                "borrowing-host",
-                "--action-id",
-                "close:work-c",
-                "--payload",
-                str(payload),
-            )
-
-        self.assertEqual("transition broke", str(raised.exception))
-        self.assertEqual(
-            ["Borrowed coordination cleanup raised ValueError: cleanup broke"],
-            raised.exception.__notes__,
-        )
-
-    def test_borrowed_coordination_cleanup_exception_identifies_committed_revision(self) -> None:
-        state = replace(
-            complete_sqlite_state(), authority=replace(complete_sqlite_state().authority, coordination=None)
-        )
-        project, work, _store = self.initialized_state(state)
-        original = service.decide_and_commit_coordination_authority_change
-
-        def raise_on_release(
-            selected_store: WorkStore,
-            operation: authority_models.CoordinationAuthorityOperation,
-        ) -> DecisionResult[MutationReceipt]:
-            if isinstance(operation, authority_models.ReleaseCoordinationAuthority):
-                raise RuntimeError("cleanup broke")
-            return original(selected_store, operation)
-
-        with (
-            patch(
-                "pinboard.interfaces.transitions.decide_and_commit_coordination_authority_change",
-                side_effect=raise_on_release,
-            ),
-            self.assertRaises(RuntimeError) as raised,
-        ):
-            self.run_cli(
-                "--project-root",
-                str(project),
-                "--work-root",
-                str(work),
-                "close",
-                "work-c",
-                "--outcome",
-                "done",
-                "--reason",
-                "The prerequisite outcome is already complete.",
-                "--task-id",
-                "coordinator-task",
-                "--host-id",
-                "studio",
-            )
-
-        self.assertEqual("cleanup broke", str(raised.exception))
-        self.assertEqual(
-            ["Transition committed at revision 14 before cleanup failed."],
-            raised.exception.__notes__,
         )
 
     def test_proposal_persists_once_through_native_intake(self) -> None:
@@ -3738,8 +2830,18 @@ Not launchable:
         common = ("--project-root", str(project), "--work-root", str(work))
         before_revision = store.snapshot().lifecycle.project.revision
 
-        result, stdout, stderr = self.run_cli(*common, "proposal", "--file", str(proposal_path))
-        duplicate_result, _, duplicate_stderr = self.run_cli(*common, "proposal", "--file", str(proposal_path))
+        proposal_arguments = (
+            *common,
+            "proposal",
+            "--file",
+            str(proposal_path),
+            "--task-id",
+            "discovering-task",
+            "--host-id",
+            "studio",
+        )
+        result, stdout, stderr = self.run_cli(*proposal_arguments)
+        duplicate_result, _, duplicate_stderr = self.run_cli(*proposal_arguments)
 
         self.assertEqual(0, result, stderr)
         self.assertIn("OK PROPOSAL_CREATED cli-sqlite-proposal", stdout)
@@ -3791,7 +2893,6 @@ Not launchable:
             (stored_state.StoredWorkItemState.INTAKE, 5),
             (intake_item.state, intake_item.queue_position),
         )
-        self.assertEqual(("work-a", "work-a-1"), (str(after.focus.item_id), str(after.focus.attempt_id)))
         self.assertEqual(
             ("work-c",),
             tuple(
@@ -3856,7 +2957,16 @@ Not launchable:
                     encoding="utf-8",
                 )
 
-                created, _stdout, stderr = self.run_cli(*common, "proposal", "--file", str(proposal_path))
+                created, _stdout, stderr = self.run_cli(
+                    *common,
+                    "proposal",
+                    "--file",
+                    str(proposal_path),
+                    "--task-id",
+                    "discovering-task",
+                    "--host-id",
+                    "studio",
+                )
 
                 self.assertEqual(0, created, stderr)
                 assert_partial_matches_full(
@@ -3887,7 +2997,7 @@ Not launchable:
                 self.assertEqual(0, rebuilt, stderr)
                 item_view = work / "views" / "items" / "zz-proposal-a.md"
                 item_view.write_bytes(b"stale projection\n")
-                actions = self.json_list(self.run_json_cli(*common, "actions", "--role", "coordinator")["actions"])
+                actions = self.json_list(self.run_json_cli(*common, "actions", "--role", "project")["actions"])
                 action = next(
                     self.json_object(value) for value in actions if self.json_object(value)["action_id"] == action_id
                 )
@@ -3915,7 +3025,7 @@ Not launchable:
         common = ("--project-root", str(project), "--work-root", str(work))
         rebuilt, _stdout, stderr = self.run_cli(*common, "views", "rebuild")
         self.assertEqual(0, rebuilt, stderr)
-        selectors = ("queue.md", "current.md", "history.md")
+        selectors = ("queue.md", "history.md")
 
         def snapshots() -> dict[str, tuple[bytes, int, int]]:
             return {
@@ -3946,7 +3056,6 @@ Not launchable:
         self.assertEqual(state.lifecycle.project.revision + 1, store.snapshot().lifecycle.project.revision)
         after_renewal = snapshots()
         self.assertEqual(before["queue.md"], after_renewal["queue.md"])
-        self.assertEqual(before["current.md"], after_renewal["current.md"])
         self.assertNotEqual(before["history.md"][0], after_renewal["history.md"][0])
         self.assertNotEqual(before["history.md"][1], after_renewal["history.md"][1])
         rebuilt, _stdout, stderr = self.run_cli(*common, "views", "rebuild")
@@ -3957,7 +3066,14 @@ Not launchable:
         project, work, _store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))
         missing, _missing_stdout, missing_stderr = self.run_cli(
-            *common, "proposal", "--file", str(project / "missing.json")
+            *common,
+            "proposal",
+            "--file",
+            str(project / "missing.json"),
+            "--task-id",
+            "discovering-task",
+            "--host-id",
+            "studio",
         )
         self.assertEqual(2, missing)
         self.assertIn("PROPOSAL_INVALID", missing_stderr)
@@ -4085,7 +3201,7 @@ Not launchable:
         self.assertEqual(
             {
                 "schema": "pinboard-item-status/v1",
-                "authority": "sqlite-v3",
+                "authority": "sqlite-v4",
                 "revision": "12",
                 "item_id": "work-b",
                 "label": "Work work-b",
@@ -4104,7 +3220,7 @@ Not launchable:
         self.assertEqual(
             {
                 "schema": "pinboard-item-status/v1",
-                "authority": "sqlite-v3",
+                "authority": "sqlite-v4",
                 "revision": "12",
                 "item_id": "work-a",
                 "label": "Work work-a",
@@ -4122,7 +3238,7 @@ Not launchable:
         )
         result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", "work-b")
         self.assertEqual(0, result, stderr)
-        self.assertIn("OK ITEM_STATUS item=work-b state=done revision=12 authority=sqlite-v3", stdout)
+        self.assertIn("OK ITEM_STATUS item=work-b state=done revision=12 authority=sqlite-v4", stdout)
         self.assertIn("queue_position=none", stdout)
         self.assertIn("outcome_evidence=accepted completion", stdout)
         self.assertIn("source=none notes=none", stdout)
@@ -4149,30 +3265,15 @@ Not launchable:
             (("actions", "--role", "worker", "--lease-id", "lease-a"), "pinboard actions"),
             (
                 (
-                    "attempt",
-                    "acquire",
-                    "--attempt-id",
-                    "attempt-a",
-                    "--task-id",
-                    "task-a",
-                    "--host-id",
-                    "host-a",
-                    "--ttl-seconds",
-                    "60",
-                    "--coordination-lease-id",
-                    "coordination-a",
-                ),
-                "pinboard attempt acquire",
-            ),
-            (
-                (
                     "transition",
                     "--action-id",
                     "pause:attempt-a",
                     "--expected-revision",
                     "1",
-                    "--generation",
-                    "1",
+                    "--task-id",
+                    "task-a",
+                    "--host-id",
+                    "host-a",
                     "--authorization",
                     "attempt",
                     "--payload",
@@ -4297,10 +3398,12 @@ Not launchable:
                     "bad/id",
                     "--expected-revision",
                     "1",
-                    "--generation",
-                    "1",
                     "--authorization",
-                    "coordinator",
+                    "project",
+                    "--task-id",
+                    "task-a",
+                    "--host-id",
+                    "host-a",
                     "--payload",
                     "payload.json",
                 ),
@@ -4313,8 +3416,10 @@ Not launchable:
                     "bad/id",
                     "--expected-revision",
                     "1",
-                    "--generation",
-                    "1",
+                    "--task-id",
+                    "task-a",
+                    "--host-id",
+                    "host-a",
                     "--checkpoint",
                     "checkpoint-a",
                     "--environment",

@@ -25,7 +25,7 @@ def _dependency_key(value: stored_state.ItemDependency) -> tuple[str, int]:
 
 
 def _render_header(kind: str) -> str:
-    return f"---\nkind: {kind}\nauthority: sqlite-v3\n---\n\n> {NOTICE}\n\n"
+    return f"---\nkind: {kind}\nauthority: sqlite-v4\n---\n\n> {NOTICE}\n\n"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,17 +67,6 @@ def _render_queue(overview: query_models.WorkOverview) -> bytes:
         for item in overview.items
     )
     return "".join(lines).encode()
-
-
-def _render_current_focus(state: stored_state.StoredWorkState) -> bytes:
-    focus = state.focus
-    return (
-        _render_header("work-current-view")
-        + "# Current Work\n\n"
-        + f"- Item: {focus.item_id or 'none'}\n"
-        + f"- Attempt: {focus.attempt_id or 'none'}\n"
-        + f"- Next action: {focus.next_action}\n"
-    ).encode()
 
 
 def _render_item(
@@ -185,8 +174,6 @@ def _write_selected_views(
     attempt_root = ensure_child_directory(view_root, "attempts")
     if affected.queue:
         atomic_replace(view_root / "queue.md", _render_queue(view_inputs.overview))
-    if affected.current_focus:
-        atomic_replace(view_root / "current.md", _render_current_focus(state))
     if affected.history:
         atomic_replace(view_root / "history.md", _render_history(state))
     items = {item.item_id: item for item in state.lifecycle.work_items}
@@ -202,11 +189,11 @@ def _write_selected_views(
                     view_inputs.definitions[item_id],
                 ),
             )
-    attempts = {attempt.attempt_id: attempt for attempt in state.lifecycle.attempts}
-    for attempt_id in affected.attempts:
-        attempt = attempts.get(attempt_id)
-        if attempt is not None:
-            atomic_replace(attempt_root / f"{attempt_id}.md", _render_attempt(attempt, attempt_briefs))
+    affected_attempts = set(affected.attempts)
+    affected_items = set(affected.items)
+    for attempt in state.lifecycle.attempts:
+        if attempt.attempt_id in affected_attempts or attempt.item_id in affected_items:
+            atomic_replace(attempt_root / f"{attempt.attempt_id}.md", _render_attempt(attempt, attempt_briefs))
 
 
 def refresh_state(
@@ -241,7 +228,6 @@ def derive_expected_view_bytes(
     view_inputs = _project_view_inputs(state, now)
     expected_views = {
         "queue.md": _render_queue(view_inputs.overview),
-        "current.md": _render_current_focus(state),
         "history.md": _render_history(state),
     }
     expected_views.update(
@@ -276,7 +262,6 @@ def rebuild_state(
             state,
             AffectedViews(
                 queue=True,
-                current_focus=True,
                 history=True,
                 items=tuple(item.item_id for item in state.lifecycle.work_items),
                 attempts=tuple(attempt.attempt_id for attempt in state.lifecycle.attempts),

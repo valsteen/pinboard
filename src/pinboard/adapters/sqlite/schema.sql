@@ -1,10 +1,10 @@
--- SQLite authority schema version 3.
+-- SQLite authority schema version 4.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE project_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     application TEXT NOT NULL CHECK (application = 'pinboard'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 3),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 4),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
     created_at TEXT NOT NULL,
@@ -153,17 +153,6 @@ CREATE TABLE proposal_freshness (
     PRIMARY KEY (proposal_id, position)
 ) STRICT;
 
-CREATE TABLE coordination_lease (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    lease_id TEXT NOT NULL,
-    task_id TEXT NOT NULL,
-    host_id TEXT NOT NULL,
-    generation INTEGER NOT NULL CHECK (generation >= 1),
-    acquired_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('active', 'released', 'revoked'))
-) STRICT;
-
 CREATE TABLE attempt_lease_counters (
     attempt_id TEXT PRIMARY KEY REFERENCES attempts(attempt_id) ON DELETE CASCADE,
     generation_high_water INTEGER NOT NULL CHECK (generation_high_water >= 0)
@@ -216,16 +205,6 @@ CREATE TABLE preparation_leases (
         REFERENCES preparation_lease_generations(item_id, generation),
     FOREIGN KEY (item_id, definition_revision, definition_digest)
         REFERENCES work_item_definition_revisions(item_id, definition_revision, definition_digest)
-) STRICT;
-
-CREATE TABLE current_focus (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    item_id TEXT REFERENCES work_items(item_id),
-    attempt_id TEXT REFERENCES attempts(attempt_id),
-    next_action TEXT NOT NULL,
-    subject_revision INTEGER NOT NULL CHECK (subject_revision >= 0),
-    CHECK (attempt_id IS NULL OR item_id IS NOT NULL),
-    FOREIGN KEY (attempt_id, item_id) REFERENCES attempts(attempt_id, item_id)
 ) STRICT;
 
 CREATE TABLE transition_history (

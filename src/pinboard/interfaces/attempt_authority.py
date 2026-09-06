@@ -22,7 +22,6 @@ from pinboard.interfaces.errors import CommandErrorCode, CommandFailure, Command
 
 type AttemptAuthorityCommand = (
     cli_commands.AttemptAcquireCommand
-    | cli_commands.CoordinatedAttemptAcquireCommand
     | cli_commands.AttemptRenewCommand
     | cli_commands.AttemptReleaseCommand
     | cli_commands.AttemptRevokeCommand
@@ -70,7 +69,7 @@ def _find_attempt_record(
 def _resolve_requested_attempt_acquisition(
     observed_state: stored_state.StoredWorkState,
     attempt_record: stored_state.StoredAttempt,
-    command: cli_commands.AttemptAcquireCommand | cli_commands.CoordinatedAttemptAcquireCommand,
+    command: cli_commands.AttemptAcquireCommand,
     requested_at: datetime,
 ) -> CommandResult[authority_models.AttemptAuthorityOperation]:
     attempt_id = command.attempt_id
@@ -93,26 +92,8 @@ def _resolve_requested_attempt_acquisition(
     inactive = project_inactive_attempt_authority(observed_state, attempt_id, requested_at)
     if isinstance(inactive, DecisionFailure):
         return CommandFailure(inactive.code, inactive.message)
-    coordination = observed_state.authority.coordination
-    if coordination is None:
-        return CommandFailure(
-            DecisionFailureCode.COORDINATION_LEASE_REQUIRED, "Attempt reacquisition requires coordination."
-        )
-    if isinstance(command, cli_commands.AttemptAcquireCommand):
-        return CommandFailure(
-            DecisionFailureCode.COORDINATION_LEASE_REQUIRED,
-            "Attempt reacquisition requires the exact coordination lease and generation.",
-        )
     return authority_models.TransferAttemptAuthority(
         inactive,
-        work_models.CoordinationCommandAuthority(
-            observed_state.lifecycle.project.host_epoch,
-            coordination.task_id,
-            coordination.host_id,
-            command.coordination_lease_id,
-            command.coordination_generation,
-            coordination.expires_at,
-        ),
         command.task_id,
         command.host_id,
         lease_id,
@@ -139,23 +120,6 @@ def _resolve_supplied_attempt_authority(
     return observed_authority
 
 
-def _resolve_supplied_coordination_authority(
-    observed_state: stored_state.StoredWorkState,
-    command: cli_commands.AttemptRevokeCommand,
-) -> CommandResult[work_models.CoordinationCommandAuthority]:
-    retained_authority = observed_state.authority.coordination
-    if retained_authority is None:
-        return CommandFailure(DecisionFailureCode.COORDINATION_LEASE_REQUIRED, "Coordination authority is absent.")
-    return work_models.CoordinationCommandAuthority(
-        observed_state.lifecycle.project.host_epoch,
-        retained_authority.task_id,
-        retained_authority.host_id,
-        command.coordination_lease_id,
-        command.coordination_generation,
-        retained_authority.expires_at,
-    )
-
-
 def _resolve_requested_attempt_change(
     observed_state: stored_state.StoredWorkState,
     attempt_record: stored_state.StoredAttempt,
@@ -163,7 +127,7 @@ def _resolve_requested_attempt_change(
     requested_at: datetime,
 ) -> CommandResult[authority_models.AttemptAuthorityOperation]:
     match command:
-        case cli_commands.AttemptAcquireCommand() | cli_commands.CoordinatedAttemptAcquireCommand():
+        case cli_commands.AttemptAcquireCommand():
             return _resolve_requested_attempt_acquisition(observed_state, attempt_record, command, requested_at)
         case cli_commands.AttemptRenewCommand():
             supplied_authority = _resolve_supplied_attempt_authority(observed_state, command.attempt_id, requested_at)
@@ -183,14 +147,12 @@ def _resolve_requested_attempt_change(
                 requested_at,
             )
         case cli_commands.AttemptRevokeCommand():
-            coordination = _resolve_supplied_coordination_authority(observed_state, command)
-            if isinstance(coordination, CommandFailure):
-                return coordination
             return authority_models.RevokeAttemptAuthority(
                 command.attempt_id,
                 command.lease_id,
                 command.generation,
-                coordination,
+                command.task_id,
+                command.host_id,
                 requested_at,
             )
         case _ as unreachable:

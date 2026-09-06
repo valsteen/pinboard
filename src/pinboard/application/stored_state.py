@@ -82,7 +82,7 @@ def stored_close_outcome(value: work_models.CloseOutcome) -> StoredWorkItemState
 @dataclass(frozen=True, slots=True)
 class ProjectRecord:
     application: Literal["pinboard"]
-    schema_version: Literal[3]
+    schema_version: Literal[4]
     revision: int
     host_epoch: int
     created_at: datetime
@@ -189,17 +189,6 @@ class ProposalFreshness:
 
 
 @dataclass(frozen=True, slots=True)
-class StoredCoordinationLease:
-    lease_id: LeaseId
-    task_id: TaskId
-    host_id: HostId
-    generation: int
-    acquired_at: datetime
-    expires_at: datetime
-    state: work_models.CoordinationLeaseStatus
-
-
-@dataclass(frozen=True, slots=True)
 class AttemptLeaseCounter:
     attempt_id: AttemptId
     generation_high_water: int
@@ -250,14 +239,6 @@ class StoredPreparationLease:
 
 
 @dataclass(frozen=True, slots=True)
-class StoredFocus:
-    item_id: ItemId | None
-    attempt_id: AttemptId | None
-    next_action: str
-    subject_revision: int
-
-
-@dataclass(frozen=True, slots=True)
 class StoredTransitionReceipt:
     history_id: HistoryId
     project_revision: int
@@ -293,7 +274,6 @@ class ProposalRecords:
 
 @dataclass(frozen=True, slots=True)
 class AuthorityRecords:
-    coordination: StoredCoordinationLease | None = None
     attempt_counters: tuple[AttemptLeaseCounter, ...] = ()
     attempt_generations: tuple[AttemptLeaseGeneration, ...] = ()
     attempt_leases: tuple[StoredAttemptLease, ...] = ()
@@ -309,7 +289,6 @@ class StoredWorkState:
     artifact_references: tuple[ArtifactReference, ...]
     authority: AuthorityRecords
     transition_receipts: tuple[StoredTransitionReceipt, ...]
-    focus: StoredFocus
 
 
 def retained_attempt(

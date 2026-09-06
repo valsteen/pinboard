@@ -16,7 +16,7 @@ from pinboard.adapters.sqlite.artifacts import read_artifacts
 from pinboard.adapters.sqlite.authority import read_authority, validate_attempt_authority
 from pinboard.adapters.sqlite.database import decode_row
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.adapters.sqlite.lifecycle import read_focus, read_lifecycle
+from pinboard.adapters.sqlite.lifecycle import read_lifecycle
 from pinboard.adapters.sqlite.proposals import read_proposals
 from pinboard.application import stored_state
 from pinboard.domain import authority_models, decision_models, work_models
@@ -201,7 +201,6 @@ def read_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
         read_artifacts(connection),
         read_authority(connection),
         _read_history(connection),
-        read_focus(connection),
     )
     _validate_current_state(state, StorageErrorCode.INVALID_STATE)
     return state

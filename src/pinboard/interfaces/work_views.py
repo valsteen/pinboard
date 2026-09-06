@@ -56,9 +56,9 @@ def refresh_shared_authority_views(
     store: SQLiteWorkStore,
     now: datetime,
 ) -> ViewRefreshResult:
-    """Refresh the queue, focus, and history affected by shared authority changes."""
+    """Refresh the queue and history affected by subject authority changes."""
 
-    return refresh(roots, store, AffectedViews(queue=True, current_focus=True, history=True), now)
+    return refresh(roots, store, AffectedViews(queue=True, history=True), now)
 
 
 def rebuild(roots: cli_commands.ResolvedRoots, store: SQLiteWorkStore, now: datetime) -> ViewRefreshResult:

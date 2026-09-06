@@ -116,7 +116,7 @@ Do not convert narrative surprise into a correctness claim. Check accepted requi
 Prefer the smallest repair that makes the next step predictable:
 
 1. Rename effectful helpers with verbs and concrete product objects.
-2. Give values provenance names such as `observed_state`, `requested_change`, `locked_state`, `accepted_decision`, `focused_mutation`, and `committed_state` when those distinctions exist.
+2. Give values provenance names such as `observed_state`, `requested_change`, `locked_state`, `accepted_decision`, `targeted_mutation`, and `committed_state` when those distinctions exist.
 3. Use named arguments where several same-shaped values otherwise require positional decoding.
 4. Recompose a long function when another arrangement makes the ordered product story or next owner clearer. Extract only functions that own meaningful inputs, effects, and exits; inline or regroup helpers when their separation creates a scavenger hunt.
 5. Move a responsibility when the reading exposes genuine mixed ownership; explain the proposed boundary and obtain the human's decision before expanding improvement scope.

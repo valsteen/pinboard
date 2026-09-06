@@ -176,19 +176,6 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
         if lease.state == authority_models.PreparationLeaseStatus.ACTIVE and lease.expires_at > now
         for anchor in (preparation_anchors[(lease.item_id, lease.generation)],)
     )
-    coordination_authority = (
-        work_models.CoordinationCommandAuthority(
-            host_epoch=state.lifecycle.project.host_epoch,
-            task_id=state.authority.coordination.task_id,
-            host_id=state.authority.coordination.host_id,
-            lease_id=state.authority.coordination.lease_id,
-            generation=state.authority.coordination.generation,
-            expires_at=state.authority.coordination.expires_at,
-        )
-        if state.authority.coordination is not None
-        and state.authority.coordination.state == work_models.CoordinationLeaseStatus.ACTIVE
-        else None
-    )
     proposal_ids = tuple(proposal.proposal_id for proposal in state.proposals.proposals)
     evidence_groups: dict[ProposalId, list[str]] = {proposal_id: [] for proposal_id in proposal_ids}
     for evidence in sorted(state.proposals.evidence, key=_proposal_evidence_order):
@@ -201,7 +188,6 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
 
     return LedgerSnapshot(
         revision=str(state.lifecycle.project.revision),
-        generation=state.authority.coordination.generation if state.authority.coordination is not None else 0,
         items=work_items,
         attempts=tuple(
             work_models.AttemptRecord(
@@ -253,27 +239,9 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
         command_attempt_authorities=command_attempt_authorities,
         preparation_authorities=preparation_authorities,
         command_preparation_authorities=command_preparation_authorities,
-        coordination_authority=coordination_authority,
         history_items=tuple(
             item.item_id for item in state.lifecycle.work_items if stored_state.live_work_state(item.state) is None
         ),
         definitions=definitions,
         host_epoch=state.lifecycle.project.host_epoch,
-        focus_item=state.focus.item_id,
-        focus_attempt=state.focus.attempt_id,
-        can_transfer_coordinator=coordination_authority is not None,
-        coordination_lease=(
-            work_models.CoordinationLeaseAuthority(
-                host_epoch=state.lifecycle.project.host_epoch,
-                task_id=coordination.task_id,
-                host_id=coordination.host_id,
-                lease_id=coordination.lease_id,
-                generation=coordination.generation,
-                acquired_at=coordination.acquired_at,
-                expires_at=coordination.expires_at,
-                state=coordination.state,
-            )
-            if (coordination := state.authority.coordination) is not None
-            else None
-        ),
     )

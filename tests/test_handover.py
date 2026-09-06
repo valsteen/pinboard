@@ -27,7 +27,7 @@ from pinboard.interfaces.cli import main
 from .support import SQLITE_NOW, complete_sqlite_state, initialize_store, test_definition
 
 
-def commit_focus_after_project_read(
+def commit_item_after_project_read(
     database: Path,
     project_read: threading.Event,
     writer_finished: threading.Event,
@@ -40,7 +40,9 @@ def commit_focus_after_project_read(
         try:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute("UPDATE project_meta SET revision = revision + 1")
-            connection.execute("UPDATE current_focus SET next_action = 'committed-between-selects'")
+            connection.execute(
+                "UPDATE work_items SET next_action = 'committed-between-selects' WHERE item_id = 'work-a'"
+            )
             connection.commit()
         finally:
             connection.close()
@@ -214,7 +216,7 @@ class HandoverTest(unittest.TestCase):
             state.transition_receipts[0],
             artifact_ref_id=review.artifact_ref_id,
             input_payload=work_models.CanonicalJson(b'{"request":{"mode":"complete"}}'),
-            outcome_payload=work_models.CanonicalJson(b'{"accepted":true,"checks":["focused","fresh-store"]}'),
+            outcome_payload=work_models.CanonicalJson(b'{"accepted":true,"checks":["targeted","fresh-store"]}'),
         )
         return replace(
             state,
@@ -306,8 +308,8 @@ class HandoverTest(unittest.TestCase):
         result, stdout, stderr = self.run_cli(*common)
         self.assertEqual(0, result, stderr)
         handover = self.decode_handover(stdout)
-        self.assertEqual("pinboard-project-handover/v1", handover.schema)
-        self.assertEqual("sqlite-v3", handover.authority)
+        self.assertEqual("pinboard-project-handover/v2", handover.schema)
+        self.assertEqual("sqlite-v4", handover.authority)
         self.assertEqual(state_before.lifecycle.project.revision, handover.revision)
         self.assertEqual(stdout, self.run_cli(*common)[1])
 
@@ -364,7 +366,7 @@ class HandoverTest(unittest.TestCase):
         self.assertIsNone(terminal_item.queue_position)
         self.assertEqual({"request": {"mode": "complete"}}, msgspec.json.decode(handover.transitions[0].input))
         self.assertEqual(
-            {"accepted": True, "checks": ["focused", "fresh-store"]},
+            {"accepted": True, "checks": ["targeted", "fresh-store"]},
             msgspec.json.decode(handover.transitions[0].outcome),
         )
 
@@ -408,7 +410,7 @@ class HandoverTest(unittest.TestCase):
             return record
 
         writer = threading.Thread(
-            target=commit_focus_after_project_read,
+            target=commit_item_after_project_read,
             args=(database, project_read, writer_finished, writer_errors),
         )
         writer.start()
@@ -431,9 +433,15 @@ class HandoverTest(unittest.TestCase):
         handover = self.decode_handover(stdout)
         after = store.snapshot()
         self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
-        self.assertEqual("committed-between-selects", after.focus.next_action)
+        self.assertEqual(
+            "committed-between-selects",
+            next(value.next_action for value in after.lifecycle.work_items if value.item_id == ItemId("work-a")),
+        )
         self.assertEqual(before.lifecycle.project.revision, handover.revision)
-        self.assertEqual(before.focus.next_action, handover.focus.next_action)
+        self.assertEqual(
+            next(value.next_action for value in before.lifecycle.work_items if value.item_id == ItemId("work-a")),
+            next(value.next_action for value in handover.work_items if value.item_id == "work-a"),
+        )
 
     def test_artifact_failure_emits_no_stdout_and_changes_no_state(self) -> None:
         for failure in ("missing", "digest-mismatch"):

@@ -2,7 +2,6 @@ import sqlite3
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import timedelta
 from pathlib import Path
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
@@ -12,7 +11,6 @@ from pinboard.adapters.sqlite.artifacts import accept_checkpoint_artifact
 from pinboard.adapters.sqlite.authority import (
     validate_attempt_authority,
     write_attempt_authority,
-    write_coordination_authority,
 )
 from pinboard.adapters.sqlite.database import initialize_database, open_database, write_transaction
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
@@ -115,18 +113,6 @@ class SQLiteEffectContractTest(unittest.TestCase):
             lifecycle.require_stored_attempt(before, AttemptId("missing-1"))
         self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, missing_attempt.exception.code)
 
-        connection = open_database(path, OpenMode.READ_WRITE)
-        try:
-            stale_focus = lifecycle.update_focus(
-                connection,
-                replace(before.focus, subject_revision=-1),
-                replace(before.focus, subject_revision=before.focus.subject_revision + 1),
-            )
-        finally:
-            connection.close()
-        self.assertIsInstance(stale_focus, DecisionFailure)
-        self.assertEqual(before, store.snapshot())
-
         for effect, argument in ((lifecycle.compact_queue, 1), (lifecycle.make_queue_space, 1)):
             connection = open_database(path, OpenMode.READ_WRITE)
             try:
@@ -190,8 +176,8 @@ class SQLiteEffectContractTest(unittest.TestCase):
         self.assertIsInstance(stale, DecisionFailure)
         self.assertEqual(before, store.snapshot())
 
-    def test_authority_validation_and_coordination_insert_staleness_are_distinct(self) -> None:
-        path, store = self._store()
+    def test_attempt_authority_validation_rejects_missing_and_mismatched_generations(self) -> None:
+        _path, store = self._store()
         before = store.snapshot()
         without_counter = replace(
             before,
@@ -216,21 +202,6 @@ class SQLiteEffectContractTest(unittest.TestCase):
         with self.assertRaises(StorageError) as invalid_lease:
             validate_attempt_authority(mismatched_lease, StorageErrorCode.INVALID_STATE)
         self.assertEqual(StorageErrorCode.INVALID_STATE, invalid_lease.exception.code)
-
-        coordination = project_decision_snapshot(before, SQLITE_NOW).coordination_lease
-        assert coordination is not None
-        connection = open_database(path, OpenMode.READ_WRITE)
-        try:
-            stale = write_coordination_authority(
-                connection,
-                None,
-                replace(coordination, expires_at=coordination.expires_at + timedelta(minutes=1)),
-                "The coordination authority already exists.",
-            )
-        finally:
-            connection.close()
-        self.assertIsInstance(stale, DecisionFailure)
-        self.assertEqual(before, store.snapshot())
 
     def test_expected_insert_key_conflicts_are_stale_but_other_constraints_are_exceptional(self) -> None:
         path, store = self._store()
@@ -285,18 +256,6 @@ class SQLiteEffectContractTest(unittest.TestCase):
                     SQLITE_NOW,
                 )
             self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, unrelated_foreign_key.exception.code)
-
-            coordination = project_decision_snapshot(before, SQLITE_NOW).coordination_lease
-            assert coordination is not None
-            with self.assertRaises(StorageError) as unrelated_check, write_transaction(connection):
-                connection.execute("DELETE FROM coordination_lease")
-                write_coordination_authority(
-                    connection,
-                    None,
-                    replace(coordination, generation=0),
-                    "The coordination authority already exists.",
-                )
-            self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, unrelated_check.exception.code)
 
             retained = before.authority.attempt_leases[0]
             command = project_decision_snapshot(before, SQLITE_NOW).command_attempt_authorities[0]

@@ -41,10 +41,8 @@ class PreparationAuthorityTest(unittest.TestCase):
         snapshot = project_decision_snapshot(state, SQLITE_NOW)
         item = snapshot.item(ItemId("work-c"))
         definition = snapshot.definition(ItemId("work-c"))
-        coordination = snapshot.coordination_authority
         assert item is not None
         assert definition is not None
-        assert coordination is not None
         return authority_models.AcquireInitialPreparationAuthority(
             snapshot.host_epoch,
             item.item,
@@ -52,7 +50,6 @@ class PreparationAuthorityTest(unittest.TestCase):
             snapshot.subject_revision(item.item) or "",
             definition.revision,
             definition.digest,
-            coordination,
             TaskId("preparer"),
             HostId("host-a"),
             LeaseId("preparation-a"),
@@ -64,10 +61,8 @@ class PreparationAuthorityTest(unittest.TestCase):
         snapshot = project_decision_snapshot(complete_sqlite_state(), SQLITE_NOW)
         item = snapshot.item(ItemId("work-c"))
         definition = snapshot.definition(ItemId("work-c"))
-        coordination = snapshot.coordination_authority
         assert item is not None
         assert definition is not None
-        assert coordination is not None
 
         decision = decide_preparation_authority(
             None,
@@ -79,7 +74,6 @@ class PreparationAuthorityTest(unittest.TestCase):
                 snapshot.subject_revision(item.item) or "",
                 definition.revision,
                 definition.digest,
-                coordination,
                 TaskId("preparer"),
                 HostId("host-a"),
                 LeaseId("preparation-a"),
@@ -343,7 +337,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             "Work C needs one newly discovered prerequisite.",
             "The dependency must be preserved before activation.",
             "Record the prerequisite and relationship.",
-            "A coordinator can evaluate it.",
+            "A project can evaluate it.",
             work_models.PrerequisiteProposalRelation(ItemId("work-c")),
             "The relationship is current.",
             ("source:local",),
@@ -355,11 +349,19 @@ class PreparationAuthorityTest(unittest.TestCase):
             store,
             CreateProposalOperation(intake),
             expires_at - timedelta(microseconds=1),
+            actor_task_id=TaskId("discovering-task"),
+            actor_host_id=HostId("host-a"),
         )
 
         self.assertIsInstance(rejected, DecisionFailure)
         self.assertEqual(before, store.snapshot())
-        accepted = create_proposal(store, CreateProposalOperation(intake), expires_at)
+        accepted = create_proposal(
+            store,
+            CreateProposalOperation(intake),
+            expires_at,
+            actor_task_id=TaskId("discovering-task"),
+            actor_host_id=HostId("host-a"),
+        )
         self.assertNotIsInstance(accepted, DecisionFailure)
         self.assertIn(
             ProposalId("required-before-work-c"),
@@ -376,7 +378,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             "Work C needs one newly discovered prerequisite.",
             "The dependency must be preserved before activation.",
             "Record the prerequisite and relationship.",
-            "A coordinator can evaluate it.",
+            "A project can evaluate it.",
             work_models.PrerequisiteProposalRelation(ItemId("work-c")),
             "The relationship is current.",
             ("source:local",),
@@ -386,15 +388,19 @@ class PreparationAuthorityTest(unittest.TestCase):
 
         for table in ("proposal_evidence", "item_dependencies"):
             with self.subTest(table=table), reject_table_inserts(table), self.assertRaises(StorageError):
-                create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW)
+                create_proposal(
+                    store,
+                    CreateProposalOperation(intake),
+                    SQLITE_NOW,
+                    actor_task_id=TaskId("discovering-task"),
+                    actor_host_id=HostId("host-a"),
+                )
             self.assertEqual(before, store.snapshot())
             self.assertEqual(before, SQLiteWorkStore(database_path).snapshot())
 
     def test_transfer_repins_current_definition_and_revocation_fences_the_holder(self) -> None:
         snapshot = project_decision_snapshot(complete_sqlite_state(), SQLITE_NOW)
-        coordination = snapshot.coordination_authority
         definition = snapshot.definition(ItemId("work-c"))
-        assert coordination is not None
         assert definition is not None
         retained = authority_models.PreparationLeaseAuthority(
             snapshot.host_epoch,
@@ -426,7 +432,6 @@ class PreparationAuthorityTest(unittest.TestCase):
             2,
             authority_models.TransferPreparationAuthority(
                 inactive,
-                coordination,
                 TaskId("preparer-b"),
                 HostId("host-b"),
                 LeaseId("preparation-b"),
@@ -445,7 +450,8 @@ class PreparationAuthorityTest(unittest.TestCase):
                 transferred.item,
                 transferred.proposed_replacement.lease_id,
                 transferred.proposed_replacement.generation,
-                coordination,
+                TaskId("project-task"),
+                HostId("host-a"),
                 SQLITE_NOW + timedelta(seconds=1),
             ),
             snapshot,
@@ -458,28 +464,13 @@ class PreparationAuthorityTest(unittest.TestCase):
 
     def test_operation_start_time_remains_authoritative_while_write_lock_crosses_expiry(self) -> None:
         state = complete_sqlite_state()
-        coordination = state.authority.coordination
-        assert coordination is not None
-        acquired_at = datetime.now(coordination.expires_at.tzinfo)
-        state = replace(
-            state,
-            authority=replace(
-                state.authority,
-                coordination=replace(
-                    coordination,
-                    acquired_at=acquired_at,
-                    expires_at=acquired_at + timedelta(minutes=1),
-                ),
-            ),
-        )
+        acquired_at = datetime.now(SQLITE_NOW.tzinfo)
         store, _database_path = self._store(state)
         snapshot = project_decision_snapshot(store.snapshot(), acquired_at)
         item = snapshot.item(ItemId("work-c"))
         definition = snapshot.definition(ItemId("work-c"))
-        coordination_authority = snapshot.coordination_authority
         assert item is not None
         assert definition is not None
-        assert coordination_authority is not None
         expires_at = acquired_at + timedelta(seconds=1)
         acquired = decide_and_commit_preparation_authority_change(
             store,
@@ -490,7 +481,6 @@ class PreparationAuthorityTest(unittest.TestCase):
                 snapshot.subject_revision(item.item) or "",
                 definition.revision,
                 definition.digest,
-                coordination_authority,
                 TaskId("preparer"),
                 HostId("host-a"),
                 LeaseId("preparation-lock-test"),

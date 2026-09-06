@@ -111,16 +111,6 @@ def _insert_lifecycle(connection: sqlite3.Connection, records: stored_state.Life
     )
 
 
-def _insert_focus(connection: sqlite3.Connection, focus: stored_state.StoredFocus) -> None:
-    connection.execute(
-        """
-        INSERT INTO current_focus (singleton, item_id, attempt_id, next_action, subject_revision)
-        VALUES (1, ?, ?, ?, ?)
-        """,
-        (focus.item_id, focus.attempt_id, focus.next_action, focus.subject_revision),
-    )
-
-
 def _insert_proposals(connection: sqlite3.Connection, records: stored_state.ProposalRecords) -> None:
     connection.executemany(
         """
@@ -162,24 +152,6 @@ def _insert_proposals(connection: sqlite3.Connection, records: stored_state.Prop
 
 
 def _insert_authority(connection: sqlite3.Connection, records: stored_state.AuthorityRecords) -> None:
-    if records.coordination is not None:
-        value = records.coordination
-        connection.execute(
-            """
-            INSERT INTO coordination_lease (
-                singleton, lease_id, task_id, host_id, generation, acquired_at, expires_at, status
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                value.lease_id,
-                value.task_id,
-                value.host_id,
-                value.generation,
-                value.acquired_at.isoformat(),
-                value.expires_at.isoformat(),
-                value.state.value,
-            ),
-        )
     connection.executemany(
         "INSERT INTO attempt_lease_counters (attempt_id, generation_high_water) VALUES (?, ?)",
         tuple((value.attempt_id, value.generation_high_water) for value in records.attempt_counters),
@@ -262,11 +234,12 @@ def insert_initial_state(connection: sqlite3.Connection, state: stored_state.Sto
             "proposals",
             "proposal_evidence",
             "proposal_freshness",
-            "coordination_lease",
             "attempt_lease_counters",
             "attempt_lease_generations",
             "attempt_leases",
-            "current_focus",
+            "preparation_lease_counters",
+            "preparation_lease_generations",
+            "preparation_leases",
             "transition_history",
         )
         for row in connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchall()
@@ -283,7 +256,6 @@ def insert_initial_state(connection: sqlite3.Connection, state: stored_state.Sto
     _insert_lifecycle(connection, state.lifecycle)
     _insert_proposals(connection, state.proposals)
     _insert_authority(connection, state.authority)
-    _insert_focus(connection, state.focus)
     append_history(connection, state.transition_receipts)
     connection.execute(
         """

@@ -51,7 +51,7 @@ For one short, isolated change, Codex already supplies the planning, implementat
 - [Command stories](#command-stories)
   - [Read, validate, initialize, and repair](#read-validate-initialize-and-repair)
   - [Follow one change](#follow-one-change)
-  - [Borrow coordination for one shared change](#borrow-coordination-for-one-shared-change)
+  - [Apply one project change](#apply-one-project-change)
   - [Carry the project into another tool](#carry-the-project-into-another-tool)
 - [Under the surface](#under-the-surface)
   - [The durable memory underneath](#the-durable-memory-underneath)
@@ -62,12 +62,12 @@ For one short, isolated change, Codex already supplies the planning, implementat
 The practical path is short enough to tell without the data model:
 
 1. **Preserve a discovery.** Intake records its trigger, evidence, hypothesis, and likely effect without changing current priority or adding it to the active feature.
-2. **Accept exact work.** Coordination decides which proposal belongs in the product, records the complete current definition, and keeps unaccepted ideas visibly separate.
+2. **Accept exact work.** A project task decides which proposal belongs in the product, records the complete current definition, and keeps unaccepted ideas visibly separate.
 3. **Prepare the brief.** A renewable preparation claim reserves that exact ready definition while one canonical brief is compiled and reviewed. The item does not become active yet.
 4. **Implement that brief.** Activation binds the accepted brief to one attempt. The worker claims the attempt, rereads the brief, and changes the ordinary repository in its assigned checkout.
 5. **Reconcile late direction.** Before candidate presentation or acceptance, the owning task accounts for user direction and repository changes since the accepted brief. A changed product target replaces the complete definition and brief, invalidates stale candidate or review identity, and requires another exact candidate and review.
 6. **Submit one candidate.** The worker records the exact candidate and its evidence. Submission protects that identity instead of asking review to infer what changed from the latest files.
-7. **Review the same decision.** A separate Codex reviewer compares that candidate with the same accepted brief and returns it for correction, accepts a checkpoint, or continues the attempt. The human-facing task then asks the human to choose repository disposition and confirm completion before the work becomes terminal.
+7. **Review the same decision.** A separate Codex reviewer compares that candidate with the same accepted brief and returns it for correction, accepts a checkpoint, or continues the attempt. The owning task then asks the human to choose repository disposition and confirm completion before the work becomes terminal.
 8. **Recover without retelling.** Pause and block preserve the attempt and its evidence. Resume requires a brief matching the current definition, so a later task cannot quietly continue obsolete scope.
 
 This normally takes more turns than asking Codex to implement and review a prompt directly. The extra work is the mechanism: discoveries remain proposals, implementation rereads accepted scope, and review receives the exact brief and candidate. Pinboard trades first-delivery speed for a durable boundary between the product you accepted and the plausible additions an agent could otherwise accumulate.
@@ -104,7 +104,7 @@ A work item is the durable project decision. An attempt is one execution of that
 
 {_picture("product", "A work item lifecycle above the legal branches of an active attempt, with related facts shown separately")}
 
-**The main lifecycle stays familiar.** Intake becomes ready, active work enters review, and accepted work reaches a terminal outcome. Deferred, paused, and blocked work are optional branches. Review can request correction, pause at an accepted checkpoint, or accept the candidate and continue. The human-facing task reconciles later direction, presents the accepted candidate for a repository decision, and records terminal completion only after the human confirms that disposition. Completion can also be accepted directly from active work after the same reconciliation and confirmation.
+**The main lifecycle stays familiar.** Intake becomes ready, active work enters review, and accepted work reaches a terminal outcome. Deferred, paused, and blocked work are optional branches. Review can request correction, pause at an accepted checkpoint, or accept the candidate and continue. The owning task reconciles later direction, presents the accepted candidate for a repository decision, and records terminal completion only after the human confirms that disposition. Completion can also be accepted directly from active work after the same reconciliation and confirmation.
 
 **Recovery preserves the right identity.** Resume makes a retained attempt active, while an item without one becomes ready. Reopen returns deferred work to intake with new evidence. Continue is advisory: it confirms that active work proceeds without changing lifecycle state or accepting mutation input. The action record's stable `effect` field describes that lifecycle effect; it does not claim that a wider command such as dispatch performs no artifact I/O. Dispatch can publish or reuse review evidence while leaving lifecycle unchanged.
 
@@ -123,13 +123,13 @@ These guarantees explain why seemingly similar words remain distinct.
 
 ## Command stories
 
-The command stories move from observation and repair to an ordinary mutation, temporary shared authority, and portable export.
+The command stories move from observation and repair to an ordinary mutation and portable export.
 
 ### Read, validate, initialize, and repair
 
 - **Inspect one snapshot.** The command line decodes one exact leaf, root resolution selects the source checkout, shared repository, and work directory, and the interface samples time when lease expiry matters. It reads one complete SQLite snapshot, asks application code to project the requested status, overview, item, definition, history, action, or parallel view, and presents that result. Inspection neither refreshes generated files nor changes authority. `input-contract` is deliberately different: it describes static action semantics and payload shape from the selected action kind without opening project state.
 
-- **Validate before repairing.** `status` is a bounded summary of one current snapshot, not the full integrity check. `validate` verifies accepted brief content, every accepted artifact identity, and every replaceable generated view against the bytes that snapshot should produce. Authoritative defects are errors; missing or stale generated views are warnings because SQLite and accepted artifacts remain the source of truth. Validation only reports. `views rebuild` separately derives and replaces every queue, focus, item, attempt, and history projection from one snapshot and verified brief content.
+- **Validate before repairing.** `status` is a bounded summary of one current snapshot, not the full integrity check. `validate` verifies accepted brief content, every accepted artifact identity, and every replaceable generated view against the bytes that snapshot should produce. Authoritative defects are errors; missing or stale generated views are warnings because SQLite and accepted artifacts remain the source of truth. Validation only reports. `views rebuild` separately derives and replaces every queue, item, attempt, and history projection from one snapshot and verified brief content.
 
 - **Initialize through a verified publication.** A new ledger is built and verified in a staging file before atomic publication. A returning ledger is schema-checked before Pinboard reconciles only its own same-file publication residue and ensures its directories. Both routes use explicit roots and one operation time, then verify accepted brief content, rebuild generated views, and present the receipt. A failed rebuild leaves the authoritative database available for retry. After a successful first initialization, the interface points once to the optional `$repository-readiness`, `$slop-cleanup`, and `$maintaining-agent-guidance` skills without running them or creating work. It may separately recommend one absent Codex long-task default; neither path writes configuration or claims to override trusted project settings. Resumed and failed initialization stay quiet, while unreadable or malformed user config suppresses only the setting recommendation.
 
@@ -137,22 +137,21 @@ The command stories move from observation and repair to an ordinary mutation, te
 
 ### Follow one change
 
-**Observe and resolve.** Acquiring a preparation claim begins when the command-line boundary decodes an exact acquisition command. The preparation interface observes stored context, then resolves the supplied coordination claim and lease details into one requested change. Observation can explain an absent claim, but it is not the authoritative state that approves the change.
+**Observe and resolve.** Acquiring a preparation claim begins when the command-line boundary decodes an exact acquisition command. The preparation interface observes the exact item and definition preconditions, then resolves them with the requested task, host, lease, and lifetime into one requested change. Observation can explain an absent or changed precondition, but it is not the authoritative state that approves the change.
 
-**Decide and commit against locked state.** The application opens the write transaction and rereads current state. A pure domain decision returns an accepted authority change or an expected rejection. The application projects acceptance into one focused mutation; SQLite commits only those guarded facts and returns their exact history and project revision. Rejection and stale guards are expected failures, infrastructure or programming failures remain exceptions, and every unsuccessful transaction rolls back.
+**Decide and commit against locked state.** The application opens the write transaction and rereads current state. A pure domain decision returns an accepted authority change or an expected rejection. The application projects acceptance into one targeted mutation; SQLite commits only those guarded facts and returns their exact history and project revision. Rejection and stale guards are expected failures, infrastructure or programming failures remain exceptions, and every unsuccessful transaction rolls back.
 
 {_picture("journey", "A preparation-authority request being decoded, observed, resolved, decided against locked state, committed, refreshed, and presented")}
 
-**Refresh and present afterward.** A failed replaceable-view refresh can warn without undoing the authoritative commit. Authority commands reload latest state to present the lease that now exists. Transition commands instead present the exact revision returned by their own commit, even if another writer advances the ledger before presentation. The representative code repeats the same provenance story: observed state becomes a requested change; the application owns locked state, accepted decision, focused mutation, and commit; refresh and presentation follow.
+**Refresh and present afterward.** A failed replaceable-view refresh can warn without undoing the authoritative commit. Authority commands reload latest state to present the lease that now exists. Transition commands instead present the exact revision returned by their own commit, even if another writer advances the ledger before presentation. The representative code repeats the same provenance story: observed state becomes a requested change; the application owns locked state, accepted decision, targeted mutation, and commit; refresh and presentation follow.
 
-### Borrow coordination for one shared change
+### Apply one project change
 
-Some installed commands need temporary graph-wide authority without becoming its long-term owner. Close first builds its transition payload. Item revision first reads and validates the complete proposed definition. Coordination apply first reads the supplied bytes. Each then follows the same sequence:
+Project actions are direct atomic ledger changes. The task applying the change supplies its task and host identity, and SQLite protects the authoritative transition:
 
-1. **Acquire temporary authority.** The interface observes stored state and requests coordination in one authoritative SQLite transaction. A rejected acquisition stops the command without cleanup.
-2. **Reread, select, and commit.** After acquisition, the interface rereads the retained lease, discovers the currently legal coordinator actions, selects the requested action, and only then decodes its matching payload. The product transition is decided and committed in a second atomic transaction.
-3. **Release even after failure.** The interface attempts a third transaction whether the product transition succeeded, returned an expected rejection, or raised an exception. The three changes are not one transaction, and release is not guaranteed. If release fails after a successful transition, that transition remains committed and the temporary lease may remain active. A cleanup failure accompanies an expected rejection; an unexpected transition exception remains primary and receives any cleanup failure as a note.
-4. **Rebuild replaceable views.** Only a successful transition and release reach the full rebuild. A warning leaves both authoritative commits stored for `pinboard views rebuild`. Presentation identifies the product-transition revision, not the later release revision.
+1. **Prepare exact input.** `close` builds its terminal payload, item revision validates a complete proposed definition, and `transition` reads the selected action receipt and its matching payload.
+2. **Reread, select, and commit.** The application opens one write transaction, rereads current state, reselects the exact legal action, decides it, and commits the change with the invoking task and host identity. A stale or illegal action returns without changing the ledger.
+3. **Refresh replaceable views.** A successful commit refreshes only the affected projections. A warning leaves the authoritative transition stored for `pinboard views rebuild`. Presentation identifies that transition's exact revision.
 
 ### Carry the project into another tool
 
@@ -160,7 +159,7 @@ Local continuity and external handover are different jobs. `pinboard handover --
 
 {_picture("handover", "Exported Pinboard project facts and verified artifacts becoming one portable JSON package while live authority stays local")}
 
-The package carries admitted work, focus, accepted definitions, attempts, pending proposals, relationships, decisions, and accepted evidence without choosing how another system represents them. Live coordination, preparation claims, attempt leases, and their generations remain in Pinboard and are not exported. Handover changes no Pinboard state and does not choose or write to the receiving tool; a human or another tool owns that mapping.
+The package carries admitted work, accepted definitions, attempts, pending proposals, relationships, decisions, and accepted evidence without choosing how another system represents them. Live preparation claims, attempt leases, and their generations remain in Pinboard and are not exported. Handover changes no Pinboard state and does not choose or write to the receiving tool; a human or another tool owns that mapping.
 
 ## Under the surface
 
@@ -168,7 +167,7 @@ The final views explain what Pinboard retains and where the code assigns respons
 
 ### The durable memory underneath
 
-The relational ledger groups eighteen tables into six kinds of memory: current work, accepted scope and dependencies, discoveries, immutable knowledge, changing mutation ownership, and the history that connects them.
+The relational ledger groups sixteen tables into six kinds of memory: current work, accepted scope and dependencies, discoveries, immutable knowledge, changing mutation ownership, and the history that connects them.
 
 {_picture("database", "Six groups of SQLite tables showing current work, scope, discovery, durable knowledge, mutation ownership, and history")}
 
@@ -177,14 +176,15 @@ The relational ledger groups eighteen tables into six kinds of memory: current w
 **Immutable artifacts enter through three paths:**
 
 1. **Brief publication** strictly decodes and cross-validates the selected candidate, canonicalizes and publishes its bytes, accepts the stable reference in SQLite, and rebuilds generated views. Activation or resume then selects that accepted brief for the attempt.
-2. **Dispatch preparation** validates the environment, optional prompt or review files, exact current action, accepted brief identity, and reviewed sources before choosing the local, existing-review, or new-review path. It may publish or reuse independent ready-review evidence by exact identity, renders the prompt, rechecks authority, and only then emits it. Dispatch prepares a prompt; it does not create a task. Declared permissions remain coordinator declarations, not grants enforced by Pinboard.
+2. **Dispatch preparation** validates the environment, optional prompt or review files, exact current action, accepted brief identity, and reviewed sources before choosing the local, existing-review, or new-review path. It may publish or reuse independent ready-review evidence by exact identity, renders the prompt, rechecks authority, and only then emits it. Dispatch prepares a prompt; it does not create a task. Declared permissions remain brief declarations, not grants enforced by Pinboard.
 3. **Checkpoint acceptance** publishes the exact result and independent review, then atomically records the attempt result, accepted review evidence, lifecycle change, and receipt. Publication alone changes no lifecycle state; rejection or rollback preserves the previous relationships.
 
-**Mutation ownership has three scopes:**
+**Mutation ownership has two leased scopes:**
 
-- A coordination lease may be borrowed for one shared scheduling or graph-wide change, then released.
 - A preparation claim keeps an item ready while one task compiles and reviews its definition-bound brief; activation consumes the claim when it creates the attempt.
 - An attempt lease identifies the task, host, and lease that own one implementation attempt. Generations fence older preparation and attempt owners after transfer or revocation, while unrelated item-scoped leases remain independent.
+
+Project actions carry the invoking task and host identity and commit directly under SQLite's write transaction. They do not establish a persistent project owner.
 
 Project state holds the current revision. Committed history records each accepted input, outcome, and actor.
 
@@ -197,7 +197,7 @@ The package is split into four layers because each removes a different kind of a
 Every arrow in this view means “may depend on.”
 
 - **Interfaces** absorb command lines, JSON, project files, and human-readable output. A small exhaustive entry point routes exact commands; thematic interface modules own composition that needs concrete adapters.
-- **Application code** reads complete stored state through capabilities and projects an accepted decision into one focused storage mutation.
+- **Application code** reads complete stored state through capabilities and projects an accepted decision into one targeted storage mutation.
 - **The domain** decides legality as pure data.
 - **Adapters** make accepted facts durable and recoverable.
 

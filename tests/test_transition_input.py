@@ -3,7 +3,7 @@ import unittest
 
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailureCode
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CandidateId, ItemId, LedgerId, ProposalId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CandidateId, ItemId, ProposalId
 from pinboard.interfaces.errors import TransitionInputFailure
 from pinboard.interfaces.transition_input import (
     INPUT_CONTRACT_ACTION_KINDS,
@@ -47,7 +47,7 @@ def revise_item_payload() -> JsonObject:
             "acceptance_criteria": ["The outcome is queryable."],
             "dependencies": [],
             "effect": "The outcome is explicit.",
-            "unlock": "Coordination can continue.",
+            "unlock": "Work can continue.",
         },
     }
 
@@ -283,10 +283,6 @@ class TransitionInputTest(unittest.TestCase):
                 revise_item_payload(),
             ),
             (action(decision_models.SubmitReviewAction, AttemptId("attempt-1")), {"candidate": "candidate"}),
-            (
-                action(decision_models.TransferCoordinatorAction, LedgerId("ledger")),
-                {"task_id": "task-b", "host_id": "host-b"},
-            ),
         )
         for selected_action, payload in cases:
             with self.subTest(kind=selected_action.kind):

@@ -1,4 +1,4 @@
-"""Pinboard coordination primitives."""
+"""Pinboard project-work primitives."""
 
 from importlib.metadata import version
 from typing import Final

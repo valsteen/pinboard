@@ -25,7 +25,6 @@ from pinboard.adapters.sqlite.authority import (
     consume_preparation_authority,
     fence_attempt_authority,
     write_attempt_authority,
-    write_coordination_authority,
     write_preparation_authority,
 )
 from pinboard.adapters.sqlite.database import (
@@ -40,7 +39,6 @@ from pinboard.adapters.sqlite.lifecycle import (
     replace_dependencies,
     set_attempt_state,
     set_item_state,
-    update_focus,
 )
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.proposals import accept_proposal, create_proposal, set_proposal_disposition
@@ -49,7 +47,6 @@ from pinboard.application.artifacts import ArtifactRef
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     CheckpointAcceptanceMutation,
-    CoordinationAuthorityMutation,
     MutationReceipt,
     PreparationAuthorityMutation,
     ProposalCreationMutation,
@@ -436,20 +433,8 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 )
             ) is not None:
                 return failure
-        case decision_models.CoordinatorTransferChange(authority_change=authority):
-            if (
-                failure := write_coordination_authority(
-                    connection,
-                    authority.before,
-                    authority.after,
-                    "The coordinator transfer is stale.",
-                )
-            ) is not None:
-                return failure
         case _ as unreachable:
             assert_never(unreachable)
-    if mutation.focus_after is not None:
-        return update_focus(connection, state.focus, mutation.focus_after)
     return None
 
 
@@ -505,8 +490,6 @@ def _persist_checkpoint_acceptance(
         return failure
     if (failure := fence_attempt_authority(connection, change.authority_change, now)) is not None:
         return failure
-    if mutation.focus_after is not None:
-        return update_focus(connection, state.focus, mutation.focus_after)
     return None
 
 
@@ -522,13 +505,6 @@ def _persist_state_change(
             return _persist_checkpoint_acceptance(connection, state, mutation)
         case ProposalCreationMutation():
             return create_proposal(connection, state, mutation)
-        case CoordinationAuthorityMutation(decision=decision):
-            return write_coordination_authority(
-                connection,
-                decision.expected_retained,
-                decision.proposed_replacement,
-                "The coordination authority changed before persistence.",
-            )
         case AttemptAuthorityMutation(decision=decision):
             return write_attempt_authority(connection, decision)
         case PreparationAuthorityMutation(decision=decision):
@@ -542,7 +518,7 @@ def _persist(
     state: stored_state.StoredWorkState,
     mutation: StoredStateMutation,
 ) -> DecisionFailure | None:
-    """Persist one focused accepted mutation without rebuilding unrelated relations."""
+    """Persist one targeted accepted mutation without rebuilding unrelated relations."""
 
     receipt = stored_transition_receipt(mutation)
     expected_history_id = 1 + max((int(value.history_id) for value in state.transition_receipts), default=0)
@@ -552,7 +528,7 @@ def _persist(
     ):
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            "The focused mutation receipt does not identify the next project revision exactly.",
+            "The targeted mutation receipt does not identify the next project revision exactly.",
         )
     connection.execute("PRAGMA defer_foreign_keys = ON")
     if (failure := _persist_state_change(connection, state, mutation)) is not None:
@@ -571,7 +547,7 @@ def _persist(
                     state.lifecycle.project.revision,
                 ),
             ),
-            "The project revision changed before focused persistence.",
+            "The project revision changed before targeted persistence.",
         )
     ) is not None:
         return failure

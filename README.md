@@ -43,13 +43,13 @@ Pinboard is not designed to win the first-prompt race. It is designed for the fi
 
 Imagine you are building *Ashfall Keep*, a small action RPG. While one Codex task works on the dragon boss's second phase, two useful but distracting discoveries arrive: save games capture temporary animation state, and controller mappings identify abilities by inventory position.
 
-<img width="20" height="20" src="assets/quest-scroll.png" alt="Sealed quest scroll"> **Capture an idea without expanding the feature.** `$pinboard-intake` records the save-game concern with its trigger, evidence, and likely consequence. It enters intake without becoming ready, replacing the current focus, or interrupting the dragon attempt.
+<img width="20" height="20" src="assets/quest-scroll.png" alt="Sealed quest scroll"> **Capture an idea without expanding the feature.** `$pinboard-intake` records the save-game concern with its trigger, evidence, and likely consequence. It enters intake without becoming ready or interrupting the dragon attempt.
 
 > **Saved for later — the animation-state concern is now in `save-game-animation-state` (`intake`); dragon work continues.**
 
 <img align="right" width="390" src="assets/party-crossroads.png" alt="Fantasy adventurer comparing routes toward a riverside village, a dragon keep, and a crystal cave while a scout investigates">
 
-<img width="20" height="20" src="assets/quick-quest-log.png" alt="Open quest ledger and compass"> **Decide from one current project view.** `$pinboard` shows the dragon phase as active, controller mapping as ready, and the save-game concern as intake. Coordination can accept, defer, connect, or close work without asking each conversation to reconstruct the plan.
+<img width="20" height="20" src="assets/quick-quest-log.png" alt="Open quest ledger and compass"> **Decide from one current project view.** `$pinboard` shows the dragon phase as active, controller mapping as ready, and the save-game concern as intake. Any task can accept, defer, connect, or close work through atomic ledger changes without reconstructing the plan.
 
 <img width="20" height="20" src="assets/safe-camp.png" alt="Campfire and bedroll checkpoint"> **Resume the decision, not the conversation.** If stable ability IDs become a real prerequisite, the dragon attempt records where it stopped and what must change. The same attempt later resumes from its accepted brief and evidence.
 
@@ -72,7 +72,7 @@ That makes this codebase one concrete case study, not proof that Pinboard elimin
 ## What it covers
 
 - **Intake:** preserve a discovery without silently changing priority or starting work.
-- **Planning:** make readiness, deferral, closure, dependencies, and current focus explicit.
+- **Planning:** make readiness, deferral, closure, and dependencies explicit.
 - **Revisioned definitions:** replace a complete accepted definition with compare-and-swap safety, retain every prior revision, and inspect current or paginated history as typed JSON.
 - **Execution:** give each accepted attempt an exact brief and independent renewable ownership.
 - **Interruption and recovery:** block, pause, resume, or recover work without rebuilding its context from chat history.
@@ -88,7 +88,7 @@ The `$pinboard`, `$pinboard-intake`, and `$pinboard-deliver` skills provide the 
 
 The three repository-care skills are optional and independently usable; none requires a Pinboard ledger.
 
-For the most reliable workflow, keep one user-facing Codex task responsible for an outcome through its final repository decision. Let it delegate bounded research, implementation, and review to subagents whose results return automatically. Open another visible task only for a genuinely independent outcome you intend to follow there.
+For the most reliable workflow, keep each outcome with the task that owns it through its final repository decision. That task can delegate bounded research, implementation, and review to subagents whose results return automatically. Start another task for a genuinely independent outcome you intend to follow separately.
 
 Private working state stays in ignored local files:
 
@@ -113,7 +113,7 @@ The current-definition read returns the project revision, item subject revision,
 
 Revision files replace the whole `pinboard-work-item-definition/v1`; partial patches are rejected. Blocking can only name dependencies already present in that definition and never changes accepted dependencies itself.
 
-Run `pinboard handover --json` to materialize the strict `pinboard-project-handover/v1` document. The command reads one validated SQLite snapshot, verifies every accepted immutable artifact, embeds its exact bytes as UTF-8 text or base64, and writes nothing unless the complete exported project-facts subset is ready. Coordination, preparation, and attempt leases stay in the local ledger; the handover document does not transfer live authority.
+Run `pinboard handover --json` to materialize the strict `pinboard-project-handover/v2` document. The command reads one validated SQLite snapshot, verifies every accepted immutable artifact, embeds its exact bytes as UTF-8 text or base64, and writes nothing unless the complete exported project-facts subset is ready. Preparation and attempt leases stay in the local ledger; the handover document does not transfer live authority.
 
 ## Install from GitHub
 

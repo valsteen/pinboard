@@ -1,19 +1,19 @@
 ---
 name: pinboard-intake
-description: Preserve one newly proposed piece of project work as an intake item on the pinboard. Use when the user explicitly asks to add, queue, intake, preserve, or send a prerequisite, bug, cleanup, feature, contradiction, or clarification for later coordination. Do not use merely because a conversation explores an idea.
+description: Preserve one newly proposed piece of project work as an intake item on the pinboard. Use when the user explicitly asks to add, queue, intake, preserve, or send a prerequisite, bug, cleanup, feature, contradiction, or clarification for later work. Do not use merely because a conversation explores an idea.
 ---
 
 # Add to the pinboard
 
 Convert one explicit concern into immutable proposal facts and a same-identity intake item. Do not claim that intake made it ready, active, or current work.
 
-Intake may be standalone or embedded in ongoing Pinboard coordination. Standalone intake may end after its persistence receipt only when the user did not also ask to begin the new work. Before embedded intake, retain a compact continuation anchor containing the pre-intake objective, the next promised action, and the exact durable owner selector. Intake changes queue state but preserves focus and active attempts, so return control to that anchor after persistence and any explicitly requested notification handling.
+Intake may be standalone or embedded in ongoing Pinboard work. Standalone intake may end after its persistence receipt only when the user did not also ask to begin the new work. Before embedded intake, retain a compact continuation anchor containing the pre-intake objective, the next promised action, and the exact durable owner selector. Intake changes queue state but preserves active attempts, so return control to that anchor after persistence and any explicitly requested notification handling.
 
 ## Preserve immediate-start intent
 
 When the same request says `start`, `begin`, `work on`, `implement`, `fix now`, or otherwise clearly asks for immediate execution, treat intake as the first atomic step rather than the requested outcome. After persistence, continue through `$pinboard` to admit, prepare, and activate the same-identity item, then use `$pinboard-deliver` to complete its accepted work. Do not end with a save-for-later receipt merely because the user explicitly named `$pinboard-intake`.
 
-Follow the coordination skill's user-facing detail threshold during that continuation. Preserve every higher-level required first-use skill disclosure, keep each one concise and outcome-oriented, and add no separate Pinboard explanation of companion-skill selection or internal routing.
+Follow the main Pinboard skill's user-facing detail threshold during that continuation. Preserve every higher-level required first-use skill disclosure, keep each one concise and outcome-oriented, and add no separate Pinboard explanation of companion-skill selection or internal routing.
 
 Immediate-start language authorizes continuing now; it does not prove that the human agreed with an unspoken magnitude interpretation. When the work is broad, route through Pinboard's one-sentence scope confirmation before preparation: state the outcome, principal read and touch surfaces, approximate magnitude, and any surprising exclusion, then continue without asking redundant permission. Ask only if that sentence exposes a real unresolved choice.
 
@@ -25,7 +25,7 @@ An explicitly requested notification remains subordinate to this continuation. S
 
 1. Resolve this plugin's executable relative to this file as `../../scripts/pinboard`.
 2. Run `pinboard status --json` from the repository checkout.
-3. Require a valid current authority root. Intake does not require a coordination lease and must not wait for a master chat.
+3. Require authority `sqlite-v4`. Intake is a direct project action using the invoking task and host identity; it does not require a lease.
 4. If the workflow or executable is unavailable, stop. Do not infer shared state from titles, recency, nearby tasks, branches, or old audit files.
 5. Determine the current source task identity from trusted task context. If the environment does not expose it, ask the human for the exact task ID rather than inventing one.
 
@@ -58,14 +58,14 @@ Before creating a proposal, distinguish exact prior coverage from a merely relat
 ## Persist, then deliver
 
 1. Write the proposal to a temporary file outside canonical work state.
-2. Run `pinboard proposal --file <path>`.
+2. Run `pinboard proposal --file <path> --task-id <current-task> --host-id <current-host>`.
 3. Treat `OK PROPOSAL_CREATED <proposal-id> position=<n> state=intake` as proof that both the proposal facts and intake item persisted.
 4. After that success, mention the generated item summary once as the readable accepted-definition view only when `<work-root>/views/items/<proposal-id>.md` is confirmed available, using a concise purpose label and a native clickable link. If the command reports a generated-view warning or the file is unavailable, preserve the successful intake receipt without a broken link; after a successful refresh or rebuild confirms availability, mention the link once. Do not re-announce it after an unchanged refresh.
-5. Read `references/codex-transport.md` only when the user explicitly requested delivery to another visible task and Codex task messaging is available.
+5. Read `references/codex-transport.md` only when the user explicitly requested delivery to another task and Codex task messaging is available.
 6. Notify the requested eligible task with the proposal ID and shared work root. Repository persistence, not messaging, is the correctness boundary.
 7. Report delivery only when the user requested it or when its outcome materially changes confidence, current work, or the next action.
 
-For embedded intake, resume the invoking coordinator before the surrounding turn ends. If context compaction obscured the conversation, re-read the anchor's active or paused item, attempt, proposal, or exact selector rather than inventing continuation state. Complete the promised action when it remains in scope; otherwise surface its exact blocker or durably defer it at an exact owner.
+For embedded intake, resume the invoking task before the surrounding turn ends. If context compaction obscured the conversation, re-read the anchor's active or paused item, attempt, proposal, or exact selector rather than inventing continuation state. Complete the promised action when it remains in scope; otherwise surface its exact blocker or durably defer it at an exact owner.
 
 When delivery was explicitly requested but transport or the requested target is unavailable, or delivery fails, retain the intake item and report the requested delivery outcome. Without an explicit delivery request, do not inspect transport, send, retry, or report notification state. Any later task can discover the item through overview or status, so never ask the human to relay it or authorize lease revocation merely to reduce notification latency.
 
@@ -100,4 +100,4 @@ When transport detail is material, distinguish these precise lifecycle outcomes:
 - proposal returned for evidence;
 - proposal rejected.
 
-Only a chat holding the current coordination lease may report the latter four after applying the matching transition.
+Report the latter four only after applying the matching direct project transition.

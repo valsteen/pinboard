@@ -23,20 +23,19 @@ from pinboard.domain.identifiers import (
 
 
 class AuthorizationKind(Enum):
-    COORDINATOR = "coordinator"
-    COORDINATION = "coordination"
+    PROJECT = "project"
     ATTEMPT = "attempt"
     PREPARATION = "preparation"
 
 
 class Role(Enum):
-    COORDINATOR = "coordinator"
+    PROJECT = "project"
     WORKER = "worker"
     OBSERVER = "observer"
     PREPARER = "preparer"
 
 
-type MutationRole = Literal[Role.COORDINATOR, Role.WORKER, Role.PREPARER]
+type MutationRole = Literal[Role.PROJECT, Role.WORKER, Role.PREPARER]
 
 
 class LifecycleEffect(Enum):
@@ -55,7 +54,6 @@ class ActionLifecyclePrecondition(Enum):
     ACTIVE_ATTEMPT = "active-attempt"
     ACTIVE_ATTEMPT_CURRENT_SCOPE = "active-attempt-current-scope"
     ACTIVE_OR_REVIEW_ATTEMPT_CURRENT_SCOPE = "active-or-review-attempt-current-scope"
-    ACTIVE_TRANSFERABLE_COORDINATION = "active-transferable-coordination"
     DEFERRED_ITEM = "deferred-item"
     INTAKE_ITEM = "intake-item"
     INTAKE_READY_OR_BLOCKED_UNSTARTED_ITEM = "intake-ready-or-blocked-unstarted-item"
@@ -102,7 +100,6 @@ class ActionKind(Enum):
     RETURN_PROPOSAL = "return-proposal"
     REVISE_ITEM = "revise-item"
     SUBMIT_REVIEW = "submit-review"
-    TRANSFER_COORDINATOR = "transfer-coordinator"
 
 
 def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR0912
@@ -111,7 +108,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Accept one independently reviewed checkpoint without completing its item.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.REVIEW_ATTEMPT,
                 "Archive the checkpoint evidence, pause the retained attempt, and fence its worker authority.",
@@ -120,7 +117,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Accept a reviewed candidate while continuing the same attempt.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.REVIEW_ATTEMPT,
                 "Record the accepted review, return the attempt to active, and fence its prior worker authority.",
@@ -129,7 +126,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Admit an intake proposal as accepted work.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.PROPOSAL,
                 ActionLifecyclePrecondition.INTAKE_PROPOSAL,
                 "Record accepted disposition and apply the selected details to its same-identity work item.",
@@ -145,7 +142,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.REPORT_BLOCKER:
             return ActionSemantics(
-                "Preserve blocker evidence for coordination.",
+                "Preserve blocker evidence for the project.",
                 LifecycleEffect.NO_LIFECYCLE_CHANGE,
                 (Role.WORKER,),
                 ActionSubjectKind.ATTEMPT,
@@ -156,7 +153,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Stop an active attempt on dependencies already accepted in its definition.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_ATTEMPT,
                 "Move the item and attempt to blocked without changing accepted dependencies.",
@@ -165,7 +162,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Stop unstarted intake work on dependencies already accepted in its definition.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.INTAKE_ITEM,
                 "Move the item to blocked without changing accepted dependencies or creating an attempt.",
@@ -174,7 +171,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Accept and finish an active or reviewed attempt.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_OR_REVIEW_ATTEMPT_CURRENT_SCOPE,
                 "Record terminal completion and remove the item from live work.",
@@ -183,7 +180,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Record a terminal decision for non-active work.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.ITEM_OUTSIDE_ACTIVE_AND_REVIEW,
                 "Record the done or dropped outcome and remove the item from live work.",
@@ -192,7 +189,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Continue work already active in an accepted attempt.",
                 LifecycleEffect.NO_LIFECYCLE_CHANGE,
-                (Role.COORDINATOR, Role.WORKER),
+                (Role.PROJECT, Role.WORKER),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_ATTEMPT,
                 "Continue the attempt without changing shared lifecycle state.",
@@ -201,7 +198,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Set aside unstarted work with an explicit reopen condition.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.INTAKE_READY_OR_BLOCKED_UNSTARTED_ITEM,
                 "Move the item to deferred and retain its reopen condition.",
@@ -210,7 +207,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Prepare or verify a worker launch for an active attempt.",
                 LifecycleEffect.NO_LIFECYCLE_CHANGE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_ATTEMPT_CURRENT_SCOPE,
                 "Produce a canonical worker launch without changing lifecycle state.",
@@ -228,7 +225,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Admit an intake item to ready work.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.INTAKE_ITEM,
                 "Move the item from intake to ready.",
@@ -237,7 +234,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Merge an intake proposal into an existing work identity.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.PROPOSAL,
                 ActionLifecyclePrecondition.INTAKE_PROPOSAL,
                 "Record merged disposition and supersede its same-identity intake item for the existing target.",
@@ -246,7 +243,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Preserve an active attempt without a named dependency condition.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_ATTEMPT,
                 "Move the item and attempt to paused for later resume.",
@@ -255,7 +252,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Reject an intake proposal.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.PROPOSAL,
                 ActionLifecyclePrecondition.INTAKE_PROPOSAL,
                 "Record rejected disposition and drop its same-identity intake item from live work.",
@@ -264,7 +261,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Return deferred work for intake reconsideration.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.DEFERRED_ITEM,
                 "Return deferred work to intake.",
@@ -273,7 +270,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Restore paused or blocked work after its dependencies are clear.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.PAUSED_OR_BLOCKED_ITEM_WITHOUT_LIVE_DEPENDENCIES,
                 "Return paused or blocked work to active when an attempt exists, otherwise ready.",
@@ -282,7 +279,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Return a reviewed attempt for correction.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.REVIEW_ATTEMPT,
                 "Return the same attempt to active and fence its prior worker authority.",
@@ -291,7 +288,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Return an intake proposal for more evidence or clarification.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.PROPOSAL,
                 ActionLifecyclePrecondition.INTAKE_PROPOSAL,
                 "Record returned disposition, retain its same-identity intake item, and expose the reason as clarification.",
@@ -300,7 +297,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Replace one nonterminal item's complete accepted definition.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
+                (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.NONTERMINAL_ITEM,
                 "Append an immutable definition revision and atomically replace its dependencies.",
@@ -314,15 +311,6 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionLifecyclePrecondition.ACTIVE_ATTEMPT_CURRENT_SCOPE,
                 "Move the item and attempt to review and protect the candidate.",
             )
-        case ActionKind.TRANSFER_COORDINATOR:
-            return ActionSemantics(
-                "Transfer graph-wide coordination ownership.",
-                LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.COORDINATOR,),
-                ActionSubjectKind.LEDGER,
-                ActionLifecyclePrecondition.ACTIVE_TRANSFERABLE_COORDINATION,
-                "Replace the coordination owner and advance its fencing generation.",
-            )
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -332,9 +320,8 @@ class ActionCapability[SubjectT: SubjectId]:
     subject: SubjectT
     label: str
     expected_revision: str
-    coordinator_generation: int
     subject_revision: str | None = None
-    authorization: AuthorizationKind | None = AuthorizationKind.COORDINATOR
+    authorization: AuthorizationKind | None = AuthorizationKind.PROJECT
     lease_id: LeaseId | None = None
     command_authority: work_models.CommandAttemptAuthority | None = None
     preparation_authority: work_models.PreparationCommandAuthority | None = None
@@ -345,9 +332,8 @@ class MutationActionCapability[SubjectT: SubjectId]:
     subject: SubjectT
     label: str
     expected_revision: str
-    coordinator_generation: int
     subject_revision: str | None = None
-    authorization: AuthorizationKind = AuthorizationKind.COORDINATOR
+    authorization: AuthorizationKind = AuthorizationKind.PROJECT
     lease_id: LeaseId | None = None
     command_authority: work_models.CommandAttemptAuthority | None = None
     preparation_authority: work_models.PreparationCommandAuthority | None = None
@@ -491,12 +477,6 @@ class SubmitReviewAction:
     kind: ActionKind = field(init=False, default=ActionKind.SUBMIT_REVIEW)
 
 
-@dataclass(frozen=True, slots=True)
-class TransferCoordinatorAction:
-    capability: MutationActionCapability[LedgerId]
-    kind: ActionKind = field(init=False, default=ActionKind.TRANSFER_COORDINATOR)
-
-
 type AdvisoryAction = ContinueAction | DispatchAction | InspectAction | ReportBlockerAction
 type LifecycleAction = (
     AcceptCheckpointAction
@@ -519,7 +499,7 @@ type LifecycleAction = (
     | ReviseItemAction
     | SubmitReviewAction
 )
-type TransitionAction = LifecycleAction | TransferCoordinatorAction
+type TransitionAction = LifecycleAction
 type NonCheckpointTransitionAction = (
     AcceptReviewAndContinueAction
     | AcceptProposalAction
@@ -539,7 +519,6 @@ type NonCheckpointTransitionAction = (
     | ReturnProposalAction
     | ReviseItemAction
     | SubmitReviewAction
-    | TransferCoordinatorAction
 )
 type Action = TransitionAction | AdvisoryAction
 
@@ -662,12 +641,6 @@ class RejectProposalCommand:
     value: work_models.ReasonInput
 
 
-@dataclass(frozen=True, slots=True)
-class TransferCoordinatorCommand:
-    action: TransferCoordinatorAction
-    value: work_models.TransferCoordinatorInput
-
-
 type TransitionCommand = (
     AcceptCheckpointCommand
     | AcceptReviewAndContinueCommand
@@ -688,7 +661,6 @@ type TransitionCommand = (
     | ReturnProposalCommand
     | ReviseItemCommand
     | RejectProposalCommand
-    | TransferCoordinatorCommand
 )
 type NonCheckpointTransitionCommand = (
     AcceptReviewAndContinueCommand
@@ -709,7 +681,6 @@ type NonCheckpointTransitionCommand = (
     | ReturnProposalCommand
     | ReviseItemCommand
     | RejectProposalCommand
-    | TransferCoordinatorCommand
 )
 
 
@@ -901,23 +872,12 @@ class AttemptAuthorityChange:
 
 
 @dataclass(frozen=True, slots=True)
-class CoordinatorAuthorityChange:
-    before: work_models.CoordinationLeaseAuthority
-    after: work_models.CoordinationLeaseAuthority
-
-
-@dataclass(frozen=True, slots=True)
 class CheckpointAcceptanceChange:
     item: ItemId
     checkpoint: CheckpointId
     attempt: AttemptId
     candidate: CandidateId
     authority_change: AttemptAuthorityChange
-
-
-@dataclass(frozen=True, slots=True)
-class CoordinatorTransferChange:
-    authority_change: CoordinatorAuthorityChange
 
 
 @dataclass(frozen=True, slots=True)
@@ -929,27 +889,6 @@ class TransitionReceipt:
     decided_at: datetime
 
 
-type DecisionChange = (
-    ItemStateChange
-    | ActivationChange
-    | AttemptStateChange
-    | BlockAttemptChange
-    | BlockItemChange
-    | ResumeAttemptChange
-    | ReviewSubmissionChange
-    | ReviewReturnChange
-    | ReviewAcceptanceChange
-    | CompletionChange
-    | ItemClosureChange
-    | AttemptClosureChange
-    | AcceptedProposalChange
-    | MergedProposalChange
-    | ReturnedProposalChange
-    | RejectedProposalChange
-    | CheckpointAcceptanceChange
-    | CoordinatorTransferChange
-    | DefinitionRevisionDecision
-)
 type NonCheckpointDecisionChange = (
     ItemStateChange
     | ActivationChange
@@ -967,7 +906,6 @@ type NonCheckpointDecisionChange = (
     | MergedProposalChange
     | ReturnedProposalChange
     | RejectedProposalChange
-    | CoordinatorTransferChange
     | DefinitionRevisionDecision
 )
 

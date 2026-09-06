@@ -6,14 +6,12 @@ from .model import Box, Connector, Diagram, Guide, Note, Section
 TABLE_GROUPS: dict[str, str] = {
     "work_items": "current work",
     "attempts": "current work",
-    "current_focus": "current work",
     "work_item_definition_revisions": "definitions and relationships",
     "item_dependencies": "scope and relationships",
     "proposals": "discovery",
     "proposal_evidence": "discovery",
     "proposal_freshness": "discovery",
     "artifact_refs": "durable knowledge",
-    "coordination_lease": "authority",
     "attempt_lease_counters": "authority",
     "attempt_lease_generations": "authority",
     "attempt_leases": "authority",
@@ -36,8 +34,6 @@ RELATION_ROLES: dict[tuple[str, str], str] = {
     ("preparation_leases", "preparation_lease_counters"): "one retained preparation claim per item",
     ("preparation_leases", "preparation_lease_generations"): "preparation identity is fenced by generation",
     ("preparation_leases", "work_item_definition_revisions"): "preparation pins one accepted definition",
-    ("current_focus", "attempts"): "focus may name the live attempt",
-    ("current_focus", "work_items"): "focus names the work",
     ("item_dependencies", "work_items"): "items form a dependency graph",
     ("work_item_definition_revisions", "work_items"): "definition history belongs to an item",
     ("proposal_evidence", "proposals"): "discovery retains its evidence",
@@ -85,7 +81,7 @@ DIAGRAM = Diagram(
     slug="database",
     title="Six kinds of memory in one relational ledger",
     description=(
-        "Eighteen SQLite tables preserve work identity, definitions, proposals, artifacts, mutation ownership, and history. "
+        "Sixteen SQLite tables preserve work identity, definitions, proposals, artifacts, mutation ownership, and history. "
         "Relationship families are grouped for readability while the source seed accounts for every foreign key."
     ),
     width=1200,
@@ -95,7 +91,7 @@ DIAGRAM = Diagram(
         Section("Current work", "identity that survives execution", 424, 42),
         Section("Definitions + relationships", "accepted intent and dependency", 824, 42),
         Section("Accepted files", "briefs · ready reviews · checkpoint evidence", 28, 432),
-        Section("Mutation ownership", "shared coordination · ready preparation · active attempts", 424, 432),
+        Section("Mutation ownership", "ready preparation · active attempts", 424, 432),
         Section("Integrity + time", "current revision and committed receipts", 824, 432),
     ),
     guides=(
@@ -113,10 +109,6 @@ DIAGRAM = Diagram(
         ),
         Connector(
             ((275, 260), (275, 230), (220, 230), (220, 200)), "proposal-freshness", "proposals", "recheck", (310, 226)
-        ),
-        Connector(((540, 270), (540, 200)), "focus", "work-items", "item", (522, 238)),
-        Connector(
-            ((640, 270), (640, 240), (700, 240), (700, 200)), "focus", "attempts", "optional attempt", (700, 228)
         ),
         Connector(
             ((695, 620), (695, 650)), "attempt-authority", "preparation-authority", "same fencing pattern", (715, 638)
@@ -139,7 +131,6 @@ DIAGRAM = Diagram(
         Box("proposal-freshness", "", "Assumptions", ("facts to recheck",), ("proposal_freshness",), 210, 260, 170, 90),
         Box("work-items", "", "Work items", ("durable identity",), ("work_items",), 430, 110, 140, 90),
         Box("attempts", "", "Attempts", ("one execution",), ("attempts",), 640, 110, 140, 90),
-        Box("focus", "", "Current focus", ("advisory pointer",), ("item + optional attempt",), 500, 270, 200, 80),
         Box("definitions", "", "Accepted versions", ("current definition",), ("plus its history",), 830, 110, 175, 90),
         Box("dependencies", "", "Dependencies", ("item → prerequisite",), ("item_dependencies",), 1020, 110, 160, 90),
         Box(
@@ -152,17 +143,6 @@ DIAGRAM = Diagram(
             500,
             300,
             150,
-        ),
-        Box(
-            "coordination",
-            "",
-            "Shared authority",
-            ("borrowed briefly", "exclusive graph change"),
-            ("coordination_lease",),
-            415,
-            500,
-            175,
-            110,
         ),
         Box(
             "attempt-authority",
@@ -199,6 +179,11 @@ DIAGRAM = Diagram(
             816,
             12,
         ),
-        Note("Shared authority coordinates the graph; preparation and attempt authority are item-scoped.", 28, 834, 12),
+        Note(
+            "Preparation and attempt authority are item-scoped; project actions rely on SQLite transactions.",
+            28,
+            834,
+            12,
+        ),
     ),
 )

@@ -1,4 +1,4 @@
 interface:
   display_name: "Repository Readiness"
   short_description: "Make an unfamiliar repository safe to change"
-  default_prompt: "Use $repository-readiness to map this repository's real authorities, consumers, projections, and validation before recommending or making any authorized improvements."
+  default_prompt: "Use $repository-readiness to map this repository's real authorities, consumers, projections, validation, and evidence-backed limitations within the selected boundary before recommending or making any authorized improvements."

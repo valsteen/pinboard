@@ -13,14 +13,14 @@ from uuid import uuid4
 
 from pinboard.adapters.files.models import AffectedViews
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state
+from pinboard.application import service, stored_state
 from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.application.service import decide_and_commit_preparation_authority_change
 from pinboard.domain import authority_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import ItemId, LeaseId
 from pinboard.interfaces import cli_commands, work_views
-from pinboard.interfaces.cli_output import retained_authority_lease_fields, write_json
+from pinboard.interfaces.cli_output import authority_lease_fields, retained_authority_lease_fields, write_json
 from pinboard.interfaces.errors import CommandErrorCode, CommandFailure, CommandResult
 
 
@@ -70,6 +70,48 @@ def show_preparation_authority_status(
     return _present_latest_preparation_authority(
         latest_committed_state, command.item_id, presented_at, json=command.json
     )
+
+
+def start_preparation(
+    roots: cli_commands.ResolvedRoots, command: cli_commands.PreparationStartCommand
+) -> CommandResult[int]:
+    store = SQLiteWorkStore(roots.work / "state.sqlite3")
+    requested_at = datetime.now(UTC)
+    committed = service.start_preparation(
+        store,
+        item_id=command.item_id,
+        task_id=command.task_id,
+        host_id=command.host_id,
+        lease_id=LeaseId(uuid4().hex),
+        acquired_at=requested_at,
+        expires_at=requested_at + timedelta(seconds=command.ttl_seconds),
+    )
+    if isinstance(committed, DecisionFailure):
+        return CommandFailure(committed.code, committed.message)
+    refreshed = work_views.refresh(
+        roots, store, AffectedViews(queue=True, items=(command.item_id,), history=True), datetime.now(UTC)
+    )
+    if refreshed.warning is not None:
+        print(refreshed.warning.message, file=sys.stderr)
+    values = {
+        "item_id": committed.item,
+        "definition_revision": committed.definition_revision,
+        "definition_digest": committed.definition_digest,
+        **authority_lease_fields(
+            task_id=committed.task_id,
+            host_id=committed.host_id,
+            lease_id=committed.lease_id,
+            generation=committed.generation,
+            acquired_at=committed.acquired_at,
+            expires_at=committed.expires_at,
+            status=committed.state.value,
+        ),
+    }
+    if command.json:
+        write_json(values)
+    else:
+        print("OK " + " ".join(f"{key}={value}" for key, value in values.items()))
+    return 0
 
 
 def _resolve_supplied_preparation_authority(

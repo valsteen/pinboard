@@ -26,7 +26,14 @@ from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import ActionId, AttemptId, HostId, ItemId, TaskId
-from pinboard.interfaces import action_selection, cli_commands, transition_models, work_views
+from pinboard.interfaces import (
+    action_selection,
+    cli_commands,
+    transition_models,
+    work_inspection,
+    work_inspection_models,
+    work_views,
+)
 from pinboard.interfaces.cli_output import write_json
 from pinboard.interfaces.errors import (
     CommandFailure,
@@ -151,7 +158,19 @@ def transition(roots: cli_commands.ResolvedRoots, cli_command: cli_commands.Tran
     commit_result = _execute_transition_command(roots, store, artifacts, decoded_command, actor_task_id, actor_host_id)
     if isinstance(commit_result, CommandFailure):
         return commit_result
-    committed_mutation = commit_result
+    return _present_committed_transition(roots, store, selected_action, commit_result, json=cli_command.json)
+
+
+def _present_committed_transition(
+    roots: cli_commands.ResolvedRoots,
+    store: SQLiteWorkStore,
+    selected_action: decision_models.Action,
+    committed_mutation: MutationReceipt,
+    *,
+    json: bool,
+) -> int:
+    """Refresh replaceable views, reload canonical continuation, then present the committed receipt."""
+
     committed_receipt = committed_mutation.transition
     subject_kind = decision_models.action_semantics(selected_action.kind).subject_kind
     affected_attempt = (
@@ -170,7 +189,30 @@ def transition(roots: cli_commands.ResolvedRoots, cli_command: cli_commands.Tran
     if view_result.warning is not None:
         print(view_result.warning.message, file=sys.stderr)
     committed_revision = str(committed_mutation.project_revision)
-    print(f"OK TRANSITION_APPLIED {decision_models.action_id(selected_action)} revision={committed_revision}")
+    latest_state = store.snapshot()
+    if affected_attempt is None and changed_item is not None:
+        affected_attempt = next(
+            (value.attempt_id for value in latest_state.lifecycle.attempts if value.item_id == changed_item), None
+        )
+    continuation = None
+    if affected_attempt is not None:
+        continuation = work_inspection.read_attempt_continuation(
+            roots, latest_state, affected_attempt, datetime.now(UTC)
+        )
+        if isinstance(continuation, CommandFailure):
+            # The mutation already committed. An unavailable read projection is a warning, not rollback.
+            print(f"Transition committed; continuation unavailable: {continuation}", file=sys.stderr)
+            continuation = None
+    if json:
+        write_json(
+            work_inspection_models.TransitionView(
+                decision_models.action_id(selected_action), committed_revision, continuation
+            )
+        )
+    else:
+        print(f"OK TRANSITION_APPLIED {decision_models.action_id(selected_action)} revision={committed_revision}")
+        if continuation is not None:
+            write_json(work_inspection_models.AttemptView(continuation))
     return 0
 
 

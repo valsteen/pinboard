@@ -29,6 +29,16 @@ An explicitly requested notification remains subordinate to this continuation. S
 4. If the workflow or executable is unavailable, stop. Do not infer shared state from titles, recency, nearby tasks, branches, or old audit files.
 5. Determine the current source task identity from trusted task context. If the environment does not expose it, ask the human for the exact task ID rather than inventing one.
 
+## Resolve conditional follow-up authority
+
+Language such as “if that is a production defect, follow it up” authorizes exactly one bounded intake only if current evidence proves the named condition. Test the condition before preparing a proposal:
+
+- false or unproved: create nothing and report no saved follow-up;
+- exact observation and consequence already recorded: reuse the exact durable owner and create nothing;
+- proved and new: create at most one `follow-up` or `independent` proposal, whichever the evidence supports.
+
+This conditional authority does not authorize a prerequisite relation, admission, preparation, activation, implementation, notification, or unrelated work. Record the condition evidence, the concern's relationship to current work, and the smallest useful next decision. When intake is embedded in delivery, return to the retained continuation anchor immediately after the one permitted disposition.
+
 ## Prepare one proposal
 
 Create a bounded JSON proposal containing:

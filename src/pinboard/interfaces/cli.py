@@ -85,6 +85,10 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
             return dispatch_brief.prepare_dispatch_command(roots, command)
         case cli_commands.AttemptStatusCommand() as command:
             return attempt_authority.show_attempt_authority_status(roots, command)
+        case cli_commands.AttemptInspectCommand() as command:
+            return work_inspection.show_attempt(roots, command)
+        case cli_commands.ReviewJobCommand() as command:
+            return work_inspection.show_review_job(roots, command)
         case (
             cli_commands.AttemptAcquireCommand()
             | cli_commands.AttemptRenewCommand()
@@ -94,6 +98,8 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
             return attempt_authority.change_attempt_authority(roots, command)
         case cli_commands.PreparationStatusCommand() as command:
             return preparation_authority.show_preparation_authority_status(roots, command)
+        case cli_commands.PreparationStartCommand() as command:
+            return preparation_authority.start_preparation(roots, command)
         case (
             cli_commands.PreparationAcquireCommand()
             | cli_commands.PreparationTransferCommand()

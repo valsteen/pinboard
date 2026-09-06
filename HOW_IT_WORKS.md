@@ -30,14 +30,16 @@ The practical path is short enough to tell without the data model:
 
 1. **Preserve a discovery.** Intake records its trigger, evidence, hypothesis, and likely effect without changing current priority or adding it to the active feature.
 2. **Accept exact work.** A project task decides which proposal belongs in the product, records the complete current definition, and keeps unaccepted ideas visibly separate.
-3. **Prepare the brief.** A renewable preparation claim reserves that exact ready definition while one canonical brief is compiled and reviewed. The item does not become active yet.
+3. **Prepare the brief.** One ordinary preparation start atomically selects the current ready definition and creates or transfers its renewable claim while one canonical brief is compiled and reviewed. The item does not become active yet.
 4. **Implement that brief.** Activation binds the accepted brief to one attempt. The worker claims the attempt, rereads the brief, and changes the ordinary repository in its assigned checkout.
 5. **Reconcile late direction.** Before candidate presentation or acceptance, the owning task accounts for user direction and repository changes since the accepted brief. A changed product target replaces the complete definition and brief, invalidates stale candidate or review identity, and requires another exact candidate and review.
 6. **Submit one candidate.** The worker records the exact candidate and its evidence. Submission protects that identity instead of asking review to infer what changed from the latest files.
-7. **Review the same decision.** A separate Codex reviewer compares that candidate with the same accepted brief and returns it for correction, accepts a checkpoint, or continues the attempt. The owning task then asks the human to choose repository disposition and confirm completion before the work becomes terminal.
+7. **Review the same decision.** Current ledger state derives the next operation. For review, a read-only job binds the exact candidate, accepted brief owner, and current result evidence for a separate Codex reviewer. The owning task processes the verdict, then asks the human to choose repository disposition and confirm completion before the work becomes terminal.
 8. **Recover without retelling.** Pause and block preserve the attempt and its evidence. Rebind corrects an active or paused attempt's branch, base revision, and matching brief without changing its lifecycle state, while fencing its previous worker. Resume requires a brief matching the current definition, so a later task cannot quietly continue obsolete scope.
 
 This normally takes more turns than asking Codex to implement and review a prompt directly. The extra work is the mechanism: discoveries remain proposals, implementation rereads accepted scope, and review receives the exact brief and candidate. Pinboard trades first-delivery speed for a durable boundary between the product you accepted and the plausible additions an agent could otherwise accumulate.
+
+Conditional follow-up requests stay narrow. “If this proves to be a production defect, follow it up” first requires evidence for that condition. A false or unproved condition writes nothing, exact existing coverage is reused, and a proved new concern creates at most one follow-up or independent intake item. It does not authorize making that item a prerequisite, starting it, implementing it, or notifying another task.
 
 ## Why Pinboard changes the Codex loop
 
@@ -52,7 +54,7 @@ When the only shared target is the evolving conversation and latest diff, each p
   <img src="assets/how-it-works/review-loop.svg" alt="An ordinary Codex implementation and review loop beside the same loop anchored by one accepted Pinboard brief, exact candidate, and evidence">
 </picture>
 
-Pinboard gives both sides a stable reference. The implementer rereads the accepted brief, submits one exact candidate with evidence, and a separate reviewer receives that same brief and candidate. Correction returns to the same attempt, with blocking findings tied to accepted scope, criteria, or reviewed project authority. If later accepted direction changes the target, the old candidate and review no longer qualify for wrap-up: the complete definition and brief are replaced before another exact candidate and review. The loop still depends on LLM and human judgment and can still be wrong; its corrections remain aimed at an explicit accepted target instead of whatever prose happens to be most recent.
+Pinboard gives both sides a stable reference. The implementer rereads the accepted brief and submits one exact candidate with evidence. A read-only review job records that candidate, the canonical brief path and digest, and the current `result.md` path and digest for a separate reviewer to verify before use. Correction returns to the same attempt, with blocking findings tied to accepted scope, criteria, or reviewed project authority. If later accepted direction changes the target, the old candidate and review no longer qualify for wrap-up: the complete definition and brief are replaced before another exact candidate and review. The loop still depends on LLM and human judgment and can still be wrong; its corrections remain aimed at an explicit accepted target instead of whatever prose happens to be most recent.
 
 ### Strict shape, semantic judgment
 
@@ -66,6 +68,8 @@ Pinboard gives both sides a stable reference. The implementer rereads the accept
 **Code checks the envelope; humans and models interpret the meaning.** The canonical work brief is strict JSON and the sole semantic brief. Pinboard rejects unknown fields and cross-checks identities, references, coverage, and canonical bytes. It cannot prove that prose under `scope` is truly in scope or that a `non_goals` entry expresses the human's intent. The model interprets those meanings, the human accepts the product decision, and independent review challenges the compiled result. The schema makes distinct reasoning jobs difficult to omit and stable across stages without pretending to replace judgment.
 
 **Project impact remains a judgment too.** Pinboard has no rule saying that a visitor-facing decision must also change a workflow guide or a durable design principle. Structured scope, provenance, reviewed authorities, and coverage help Codex reason toward affected surfaces without a hard-coded file map or an exhaustive reread. The model can still miss or invent a connection; human acceptance and independent review decide whether it is real. This is information architecture refined through experience, not a semantic consistency engine.
+
+**Local means the whole changed path is locally observable.** A lightweight local checkpoint is appropriate only when ownership and dependency direction, stored and wire identities, and independently owned consumers remain unchanged, and one production entry point can exercise the complete path. Otherwise the checkpoint uses the cross-boundary contract and review shape.
 
 The rest of this guide moves from the product concepts a visitor encounters to representative command stories, then to the storage and package structure underneath.
 
@@ -82,7 +86,7 @@ A work item is the durable project decision. An attempt is one execution of that
 
 **The main lifecycle stays familiar.** Intake becomes ready, active work enters review, and accepted work reaches a terminal outcome. Deferred, paused, and blocked work are optional branches. Review can request correction, pause at an accepted checkpoint, or accept the candidate and continue. The owning task reconciles later direction, presents the accepted candidate for a repository decision, and records terminal completion only after the human confirms that disposition. Completion can also be accepted directly from active work after the same reconciliation and confirmation.
 
-**Recovery preserves the right identity.** Resume makes a retained attempt active, while an item without one becomes ready. Reopen returns deferred work to intake with new evidence. Continue is advisory: it confirms that active work proceeds without changing lifecycle state or accepting mutation input. The action record's stable `effect` field describes that lifecycle effect; it does not claim that a wider command such as dispatch performs no artifact I/O. Dispatch can publish or reuse review evidence while leaving lifecycle unchanged.
+**Recovery preserves the right identity.** Resume makes a retained attempt active, while an item without one becomes ready. Reopen returns deferred work to intake with new evidence. Continue is advisory: it confirms that active work proceeds without changing lifecycle state or accepting mutation input. Attempt inspection derives its owner, legal actions, and next operation from current authoritative state rather than persisting another workflow status. The action record's stable `effect` field describes that lifecycle effect; it does not claim that a wider command such as dispatch performs no artifact I/O. Dispatch can publish or reuse review evidence while leaving lifecycle unchanged.
 
 **Pause records a deliberate interruption; it does not invent a blocker.** Suppose an urgent prerequisite must take priority while the current attempt is still technically runnable. Without pause, that attempt remains active and eligible for continuation or redispatch even though the human intends it to stop. Pause instead keeps the same attempt, retained lease, accepted brief, and evidence while removing runnable actions. Pause does not fence that lease. Rebind serves a different purpose: it corrects the branch, base revision, and matching brief while preserving either active or paused state, and it fences the prior worker generation. A later resume restores the same paused attempt without claiming that a dependency blocked it.
 
@@ -115,16 +119,16 @@ The command stories move from observation and repair to an ordinary mutation and
 
 ### Follow one change
 
-**Observe and resolve.** Acquiring a preparation claim begins when the command-line boundary decodes an exact acquisition command. The preparation interface observes the exact item and definition preconditions, then resolves them with the requested task, host, lease, and lifetime into one requested change. Observation can explain an absent or changed precondition, but it is not the authoritative state that approves the change.
+**Start from current accepted state.** Ordinary preparation begins with an item, task, host, and lifetime. The interface samples the operation time and the application opens one write transaction. Inside that transaction it reads the current ready definition and chooses either initial acquisition or transfer of an inactive retained claim. Exact acquire and transfer commands remain available for recovery and diagnosis.
 
-**Decide and commit against locked state.** The application opens the write transaction and rereads current state. A pure domain decision returns an accepted authority change or an expected rejection. The application projects acceptance into one targeted mutation; SQLite commits only those guarded facts and returns their exact history and project revision. Rejection and stale guards are expected failures, infrastructure or programming failures remain exceptions, and every unsuccessful transaction rolls back.
+**Decide and commit against locked state.** From that locked snapshot, a pure domain decision returns an accepted authority change or an expected rejection. The application projects acceptance into one targeted mutation; SQLite commits only those guarded facts and returns the exact claim plus its history and project revision. Rejection and stale guards are expected failures, infrastructure or programming failures remain exceptions, and every unsuccessful transaction rolls back.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works/journey-dark.svg">
-  <img src="assets/how-it-works/journey.svg" alt="A preparation-authority request being decoded, observed, resolved, decided against locked state, committed, refreshed, and presented">
+  <img src="assets/how-it-works/journey.svg" alt="An ordinary preparation start selecting the current definition and claim operation against locked state, then committing, refreshing, and presenting it">
 </picture>
 
-**Refresh and present afterward.** A failed replaceable-view refresh can warn without undoing the authoritative commit. Authority commands reload latest state to present the lease that now exists. Transition commands instead present the exact revision returned by their own commit, even if another writer advances the ledger before presentation. The representative code repeats the same provenance story: observed state becomes a requested change; the application owns locked state, accepted decision, targeted mutation, and commit; refresh and presentation follow.
+**Refresh and present afterward.** A failed replaceable-view refresh can warn without undoing the authoritative commit. Ordinary preparation start presents the exact claim returned by its transaction; lower-level authority commands reload latest state for their recovery-oriented presentation. Transition JSON preserves the committed revision, reloads current canonical state, and includes the affected attempt's derived continuation when available. If that projection is unavailable, the transition remains committed and attempt inspection can be retried without replaying the mutation. The representative code repeats the same provenance story: the application owns locked selection, accepted decision, targeted mutation, and commit; refresh and presentation follow.
 
 ### Apply one project change
 
@@ -166,9 +170,11 @@ The relational ledger groups sixteen tables into six kinds of memory: current wo
 2. **Dispatch preparation** validates the environment, optional prompt or review files, exact current action, accepted brief identity, and reviewed sources before choosing the local, existing-review, or new-review path. It may publish or reuse independent ready-review evidence by exact identity, renders the prompt, rechecks authority, and only then emits it. Dispatch prepares a prompt; it does not create a task. Declared permissions remain brief declarations, not grants enforced by Pinboard.
 3. **Checkpoint acceptance** publishes the exact result and independent review, then atomically records the attempt result, accepted review evidence, lifecycle change, and receipt. Publication alone changes no lifecycle state; rejection or rollback preserves the previous relationships.
 
+Once submission protects a candidate, `review-job` is a separate read-only projection. It verifies the accepted brief, reads nonempty current result evidence, and emits paths, render-time digests, the exact outcome owner, and a bounded prompt. The Codex runtime—not Pinboard—creates the fresh reviewer. If that runtime cannot create a subagent, the candidate stays in review with its evidence intact; another user-owned task is not used as a substitute.
+
 **Mutation ownership has two leased scopes:**
 
-- A preparation claim keeps an item ready while one task compiles and reviews its definition-bound brief; activation consumes the claim when it creates the attempt.
+- A preparation claim keeps an item ready while one task compiles and reviews its definition-bound brief; ordinary start creates the first claim or transfers an inactive one under the same lock that selects the current definition, and activation consumes the claim when it creates the attempt.
 - An attempt lease identifies the task, host, and lease that own one implementation attempt. Generations fence older preparation and attempt owners after transfer or revocation, while unrelated item-scoped leases remain independent.
 
 Project actions carry the invoking task and host identity and commit directly under SQLite's write transaction. They do not establish a persistent project owner.

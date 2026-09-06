@@ -74,10 +74,10 @@ That makes this codebase one concrete case study, not proof that Pinboard elimin
 - **Intake:** preserve a discovery without silently changing priority or starting work.
 - **Planning:** make readiness, deferral, closure, and dependencies explicit.
 - **Revisioned definitions:** replace a complete accepted definition with compare-and-swap safety, retain every prior revision, and inspect current or paginated history as typed JSON.
-- **Execution:** give each accepted attempt an exact brief and independent renewable ownership.
+- **Execution:** start preparation atomically from the current accepted definition, then give each accepted attempt an exact brief and independent renewable ownership.
 - **Interruption and recovery:** block, deliberately pause otherwise runnable work, rebind a corrected Git baseline, resume, or recover without rebuilding context from chat history or silently changing the checkout.
 - **Parallel work:** preview independent items and recheck the group as each attempt starts, without creating tasks on the user's behalf.
-- **Review:** keep the submitted candidate and its evidence exact, then use a separate Codex reviewer—normally a subagent that returns to the owning task—to accept it or return it for correction.
+- **Review:** derive the next operation from current ledger state, bind a read-only review job to the exact candidate, brief, and result evidence, then use a separate Codex reviewer—normally a subagent that returns to the owning task—to accept it or return it for correction.
 - **Wrap-up:** reconcile later accepted direction and repository changes before candidate presentation or acceptance, then let the human choose the repository disposition and confirm terminal completion.
 - **Handover:** export one revision-stamped JSON package of supported project facts—admitted work, pending proposals, relationships, decisions, and verified review evidence—without choosing a team-tool vendor. Live lease authority remains local.
 - **Repository readiness:** use `$repository-readiness` to map the real authority, consumers, projections, and validation behind a representative change before improving an unfamiliar repository; select whole-repository coverage explicitly.
@@ -109,9 +109,24 @@ pinboard item definition-history --item-id <item> --limit 20 --json
 pinboard item revise --file <pinboard-item-revision-v1.json> --task-id <task> --host-id <host> --json
 ```
 
-The current-definition read returns the project revision, item subject revision, definition revision, and definition digest from one snapshot. Preparation acquisition accepts those exact values, and a rejected stale request identifies which observed precondition changed.
+The ordinary preparation command selects the current accepted definition and either creates the first claim or transfers an inactive retained claim atomically:
+
+```sh
+pinboard preparation start --item-id <item> --task-id <task> --host-id <host> --ttl-seconds 7200 --json
+```
+
+A live conflicting claim or an item that is no longer ready is rejected without change. The lower-level acquire and transfer commands remain available for exact recovery and diagnosis.
 
 Revision files replace the whole `pinboard-work-item-definition/v1`; partial patches are rejected. Blocking can only name dependencies already present in that definition and never changes accepted dependencies itself.
+
+After a transition, `--json` includes the continuation derived from a fresh canonical snapshot when an attempt is involved. The same record is available directly, and an exact candidate-bound review job can be rendered without mutating the ledger:
+
+```sh
+pinboard attempt inspect --attempt-id <attempt> --json
+pinboard review-job --attempt-id <attempt> --candidate-revision <candidate> --json
+```
+
+The review job names the outcome-owning task and records the accepted brief and current `result.md` paths and SHA-256 digests. A fresh reviewer verifies those bytes before reviewing. Pinboard does not create or wake a Codex task: the owning task invokes a review subagent through the runtime and keeps responsibility for the verdict. If that runtime capability is absent, the exact candidate remains safely in review until a capable runtime continues it.
 
 Run `pinboard handover --json` to materialize the strict `pinboard-project-handover/v2` document. The command reads one validated SQLite snapshot, verifies every accepted immutable artifact, embeds its exact bytes as UTF-8 text or base64, and writes nothing unless the complete exported project-facts subset is ready. Preparation and attempt leases stay in the local ledger; the handover document does not transfer live authority.
 
@@ -138,13 +153,15 @@ When another task uncovers something worth keeping, ask it:
 
 > Add this to the repository work queue as intake: saving a boss fight currently captures temporary animation state. Include what you found and why it could block phase-two save support.
 
+Conditional wording stays bounded. For example, “if this proves to be a production defect, follow it up” creates at most one follow-up or independent intake item after evidence proves the condition. A false or unproved condition creates nothing, exact existing coverage is reused, and the wording does not authorize starting or implementing the new work.
+
 For a quick current picture, ask:
 
 > Give me the quick live-work overview. Then offer the deeper views I can ask for.
 
 ## Runtime and development
 
-The repository currently pins Python 3.14.7 and uv 0.12.10. msgspec provides immutable records and strict JSON decoding at repository boundaries. uv manages Python installation, the project environment, Python dependencies, the checked-in Python lockfile, and Python command execution.
+The repository currently pins Python 3.14.7 and uv 0.12.10. msgspec provides immutable records and strict JSON decoding at repository boundaries. uv manages Python installation, the project environment, Python dependencies, the checked-in Python lockfile, and Python command execution. The installed plugin launcher runs the package from its already prepared cached environment; a source checkout falls back to its locked development environment. Users should not need to select a uv cache directory or tolerate dependency-update warnings during ordinary installed use.
 
 jscpd is the sole non-Python development tool. It requires Node.js 18 or newer and npm, but no global package installation. Install the pinned native binary into this repository's ignored `node_modules/` directory:
 

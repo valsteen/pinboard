@@ -64,6 +64,7 @@ class _TransitionArguments(msgspec.Struct, frozen=True):
     expected_revision: str
     payload: Path
     subject_revision: str | None
+    json: bool
 
 
 class _ProjectTransitionArguments(
@@ -163,6 +164,7 @@ def _decode_transition[RawT](values: dict[str, RawT]) -> cli_commands.Transition
                 task_id=arguments.task_id,
                 host_id=arguments.host_id,
                 subject_revision=arguments.subject_revision,
+                json=arguments.json,
             )
         case _AttemptTransitionArguments():
             return cli_commands.AttemptTransitionCommand(
@@ -172,6 +174,7 @@ def _decode_transition[RawT](values: dict[str, RawT]) -> cli_commands.Transition
                 payload=arguments.payload,
                 lease_id=arguments.lease_id,
                 subject_revision=arguments.subject_revision,
+                json=arguments.json,
             )
         case _PreparationTransitionArguments():
             return cli_commands.PreparationTransitionCommand(
@@ -181,6 +184,7 @@ def _decode_transition[RawT](values: dict[str, RawT]) -> cli_commands.Transition
                 payload=arguments.payload,
                 lease_id=arguments.lease_id,
                 subject_revision=arguments.subject_revision,
+                json=arguments.json,
             )
         case _ as unreachable:
             assert_never(unreachable)
@@ -273,11 +277,22 @@ def _add_attempt_parser(commands: argparse._SubParsersAction[argparse.ArgumentPa
     status.add_argument("--attempt-id", required=True)
     status.add_argument("--json", action="store_true")
     _select_command(status, cli_commands.AttemptStatusCommand)
+    inspect = operations.add_parser("inspect", help="Read the exact attempt and its current continuation.")
+    inspect.add_argument("--attempt-id", required=True)
+    inspect.add_argument("--json", action="store_true")
+    _select_command(inspect, cli_commands.AttemptInspectCommand)
 
 
-def _add_preparation_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def _add_preparation_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # noqa: PLR0915 - complete preparation grammar
     preparation = commands.add_parser("preparation", help="Manage a renewable ready-item preparation claim.")
     operations = preparation.add_subparsers(required=True)
+    start = operations.add_parser("start", help="Claim the current eligible definition atomically.")
+    start.add_argument("--item-id", required=True)
+    start.add_argument("--task-id", required=True)
+    start.add_argument("--host-id", required=True)
+    start.add_argument("--ttl-seconds", required=True, type=int)
+    start.add_argument("--json", action="store_true")
+    _select_command(start, cli_commands.PreparationStartCommand)
     acquire = operations.add_parser("acquire")
     acquire.add_argument("--item-id", required=True)
     acquire.add_argument("--expected-project-revision", required=True)
@@ -416,7 +431,7 @@ def _add_brief_parser(commands: argparse._SubParsersAction[argparse.ArgumentPars
     _select_command(publish, cli_commands.BriefPublishCommand)
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - complete top-level grammar
     parser = argparse.ArgumentParser(prog="pinboard", description="Inspect and transition one pinboard.")
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--project-root", type=Path, help="Select the exact source checkout for authority reads.")
@@ -450,8 +465,14 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
     transition.add_argument("--payload", required=True, type=Path)
+    transition.add_argument("--json", action="store_true")
     _select_command(transition, _CompoundCommand.TRANSITION)
     dispatch = commands.add_parser("dispatch", help="Prepare or verify a canonical worker launch.")
+    review_job = commands.add_parser("review-job", help="Render a read-only job for the exact review candidate.")
+    review_job.add_argument("--attempt-id", required=True)
+    review_job.add_argument("--candidate-revision", required=True)
+    review_job.add_argument("--json", action="store_true")
+    _select_command(review_job, cli_commands.ReviewJobCommand)
     dispatch.add_argument("--action-id", required=True, help="Exact dispatch action returned by project actions.")
     dispatch.add_argument("--expected-revision", required=True, help="Ledger revision from the dispatch action.")
     dispatch.add_argument("--task-id", required=True)

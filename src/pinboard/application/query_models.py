@@ -5,7 +5,42 @@ from typing import Literal
 import msgspec
 
 from pinboard.application import stored_state
-from pinboard.domain import authority_models, work_models
+from pinboard.domain import authority_models, decision_models, work_models
+
+
+class ActionContinuation(msgspec.Struct, tag="action", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    action_id: str
+    action_kind: decision_models.ActionKind
+    condition: str
+
+
+class ReviewContinuation(
+    msgspec.Struct, tag="review-subagent", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    required_capability: Literal["runtime-subagent"] = "runtime-subagent"
+
+
+class DependencyContinuation(
+    msgspec.Struct, tag="wait-for-dependencies", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    dependencies: tuple[str, ...]
+
+
+class AttemptContinuation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-attempt-continuation/v1"]
+    attempt_id: str
+    item_id: str
+    revision: int
+    state: work_models.AttemptState
+    owner_task_id: str | None
+    terminal: bool
+    user_input_required: bool
+    next_operation: ActionContinuation | ReviewContinuation | DependencyContinuation | None
+    legal_actions: tuple[str, ...]
+    forbidden_routes: tuple[Literal["create-user-task", "wake-user-task", "return-ownership-to-parent"], ...]
+
 
 type ItemStatusSchema = Literal["pinboard-item-status/v1"]
 type ItemStatusAuthority = Literal["sqlite-v4"]

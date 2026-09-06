@@ -241,7 +241,7 @@ DIAGRAM = Diagram(
             "evidence",
             "Review candidate",
             "Exact result under review",
-            ("candidate id · accepted evidence",),
+            ("candidate id · accepted evidence", "derived review job is read-only"),
             (),
             890,
             780,

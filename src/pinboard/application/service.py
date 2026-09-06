@@ -17,7 +17,7 @@ from pinboard.application.mutations import (
     project_checkpoint_acceptance_mutation,
     project_transition_mutation,
 )
-from pinboard.application.ports import WorkStore
+from pinboard.application.ports import WorkStore, WorkTransaction
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.authority_decisions import (
     decide_attempt_authority,
@@ -32,6 +32,7 @@ from pinboard.domain.identifiers import (
     HistorySubjectId,
     HostId,
     ItemId,
+    LeaseId,
     TaskId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
@@ -192,7 +193,86 @@ def decide_and_commit_preparation_authority_change(
     store: WorkStore,
     requested_change: authority_models.PreparationAuthorityOperation,
 ) -> DecisionResult[MutationReceipt]:
-    """Reread locked state, decide, and commit one preparation-authority change."""
+    """Reread locked state, decide, and commit one exact preparation change."""
+
+    with store.write() as transaction:
+        committed = _commit_preparation_authority_change(transaction, transaction.snapshot(), requested_change)
+        if isinstance(committed, DecisionFailure):
+            return committed
+        receipt, _lease = committed
+        return receipt
+
+
+def start_preparation(
+    store: WorkStore,
+    *,
+    item_id: ItemId,
+    task_id: TaskId,
+    host_id: HostId,
+    lease_id: LeaseId,
+    acquired_at: datetime,
+    expires_at: datetime,
+) -> DecisionResult[authority_models.PreparationLeaseAuthority]:
+    """Select current initial acquisition or inactive transfer under one write lock."""
+
+    with store.write() as transaction:
+        locked_state = transaction.snapshot()
+        snapshot = project_decision_snapshot(locked_state, acquired_at)
+        retained = _project_retained_preparation_authority(locked_state, item_id)
+        if retained is None:
+            definition = snapshot.definition(item_id)
+            subject_revision = snapshot.subject_revision(item_id)
+            if definition is None or subject_revision is None:
+                return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item_id}' has no definition.")
+            requested_change = authority_models.AcquireInitialPreparationAuthority(
+                snapshot.host_epoch,
+                item_id,
+                snapshot.revision,
+                subject_revision,
+                definition.revision,
+                definition.digest,
+                task_id,
+                host_id,
+                lease_id,
+                acquired_at,
+                expires_at,
+            )
+        else:
+            state = retained.state
+            if state == authority_models.PreparationLeaseStatus.ACTIVE and retained.expires_at <= acquired_at:
+                state = authority_models.PreparationLeaseStatus.EXPIRED
+            requested_change = authority_models.TransferPreparationAuthority(
+                authority_models.InactivePreparationAuthority(
+                    retained.host_epoch,
+                    retained.item,
+                    retained.definition_revision,
+                    retained.definition_digest,
+                    retained.task_id,
+                    retained.host_id,
+                    retained.lease_id,
+                    retained.generation,
+                    retained.expires_at,
+                    state,
+                ),
+                task_id,
+                host_id,
+                lease_id,
+                acquired_at,
+                expires_at,
+            )
+        committed = _commit_preparation_authority_change(transaction, locked_state, requested_change)
+        if isinstance(committed, DecisionFailure):
+            return committed
+        _receipt, lease = committed
+        return lease
+
+
+def _commit_preparation_authority_change(
+    transaction: WorkTransaction,
+    locked_state: stored_state.StoredWorkState,
+    requested_change: authority_models.PreparationAuthorityOperation,
+) -> DecisionResult[tuple[MutationReceipt, authority_models.PreparationLeaseAuthority]]:
+    """Decide and persist inside the caller's existing transaction."""
 
     match requested_change:
         case authority_models.AcquireInitialPreparationAuthority(
@@ -218,50 +298,51 @@ def decide_and_commit_preparation_authority_change(
             history_outcome = "revoke-preparation-authority"
         case _ as unreachable:
             assert_never(unreachable)
-    with store.write() as transaction:
-        locked_state = transaction.snapshot()
-        decision_context = project_decision_snapshot(locked_state, decided_at)
-        generation_before = next(
-            (
-                value.generation_high_water
-                for value in locked_state.authority.preparation_counters
-                if value.item_id == item_id
-            ),
-            0,
-        )
-        decision_result = decide_preparation_authority(
-            retained=_project_retained_preparation_authority(locked_state, item_id),
-            counter=generation_before,
-            operation=requested_change,
-            snapshot=decision_context,
-            now=decided_at,
-        )
-        if isinstance(decision_result, DecisionFailure):
-            return decision_result
-        accepted_decision = decision_result
-        proposed_replacement = accepted_decision.proposed_replacement
-        transition_receipt = decision_models.TransitionReceipt(
-            action_id=ActionId(f"continue:preparation-authority:{item_id}:{proposed_replacement.generation}"),
-            item=item_id,
-            outcome=history_outcome,
-            evidence=None,
-            decided_at=decided_at,
-        )
-        mutation_receipt = MutationReceipt(
-            transition=transition_receipt,
-            history_id=_next_history_id(locked_state),
-            project_revision=locked_state.lifecycle.project.revision + 1,
-            action_kind=decision_models.ActionKind.CONTINUE,
-            subject_id=HistorySubjectId(item_id),
-            artifact_ref_id=None,
-            authorization=decision_models.AuthorizationKind.PREPARATION,
-            actor_task_id=actor_task_id,
-            actor_host_id=actor_host_id,
-            input_schema="preparation-authority/v1",
-            input_payload=work_models.CanonicalJson(b"{}"),
-        )
-        mutation = PreparationAuthorityMutation(receipt=mutation_receipt, decision=accepted_decision)
-        return transaction.commit(mutation)
+    decision_context = project_decision_snapshot(locked_state, decided_at)
+    generation_before = next(
+        (
+            value.generation_high_water
+            for value in locked_state.authority.preparation_counters
+            if value.item_id == item_id
+        ),
+        0,
+    )
+    decision_result = decide_preparation_authority(
+        retained=_project_retained_preparation_authority(locked_state, item_id),
+        counter=generation_before,
+        operation=requested_change,
+        snapshot=decision_context,
+        now=decided_at,
+    )
+    if isinstance(decision_result, DecisionFailure):
+        return decision_result
+    accepted_decision = decision_result
+    proposed_replacement = accepted_decision.proposed_replacement
+    transition_receipt = decision_models.TransitionReceipt(
+        action_id=ActionId(f"continue:preparation-authority:{item_id}:{proposed_replacement.generation}"),
+        item=item_id,
+        outcome=history_outcome,
+        evidence=None,
+        decided_at=decided_at,
+    )
+    mutation_receipt = MutationReceipt(
+        transition=transition_receipt,
+        history_id=_next_history_id(locked_state),
+        project_revision=locked_state.lifecycle.project.revision + 1,
+        action_kind=decision_models.ActionKind.CONTINUE,
+        subject_id=HistorySubjectId(item_id),
+        artifact_ref_id=None,
+        authorization=decision_models.AuthorizationKind.PREPARATION,
+        actor_task_id=actor_task_id,
+        actor_host_id=actor_host_id,
+        input_schema="preparation-authority/v1",
+        input_payload=work_models.CanonicalJson(b"{}"),
+    )
+    mutation = PreparationAuthorityMutation(receipt=mutation_receipt, decision=accepted_decision)
+    committed = transaction.commit(mutation)
+    if isinstance(committed, DecisionFailure):
+        return committed
+    return committed, proposed_replacement
 
 
 def create_proposal(

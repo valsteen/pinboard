@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -11,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+import msgspec
 from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files import views as file_views
@@ -30,7 +32,7 @@ from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
 from pinboard.interfaces import transitions as transition_interface
-from pinboard.interfaces import work_brief_models
+from pinboard.interfaces import work_brief_models, work_inspection_models
 from pinboard.interfaces.cli import build_parser, main
 from pinboard.interfaces.errors import WorkBriefError, WorkBriefErrorCode
 from pinboard.interfaces.work_briefs import canonical_work_brief_bytes
@@ -91,7 +93,9 @@ class CliTest(unittest.TestCase):
             self.fail("JSON value must be an integer")
         return value
 
-    def run_transition(self, common: tuple[str, ...], action: JsonObject, payload: Path) -> tuple[int, str, str]:
+    def run_transition(
+        self, common: tuple[str, ...], action: JsonObject, payload: Path, *, json_output: bool = False
+    ) -> tuple[int, str, str]:
         arguments = [
             *common,
             "transition",
@@ -111,7 +115,25 @@ class CliTest(unittest.TestCase):
         else:
             arguments.extend(("--task-id", "project-task", "--host-id", "studio"))
         arguments.extend(("--payload", str(payload)))
-        return self.run_cli(*arguments)
+        if json_output:
+            arguments.append("--json")
+        result, stdout, stderr = self.run_cli(*arguments)
+        if result == 0 and json_output:
+            transition = msgspec.json.decode(stdout, type=work_inspection_models.TransitionView)
+            if transition.continuation is not None:
+                inspected = self.run_json_cli(
+                    *common, "attempt", "inspect", "--attempt-id", transition.continuation.attempt_id
+                )
+                self.assertEqual(
+                    json.loads(msgspec.json.encode(work_inspection_models.AttemptView(transition.continuation))),
+                    inspected,
+                )
+        elif result == 0 and "\n{" in stdout:
+            encoded = stdout[stdout.index("\n{") + 1 :].encode()
+            view = msgspec.json.decode(encoded, type=work_inspection_models.AttemptView)
+            inspected = self.run_json_cli(*common, "attempt", "inspect", "--attempt-id", view.continuation.attempt_id)
+            self.assertEqual(json.loads(encoded), inspected)
+        return result, stdout, stderr
 
     def project_action(self, common: tuple[str, ...], action_id: str) -> JsonObject:
         return self.json_object(
@@ -472,6 +494,130 @@ class CliTest(unittest.TestCase):
             ),
         )
 
+    def test_preparation_start_selects_current_definition_and_transfers_inactive_claims(self) -> None:
+        for retained_status in (None, "expired", "released", "revoked"):
+            with self.subTest(retained_status=retained_status):
+                state = complete_sqlite_state()
+                if retained_status is not None:
+                    state = self.prepared_state(SQLITE_NOW + timedelta(minutes=1))
+                    if retained_status != "expired":
+                        state = replace(
+                            state,
+                            authority=replace(
+                                state.authority,
+                                preparation_leases=(
+                                    replace(
+                                        state.authority.preparation_leases[0],
+                                        state=authority_models.PreparationLeaseStatus(retained_status),
+                                    ),
+                                ),
+                            ),
+                        )
+                project, work, store = self.initialized_state(state)
+                common = ("--project-root", str(project), "--work-root", str(work))
+                started = self.run_json_cli(
+                    *common,
+                    "preparation",
+                    "start",
+                    "--item-id",
+                    "work-c",
+                    "--task-id",
+                    "new-preparer",
+                    "--host-id",
+                    "studio",
+                    "--ttl-seconds",
+                    "300",
+                )
+                fresh = SQLiteWorkStore(work / "state.sqlite3").snapshot()
+                definition = next(value for value in fresh.lifecycle.definition_revisions if value.item_id == "work-c")
+                self.assertEqual(definition.digest, started["definition_digest"])
+                self.assertEqual(definition.revision, started["definition_revision"])
+                self.assertEqual("new-preparer", started["task_id"])
+                self.assertEqual(1 if retained_status is None else 2, started["generation"])
+                before = store.snapshot()
+                rejected, _, _ = self.run_cli(
+                    *common,
+                    "preparation",
+                    "start",
+                    "--item-id",
+                    "work-c",
+                    "--task-id",
+                    "racing-preparer",
+                    "--host-id",
+                    "studio",
+                    "--ttl-seconds",
+                    "300",
+                )
+                self.assertEqual(11, rejected)
+                self.assertEqual(before, store.snapshot())
+                self.run_cli_parse_error(
+                    *common,
+                    "preparation",
+                    "start",
+                    "--item-id",
+                    "work-c",
+                    "--task-id",
+                    "new-preparer",
+                    "--host-id",
+                    "studio",
+                    "--ttl-seconds",
+                    "0",
+                )
+
+    def test_ordinary_preparation_start_rejects_unknown_or_ineligible_items_without_change(self) -> None:
+        state = complete_sqlite_state()
+        state = with_definition_dependencies(state, ItemId("work-c"), (ItemId("intake-work"),))
+        project, work, store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        before = store.snapshot()
+        for item_id in ("unknown", "work-a", "work-c", "intake-work"):
+            with self.subTest(item=item_id):
+                result, _, _ = self.run_cli(
+                    *common,
+                    "preparation",
+                    "start",
+                    "--item-id",
+                    item_id,
+                    "--task-id",
+                    "preparer",
+                    "--host-id",
+                    "host-a",
+                    "--ttl-seconds",
+                    "300",
+                )
+                self.assertEqual(11, result)
+                self.assertEqual(before, store.snapshot())
+
+    def test_active_definition_replacement_requires_pause_before_rebinding(self) -> None:
+        project, work, store = self.initialized_state(complete_sqlite_state())
+        common = ("--project-root", str(project), "--work-root", str(work))
+        definition, digest = test_definition(ItemId("work-a"))
+        payload = self.write_item_revision(
+            project / "active-definition.json",
+            ItemId("work-a"),
+            1,
+            digest,
+            definition,
+            objective="Follow the new accepted target.",
+        )
+        result, stdout, stderr = self.run_transition(
+            common, self.project_action(common, "revise-item:work-a"), payload, json_output=True
+        )
+        self.assertEqual(0, result, stderr)
+        continuation = self.json_object(json.loads(stdout)["continuation"])
+        self.assertEqual("active", continuation["state"])
+        self.assertEqual("pause", self.json_object(continuation["next_operation"])["action_kind"])
+        self.assertEqual(work_a_brief(project).owner_task_id, continuation["owner_task_id"])
+        before = store.snapshot()
+        attempt = next(value for value in before.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
+        brief = next(
+            value for value in before.artifact_references if value.artifact_ref_id == attempt.brief_artifact_ref_id
+        )
+        (work / brief.selector).unlink()
+        rejected, _, _ = self.run_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1")
+        self.assertEqual(11, rejected)
+        self.assertEqual(before, store.snapshot())
+
     def test_current_command_surface_lists_every_command(self) -> None:
         parser = build_parser()
         help_text = parser.format_help()
@@ -493,6 +639,7 @@ class CliTest(unittest.TestCase):
             "attempt",
             "preparation",
             "parallel",
+            "review-job",
             "views",
         ):
             self.assertIn(retained, help_text)
@@ -792,6 +939,15 @@ class CliTest(unittest.TestCase):
         }
         self.assertTrue(set(before_actions).isdisjoint(after_ids))
         after_revision = store.snapshot()
+        continuation = self.json_object(
+            self.run_json_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1")["continuation"]
+        )
+        self.assertEqual("return-for-correction", self.json_object(continuation["next_operation"])["action_kind"])
+        rejected, _, _ = self.run_cli(
+            *common, "review-job", "--attempt-id", "work-a-1", "--candidate-revision", "candidate-review"
+        )
+        self.assertEqual(11, rejected)
+        self.assertEqual(after_revision, store.snapshot())
         payloads = {
             "accept-checkpoint:work-a-1": '{"checkpoint":"checkpoint-a","candidate":"candidate-review","evidence":"accepted"}',
             "accept-review-and-continue:work-a-1": '{"candidate":"candidate-review","evidence":"accepted"}',
@@ -1293,12 +1449,13 @@ class CliTest(unittest.TestCase):
             transition_clock.now.side_effect = (
                 activation_expiry - timedelta(microseconds=2),
                 activation_expiry - timedelta(microseconds=1),
+                activation_expiry,
             )
             result, _stdout, stderr = self.run_transition(common, activation, payload)
         self.assertEqual(0, result, stderr)
         self.assertIn("generated views need repair", stderr)
         self.assertEqual(1, selection_clock.now.call_count)
-        self.assertEqual(2, transition_clock.now.call_count)
+        self.assertEqual(3, transition_clock.now.call_count)
         self.assertEqual(
             "revoked", self.run_json_cli(*common, "preparation", "status", "--item-id", "work-c")["status"]
         )
@@ -2787,7 +2944,7 @@ Not launchable:
         self.assertIn("pinboard attempt acquire", identifier_stderr)
         self.assertIn("$.task_id", identifier_stderr)
 
-    def test_direct_transition_selects_exact_worker_capability(self) -> None:
+    def test_direct_transition_selects_exact_worker_capability(self) -> None:  # noqa: PLR0915 - one submit and read-only review journey
         state = complete_sqlite_state()
         now = datetime.now(UTC)
         state = replace(
@@ -2833,6 +2990,45 @@ Not launchable:
         self.assertEqual(0, result, stderr)
         self.assertIn("OK TRANSITION_APPLIED submit-review:work-a-1", stdout)
 
+        inspected = self.run_json_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1")
+        continuation = self.json_object(inspected["continuation"])
+        self.assertEqual("review", continuation["state"])
+        self.assertFalse(continuation["terminal"])
+        self.assertFalse(continuation["user_input_required"])
+        self.assertEqual(work_a_brief(project).owner_task_id, continuation["owner_task_id"])
+        self.assertEqual("review-subagent", self.json_object(continuation["next_operation"])["kind"])
+        self.assertEqual("candidate-cli-direct", self.json_object(continuation["next_operation"])["candidate_revision"])
+        before_review_job = SQLiteWorkStore(work / "state.sqlite3").snapshot()
+        self.assertIsNone(before_review_job.lifecycle.attempts[0].result_artifact_ref_id)
+        review_arguments = (
+            *common,
+            "review-job",
+            "--attempt-id",
+            "work-a-1",
+            "--candidate-revision",
+            "candidate-cli-direct",
+        )
+        missing, _, _ = self.run_cli(*review_arguments)
+        self.assertEqual(11, missing)
+        result_path = work / "attempts" / "work-a-1" / "result.md"
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text("Candidate evidence.\n", encoding="utf-8")
+        job = self.run_json_cli(*review_arguments)
+        self.assertEqual(str(result_path), job["result_path"])
+        self.assertEqual(hashlib.sha256(result_path.read_bytes()).hexdigest(), job["result_sha256"])
+        self.assertEqual("candidate-cli-direct", job["candidate_revision"])
+        self.assertEqual(before_review_job, SQLiteWorkStore(work / "state.sqlite3").snapshot())
+        result_path.write_text("", encoding="utf-8")
+        empty, _, _ = self.run_cli(*review_arguments)
+        self.assertEqual(11, empty)
+        result_path.unlink()
+        result_path.mkdir()
+        unreadable, _, _ = self.run_cli(*review_arguments)
+        self.assertEqual(11, unreadable)
+        mismatch, _, _ = self.run_cli(*review_arguments[:-1], "different-candidate")
+        self.assertEqual(11, mismatch)
+        self.assertEqual(before_review_job, SQLiteWorkStore(work / "state.sqlite3").snapshot())
+
         invalid_cases = (
             (("--action-id", "invalid"), "ACTION_ID_INVALID"),
             (
@@ -2871,7 +3067,7 @@ Not launchable:
                 self.assertEqual(11, invalid_result)
                 self.assertIn(code, invalid_stderr)
 
-    def test_review_acceptance_and_continuation_uses_the_exact_project_capability(self) -> None:
+    def test_review_acceptance_and_correction_continue_in_the_same_attempt(self) -> None:
         state = complete_sqlite_state()
         now = datetime.now(UTC)
         state = replace(
@@ -2903,33 +3099,65 @@ Not launchable:
                 ),
             ),
         )
-        project, work, store = self.initialized_state(state)
+        for action_id, value in (
+            ("accept-review-and-continue:work-a-1", '{"candidate":"candidate-cli-review","evidence":"accepted"}'),
+            ("return-for-correction:work-a-1", '{"reason":"Correct the candidate."}'),
+        ):
+            with self.subTest(action=action_id):
+                project, work, store = self.initialized_state(state)
+                common = ("--project-root", str(project), "--work-root", str(work))
+                action = self.project_action(common, action_id)
+                payload = project / "review-disposition.json"
+                payload.write_text(value, encoding="utf-8")
+                result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
+                self.assertEqual(0, result, stderr)
+                rendered = msgspec.json.decode(stdout, type=work_inspection_models.TransitionView)
+                self.assertIsNotNone(rendered.continuation)
+                assert rendered.continuation is not None
+                self.assertEqual(work_a_brief(project).owner_task_id, rendered.continuation.owner_task_id)
+                self.assertEqual(work_models.AttemptState.ACTIVE, rendered.continuation.state)
+                reloaded = store.snapshot()
+                attempt = next(
+                    value for value in reloaded.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1")
+                )
+                self.assertEqual(work_models.AttemptState.ACTIVE, attempt.state)
+                self.assertIsNone(attempt.candidate_revision)
+                rejected, _, _ = self.run_cli(
+                    *common, "review-job", "--attempt-id", "work-a-1", "--candidate-revision", "candidate-cli-review"
+                )
+                self.assertEqual(11, rejected)
+                self.assertEqual(reloaded, store.snapshot())
+
+    def test_completion_continuation_is_terminal_and_inspection_is_read_only(self) -> None:
+        project, work, store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))
-        exact = self.json_list(
-            self.run_json_cli(
-                *common,
-                "actions",
-                "--role",
-                "project",
-                "--action-id",
-                "accept-review-and-continue:work-a-1",
-            )["actions"]
-        )
-        action = self.json_object(exact[0])
-        payload = project / "accept-review-and-continue.json"
-        payload.write_text(
-            '{"candidate":"candidate-cli-review","evidence":"accepted through the CLI"}\n',
-            encoding="utf-8",
-        )
-
-        result, stdout, stderr = self.run_transition(common, action, payload)
-
+        action = self.project_action(common, "complete:work-a-1")
+        payload = project / "complete.json"
+        payload.write_text('{"evidence":"All accepted work is complete."}', encoding="utf-8")
+        with patch(
+            "pinboard.interfaces.work_views.read_attempt_brief_views",
+            side_effect=WorkBriefError(WorkBriefErrorCode.BRIEF_INVALID, "injected view failure"),
+        ):
+            result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
         self.assertEqual(0, result, stderr)
-        self.assertIn("OK TRANSITION_APPLIED accept-review-and-continue:work-a-1", stdout)
-        reloaded = store.snapshot()
-        attempt = next(value for value in reloaded.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
-        self.assertEqual(work_models.AttemptState.ACTIVE, attempt.state)
-        self.assertIsNone(attempt.candidate_revision)
+        self.assertIn("injected view failure", stderr)
+        rendered = msgspec.json.decode(stdout, type=work_inspection_models.TransitionView)
+        continuation = rendered.continuation
+        assert continuation is not None
+        self.assertEqual(work_models.AttemptState.DONE, continuation.state)
+        self.assertTrue(continuation.terminal)
+        self.assertIsNone(continuation.owner_task_id)
+        self.assertIsNone(continuation.next_operation)
+        self.assertEqual((), continuation.legal_actions)
+        before = store.snapshot()
+        for arguments in (
+            ("attempt", "inspect", "--attempt-id", "unknown"),
+            ("review-job", "--attempt-id", "work-a-1", "--candidate-revision", "candidate"),
+            ("review-job", "--attempt-id", "unknown", "--candidate-revision", "candidate"),
+        ):
+            rejected, _, _ = self.run_cli(*common, *arguments)
+            self.assertEqual(11, rejected)
+            self.assertEqual(before, store.snapshot())
 
     def test_direct_transition_reports_its_own_revision_across_a_disjoint_commit(self) -> None:
         state = complete_sqlite_state()
@@ -3035,7 +3263,7 @@ Not launchable:
             encoding="utf-8",
         )
         common = ("--project-root", str(project), "--work-root", str(work))
-        before_revision = store.snapshot().lifecycle.project.revision
+        before = store.snapshot()
 
         proposal_arguments = (
             *common,
@@ -3053,7 +3281,21 @@ Not launchable:
         self.assertEqual(0, result, stderr)
         self.assertIn("OK PROPOSAL_CREATED cli-sqlite-proposal", stdout)
         after = SQLiteWorkStore(work / "state.sqlite3").snapshot()
-        self.assertEqual(before_revision + 1, after.lifecycle.project.revision)
+        self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
+        self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
+        self.assertEqual(before.authority, after.authority)
+        self.assertEqual(
+            before.lifecycle.definition_revisions,
+            tuple(
+                value
+                for value in after.lifecycle.definition_revisions
+                if value.item_id != ItemId("cli-sqlite-proposal")
+            ),
+        )
+        self.assertEqual(
+            before.lifecycle.work_items,
+            tuple(value for value in after.lifecycle.work_items if value.item_id != ItemId("cli-sqlite-proposal")),
+        )
         persisted_proposal = next(
             value for value in after.proposals.proposals if str(value.proposal_id) == "cli-sqlite-proposal"
         )

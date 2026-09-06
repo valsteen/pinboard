@@ -41,7 +41,7 @@ For each selected change, start from a realistic user-level request and record:
 
 Trace outward from the authority and backward from likely entry points. Record plausible wrong paths, missing links, duplicated decisions, projection/authority confusion, and places that require repository history or tribal knowledge. Keep unresolved intent visible instead of guessing.
 
-When a command, closed family, or dynamic route makes the next implementation owner difficult to predict, read [developer-navigation.md](references/developer-navigation.md). When code and its overview tell different stories, names make false promises, or a newcomer cannot accurately retell the flow, read [storytelling-readability.md](references/storytelling-readability.md). Load neither reference for an ordinary authority trace that does not need its lens.
+When a selected change extends a decision surface with interacting conditions or operations, read [Preserve independent decision gates](references/developer-navigation.md#preserve-independent-decision-gates). When a command, closed family, or dynamic route makes the next implementation owner difficult to predict, read the full [developer-navigation.md](references/developer-navigation.md) routing audit. When code and its overview tell different stories, names make false promises, or a newcomer cannot accurately retell the flow, read [storytelling-readability.md](references/storytelling-readability.md). Load none of these references for an ordinary authority trace that does not need their lens.
 
 ## Present the diagnosis
 

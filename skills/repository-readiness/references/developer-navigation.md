@@ -91,6 +91,14 @@ Choose one plausible sibling with the same boundary and lifecycle shape. List ev
 
 Keep exhaustive branching where a closed boundary or owner genuinely distinguishes the family. Use direct calls or a required protocol when the caller should not distinguish implementations. Use dynamic dispatch only for a deliberately open family with one visible wiring owner, an explicit required surface, and explicit failure for missing support. Do not hide incomplete handling behind a catch-all, mapping default, optional callback, inherited implementation, or fallback handler.
 
+## Preserve independent decision gates
+
+Use this method when a change extends behavior whose availability or effect interacts with conditions on the same or neighboring behaviors. Before editing, enumerate the relevant existing conditions, such as permission, readiness, dependency, freshness, feature, or environment checks. Trace the changed behavior and at least one sibling from their decision owner to observable effects. A new permission for one behavior does not relax another condition unless accepted product scope explicitly changes it.
+
+Seek the cheapest mixed counterexample where the new behavior is allowed while an independently gated sibling remains forbidden. When several conditions and operations interact, a small condition/operation table or state/action matrix can make that case visible. Do not impose a matrix or state-machine model on ordinary code with no such conditional interaction.
+
+Preserve the distinction with one focused observable test at the cheapest real boundary, or with the cheapest equivalent static or integration evidence when a test is not appropriate. Stop when each behavior remains governed by its own conditions and the mixed counterexample would fail if the implementation accidentally coupled them.
+
 ## Mock example: CLI leaf routing
 
 Suppose one command currently travels through:

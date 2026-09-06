@@ -35,6 +35,7 @@ from pinboard.domain.decisions import (
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import (
+    ArtifactRefId,
     AttemptId,
     CandidateId,
     CheckpointId,
@@ -62,6 +63,33 @@ def _commit_same_pause(
     action = next(value for value in actions if value.kind == decision_models.ActionKind.PAUSE)
     assert isinstance(action, decision_models.PauseAction)
     selected_command = decision_models.PauseCommand(action, work_models.ReasonInput("Concurrent pause."))
+    decision = expect_success(decide(snapshot, selected_command, SQLITE_NOW))
+    assert isinstance(decision, decision_models.TransitionDecision)
+    mutation = project_transition_mutation(before, decision, TaskId("project-task"), HostId("host-a"))
+    barrier.wait()
+    with store.write() as transaction:
+        result = transaction.commit(mutation)
+    results.put(result.code.value if isinstance(result, DecisionFailure) else "committed")
+
+
+def _commit_same_rebind(
+    database_path: str,
+    barrier: Barrier,
+    results: multiprocessing.queues.Queue[str],
+) -> None:
+    store = SQLiteWorkStore(Path(database_path))
+    before = store.snapshot()
+    snapshot = project_decision_snapshot(before, SQLITE_NOW)
+    actor = decision_models.ActorAuthority(decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0)
+    actions = expect_success(available_actions(snapshot, actor))
+    action = next(value for value in actions if value.kind == decision_models.ActionKind.REBIND_ATTEMPT)
+    assert isinstance(action, decision_models.RebindAttemptAction)
+    selected_command = decision_models.RebindAttemptCommand(
+        action,
+        work_models.RebindAttemptInput(
+            AttemptId("work-a-1"), "codex/corrected-work-a", "corrected-base", ArtifactRefId(99)
+        ),
+    )
     decision = expect_success(decide(snapshot, selected_command, SQLITE_NOW))
     assert isinstance(decision, decision_models.TransitionDecision)
     mutation = project_transition_mutation(before, decision, TaskId("project-task"), HostId("host-a"))
@@ -442,6 +470,49 @@ class SQLiteConcurrencyTest(unittest.TestCase):
 
         self.assertCountEqual(("committed", "ACTION_NOT_AVAILABLE"), (results.get(), results.get()))
         self.assertEqual(13, store.snapshot().lifecycle.project.revision)
+
+    def test_concurrent_rebind_commits_lineage_and_fence_once(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        roots = resolve_durable_roots(project)
+        initialize_database(roots, SQLITE_NOW)
+        store = SQLiteWorkStore(roots.database_path)
+        state = complete_sqlite_state()
+        replacement = replace(
+            state.artifact_references[0],
+            artifact_ref_id=ArtifactRefId(99),
+            key="work-a-rebound-brief",
+            selector="artifacts/briefs/work-a-rebound-brief/1.opaque",
+            content_sha256="b" * 64,
+        )
+        initialize_store(store, replace(state, artifact_references=(*state.artifact_references, replacement)))
+
+        context = multiprocessing.get_context("spawn")
+        barrier = context.Barrier(2)
+        results = context.Queue()
+        workers = tuple(
+            context.Process(target=_commit_same_rebind, args=(str(roots.database_path), barrier, results))
+            for _ in range(2)
+        )
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=10)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(0, worker.exitcode)
+
+        self.assertCountEqual(("committed", "ACTION_NOT_AVAILABLE"), (results.get(), results.get()))
+        rebound = SQLiteWorkStore(roots.database_path).snapshot()
+        self.assertEqual(13, rebound.lifecycle.project.revision)
+        self.assertEqual(
+            ("codex/corrected-work-a", "corrected-base", 99),
+            (
+                rebound.lifecycle.attempts[0].branch,
+                rebound.lifecycle.attempts[0].base_revision,
+                rebound.lifecycle.attempts[0].brief_artifact_ref_id,
+            ),
+        )
+        self.assertEqual(4, rebound.authority.attempt_counters[0].generation_high_water)
+        self.assertEqual(authority_models.AttemptLeaseStatus.REVOKED, rebound.authority.attempt_leases[0].state)
 
     def test_concurrent_checkpoint_acceptance_commits_both_references_once(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

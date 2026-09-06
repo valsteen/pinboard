@@ -53,6 +53,7 @@ class ActionSubjectKind(Enum):
 class ActionLifecyclePrecondition(Enum):
     ACTIVE_ATTEMPT = "active-attempt"
     ACTIVE_ATTEMPT_CURRENT_SCOPE = "active-attempt-current-scope"
+    ACTIVE_OR_PAUSED_ATTEMPT_CURRENT_SCOPE = "active-or-paused-attempt-current-scope"
     ACTIVE_OR_REVIEW_ATTEMPT_CURRENT_SCOPE = "active-or-review-attempt-current-scope"
     DEFERRED_ITEM = "deferred-item"
     INTAKE_ITEM = "intake-item"
@@ -94,6 +95,7 @@ class ActionKind(Enum):
     PAUSE = "pause"
     REJECT_PROPOSAL = "reject-proposal"
     REOPEN = "reopen"
+    REBIND_ATTEMPT = "rebind-attempt"
     REPORT_BLOCKER = "report-blocker"
     RESUME = "resume"
     RETURN_FOR_CORRECTION = "return-for-correction"
@@ -265,6 +267,15 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.DEFERRED_ITEM,
                 "Return deferred work to intake.",
+            )
+        case ActionKind.REBIND_ATTEMPT:
+            return ActionSemantics(
+                "Correct an active or paused attempt's Git lineage without restarting it.",
+                LifecycleEffect.CHANGES_LIFECYCLE,
+                (Role.PROJECT,),
+                ActionSubjectKind.ATTEMPT,
+                ActionLifecyclePrecondition.ACTIVE_OR_PAUSED_ATTEMPT_CURRENT_SCOPE,
+                "Replace the accepted branch, base revision, and brief while preserving lifecycle state and fencing prior worker authority.",
             )
         case ActionKind.RESUME:
             return ActionSemantics(
@@ -442,6 +453,12 @@ class ReopenAction:
 
 
 @dataclass(frozen=True, slots=True)
+class RebindAttemptAction:
+    capability: MutationActionCapability[AttemptId]
+    kind: ActionKind = field(init=False, default=ActionKind.REBIND_ATTEMPT)
+
+
+@dataclass(frozen=True, slots=True)
 class ReportBlockerAction:
     capability: ActionCapability[AttemptId] | MutationActionCapability[AttemptId]
     kind: ActionKind = field(init=False, default=ActionKind.REPORT_BLOCKER)
@@ -492,6 +509,7 @@ type LifecycleAction = (
     | MergeProposalAction
     | PauseAction
     | RejectProposalAction
+    | RebindAttemptAction
     | ReopenAction
     | ResumeAction
     | ReturnForCorrectionAction
@@ -513,6 +531,7 @@ type NonCheckpointTransitionAction = (
     | MergeProposalAction
     | PauseAction
     | RejectProposalAction
+    | RebindAttemptAction
     | ReopenAction
     | ResumeAction
     | ReturnForCorrectionAction
@@ -573,6 +592,12 @@ class CloseCommand:
 class ResumeCommand:
     action: ResumeAction
     value: work_models.ResumeInput
+
+
+@dataclass(frozen=True, slots=True)
+class RebindAttemptCommand:
+    action: RebindAttemptAction
+    value: work_models.RebindAttemptInput
 
 
 @dataclass(frozen=True, slots=True)
@@ -649,6 +674,7 @@ type TransitionCommand = (
     | BlockCommand
     | CompleteCommand
     | CloseCommand
+    | RebindAttemptCommand
     | ResumeCommand
     | SubmitReviewCommand
     | ReturnForCorrectionCommand
@@ -669,6 +695,7 @@ type NonCheckpointTransitionCommand = (
     | BlockCommand
     | CompleteCommand
     | CloseCommand
+    | RebindAttemptCommand
     | ResumeCommand
     | SubmitReviewCommand
     | ReturnForCorrectionCommand
@@ -767,6 +794,19 @@ class ResumeAttemptChange:
     attempt: AttemptId
     attempt_before: work_models.AttemptState
     revised_brief: RevisedAttemptBrief | None
+
+
+@dataclass(frozen=True, slots=True)
+class RebindAttemptChange:
+    item: ItemId
+    attempt: AttemptId
+    attempt_state: work_models.AttemptState
+    branch: str
+    base_revision: str
+    brief_artifact_ref_id: ArtifactRefId
+    accepted_scope_revision: int
+    accepted_scope_digest: str
+    authority_change: AttemptAuthorityChange
 
 
 @dataclass(frozen=True, slots=True)
@@ -895,6 +935,7 @@ type NonCheckpointDecisionChange = (
     | AttemptStateChange
     | BlockAttemptChange
     | BlockItemChange
+    | RebindAttemptChange
     | ResumeAttemptChange
     | ReviewSubmissionChange
     | ReviewReturnChange

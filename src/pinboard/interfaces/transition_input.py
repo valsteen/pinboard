@@ -46,6 +46,8 @@ def _input_model_or_none(kind: decision_models.ActionKind) -> transition_models.
             return transition_models.MergeProposalInputPayload
         case decision_models.ActionKind.RESUME:
             return transition_models.ResumeInputPayload
+        case decision_models.ActionKind.REBIND_ATTEMPT:
+            return transition_models.RebindAttemptInputPayload
         case decision_models.ActionKind.REVISE_ITEM:
             return transition_models.ReviseItemInputPayload
         case decision_models.ActionKind.SUBMIT_REVIEW:
@@ -116,7 +118,7 @@ def parse_item_revision_input(data: bytes | str) -> TransitionInputResult[work_m
     return _revise_item_input(payload)
 
 
-def parse_transition_command(  # noqa: C901, PLR0912 - one visible exhaustive action-to-command boundary
+def parse_transition_command(  # noqa: C901, PLR0912, PLR0915 - one visible exhaustive action-to-command boundary
     action: decision_models.Action,
     data: bytes | str,
 ) -> TransitionInputResult[decision_models.TransitionCommand]:
@@ -237,6 +239,20 @@ def parse_transition_command(  # noqa: C901, PLR0912 - one visible exhaustive ac
                 action,
                 work_models.ResumeInput(
                     None if payload.brief_artifact_ref_id is None else ArtifactRefId(payload.brief_artifact_ref_id)
+                ),
+            )
+        case decision_models.RebindAttemptAction():
+            if isinstance(
+                payload := _decode(data, transition_models.RebindAttemptInputPayload), TransitionInputFailure
+            ):
+                return payload
+            return decision_models.RebindAttemptCommand(
+                action,
+                work_models.RebindAttemptInput(
+                    AttemptId(payload.attempt),
+                    payload.branch,
+                    payload.base_revision,
+                    ArtifactRefId(payload.brief_artifact_ref_id),
                 ),
             )
         case decision_models.ReviseItemAction():

@@ -155,6 +155,7 @@ def _validate_dispatch_identity(
     brief: work_brief_models.WorkBrief,
     attempt_id: str,
     attempt_branch: str,
+    attempt_base_revision: str,
     checkpoint_id: str,
     environment: DispatchEnvironment,
     accepted_item_id: str | None,
@@ -183,6 +184,11 @@ def _validate_dispatch_identity(
             DispatchErrorCode.DISPATCH_BRANCH_MISMATCH,
             "Canonical brief, attempt, and dispatch environment branches must match.",
         )
+    if brief.base_revision != attempt_base_revision or environment.starting_revision != attempt_base_revision:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BASE_REVISION_MISMATCH,
+            "Canonical brief, attempt, and dispatch environment base revisions must match.",
+        )
     checkout = Path(environment.checkout)
     if not checkout.is_dir():
         return DispatchFailure(
@@ -205,6 +211,7 @@ def _read_dispatch_brief(
     attempt_path: Path,
     attempt_id: str,
     attempt_branch: str,
+    attempt_base_revision: str,
     source_checkout_root: Path,
     checkpoint: str,
     environment: DispatchEnvironment,
@@ -221,6 +228,7 @@ def _read_dispatch_brief(
             brief,
             attempt_id,
             attempt_branch,
+            attempt_base_revision,
             checkpoint,
             environment,
             accepted_item_id,
@@ -343,6 +351,7 @@ def prepare_dispatch(
         accepted_brief_path,
         str(selected_dispatch.attempt.attempt_id),
         selected_dispatch.attempt.branch,
+        selected_dispatch.attempt.base_revision,
         source_checkout_root,
         checkpoint,
         environment,

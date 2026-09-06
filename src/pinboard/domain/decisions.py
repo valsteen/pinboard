@@ -122,6 +122,9 @@ def _project_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory)
                         decision_models.DispatchAction(
                             factory.make(item.attempt, f"Prepare a worker launch for {item.item}")
                         ),
+                        decision_models.RebindAttemptAction(
+                            factory.make(item.attempt, f"Rebind the Git baseline for {item.item}")
+                        ),
                     )
                 )
             result.extend(
@@ -175,6 +178,17 @@ def _item_actions(
             close,
         ]
     dependencies_live = any(dependency in snapshot.items_by_id() for dependency in item.depends_on)
+    if item.state == work_models.WorkState.PAUSED and item.attempt is not None:
+        result: list[decision_models.Action] = []
+        if not _definition_stale(snapshot, item):
+            result.append(
+                decision_models.RebindAttemptAction(
+                    factory.make(item.attempt, f"Rebind the Git baseline for {item.item}")
+                )
+            )
+        if not dependencies_live:
+            result.append(decision_models.ResumeAction(factory.make(item.item, f"Return {item.item} to active")))
+        return [*result, close]
     if item.state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED} and not dependencies_live:
         target = "active" if item.attempt is not None else "ready"
         result: list[decision_models.Action] = [
@@ -645,6 +659,94 @@ def _resume(
     )
 
 
+def _rebind_attempt(
+    snapshot: LedgerSnapshot,
+    command: decision_models.RebindAttemptCommand,
+    now: datetime,
+) -> DecisionResult[decision_models.TransitionDecision]:
+    action = command.action
+    value = command.value
+    attempt_id = action.capability.subject
+    if value.attempt != attempt_id:
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "The rebind payload must name the selected attempt.",
+        )
+    item = snapshot.item_for_attempt(attempt_id)
+    attempt = snapshot.attempt(attempt_id)
+    if item is None or attempt is None:
+        return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.")
+    match item.state:
+        case work_models.WorkState.ACTIVE:
+            expected_attempt_state = work_models.AttemptState.ACTIVE
+        case work_models.WorkState.PAUSED:
+            expected_attempt_state = work_models.AttemptState.PAUSED
+        case (
+            work_models.WorkState.INTAKE
+            | work_models.WorkState.READY
+            | work_models.WorkState.BLOCKED
+            | work_models.WorkState.DEFERRED
+            | work_models.WorkState.REVIEW
+        ):
+            return DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                "Only an active or paused attempt can be rebound.",
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    if attempt.state != expected_attempt_state:
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            "Only an active or paused attempt can be rebound.",
+        )
+    definition = snapshot.definition(item.item)
+    if (
+        definition is None
+        or attempt.accepted_scope_revision is None
+        or attempt.accepted_scope_digest is None
+        or (attempt.accepted_scope_revision, attempt.accepted_scope_digest) != (definition.revision, definition.digest)
+    ):
+        return DecisionFailure(
+            DecisionFailureCode.ITEM_DEFINITION_STALE,
+            "The attempt has not accepted the item's current definition.",
+        )
+    artifact = next(
+        (candidate for candidate in snapshot.artifacts if candidate.artifact_ref_id == value.brief_artifact_ref_id),
+        None,
+    )
+    if artifact is None or artifact.kind != work_models.ArtifactKind.BRIEF:
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "Rebinding requires one existing brief artifact reference.",
+        )
+    authorities = tuple(candidate for candidate in snapshot.attempt_authorities if candidate.attempt == attempt_id)
+    if len(authorities) != 1:
+        return DecisionFailure(
+            DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
+            "Rebinding requires exactly one current attempt-authority record to fence.",
+        )
+    authority = authorities[0]
+    return _accepted_transition_decision(
+        action,
+        now,
+        decision_models.RebindAttemptChange(
+            item.item,
+            attempt_id,
+            expected_attempt_state,
+            value.branch,
+            value.base_revision,
+            value.brief_artifact_ref_id,
+            definition.revision,
+            definition.digest,
+            decision_models.AttemptAuthorityChange(
+                authority,
+                replace(authority, lease_id=None, generation=authority.generation + 1),
+            ),
+        ),
+        item=item.item,
+    )
+
+
 def _submit_review(
     snapshot: LedgerSnapshot, command: decision_models.SubmitReviewCommand, now: datetime
 ) -> DecisionResult[decision_models.TransitionDecision]:
@@ -1083,6 +1185,8 @@ def decide(  # noqa: C901, PLR0912
             return _complete(snapshot, command, now)
         case decision_models.CloseCommand():
             return _close(snapshot, command, now)
+        case decision_models.RebindAttemptCommand():
+            return _rebind_attempt(snapshot, command, now)
         case decision_models.ResumeCommand():
             return _resume(snapshot, command, now)
         case decision_models.SubmitReviewCommand():

@@ -297,6 +297,43 @@ def set_attempt_state(
     )
 
 
+def rebind_attempt(
+    connection: sqlite3.Connection,
+    state: stored_state.StoredWorkState,
+    change: decision_models.RebindAttemptChange,
+    revision: int,
+    now: datetime,
+) -> DecisionFailure | None:
+    current = require_stored_attempt(state, change.attempt)
+    return require_one_changed_row(
+        connection.execute(
+            """
+            UPDATE attempts
+            SET branch = ?, base_revision = ?, brief_artifact_ref_id = ?,
+                accepted_scope_revision = ?, accepted_scope_digest = ?, subject_revision = ?, updated_at = ?
+            WHERE attempt_id = ? AND item_id = ? AND state = ? AND subject_revision = ?
+                AND accepted_scope_revision = ? AND accepted_scope_digest = ?
+            """,
+            (
+                change.branch,
+                change.base_revision,
+                change.brief_artifact_ref_id,
+                change.accepted_scope_revision,
+                change.accepted_scope_digest,
+                revision,
+                now.isoformat(),
+                change.attempt,
+                change.item,
+                change.attempt_state.value,
+                current.subject_revision,
+                change.accepted_scope_revision,
+                change.accepted_scope_digest,
+            ),
+        ),
+        "The targeted attempt rebind is stale.",
+    )
+
+
 def replace_dependencies(connection: sqlite3.Connection, item_id: ItemId, dependencies: tuple[ItemId, ...]) -> None:
     connection.execute("DELETE FROM item_dependencies WHERE item_id = ?", (item_id,))
     connection.executemany(

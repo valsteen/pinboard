@@ -52,6 +52,7 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                     | decision_models.MergedProposalChange()
                     | decision_models.ReturnedProposalChange()
                     | decision_models.RejectedProposalChange()
+                    | decision_models.RebindAttemptChange()
                     | decision_models.ResumeAttemptChange()
                     | decision_models.ReviewReturnChange()
                     | DefinitionRevisionDecision()

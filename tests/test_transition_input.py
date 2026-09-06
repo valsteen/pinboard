@@ -117,6 +117,22 @@ class TransitionInputTest(unittest.TestCase):
             decision_models.ResumeCommand(resume_action, work_models.ResumeInput(ArtifactRefId(8))),
             expect_transition_command(parse_transition_command(resume_action, '{"brief_artifact_ref_id":8}')),
         )
+        rebind_action = action(decision_models.RebindAttemptAction, AttemptId("attempt-1"))
+        self.assertEqual(
+            decision_models.RebindAttemptCommand(
+                rebind_action,
+                work_models.RebindAttemptInput(
+                    AttemptId("attempt-1"), "codex/corrected", "correct-base", ArtifactRefId(9)
+                ),
+            ),
+            expect_transition_command(
+                parse_transition_command(
+                    rebind_action,
+                    '{"attempt":"attempt-1","branch":"codex/corrected","base_revision":"correct-base",'
+                    '"brief_artifact_ref_id":9}',
+                )
+            ),
+        )
 
         checkpoint_action = action(decision_models.AcceptCheckpointAction, AttemptId("attempt-1"))
         checkpoint = expect_transition_command(
@@ -174,6 +190,25 @@ class TransitionInputTest(unittest.TestCase):
             (
                 action(decision_models.AcceptReviewAndContinueAction, AttemptId("attempt-1")),
                 {"candidate": "candidate", "evidence": "accepted", "unexpected": True},
+            ),
+            (
+                action(decision_models.RebindAttemptAction, AttemptId("attempt-1")),
+                {
+                    "attempt": "attempt-1",
+                    "branch": "codex/corrected",
+                    "base_revision": "correct-base",
+                    "brief_artifact_ref_id": 1,
+                    "unexpected": True,
+                },
+            ),
+            (
+                action(decision_models.RebindAttemptAction, AttemptId("attempt-1")),
+                {
+                    "attempt": "attempt-1",
+                    "branch": "bad\nbranch",
+                    "base_revision": "correct-base",
+                    "brief_artifact_ref_id": 1,
+                },
             ),
             (action(decision_models.SubmitReviewAction, AttemptId("attempt-1")), {"candidate": 1}),
             (revise, revise_item_payload() | {"source_task": ""}),
@@ -275,6 +310,15 @@ class TransitionInputTest(unittest.TestCase):
             (action(decision_models.PauseAction, AttemptId("attempt-1")), {"reason": "pause"}),
             (action(decision_models.RejectProposalAction, ProposalId("proposal-1")), {"reason": "reject"}),
             (action(decision_models.ReopenAction, ItemId("work-a")), {"evidence": "reopen"}),
+            (
+                action(decision_models.RebindAttemptAction, AttemptId("attempt-1")),
+                {
+                    "attempt": "attempt-1",
+                    "branch": "codex/corrected",
+                    "base_revision": "correct-base",
+                    "brief_artifact_ref_id": 2,
+                },
+            ),
             (action(decision_models.ResumeAction, ItemId("work-a")), {}),
             (action(decision_models.ReturnForCorrectionAction, AttemptId("attempt-1")), {"reason": "correct"}),
             (action(decision_models.ReturnProposalAction, ProposalId("proposal-1")), {"reason": "more evidence"}),

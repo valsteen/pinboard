@@ -99,6 +99,8 @@ def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
             action = decision_models.RejectProposalAction(capability(ProposalId(subject)))
         case decision_models.ActionKind.REOPEN:
             action = decision_models.ReopenAction(capability(ItemId(subject)))
+        case decision_models.ActionKind.REBIND_ATTEMPT:
+            action = decision_models.RebindAttemptAction(capability(AttemptId(subject)))
         case decision_models.ActionKind.REPORT_BLOCKER:
             action = decision_models.ReportBlockerAction(capability(AttemptId(subject)))
         case decision_models.ActionKind.RESUME:

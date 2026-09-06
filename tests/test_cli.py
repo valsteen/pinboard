@@ -45,7 +45,7 @@ from .support import (
     test_definition,
     with_definition_dependencies,
 )
-from .work_brief_support import work_a_brief, work_c_brief
+from .work_brief_support import CHECKPOINT_ID, ready_review, work_a_brief, work_c_brief
 
 
 class CliTest(unittest.TestCase):
@@ -2081,6 +2081,32 @@ Not launchable:
             self.json_object(reopen_contract["semantics"])["practical_result"],
         )
 
+    def test_paused_current_attempt_with_live_dependency_can_rebind_but_not_resume(self) -> None:
+        state = complete_sqlite_state()
+        state = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=tuple(
+                    replace(value, state=stored_state.StoredWorkItemState.PAUSED)
+                    if value.item_id == ItemId("work-a")
+                    else value
+                    for value in state.lifecycle.work_items
+                ),
+                attempts=(replace(state.lifecycle.attempts[0], state=work_models.AttemptState.PAUSED),),
+            ),
+        )
+        project, work, _store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+
+        action_ids = {
+            str(self.json_object(value)["action_id"])
+            for value in self.json_list(self.run_json_cli(*common, "actions", "--role", "project")["actions"])
+        }
+
+        self.assertIn("rebind-attempt:work-a-1", action_ids)
+        self.assertNotIn("resume:work-a", action_ids)
+
     def test_active_attempt_blocker_flow_persists_dependencies_and_resumes_through_commands(self) -> None:
         state = complete_sqlite_state()
         now = datetime.now(UTC)
@@ -2347,6 +2373,187 @@ Not launchable:
             "dispatch:work-a-1",
             tuple(str(self.json_object(value)["action_id"]) for value in project_actions),
         )
+
+    def test_rebind_attempt_updates_every_read_surface_and_dispatch_identity_without_touching_checkout(  # noqa: PLR0915
+        self,
+    ) -> None:
+        state = complete_sqlite_state()
+        now = datetime.now(UTC)
+        state = replace(
+            state,
+            authority=replace(
+                state.authority,
+                attempt_leases=tuple(
+                    replace(value, expires_at=now + timedelta(minutes=5)) for value in state.authority.attempt_leases
+                ),
+            ),
+            artifact_references=(state.artifact_references[0],),
+            transition_receipts=(replace(state.transition_receipts[0], artifact_ref_id=None),),
+        )
+        project, work, store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        original = store.snapshot()
+        original_attempt = original.lifecycle.attempts[0]
+        original_counter = original.authority.attempt_counters[0]
+
+        replacement = replace_struct(
+            work_a_brief(project),
+            artifact_revision=2,
+            branch="codex/corrected-work-a",
+            base_revision="corrected-base-revision",
+        )
+        brief_path = project / "work-a-brief-2.json"
+        brief_path.write_bytes(canonical_work_brief_bytes(replacement))
+        publication = self.run_json_cli(*common, "brief", "publish", "--file", str(brief_path))
+        payload = project / "rebind-attempt.json"
+        payload.write_text(
+            json.dumps(
+                {
+                    "attempt": "work-a-1",
+                    "branch": replacement.branch,
+                    "base_revision": replacement.base_revision,
+                    "brief_artifact_ref_id": publication["artifact_ref_id"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        checkout_file = project / "architecture.md"
+        checkout_bytes = checkout_file.read_bytes()
+        contract = self.run_json_cli(*common, "input-contract", "rebind-attempt")
+        self.assertEqual("rebind-attempt", contract["action_kind"])
+        action = self.project_action(common, "rebind-attempt:work-a-1")
+
+        result, stdout, stderr = self.run_transition(common, action, payload)
+
+        self.assertEqual(0, result, stderr)
+        self.assertIn("OK TRANSITION_APPLIED rebind-attempt:work-a-1", stdout)
+        rebound = SQLiteWorkStore(work / "state.sqlite3").snapshot()
+        rebound_attempt = rebound.lifecycle.attempts[0]
+        self.assertEqual(
+            (
+                original_attempt.attempt_id,
+                original_attempt.item_id,
+                original_attempt.state,
+                replacement.branch,
+                replacement.base_revision,
+                publication["artifact_ref_id"],
+                original_attempt.result_artifact_ref_id,
+                original_attempt.candidate_revision,
+                original_attempt.accepted_scope_revision,
+                original_attempt.accepted_scope_digest,
+                rebound.lifecycle.project.revision,
+            ),
+            (
+                rebound_attempt.attempt_id,
+                rebound_attempt.item_id,
+                rebound_attempt.state,
+                rebound_attempt.branch,
+                rebound_attempt.base_revision,
+                rebound_attempt.brief_artifact_ref_id,
+                rebound_attempt.result_artifact_ref_id,
+                rebound_attempt.candidate_revision,
+                rebound_attempt.accepted_scope_revision,
+                rebound_attempt.accepted_scope_digest,
+                rebound_attempt.subject_revision,
+            ),
+        )
+        self.assertEqual(
+            original_counter.generation_high_water + 1, rebound.authority.attempt_counters[0].generation_high_water
+        )
+        self.assertEqual(original_counter.generation_high_water + 1, rebound.authority.attempt_leases[0].generation)
+        self.assertEqual(authority_models.AttemptLeaseStatus.REVOKED, rebound.authority.attempt_leases[0].state)
+        self.assertEqual(decision_models.ActionKind.REBIND_ATTEMPT, rebound.transition_receipts[-1].action_kind)
+        old_worker_result, _old_worker_stdout, old_worker_stderr = self.run_cli(
+            *common,
+            "actions",
+            "--role",
+            "worker",
+            "--lease-id",
+            "attempt-lease-a",
+            "--generation",
+            "3",
+        )
+        self.assertNotEqual(0, old_worker_result)
+        self.assertIn("ATTEMPT_LEASE_REQUIRED", old_worker_stderr)
+
+        validation_result, validation_stdout, validation_stderr = self.run_cli(*common, "validate")
+        self.assertEqual(0, validation_result, f"{validation_stdout}\n{validation_stderr}")
+        rebuild_result, rebuild_stdout, rebuild_stderr = self.run_cli(*common, "views", "rebuild")
+        self.assertEqual(0, rebuild_result, f"{rebuild_stdout}\n{rebuild_stderr}")
+        handover = self.run_json_cli(*common, "handover")
+        handover_attempt = self.json_object(self.json_list(handover["attempts"])[0])
+        self.assertEqual(replacement.branch, handover_attempt["branch"])
+        self.assertEqual(replacement.base_revision, handover_attempt["base_revision"])
+        self.assertEqual(publication["artifact_ref_id"], handover_attempt["brief_artifact_ref_id"])
+        self.assertEqual("rebind-attempt", self.json_object(self.json_list(handover["transitions"])[-1])["action_kind"])
+
+        dispatch_action = self.project_action(common, "dispatch:work-a-1")
+        review_path = project / "work-a-brief-review.json"
+        review_path.write_bytes(ready_review(replacement))
+        old_environment_path = project / "old-dispatch.json"
+        old_environment_path.write_text(
+            json.dumps(
+                {
+                    "schema": "pinboard-dispatch/v1",
+                    "checkout": str(project),
+                    "branch": original_attempt.branch,
+                    "starting_revision": original_attempt.base_revision,
+                    "permissions": ["repository-read"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        dispatch_arguments = (
+            *common,
+            "dispatch",
+            "--action-id",
+            str(dispatch_action["action_id"]),
+            "--expected-revision",
+            str(dispatch_action["expected_revision"]),
+            "--task-id",
+            "replacement-worker",
+            "--host-id",
+            "studio",
+            "--checkpoint",
+            CHECKPOINT_ID,
+        )
+        old_result, _old_stdout, old_stderr = self.run_cli(
+            *dispatch_arguments,
+            "--environment",
+            str(old_environment_path),
+            "--brief-review",
+            str(review_path),
+            "--review-id",
+            "replacement-review",
+        )
+        self.assertNotEqual(0, old_result)
+        self.assertIn("DISPATCH_BRANCH_MISMATCH", old_stderr)
+        corrected_environment_path = project / "corrected-dispatch.json"
+        corrected_environment_path.write_text(
+            json.dumps(
+                {
+                    "schema": "pinboard-dispatch/v1",
+                    "checkout": str(project),
+                    "branch": replacement.branch,
+                    "starting_revision": replacement.base_revision,
+                    "permissions": ["repository-read"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        dispatch_result, dispatch_stdout, dispatch_stderr = self.run_cli(
+            *dispatch_arguments,
+            "--environment",
+            str(corrected_environment_path),
+            "--brief-review",
+            str(review_path),
+            "--review-id",
+            "replacement-review",
+        )
+        self.assertEqual(0, dispatch_result, dispatch_stderr)
+        self.assertIn(f"- Branch: {replacement.branch}", dispatch_stdout)
+        self.assertIn(f"- Starting revision: {replacement.base_revision}", dispatch_stdout)
+        self.assertEqual(checkout_bytes, checkout_file.read_bytes())
 
     def test_revised_brief_identity_mismatches_reject_at_command_boundary_without_effects(self) -> None:
         base_brief = replace_struct(work_a_brief(Path(tempfile.mkdtemp()).resolve()), artifact_revision=2)

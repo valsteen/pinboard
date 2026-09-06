@@ -253,6 +253,7 @@ def _execute_transition_command(
             | decision_models.BlockCommand()
             | decision_models.CompleteCommand()
             | decision_models.CloseCommand()
+            | decision_models.RebindAttemptCommand()
             | decision_models.ResumeCommand()
             | decision_models.SubmitReviewCommand()
             | decision_models.ReturnForCorrectionCommand()

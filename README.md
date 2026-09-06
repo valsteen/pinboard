@@ -75,7 +75,7 @@ That makes this codebase one concrete case study, not proof that Pinboard elimin
 - **Planning:** make readiness, deferral, closure, and dependencies explicit.
 - **Revisioned definitions:** replace a complete accepted definition with compare-and-swap safety, retain every prior revision, and inspect current or paginated history as typed JSON.
 - **Execution:** give each accepted attempt an exact brief and independent renewable ownership.
-- **Interruption and recovery:** block, pause, resume, or recover work without rebuilding its context from chat history.
+- **Interruption and recovery:** block, deliberately pause otherwise runnable work, rebind a corrected Git baseline, resume, or recover without rebuilding context from chat history or silently changing the checkout.
 - **Parallel work:** preview independent items and recheck the group as each attempt starts, without creating tasks on the user's behalf.
 - **Review:** keep the submitted candidate and its evidence exact, then use a separate Codex reviewer—normally a subagent that returns to the owning task—to accept it or return it for correction.
 - **Wrap-up:** reconcile later accepted direction and repository changes before candidate presentation or acceptance, then let the human choose the repository disposition and confirm terminal completion.

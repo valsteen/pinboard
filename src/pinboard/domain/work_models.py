@@ -176,6 +176,14 @@ class ResumeInput:
 
 
 @dataclass(frozen=True, slots=True)
+class RebindAttemptInput:
+    attempt: AttemptId
+    branch: str
+    base_revision: str
+    brief_artifact_ref_id: ArtifactRefId
+
+
+@dataclass(frozen=True, slots=True)
 class ActivateInput:
     attempt: AttemptId
     branch: str

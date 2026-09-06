@@ -36,6 +36,7 @@ from pinboard.domain.decisions import (
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import (
     ActionId,
+    ArtifactRefId,
     AttemptId,
     CandidateId,
     CheckpointId,
@@ -233,6 +234,121 @@ class ServiceTest(unittest.TestCase):
                 assert isinstance(result, DecisionFailure)
                 self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, result.code)
                 self.assertEqual(before, store.snapshot())
+
+    def test_active_and_paused_rebind_commit_exact_lineage_and_authority_fence(self) -> None:
+        for item_state, attempt_state in (
+            (stored_state.StoredWorkItemState.ACTIVE, work_models.AttemptState.ACTIVE),
+            (stored_state.StoredWorkItemState.PAUSED, work_models.AttemptState.PAUSED),
+        ):
+            with self.subTest(item_state=item_state):
+                state = complete_sqlite_state()
+                protected_result = replace(
+                    state.artifact_references[2],
+                    artifact_ref_id=ArtifactRefId(98),
+                    key="work-a-protected-result",
+                    kind=work_models.ArtifactKind.RESULT,
+                    selector="artifacts/results/work-a-protected-result/1.opaque",
+                    content_sha256="a" * 64,
+                )
+                current_attempt = replace(
+                    state.lifecycle.attempts[0],
+                    result_artifact_ref_id=protected_result.artifact_ref_id,
+                )
+                replacement = replace(
+                    state.artifact_references[0],
+                    artifact_ref_id=ArtifactRefId(99),
+                    key="work-a-rebound-brief",
+                    selector="artifacts/briefs/work-a-rebound-brief/1.opaque",
+                    content_sha256="b" * 64,
+                )
+                state = replace(
+                    state,
+                    lifecycle=replace(
+                        state.lifecycle,
+                        work_items=tuple(
+                            replace(value, state=item_state) if value.item_id == ItemId("work-a") else value
+                            for value in state.lifecycle.work_items
+                        ),
+                        attempts=(replace(current_attempt, state=attempt_state),),
+                    ),
+                    artifact_references=(*state.artifact_references, protected_result, replacement),
+                )
+                store, database_path = self._store_with_state(state)
+                action = self._project_action(store, decision_models.RebindAttemptAction)
+                command = non_checkpoint_command(
+                    decision_models.RebindAttemptCommand(
+                        action,
+                        work_models.RebindAttemptInput(
+                            AttemptId("work-a-1"),
+                            "codex/corrected-work-a",
+                            "corrected-base",
+                            replacement.artifact_ref_id,
+                        ),
+                    )
+                )
+                identity = WorkBriefIdentity(
+                    "work-a-1",
+                    "work-a",
+                    "codex/corrected-work-a",
+                    "corrected-base",
+                    1,
+                    current_attempt.accepted_scope_digest or "",
+                )
+                before = store.snapshot()
+                for mismatch in (
+                    replace(identity, attempt_id="work-a-2"),
+                    replace(identity, item_id="work-c"),
+                    replace(identity, branch="codex/other"),
+                    replace(identity, base_revision="other-base"),
+                    replace(identity, accepted_scope_revision=2),
+                    replace(identity, accepted_scope_digest="f" * 64),
+                ):
+                    mismatched = self._commit_transition(
+                        store,
+                        command,
+                        SQLITE_NOW + timedelta(milliseconds=1),
+                        transition_brief_identity=mismatch,
+                    )
+                    self.assertIsInstance(mismatched, DecisionFailure)
+                    self.assertEqual(before, store.snapshot())
+
+                receipt = self._commit_transition(
+                    store,
+                    command,
+                    SQLITE_NOW + timedelta(seconds=1),
+                    transition_brief_identity=identity,
+                )
+
+                self.assertNotIsInstance(receipt, DecisionFailure)
+                reopened = SQLiteWorkStore(database_path).snapshot()
+                rebound = reopened.lifecycle.attempts[0]
+                self.assertEqual(
+                    replace(
+                        current_attempt,
+                        state=attempt_state,
+                        branch="codex/corrected-work-a",
+                        base_revision="corrected-base",
+                        brief_artifact_ref_id=replacement.artifact_ref_id,
+                        subject_revision=13,
+                        updated_at=SQLITE_NOW + timedelta(seconds=1),
+                    ),
+                    rebound,
+                )
+                self.assertEqual(4, reopened.authority.attempt_counters[0].generation_high_water)
+                self.assertEqual(4, reopened.authority.attempt_leases[0].generation)
+                self.assertEqual(
+                    authority_models.AttemptLeaseStatus.REVOKED,
+                    reopened.authority.attempt_leases[0].state,
+                )
+
+                stale = self._commit_transition(
+                    store,
+                    command,
+                    SQLITE_NOW + timedelta(seconds=2),
+                    transition_brief_identity=identity,
+                )
+                self.assertIsInstance(stale, DecisionFailure)
+                self.assertEqual(reopened, store.snapshot())
 
     def test_decide_and_commit_transition_accepts_exact_live_worker_authority(self) -> None:
         store = self._store()

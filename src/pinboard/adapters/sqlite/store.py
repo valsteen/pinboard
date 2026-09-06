@@ -36,6 +36,7 @@ from pinboard.adapters.sqlite.database import (
 from pinboard.adapters.sqlite.lifecycle import (
     insert_attempt,
     insert_definition_revision,
+    rebind_attempt,
     replace_dependencies,
     set_attempt_state,
     set_item_state,
@@ -187,6 +188,11 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             ) is not None:
                 return failure
             replace_dependencies(connection, item, dependencies)
+        case decision_models.RebindAttemptChange(authority_change=authority):
+            if (failure := rebind_attempt(connection, state, change, revision, now)) is not None:
+                return failure
+            if (failure := fence_attempt_authority(connection, authority, now)) is not None:
+                return failure
         case decision_models.ResumeAttemptChange(
             item=item,
             item_before=item_before,

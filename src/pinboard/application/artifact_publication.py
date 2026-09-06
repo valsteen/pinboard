@@ -34,12 +34,12 @@ def publish_accepted_artifact(
     return store.accept_artifact_reference(publisher.work_root, published_reference, accepted_at)
 
 
-def validate_transition_work_brief(
+def validate_transition_work_brief(  # noqa: C901, PLR0912
     state: stored_state.StoredWorkState,
     command: decision_models.TransitionCommand,
     identity: WorkBriefIdentity | None,
 ) -> DecisionFailure | None:
-    """Validate activation or resume brief identity against the locked SQLite snapshot."""
+    """Validate activation, resume, or rebind brief identity against the locked SQLite snapshot."""
 
     match command:
         case decision_models.ActivateCommand(action=action, value=value):
@@ -60,6 +60,24 @@ def validate_transition_work_brief(
             attempt_id = str(attempt.attempt_id)
             branch = attempt.branch
             base_revision = attempt.base_revision
+        case decision_models.RebindAttemptCommand(action=action, value=value):
+            attempt_id = str(action.capability.subject)
+            attempt = next(
+                (
+                    candidate
+                    for candidate in state.lifecycle.attempts
+                    if candidate.attempt_id == action.capability.subject
+                ),
+                None,
+            )
+            if attempt is None:
+                return DecisionFailure(
+                    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                    "Rebinding requires an existing attempt.",
+                )
+            item_id = str(attempt.item_id)
+            branch = value.branch
+            base_revision = value.base_revision
         case _:
             return None
     reference = transition_work_brief_reference(state, command)
@@ -114,9 +132,11 @@ def transition_work_brief_reference(
     command: decision_models.TransitionCommand,
 ) -> stored_state.ArtifactReference | None:
     match command:
-        case decision_models.ActivateCommand(value=value) | decision_models.ResumeCommand(value=value) if (
-            value.brief_artifact_ref_id is not None
-        ):
+        case (
+            decision_models.ActivateCommand(value=value)
+            | decision_models.ResumeCommand(value=value)
+            | decision_models.RebindAttemptCommand(value=value)
+        ) if value.brief_artifact_ref_id is not None:
             artifact_ref_id = value.brief_artifact_ref_id
         case _:
             return None

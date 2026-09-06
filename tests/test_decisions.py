@@ -320,6 +320,31 @@ class LifecycleDecisionTest(unittest.TestCase):
                 assert isinstance(rejected, DecisionFailure)
                 self.assertEqual(expected_code, rejected.code)
 
+    def test_paused_current_attempt_with_live_dependency_can_rebind_without_resume(self) -> None:
+        dependency = ItemId("prerequisite")
+        paused = replace(
+            item("target", work_models.WorkState.PAUSED, attempt="target-1"),
+            depends_on=(dependency,),
+        )
+        snapshot = LedgerSnapshot(
+            "revision",
+            (paused, item("prerequisite", work_models.WorkState.READY)),
+            attempts=(AttemptRecord("target-1", "target", work_models.AttemptState.PAUSED, 1, DIGEST_A),),
+            definitions=(definition_anchor("target", 1, DIGEST_A, (dependency,)),),
+        )
+
+        actions = available_actions(
+            snapshot,
+            decision_models.ActorAuthority(
+                decision_models.Role.PROJECT,
+                decision_models.AuthorizationKind.PROJECT,
+                1,
+            ),
+        )
+
+        self.assertTrue(any(isinstance(value, decision_models.RebindAttemptAction) for value in actions))
+        self.assertFalse(any(isinstance(value, decision_models.ResumeAction) for value in actions))
+
     def test_blocker_actions_expose_distinct_roles_subjects_preconditions_and_effects(self) -> None:
         active = replace(
             item("target", work_models.WorkState.ACTIVE, attempt="target-1"),

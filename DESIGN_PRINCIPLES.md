@@ -6,6 +6,8 @@ This document describes how Pinboard keeps decisions visible while moving repeti
 
 The primary reader is a person trying to answer: what can happen here, under which condition, and with which effect? Put those branches together in one explicit owner. Move representation conversion and mechanical persistence details aside only when their contract remains obvious from the call site.
 
+When extending behavior, preserve the independent conditions on that behavior and its neighbors unless accepted product scope explicitly changes them. A new permission for one operation must not silently enable, disable, or bypass a sibling governed by a different condition. The cheapest proof is usually one mixed counterexample where the new behavior is allowed while the independently gated sibling remains forbidden.
+
 File size is a signal, not the objective. A smaller orchestration file is useful when it concentrates the real alternatives. A lower total line count is useful when it removes repetition without hiding control flow. Measure those outcomes separately.
 
 Treat agent-facing schemas, values, and entry points as product surfaces when agents can adopt them to steer work. Unless a public API or CLI already makes the contract obvious, keep the intended consumer, semantic effect or deliberate non-effect, and owner locally discoverable from the definition or its direct entry point. Remove an unused or unclear surface rather than preserving a value that survives only because a schema can carry it.

@@ -17,21 +17,28 @@ def project_inactive_attempt_authority(
     attempt = next((value for value in state.lifecycle.attempts if value.attempt_id == attempt_id), None)
     retained = stored_state.retained_attempt(state, attempt_id)
     if attempt is None or retained is None:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED, "No retained attempt authority exists.")
+        return DecisionFailure(
+            DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED, "No retained attempt authority exists.", None
+        )
     lease, anchor = retained
     if anchor is None:
         return DecisionFailure(
             DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
             "The retained attempt generation has no exact identity anchor.",
+            None,
         )
     if lease.state == authority_models.AttemptLeaseStatus.ACTIVE:
         if lease.expires_at > now:
-            return DecisionFailure(DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED, "Attempt authority remains live.")
+            return DecisionFailure(
+                DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED, "Attempt authority remains live.", None
+            )
         status = authority_models.AttemptLeaseStatus.EXPIRED
     elif lease.state in {authority_models.AttemptLeaseStatus.RELEASED, authority_models.AttemptLeaseStatus.REVOKED}:
         status = lease.state
     else:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED, "Attempt authority is not inactive.")
+        return DecisionFailure(
+            DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED, "Attempt authority is not inactive.", None
+        )
     return authority_models.InactiveAttemptAuthority(
         host_epoch=state.lifecycle.project.host_epoch,
         attempt=attempt_id,

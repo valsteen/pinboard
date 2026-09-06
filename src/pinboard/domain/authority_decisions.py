@@ -72,18 +72,20 @@ def decide_attempt_authority(  # noqa: C901, PLR0912
                 return DecisionFailure(
                     DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
                     "Initial attempt authority requires the exact live attempt and project host epoch.",
+                    None,
                 )
             if counter != 0 or (
                 retained is not None
                 and (retained.generation != 0 or retained.state != authority_models.AttemptLeaseStatus.RELEASED)
             ):
                 return DecisionFailure(
-                    DecisionFailureCode.LEASE_FENCED, "Initial attempt authority is already claimed."
+                    DecisionFailureCode.LEASE_FENCED, "Initial attempt authority is already claimed.", None
                 )
             if expires_at <= acquired_at:
                 return DecisionFailure(
                     DecisionFailureCode.TRANSITION_INPUT_INVALID,
                     "Attempt authority requires a positive bounded interval.",
+                    None,
                 )
             proposed_replacement = authority_models.AttemptLeaseAuthority(
                 host_epoch=host_epoch,
@@ -116,6 +118,7 @@ def decide_attempt_authority(  # noqa: C901, PLR0912
                 return DecisionFailure(
                     DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
                     "Attempt transfer requires the exact retained nonterminal attempt.",
+                    None,
                 )
             if (failure := _validate_attempt_transfer(retained, current, acquired_at)) is not None:
                 return failure
@@ -124,6 +127,7 @@ def decide_attempt_authority(  # noqa: C901, PLR0912
                 return DecisionFailure(
                     DecisionFailureCode.TRANSITION_INPUT_INVALID,
                     "Transferred attempt authority requires a positive bounded interval.",
+                    None,
                 )
             proposed_replacement = replace(
                 retained,
@@ -150,6 +154,7 @@ def decide_attempt_authority(  # noqa: C901, PLR0912
                 return DecisionFailure(
                     DecisionFailureCode.TRANSITION_INPUT_INVALID,
                     "Attempt renewal must extend its bounded expiry.",
+                    None,
                 )
             return authority_models.AttemptAuthorityDecision(
                 attempt=retained.attempt,
@@ -186,7 +191,7 @@ def decide_attempt_authority(  # noqa: C901, PLR0912
                 lease_id,
                 generation,
             ):
-                return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Attempt authority is fenced.")
+                return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Attempt authority is fenced.", None)
             proposed_replacement = replace(
                 retained,
                 generation=counter + 1,
@@ -210,11 +215,11 @@ def _validate_attempt_change(
     now: datetime,
 ) -> DecisionFailure | None:
     if retained is None:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority does not exist.")
+        return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority does not exist.", None)
     if retained.state != authority_models.AttemptLeaseStatus.ACTIVE or not _same_attempt_token(retained, current):
-        return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Attempt authority is fenced.")
+        return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Attempt authority is fenced.", None)
     if retained.expires_at <= now:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_EXPIRED, "Attempt authority has expired.")
+        return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_EXPIRED, "Attempt authority has expired.", None)
     return None
 
 
@@ -224,9 +229,9 @@ def _validate_attempt_transfer(
     now: datetime,
 ) -> DecisionFailure | None:
     if retained is None:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority does not exist.")
+        return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority does not exist.", None)
     if retained.state == authority_models.AttemptLeaseStatus.ACTIVE and retained.expires_at > now:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority remains live.")
+        return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority remains live.", None)
     expected_state = (
         authority_models.AttemptLeaseStatus.EXPIRED
         if retained.state == authority_models.AttemptLeaseStatus.ACTIVE
@@ -237,7 +242,7 @@ def _validate_attempt_transfer(
         authority_models.AttemptLeaseStatus.REVOKED,
         authority_models.AttemptLeaseStatus.EXPIRED,
     }:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority is not inactive.")
+        return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority is not inactive.", None)
     expected = authority_models.InactiveAttemptAuthority(
         host_epoch=retained.host_epoch,
         attempt=retained.attempt,
@@ -250,7 +255,7 @@ def _validate_attempt_transfer(
         state=expected_state,
     )
     if current != expected:
-        return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Attempt authority is fenced.")
+        return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Attempt authority is fenced.", None)
     return None
 
 
@@ -274,11 +279,11 @@ def _validate_preparation_change(
     now: datetime,
 ) -> DecisionFailure | None:
     if retained is None:
-        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority does not exist.")
+        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority does not exist.", None)
     if retained.state != authority_models.PreparationLeaseStatus.ACTIVE or _preparation_token(retained) != current:
-        return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Preparation authority is fenced.")
+        return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Preparation authority is fenced.", None)
     if retained.expires_at <= now:
-        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority has expired.")
+        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority has expired.", None)
     return None
 
 
@@ -288,9 +293,9 @@ def _validate_preparation_transfer(
     now: datetime,
 ) -> DecisionFailure | None:
     if retained is None:
-        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority does not exist.")
+        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority does not exist.", None)
     if retained.state == authority_models.PreparationLeaseStatus.ACTIVE and retained.expires_at > now:
-        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority remains live.")
+        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority remains live.", None)
     state = (
         authority_models.PreparationLeaseStatus.EXPIRED
         if retained.state == authority_models.PreparationLeaseStatus.ACTIVE
@@ -317,7 +322,7 @@ def _validate_preparation_transfer(
         }
         or current != expected
     ):
-        return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Preparation authority is fenced.")
+        return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Preparation authority is fenced.", None)
     return None
 
 
@@ -343,54 +348,66 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
             expires_at=expires_at,
         ):
             if snapshot is None:
-                return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation requires ledger state.")
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation requires ledger state.", None
+                )
             item_value = snapshot.item(item)
             definition = snapshot.definition(item)
             if snapshot.host_epoch != host_epoch:
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     "Initial preparation requires the exact dependency-satisfied ready item and definition.",
+                    None,
                 )
             if snapshot.revision != expected_project_revision:
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     "Project revision differs from the initial preparation request.",
+                    None,
                 )
             if item_value is None:
-                return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item}' does not exist.")
+                return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item}' does not exist.", None)
             if snapshot.subject_revision(item) != expected_item_subject_revision:
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     f"Item '{item}' subject revision differs from the initial preparation request.",
+                    None,
                 )
             if item_value.state != work_models.WorkState.READY:
-                return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item}' is not ready.")
+                return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item}' is not ready.", None)
             if any(dependency in snapshot.items_by_id() for dependency in item_value.depends_on):
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     f"Item '{item}' has live dependencies.",
+                    None,
                 )
             if definition is None:
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     f"Item '{item}' has no accepted definition.",
+                    None,
                 )
             if definition.revision != expected_definition_revision:
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     f"Item '{item}' definition revision differs from the initial preparation request.",
+                    None,
                 )
             if definition.digest != expected_definition_digest:
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     f"Item '{item}' definition digest differs from the initial preparation request.",
+                    None,
                 )
             if counter != 0 or retained is not None:
-                return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Initial preparation is already claimed.")
+                return DecisionFailure(
+                    DecisionFailureCode.LEASE_FENCED, "Initial preparation is already claimed.", None
+                )
             if expires_at <= acquired_at:
                 return DecisionFailure(
                     DecisionFailureCode.TRANSITION_INPUT_INVALID,
                     "Preparation authority requires a positive bounded interval.",
+                    None,
                 )
             proposed_replacement = authority_models.PreparationLeaseAuthority(
                 host_epoch=host_epoch,
@@ -421,7 +438,9 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
             expires_at=expires_at,
         ):
             if snapshot is None or retained is None:
-                return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation transfer is unavailable.")
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation transfer is unavailable.", None
+                )
             if (failure := _validate_preparation_transfer(retained, current, now)) is not None:
                 return failure
             item_value = snapshot.item(retained.item)
@@ -433,7 +452,9 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                 or definition is None
                 or expires_at <= acquired_at
             ):
-                return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation cannot be transferred.")
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation cannot be transferred.", None
+                )
             proposed_replacement = replace(
                 retained,
                 definition_revision=definition.revision,
@@ -461,6 +482,7 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                 return DecisionFailure(
                     DecisionFailureCode.TRANSITION_INPUT_INVALID,
                     "Preparation renewal must extend its bounded expiry.",
+                    None,
                 )
             return authority_models.PreparationAuthorityDecision(
                 item=retained.item,
@@ -493,14 +515,14 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
         ):
             if snapshot is None:
                 return DecisionFailure(
-                    DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation revocation is unavailable."
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation revocation is unavailable.", None
                 )
             if retained is None or (retained.item, retained.lease_id, retained.generation) != (
                 item,
                 lease_id,
                 generation,
             ):
-                return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Preparation authority is fenced.")
+                return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Preparation authority is fenced.", None)
             return authority_models.PreparationAuthorityDecision(
                 item=item,
                 counter_before=counter,

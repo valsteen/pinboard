@@ -43,7 +43,7 @@ def decode_row[Record](row: sqlite3.Row, record_type: type[Record]) -> Record:
 
 
 def stale_write(message: str) -> DecisionFailure:
-    return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, message)
+    return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, message, None)
 
 
 def require_one_changed_row(cursor: sqlite3.Cursor, message: str) -> DecisionFailure | None:

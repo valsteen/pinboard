@@ -79,7 +79,7 @@ Before review:
 5. map every acceptance criterion to code, test, or evidence;
 6. if an existing test file shrank materially, inventory the removed behavior or test names and identify the replacement evidence;
 7. when acceptance claims lifecycle wiring, prove it through the production entry point rather than only through an internal primitive;
-8. write `result.md` in the attempt directory.
+8. write `result.md` at the exact attempt path `<work-root>/attempts/<attempt-id>/result.md`.
 
 When `result.md` is new or materially refreshed, return it to the owning task with one concise purpose label and one native clickable link. Do not repeat an unchanged result link in later status updates.
 

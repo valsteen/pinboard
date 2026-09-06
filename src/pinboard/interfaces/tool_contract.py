@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 from pathlib import Path
 from types import UnionType
-from typing import Literal, TypeAliasType, get_args
+from typing import Literal, TypeAliasType, assert_never, get_args
 
 import msgspec
 
@@ -30,6 +30,13 @@ type MutationClass = Literal[
     "may-publish-and-record-artifact",
     "repairs-derived-views",
 ]
+type ActionExecutionRoute = Literal[
+    "transition",
+    "dispatch",
+    "overview",
+    "runtime-continuation",
+    "runtime-blocker-artifact",
+]
 
 
 class OperationIndexEntry(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -42,6 +49,7 @@ class OperationIndexEntry(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 class ActionIndexEntry(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_kind: str
     mutation_class: MutationClass
+    execution_route: ActionExecutionRoute
     detail_selector: str
 
 
@@ -50,11 +58,17 @@ class PresentationIndexEntry(msgspec.Struct, frozen=True, forbid_unknown_fields=
     detail_selector: str
 
 
+class BriefStarterIndexEntry(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    boundary: cli_commands.BriefBoundary
+    detail_selector: str
+
+
 class ToolContractIndex(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-agent-tool-contract/v1"]
     tool_version: str
     operations: tuple[OperationIndexEntry, ...]
     actions: tuple[ActionIndexEntry, ...]
+    brief_starters: tuple[BriefStarterIndexEntry, ...]
     presentations: tuple[PresentationIndexEntry, ...]
 
 
@@ -62,6 +76,7 @@ class OperationContract(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     schema: Literal["pinboard-agent-tool-operation/v1"]
     operation_id: str
     variant: str
+    cli_usage: str
     purpose: str
     mutation_class: MutationClass
     permitted_roles: tuple[str, ...]
@@ -81,6 +96,7 @@ class ActionContract(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_kind: str
     purpose: str
     mutation_class: MutationClass
+    execution_route: ActionExecutionRoute
     lifecycle_effect: str
     permitted_roles: tuple[str, ...]
     required_authority: str
@@ -107,7 +123,10 @@ class PresentationContract(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     retry_semantics: Literal["safe-to-repeat"]
 
 
-type ToolContractDetail = OperationContract | ActionContract | PresentationContract
+type ToolContractDetail = (
+    OperationContract | ActionContract | PresentationContract | work_brief_contract.WorkBriefStarterContract
+)
+type OperationDetail = OperationContract | PresentationContract
 type OperationKey = tuple[str, str]
 
 
@@ -249,7 +268,7 @@ def _roles_and_authority(
         cli_commands.AttemptRevokeCommand,
         cli_commands.PreparationRevokeCommand,
     ):
-        return ("project",), "project-task-and-host"
+        return ("project",), "direct-project-operation-with-task-host-attribution"
     if command_type is cli_commands.BriefPublishCommand:
         return ("local-caller",), "validated-brief-identity"
     if command_type is cli_commands.InitializeCommand:
@@ -396,6 +415,7 @@ def _operation_contract(variant: cli_parser.InstalledCommandVariant) -> Operatio
         "pinboard-agent-tool-operation/v1",
         variant.operation_id,
         variant.variant,
+        variant.cli_usage,
         _purpose(variant.operation_id, variant.variant),
         mutation_class,
         roles,
@@ -421,6 +441,43 @@ def _action_mutation_class(kind: decision_models.ActionKind) -> MutationClass:
     return "read-only"
 
 
+def _action_execution_route(kind: decision_models.ActionKind) -> ActionExecutionRoute:
+    match kind:
+        case (
+            decision_models.ActionKind.ACCEPT_CHECKPOINT
+            | decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
+            | decision_models.ActionKind.ACCEPT_PROPOSAL
+            | decision_models.ActionKind.ACTIVATE
+            | decision_models.ActionKind.BLOCK
+            | decision_models.ActionKind.BLOCK_ITEM
+            | decision_models.ActionKind.COMPLETE
+            | decision_models.ActionKind.CLOSE
+            | decision_models.ActionKind.DEFER
+            | decision_models.ActionKind.MARK_READY
+            | decision_models.ActionKind.MERGE_PROPOSAL
+            | decision_models.ActionKind.PAUSE
+            | decision_models.ActionKind.REJECT_PROPOSAL
+            | decision_models.ActionKind.REOPEN
+            | decision_models.ActionKind.REBIND_ATTEMPT
+            | decision_models.ActionKind.RESUME
+            | decision_models.ActionKind.RETURN_FOR_CORRECTION
+            | decision_models.ActionKind.RETURN_PROPOSAL
+            | decision_models.ActionKind.REVISE_ITEM
+            | decision_models.ActionKind.SUBMIT_REVIEW
+        ):
+            return "transition"
+        case decision_models.ActionKind.DISPATCH:
+            return "dispatch"
+        case decision_models.ActionKind.INSPECT:
+            return "overview"
+        case decision_models.ActionKind.CONTINUE:
+            return "runtime-continuation"
+        case decision_models.ActionKind.REPORT_BLOCKER:
+            return "runtime-blocker-artifact"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _action_authority(roles: tuple[decision_models.Role, ...]) -> str:
     if roles == (decision_models.Role.WORKER,):
         return "attempt-lease"
@@ -429,7 +486,7 @@ def _action_authority(roles: tuple[decision_models.Role, ...]) -> str:
     if roles == (decision_models.Role.OBSERVER,):
         return "none"
     if roles == (decision_models.Role.PROJECT,):
-        return "project-task-and-host"
+        return "direct-project-operation-with-task-host-attribution"
     return "selected-role-authority"
 
 
@@ -447,6 +504,7 @@ def describe_action(kind: decision_models.ActionKind) -> ActionContract:
         kind.value,
         semantics.use_case,
         mutation_class,
+        _action_execution_route(kind),
         semantics.lifecycle_effect.value,
         tuple(role.value for role in semantics.permitted_roles),
         _action_authority(semantics.permitted_roles),
@@ -539,7 +597,12 @@ def installed_tool_contract() -> ToolContractIndex:
         for variant in installed
     )
     actions = tuple(
-        ActionIndexEntry(kind.value, _action_mutation_class(kind), f"--action-kind {kind.value}")
+        ActionIndexEntry(
+            kind.value,
+            _action_mutation_class(kind),
+            _action_execution_route(kind),
+            f"--action-kind {kind.value}",
+        )
         for kind in decision_models.ActionKind
     )
     installed_keys = tuple((variant.operation_id, variant.variant) for variant in installed)
@@ -553,11 +616,15 @@ def installed_tool_contract() -> ToolContractIndex:
         __version__,
         operations,
         actions,
+        tuple(
+            BriefStarterIndexEntry(boundary, f"--brief-starter {boundary}")
+            for boundary in cli_commands.BRIEF_BOUNDARIES
+        ),
         tuple(PresentationIndexEntry(name, f"--operation presentation/{name}") for name in ("root", "help", "version")),
     )
 
 
-def describe_operation(operation_id: str, variant: str = "default") -> ToolContractDetail:
+def describe_operation(operation_id: str, variant: str) -> OperationDetail:
     if operation_id.startswith("presentation/"):
         return _presentation_contract(operation_id.removeprefix("presentation/"))
     selected = tuple(
@@ -582,6 +649,8 @@ def operation_identity(command: cli_commands.CliCommand) -> str:
 
 
 def select_tool_contract(command: cli_commands.ToolContractCommand) -> ToolContractIndex | ToolContractDetail:
+    if command.brief_starter is not None:
+        return work_brief_contract.describe_work_brief_starter(command.brief_starter)
     if command.action_kind is not None:
         return describe_action(command.action_kind)
     if command.operation is None:
@@ -594,24 +663,38 @@ def show_tool_contract(command: cli_commands.ToolContractCommand) -> CommandResu
     try:
         selected = select_tool_contract(command)
     except UnknownToolContractSelector as error:
-        return CommandFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, str(error))
+        return CommandFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, str(error), None)
     if command.json:
         write_json(selected)
     elif isinstance(selected, ToolContractIndex):
         print(
             f"OK TOOL_CONTRACT operations={len(selected.operations)} "
-            f"actions={len(selected.actions)} presentations={len(selected.presentations)}"
+            f"actions={len(selected.actions)} brief_starters={len(selected.brief_starters)} "
+            f"presentations={len(selected.presentations)}"
         )
         print("Use --json for the compact index and one returned detail selector for exact execution facts.")
     else:
-        identity = (
-            selected.action_kind
-            if isinstance(selected, ActionContract)
-            else selected.presentation
-            if isinstance(selected, PresentationContract)
-            else f"{selected.operation_id}:{selected.variant}"
-        )
-        print(f"OK TOOL_CONTRACT_DETAIL identity={identity} mutation_class={selected.mutation_class}")
-        print(f"purpose={selected.purpose}")
-        print(f"retry_semantics={selected.retry_semantics}")
+        if isinstance(selected, ActionContract):
+            identity = selected.action_kind
+            mutation_class = selected.mutation_class
+            purpose = selected.purpose
+            retry_semantics = selected.retry_semantics
+        elif isinstance(selected, PresentationContract):
+            identity = selected.presentation
+            mutation_class = selected.mutation_class
+            purpose = selected.purpose
+            retry_semantics = selected.retry_semantics
+        elif isinstance(selected, work_brief_contract.WorkBriefStarterContract):
+            identity = f"brief-starter:{selected.boundary}"
+            mutation_class = "read-only"
+            purpose = "Return one complete unresolved work-brief starter without the full schema."
+            retry_semantics = "safe-to-repeat"
+        else:
+            identity = f"{selected.operation_id}:{selected.variant}"
+            mutation_class = selected.mutation_class
+            purpose = selected.purpose
+            retry_semantics = selected.retry_semantics
+        print(f"OK TOOL_CONTRACT_DETAIL identity={identity} mutation_class={mutation_class}")
+        print(f"purpose={purpose}")
+        print(f"retry_semantics={retry_semantics}")
     return 0

@@ -19,7 +19,7 @@ class ReviewContinuation(
 ):
     attempt_id: str
     candidate_revision: str
-    required_capability: Literal["runtime-subagent"] = "runtime-subagent"
+    required_capability: Literal["runtime-subagent"]
 
 
 class DependencyContinuation(

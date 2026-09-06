@@ -122,7 +122,17 @@ def write_rejected_operation(operation: str, failure: CliFailure) -> None:
         operation,
         failure.code.value,
         failure.message,
-        FailureDetails() if details is None else details,
+        FailureDetails(
+            observed=(),
+            mismatches=(),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        )
+        if details is None
+        else details,
+        (),
     )
 
 
@@ -130,11 +140,22 @@ def write_operation_rejection(
     operation: str,
     code: str,
     message: str,
-    details: FailureDetails | None = None,
-    next_actions: tuple[str, ...] = (),
+    details: FailureDetails | None,
+    next_actions: tuple[str, ...],
 ) -> None:
     """Present one typed operation failure, including any already committed effect."""
-    details = FailureDetails() if details is None else details
+    details = (
+        FailureDetails(
+            observed=(),
+            mismatches=(),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        )
+        if details is None
+        else details
+    )
     effect = details.effect
     write_json(
         RejectedOperationView(

@@ -4,7 +4,14 @@ from typing import assert_never, overload
 
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.definition_decisions import decide_definition_revision, introduces_dependency_cycle
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.errors import (
+    DecisionFailure,
+    DecisionFailureCode,
+    DecisionResult,
+    EffectDisposition,
+    FailureDetails,
+    RetryDisposition,
+)
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, ItemId, LedgerId, ProposalId, SubjectId
 from pinboard.domain.ledger import LedgerSnapshot
@@ -52,6 +59,33 @@ def _definition_stale(snapshot: LedgerSnapshot, item: work_models.WorkItem) -> b
         return False
     current_identity = definition.revision, definition.digest
     return (attempt.accepted_scope_revision, attempt.accepted_scope_digest) != current_identity
+
+
+def _require_item(snapshot: LedgerSnapshot, item_id: ItemId) -> DecisionResult[work_models.WorkItem]:
+    item = snapshot.item(item_id)
+    if item is None:
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.", None)
+    return item
+
+
+def _require_attempt_item(snapshot: LedgerSnapshot, attempt_id: AttemptId) -> DecisionResult[work_models.WorkItem]:
+    item = snapshot.item_for_attempt(attempt_id)
+    if item is None:
+        return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.", None)
+    return item
+
+
+def _require_review_item(
+    snapshot: LedgerSnapshot,
+    attempt_id: AttemptId,
+    unavailable_message: str,
+) -> DecisionResult[work_models.WorkItem]:
+    item = _require_attempt_item(snapshot, attempt_id)
+    if isinstance(item, DecisionFailure):
+        return item
+    if item.state != work_models.WorkState.REVIEW:
+        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, unavailable_message, None)
+    return item
 
 
 def _worker_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory) -> tuple[decision_models.Action, ...]:
@@ -229,6 +263,7 @@ def available_actions(
                         return DecisionFailure(
                             DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
                             "The supplied attempt lease is not current for an active item.",
+                            None,
                         )
                     return result
                 case decision_models.Role.PREPARER:
@@ -237,6 +272,7 @@ def available_actions(
                         return DecisionFailure(
                             DecisionFailureCode.ACTION_NOT_AVAILABLE,
                             "The supplied preparation lease is not current for a ready item.",
+                            None,
                         )
                     return result
                 case decision_models.Role.PROJECT:
@@ -310,6 +346,7 @@ def validate_supplied_action(
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             f"Action '{decision_models.action_id(supplied)}' is no longer legal.",
+            None,
         )
     supplied_capability = supplied.capability
     current_capability = current.capability
@@ -331,6 +368,7 @@ def validate_supplied_action(
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             f"Action '{decision_models.action_id(supplied)}' no longer carries the exact current authority.",
+            None,
         )
     return None
 
@@ -382,12 +420,12 @@ def _activate(
     action = command.action
     value = command.value
     item_id = action.capability.subject
-    item = snapshot.item(item_id)
-    if item is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.")
+    item = _require_item(snapshot, item_id)
+    if isinstance(item, DecisionFailure):
+        return item
     if item.state != work_models.WorkState.READY:
         return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.item}' is not ready for activation."
+            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.item}' is not ready for activation.", None
         )
     preparation = action.capability.preparation_authority
     definition = snapshot.definition(item.item)
@@ -404,6 +442,7 @@ def _activate(
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             "Activation requires the exact live preparation authority and definition pin.",
+            None,
         )
     artifact = next(
         (candidate for candidate in snapshot.artifacts if candidate.artifact_ref_id == value.brief_artifact_ref_id),
@@ -413,6 +452,14 @@ def _activate(
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             "Activation requires one existing brief artifact reference.",
+            FailureDetails(
+                observed=(),
+                mismatches=(),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
         )
     return _accepted_transition_decision(
         action,
@@ -442,11 +489,13 @@ def _block_dependencies(
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
             "The blocked item has no current definition.",
+            None,
         )
     if any(dependency not in definition.definition.dependencies for dependency in value.depends_on):
         return DecisionFailure(
             DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
             "Blocker dependencies must be identities from the current definition.",
+            None,
         )
     return item.depends_on
 
@@ -458,11 +507,11 @@ def _pause_or_block(
 ) -> DecisionResult[decision_models.TransitionDecision]:
     action = command.action
     attempt_id = action.capability.subject
-    item = snapshot.item_for_attempt(attempt_id)
-    if item is None:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.")
+    item = _require_attempt_item(snapshot, attempt_id)
+    if isinstance(item, DecisionFailure):
+        return item
     if item.state != work_models.WorkState.ACTIVE:
-        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "The named attempt is not active.")
+        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "The named attempt is not active.", None)
     match command:
         case decision_models.PauseCommand():
             change: decision_models.NonCheckpointDecisionChange = decision_models.AttemptStateChange(
@@ -513,20 +562,23 @@ def _complete(
     action = command.action
     value = command.value
     attempt_id = action.capability.subject
-    item = snapshot.item_for_attempt(attempt_id)
-    if item is None:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.")
+    item = _require_attempt_item(snapshot, attempt_id)
+    if isinstance(item, DecisionFailure):
+        return item
     if item.state not in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}:
         return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE, "The named attempt is not active or in review."
+            DecisionFailureCode.ACTION_NOT_AVAILABLE, "The named attempt is not active or in review.", None
         )
     if _definition_stale(snapshot, item):
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_STALE,
             "The attempt has not accepted the item's current definition.",
+            None,
         )
     if item.item in snapshot.history_items:
-        return DecisionFailure(DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.item}'.")
+        return DecisionFailure(
+            DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.item}'.", None
+        )
     before = (
         work_models.AttemptState.REVIEW
         if item.state == work_models.WorkState.REVIEW
@@ -548,19 +600,23 @@ def _close(
     action = command.action
     value = command.value
     item_id = action.capability.subject
-    item = snapshot.item(item_id)
-    if item is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.")
+    item = _require_item(snapshot, item_id)
+    if isinstance(item, DecisionFailure):
+        return item
     if item.state in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}:
         return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE, "Active or review work requires the acceptance path."
+            DecisionFailureCode.ACTION_NOT_AVAILABLE, "Active or review work requires the acceptance path.", None
         )
     if value.outcome == work_models.CloseOutcome.DROPPED and any(
         item.item in candidate.depends_on for candidate in snapshot.items
     ):
-        return DecisionFailure(DecisionFailureCode.LIVE_DEPENDENTS, f"Item '{item.item}' still has live dependents.")
+        return DecisionFailure(
+            DecisionFailureCode.LIVE_DEPENDENTS, f"Item '{item.item}' still has live dependents.", None
+        )
     if item.item in snapshot.history_items:
-        return DecisionFailure(DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.item}'.")
+        return DecisionFailure(
+            DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.item}'.", None
+        )
     authority_change = None if item.attempt is None else _fence_retained_attempt_authority(snapshot, item.attempt)
     if item.attempt is None:
         change: decision_models.NonCheckpointDecisionChange = decision_models.ItemClosureChange(
@@ -569,7 +625,9 @@ def _close(
     else:
         attempt = snapshot.attempts_by_id().get(item.attempt)
         if attempt is None:
-            return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{item.attempt}' does not exist.")
+            return DecisionFailure(
+                DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{item.attempt}' does not exist.", None
+            )
         change = decision_models.AttemptClosureChange(
             item.item,
             item.state,
@@ -595,16 +653,16 @@ def _resume(
     action = command.action
     value = command.value
     item_id = action.capability.subject
-    item = snapshot.item(item_id)
-    if item is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.")
+    item = _require_item(snapshot, item_id)
+    if isinstance(item, DecisionFailure):
+        return item
     if item.state not in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED}:
         return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.item}' is not paused or blocked."
+            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.item}' is not paused or blocked.", None
         )
     if any(dependency in snapshot.items_by_id() for dependency in item.depends_on):
         return DecisionFailure(
-            DecisionFailureCode.DEPENDENCY_NOT_SATISFIED, f"Item '{item.item}' still has a live dependency."
+            DecisionFailureCode.DEPENDENCY_NOT_SATISFIED, f"Item '{item.item}' still has a live dependency.", None
         )
     revised_brief: decision_models.RevisedAttemptBrief | None = None
     if value.brief_artifact_ref_id is not None:
@@ -612,6 +670,7 @@ def _resume(
             return DecisionFailure(
                 DecisionFailureCode.TRANSITION_INPUT_INVALID,
                 "Resuming with a revised brief requires an existing attempt.",
+                None,
             )
         artifact = next(
             (candidate for candidate in snapshot.artifacts if candidate.artifact_ref_id == value.brief_artifact_ref_id),
@@ -621,12 +680,14 @@ def _resume(
             return DecisionFailure(
                 DecisionFailureCode.TRANSITION_INPUT_INVALID,
                 "Resuming with a revised brief requires one existing brief artifact reference.",
+                None,
             )
         definition = snapshot.definition(item.item)
         if definition is None:
             return DecisionFailure(
                 DecisionFailureCode.TRANSITION_INPUT_INVALID,
                 "Resuming with a revised brief requires the item's accepted definition.",
+                None,
             )
         revised_brief = decision_models.RevisedAttemptBrief(
             value.brief_artifact_ref_id,
@@ -669,11 +730,12 @@ def _rebind_attempt(
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             "The rebind payload must name the selected attempt.",
+            None,
         )
     item = snapshot.item_for_attempt(attempt_id)
     attempt = snapshot.attempt(attempt_id)
     if item is None or attempt is None:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.")
+        return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.", None)
     match item.state:
         case work_models.WorkState.ACTIVE:
             expected_attempt_state = work_models.AttemptState.ACTIVE
@@ -689,6 +751,7 @@ def _rebind_attempt(
             return DecisionFailure(
                 DecisionFailureCode.ACTION_NOT_AVAILABLE,
                 "Only an active or paused attempt can be rebound.",
+                None,
             )
         case _ as unreachable:
             assert_never(unreachable)
@@ -696,12 +759,14 @@ def _rebind_attempt(
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             "Only an active or paused attempt can be rebound.",
+            None,
         )
     definition = snapshot.definition(item.item)
     if definition is None or attempt.accepted_scope_revision is None or attempt.accepted_scope_digest is None:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_STALE,
             "The attempt has no accepted definition identity to replace.",
+            None,
         )
     artifact = next(
         (candidate for candidate in snapshot.artifacts if candidate.artifact_ref_id == value.brief_artifact_ref_id),
@@ -711,12 +776,14 @@ def _rebind_attempt(
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             "Rebinding requires one existing brief artifact reference.",
+            None,
         )
     authorities = tuple(candidate for candidate in snapshot.attempt_authorities if candidate.attempt == attempt_id)
     if len(authorities) != 1:
         return DecisionFailure(
             DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
             "Rebinding requires exactly one current attempt-authority record to fence.",
+            None,
         )
     authority = authorities[0]
     return _accepted_transition_decision(
@@ -746,21 +813,22 @@ def _submit_review(
     action = command.action
     value = command.value
     attempt_id = action.capability.subject
-    item = snapshot.item_for_attempt(attempt_id)
-    if item is None:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.")
+    item = _require_attempt_item(snapshot, attempt_id)
+    if isinstance(item, DecisionFailure):
+        return item
     if item.state != work_models.WorkState.ACTIVE:
         return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE, "Only an active attempt can be submitted for review."
+            DecisionFailureCode.ACTION_NOT_AVAILABLE, "Only an active attempt can be submitted for review.", None
         )
     if _definition_stale(snapshot, item):
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_STALE,
             "The attempt has not accepted the item's current definition.",
+            None,
         )
     attempt = snapshot.attempt(attempt_id)
     if attempt is None:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.")
+        return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.", None)
     return _accepted_transition_decision(
         action,
         now,
@@ -782,18 +850,15 @@ def _return_for_correction(
     action = command.action
     value = command.value
     attempt_id = action.capability.subject
-    item = snapshot.item_for_attempt(attempt_id)
-    if item is None:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.")
-    if item.state != work_models.WorkState.REVIEW:
-        return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE, "Only an attempt in review can be returned for correction."
-        )
+    item = _require_review_item(snapshot, attempt_id, "Only an attempt in review can be returned for correction.")
+    if isinstance(item, DecisionFailure):
+        return item
     authorities = tuple(candidate for candidate in snapshot.attempt_authorities if candidate.attempt == attempt_id)
     if len(authorities) != 1:
         return DecisionFailure(
             DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
             "Returning a review requires exactly one current attempt-authority record to fence.",
+            None,
         )
     authority = authorities[0]
     authority_change = decision_models.AttemptAuthorityChange(
@@ -821,24 +886,21 @@ def _accept_checkpoint(
     action = command.action
     value = command.value
     attempt_id = action.capability.subject
-    item = snapshot.item_for_attempt(attempt_id)
-    if item is None:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.")
-    if item.state != work_models.WorkState.REVIEW:
-        return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            "Only an attempt in review can have a checkpoint accepted.",
-        )
+    item = _require_review_item(snapshot, attempt_id, "Only an attempt in review can have a checkpoint accepted.")
+    if isinstance(item, DecisionFailure):
+        return item
     if _definition_stale(snapshot, item):
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_STALE,
             "The attempt has not accepted the item's current definition.",
+            None,
         )
     authorities = tuple(candidate for candidate in snapshot.attempt_authorities if candidate.attempt == attempt_id)
     if len(authorities) != 1:
         return DecisionFailure(
             DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
             "Checkpoint acceptance requires exactly one current attempt-authority record to fence.",
+            None,
         )
     authority = authorities[0]
     authority_change = decision_models.AttemptAuthorityChange(
@@ -868,35 +930,36 @@ def _accept_review_and_continue(
     action = command.action
     value = command.value
     attempt_id = action.capability.subject
-    item = snapshot.item_for_attempt(attempt_id)
-    if item is None:
-        return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.")
-    if item.state != work_models.WorkState.REVIEW:
-        return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            "Only an item in review can have its review accepted for continuation.",
-        )
+    item = _require_review_item(
+        snapshot, attempt_id, "Only an item in review can have its review accepted for continuation."
+    )
+    if isinstance(item, DecisionFailure):
+        return item
     if _definition_stale(snapshot, item):
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_STALE,
             "The attempt has not accepted the item's current definition.",
+            None,
         )
     attempt = snapshot.attempt(attempt_id)
     if attempt is None or attempt.state != work_models.AttemptState.REVIEW:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             "Only an attempt in review can have its review accepted for continuation.",
+            None,
         )
     if attempt.protected_candidate_revision != value.candidate:
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             "Review continuation requires the exact protected candidate.",
+            None,
         )
     authorities = tuple(candidate for candidate in snapshot.attempt_authorities if candidate.attempt == attempt_id)
     if len(authorities) != 1:
         return DecisionFailure(
             DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
             "Review continuation requires exactly one current attempt-authority record to fence.",
+            None,
         )
     authority = authorities[0]
     authority_change = decision_models.AttemptAuthorityChange(
@@ -917,13 +980,14 @@ def _block_item(
 ) -> DecisionResult[decision_models.TransitionDecision]:
     action = command.action
     item_id = action.capability.subject
-    item = snapshot.item(item_id)
-    if item is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.")
+    item = _require_item(snapshot, item_id)
+    if isinstance(item, DecisionFailure):
+        return item
     if item.state != work_models.WorkState.INTAKE:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             f"Item '{item.item}' cannot perform '{action.kind.value}' now.",
+            None,
         )
     dependencies = _block_dependencies(snapshot, item, command.value)
     if isinstance(dependencies, DecisionFailure):
@@ -952,13 +1016,14 @@ def _simple_item_transition(
         case _ as unreachable:
             assert_never(unreachable)
     item_id = action.capability.subject
-    item = snapshot.item(item_id)
-    if item is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.")
+    item = _require_item(snapshot, item_id)
+    if isinstance(item, DecisionFailure):
+        return item
     if item.state not in expected:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             f"Item '{item.item}' cannot perform '{action.kind.value}' now.",
+            None,
         )
     return _accepted_transition_decision(
         action, now, decision_models.ItemStateChange(item.item, item.state, target), item=item.item
@@ -970,14 +1035,16 @@ def _defer(
 ) -> DecisionResult[decision_models.TransitionDecision]:
     action = command.action
     item_id = action.capability.subject
-    item = snapshot.item(item_id)
-    if item is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.")
+    item = _require_item(snapshot, item_id)
+    if isinstance(item, DecisionFailure):
+        return item
     if (
         item.state not in {work_models.WorkState.INTAKE, work_models.WorkState.READY, work_models.WorkState.BLOCKED}
         or item.attempt is not None
     ):
-        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.item}' cannot be deferred now.")
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.item}' cannot be deferred now.", None
+        )
     return _accepted_transition_decision(
         action,
         now,
@@ -993,10 +1060,12 @@ def _require_current_intake_proposal(
 ) -> DecisionResult[tuple[work_models.ProposalRecord, work_models.WorkItem]]:
     proposal = snapshot.proposal(proposal_id)
     if proposal is None:
-        return DecisionFailure(DecisionFailureCode.PROPOSAL_NOT_FOUND, f"Proposal '{proposal_id}' does not exist.")
+        return DecisionFailure(
+            DecisionFailureCode.PROPOSAL_NOT_FOUND, f"Proposal '{proposal_id}' does not exist.", None
+        )
     item = snapshot.item(ItemId(proposal_id))
     if item is None or item.state != work_models.WorkState.INTAKE or item.attempt is not None:
-        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, unavailable_message)
+        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, unavailable_message, None)
     return proposal, item
 
 
@@ -1018,6 +1087,7 @@ def _accept_proposal(
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             "An intake proposal must be accepted with its same work-item identity.",
+            None,
         )
     dependencies = tuple(dict.fromkeys((*current_item.depends_on, *value.depends_on)))
     if any(
@@ -1026,17 +1096,20 @@ def _accept_proposal(
         return DecisionFailure(
             DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
             "Accepted proposal dependencies must be existing identities.",
+            None,
         )
     if introduces_dependency_cycle(snapshot, value.item, dependencies):
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEPENDENCY_CYCLE,
             "Accepted proposal dependencies must not introduce a cycle.",
+            None,
         )
     current_definition = snapshot.definition(value.item)
     if current_definition is None:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
             "The accepted proposal item has no current definition.",
+            None,
         )
     accepted_definition = replace(current_definition.definition, dependencies=dependencies)
     definition_digest = work_item_definition_digest(accepted_definition)
@@ -1079,7 +1152,7 @@ def _merge_proposal(
         return current_proposal
     proposal, _item = current_proposal
     if snapshot.item(value.target) is None and value.target not in snapshot.history_items:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{value.target}' does not exist.")
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{value.target}' does not exist.", None)
     return _accepted_transition_decision(
         action,
         now,

@@ -65,10 +65,10 @@ class ActionView(msgspec.Struct, frozen=True, omit_defaults=True):
     subject: str
     label: str
     expected_revision: str
-    subject_revision: str
+    subject_revision: str | None
     authorization: str
-    lease_id: str
-    generation: int
+    lease_id: str | None
+    generation: int | None
     semantics: ActionSemanticsView
     input_contract: InputContractView | None = None
 

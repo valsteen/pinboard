@@ -26,7 +26,7 @@ class DispatchRejectionCode(Enum):
 class DispatchFailure:
     code: DispatchRejectionCode | DecisionFailureCode
     message: str
-    details: FailureDetails | None = None
+    details: FailureDetails | None
 
 
 type DispatchResult[T] = T | DispatchFailure

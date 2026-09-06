@@ -265,7 +265,7 @@ class PreparationAuthorityTest(unittest.TestCase):
                 before = observed
                 decision = decide_preparation_authority(None, 0, requested, observed, SQLITE_NOW)
 
-                self.assertEqual(DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, message), decision)
+                self.assertEqual(DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, message, None), decision)
                 self.assertEqual(before, observed)
 
     def test_initial_acquisition_keeps_internal_host_epoch_rejection(self) -> None:
@@ -279,6 +279,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             DecisionFailure(
                 DecisionFailureCode.ACTION_NOT_AVAILABLE,
                 "Initial preparation requires the exact dependency-satisfied ready item and definition.",
+                None,
             ),
             decision,
         )

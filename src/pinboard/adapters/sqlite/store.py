@@ -113,6 +113,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     "Activation requires exact preparation authority.",
+                    None,
                 )
             if (failure := consume_preparation_authority(connection, preparation, now)) is not None:
                 return failure
@@ -287,21 +288,38 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 return failure
             if (failure := fence_attempt_authority(connection, authority, now)) is not None:
                 return failure
-        case decision_models.CompletionChange(
-            item=item,
-            item_before=item_before,
-            attempt=attempt,
-            attempt_before=attempt_before,
-            evidence=evidence,
-            authority_change=authority,
-        ):
+        case (
+            decision_models.CompletionChange(
+                item=item,
+                item_before=item_before,
+                attempt=attempt,
+                attempt_before=attempt_before,
+                evidence=evidence,
+                authority_change=authority,
+            )
+            | decision_models.AttemptClosureChange(
+                item=item,
+                item_before=item_before,
+                evidence=evidence,
+                attempt=attempt,
+                attempt_before=attempt_before,
+                authority_change=authority,
+            )
+        ) as terminal_change:
+            match terminal_change:
+                case decision_models.CompletionChange():
+                    terminal_item_state = stored_state.StoredWorkItemState.DONE
+                case decision_models.AttemptClosureChange(terminal_state=terminal_state):
+                    terminal_item_state = stored_state.stored_close_outcome(terminal_state)
+                case _ as unreachable:
+                    assert_never(unreachable)
             if (
                 failure := set_item_state(
                     connection,
                     state,
                     item,
                     item_before,
-                    stored_state.StoredWorkItemState.DONE,
+                    terminal_item_state,
                     revision,
                     now,
                     evidence,
@@ -340,42 +358,6 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                     evidence,
                 )
             ) is not None:
-                return failure
-        case decision_models.AttemptClosureChange(
-            item=item,
-            item_before=item_before,
-            terminal_state=terminal_state,
-            evidence=evidence,
-            attempt=attempt,
-            attempt_before=attempt_before,
-            authority_change=authority,
-        ):
-            if (
-                failure := set_item_state(
-                    connection,
-                    state,
-                    item,
-                    item_before,
-                    stored_state.stored_close_outcome(terminal_state),
-                    revision,
-                    now,
-                    evidence,
-                )
-            ) is not None:
-                return failure
-            if (
-                failure := set_attempt_state(
-                    connection,
-                    state,
-                    attempt,
-                    attempt_before,
-                    work_models.AttemptState.DONE,
-                    revision,
-                    now,
-                )
-            ) is not None:
-                return failure
-            if authority is not None and (failure := fence_attempt_authority(connection, authority, now)) is not None:
                 return failure
         case decision_models.AcceptedProposalChange():
             if (failure := accept_proposal(connection, state, change, revision, now)) is not None:
@@ -535,6 +517,7 @@ def _persist(
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             "The targeted mutation receipt does not identify the next project revision exactly.",
+            None,
         )
     connection.execute("PRAGMA defer_foreign_keys = ON")
     if (failure := _persist_state_change(connection, state, mutation)) is not None:

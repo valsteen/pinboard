@@ -17,22 +17,25 @@ def decide_proposal_creation(
 ) -> DecisionResult[ProposalCreationDecision]:
     intake = operation.intake
     if snapshot.proposal(intake.proposal_id) is not None:
-        return DecisionFailure(DecisionFailureCode.PROPOSAL_ALREADY_EXISTS, "Proposal identity already exists.")
+        return DecisionFailure(DecisionFailureCode.PROPOSAL_ALREADY_EXISTS, "Proposal identity already exists.", None)
     item_id = ItemId(intake.proposal_id)
     if snapshot.item(item_id) is not None or item_id in snapshot.history_items:
-        return DecisionFailure(DecisionFailureCode.ITEM_ALREADY_EXISTS, "Proposal identity already names a work item.")
+        return DecisionFailure(
+            DecisionFailureCode.ITEM_ALREADY_EXISTS, "Proposal identity already names a work item.", None
+        )
     if (
         intake.relation.item is not None
         and snapshot.item(intake.relation.item) is None
         and intake.relation.item not in snapshot.history_items
     ):
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, "The related work item does not exist.")
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, "The related work item does not exist.", None)
     live_count = len(snapshot.items)
     position = intake.position if intake.position is not None else live_count + 1
     if position > live_count + 1:
         return DecisionFailure(
             DecisionFailureCode.PROPOSAL_INVALID,
             f"Proposal position must be between 1 and {live_count + 1}.",
+            None,
         )
     dependencies = (intake.relation.item,) if isinstance(intake.relation, work_models.FollowUpProposalRelation) else ()
     definition = work_models.WorkItemDefinition(
@@ -56,6 +59,7 @@ def decide_proposal_creation(
             return DecisionFailure(
                 DecisionFailureCode.ACTION_NOT_AVAILABLE,
                 "A live preparation claim prevents prerequisite changes to its ready item.",
+                None,
             )
         target = snapshot.item(intake.relation.item)
         anchor = snapshot.definition(intake.relation.item)

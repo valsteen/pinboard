@@ -25,7 +25,7 @@ An explicitly requested notification remains subordinate to this continuation. S
 
 1. Resolve this plugin's executable relative to this file as `../../scripts/pinboard`.
 2. Run `pinboard status --json` from the repository checkout.
-3. Require authority `sqlite-v4`. Intake is a direct project action using the invoking task and host identity; it does not require a lease.
+3. Require authority `sqlite-v4`. Intake is a direct trusted-local project action; its task and host values are audit attribution, not credentials, and it does not require a lease.
 4. If the workflow or executable is unavailable, stop. Do not infer shared state from titles, recency, nearby tasks, branches, or old audit files.
 5. Determine the current source task identity from trusted task context. If the environment does not expose it, ask the human for the exact task ID rather than inventing one.
 
@@ -70,8 +70,8 @@ Before creating a proposal, distinguish exact prior coverage from a merely relat
 ## Persist, then deliver
 
 1. Write the proposal to a temporary file outside canonical work state.
-2. Run `pinboard proposal --file <path> --task-id <current-task> --host-id <current-host>`.
-3. Treat `OK PROPOSAL_CREATED <proposal-id> position=<n> state=intake` as proof that both the proposal facts and intake item persisted.
+2. Run `pinboard proposal --file <path> --task-id <current-task> --host-id <current-host> --json`.
+3. Treat the returned `pinboard-proposal-created/v1` record as proof that both the proposal facts and intake item persisted. Use its exact `proposal_id`, `position`, `state`, and `committed_revision`; do not scrape human output.
 4. After that success, mention the generated item summary once as the readable accepted-definition view only when `<work-root>/views/items/<proposal-id>.md` is confirmed available, using a concise purpose label and a native clickable link. If the command reports a generated-view warning or the file is unavailable, preserve the successful intake receipt without a broken link; after a successful refresh or rebuild confirms availability, mention the link once. Do not re-announce it after an unchanged refresh.
 5. Read `references/codex-transport.md` only when the user explicitly requested delivery to another task and Codex task messaging is available.
 6. Notify the requested eligible task with the proposal ID and shared work root. Repository persistence, not messaging, is the correctness boundary.

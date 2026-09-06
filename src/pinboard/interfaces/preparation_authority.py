@@ -29,10 +29,14 @@ def _find_retained_preparation_claim(
 ) -> CommandResult[tuple[stored_state.StoredPreparationLease, stored_state.PreparationLeaseGeneration]]:
     retained = stored_state.retained_preparation(state, item_id)
     if retained is None:
-        return CommandFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item_id}' has no preparation claim.")
+        return CommandFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item_id}' has no preparation claim.", None
+        )
     lease, anchor = retained
     if anchor is None:
-        return CommandFailure(CommandErrorCode.WORK_STATE_INVALID, "Preparation authority has no identity anchor.")
+        return CommandFailure(
+            CommandErrorCode.WORK_STATE_INVALID, "Preparation authority has no identity anchor.", None
+        )
     if lease.state == authority_models.PreparationLeaseStatus.ACTIVE and lease.expires_at <= evaluated_at:
         lease = replace(lease, state=authority_models.PreparationLeaseStatus.EXPIRED)
     return lease, anchor
@@ -130,7 +134,7 @@ def _resolve_supplied_preparation_authority(
         None,
     )
     if observed_authority is None:
-        return CommandFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority is not active.")
+        return CommandFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority is not active.", None)
     return replace(observed_authority, lease_id=lease_id, generation=generation)
 
 
@@ -166,7 +170,9 @@ def _resolve_requested_preparation_change(
                 return retained
             lease, anchor = retained
             if lease.state == authority_models.PreparationLeaseStatus.ACTIVE:
-                return CommandFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority remains live.")
+                return CommandFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority remains live.", None
+                )
             return authority_models.TransferPreparationAuthority(
                 current=authority_models.InactivePreparationAuthority(
                     host_epoch=observed_state.lifecycle.project.host_epoch,

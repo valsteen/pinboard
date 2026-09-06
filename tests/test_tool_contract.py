@@ -29,6 +29,10 @@ class ToolContractTest(unittest.TestCase):
             {"root", "help", "version"},
             {presentation.presentation for presentation in contract.presentations},
         )
+        self.assertEqual(
+            {"local", "cross-boundary"},
+            {starter.boundary for starter in contract.brief_starters},
+        )
         for operation in contract.operations:
             with self.subTest(operation=operation.detail_selector):
                 detail = tool_contract.describe_operation(operation.operation_id, operation.variant)
@@ -48,12 +52,25 @@ class ToolContractTest(unittest.TestCase):
         self.assertEqual("pinboard-agent-tool-operation/v1", command.schema)
         self.assertEqual("transition", command.operation_id)
         self.assertEqual("attempt", command.variant)
+        self.assertTrue(
+            command.cli_usage.startswith("pinboard [--project-root PROJECT_ROOT] [--work-root WORK_ROOT] transition ")
+        )
+        self.assertIn("--authorization {project,attempt,preparation}", command.cli_usage)
+        self.assertIn("--lease-id LEASE_ID", command.cli_usage)
         self.assertEqual("mutates-ledger", command.mutation_class)
         self.assertEqual(("worker",), command.permitted_roles)
         self.assertEqual("attempt-lease", command.required_authority)
         self.assertEqual("action-subject", command.subject_kind)
         self.assertIsNotNone(command.input_schema)
         self.assertEqual("never-retry-with-stale-action-facts", command.retry_semantics)
+
+        project_command = tool_contract.describe_operation("transition", "project")
+        self.assertIsInstance(project_command, tool_contract.OperationContract)
+        assert isinstance(project_command, tool_contract.OperationContract)
+        self.assertEqual(
+            "direct-project-operation-with-task-host-attribution",
+            project_command.required_authority,
+        )
 
         action = tool_contract.describe_action(decision_models.ActionKind.SUBMIT_REVIEW)
         self.assertEqual("pinboard-agent-tool-action/v1", action.schema)
@@ -65,7 +82,7 @@ class ToolContractTest(unittest.TestCase):
         self.assertIsNotNone(action.input_schema)
         self.assertEqual("reselect-after-any-rejection", action.retry_semantics)
 
-        brief = tool_contract.describe_operation("brief/publish")
+        brief = tool_contract.describe_operation("brief/publish", "default")
         self.assertIsInstance(brief, tool_contract.OperationContract)
         assert isinstance(brief, tool_contract.OperationContract)
         self.assertIsNone(brief.artifact_schema)
@@ -73,7 +90,7 @@ class ToolContractTest(unittest.TestCase):
         assert brief.work_brief is not None
         self.assertEqual("pinboard-work-brief-contract/v1", brief.work_brief.schema)
 
-        proposal = tool_contract.describe_operation("proposal")
+        proposal = tool_contract.describe_operation("proposal", "default")
         self.assertIsInstance(proposal, tool_contract.OperationContract)
         assert isinstance(proposal, tool_contract.OperationContract)
         assert proposal.artifact_schema is not None
@@ -93,11 +110,26 @@ class ToolContractTest(unittest.TestCase):
             proposal_schema["$defs"]["FollowUpProposalRelation"]["properties"]["item"]["type"],
         )
 
+    def test_action_contract_names_the_execution_route_and_exact_authority(self) -> None:
+        transition = tool_contract.describe_action(decision_models.ActionKind.SUBMIT_REVIEW)
+        self.assertEqual("transition", transition.execution_route)
+
+        continuation = tool_contract.describe_action(decision_models.ActionKind.CONTINUE)
+        self.assertEqual("runtime-continuation", continuation.execution_route)
+        self.assertIsNone(continuation.input_schema)
+
+        project_action = tool_contract.describe_action(decision_models.ActionKind.MARK_READY)
+        self.assertEqual(
+            "direct-project-operation-with-task-host-attribution",
+            project_action.required_authority,
+        )
+
     def test_cli_index_and_selected_detail_do_not_resolve_project_roots(self) -> None:
         for arguments in (
             ("tool-contract", "--json"),
             ("tool-contract", "--operation", "attempt/inspect", "--json"),
             ("tool-contract", "--action-kind", "activate", "--json"),
+            ("tool-contract", "--brief-starter", "local", "--json"),
         ):
             with self.subTest(arguments=arguments):
                 stdout = io.StringIO()
@@ -115,6 +147,22 @@ class ToolContractTest(unittest.TestCase):
                 payload = json.loads(stdout.getvalue())
                 self.assertIsInstance(payload, dict)
                 self.assertIn("schema", payload)
+
+    def test_boundary_specific_brief_starter_is_complete_and_compact(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = main(("tool-contract", "--brief-starter", "local", "--json"))
+
+        self.assertEqual(0, result, stderr.getvalue())
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual("pinboard-work-brief-starter/v1", payload["schema"])
+        self.assertEqual("local", payload["boundary"])
+        self.assertNotIn("payload_schema", payload)
+        self.assertEqual("local", payload["starter"]["checkpoint"]["boundary"])
+        self.assertIn("outcome_description", payload["starter"]["checkpoint"])
+        self.assertIn("deferrals", payload["starter"]["checkpoint"])
+        self.assertLess(len(stdout.getvalue()), 10_000)
 
     def test_completeness_rejects_missing_duplicate_and_unknown_classification(self) -> None:
         installed = cli_parser.installed_command_variants()

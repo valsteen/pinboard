@@ -8,7 +8,9 @@ returned as values; infrastructure failures remain exceptions.
 
 import sys
 from datetime import UTC, datetime
-from typing import assert_never
+from typing import Literal, assert_never
+
+import msgspec
 
 from pinboard.adapters.files import models as file_models
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -18,7 +20,16 @@ from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import ItemId, ProposalId, TaskId
 from pinboard.interfaces import cli_commands, proposal_models, proposals, work_views
+from pinboard.interfaces.cli_output import write_json
 from pinboard.interfaces.errors import ProposalFailure, ProposalResult
+
+
+class ProposalCreatedView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-proposal-created/v1"]
+    proposal_id: str
+    position: int
+    state: str
+    committed_revision: str
 
 
 def _convert_proposal_relation(value: proposal_models.ProposalRelation) -> work_models.ProposalRelation:
@@ -50,6 +61,7 @@ def create_proposal(
         return ProposalFailure(
             DecisionFailureCode.PROPOSAL_INVALID,
             f"Cannot read proposal at '{proposal_path}': {error}",
+            None,
         )
     decoded_proposal = proposals.parse_proposal(encoded_proposal)
     if isinstance(decoded_proposal, ProposalFailure):
@@ -94,8 +106,16 @@ def create_proposal(
     intake_item = next(
         value for value in committed_state.lifecycle.work_items if str(value.item_id) == decoded_proposal.proposal_id
     )
-    print(
-        f"OK PROPOSAL_CREATED {decoded_proposal.proposal_id} "
-        f"position={intake_item.queue_position} state={intake_item.state.value}"
+    assert intake_item.queue_position is not None
+    created = ProposalCreatedView(
+        "pinboard-proposal-created/v1",
+        decoded_proposal.proposal_id,
+        intake_item.queue_position,
+        intake_item.state.value,
+        str(committed_state.lifecycle.project.revision),
     )
+    if command.json:
+        write_json(created)
+    else:
+        print(f"OK PROPOSAL_CREATED {created.proposal_id} position={created.position} state={created.state}")
     return 0

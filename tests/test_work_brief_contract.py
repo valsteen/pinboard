@@ -50,6 +50,17 @@ class WorkBriefContractTest(unittest.TestCase):
 
         self.assertEqual("pinboard-work-brief-contract/v1", contract.schema)
         self.assertEqual(
+            "Encode the completed typed brief as JSON with lexicographically sorted object keys, no insignificant "
+            "whitespace, and exactly one trailing newline.",
+            contract.canonicalization_rule,
+        )
+        self.assertEqual(
+            "Publication validates structure, cross-references, and canonical bytes. It does not resolve branch or "
+            "base_revision against Git or prove semantic scope, authority, consumer, or verification claims; the "
+            "caller and independent review own those facts.",
+            contract.fact_validation_boundary,
+        )
+        self.assertEqual(
             msgspec.json.schema(work_brief_models.WorkBrief),
             msgspec.json.decode(bytes(contract.payload_schema)),
         )

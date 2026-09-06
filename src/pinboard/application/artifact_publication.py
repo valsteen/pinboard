@@ -10,6 +10,7 @@ from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
     DecisionResult,
+    EffectDisposition,
     FailureDetails,
     FailureFact,
     FailureMismatch,
@@ -64,6 +65,7 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
                 return DecisionFailure(
                     DecisionFailureCode.TRANSITION_INPUT_INVALID,
                     "Resuming with a revised brief requires an existing attempt.",
+                    None,
                 )
             attempt_id = str(attempt.attempt_id)
             branch = attempt.branch
@@ -82,6 +84,7 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
                 return DecisionFailure(
                     DecisionFailureCode.TRANSITION_INPUT_INVALID,
                     "Rebinding requires an existing attempt.",
+                    None,
                 )
             item_id = str(attempt.item_id)
             branch = value.branch
@@ -99,6 +102,9 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
                 observed=(FailureFact("brief_identity", None),),
                 mismatches=(FailureMismatch("brief_identity", "decoded", None),),
                 retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
             ),
         )
     item = next((candidate for candidate in state.lifecycle.work_items if str(candidate.item_id) == item_id), None)
@@ -112,6 +118,7 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
             "The selected work item has no current definition.",
+            None,
         )
     if isinstance(command, decision_models.ActivateCommand):
         preparation = command.action.capability.preparation_authority
@@ -141,8 +148,12 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
                 DecisionFailureCode.TRANSITION_INPUT_INVALID,
                 "The selected work brief does not match the live preparation pin.",
                 FailureDetails(
+                    observed=(),
                     mismatches=preparation_mismatches,
                     retry=RetryDisposition.REFRESH_ACTION,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
                 ),
             )
     expected = WorkBriefIdentity(
@@ -178,8 +189,12 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             "The selected brief artifact does not match the attempt, item, branch, base revision, and accepted scope.",
             FailureDetails(
+                observed=(),
                 mismatches=identity_mismatches,
                 retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
             ),
         )
     return None

@@ -28,7 +28,7 @@ from tests.support import SQLITE_DIGEST, SQLITE_NOW, complete_sqlite_state, init
 class OperationFailureTest(unittest.TestCase):
     def initialized(
         self,
-        state: stored_state.StoredWorkState | None = None,
+        state: stored_state.StoredWorkState | None,
     ) -> tuple[SQLiteWorkStore, cli_commands.ResolvedRoots]:
         project = Path(tempfile.mkdtemp()).resolve()
         roots = resolve_durable_roots(project)
@@ -81,7 +81,7 @@ class OperationFailureTest(unittest.TestCase):
         worker_action = self.worker_action()
         worker_receipt = action_selection.ParsedActionReceipt(worker_action, decision_models.Role.WORKER, 3)
 
-        _store, roots = self.initialized()
+        _store, roots = self.initialized(None)
         stale_action = replace(
             worker_action,
             capability=replace(worker_action.capability, expected_revision="11"),
@@ -268,7 +268,7 @@ class OperationFailureTest(unittest.TestCase):
         )
 
     def test_dispatch_review_collision_reports_preserved_evidence_surfaces(self) -> None:
-        store, roots = self.initialized()
+        store, roots = self.initialized(None)
         artifacts = ArtifactRepository(resolve_durable_roots(roots.shared_repository))
         checkpoint_sha256 = "a" * 64
         first = publish_dispatch_review(

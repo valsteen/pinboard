@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import msgspec
 
@@ -17,6 +17,8 @@ type StableHostId = Annotated[HostId, _PATH_COMPONENT_ID]
 type StableItemId = Annotated[ItemId, _PATH_COMPONENT_ID]
 type StableLeaseId = Annotated[LeaseId, _PATH_COMPONENT_ID]
 type StableTaskId = Annotated[TaskId, _PATH_COMPONENT_ID]
+type BriefBoundary = Literal["local", "cross-boundary"]
+BRIEF_BOUNDARIES: tuple[BriefBoundary, ...] = ("local", "cross-boundary")
 
 
 class RootSelection(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -106,11 +108,16 @@ class InputContractCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
 class ToolContractCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     operation: str | None = None
     action_kind: decision_models.ActionKind | None = None
+    brief_starter: BriefBoundary | None = None
     json: bool = False
 
     def __post_init__(self) -> None:
-        if self.operation is not None and self.action_kind is not None:
-            raise ValueError("--operation and --action-kind are mutually exclusive")
+        if (
+            (self.operation is not None and self.action_kind is not None)
+            or (self.operation is not None and self.brief_starter is not None)
+            or (self.action_kind is not None and self.brief_starter is not None)
+        ):
+            raise ValueError("--operation, --action-kind, and --brief-starter are mutually exclusive")
 
 
 class BriefSourcesPlanCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -138,13 +145,14 @@ class HandoverCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class InitializeCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    pass
+    json: bool = False
 
 
 class ProposalCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     file: Path
     task_id: StableTaskId
     host_id: StableHostId
+    json: bool = False
 
 
 class ProjectTransitionCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

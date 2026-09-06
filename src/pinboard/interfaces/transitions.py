@@ -116,13 +116,13 @@ def revise_item(roots: cli_commands.ResolvedRoots, command: cli_commands.ItemRev
     try:
         revision_bytes = command.file.read_bytes()
     except OSError as error:
-        return CommandFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, f"Cannot read item revision: {error}")
+        return CommandFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, f"Cannot read item revision: {error}", None)
     validated_revision = parse_item_revision_input(revision_bytes)
     if isinstance(validated_revision, TransitionInputFailure):
         return CommandFailure(validated_revision.code, validated_revision.message, validated_revision.details)
     definition_digest = work_item_definition_digest(validated_revision.definition)
     if not isinstance(definition_digest, str):
-        return CommandFailure(definition_digest.code, definition_digest.message)
+        return CommandFailure(definition_digest.code, definition_digest.message, None)
     transition_revision = execute_project_transition(
         roots,
         command.task_id,
@@ -154,7 +154,9 @@ def transition(roots: cli_commands.ResolvedRoots, cli_command: cli_commands.Tran
     try:
         encoded_payload = cli_command.payload.read_bytes()
     except OSError as error:
-        return CommandFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, f"Cannot read transition payload: {error}")
+        return CommandFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID, f"Cannot read transition payload: {error}", None
+        )
     selected_action = action_selection.select_current_action(roots, supplied_action_receipt)
     if isinstance(selected_action, CommandFailure):
         return selected_action
@@ -260,6 +262,7 @@ def publish_checkpoint_artifacts(
         return CommandFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             f"Cannot read current checkpoint result.md and review.md: {error}",
+            None,
         )
     result_artifact = NewArtifact(
         work_models.ArtifactKind.RESULT,
@@ -289,8 +292,12 @@ def publish_checkpoint_artifacts(
                 error.code.value,
                 str(error),
                 FailureDetails(
+                    observed=(),
+                    mismatches=(),
+                    retry=RetryDisposition.DO_NOT_RETRY,
                     effect=EffectDisposition.COMMITTED,
                     changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+                    alternatives=(),
                 ),
             ) from error
         raise
@@ -335,16 +342,30 @@ def _execute_transition_command(
                         error.code.value,
                         str(error),
                         FailureDetails(
+                            observed=(),
+                            mismatches=(),
                             retry=(
                                 RetryDisposition.RETRY_SAME_INPUT if error.retryable else RetryDisposition.DO_NOT_RETRY
                             ),
                             effect=EffectDisposition.COMMITTED,
                             changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+                            alternatives=(),
                         ),
                     ) from error
                 raise
             if isinstance(result, DecisionFailure) and checkpoint_artifacts.created_immutable_artifact:
-                details = FailureDetails() if result.details is None else result.details
+                details = (
+                    FailureDetails(
+                        observed=(),
+                        mismatches=(),
+                        retry=RetryDisposition.DO_NOT_RETRY,
+                        effect=EffectDisposition.UNCHANGED,
+                        changed_surfaces=(),
+                        alternatives=(),
+                    )
+                    if result.details is None
+                    else result.details
+                )
                 result = DecisionFailure(
                     result.code,
                     result.message,
@@ -354,6 +375,7 @@ def _execute_transition_command(
                         retry=details.retry,
                         effect=EffectDisposition.COMMITTED,
                         changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+                        alternatives=(),
                     ),
                 )
         case (
@@ -417,6 +439,7 @@ def _decode_selected_project_transition(
                 return CommandFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     f"Action '{_requested_project_action_id(request)}' is not an item-revision action.",
+                    None,
                 )
             return decision_models.ReviseItemCommand(action, validated_revision)
         case _ as unreachable:
@@ -450,6 +473,7 @@ def execute_project_transition(
         return CommandFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             f"Action '{requested_action_id}' is not currently legal.",
+            None,
         )
     decoded_transition = _decode_selected_project_transition(selected_action, request)
     if isinstance(decoded_transition, CommandFailure):

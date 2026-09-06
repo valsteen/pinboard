@@ -355,6 +355,7 @@ def insert_definition_revision(
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_STALE,
             "The current definition changed before persistence.",
+            None,
         )
     append_definition_revision(connection, revision)
     current_item = require_stored_item(state, revision.item_id)
@@ -408,6 +409,7 @@ def insert_attempt(
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
             "The activated work item has no current definition.",
+            None,
         )
     return require_one_changed_row(
         connection.execute(

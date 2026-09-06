@@ -44,6 +44,7 @@ class InstalledCommandVariant:
     operation_id: str
     variant: str
     command_type: type[cli_commands.CliCommand]
+    cli_usage: str
 
 
 class _BriefSourcesArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -460,6 +461,11 @@ def _add_inspection_parsers(commands: argparse._SubParsersAction[argparse.Argume
     selection = tool_contract.add_mutually_exclusive_group()
     selection.add_argument("--operation", help="Installed operation ID, optionally followed by :variant.")
     selection.add_argument("--action-kind", choices=transition_input.INPUT_CONTRACT_ACTION_KINDS)
+    selection.add_argument(
+        "--brief-starter",
+        choices=cli_commands.BRIEF_BOUNDARIES,
+        help="Return one compact complete unresolved work-brief starter for this boundary.",
+    )
     tool_contract.add_argument("--json", action="store_true")
     _select_command(tool_contract, cli_commands.ToolContractCommand)
     brief_sources = commands.add_parser(
@@ -483,23 +489,29 @@ def _add_brief_parser(commands: argparse._SubParsersAction[argparse.ArgumentPars
     _select_command(publish, cli_commands.BriefPublishCommand)
 
 
+def _add_root_selection(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project-root", type=Path, help="Select the exact source checkout for authority reads.")
+    parser.add_argument("--work-root", type=Path)
+
+
 def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - complete top-level grammar
     parser = argparse.ArgumentParser(prog="pinboard", description="Inspect and transition one pinboard.")
     parser.add_argument("--version", action="version", version=__version__)
-    parser.add_argument("--project-root", type=Path, help="Select the exact source checkout for authority reads.")
-    parser.add_argument("--work-root", type=Path)
+    _add_root_selection(parser)
     commands = parser.add_subparsers(required=True)
     _add_inspection_parsers(commands)
     handover = commands.add_parser("handover", help="Export one complete tool-neutral project handover.")
     handover.add_argument("--json", action="store_true", required=True)
     _select_command(handover, cli_commands.HandoverCommand)
     initialize = commands.add_parser("init", help="Create an empty current SQLite work state.")
+    initialize.add_argument("--json", action="store_true")
     _select_command(initialize, cli_commands.InitializeCommand)
     _add_brief_parser(commands)
     proposal = commands.add_parser("proposal", help="Create one intake item without activating it.")
     proposal.add_argument("--file", type=Path, required=True)
     proposal.add_argument("--task-id", required=True)
     proposal.add_argument("--host-id", required=True)
+    proposal.add_argument("--json", action="store_true")
     _select_command(proposal, cli_commands.ProposalCommand)
     transition = commands.add_parser(
         "transition", help="Apply one selected lifecycle-changing action returned by the actions command."
@@ -595,13 +607,19 @@ def installed_command_variants() -> tuple[InstalledCommandVariant, ...]:
     """Read exact decoded variants from the installed parser leaves."""
 
     discovered: list[InstalledCommandVariant] = []
+    root_selection_parser = argparse.ArgumentParser(prog="pinboard", add_help=False)
+    _add_root_selection(root_selection_parser)
+    root_usage = " ".join(root_selection_parser.format_usage().removeprefix("usage: ").split())
 
     def visit(parser: argparse.ArgumentParser) -> None:
         variants = parser.get_default("contract_variants")
         if variants:
             operation_id = parser.prog.removeprefix("pinboard ").replace(" ", "/")
+            leaf_usage = " ".join(parser.format_usage().removeprefix("usage: ").split())
+            cli_usage = root_usage + leaf_usage.removeprefix("pinboard")
             discovered.extend(
-                InstalledCommandVariant(operation_id, variant, command_type) for variant, command_type in variants
+                InstalledCommandVariant(operation_id, variant, command_type, cli_usage)
+                for variant, command_type in variants
             )
         for action in parser._actions:
             if isinstance(action, argparse._SubParsersAction):

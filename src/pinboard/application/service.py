@@ -223,7 +223,9 @@ def start_preparation(
             definition = snapshot.definition(item_id)
             subject_revision = snapshot.subject_revision(item_id)
             if definition is None or subject_revision is None:
-                return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item_id}' has no definition.")
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item_id}' has no definition.", None
+                )
             requested_change = authority_models.AcquireInitialPreparationAuthority(
                 snapshot.host_epoch,
                 item_id,
@@ -410,6 +412,7 @@ def _resolve_actor_authority(
                 return DecisionFailure(
                     DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
                     "The supplied attempt authority is no longer current.",
+                    None,
                 )
             return decision_models.ActorAuthority(
                 decision_models.Role.WORKER,
@@ -430,6 +433,7 @@ def _resolve_actor_authority(
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     "The supplied preparation authority is no longer current.",
+                    None,
                 )
             return decision_models.ActorAuthority(
                 decision_models.Role.PREPARER,
@@ -481,6 +485,7 @@ def _validate_supplied_transition_and_decide(
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             "Project actions require the invoking task and host identity.",
+            None,
         )
     actor_authority = _resolve_actor_authority(decision_context, command.action, now)
     if isinstance(actor_authority, DecisionFailure):

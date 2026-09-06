@@ -35,12 +35,12 @@ def _read_attempt_brief(
     )
     if reference is None:
         return errors.CommandFailure(
-            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, "Accepted brief is missing."
+            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, "Accepted brief is missing.", None
         )
     try:
         brief = decode_canonical_work_brief(read_reference(roots.work, reference))
     except (ArtifactError, errors.WorkBriefError) as error:
-        return errors.CommandFailure(domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, str(error))
+        return errors.CommandFailure(domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, str(error), None)
     if (
         brief.attempt_id,
         brief.item_id,
@@ -57,7 +57,9 @@ def _read_attempt_brief(
         attempt.accepted_scope_digest,
     ):
         return errors.CommandFailure(
-            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, "Accepted brief identity differs from the attempt."
+            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            "Accepted brief identity differs from the attempt.",
+            None,
         )
     return reference, brief
 
@@ -69,7 +71,9 @@ def read_attempt_continuation(
     attempt = next((value for value in state.lifecycle.attempts if value.attempt_id == attempt_id), None)
     if attempt is None:
         return errors.CommandFailure(
-            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Attempt '{attempt_id}' does not exist."
+            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            f"Attempt '{attempt_id}' does not exist.",
+            None,
         )
     owner_task_id = None
     if attempt.state != work_models.AttemptState.DONE:
@@ -105,6 +109,7 @@ def show_review_job(
         return errors.CommandFailure(
             domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
             "Review job requires the current review attempt and exact protected candidate.",
+            None,
         )
     selected = _read_attempt_brief(roots, state, attempt)
     if isinstance(selected, errors.CommandFailure):
@@ -123,17 +128,20 @@ def show_review_job(
         return errors.CommandFailure(
             domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
             "Review job requires the current review attempt and exact protected candidate.",
+            None,
         )
     result_path = roots.work / "attempts" / command.attempt_id / "result.md"
     try:
         result_bytes = result_path.read_bytes()
     except OSError as error:
         return errors.CommandFailure(
-            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Cannot read current result.md: {error}"
+            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            f"Cannot read current result.md: {error}",
+            None,
         )
     if not result_bytes.strip():
         return errors.CommandFailure(
-            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, "Current result.md is empty."
+            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, "Current result.md is empty.", None
         )
     digest = sha256(result_bytes).hexdigest()
     brief_path = roots.work / reference.selector
@@ -224,15 +232,15 @@ def project_action(
         subject=capability.subject,
         label=capability.label,
         expected_revision=capability.expected_revision,
-        subject_revision=capability.subject_revision or "",
+        subject_revision=capability.subject_revision,
         authorization="observer" if capability.authorization is None else capability.authorization.value,
-        lease_id=capability.lease_id or "",
+        lease_id=capability.lease_id,
         generation=(
             capability.command_authority.generation
             if capability.command_authority is not None
             else capability.preparation_authority.generation
             if capability.preparation_authority is not None
-            else 0
+            else None
         ),
         semantics=_project_action_semantics(decision_models.action_semantics(action.kind)),
         input_contract=input_contract,
@@ -480,6 +488,7 @@ def show_actions(
             return errors.CommandFailure(
                 domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
                 f"Action '{exact_action_id}' is not currently legal for this role and lease.",
+                None,
             )
     if command.json:
         action_views: list[work_inspection_models.ActionView] = []
@@ -546,7 +555,7 @@ def show_parallel_preview(
         now=operation_time,
     )
     if isinstance(preview, query_models.ParallelSelectionInvalid):
-        return errors.CommandFailure(errors.CommandErrorCode.PARALLEL_SELECTION_INVALID, preview.message)
+        return errors.CommandFailure(errors.CommandErrorCode.PARALLEL_SELECTION_INVALID, preview.message, None)
     view = project_parallel_preview(preview)
     if command.json:
         write_json(view)

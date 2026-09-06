@@ -25,7 +25,9 @@ def project_attempt_continuation(
     """
     attempt = next((value for value in state.lifecycle.attempts if value.attempt_id == attempt_id), None)
     if attempt is None:
-        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Attempt '{attempt_id}' does not exist.")
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Attempt '{attempt_id}' does not exist.", None
+        )
     terminal = attempt.state == work_models.AttemptState.DONE
     available = discover_actions(state, decision_models.Role.PROJECT, now=now)
     if isinstance(available, DecisionFailure):
@@ -65,8 +67,10 @@ def _next_attempt_operation(
     for action in actions:
         if isinstance(action, decision_models.AcceptCheckpointAction):
             if attempt.candidate_revision is None:
-                return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Review has no protected candidate.")
-            return query_models.ReviewContinuation(attempt.attempt_id, attempt.candidate_revision)
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE, "Review has no protected candidate.", None
+                )
+            return query_models.ReviewContinuation(attempt.attempt_id, attempt.candidate_revision, "runtime-subagent")
         if isinstance(action, decision_models.ContinueAction):
             return query_models.ActionContinuation(
                 decision_models.action_id(action), action.kind, "Follow the accepted brief."
@@ -100,6 +104,7 @@ def _next_attempt_operation(
     return DecisionFailure(
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
         f"Attempt '{attempt.attempt_id}' has no supported continuation among its current legal actions.",
+        None,
     )
 
 
@@ -283,13 +288,15 @@ def project_item_status(
 ) -> DecisionResult[query_models.ItemStatus]:
     item = next((candidate for candidate in state.lifecycle.work_items if candidate.item_id == item_id), None)
     if item is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' was not found.")
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' was not found.", None)
     definition = next(
         (value.definition for value in reversed(state.lifecycle.definition_revisions) if value.item_id == item_id),
         None,
     )
     if definition is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Item '{item_id}' has no definition.")
+        return DecisionFailure(
+            DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Item '{item_id}' has no definition.", None
+        )
     attempts = tuple(
         query_models.ItemStatusAttempt(str(attempt.attempt_id), attempt.state, attempt.candidate_revision)
         for attempt in sorted(
@@ -337,7 +344,7 @@ def project_item_definition(
 ) -> DecisionResult[query_models.ItemDefinition]:
     item = next((value for value in state.lifecycle.work_items if value.item_id == item_id), None)
     if item is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.")
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.", None)
     current_definition = next(
         (value for value in reversed(state.lifecycle.definition_revisions) if value.item_id == item_id),
         None,
@@ -346,6 +353,7 @@ def project_item_definition(
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
             f"Item '{item_id}' has no accepted definition.",
+            None,
         )
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
@@ -367,7 +375,7 @@ def project_item_definition_history(
     before_revision: int | None = None,
 ) -> DecisionResult[query_models.ItemDefinitionHistory]:
     if not any(item.item_id == item_id for item in state.lifecycle.work_items):
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.")
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.", None)
     available = tuple(
         value
         for value in reversed(state.lifecycle.definition_revisions)

@@ -15,9 +15,21 @@ class WorkBriefRelationalConstraint(msgspec.Struct, frozen=True, forbid_unknown_
 class WorkBriefContract(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-work-brief-contract/v1"]
     completion_rule: work_brief_models.NonEmptyText
+    canonicalization_rule: work_brief_models.NonEmptyText
+    fact_validation_boundary: work_brief_models.NonEmptyText
     payload_schema: msgspec.Raw
     local_starter: msgspec.Raw
     cross_boundary_starter: msgspec.Raw
+    relational_constraints: tuple[WorkBriefRelationalConstraint, ...]
+
+
+class WorkBriefStarterContract(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-work-brief-starter/v1"]
+    boundary: Literal["local", "cross-boundary"]
+    completion_rule: work_brief_models.NonEmptyText
+    canonicalization_rule: work_brief_models.NonEmptyText
+    fact_validation_boundary: work_brief_models.NonEmptyText
+    starter: msgspec.Raw
     relational_constraints: tuple[WorkBriefRelationalConstraint, ...]
 
 
@@ -291,10 +303,34 @@ def describe_work_brief_contract() -> WorkBriefContract:
             "Every null is an unresolved required value. Fill it from accepted scope, reviewed authorities, and observed "
             "production consumers before publication; never infer missing facts. Empty optional collections may remain empty."
         ),
+        canonicalization_rule=(
+            "Encode the completed typed brief as JSON with lexicographically sorted object keys, no insignificant "
+            "whitespace, and exactly one trailing newline."
+        ),
+        fact_validation_boundary=(
+            "Publication validates structure, cross-references, and canonical bytes. It does not resolve branch or "
+            "base_revision against Git or prove semantic scope, authority, consumer, or verification claims; the "
+            "caller and independent review own those facts."
+        ),
         payload_schema=msgspec.Raw(
             msgspec.json.encode(msgspec.json.schema(work_brief_models.WorkBrief), order="sorted")
         ),
         local_starter=msgspec.Raw(msgspec.json.encode(_local_starter(), order="sorted")),
         cross_boundary_starter=msgspec.Raw(msgspec.json.encode(_cross_boundary_starter(), order="sorted")),
         relational_constraints=_RELATIONAL_CONSTRAINTS,
+    )
+
+
+def describe_work_brief_starter(boundary: Literal["local", "cross-boundary"]) -> WorkBriefStarterContract:
+    """Return one complete unresolved starter without the much larger validation schema."""
+    contract = describe_work_brief_contract()
+    starter = contract.local_starter if boundary == "local" else contract.cross_boundary_starter
+    return WorkBriefStarterContract(
+        schema="pinboard-work-brief-starter/v1",
+        boundary=boundary,
+        completion_rule=contract.completion_rule,
+        canonicalization_rule=contract.canonicalization_rule,
+        fact_validation_boundary=contract.fact_validation_boundary,
+        starter=starter,
+        relational_constraints=contract.relational_constraints,
     )

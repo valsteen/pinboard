@@ -49,12 +49,12 @@ class FailureAction:
 
 @dataclass(frozen=True, slots=True)
 class FailureDetails:
-    observed: tuple[FailureFact, ...] = ()
-    mismatches: tuple[FailureMismatch, ...] = ()
-    retry: RetryDisposition = RetryDisposition.DO_NOT_RETRY
-    effect: EffectDisposition = EffectDisposition.UNCHANGED
-    changed_surfaces: tuple[ChangedSurface, ...] = ()
-    alternatives: tuple[FailureAction, ...] = ()
+    observed: tuple[FailureFact, ...]
+    mismatches: tuple[FailureMismatch, ...]
+    retry: RetryDisposition
+    effect: EffectDisposition
+    changed_surfaces: tuple[ChangedSurface, ...]
+    alternatives: tuple[FailureAction, ...]
 
 
 class DecisionFailureCode(Enum):
@@ -84,7 +84,7 @@ class DecisionFailureCode(Enum):
 class DecisionFailure:
     code: DecisionFailureCode
     message: str
-    details: FailureDetails | None = None
+    details: FailureDetails | None
 
 
 type DecisionResult[T] = T | DecisionFailure

@@ -96,6 +96,7 @@ def read_dispatch_environment(path: Path) -> DispatchResult[DispatchEnvironment]
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_ENVIRONMENT_UNREADABLE,
             f"Cannot read '{path}': {error}",
+            None,
         )
     try:
         return msgspec.json.decode(data, type=DispatchEnvironment)
@@ -103,6 +104,7 @@ def read_dispatch_environment(path: Path) -> DispatchResult[DispatchEnvironment]
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_ENVIRONMENT_INVALID,
             f"Cannot decode dispatch environment: {error}",
+            None,
         )
 
 
@@ -123,13 +125,13 @@ def _review_failure(error: WorkBriefError) -> DispatchFailure:
             code = DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE
         case _ as unreachable:
             assert_never(unreachable)
-    return DispatchFailure(code, error.message)
+    return DispatchFailure(code, error.message, None)
 
 
 def _dispatch_failure(failure: ApplicationDispatchFailure) -> DispatchFailure:
     match failure.code:
         case DecisionFailureCode() as code:
-            return DispatchFailure(code, failure.message)
+            return DispatchFailure(code, failure.message, None)
         case DispatchRejectionCode.ACTION_INVALID:
             code = DispatchErrorCode.DISPATCH_ACTION_INVALID
         case DispatchRejectionCode.ACTION_UNAVAILABLE:
@@ -187,44 +189,52 @@ def _validate_dispatch_identity(
 ) -> DispatchFailure | None:
     if brief.attempt_id != attempt_id:
         return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_INVALID, "Canonical work brief names a different attempt."
+            DispatchErrorCode.DISPATCH_BRIEF_INVALID, "Canonical work brief names a different attempt.", None
         )
     if accepted_item_id is not None and brief.item_id != accepted_item_id:
-        return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, "Canonical work brief names a different item.")
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_INVALID, "Canonical work brief names a different item.", None
+        )
     if accepted_scope_revision is not None and brief.accepted_scope.revision != accepted_scope_revision:
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_INVALID,
             "Canonical work brief names a different accepted scope revision.",
+            None,
         )
     if accepted_scope_digest is not None and brief.accepted_scope.digest != accepted_scope_digest:
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_INVALID,
             "Canonical work brief names a different accepted scope digest.",
+            None,
         )
     if brief.branch != attempt_branch or environment.branch != attempt_branch:
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRANCH_MISMATCH,
             "Canonical brief, attempt, and dispatch environment branches must match.",
+            None,
         )
     if brief.base_revision != attempt_base_revision or environment.starting_revision != attempt_base_revision:
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BASE_REVISION_MISMATCH,
             "Canonical brief, attempt, and dispatch environment base revisions must match.",
+            None,
         )
     checkout = Path(environment.checkout)
     if not checkout.is_dir():
         return DispatchFailure(
-            DispatchErrorCode.DISPATCH_CHECKOUT_MISSING, f"Checkout '{checkout}' is not a directory."
+            DispatchErrorCode.DISPATCH_CHECKOUT_MISSING, f"Checkout '{checkout}' is not a directory.", None
         )
     if checkout.resolve() != source_checkout_root.resolve():
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_CHECKOUT_MISMATCH,
             "The dispatch environment checkout must match the selected source checkout.",
+            None,
         )
     if brief.checkpoint.checkpoint_id != checkpoint_id:
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_CHECKPOINT_MISSING,
             f"Checkpoint '{checkpoint_id}' is not the current canonical checkpoint.",
+            None,
         )
     return None
 
@@ -244,7 +254,7 @@ def _read_dispatch_brief(
     try:
         brief = read_work_brief(attempt_path)
     except WorkBriefError as error:
-        return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, error.message)
+        return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, error.message, None)
     if (
         failure := _validate_dispatch_identity(
             brief,
@@ -269,11 +279,13 @@ def _read_dispatch_brief(
                 return DispatchFailure(
                     DispatchErrorCode.DISPATCH_AUTHORITY_UNREADABLE,
                     f"Cannot read reviewed authority '{authority_id}': {reason}",
+                    None,
                 )
             case work_brief_models.ReviewedAuthorityDigestMismatch(authority_id=authority_id):
                 return DispatchFailure(
                     DispatchErrorCode.DISPATCH_AUTHORITY_STALE,
                     f"Reviewed authority '{authority_id}' changed after review.",
+                    None,
                 )
             case _ as unreachable:
                 assert_never(unreachable)
@@ -290,6 +302,7 @@ def _select_dispatch_review(
                 return DispatchFailure(
                     DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
                     "Local checkpoints do not publish cross-boundary brief reviews.",
+                    None,
                 )
             return None
         case work_brief_models.CrossBoundaryCheckpoint() as checkpoint:
@@ -315,12 +328,14 @@ def _validate_accepted_review(
                 return DispatchFailure(
                     DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
                     "Local checkpoints do not use cross-boundary brief reviews.",
+                    None,
                 )
         case work_brief_models.CrossBoundaryCheckpoint():
             if accepted_review is None:
                 return DispatchFailure(
                     DispatchErrorCode.DISPATCH_BRIEF_REVIEW_MISSING,
                     "The exact ready brief review is absent.",
+                    None,
                 )
             try:
                 review = decode_canonical_work_brief_review(accepted_review)
@@ -347,6 +362,7 @@ def _render_dispatch_prompt(
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_PROMPT_NOT_CANONICAL,
             "The launch adds or changes instructions outside the canonical attempt brief; render and use the exact prompt.",
+            None,
         )
     return prompt
 
@@ -458,6 +474,7 @@ def prepare_dispatch_command(
             return DispatchFailure(
                 DispatchErrorCode.DISPATCH_PROMPT_UNREADABLE,
                 f"Cannot read '{command.prompt}': {error}",
+                None,
             )
     match command:
         case cli_commands.ProjectReviewedDispatchCommand(brief_review=brief_review_path, review_id=review_id):
@@ -467,6 +484,7 @@ def prepare_dispatch_command(
                 return DispatchFailure(
                     DispatchErrorCode.DISPATCH_BRIEF_REVIEW_INVALID,
                     f"Cannot read '{brief_review_path}': {error}",
+                    None,
                 )
         case cli_commands.ProjectDispatchCommand():
             supplied_review = None

@@ -66,6 +66,7 @@ def _current_dispatch_action(
         return DispatchFailure(
             DispatchRejectionCode.ACTION_UNAVAILABLE,
             f"Action '{decision_models.action_id(supplied)}' is not available.",
+            None,
         )
     if current != supplied:
         if current.capability.expected_revision != supplied.capability.expected_revision:
@@ -73,6 +74,7 @@ def _current_dispatch_action(
                 DispatchRejectionCode.STALE_ACTION,
                 "The work ledger changed after this dispatch action was selected.",
                 FailureDetails(
+                    observed=(),
                     mismatches=(
                         FailureMismatch(
                             "expected_revision",
@@ -81,11 +83,15 @@ def _current_dispatch_action(
                         ),
                     ),
                     retry=RetryDisposition.REFRESH_ACTION,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
                 ),
             )
         return DispatchFailure(
             DispatchRejectionCode.ACTION_INVALID,
             "The dispatch action does not carry exact current authority.",
+            None,
         )
     return current
 
@@ -99,6 +105,7 @@ def select_dispatch(
         return DispatchFailure(
             DispatchRejectionCode.ACTION_UNAVAILABLE,
             f"Action '{decision_models.action_id(action)}' is not a dispatch action.",
+            None,
         )
     current = _current_dispatch_action(store, action, now)
     if isinstance(current, DispatchFailure):
@@ -107,7 +114,7 @@ def select_dispatch(
     attempt_id = current.capability.subject
     attempt = next((value for value in state.lifecycle.attempts if value.attempt_id == attempt_id), None)
     if attempt is None or attempt.state != work_models.AttemptState.ACTIVE:
-        return DispatchFailure(DispatchRejectionCode.ATTEMPT_NOT_ACTIVE, f"Attempt '{attempt_id}' is not active.")
+        return DispatchFailure(DispatchRejectionCode.ATTEMPT_NOT_ACTIVE, f"Attempt '{attempt_id}' is not active.", None)
     reference = next(
         (
             value
@@ -117,7 +124,7 @@ def select_dispatch(
         None,
     )
     if reference is None:
-        return DispatchFailure(DispatchRejectionCode.BRIEF_MISSING, "The attempt has no accepted brief artifact.")
+        return DispatchFailure(DispatchRejectionCode.BRIEF_MISSING, "The attempt has no accepted brief artifact.", None)
     return SelectedDispatch(attempt, reference)
 
 
@@ -144,7 +151,7 @@ def find_dispatch_review(
 ) -> DispatchResult[stored_state.ArtifactReference]:
     existing = _find_ready_review_reference(store, attempt_id, checkpoint_sha256)
     if existing is None:
-        return DispatchFailure(DispatchRejectionCode.REVIEW_MISSING, "The exact ready brief review is absent.")
+        return DispatchFailure(DispatchRejectionCode.REVIEW_MISSING, "The exact ready brief review is absent.", None)
     return existing
 
 
@@ -183,9 +190,11 @@ def publish_dispatch_review(
                 rejected_acceptance.message,
                 FailureDetails(
                     observed=(FailureFact("published_artifact_selector", rejected.selector),),
+                    mismatches=(),
                     retry=RetryDisposition.DO_NOT_RETRY,
                     effect=EffectDisposition.COMMITTED,
                     changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+                    alternatives=(),
                 ),
             )
         return DispatchFailure(
@@ -196,6 +205,7 @@ def publish_dispatch_review(
                     FailureFact("published_artifact_selector", rejected.selector),
                     FailureFact("accepted_revision", rejected_acceptance.accepted_revision),
                 ),
+                mismatches=(),
                 retry=RetryDisposition.DO_NOT_RETRY,
                 effect=EffectDisposition.COMMITTED,
                 changed_surfaces=(
@@ -203,6 +213,7 @@ def publish_dispatch_review(
                     ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE,
                     ChangedSurface.LEDGER,
                 ),
+                alternatives=(),
             ),
         )
     published = artifacts.publish(NewArtifact(work_models.ArtifactKind.EVIDENCE, key, 1, ".json", candidate))
@@ -217,9 +228,11 @@ def publish_dispatch_review(
             accepted.message,
             FailureDetails(
                 observed=(FailureFact("published_artifact_selector", published.selector),),
+                mismatches=(),
                 retry=RetryDisposition.DO_NOT_RETRY,
                 effect=EffectDisposition.COMMITTED,
                 changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+                alternatives=(),
             ),
         )
     return AcceptedDispatchReview(accepted, accepted.accepted_revision)
@@ -280,5 +293,6 @@ def recheck_dispatch_authority(
                 if own_review_publication_revision is not None
                 else ()
             ),
+            alternatives=(),
         ),
     )

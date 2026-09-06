@@ -8,6 +8,7 @@ from pinboard.application.actions import discover_actions
 from pinboard.domain import decision_models
 from pinboard.domain.errors import (
     DecisionFailure,
+    EffectDisposition,
     FailureAction,
     FailureDetails,
     FailureFact,
@@ -73,7 +74,18 @@ def with_current_alternatives(
     )
     if isinstance(current_actions, DecisionFailure):
         return failure
-    details = FailureDetails() if failure.details is None else failure.details
+    details = (
+        FailureDetails(
+            observed=(),
+            mismatches=(),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        )
+        if failure.details is None
+        else failure.details
+    )
     return CommandFailure(
         failure.code,
         failure.message,
@@ -96,6 +108,9 @@ def _malformed_action_id_failure(action_id: str, message: str) -> CommandFailure
             observed=(FailureFact("action_id", action_id),),
             mismatches=(FailureMismatch("action_id", "kind:subject", action_id),),
             retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
         ),
     )
 
@@ -122,8 +137,12 @@ def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
             CommandErrorCode.ACTION_KIND_UNKNOWN,
             f"Unknown action kind: {kind_value!r}.",
             FailureDetails(
+                observed=(),
                 mismatches=(FailureMismatch("action_kind", "known action kind", kind_value),),
                 retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
             ),
         )
     match command:
@@ -247,6 +266,9 @@ def _wrong_authority_failure(
             ),
             mismatches=mismatches,
             retry=RetryDisposition.REFRESH_ACTION,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
         ),
     )
 
@@ -279,6 +301,9 @@ def _inactive_authority_failure(
             ),
             mismatches=(FailureMismatch("authority_status", "active-unexpired", observed_status),),
             retry=RetryDisposition.REACQUIRE_AUTHORITY,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
         ),
     )
 
@@ -408,6 +433,8 @@ def select_current_action(
                     ),
                 ),
                 retry=RetryDisposition.REFRESH_ACTION,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
                 alternatives=alternatives,
             ),
         )
@@ -417,6 +444,7 @@ def select_current_action(
             CommandErrorCode.ACTION_REVISION_STALE,
             "The work ledger changed after this action was selected.",
             FailureDetails(
+                observed=(),
                 mismatches=(
                     FailureMismatch(
                         "expected_revision",
@@ -425,6 +453,8 @@ def select_current_action(
                     ),
                 ),
                 retry=RetryDisposition.REFRESH_ACTION,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
                 alternatives=alternatives,
             ),
         )
@@ -464,8 +494,11 @@ def select_current_action(
             CommandErrorCode.ACTION_AUTHORITY_WRONG,
             f"Action '{decision_models.action_id(supplied_action)}' no longer has exact current authority.",
             FailureDetails(
+                observed=(),
                 mismatches=mismatches,
                 retry=RetryDisposition.REFRESH_ACTION,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
                 alternatives=alternatives,
             ),
         )

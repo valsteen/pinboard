@@ -13,7 +13,7 @@ from typing import assert_never
 
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, RootError
 from pinboard.adapters.sqlite.errors import StorageError
-from pinboard.domain.errors import DecisionFailureCode, FailureDetails, RetryDisposition
+from pinboard.domain.errors import DecisionFailureCode, EffectDisposition, FailureDetails, RetryDisposition
 from pinboard.interfaces import (
     attempt_authority,
     brief_source_commands,
@@ -168,7 +168,7 @@ def _present_expected_result(result: CliResult[int], operation: str, *, json_req
     return exit_code
 
 
-def _run_invocation(  # noqa: PLR0912 - one visible final process-error router
+def _run_invocation(
     invocation: cli_commands.CliInvocation,
     operation: str,
     *,
@@ -178,7 +178,7 @@ def _run_invocation(  # noqa: PLR0912 - one visible final process-error router
         return _present_expected_result(_dispatch(invocation), operation, json_requested=json_requested)
     except CommittedEffectError as error:
         if json_requested:
-            cli_output.write_operation_rejection(operation, error.code, error.message, error.details)
+            cli_output.write_operation_rejection(operation, error.code, error.message, error.details, ())
         else:
             print(str(error), file=sys.stderr)
         return 12
@@ -189,7 +189,15 @@ def _run_invocation(  # noqa: PLR0912 - one visible final process-error router
                 operation,
                 code,
                 str(error),
-                FailureDetails(retry=RetryDisposition.CORRECT_INPUT),
+                FailureDetails(
+                    observed=(),
+                    mismatches=(),
+                    retry=RetryDisposition.CORRECT_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+                (),
             )
         else:
             print(str(error), file=sys.stderr)
@@ -205,33 +213,38 @@ def _run_invocation(  # noqa: PLR0912 - one visible final process-error router
                 operation,
                 error.code.value,
                 str(error),
-                FailureDetails(retry=retry),
+                FailureDetails(
+                    observed=(),
+                    mismatches=(),
+                    retry=retry,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+                (),
             )
         else:
             print(str(error), file=sys.stderr)
         return 12
-    except BriefSourceError as error:
+    except (BriefSourceError, WorkBriefError) as error:
         if json_requested:
             cli_output.write_operation_rejection(
                 operation,
                 error.code.value,
                 error.message,
-                FailureDetails(retry=RetryDisposition.CORRECT_INPUT),
+                FailureDetails(
+                    observed=(),
+                    mismatches=(),
+                    retry=RetryDisposition.CORRECT_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+                (),
             )
         else:
             print(str(error), file=sys.stderr)
-        return 15
-    except WorkBriefError as error:
-        if json_requested:
-            cli_output.write_operation_rejection(
-                operation,
-                error.code.value,
-                error.message,
-                FailureDetails(retry=RetryDisposition.CORRECT_INPUT),
-            )
-        else:
-            print(str(error), file=sys.stderr)
-        return 16
+        return 15 if isinstance(error, BriefSourceError) else 16
 
 
 def main(argv: Sequence[str] | None = None) -> int:

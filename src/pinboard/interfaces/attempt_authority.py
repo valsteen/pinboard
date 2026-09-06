@@ -34,11 +34,13 @@ def _present_latest_attempt_authority(
     retained = stored_state.retained_attempt(state, attempt_id)
     if retained is None:
         return CommandFailure(
-            DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, f"Attempt '{attempt_id}' has no retained authority."
+            DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, f"Attempt '{attempt_id}' has no retained authority.", None
         )
     lease, anchor = retained
     if anchor is None:
-        return CommandFailure(CommandErrorCode.WORK_STATE_INVALID, "Attempt authority has no exact identity anchor.")
+        return CommandFailure(
+            CommandErrorCode.WORK_STATE_INVALID, "Attempt authority has no exact identity anchor.", None
+        )
     values: dict[str, str | int] = {
         "attempt_id": str(attempt_id),
         **retained_authority_lease_fields((lease, anchor)),
@@ -62,7 +64,9 @@ def _find_attempt_record(
 ) -> CommandResult[stored_state.StoredAttempt]:
     attempt = next((value for value in observed_state.lifecycle.attempts if value.attempt_id == attempt_id), None)
     if attempt is None:
-        return CommandFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, f"Attempt '{attempt_id}' is not current.")
+        return CommandFailure(
+            DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, f"Attempt '{attempt_id}' is not current.", None
+        )
     return attempt
 
 
@@ -116,7 +120,7 @@ def _resolve_supplied_attempt_authority(
         None,
     )
     if observed_authority is None:
-        return CommandFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority is not active.")
+        return CommandFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority is not active.", None)
     return observed_authority
 
 

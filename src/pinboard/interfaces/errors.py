@@ -39,7 +39,7 @@ type CommandFailureCode = CommandErrorCode | DecisionFailureCode
 class CommandFailure:
     code: CommandFailureCode
     message: str
-    details: FailureDetails | None = None
+    details: FailureDetails | None
 
     def __str__(self) -> str:
         return f"{self.code.value}: {self.message}"
@@ -52,7 +52,7 @@ type CommandResult[T] = T | CommandFailure
 class ProposalFailure:
     code: DecisionFailureCode
     message: str
-    details: FailureDetails | None = None
+    details: FailureDetails | None
 
     def __str__(self) -> str:
         return f"{self.code.value}: {self.message}"
@@ -65,7 +65,7 @@ type ProposalResult[T] = T | ProposalFailure
 class TransitionInputFailure:
     code: DecisionFailureCode
     message: str
-    details: FailureDetails | None = None
+    details: FailureDetails | None
 
     def __str__(self) -> str:
         return f"{self.code.value}: {self.message}"
@@ -108,7 +108,7 @@ type DispatchFailureCode = DispatchErrorCode | DecisionFailureCode
 class DispatchFailure:
     code: DispatchFailureCode
     message: str
-    details: FailureDetails | None = None
+    details: FailureDetails | None
 
     def __str__(self) -> str:
         return f"{self.code.value}: {self.message}"

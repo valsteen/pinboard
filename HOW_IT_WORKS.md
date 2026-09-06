@@ -120,7 +120,7 @@ The command stories move from observation and repair to an ordinary mutation and
 
 ### Discover and recover an exact operation
 
-`tool-contract` reads no project state. Its compact index is derived from every installed parser leaf, the exact command union, and every lifecycle action. Selecting one operation or action exposes its purpose, effect class, role and authority, subject, lifecycle precondition, generated strict input or artifact schema, success postcondition, and retry rule. Brief publication also includes unresolved local and cross-boundary starters plus the relational constraints that a completed brief must satisfy. Structural tags are fixed, while identity, scope, authority, and verification stay `null` until accepted and reviewed facts supply them.
+`tool-contract` reads no project state. Its compact index is derived from every installed parser leaf, the exact command union, every lifecycle action, and both brief boundaries. Selecting one operation exposes exact CLI usage including global-root placement. Selecting one action adds the route that actually executes it, separating lifecycle transitions from dispatch, installed reads, runtime continuation, and blocker evidence. Both expose purpose, effect class, role and authority, subject, lifecycle precondition, strict input or artifact shape, success postcondition, and retry rule. Selecting one brief boundary returns only its complete unresolved starter, canonical byte rule, relational constraints, and fact-validation boundary without the much larger validation schema. Structural tags and required keys are fixed, while identity, scope, authority, and verification stay `null` until accepted and reviewed facts supply them.
 
 Explicit JSON failures use `pinboard-rejected-operation/v1`. An unchanged rejection reports its stable code, observations, mismatches, retry disposition, and any fresh same-subject action receipts after the locked check. A committed-effect result instead names the immutable artifact, accepted reference, or ledger surface already changed before the operation stopped. The caller inspects current state rather than replaying that mutation. This makes command mechanics discoverable and recoverable without making product meaning, source authority, independent review, or unavailable runtime capabilities mechanical.
 
@@ -139,7 +139,7 @@ Explicit JSON failures use `pinboard-rejected-operation/v1`. An unchanged reject
 
 ### Apply one project change
 
-Project actions are direct atomic ledger changes. The task applying the change supplies its task and host identity, and SQLite protects the authoritative transition. Rebinding is one such action: it changes the accepted scope identity, stored Git lineage, and accepted brief atomically, never the source checkout itself.
+Project actions are direct atomic ledger changes. The task applying the change supplies task and host audit attribution, not authenticated credentials, and SQLite protects the authoritative transition. Rebinding is one such action: it changes the accepted scope identity, stored Git lineage, and accepted brief atomically, never the source checkout itself.
 
 1. **Prepare exact input.** `close` builds its terminal payload, item revision validates a complete proposed definition, and `transition` reads the selected action receipt and its matching payload.
 2. **Reread, select, and commit.** The application opens one write transaction, rereads current state, reselects the exact legal action, decides it, and commits the change with the invoking task and host identity. A stale or illegal action returns without changing the ledger; JSON output may carry fresh legal alternatives from the post-rejection snapshot.
@@ -184,7 +184,7 @@ Once submission protects a candidate, `review-job` is a separate read-only proje
 - A preparation claim keeps an item ready while one task compiles and reviews its definition-bound brief; ordinary start creates the first claim or transfers an inactive one under the same lock that selects the current definition, and activation consumes the claim when it creates the attempt.
 - An attempt lease identifies the task, host, and lease that own one implementation attempt. Generations fence older preparation and attempt owners after transfer or revocation, while unrelated item-scoped leases remain independent.
 
-Project actions carry the invoking task and host identity and commit directly under SQLite's write transaction. They do not establish a persistent project owner.
+Project actions carry invoking task and host audit attribution and commit directly under SQLite's write transaction. They do not authenticate those strings or establish a persistent project owner.
 
 Project state holds the current revision. Committed history records each accepted input, outcome, and actor.
 

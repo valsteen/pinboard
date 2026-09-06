@@ -107,9 +107,10 @@ The installed command describes its own supported operations without opening pro
 pinboard tool-contract --json
 pinboard tool-contract --operation transition:attempt --json
 pinboard tool-contract --action-kind submit-review --json
+pinboard tool-contract --brief-starter local --json
 ```
 
-The compact index is derived from the installed parser leaves, exact command union, and lifecycle action family. A selected detail reports purpose, effect class, role and authority, subject, lifecycle precondition, strict input or artifact schema, success postcondition, and retry semantics. Brief publication additionally provides complete unresolved local and cross-boundary starters plus relational constraints; their `null` values must be filled from accepted and reviewed project facts, not guessed.
+The compact index is derived from the installed parser leaves, exact command union, lifecycle action family, and closed brief-boundary family. A selected detail reports the installed CLI usage including optional global-root placement, purpose, effect class, role and authority, subject, lifecycle precondition, strict input or artifact schema, success postcondition, and retry semantics. Action details name an execution route so advisory runtime actions are not mistaken for payload-bearing transitions. Brief publication additionally provides complete unresolved local and cross-boundary starters, canonical byte rules, relational constraints, and the exact fact-validation boundary. Use the boundary-specific selector to return one complete starter without the much larger validation schema, then replace every semantic `null` without dropping fields. Publication validates structure, cross-references, and canonical bytes; it does not resolve the declared branch or base revision against Git or prove that semantic claims are true.
 
 JSON-capable commands also return a stable `pinboard-rejected-operation/v1` document for malformed input, expected rejection, and known infrastructure failure. It separates unchanged rejection from a committed evidence-publication effect, reports exact mismatches and retry safety, and may include fresh same-subject action receipts. This makes mechanical command selection and recovery possible without reading Pinboard source. It does not make product meaning mechanical: choosing source authority, writing truthful scope and verification, providing an independent reviewer, and deciding repository disposition still require model or human judgment. If the Codex runtime cannot create a review subagent, the exact candidate remains in review for a capable runtime; Pinboard does not silently substitute the implementer or the user.
 
@@ -128,6 +129,8 @@ pinboard preparation start --item-id <item> --task-id <task> --host-id <host> --
 ```
 
 A live conflicting claim or an item that is no longer ready is rejected without change. The lower-level acquire and transfer commands remain available for exact recovery and diagnosis.
+
+Task and host strings on direct project operations are audit attribution supplied by the invoking Codex task. They are not authenticated credentials. Preparation and attempt lease IDs plus fencing generations are the retained operation authority.
 
 Revision files replace the whole `pinboard-work-item-definition/v1`; partial patches are rejected. Blocking can only name dependencies already present in that definition and never changes accepted dependencies itself.
 

@@ -310,7 +310,7 @@ class HandoverTest(unittest.TestCase):
         self.assertEqual(0, result, stderr)
         handover = self.decode_handover(stdout)
         self.assertEqual("pinboard-project-handover/v2", handover.schema)
-        self.assertEqual("sqlite-v4", handover.authority)
+        self.assertEqual("sqlite-v5", handover.authority)
         self.assertEqual(state_before.lifecycle.project.revision, handover.revision)
         self.assertEqual(stdout, self.run_cli(*common)[1])
 

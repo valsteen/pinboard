@@ -237,7 +237,7 @@ class SQLiteStoreTest(unittest.TestCase):
         for field, value, expected in (
             ("application", "wrong-application", StorageErrorCode.INVALID_STATE),
             ("schema_version", 0, StorageErrorCode.SCHEMA_UNSUPPORTED),
-            ("schema_version", 5, StorageErrorCode.SCHEMA_UNSUPPORTED),
+            ("schema_version", 4, StorageErrorCode.SCHEMA_UNSUPPORTED),
         ):
             tampered, _ = self._store(populated=False)
             connection = sqlite3.connect(tampered)
@@ -264,34 +264,34 @@ class SQLiteStoreTest(unittest.TestCase):
         self.assertEqual(StorageErrorCode.INVALID_STATE, malformed_error.exception.code)
 
     def test_unsupported_wal_schema_is_rejected_without_mutation(self) -> None:
-        newer_wal, _ = self._store(populated=False)
-        connection = sqlite3.connect(newer_wal)
+        unsupported_wal, _ = self._store(populated=False)
+        connection = sqlite3.connect(unsupported_wal)
         try:
             self.assertEqual("wal", connection.execute("PRAGMA journal_mode = WAL").fetchone()[0])
             connection.execute("PRAGMA ignore_check_constraints = ON")
-            connection.execute("UPDATE project_meta SET schema_version = 5")
+            connection.execute("UPDATE project_meta SET schema_version = 4")
             connection.commit()
         finally:
             connection.close()
         before_rejection = tuple(
             (candidate.name, candidate.read_bytes())
-            for candidate in sorted(newer_wal.parent.iterdir())
+            for candidate in sorted(unsupported_wal.parent.iterdir())
             if candidate.is_file()
         )
 
         with self.assertRaises(StorageError) as newer_error:
-            open_database(newer_wal, OpenMode.READ_WRITE)
+            open_database(unsupported_wal, OpenMode.READ_WRITE)
 
         self.assertEqual(StorageErrorCode.SCHEMA_UNSUPPORTED, newer_error.exception.code)
         self.assertEqual(
             before_rejection,
             tuple(
                 (candidate.name, candidate.read_bytes())
-                for candidate in sorted(newer_wal.parent.iterdir())
+                for candidate in sorted(unsupported_wal.parent.iterdir())
                 if candidate.is_file()
             ),
         )
-        mode_probe = sqlite3.connect(newer_wal)
+        mode_probe = sqlite3.connect(unsupported_wal)
         try:
             self.assertEqual("wal", mode_probe.execute("PRAGMA journal_mode").fetchone()[0])
         finally:
@@ -373,7 +373,7 @@ class SQLiteStoreTest(unittest.TestCase):
             connection.execute(
                 "CREATE TABLE project_meta (singleton INTEGER, application TEXT, schema_version INTEGER)"
             )
-            connection.execute("INSERT INTO project_meta VALUES (1, 'pinboard', 4)")
+            connection.execute("INSERT INTO project_meta VALUES (1, 'pinboard', 5)")
             connection.commit()
         finally:
             connection.close()
@@ -385,7 +385,7 @@ class SQLiteStoreTest(unittest.TestCase):
         invalid_types_connection = sqlite3.connect(invalid_types)
         try:
             invalid_types_connection.execute("CREATE TABLE project_meta (application, schema_version)")
-            invalid_types_connection.execute("INSERT INTO project_meta VALUES (7, 'sqlite-v4')")
+            invalid_types_connection.execute("INSERT INTO project_meta VALUES (7, 'sqlite-v5')")
             invalid_types_connection.commit()
         finally:
             invalid_types_connection.close()

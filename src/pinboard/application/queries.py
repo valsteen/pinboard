@@ -194,6 +194,29 @@ def _project_preparation_status(
     )
 
 
+def _project_selected_preparation_status(
+    selected: query_models.PreparationAuthorityStatus | None,
+    now: datetime,
+) -> query_models.PreparationStatusView | None:
+    if selected is None:
+        return None
+    status = (
+        authority_models.PreparationLeaseStatus.EXPIRED
+        if selected.status == authority_models.PreparationLeaseStatus.ACTIVE and selected.expires_at <= now
+        else selected.status
+    )
+    return query_models.PreparationStatusView(
+        selected.definition_revision,
+        selected.definition_digest,
+        str(selected.task_id),
+        str(selected.host_id),
+        str(selected.lease_id),
+        selected.generation,
+        selected.expires_at.isoformat(),
+        status,
+    )
+
+
 def project_overview(state: stored_state.StoredWorkState, now: datetime) -> query_models.WorkOverview:
     definitions = {value.item_id: value.definition for value in state.lifecycle.definition_revisions}
     attempts = {
@@ -299,7 +322,7 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
     )
     return query_models.WorkOverview(
         "pinboard-overview/v3",
-        "sqlite-v4",
+        "sqlite-v5",
         str(state.lifecycle.project.revision),
         tuple(
             str(attempt.attempt_id)
@@ -312,34 +335,28 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
 
 
 def project_item_status(
-    state: stored_state.StoredWorkState,
+    reader: ports.ItemStatusReader,
     item_id: ItemId,
     now: datetime,
 ) -> DecisionResult[query_models.ItemStatus]:
-    item = next((candidate for candidate in state.lifecycle.work_items if candidate.item_id == item_id), None)
+    facts = reader.read_item_status(item_id)
+    item = facts.item
     if item is None:
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' was not found.", None)
-    definition = next(
-        (value.definition for value in reversed(state.lifecycle.definition_revisions) if value.item_id == item_id),
-        None,
-    )
-    if definition is None:
+    if facts.definition_title is None:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Item '{item_id}' has no definition.", None
         )
     attempts = tuple(
         query_models.ItemStatusAttempt(str(attempt.attempt_id), attempt.state, attempt.candidate_revision)
-        for attempt in sorted(
-            (candidate for candidate in state.lifecycle.attempts if candidate.item_id == item_id),
-            key=_attempt_key,
-        )
+        for attempt in facts.attempts
     )
     return query_models.ItemStatus(
         "pinboard-item-status/v1",
-        "sqlite-v4",
-        str(state.lifecycle.project.revision),
+        "sqlite-v5",
+        str(facts.project_revision),
         str(item.item_id),
-        definition.title,
+        facts.definition_title,
         item.state,
         item.timing,
         item.outcome_evidence,
@@ -348,7 +365,7 @@ def project_item_status(
         item.notes,
         item.queue_position,
         attempts,
-        _project_preparation_status(stored_state.retained_preparation(state, item_id), now),
+        _project_selected_preparation_status(facts.preparation, now),
     )
 
 
@@ -382,7 +399,7 @@ def select_item_definition(
         )
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
-        "sqlite-v4",
+        "sqlite-v5",
         selected.project_revision,
         item_id,
         selected.item_subject_revision,
@@ -419,7 +436,7 @@ def select_item_definition_history(
     )
     return query_models.ItemDefinitionHistory(
         "pinboard-item-definition-history/v1",
-        "sqlite-v4",
+        "sqlite-v5",
         selected.project_revision,
         item_id,
         rows,

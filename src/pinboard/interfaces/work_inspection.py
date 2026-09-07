@@ -303,7 +303,7 @@ def compose_status(
         active_attempts=overview_value.active_attempts,
         counts=dict(Counter(item.state.value for item in state.lifecycle.work_items)),
         intake_item_count=sum(1 for item in overview_value.items if item.state == work_models.WorkState.INTAKE),
-        authority="sqlite-v4",
+        authority="sqlite-v5",
     )
 
 
@@ -362,8 +362,7 @@ def show_item_status(
     command: cli_commands.ItemStatusCommand,
 ) -> errors.CommandResult[int]:
     operation_time = datetime.now(UTC)
-    current_state = store.snapshot()
-    item_projection = queries.project_item_status(current_state, command.item_id, operation_time)
+    item_projection = queries.project_item_status(store, command.item_id, operation_time)
     if isinstance(item_projection, domain_errors.DecisionFailure):
         return errors.CommandFailure(item_projection.code, item_projection.message, item_projection.details)
     if command.json:

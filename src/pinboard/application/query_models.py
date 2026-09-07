@@ -71,7 +71,43 @@ class AttemptContinuation(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 
 
 type ItemStatusSchema = Literal["pinboard-item-status/v1"]
-type ItemStatusAuthority = Literal["sqlite-v4"]
+type ItemStatusAuthority = Literal["sqlite-v5"]
+
+
+@dataclass(frozen=True, slots=True)
+class ItemStatusItemFacts:
+    item_id: ItemId
+    state: stored_state.StoredWorkItemState
+    timing: work_models.Timing | None
+    outcome_evidence: str | None
+    next_action: str | None
+    source: str | None
+    notes: str | None
+    queue_position: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemStatusAttemptFacts:
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    candidate_revision: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemStatusLifecycleFacts:
+    project_revision: int
+    item: ItemStatusItemFacts | None
+    definition_title: str | None
+    attempts: tuple[ItemStatusAttemptFacts, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ItemStatusFacts:
+    project_revision: int
+    item: ItemStatusItemFacts | None
+    definition_title: str | None
+    attempts: tuple[ItemStatusAttemptFacts, ...]
+    preparation: PreparationAuthorityStatus | None
 
 
 class ItemStatusAttempt(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -217,7 +253,7 @@ class WorkItemDefinitionView(msgspec.Struct, frozen=True, forbid_unknown_fields=
 
 class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition/v1"]
-    authority: Literal["sqlite-v4"]
+    authority: Literal["sqlite-v5"]
     project_revision: int
     item_id: str
     item_subject_revision: int
@@ -240,7 +276,7 @@ class ItemDefinitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_field
 
 class ItemDefinitionHistory(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition-history/v1"]
-    authority: Literal["sqlite-v4"]
+    authority: Literal["sqlite-v5"]
     project_revision: int
     item_id: str
     revisions: tuple[ItemDefinitionHistoryRow, ...]

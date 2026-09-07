@@ -21,6 +21,7 @@ from pinboard.adapters.sqlite.artifacts import (
 )
 from pinboard.adapters.sqlite.artifacts import (
     accept_checkpoint_artifact,
+    read_brief_artifact_reference,
 )
 from pinboard.adapters.sqlite.authority import (
     consume_preparation_authority,
@@ -39,8 +40,11 @@ from pinboard.adapters.sqlite.database import (
 )
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
+    NonterminalAttemptContextSelection,
+    TerminalAttemptContextSelection,
     insert_attempt,
     insert_definition_revision,
+    read_attempt_context,
     read_item_status,
     rebind_attempt,
     replace_dependencies,
@@ -697,6 +701,46 @@ class SQLiteWorkStore:
                     lifecycle.attempts,
                     preparation,
                 )
+        finally:
+            connection.close()
+
+    def read_attempt_context(self, attempt_id: AttemptId) -> query_models.AttemptContextFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                selected = read_attempt_context(connection, attempt_id)
+                if selected is None:
+                    return None
+                match selected:
+                    case TerminalAttemptContextSelection():
+                        return query_models.TerminalAttemptContextFacts(
+                            selected.project_revision,
+                            selected.attempt_id,
+                            selected.item_id,
+                        )
+                    case NonterminalAttemptContextSelection():
+                        reference = read_brief_artifact_reference(connection, selected.brief_artifact_ref_id)
+                        if reference is None:
+                            raise StorageError(
+                                StorageErrorCode.INVALID_STATE,
+                                "The selected nonterminal attempt has no accepted brief reference.",
+                            )
+                        return query_models.NonterminalAttemptContextFacts(
+                            selected.project_revision,
+                            selected.attempt_id,
+                            selected.item_id,
+                            selected.state,
+                            selected.branch,
+                            selected.base_revision,
+                            selected.accepted_scope_revision,
+                            selected.accepted_scope_digest,
+                            selected.candidate_revision,
+                            selected.brief_artifact_ref_id,
+                            selected.item,
+                            reference,
+                        )
+                    case _ as unreachable:
+                        assert_never(unreachable)
         finally:
             connection.close()
 

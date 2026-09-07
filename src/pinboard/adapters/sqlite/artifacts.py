@@ -10,18 +10,30 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+import msgspec
+
 from pinboard.adapters.files.artifacts import verify_reference
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.application import stored_state
 from pinboard.application.artifacts import (
     ArtifactRef,
+    BriefArtifactRef,
     EvidenceArtifactRef,
     ResultArtifactRef,
 )
 from pinboard.application.ports import ArtifactReferenceAcceptance
+from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId
+
+
+class _BriefArtifactReferenceRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    key: str
+    revision: int
+    selector: str
+    content_sha256: str
+    size_bytes: int
 
 
 def _find_accepted_artifact(
@@ -71,6 +83,32 @@ def read_artifacts(connection: sqlite3.Connection) -> tuple[stored_state.Artifac
             ORDER BY artifact_ref_id
             """
         ).fetchall()
+    )
+
+
+def read_brief_artifact_reference(
+    connection: sqlite3.Connection,
+    artifact_ref_id: ArtifactRefId,
+) -> BriefArtifactRef | None:
+    row = connection.execute(
+        """
+        SELECT artifact_key AS key, artifact_revision AS revision, relative_path AS selector,
+               content_sha256, size_bytes
+        FROM artifact_refs
+        WHERE artifact_ref_id = ? AND kind = 'brief'
+        """,
+        (artifact_ref_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    selected = decode_row(row, _BriefArtifactReferenceRow)
+    return BriefArtifactRef(
+        selected.key,
+        selected.revision,
+        selected.selector,
+        selected.content_sha256,
+        selected.size_bytes,
+        work_models.ArtifactKind.BRIEF,
     )
 
 

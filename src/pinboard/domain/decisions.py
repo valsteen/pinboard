@@ -61,6 +61,21 @@ def _definition_stale(snapshot: LedgerSnapshot, item: work_models.WorkItem) -> b
     return (attempt.accepted_scope_revision, attempt.accepted_scope_digest) != current_identity
 
 
+def _context_definition_stale(context: work_models.ProjectAttemptActionContext) -> bool:
+    attempt = context.attempt_record
+    if (
+        attempt is None
+        or attempt.accepted_scope_revision is None
+        or context.current_definition_revision is None
+        or context.current_definition_digest is None
+    ):
+        return False
+    return (attempt.accepted_scope_revision, attempt.accepted_scope_digest) != (
+        context.current_definition_revision,
+        context.current_definition_digest,
+    )
+
+
 def _require_item(snapshot: LedgerSnapshot, item_id: ItemId) -> DecisionResult[work_models.WorkItem]:
     item = snapshot.item(item_id)
     if item is None:
@@ -143,56 +158,112 @@ def _preparer_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory
     return tuple(result)
 
 
-def _project_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory) -> list[decision_models.Action]:
-    result: list[decision_models.Action] = []
-    for item in snapshot.items:
-        if item.state not in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW} or item.attempt is None:
-            continue
-        if item.state == work_models.WorkState.ACTIVE:
-            if not _definition_stale(snapshot, item):
-                result.extend(
-                    (
-                        decision_models.ContinueAction(factory.make(item.attempt, f"Continue {item.item}")),
-                        decision_models.DispatchAction(
-                            factory.make(item.attempt, f"Prepare a worker launch for {item.item}")
-                        ),
-                    )
-                )
-            result.extend(
+@dataclass(frozen=True, slots=True)
+class ProjectAttemptActionGroups:
+    attempt_actions: tuple[decision_models.Action, ...]
+    item_actions: tuple[decision_models.Action, ...]
+
+
+def project_attempt_action_groups(
+    context: work_models.ProjectAttemptActionContext,
+    factory: ActionCapabilityFactory,
+) -> ProjectAttemptActionGroups:
+    """Decide the ordered project actions associated with one live attempt."""
+
+    attempt_actions: list[decision_models.Action] = []
+    stale = _context_definition_stale(context)
+    if context.item_state == work_models.WorkState.ACTIVE:
+        if not stale:
+            attempt_actions.extend(
                 (
-                    decision_models.RebindAttemptAction(
-                        factory.make(item.attempt, f"Rebind the accepted scope and Git baseline for {item.item}")
-                    ),
-                    decision_models.PauseAction(factory.make(item.attempt, f"Pause and preserve {item.item}")),
-                    decision_models.BlockAttemptAction(
-                        factory.make(item.attempt, f"Block active attempt for {item.item}")
+                    decision_models.ContinueAction(factory.make(context.attempt, f"Continue {context.item}")),
+                    decision_models.DispatchAction(
+                        factory.make(context.attempt, f"Prepare a worker launch for {context.item}")
                     ),
                 )
             )
-        if not _definition_stale(snapshot, item):
-            result.append(
-                decision_models.CompleteAction(factory.make(item.attempt, f"Accept and complete {item.item}"))
+        attempt_actions.extend(
+            (
+                decision_models.RebindAttemptAction(
+                    factory.make(context.attempt, f"Rebind the accepted scope and Git baseline for {context.item}")
+                ),
+                decision_models.PauseAction(factory.make(context.attempt, f"Pause and preserve {context.item}")),
+                decision_models.BlockAttemptAction(
+                    factory.make(context.attempt, f"Block active attempt for {context.item}")
+                ),
             )
-        if item.state == work_models.WorkState.REVIEW:
-            attempt = snapshot.attempt(item.attempt)
-            result.append(
-                decision_models.ReturnForCorrectionAction(
-                    factory.make(item.attempt, f"Return {item.item} for correction")
+        )
+    if context.item_state in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW} and not stale:
+        attempt_actions.append(
+            decision_models.CompleteAction(factory.make(context.attempt, f"Accept and complete {context.item}"))
+        )
+    if context.item_state == work_models.WorkState.REVIEW:
+        attempt_actions.append(
+            decision_models.ReturnForCorrectionAction(
+                factory.make(context.attempt, f"Return {context.item} for correction")
+            )
+        )
+        if not stale:
+            attempt_actions.append(
+                decision_models.AcceptCheckpointAction(
+                    factory.make(context.attempt, f"Accept a checkpoint for {context.item}")
                 )
             )
-            if not _definition_stale(snapshot, item):
-                result.append(
-                    decision_models.AcceptCheckpointAction(
-                        factory.make(item.attempt, f"Accept a checkpoint for {item.item}")
+            if context.attempt_record is not None and context.attempt_record.state == work_models.AttemptState.REVIEW:
+                attempt_actions.append(
+                    decision_models.AcceptReviewAndContinueAction(
+                        factory.make(context.attempt, f"Accept the review and continue {context.item}")
                     )
                 )
-                if attempt is not None and attempt.state == work_models.AttemptState.REVIEW:
-                    result.append(
-                        decision_models.AcceptReviewAndContinueAction(
-                            factory.make(item.attempt, f"Accept the review and continue {item.item}")
-                        )
-                    )
-    return result
+
+    item_actions: list[decision_models.Action] = []
+    if context.revision_available:
+        item_actions.append(
+            decision_models.ReviseItemAction(
+                factory.make(context.item, f"Revise the accepted definition for {context.item}")
+            )
+        )
+    close = decision_models.CloseAction(factory.make(context.item, f"Record a terminal decision for {context.item}"))
+    if context.item_state == work_models.WorkState.PAUSED:
+        item_actions.append(
+            decision_models.RebindAttemptAction(
+                factory.make(context.attempt, f"Rebind the accepted scope and Git baseline for {context.item}")
+            )
+        )
+        if not context.live_dependencies:
+            item_actions.append(
+                decision_models.ResumeAction(factory.make(context.item, f"Return {context.item} to active"))
+            )
+        item_actions.append(close)
+    elif context.item_state == work_models.WorkState.BLOCKED:
+        if not context.live_dependencies:
+            item_actions.append(
+                decision_models.ResumeAction(factory.make(context.item, f"Return {context.item} to active"))
+            )
+        item_actions.append(close)
+    return ProjectAttemptActionGroups(tuple(attempt_actions), tuple(item_actions))
+
+
+def _project_attempt_context(
+    snapshot: LedgerSnapshot,
+    item: work_models.WorkItem,
+    *,
+    revision_available: bool,
+) -> work_models.ProjectAttemptActionContext | None:
+    if item.attempt is None:
+        return None
+    live_items = snapshot.items_by_id()
+    definition = snapshot.definition(item.item)
+    return work_models.ProjectAttemptActionContext(
+        item.item,
+        item.state,
+        item.attempt,
+        snapshot.attempt(item.attempt),
+        None if definition is None else definition.revision,
+        None if definition is None else definition.digest,
+        tuple(dependency for dependency in item.depends_on if dependency in live_items),
+        revision_available,
+    )
 
 
 def _item_actions(
@@ -212,30 +283,68 @@ def _item_actions(
             close,
         ]
     dependencies_live = any(dependency in snapshot.items_by_id() for dependency in item.depends_on)
-    if item.state == work_models.WorkState.PAUSED and item.attempt is not None:
-        result: list[decision_models.Action] = [
-            decision_models.RebindAttemptAction(
-                factory.make(item.attempt, f"Rebind the accepted scope and Git baseline for {item.item}")
-            )
-        ]
-        if not dependencies_live:
-            result.append(decision_models.ResumeAction(factory.make(item.item, f"Return {item.item} to active")))
-        return [*result, close]
     if item.state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED} and not dependencies_live:
-        target = "active" if item.attempt is not None else "ready"
         result: list[decision_models.Action] = [
-            decision_models.ResumeAction(factory.make(item.item, f"Return {item.item} to {target}"))
+            decision_models.ResumeAction(factory.make(item.item, f"Return {item.item} to ready"))
         ]
-        if item.attempt is None:
-            result.append(
-                decision_models.DeferAction(factory.make(item.item, f"Defer {item.item} with a reopen condition"))
-            )
+        result.append(
+            decision_models.DeferAction(factory.make(item.item, f"Defer {item.item} with a reopen condition"))
+        )
         return [*result, close]
     if item.state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED}:
         return [close]
     if item.state == work_models.WorkState.DEFERRED:
         return [decision_models.ReopenAction(factory.make(item.item, f"Reopen {item.item} for intake")), close]
     return []
+
+
+def _project_role_actions(
+    snapshot: LedgerSnapshot,
+    factory: ActionCapabilityFactory,
+) -> tuple[decision_models.Action, ...]:
+    attempt_groups: dict[ItemId, ProjectAttemptActionGroups] = {}
+    for item in snapshot.items:
+        revision_available = not any(
+            authority.item == item.item for authority in snapshot.command_preparation_authorities
+        )
+        context = _project_attempt_context(snapshot, item, revision_available=revision_available)
+        if context is not None:
+            attempt_groups[item.item] = project_attempt_action_groups(context, factory)
+    result = [
+        action
+        for item in snapshot.items
+        if (group := attempt_groups.get(item.item)) is not None
+        for action in group.attempt_actions
+    ]
+    for item in snapshot.items:
+        if any(authority.item == item.item for authority in snapshot.command_preparation_authorities):
+            continue
+        group = attempt_groups.get(item.item)
+        if group is not None:
+            result.extend(group.item_actions)
+            continue
+        result.append(
+            decision_models.ReviseItemAction(factory.make(item.item, f"Revise the accepted definition for {item.item}"))
+        )
+        result.extend(_item_actions(snapshot, item, factory))
+    for proposal in snapshot.proposals:
+        result.extend(
+            (
+                decision_models.AcceptProposalAction(
+                    factory.make(proposal.proposal, f"Accept proposal {proposal.proposal}", proposal.revision)
+                ),
+                decision_models.MergeProposalAction(
+                    factory.make(proposal.proposal, f"Merge proposal {proposal.proposal}", proposal.revision)
+                ),
+                decision_models.ReturnProposalAction(
+                    factory.make(proposal.proposal, f"Return proposal {proposal.proposal}", proposal.revision)
+                ),
+                decision_models.RejectProposalAction(
+                    factory.make(proposal.proposal, f"Reject proposal {proposal.proposal}", proposal.revision)
+                ),
+            )
+        )
+    return tuple(result)
 
 
 def available_actions(
@@ -276,50 +385,7 @@ def available_actions(
                         )
                     return result
                 case decision_models.Role.PROJECT:
-                    result = _project_actions(snapshot, factory)
-                    for item in snapshot.items:
-                        if any(authority.item == item.item for authority in snapshot.command_preparation_authorities):
-                            continue
-                        result.append(
-                            decision_models.ReviseItemAction(
-                                factory.make(item.item, f"Revise the accepted definition for {item.item}")
-                            )
-                        )
-                        result.extend(_item_actions(snapshot, item, factory))
-                    for proposal in snapshot.proposals:
-                        result.extend(
-                            (
-                                decision_models.AcceptProposalAction(
-                                    factory.make(
-                                        proposal.proposal,
-                                        f"Accept proposal {proposal.proposal}",
-                                        proposal.revision,
-                                    )
-                                ),
-                                decision_models.MergeProposalAction(
-                                    factory.make(
-                                        proposal.proposal,
-                                        f"Merge proposal {proposal.proposal}",
-                                        proposal.revision,
-                                    )
-                                ),
-                                decision_models.ReturnProposalAction(
-                                    factory.make(
-                                        proposal.proposal,
-                                        f"Return proposal {proposal.proposal}",
-                                        proposal.revision,
-                                    )
-                                ),
-                                decision_models.RejectProposalAction(
-                                    factory.make(
-                                        proposal.proposal,
-                                        f"Reject proposal {proposal.proposal}",
-                                        proposal.revision,
-                                    )
-                                ),
-                            )
-                        )
-                    return tuple(result)
+                    return _project_role_actions(snapshot, factory)
                 case _ as unreachable:
                     assert_never(unreachable)
         case _ as unreachable:

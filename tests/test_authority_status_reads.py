@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import sqlite3
 import tempfile
@@ -20,7 +21,9 @@ from pinboard.domain import authority_models, work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
 from pinboard.interfaces.cli import main
+from pinboard.interfaces.work_briefs import canonical_work_brief_bytes
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
+from tests.work_brief_support import work_a_brief
 
 
 class AuthorityStatusReadTest(unittest.TestCase):
@@ -30,6 +33,27 @@ class AuthorityStatusReadTest(unittest.TestCase):
         initialize_database(roots, SQLITE_NOW)
         store = SQLiteWorkStore(roots.database_path)
         initialize_store(store, state)
+        return project, roots.work_root, store
+
+    def initialized_attempt_context(
+        self,
+        state: stored_state.StoredWorkState,
+    ) -> tuple[Path, Path, SQLiteWorkStore]:
+        project = Path(tempfile.mkdtemp()).resolve()
+        brief_bytes = canonical_work_brief_bytes(work_a_brief(project))
+        selected_reference = replace(
+            state.artifact_references[0],
+            content_sha256=hashlib.sha256(brief_bytes).hexdigest(),
+            size_bytes=len(brief_bytes),
+        )
+        state = replace(state, artifact_references=(selected_reference, *state.artifact_references[1:]))
+        roots = resolve_durable_roots(project)
+        initialize_database(roots, SQLITE_NOW)
+        store = SQLiteWorkStore(roots.database_path)
+        initialize_store(store, state)
+        brief_path = roots.work_root / selected_reference.selector
+        brief_path.parent.mkdir(parents=True)
+        brief_path.write_bytes(brief_bytes)
         return project, roots.work_root, store
 
     def run_cli(self, *arguments: str) -> tuple[int, str, str]:
@@ -67,6 +91,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
             yield read_tables, statements
 
     def assert_keyed_status_queries(self, database: Path, statements: list[str]) -> None:
+        self.assertEqual(1, sum(statement == "BEGIN" for statement in statements), statements)
         selects = tuple(statement for statement in statements if statement.lstrip().upper().startswith("SELECT"))
         self.assertTrue(selects)
         connection = sqlite3.connect(database)
@@ -302,6 +327,217 @@ class AuthorityStatusReadTest(unittest.TestCase):
             read_tables,
         )
         self.assert_keyed_status_queries(work / "state.sqlite3", statements)
+
+    def test_installed_attempt_reads_only_selected_continuation_facts(self) -> None:
+        state = self.state_with_unrelated_attempt_authority()
+        project, work, _store = self.initialized_attempt_context(state)
+        database = work / "state.sqlite3"
+        common = ("--project-root", str(project), "--work-root", str(work))
+        unrelated_view = work / "views" / "unrelated.md"
+        unrelated_view.parent.mkdir(parents=True, exist_ok=True)
+        unrelated_view.write_text("Unrelated projection.\n", encoding="utf-8")
+        before_inspection = (
+            database.read_bytes(),
+            database.stat().st_mtime_ns,
+            unrelated_view.read_bytes(),
+            unrelated_view.stat().st_mtime_ns,
+        )
+
+        with (
+            patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+            patch("pinboard.interfaces.work_inspection.datetime") as clock,
+            self.record_store_reads() as attempt_reads,
+        ):
+            clock.now.return_value = SQLITE_NOW
+            result, stdout, stderr = self.run_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1", "--json")
+
+        self.assertEqual(0, result, stderr)
+        self.assertIn('"attempt_id": "work-a-1"', stdout)
+        self.assertEqual(1, clock.now.call_count)
+        self.assertEqual(
+            before_inspection,
+            (
+                database.read_bytes(),
+                database.stat().st_mtime_ns,
+                unrelated_view.read_bytes(),
+                unrelated_view.stat().st_mtime_ns,
+            ),
+        )
+        read_tables, statements = attempt_reads
+        self.assertEqual(
+            {
+                "artifact_refs",
+                "attempts",
+                "item_dependencies",
+                "project_meta",
+                "work_item_definition_revisions",
+                "work_items",
+            },
+            read_tables,
+        )
+        self.assert_keyed_status_queries(database, statements)
+
+        raw = sqlite3.connect(database)
+        try:
+            raw.execute("UPDATE work_items SET state = 'review' WHERE item_id = 'work-a'")
+            raw.execute(
+                """
+                UPDATE attempts
+                SET state = 'review', candidate_revision = 'candidate-a', candidate_recorded_at = ?
+                WHERE attempt_id = 'work-a-1'
+                """,
+                (SQLITE_NOW.isoformat(),),
+            )
+            raw.commit()
+        finally:
+            raw.close()
+        result_path = work / "attempts" / "work-a-1" / "result.md"
+        result_path.parent.mkdir(parents=True)
+        result_path.write_text("Candidate evidence.\n", encoding="utf-8")
+        before_review = (
+            database.read_bytes(),
+            database.stat().st_mtime_ns,
+            unrelated_view.read_bytes(),
+            unrelated_view.stat().st_mtime_ns,
+        )
+
+        with (
+            patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+            patch("pinboard.interfaces.work_inspection.datetime") as clock,
+            self.record_store_reads() as review_reads,
+        ):
+            clock.now.return_value = SQLITE_NOW
+            result, stdout, stderr = self.run_cli(
+                *common,
+                "review-job",
+                "--attempt-id",
+                "work-a-1",
+                "--candidate-revision",
+                "candidate-a",
+                "--json",
+            )
+
+        self.assertEqual(0, result, stderr)
+        self.assertIn('"candidate_revision": "candidate-a"', stdout)
+        self.assertEqual(1, clock.now.call_count)
+        self.assertEqual(
+            before_review,
+            (
+                database.read_bytes(),
+                database.stat().st_mtime_ns,
+                unrelated_view.read_bytes(),
+                unrelated_view.stat().st_mtime_ns,
+            ),
+        )
+        review_tables, review_statements = review_reads
+        self.assertEqual(read_tables, review_tables)
+        self.assert_keyed_status_queries(database, review_statements)
+
+    def test_terminal_attempt_inspection_stops_before_related_rows_and_artifacts(self) -> None:
+        state = self.state_with_unrelated_attempt_authority()
+        selected_item = next(value for value in state.lifecycle.work_items if value.item_id == ItemId("work-a"))
+        selected_attempt = next(
+            value for value in state.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1")
+        )
+        assert selected_item.queue_position is not None
+        items = tuple(
+            replace(
+                item,
+                state=stored_state.StoredWorkItemState.DONE,
+                outcome_evidence="accepted",
+                next_action=None,
+                queue_position=None,
+            )
+            if item == selected_item
+            else replace(item, queue_position=item.queue_position - 1)
+            if item.queue_position is not None and item.queue_position > selected_item.queue_position
+            else item
+            for item in state.lifecycle.work_items
+        )
+        attempts = tuple(
+            replace(attempt, state=work_models.AttemptState.DONE) if attempt == selected_attempt else attempt
+            for attempt in state.lifecycle.attempts
+        )
+        state = replace(state, lifecycle=replace(state.lifecycle, work_items=items, attempts=attempts))
+        project, work, _store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+
+        with (
+            patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+            self.record_store_reads() as reads,
+        ):
+            result, stdout, stderr = self.run_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1")
+
+        self.assertEqual(0, result, stderr)
+        self.assertIn('"terminal": true', stdout)
+        tables, statements = reads
+        self.assertEqual({"attempts", "project_meta"}, tables)
+        self.assert_keyed_status_queries(work / "state.sqlite3", statements)
+
+    def test_attempt_inspection_rejects_selected_corruption_and_ignores_unrelated_corruption(self) -> None:
+        state = self.state_with_unrelated_attempt_authority()
+        project, work, _store = self.initialized_attempt_context(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        raw = sqlite3.connect(work / "state.sqlite3")
+        try:
+            raw.execute(
+                "UPDATE work_item_definition_revisions SET definition_json = ? WHERE item_id = ?",
+                (b"{}", "work-b"),
+            )
+            raw.commit()
+        finally:
+            raw.close()
+
+        result, stdout, stderr = self.run_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1")
+        self.assertEqual(0, result, stderr)
+        self.assertIn('"attempt_id": "work-a-1"', stdout)
+        validation, validation_stdout, _validation_stderr = self.run_cli(*common, "validate")
+        self.assertEqual(10, validation)
+        self.assertIn("WORK_STATE_INVALID", validation_stdout)
+
+        selected_project, selected_work, _selected_store = self.initialized_attempt_context(state)
+        raw = sqlite3.connect(selected_work / "state.sqlite3")
+        try:
+            raw.execute(
+                "UPDATE work_item_definition_revisions SET definition_json = ? WHERE item_id = ?",
+                (b"{}", "work-a"),
+            )
+            raw.commit()
+        finally:
+            raw.close()
+        selected_result, _selected_stdout, selected_stderr = self.run_cli(
+            "--project-root",
+            str(selected_project),
+            "--work-root",
+            str(selected_work),
+            "attempt",
+            "inspect",
+            "--attempt-id",
+            "work-a-1",
+        )
+        self.assertEqual(12, selected_result)
+        self.assertIn("WORK_STATE_INVALID", selected_stderr)
+
+        missing_project, missing_work, _missing_store = self.initialized_attempt_context(state)
+        raw = sqlite3.connect(missing_work / "state.sqlite3")
+        try:
+            raw.execute("PRAGMA foreign_keys = OFF")
+            raw.execute("DELETE FROM work_items WHERE item_id = ?", ("work-a",))
+            raw.commit()
+        finally:
+            raw.close()
+        missing_result, _missing_stdout, missing_stderr = self.run_cli(
+            "--project-root",
+            str(missing_project),
+            "--work-root",
+            str(missing_work),
+            "attempt",
+            "inspect",
+            "--attempt-id",
+            "work-a-1",
+        )
+        self.assertEqual(12, missing_result)
+        self.assertIn("WORK_STATE_INVALID", missing_stderr)
 
     def test_item_status_rejects_selected_corruption_and_ignores_unrelated_corruption(self) -> None:
         state = self.state_with_preparation(unrelated_count=1)

@@ -4,6 +4,7 @@ import io
 import json
 import os
 import runpy
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -19,6 +20,8 @@ from pinboard.adapters.files import views as file_views
 from pinboard.adapters.files.artifacts import write_revision
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
+from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult
+from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -3347,6 +3350,29 @@ Not launchable:
         self.assertIsNone(continuation.next_operation)
         self.assertEqual((), continuation.legal_actions)
         before = store.snapshot()
+        missing_message = "Review job requires the current review attempt and exact protected candidate."
+        rejected, _, rejected_stderr = self.run_cli(
+            *common,
+            "review-job",
+            "--attempt-id",
+            "unknown",
+            "--candidate-revision",
+            "candidate",
+        )
+        self.assertEqual(11, rejected)
+        self.assertIn(missing_message, rejected_stderr)
+        rejected, rejected_stdout, rejected_stderr = self.run_cli(
+            *common,
+            "review-job",
+            "--attempt-id",
+            "unknown",
+            "--candidate-revision",
+            "candidate",
+            "--json",
+        )
+        self.assertEqual(11, rejected)
+        self.assertEqual("", rejected_stderr)
+        self.assertEqual(missing_message, self.json_object(json.loads(rejected_stdout))["message"])
         for arguments in (
             ("attempt", "inspect", "--attempt-id", "unknown"),
             ("review-job", "--attempt-id", "work-a-1", "--candidate-revision", "candidate"),
@@ -3355,6 +3381,52 @@ Not launchable:
             rejected, _, _ = self.run_cli(*common, *arguments)
             self.assertEqual(11, rejected)
             self.assertEqual(before, store.snapshot())
+
+    def test_known_attempt_post_commit_continuation_cannot_use_complete_state(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        common = ("--project-root", str(project), "--work-root", str(work))
+        action = self.project_action(common, "pause:work-a-1")
+        payload = project / "pause.json"
+        payload.write_text('{"reason":"Pause at a stable checkpoint."}\n', encoding="utf-8")
+        original_snapshot = SQLiteWorkStore.snapshot
+        original_read_state = sqlite_state.read_state
+        original_refresh = transition_interface.work_views.refresh
+        refresh_complete = False
+
+        def guarded_snapshot(selected_store: SQLiteWorkStore) -> stored_state.StoredWorkState:
+            if refresh_complete:
+                raise AssertionError("post-commit continuation used a complete snapshot")
+            return original_snapshot(selected_store)
+
+        def guarded_read_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
+            if refresh_complete:
+                raise AssertionError("post-commit continuation used complete-state assembly")
+            return original_read_state(connection)
+
+        def refresh_then_fence(
+            durable: DurableRoots,
+            selected_store: SQLiteWorkStore,
+            affected: AffectedViews,
+            now: datetime,
+        ) -> ViewRefreshResult:
+            nonlocal refresh_complete
+            result = original_refresh(durable, selected_store, affected, now)
+            refresh_complete = True
+            return result
+
+        with (
+            patch.object(SQLiteWorkStore, "snapshot", guarded_snapshot),
+            patch.object(sqlite_state, "read_state", guarded_read_state),
+            patch.object(transition_interface.work_views, "refresh", refresh_then_fence),
+        ):
+            result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
+
+        self.assertEqual(0, result, stderr)
+        rendered = msgspec.json.decode(stdout, type=work_inspection_models.TransitionView)
+        self.assertIsNotNone(rendered.continuation)
+        assert rendered.continuation is not None
+        self.assertEqual(work_models.AttemptState.PAUSED, rendered.continuation.state)
+        self.assertTrue(refresh_complete)
 
     def test_direct_transition_reports_its_own_revision_across_a_disjoint_commit(self) -> None:
         state = complete_sqlite_state()

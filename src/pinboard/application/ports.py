@@ -56,3 +56,7 @@ class ItemDefinitionReader(Protocol):
 
 class ItemStatusReader(Protocol):
     def read_item_status(self, item_id: ItemId) -> query_models.ItemStatusFacts | None: ...
+
+
+class AttemptContextReader(Protocol):
+    def read_attempt_context(self, attempt_id: AttemptId) -> query_models.AttemptContextFacts | None: ...

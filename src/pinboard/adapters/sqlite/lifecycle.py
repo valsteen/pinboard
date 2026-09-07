@@ -9,6 +9,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import pairwise
+from typing import assert_never
 
 import msgspec
 
@@ -130,6 +131,29 @@ class ParallelPreviewLifecycleItem:
 class ParallelPreviewLifecycleSelection:
     project_revision: int
     items: tuple[ParallelPreviewLifecycleItem, ...]
+
+
+def _validate_parallel_preview_attempt(
+    state: work_models.WorkState,
+    attempt: ParallelPreviewLifecycleAttempt | None,
+) -> None:
+    match state:
+        case (
+            work_models.WorkState.ACTIVE
+            | work_models.WorkState.PAUSED
+            | work_models.WorkState.BLOCKED
+            | work_models.WorkState.REVIEW
+        ) as attempted_state:
+            valid = attempt is not None and attempt.state.value == attempted_state.value
+        case work_models.WorkState.INTAKE | work_models.WorkState.READY | work_models.WorkState.DEFERRED:
+            valid = attempt is None
+        case _ as unreachable:
+            assert_never(unreachable)
+    if not valid:
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE,
+            "The selected work item and open attempt states do not match.",
+        )
 
 
 def _definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionRevision:
@@ -336,6 +360,7 @@ def read_parallel_preview_lifecycle(
                     attempt = ParallelPreviewLifecycleAttempt(decoded_attempt.attempt_id, attempt_state)
                 case _:
                     raise StorageError(StorageErrorCode.INVALID_STATE, "The selected open attempt state is invalid.")
+        _validate_parallel_preview_attempt(state, attempt)
         selected.append(
             ParallelPreviewLifecycleItem(
                 item.item_id,

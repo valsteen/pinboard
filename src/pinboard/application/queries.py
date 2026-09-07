@@ -368,18 +368,13 @@ def _project_definition(definition: work_models.WorkItemDefinition) -> query_mod
     )
 
 
-def project_item_definition(
-    state: stored_state.StoredWorkState,
-    item_id: ItemId,
+def select_item_definition(
+    reader: ports.ItemDefinitionReader, item_id: ItemId
 ) -> DecisionResult[query_models.ItemDefinition]:
-    item = next((value for value in state.lifecycle.work_items if value.item_id == item_id), None)
-    if item is None:
+    selected = reader.read_item_definition(item_id)
+    if selected.item_subject_revision is None:
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.", None)
-    current_definition = next(
-        (value for value in reversed(state.lifecycle.definition_revisions) if value.item_id == item_id),
-        None,
-    )
-    if current_definition is None:
+    if selected.definition is None:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
             f"Item '{item_id}' has no accepted definition.",
@@ -388,30 +383,26 @@ def project_item_definition(
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
         "sqlite-v4",
-        state.lifecycle.project.revision,
+        selected.project_revision,
         item_id,
-        item.subject_revision,
-        current_definition.revision,
-        current_definition.digest,
-        _project_definition(current_definition.definition),
+        selected.item_subject_revision,
+        selected.definition.revision,
+        selected.definition.digest,
+        _project_definition(selected.definition.definition),
     )
 
 
-def project_item_definition_history(
-    state: stored_state.StoredWorkState,
+def select_item_definition_history(
+    reader: ports.ItemDefinitionReader,
     item_id: ItemId,
     *,
-    limit: int = 20,
-    before_revision: int | None = None,
+    limit: int,
+    before_revision: int | None,
 ) -> DecisionResult[query_models.ItemDefinitionHistory]:
-    if not any(item.item_id == item_id for item in state.lifecycle.work_items):
+    selected = reader.read_item_definition_history(item_id, limit=limit, before_revision=before_revision)
+    if not selected.item_exists:
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.", None)
-    available = tuple(
-        value
-        for value in reversed(state.lifecycle.definition_revisions)
-        if value.item_id == item_id and (before_revision is None or value.revision < before_revision)
-    )
-    selected = available[:limit]
+    visible = selected.revisions[:limit]
     rows = tuple(
         query_models.ItemDefinitionHistoryRow(
             value.revision,
@@ -424,15 +415,15 @@ def project_item_definition_history(
             value.after_digest,
             value.accepted_project_revision,
         )
-        for value in selected
+        for value in visible
     )
     return query_models.ItemDefinitionHistory(
         "pinboard-item-definition-history/v1",
         "sqlite-v4",
-        state.lifecycle.project.revision,
+        selected.project_revision,
         item_id,
         rows,
-        rows[-1].revision if len(available) > limit else None,
+        rows[-1].revision if len(selected.revisions) > limit else None,
     )
 
 

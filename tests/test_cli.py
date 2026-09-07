@@ -18,7 +18,7 @@ from msgspec.structs import replace as replace_struct
 from pinboard.adapters.files import views as file_views
 from pinboard.adapters.files.artifacts import write_revision
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
-from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -31,8 +31,14 @@ from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.interfaces import (
+    action_selection,
+    dispatch_brief,
+    work_brief_models,
+    work_inspection_models,
+    work_state_commands,
+)
 from pinboard.interfaces import transitions as transition_interface
-from pinboard.interfaces import work_brief_models, work_inspection_models
 from pinboard.interfaces.cli import build_parser, main
 from pinboard.interfaces.errors import WorkBriefErrorCode, WorkBriefFailure
 from pinboard.interfaces.work_briefs import canonical_work_brief_bytes
@@ -3846,7 +3852,7 @@ Not launchable:
         self.assertIn("OK WORK_STATE_VALID", stdout)
         self.assertEqual(1, calls)
 
-    def test_each_installed_inspection_reads_one_snapshot_while_input_contract_reads_none(self) -> None:
+    def test_installed_inspections_use_their_declared_read_capability(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))
         original_snapshot = SQLiteWorkStore.snapshot
@@ -3854,8 +3860,6 @@ Not launchable:
         for arguments in (
             ("overview", "--json"),
             ("item", "status", "--item-id", "work-a", "--json"),
-            ("item", "definition", "--item-id", "work-a", "--json"),
-            ("item", "definition-history", "--item-id", "work-a", "--json"),
             ("actions", "--role", "observer", "--json"),
             ("parallel", "preview", "--json"),
         ):
@@ -3871,6 +3875,17 @@ Not launchable:
             self.assertEqual(0, result, stderr)
             self.assertEqual(1, calls)
 
+        for arguments in (
+            ("item", "definition", "--item-id", "work-a", "--json"),
+            ("item", "definition-history", "--item-id", "work-a", "--json"),
+        ):
+            with (
+                self.subTest(command=arguments[1]),
+                patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+            ):
+                result, _stdout, stderr = self.run_cli(*common, *arguments)
+            self.assertEqual(0, result, stderr)
+
         with (
             patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("unexpected SQLite read")),
             patch(
@@ -3881,6 +3896,104 @@ Not launchable:
             result, stdout, stderr = self.run_cli("input-contract", "inspect", "--json")
         self.assertEqual(0, result, stderr)
         self.assertIn('"action_kind": "inspect"', stdout)
+
+    def test_rooted_command_composes_one_store_while_static_commands_compose_none(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        common = ("--project-root", str(project), "--work-root", str(work))
+        source = project / "source.txt"
+        source.write_text("selected authority\n", encoding="utf-8")
+        manifest = project / "sources.json"
+        manifest.write_text(
+            '{"schema":"pinboard-brief-sources/v1","sources":['
+            '{"authority_id":"source","selector":"source.txt","families":["contract"]}]}\n',
+            encoding="utf-8",
+        )
+        original_compose = work_state_commands.compose_store
+        composed: list[SQLiteWorkStore] = []
+
+        def counted_compose(durable: DurableRoots) -> SQLiteWorkStore:
+            store = original_compose(durable)
+            composed.append(store)
+            return store
+
+        with patch.object(work_state_commands, "compose_store", counted_compose):
+            result, _stdout, stderr = self.run_cli(*common, "status")
+        self.assertEqual(0, result, stderr)
+        self.assertEqual(1, len(composed))
+
+        dispatch_action = self.project_action(common, "dispatch:work-a-1")
+        environment = project / "dispatch.json"
+        environment.write_text(
+            json.dumps(
+                {
+                    "schema": "pinboard-dispatch/v1",
+                    "checkout": str(project),
+                    "branch": "codex/work-a",
+                    "starting_revision": "base-revision",
+                    "permissions": ["repository-read"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        with (
+            patch.object(work_state_commands, "compose_store", return_value=_store),
+            patch.object(
+                action_selection,
+                "select_current_action",
+                wraps=action_selection.select_current_action,
+            ) as select_action,
+            patch.object(dispatch_brief, "prepare_dispatch", return_value="prepared prompt\n") as prepare,
+        ):
+            result, _stdout, stderr = self.run_cli(
+                *common,
+                "dispatch",
+                "--action-id",
+                str(dispatch_action["action_id"]),
+                "--expected-revision",
+                str(dispatch_action["expected_revision"]),
+                "--task-id",
+                "project-task",
+                "--host-id",
+                "local",
+                "--checkpoint",
+                CHECKPOINT_ID,
+                "--environment",
+                str(environment),
+            )
+        self.assertEqual(0, result, stderr)
+        self.assertIs(_store, select_action.call_args.args[0])
+        self.assertIs(_store, prepare.call_args.args[0])
+
+        for arguments in (
+            ("input-contract", "inspect", "--json"),
+            ("tool-contract", "--json"),
+            (*common, "root"),
+            (*common, "brief-sources", "--file", str(manifest), "--json"),
+        ):
+            with (
+                self.subTest(command=arguments[0]),
+                patch.object(
+                    work_state_commands,
+                    "compose_store",
+                    side_effect=AssertionError("static command composed a store"),
+                ),
+            ):
+                result, _stdout, stderr = self.run_cli(*arguments)
+            self.assertEqual(0, result, stderr)
+
+        for arguments in (("--help",), ("--version",)):
+            with (
+                self.subTest(command=arguments[0]),
+                patch.object(
+                    work_state_commands,
+                    "compose_store",
+                    side_effect=AssertionError("static command composed a store"),
+                ),
+                contextlib.redirect_stdout(io.StringIO()),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                main(arguments)
+            self.assertEqual(0, raised.exception.code)
 
     def test_item_status_emits_exact_json_and_text_from_one_snapshot(self) -> None:
         state = complete_sqlite_state()

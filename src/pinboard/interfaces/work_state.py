@@ -11,7 +11,7 @@ from pathlib import Path
 
 from pinboard.adapters.files.artifacts import ArtifactRepository, verify_reference
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode
-from pinboard.adapters.files.file_io import ensure_directory_chain, resolve_durable_roots
+from pinboard.adapters.files.file_io import DurableRoots, ensure_directory_chain
 from pinboard.adapters.files.root import ensure_default_git_exclude
 from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_state
 from pinboard.adapters.sqlite.database import initialize_database, open_database, reconcile_database_publication
@@ -27,13 +27,14 @@ from pinboard.interfaces.work_state_models import Diagnostic, Severity, Validati
 
 def initialize_work_state(
     shared_repository_root: Path,
-    work_root: Path | None = None,
+    roots: DurableRoots,
     *,
+    default_work_root: bool,
+    store: SQLiteWorkStore,
     now: datetime | None = None,
 ) -> WorkBriefResult[InitReceipt]:
-    if work_root is None:
+    if default_work_root:
         ensure_default_git_exclude(shared_repository_root)
-    roots = resolve_durable_roots(shared_repository_root, work_root)
     database_already_exists = roots.database_path.exists()
     operation_time = now or datetime.now(UTC)
     if database_already_exists:
@@ -43,7 +44,6 @@ def initialize_work_state(
         ensure_directory_chain(roots)
     else:
         initialize_database(roots, operation_time)
-    store = SQLiteWorkStore(roots.database_path)
     current_state = store.snapshot()
     rendered_attempt_briefs = build_attempt_brief_views(current_state, ArtifactRepository(roots))
     if isinstance(rendered_attempt_briefs, WorkBriefFailure):
@@ -63,14 +63,15 @@ def _error_diagnostic(code: str, path: Path, message: str, hint: str | None = No
     return Diagnostic(code=code, severity=Severity.ERROR, path=path, message=message, hint=hint)
 
 
-def read_state_for_validation(work_root: Path) -> stored_state.StoredWorkState | ValidationReport:
+def read_state_for_validation(
+    database_path: Path, store: SQLiteWorkStore
+) -> stored_state.StoredWorkState | ValidationReport:
     """Read and structurally validate the authoritative SQLite snapshot once."""
 
-    database = work_root / "state.sqlite3"
     try:
-        return SQLiteWorkStore(database).validated_snapshot()
+        return store.validated_snapshot()
     except StorageError as error:
-        return ValidationReport((_error_diagnostic(error.code.value, database, str(error)),))
+        return ValidationReport((_error_diagnostic(error.code.value, database_path, str(error)),))
 
 
 def validate_loaded_work_state(

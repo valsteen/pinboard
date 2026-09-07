@@ -81,7 +81,7 @@ class OperationFailureTest(unittest.TestCase):
         worker_action = self.worker_action()
         worker_receipt = action_selection.ParsedActionReceipt(worker_action, decision_models.Role.WORKER, 3)
 
-        _store, roots = self.initialized(None)
+        store, _roots = self.initialized(None)
         stale_action = replace(
             worker_action,
             capability=replace(worker_action.capability, expected_revision="11"),
@@ -89,7 +89,7 @@ class OperationFailureTest(unittest.TestCase):
         with patch("pinboard.interfaces.action_selection.datetime") as clock:
             clock.now.return_value = SQLITE_NOW
             stale = action_selection.select_current_action(
-                roots,
+                store,
                 action_selection.ParsedActionReceipt(stale_action, decision_models.Role.WORKER, 3),
             )
         self.assertIsInstance(stale, CommandFailure)
@@ -127,7 +127,7 @@ class OperationFailureTest(unittest.TestCase):
         with patch("pinboard.interfaces.action_selection.datetime") as clock:
             clock.now.return_value = SQLITE_NOW
             wrong = action_selection.select_current_action(
-                roots,
+                store,
                 action_selection.ParsedActionReceipt(wrong_action, decision_models.Role.WORKER, 3),
             )
         self.assertIsInstance(wrong, CommandFailure)
@@ -149,11 +149,11 @@ class OperationFailureTest(unittest.TestCase):
                     attempt_leases=tuple(replace(value, state=status) for value in state.authority.attempt_leases),
                 ),
             )
-            status_store, status_roots = self.initialized(state)
+            status_store, _status_roots = self.initialized(state)
             before = status_store.snapshot()
             with patch("pinboard.interfaces.action_selection.datetime") as clock:
                 clock.now.return_value = SQLITE_NOW
-                rejected = action_selection.select_current_action(status_roots, worker_receipt)
+                rejected = action_selection.select_current_action(status_store, worker_receipt)
             self.assertIsInstance(rejected, CommandFailure)
             assert isinstance(rejected, CommandFailure)
             self.assertEqual(expected_code, rejected.code)
@@ -182,11 +182,11 @@ class OperationFailureTest(unittest.TestCase):
                 ),
             ),
         )
-        _lifecycle_store, lifecycle_roots = self.initialized(state)
+        lifecycle_store, _lifecycle_roots = self.initialized(state)
         with patch("pinboard.interfaces.action_selection.datetime") as clock:
             clock.now.return_value = SQLITE_NOW
             unavailable = action_selection.select_current_action(
-                lifecycle_roots,
+                lifecycle_store,
                 action_selection.ParsedActionReceipt(project_pause, decision_models.Role.PROJECT, 0),
             )
         self.assertIsInstance(unavailable, CommandFailure)

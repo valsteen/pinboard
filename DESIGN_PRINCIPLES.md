@@ -96,6 +96,14 @@ Dependencies point toward policy. Domain code owns product vocabulary and pure l
 
 When an operation genuinely needs two layers, the outer layer that already knows both owns the conversion or composition. Do not make both inner layers import each other, and do not create a shared module that makes every participant own the cross-dependency.
 
+## Resolve configured resources once
+
+A configured location or concrete effect capability is part of an operation's input even when every current installation happens to use the same value. Repeating a path literal or reconstructing the same adapter in several consumers creates an unnamed ambient dependency: each site can drift, tests can accidentally exercise a different resource, and the real composition boundary becomes difficult to see.
+
+Resolve deployment layout once at the nearest stable outer boundary, construct each effectful capability once for its invocation and lifetime, and pass the exact value inward. Inner workflows receive the narrow configured path, store, repository, connection, or protocol they use; they do not rediscover it from a broader root or instantiate a concrete replacement. State-independent routes should not construct stateful capabilities at all.
+
+Prefer ordinary required parameters and a small immutable configuration record. Do not introduce module globals, mutable singletons, service locators, registries, optional dependency parameters, default constructors, or a dependency-injection framework. Split the composition only when collaborators genuinely have different lifetimes or owners, and keep that distinction explicit at their caller.
+
 ## Constrain composition fan-out
 
 Being outermost permits a dependency direction; it does not justify collecting unrelated work. Keep the process entry point as a small composition root that owns only complete input decoding, one exhaustive route, and final result presentation. Put each cross-layer workflow in a thematic outer module named for the use case it composes.

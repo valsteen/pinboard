@@ -46,6 +46,12 @@ from pinboard.adapters.sqlite.lifecycle import (
     set_attempt_state,
     set_item_state,
 )
+from pinboard.adapters.sqlite.lifecycle import (
+    read_item_definition as select_item_definition,
+)
+from pinboard.adapters.sqlite.lifecycle import (
+    read_item_definition_history as select_item_definition_history,
+)
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.proposals import accept_proposal, create_proposal, set_proposal_disposition
 from pinboard.application import query_models, stored_state
@@ -664,6 +670,24 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return read_preparation_authority_status(connection, item_id)
+        finally:
+            connection.close()
+
+    def read_item_definition(self, item_id: ItemId) -> query_models.ItemDefinitionFacts:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return select_item_definition(connection, item_id)
+        finally:
+            connection.close()
+
+    def read_item_definition_history(
+        self, item_id: ItemId, *, limit: int, before_revision: int | None
+    ) -> query_models.ItemDefinitionHistoryFacts:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return select_item_definition_history(connection, item_id, limit=limit, before_revision=before_revision)
         finally:
             connection.close()
 

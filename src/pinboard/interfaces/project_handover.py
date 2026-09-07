@@ -5,7 +5,7 @@ from pathlib import PurePosixPath
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
-from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import handover, stored_state
 from pinboard.interfaces import cli_commands
@@ -53,9 +53,11 @@ def _read_and_encode_artifacts(
     return tuple(projected_references), tuple(encoded_contents)
 
 
-def export_project_handover(roots: cli_commands.ResolvedRoots, _command: cli_commands.HandoverCommand) -> int:
-    captured_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
-    artifact_repository = ArtifactRepository(resolve_durable_roots(roots.shared_repository, roots.work))
+def export_project_handover(
+    durable: DurableRoots, store: SQLiteWorkStore, _command: cli_commands.HandoverCommand
+) -> int:
+    captured_state = store.snapshot()
+    artifact_repository = ArtifactRepository(durable)
     projected_references, encoded_contents = _read_and_encode_artifacts(captured_state, artifact_repository)
     portable_package = handover.project_handover_from_state(
         captured_state,

@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 import msgspec
 
 from pinboard.adapters.files import artifacts as artifact_files
-from pinboard.adapters.files import file_io
+from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import artifact_publication, artifacts
 from pinboard.domain import work_models
@@ -40,7 +40,8 @@ class BriefPublicationView(msgspec.Struct, frozen=True):
 
 
 def publish_brief(
-    roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
+    store: SQLiteWorkStore,
     command: cli_commands.BriefPublishCommand,
 ) -> CommandResult[int] | WorkBriefFailure:
     try:
@@ -54,10 +55,9 @@ def publish_brief(
     if isinstance(validated_brief, WorkBriefFailure):
         return validated_brief
     canonical_brief_bytes = work_briefs.canonical_work_brief_bytes(validated_brief)
-    store = SQLiteWorkStore(roots.work / "state.sqlite3")
     accepted_reference = artifact_publication.publish_accepted_artifact(
         store,
-        artifact_files.ArtifactRepository(file_io.resolve_durable_roots(roots.shared_repository, roots.work)),
+        artifact_files.ArtifactRepository(durable),
         artifacts.NewArtifact(
             work_models.ArtifactKind.BRIEF,
             validated_brief.attempt_id,
@@ -70,7 +70,7 @@ def publish_brief(
     if isinstance(accepted_reference, DecisionFailure):
         return CommandFailure(accepted_reference.code, accepted_reference.message, accepted_reference.details)
     reference = accepted_reference.reference
-    rebuilt_views = work_views.rebuild(roots, store, datetime.now(UTC))
+    rebuilt_views = work_views.rebuild(durable, store, datetime.now(UTC))
     if rebuilt_views.warning is not None:
         print(rebuilt_views.warning.message, rebuilt_views.warning.repair, sep="\n", file=sys.stderr)
     publication_view = BriefPublicationView(

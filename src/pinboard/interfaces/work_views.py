@@ -8,36 +8,35 @@ files. SQLite and accepted artifacts remain authoritative.
 from datetime import datetime
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
-from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
 from pinboard.adapters.files.views import rebuild_state as rebuild_file_views
 from pinboard.adapters.files.views import refresh_state as refresh_file_views
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.domain.identifiers import AttemptId
-from pinboard.interfaces import cli_commands
 from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
 from pinboard.interfaces.work_briefs import build_attempt_brief_views
 
 
 def read_attempt_brief_views(
-    roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
     state: stored_state.StoredWorkState,
 ) -> WorkBriefResult[dict[AttemptId, bytes]]:
     return build_attempt_brief_views(
         state,
-        ArtifactRepository(resolve_durable_roots(roots.shared_repository, roots.work)),
+        ArtifactRepository(durable),
     )
 
 
 def refresh(
-    roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
     store: SQLiteWorkStore,
     affected: AffectedViews,
     now: datetime,
 ) -> ViewRefreshResult:
     current_state = store.snapshot()
-    attempt_briefs = read_attempt_brief_views(roots, current_state)
+    attempt_briefs = read_attempt_brief_views(durable, current_state)
     if isinstance(attempt_briefs, WorkBriefFailure):
         return ViewRefreshResult(
             current_state.lifecycle.project.revision,
@@ -47,22 +46,22 @@ def refresh(
                 "Run 'pinboard views rebuild'.",
             ),
         )
-    return refresh_file_views(current_state, roots.work, affected, attempt_briefs, now=now)
+    return refresh_file_views(current_state, durable.work_root, affected, attempt_briefs, now=now)
 
 
 def refresh_shared_authority_views(
-    roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
     store: SQLiteWorkStore,
     now: datetime,
 ) -> ViewRefreshResult:
     """Refresh the queue and history affected by subject authority changes."""
 
-    return refresh(roots, store, AffectedViews(queue=True, history=True), now)
+    return refresh(durable, store, AffectedViews(queue=True, history=True), now)
 
 
-def rebuild(roots: cli_commands.ResolvedRoots, store: SQLiteWorkStore, now: datetime) -> ViewRefreshResult:
+def rebuild(durable: DurableRoots, store: SQLiteWorkStore, now: datetime) -> ViewRefreshResult:
     current_state = store.snapshot()
-    attempt_briefs = read_attempt_brief_views(roots, current_state)
+    attempt_briefs = read_attempt_brief_views(durable, current_state)
     if isinstance(attempt_briefs, WorkBriefFailure):
         return ViewRefreshResult(
             current_state.lifecycle.project.revision,
@@ -72,4 +71,4 @@ def rebuild(roots: cli_commands.ResolvedRoots, store: SQLiteWorkStore, now: date
                 "Resolve the accepted work-brief problem and run 'pinboard views rebuild' again.",
             ),
         )
-    return rebuild_file_views(current_state, roots.work, attempt_briefs, now=now)
+    return rebuild_file_views(current_state, durable.work_root, attempt_briefs, now=now)

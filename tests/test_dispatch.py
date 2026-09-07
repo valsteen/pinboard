@@ -24,7 +24,7 @@ from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionResult
 from pinboard.domain.identifiers import ReviewId
-from pinboard.interfaces import work_brief_models
+from pinboard.interfaces import dispatch_brief, work_brief_models
 from pinboard.interfaces.cli import main
 from pinboard.interfaces.dispatch_brief import (
     SuppliedDispatchReview,
@@ -388,17 +388,33 @@ class DispatchTest(unittest.TestCase):
         project, roots, store, value, action, environment = self.initialized()
         first_review = ready_review(value)
 
-        prompt = expect_dispatch_success(
-            prepare_dispatch(
-                store,
-                ArtifactRepository(roots),
-                project,
-                action(),
-                CHECKPOINT_ID,
-                environment,
-                supplied_review=SuppliedDispatchReview(first_review, ReviewId("first-review")),
+        with (
+            patch.object(dispatch_brief, "select_dispatch", wraps=dispatch_brief.select_dispatch) as select,
+            patch.object(
+                dispatch_brief,
+                "publish_dispatch_review",
+                wraps=dispatch_brief.publish_dispatch_review,
+            ) as publish_review,
+            patch.object(
+                dispatch_brief,
+                "recheck_dispatch_authority",
+                wraps=dispatch_brief.recheck_dispatch_authority,
+            ) as recheck,
+        ):
+            prompt = expect_dispatch_success(
+                prepare_dispatch(
+                    store,
+                    ArtifactRepository(roots),
+                    project,
+                    action(),
+                    CHECKPOINT_ID,
+                    environment,
+                    supplied_review=SuppliedDispatchReview(first_review, ReviewId("first-review")),
+                )
             )
-        )
+        self.assertIs(store, select.call_args.args[0])
+        self.assertIs(store, publish_review.call_args.args[0])
+        self.assertIs(store, recheck.call_args.args[0])
 
         self.assertIn(f"Checkpoint: {CHECKPOINT_ID}", prompt)
         after_first = store.snapshot()

@@ -9,10 +9,11 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
 from pinboard.application.actions import discover_actions
 from pinboard.application.queries import (
-    project_item_definition,
     project_item_status,
     project_overview,
     project_parallel_preview,
+    select_item_definition,
+    select_item_definition_history,
 )
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
@@ -220,16 +221,20 @@ class SQLiteQueriesTest(unittest.TestCase):
         assert isinstance(missing, DecisionFailure)
         self.assertEqual(DecisionFailureCode.ITEM_NOT_FOUND, missing.code)
 
-    def test_item_definition_returns_every_preparation_revision_from_one_snapshot(self) -> None:
+    def test_item_definition_and_history_project_exact_store_reads(self) -> None:
         state = complete_sqlite_state()
         item = next(value for value in state.lifecycle.work_items if value.item_id == ItemId("work-c"))
+        store = self._store(state)
 
-        definition = expect_success(project_item_definition(state, item.item_id))
+        definition = expect_success(select_item_definition(store, item.item_id))
+        history = expect_success(select_item_definition_history(store, item.item_id, limit=1, before_revision=None))
 
         self.assertEqual(state.lifecycle.project.revision, definition.project_revision)
         self.assertEqual(item.subject_revision, definition.item_subject_revision)
         self.assertEqual(1, definition.definition_revision)
         self.assertEqual(test_definition(item.item_id)[1], definition.definition_digest)
+        self.assertEqual((1,), tuple(value.revision for value in history.revisions))
+        self.assertIsNone(history.next_before_revision)
 
     def test_action_and_query_failure_matrix_is_stable_and_read_only(self) -> None:
         state = complete_sqlite_state()

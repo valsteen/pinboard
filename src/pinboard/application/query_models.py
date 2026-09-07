@@ -245,3 +245,17 @@ class ItemDefinitionHistory(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     item_id: str
     revisions: tuple[ItemDefinitionHistoryRow, ...]
     next_before_revision: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemDefinitionFacts:
+    project_revision: int
+    item_subject_revision: int | None
+    definition: stored_state.ItemDefinitionRevision | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemDefinitionHistoryFacts:
+    project_revision: int
+    item_exists: bool
+    revisions: tuple[stored_state.ItemDefinitionRevision, ...]

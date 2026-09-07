@@ -59,12 +59,12 @@ def _failure_alternatives(
 
 
 def with_current_alternatives(
-    roots: cli_commands.ResolvedRoots,
+    store: SQLiteWorkStore,
     supplied: ParsedActionReceipt,
     failure: CommandFailure,
 ) -> CommandFailure:
     """Attach fresh same-subject actions after a locked execution rejection."""
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    current_state = store.snapshot()
     current_actions = discover_actions(
         current_state,
         supplied.role,
@@ -390,13 +390,13 @@ def _subject_state(state: stored_state.StoredWorkState, action: decision_models.
 
 
 def select_current_action(
-    roots: cli_commands.ResolvedRoots,
+    store: SQLiteWorkStore,
     supplied: ParsedActionReceipt,
 ) -> CommandResult[decision_models.Action]:
     supplied_action = supplied.action
     supplied_capability = supplied_action.capability
     operation_time = datetime.now(UTC)
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    current_state = store.snapshot()
     if (authority_failure := _authority_failure(current_state, supplied, operation_time)) is not None:
         return authority_failure
     current_actions = discover_actions(

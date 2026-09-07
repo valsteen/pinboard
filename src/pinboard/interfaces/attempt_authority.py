@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import assert_never
 from uuid import uuid4
 
+from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import queries, stored_state
 from pinboard.application.decision_projection import (
@@ -53,11 +54,10 @@ def _present_latest_attempt_authority(
 
 
 def show_attempt_authority_status(
-    roots: cli_commands.ResolvedRoots, command: cli_commands.AttemptStatusCommand
+    store: SQLiteWorkStore,
+    command: cli_commands.AttemptStatusCommand,
 ) -> CommandResult[int]:
-    selected = queries.select_attempt_authority_status(
-        SQLiteWorkStore(roots.work / "state.sqlite3"), command.attempt_id
-    )
+    selected = queries.select_attempt_authority_status(store, command.attempt_id)
     if isinstance(selected, DecisionFailure):
         return CommandFailure(selected.code, selected.message, selected.details)
     values: dict[str, str | int] = {
@@ -176,10 +176,10 @@ def _resolve_requested_attempt_change(
 
 
 def change_attempt_authority(
-    roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
+    store: SQLiteWorkStore,
     command: AttemptAuthorityCommand,
 ) -> CommandResult[int]:
-    store = SQLiteWorkStore(roots.work / "state.sqlite3")
     observed_state = store.snapshot()
     attempt_record = _find_attempt_record(observed_state, command.attempt_id)
     if isinstance(attempt_record, CommandFailure):
@@ -191,7 +191,7 @@ def change_attempt_authority(
     commit_result = decide_and_commit_attempt_authority_change(store, requested_change)
     if isinstance(commit_result, DecisionFailure):
         return CommandFailure(commit_result.code, commit_result.message, commit_result.details)
-    refresh_result = work_views.refresh_shared_authority_views(roots, store, datetime.now(UTC))
+    refresh_result = work_views.refresh_shared_authority_views(durable, store, datetime.now(UTC))
     if refresh_result.warning is not None:
         print(refresh_result.warning.message, file=sys.stderr)
     latest_committed_state = store.snapshot()

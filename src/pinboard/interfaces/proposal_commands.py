@@ -1,7 +1,7 @@
 """Create one proposal from its installed boundary representation.
 
 This outer command owner reads and decodes the candidate, performs the explicit
-boundary-to-domain conversion, opens the concrete store, invokes the proposal
+boundary-to-domain conversion, receives the configured store, invokes the proposal
 use case, and refreshes its affected views. Expected proposal rejections are
 returned as values; infrastructure failures remain exceptions.
 """
@@ -13,6 +13,7 @@ from typing import Literal, assert_never
 import msgspec
 
 from pinboard.adapters.files import models as file_models
+from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import service
 from pinboard.domain import proposal_models as domain_proposal_models
@@ -51,7 +52,8 @@ def _convert_proposal_relation(value: proposal_models.ProposalRelation) -> work_
 
 
 def create_proposal(
-    roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
+    store: SQLiteWorkStore,
     command: cli_commands.ProposalCommand,
 ) -> ProposalResult[int]:
     proposal_path = command.file
@@ -81,7 +83,6 @@ def create_proposal(
         decoded_proposal.freshness_assumptions,
         decoded_proposal.position,
     )
-    store = SQLiteWorkStore(roots.work / "state.sqlite3")
     creation_result = service.create_proposal(
         store,
         domain_proposal_models.CreateProposalOperation(requested_intake),
@@ -96,7 +97,7 @@ def create_proposal(
     if isinstance(decoded_proposal.relation, proposal_models.PrerequisiteProposalRelation):
         changed_items.append(ItemId(decoded_proposal.relation.item))
     view_result = work_views.refresh(
-        roots,
+        durable,
         store,
         file_models.AffectedViews(queue=True, history=True, items=tuple(changed_items)),
         datetime.now(UTC),

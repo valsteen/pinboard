@@ -7,7 +7,7 @@ from typing import Literal, assert_never
 import msgspec
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
-from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.dispatch import (
     find_dispatch_review,
@@ -456,6 +456,8 @@ def prepare_dispatch(
 
 def prepare_dispatch_command(
     roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
+    store: SQLiteWorkStore,
     command: cli_commands.DispatchCommand,
 ) -> CliResult[int]:
     """Prepare one installed dispatch request and return every advertised rejection."""
@@ -490,12 +492,12 @@ def prepare_dispatch_command(
     parsed_action = action_selection.parse_action_receipt(command)
     if isinstance(parsed_action, CommandFailure):
         return parsed_action
-    selected_action = action_selection.select_current_action(roots, parsed_action)
+    selected_action = action_selection.select_current_action(store, parsed_action)
     if isinstance(selected_action, CommandFailure):
         return selected_action
     rendered_prompt = prepare_dispatch(
-        SQLiteWorkStore(roots.work / "state.sqlite3"),
-        ArtifactRepository(resolve_durable_roots(roots.shared_repository, roots.work)),
+        store,
+        ArtifactRepository(durable),
         roots.source_checkout,
         selected_action,
         command.checkpoint,

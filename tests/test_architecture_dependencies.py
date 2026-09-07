@@ -78,6 +78,30 @@ def _interface_cycles(source_root: Path = SOURCE_ROOT) -> tuple[tuple[str, ...],
     return tuple(sorted(cycles))
 
 
+def _sqlite_store_constructors(source_root: Path = SOURCE_ROOT) -> tuple[Path, ...]:
+    constructors: list[Path] = []
+    for path in sorted(source_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        constructors.extend(
+            path.relative_to(source_root)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "SQLiteWorkStore"
+        )
+    return tuple(constructors)
+
+
+def _database_location_literals(source_root: Path = SOURCE_ROOT) -> tuple[Path, ...]:
+    owners: list[Path] = []
+    for path in sorted(source_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        owners.extend(
+            path.relative_to(source_root)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and node.value == "state.sqlite3"
+        )
+    return tuple(owners)
+
+
 class ArchitectureDependencyTest(unittest.TestCase):
     def test_outward_relative_import_cannot_bypass_dependency_direction(self) -> None:
         source_root = Path(tempfile.mkdtemp()) / "src" / "pinboard"
@@ -120,6 +144,10 @@ class ArchitectureDependencyTest(unittest.TestCase):
                 if not any(value == allowed or value.startswith(f"{allowed}.") for allowed in allowed_non_interface)
             },
         )
+
+    def test_sqlite_location_and_store_composition_have_one_explicit_owner(self) -> None:
+        self.assertEqual((Path("adapters/files/file_io.py"),), _database_location_literals())
+        self.assertEqual((Path("interfaces/work_state_commands.py"),), _sqlite_store_constructors())
 
 
 if __name__ == "__main__":

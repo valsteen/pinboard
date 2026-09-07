@@ -8,13 +8,18 @@ reads the filesystem, or obtains time. Expected stale CAS writes return a
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import pairwise
 
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.application import stored_state
+from pinboard.application import query_models, stored_state
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.domain.history import decode_work_item_definition, work_item_definition_bytes
+from pinboard.domain.history import (
+    decode_work_item_definition,
+    work_item_definition_bytes,
+    work_item_definition_digest,
+)
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, ItemId, TaskId
 
 
@@ -32,11 +37,32 @@ class _DefinitionRevisionRow:
     accepted_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class _ProjectRevisionRow:
+    revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class _SubjectRevisionRow:
+    subject_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class _DependencyRow:
+    dependency_id: ItemId
+
+
 def _definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionRevision:
     value = decode_row(row, _DefinitionRevisionRow)
     definition = decode_work_item_definition(value.definition_json)
     if isinstance(definition, DecisionFailure):
         raise StorageError(StorageErrorCode.INVALID_STATE, definition.message)
+    digest = work_item_definition_digest(definition)
+    if not isinstance(digest, str) or digest != value.digest or value.after_digest != value.digest:
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE,
+            "Definition history digest does not match its canonical definition.",
+        )
     return stored_state.ItemDefinitionRevision(
         value.item_id,
         value.revision,
@@ -49,6 +75,114 @@ def _definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionRevisio
         value.accepted_project_revision,
         value.accepted_at,
     )
+
+
+def read_item_definition(connection: sqlite3.Connection, item_id: ItemId) -> query_models.ItemDefinitionFacts:
+    project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    item_row = connection.execute("SELECT subject_revision FROM work_items WHERE item_id = ?", (item_id,)).fetchone()
+    if project_revision_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
+    if item_row is None:
+        return query_models.ItemDefinitionFacts(project_revision, None, None)
+    subject_revision = decode_row(item_row, _SubjectRevisionRow).subject_revision
+    definition = connection.execute(
+        """
+        SELECT item_id, definition_revision AS revision, definition_digest AS digest,
+               definition_json, reason, source_task_id, before_digest, after_digest,
+               accepted_project_revision, accepted_at
+        FROM work_item_definition_revisions
+        WHERE item_id = ?
+        ORDER BY definition_revision DESC
+        LIMIT 1
+        """,
+        (item_id,),
+    ).fetchone()
+    selected_definition = None if definition is None else _definition_revision(definition)
+    if selected_definition is not None:
+        dependency_rows = connection.execute(
+            "SELECT dependency_id FROM item_dependencies WHERE item_id = ? ORDER BY position",
+            (item_id,),
+        ).fetchall()
+        dependencies = tuple(decode_row(row, _DependencyRow).dependency_id for row in dependency_rows)
+        if dependencies != selected_definition.definition.dependencies:
+            raise StorageError(
+                StorageErrorCode.INVALID_STATE,
+                "Current definition dependencies do not match relational dependencies.",
+            )
+    return query_models.ItemDefinitionFacts(
+        project_revision,
+        subject_revision,
+        selected_definition,
+    )
+
+
+def read_item_definition_history(
+    connection: sqlite3.Connection,
+    item_id: ItemId,
+    *,
+    limit: int,
+    before_revision: int | None,
+) -> query_models.ItemDefinitionHistoryFacts:
+    project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    item = connection.execute("SELECT 1 FROM work_items WHERE item_id = ?", (item_id,)).fetchone()
+    if project_revision_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
+    if item is None:
+        return query_models.ItemDefinitionHistoryFacts(project_revision, False, ())
+    predicate = "item_id = ?" if before_revision is None else "item_id = ? AND definition_revision < ?"
+    parameters = (item_id,) if before_revision is None else (item_id, before_revision)
+    rows = connection.execute(
+        f"""
+        SELECT item_id, definition_revision AS revision, definition_digest AS digest,
+               definition_json, reason, source_task_id, before_digest, after_digest,
+               accepted_project_revision, accepted_at
+        FROM work_item_definition_revisions
+        WHERE {predicate}
+        ORDER BY definition_revision DESC
+        LIMIT ?
+        """,
+        (*parameters, limit + 1),
+    ).fetchall()
+    definitions = tuple(_definition_revision(row) for row in rows)
+    if any(
+        newer.revision != older.revision + 1 or newer.before_digest != older.digest
+        for newer, older in pairwise(definitions)
+    ):
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Definition history digest links are not contiguous.")
+    if (
+        definitions
+        and len(definitions) <= limit
+        and (definitions[-1].revision != 1 or definitions[-1].before_digest is not None)
+    ):
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Definition history digest links are not contiguous.")
+    if before_revision is not None:
+        anchor_row = connection.execute(
+            """
+            SELECT item_id, definition_revision AS revision, definition_digest AS digest,
+                   definition_json, reason, source_task_id, before_digest, after_digest,
+                   accepted_project_revision, accepted_at
+            FROM work_item_definition_revisions
+            WHERE item_id = ? AND definition_revision = ?
+            """,
+            (item_id, before_revision),
+        ).fetchone()
+        if anchor_row is not None:
+            anchor = _definition_revision(anchor_row)
+            if definitions and (
+                anchor.revision != definitions[0].revision + 1 or anchor.before_digest != definitions[0].digest
+            ):
+                raise StorageError(
+                    StorageErrorCode.INVALID_STATE,
+                    "Definition history digest links are not contiguous.",
+                )
+            if not definitions and (anchor.revision != 1 or anchor.before_digest is not None):
+                raise StorageError(
+                    StorageErrorCode.INVALID_STATE,
+                    "Definition history digest links are not contiguous.",
+                )
+    return query_models.ItemDefinitionHistoryFacts(project_revision, True, definitions)
 
 
 def _definition_revision_values(value: stored_state.ItemDefinitionRevision) -> tuple[str | int | bytes | None, ...]:

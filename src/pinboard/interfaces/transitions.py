@@ -7,7 +7,7 @@ import msgspec
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError
-from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -108,13 +108,18 @@ def _item_changed_by_transition(
 
 
 def close(
-    roots: cli_commands.ResolvedRoots, command: cli_commands.CloseCommand
+    roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
+    store: SQLiteWorkStore,
+    command: cli_commands.CloseCommand,
 ) -> CommandResult[int] | CommittedEffectFailure:
     encoded_transition = msgspec.json.encode(
         {"outcome": command.outcome.value, "reason": command.reason}, order="sorted"
     )
     transition_revision = execute_project_transition(
         roots,
+        durable,
+        store,
         command.task_id,
         command.host_id,
         _EncodedProjectTransitionRequest(ActionId(f"close:{command.item_id}"), encoded_transition),
@@ -130,7 +135,10 @@ def close(
 
 
 def revise_item(
-    roots: cli_commands.ResolvedRoots, command: cli_commands.ItemReviseCommand
+    roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
+    store: SQLiteWorkStore,
+    command: cli_commands.ItemReviseCommand,
 ) -> CommandResult[int] | CommittedEffectFailure:
     try:
         revision_bytes = command.file.read_bytes()
@@ -144,6 +152,8 @@ def revise_item(
         return CommandFailure(definition_digest.code, definition_digest.message, None)
     transition_revision = execute_project_transition(
         roots,
+        durable,
+        store,
         command.task_id,
         command.host_id,
         _ValidatedItemRevisionRequest(validated_revision),
@@ -167,7 +177,10 @@ def revise_item(
 
 
 def transition(
-    roots: cli_commands.ResolvedRoots, cli_command: cli_commands.TransitionCommand
+    roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
+    store: SQLiteWorkStore,
+    cli_command: cli_commands.TransitionCommand,
 ) -> CommandResult[int] | CommittedEffectFailure:
     supplied_action_receipt = action_selection.parse_action_receipt(cli_command)
     if isinstance(supplied_action_receipt, CommandFailure):
@@ -178,14 +191,13 @@ def transition(
         return CommandFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID, f"Cannot read transition payload: {error}", None
         )
-    selected_action = action_selection.select_current_action(roots, supplied_action_receipt)
+    selected_action = action_selection.select_current_action(store, supplied_action_receipt)
     if isinstance(selected_action, CommandFailure):
         return selected_action
     decoded_command = parse_transition_command(selected_action, encoded_payload)
     if isinstance(decoded_command, TransitionInputFailure):
         return CommandFailure(decoded_command.code, decoded_command.message, decoded_command.details)
-    store = SQLiteWorkStore(roots.work / "state.sqlite3")
-    artifacts = ArtifactRepository(resolve_durable_roots(roots.shared_repository, roots.work))
+    artifacts = ArtifactRepository(durable)
     match cli_command:
         case cli_commands.ProjectTransitionCommand(task_id=actor_task_id, host_id=actor_host_id):
             pass
@@ -198,12 +210,13 @@ def transition(
     if isinstance(commit_result, CommittedEffectFailure):
         return commit_result
     if isinstance(commit_result, CommandFailure):
-        return action_selection.with_current_alternatives(roots, supplied_action_receipt, commit_result)
-    return _present_committed_transition(roots, store, selected_action, commit_result, json=cli_command.json)
+        return action_selection.with_current_alternatives(store, supplied_action_receipt, commit_result)
+    return _present_committed_transition(roots, durable, store, selected_action, commit_result, json=cli_command.json)
 
 
 def _present_committed_transition(
     roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
     store: SQLiteWorkStore,
     selected_action: decision_models.Action,
     committed_mutation: MutationReceipt,
@@ -226,7 +239,7 @@ def _present_committed_transition(
         items=(changed_item,) if changed_item is not None else (),
         attempts=(affected_attempt,) if affected_attempt is not None else (),
     )
-    view_result = work_views.refresh(roots, store, affected, datetime.now(UTC))
+    view_result = work_views.refresh(durable, store, affected, datetime.now(UTC))
     if view_result.warning is not None:
         print(view_result.warning.message, file=sys.stderr)
     committed_revision = str(committed_mutation.project_revision)
@@ -447,14 +460,15 @@ def _decode_selected_project_transition(
 
 def execute_project_transition(
     roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
+    store: SQLiteWorkStore,
     task_id: TaskId,
     host_id: HostId,
     request: _ProjectTransitionRequest,
 ) -> CommandResult[str] | CommittedEffectFailure:
     """Select and commit one exact current project action."""
 
-    store = SQLiteWorkStore(roots.work / "state.sqlite3")
-    artifacts = ArtifactRepository(resolve_durable_roots(roots.shared_repository, roots.work))
+    artifacts = ArtifactRepository(durable)
     observed_state = store.snapshot()
     current_actions = discover_actions(
         observed_state,
@@ -482,11 +496,11 @@ def execute_project_transition(
         return committed_mutation
     if isinstance(committed_mutation, CommandFailure):
         return action_selection.with_current_alternatives(
-            roots,
+            store,
             action_selection.ParsedActionReceipt(selected_action, decision_models.Role.PROJECT, 0),
             committed_mutation,
         )
-    rebuild_result = work_views.rebuild(roots, store, datetime.now(UTC))
+    rebuild_result = work_views.rebuild(durable, store, datetime.now(UTC))
     if rebuild_result.warning is not None:
         print(rebuild_result.warning.message, file=sys.stderr)
     return str(committed_mutation.project_revision)

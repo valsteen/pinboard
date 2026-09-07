@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import assert_never
 from uuid import uuid4
 
+from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import queries, service, stored_state
@@ -72,12 +73,11 @@ def _present_latest_preparation_authority(
 
 
 def show_preparation_authority_status(
-    roots: cli_commands.ResolvedRoots, command: cli_commands.PreparationStatusCommand
+    store: SQLiteWorkStore,
+    command: cli_commands.PreparationStatusCommand,
 ) -> CommandResult[int]:
     presented_at = datetime.now(UTC)
-    selected = queries.select_preparation_authority_status(
-        SQLiteWorkStore(roots.work / "state.sqlite3"), command.item_id, presented_at
-    )
+    selected = queries.select_preparation_authority_status(store, command.item_id, presented_at)
     if isinstance(selected, DecisionFailure):
         return CommandFailure(selected.code, selected.message, selected.details)
     values: dict[str, str | int] = {
@@ -94,9 +94,10 @@ def show_preparation_authority_status(
 
 
 def start_preparation(
-    roots: cli_commands.ResolvedRoots, command: cli_commands.PreparationStartCommand
+    durable: DurableRoots,
+    store: SQLiteWorkStore,
+    command: cli_commands.PreparationStartCommand,
 ) -> CommandResult[int]:
-    store = SQLiteWorkStore(roots.work / "state.sqlite3")
     requested_at = datetime.now(UTC)
     committed = service.start_preparation(
         store,
@@ -110,7 +111,7 @@ def start_preparation(
     if isinstance(committed, DecisionFailure):
         return CommandFailure(committed.code, committed.message, committed.details)
     refreshed = work_views.refresh(
-        roots, store, AffectedViews(queue=True, items=(command.item_id,), history=True), datetime.now(UTC)
+        durable, store, AffectedViews(queue=True, items=(command.item_id,), history=True), datetime.now(UTC)
     )
     if refreshed.warning is not None:
         print(refreshed.warning.message, file=sys.stderr)
@@ -241,7 +242,8 @@ def _resolve_requested_preparation_change(
 
 
 def change_preparation_authority(
-    roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
+    store: SQLiteWorkStore,
     command: (
         cli_commands.PreparationAcquireCommand
         | cli_commands.PreparationTransferCommand
@@ -250,7 +252,6 @@ def change_preparation_authority(
         | cli_commands.PreparationRevokeCommand
     ),
 ) -> CommandResult[int]:
-    store = SQLiteWorkStore(roots.work / "state.sqlite3")
     observed_state = store.snapshot()
     requested_at = datetime.now(UTC)
     requested_change = _resolve_requested_preparation_change(observed_state, command, requested_at)
@@ -260,7 +261,7 @@ def change_preparation_authority(
     if isinstance(commit_result, DecisionFailure):
         return CommandFailure(commit_result.code, commit_result.message, commit_result.details)
     refresh_result = work_views.refresh(
-        roots,
+        durable,
         store,
         AffectedViews(queue=True, items=(command.item_id,), history=True),
         datetime.now(UTC),

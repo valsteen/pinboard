@@ -59,62 +59,64 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
     if isinstance(invocation.command, cli_commands.ToolContractCommand):
         return tool_contract.show_tool_contract(invocation.command)
     roots = work_state_commands.resolve_roots(invocation.roots)
+    if isinstance(invocation.command, cli_commands.RootCommand):
+        return work_state_commands.show_roots(roots, invocation.command)
+    if isinstance(invocation.command, cli_commands.BriefSourcesPlanCommand | cli_commands.BriefSourcesEmitCommand):
+        return brief_source_commands.plan_or_emit_brief_sources(roots, invocation.command)
+    durable = work_state_commands.resolve_durable_layout(roots)
+    store = work_state_commands.compose_store(durable)
     match invocation.command:
-        case cli_commands.RootCommand() as command:
-            return work_state_commands.show_roots(roots, command)
         case cli_commands.ValidateCommand() as command:
-            return work_state_commands.validate_state(roots, command)
+            return work_state_commands.validate_state(roots, durable, store, command)
         case cli_commands.StatusCommand() as command:
-            return work_inspection.show_status(roots, command)
+            return work_inspection.show_status(roots, store, command)
         case cli_commands.OverviewCommand() as command:
-            return work_inspection.show_overview(roots, command)
+            return work_inspection.show_overview(store, command)
         case cli_commands.ItemStatusCommand() as command:
-            return work_inspection.show_item_status(roots, command)
+            return work_inspection.show_item_status(store, command)
         case cli_commands.ItemReviseCommand() as command:
-            return transitions.revise_item(roots, command)
+            return transitions.revise_item(roots, durable, store, command)
         case cli_commands.ItemDefinitionCommand() as command:
-            return work_inspection.show_item_definition(roots, command)
+            return work_inspection.show_item_definition(store, command)
         case cli_commands.ItemDefinitionHistoryCommand() as command:
-            return work_inspection.show_item_definition_history(roots, command)
+            return work_inspection.show_item_definition_history(store, command)
         case cli_commands.CloseCommand() as command:
-            return transitions.close(roots, command)
+            return transitions.close(roots, durable, store, command)
         case cli_commands.ActionsCommand() | cli_commands.LeasedActionsCommand() as command:
-            return work_inspection.show_actions(roots, command)
-        case (cli_commands.BriefSourcesPlanCommand() | cli_commands.BriefSourcesEmitCommand()) as command:
-            return brief_source_commands.plan_or_emit_brief_sources(roots, command)
+            return work_inspection.show_actions(store, command)
         case cli_commands.BriefPublishCommand() as command:
-            return work_brief_publication.publish_brief(roots, command)
+            return work_brief_publication.publish_brief(durable, store, command)
         case cli_commands.HandoverCommand() as command:
-            return project_handover.export_project_handover(roots, command)
+            return project_handover.export_project_handover(durable, store, command)
         case cli_commands.InitializeCommand() as command:
-            return work_state_commands.initialize_state(roots, command)
+            return work_state_commands.initialize_state(roots, durable, store, command)
         case cli_commands.ProposalCommand() as command:
-            return proposal_commands.create_proposal(roots, command)
+            return proposal_commands.create_proposal(durable, store, command)
         case (
             cli_commands.ProjectTransitionCommand()
             | cli_commands.AttemptTransitionCommand()
             | cli_commands.PreparationTransitionCommand()
         ) as command:
-            return transitions.transition(roots, command)
+            return transitions.transition(roots, durable, store, command)
         case (cli_commands.ProjectDispatchCommand() | cli_commands.ProjectReviewedDispatchCommand()) as command:
-            return dispatch_brief.prepare_dispatch_command(roots, command)
+            return dispatch_brief.prepare_dispatch_command(roots, durable, store, command)
         case cli_commands.AttemptStatusCommand() as command:
-            return attempt_authority.show_attempt_authority_status(roots, command)
+            return attempt_authority.show_attempt_authority_status(store, command)
         case cli_commands.AttemptInspectCommand() as command:
-            return work_inspection.show_attempt(roots, command)
+            return work_inspection.show_attempt(roots, store, command)
         case cli_commands.ReviewJobCommand() as command:
-            return work_inspection.show_review_job(roots, command)
+            return work_inspection.show_review_job(roots, store, command)
         case (
             cli_commands.AttemptAcquireCommand()
             | cli_commands.AttemptRenewCommand()
             | cli_commands.AttemptReleaseCommand()
             | cli_commands.AttemptRevokeCommand()
         ) as command:
-            return attempt_authority.change_attempt_authority(roots, command)
+            return attempt_authority.change_attempt_authority(durable, store, command)
         case cli_commands.PreparationStatusCommand() as command:
-            return preparation_authority.show_preparation_authority_status(roots, command)
+            return preparation_authority.show_preparation_authority_status(store, command)
         case cli_commands.PreparationStartCommand() as command:
-            return preparation_authority.start_preparation(roots, command)
+            return preparation_authority.start_preparation(durable, store, command)
         case (
             cli_commands.PreparationAcquireCommand()
             | cli_commands.PreparationTransferCommand()
@@ -122,11 +124,11 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
             | cli_commands.PreparationReleaseCommand()
             | cli_commands.PreparationRevokeCommand()
         ) as command:
-            return preparation_authority.change_preparation_authority(roots, command)
+            return preparation_authority.change_preparation_authority(durable, store, command)
         case cli_commands.ParallelPreviewCommand() as command:
-            return work_inspection.show_parallel_preview(roots, command)
+            return work_inspection.show_parallel_preview(store, command)
         case cli_commands.RebuildViewsCommand() as command:
-            return work_state_commands.rebuild_views(roots, command)
+            return work_state_commands.rebuild_views(durable, store, command)
         case _ as unreachable:
             assert_never(unreachable)
 

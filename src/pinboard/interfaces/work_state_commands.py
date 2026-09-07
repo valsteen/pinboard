@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode, RootError, RootErrorCode
+from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.interfaces import cli_commands, work_views
@@ -43,6 +44,18 @@ def resolve_roots(selection: cli_commands.RootSelection) -> cli_commands.Resolve
     return cli_commands.ResolvedRoots(source_checkout, shared_repository, work, work_argument is not None)
 
 
+def resolve_durable_layout(roots: cli_commands.ResolvedRoots) -> DurableRoots:
+    """Validate and name the configured durable layout for a stateful command."""
+
+    return resolve_durable_roots(roots.shared_repository, roots.work)
+
+
+def compose_store(durable: DurableRoots) -> SQLiteWorkStore:
+    """Construct the configured store once for one installed invocation."""
+
+    return SQLiteWorkStore(durable.database_path)
+
+
 def _project_validation(report: ValidationReport) -> ValidationView:
     return ValidationView(
         valid=report.valid,
@@ -64,16 +77,21 @@ def show_roots(roots: cli_commands.ResolvedRoots, _command: cli_commands.RootCom
     return 0
 
 
-def validate_state(roots: cli_commands.ResolvedRoots, command: cli_commands.ValidateCommand) -> int:
+def validate_state(
+    roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
+    store: SQLiteWorkStore,
+    command: cli_commands.ValidateCommand,
+) -> int:
     operation_time = datetime.now(UTC)
-    loaded_state = read_state_for_validation(roots.work)
+    loaded_state = read_state_for_validation(durable.database_path, store)
     if isinstance(loaded_state, ValidationReport):
         validation_report = loaded_state
     else:
         current_state = loaded_state
         brief_error: WorkBriefFailure | None = None
         try:
-            attempt_briefs = work_views.read_attempt_brief_views(roots, current_state)
+            attempt_briefs = work_views.read_attempt_brief_views(durable, current_state)
         except ArtifactError:
             attempt_briefs = None
         if isinstance(attempt_briefs, WorkBriefFailure):
@@ -113,10 +131,20 @@ def _read_user_config_and_recommend_body_after_prefix() -> str | None:
     )
 
 
-def initialize_state(roots: cli_commands.ResolvedRoots, command: cli_commands.InitializeCommand) -> CliResult[int]:
-    selected_work = roots.work if roots.explicit_work_root else None
+def initialize_state(
+    roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
+    store: SQLiteWorkStore,
+    command: cli_commands.InitializeCommand,
+) -> CliResult[int]:
     operation_time = datetime.now(UTC)
-    receipt = initialize_work_state(roots.shared_repository, selected_work, now=operation_time)
+    receipt = initialize_work_state(
+        roots.shared_repository,
+        durable,
+        default_work_root=not roots.explicit_work_root,
+        store=store,
+        now=operation_time,
+    )
     if isinstance(receipt, WorkBriefFailure):
         return receipt
     optional_next_skills = (
@@ -148,10 +176,13 @@ def initialize_state(roots: cli_commands.ResolvedRoots, command: cli_commands.In
     return 0
 
 
-def rebuild_views(roots: cli_commands.ResolvedRoots, _command: cli_commands.RebuildViewsCommand) -> int:
-    store = SQLiteWorkStore(roots.work / "state.sqlite3")
+def rebuild_views(
+    durable: DurableRoots,
+    store: SQLiteWorkStore,
+    _command: cli_commands.RebuildViewsCommand,
+) -> int:
     operation_time = datetime.now(UTC)
-    rebuild_result = work_views.rebuild(roots, store, operation_time)
+    rebuild_result = work_views.rebuild(durable, store, operation_time)
     if rebuild_result.warning is not None:
         raise FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, rebuild_result.warning.message)
     print(f"OK VIEWS_REBUILT revision={rebuild_result.database_revision}")

@@ -88,6 +88,37 @@ class RootResolutionTest(unittest.TestCase):
         with self.assertRaisesRegex(RootError, "PROJECT_GIT_ROOT_UNAVAILABLE"):
             resolve_shared_repository_root(directory)
 
+    def test_store_free_routes_do_not_validate_an_unused_external_work_root(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        source = project / "source.txt"
+        source.write_text("selected authority\n", encoding="utf-8")
+        manifest = project / "sources.json"
+        manifest.write_text(
+            '{"schema":"pinboard-brief-sources/v1","sources":['
+            '{"authority_id":"source","selector":"source.txt","families":["contract"]}]}\n',
+            encoding="utf-8",
+        )
+        unused_work_root = project / "missing-parent" / "work"
+
+        root_result, root_stdout, root_stderr = self.run_cli(
+            "--project-root", str(project), "--work-root", str(unused_work_root), "root"
+        )
+        self.assertEqual(0, root_result, root_stderr)
+        self.assertEqual(str(unused_work_root), json.loads(root_stdout)["work_root"])
+
+        source_result, source_stdout, source_stderr = self.run_cli(
+            "--project-root",
+            str(project),
+            "--work-root",
+            str(unused_work_root),
+            "brief-sources",
+            "--file",
+            str(manifest),
+            "--json",
+        )
+        self.assertEqual(0, source_result, source_stderr)
+        self.assertIn('"schema": "pinboard-brief-source-plan/v1"', source_stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

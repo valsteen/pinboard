@@ -87,9 +87,9 @@ def read_attempt_continuation(
 
 
 def show_attempt(
-    roots: cli_commands.ResolvedRoots, command: cli_commands.AttemptInspectCommand
+    roots: cli_commands.ResolvedRoots, store: SQLiteWorkStore, command: cli_commands.AttemptInspectCommand
 ) -> errors.CommandResult[int]:
-    state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    state = store.snapshot()
     continuation = read_attempt_continuation(roots, state, command.attempt_id, datetime.now(UTC))
     if isinstance(continuation, errors.CommandFailure):
         return continuation
@@ -99,9 +99,9 @@ def show_attempt(
 
 
 def show_review_job(
-    roots: cli_commands.ResolvedRoots, command: cli_commands.ReviewJobCommand
+    roots: cli_commands.ResolvedRoots, store: SQLiteWorkStore, command: cli_commands.ReviewJobCommand
 ) -> errors.CommandResult[int]:
-    state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    state = store.snapshot()
     attempt = next((value for value in state.lifecycle.attempts if value.attempt_id == command.attempt_id), None)
     if attempt is None:
         return errors.CommandFailure(
@@ -307,9 +307,9 @@ def compose_status(
     )
 
 
-def show_status(roots: cli_commands.ResolvedRoots, command: cli_commands.StatusCommand) -> int:
+def show_status(roots: cli_commands.ResolvedRoots, store: SQLiteWorkStore, command: cli_commands.StatusCommand) -> int:
     operation_time = datetime.now(UTC)
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    current_state = store.snapshot()
     status_projection = compose_status(
         current_state, roots.work, roots.source_checkout, roots.shared_repository, operation_time
     )
@@ -322,9 +322,9 @@ def show_status(roots: cli_commands.ResolvedRoots, command: cli_commands.StatusC
     return 0
 
 
-def show_overview(roots: cli_commands.ResolvedRoots, command: cli_commands.OverviewCommand) -> int:
+def show_overview(store: SQLiteWorkStore, command: cli_commands.OverviewCommand) -> int:
     operation_time = datetime.now(UTC)
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    current_state = store.snapshot()
     overview_projection = queries.project_overview(current_state, operation_time)
     if command.json:
         write_json(overview_projection)
@@ -358,11 +358,11 @@ def show_overview(roots: cli_commands.ResolvedRoots, command: cli_commands.Overv
 
 
 def show_item_status(
-    roots: cli_commands.ResolvedRoots,
+    store: SQLiteWorkStore,
     command: cli_commands.ItemStatusCommand,
 ) -> errors.CommandResult[int]:
     operation_time = datetime.now(UTC)
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    current_state = store.snapshot()
     item_projection = queries.project_item_status(current_state, command.item_id, operation_time)
     if isinstance(item_projection, domain_errors.DecisionFailure):
         return errors.CommandFailure(item_projection.code, item_projection.message, item_projection.details)
@@ -403,11 +403,10 @@ def show_item_status(
 
 
 def show_item_definition(
-    roots: cli_commands.ResolvedRoots,
+    store: SQLiteWorkStore,
     command: cli_commands.ItemDefinitionCommand,
 ) -> errors.CommandResult[int]:
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
-    definition_projection = queries.project_item_definition(current_state, command.item_id)
+    definition_projection = queries.select_item_definition(store, command.item_id)
     if isinstance(definition_projection, domain_errors.DecisionFailure):
         return errors.CommandFailure(
             definition_projection.code, definition_projection.message, definition_projection.details
@@ -427,12 +426,11 @@ def show_item_definition(
 
 
 def show_item_definition_history(
-    roots: cli_commands.ResolvedRoots,
+    store: SQLiteWorkStore,
     command: cli_commands.ItemDefinitionHistoryCommand,
 ) -> errors.CommandResult[int]:
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
-    history_projection = queries.project_item_definition_history(
-        current_state,
+    history_projection = queries.select_item_definition_history(
+        store,
         command.item_id,
         limit=command.limit,
         before_revision=command.before_revision,
@@ -455,7 +453,7 @@ def show_item_definition_history(
 
 
 def show_actions(
-    roots: cli_commands.ResolvedRoots,
+    store: SQLiteWorkStore,
     command: cli_commands.ActionsCommand | cli_commands.LeasedActionsCommand,
 ) -> errors.CommandResult[int]:
     match command:
@@ -467,7 +465,7 @@ def show_actions(
         case _ as unreachable:
             assert_never(unreachable)
     operation_time = datetime.now(UTC)
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    current_state = store.snapshot()
     available_actions = action_queries.discover_actions(
         current_state,
         command.role,
@@ -542,11 +540,11 @@ def _print_parallel_group(title: str, items: tuple[work_inspection_models.Parall
 
 
 def show_parallel_preview(
-    roots: cli_commands.ResolvedRoots,
+    store: SQLiteWorkStore,
     command: cli_commands.ParallelPreviewCommand,
 ) -> errors.CommandResult[int]:
     operation_time = datetime.now(UTC)
-    current_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
+    current_state = store.snapshot()
     preview = queries.project_parallel_preview(
         current_state,
         selected=tuple(command.item),

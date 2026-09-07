@@ -276,6 +276,153 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
         self.assert_keyed_status_queries(work / "state.sqlite3", preparation_statements)
 
+    def test_installed_definition_reads_are_keyed_and_bounded_by_the_requested_page(self) -> None:
+        project, work, _store = self.initialized_state(
+            self.state_with_preparation(
+                status=authority_models.PreparationLeaseStatus.RELEASED,
+                historical=True,
+                unrelated_count=64,
+            )
+        )
+        common = ("--project-root", str(project), "--work-root", str(work))
+
+        for arguments, expected_revision, expected_tables in (
+            (
+                ("item", "definition", "--item-id", "work-c"),
+                "definition_revision=2",
+                {"project_meta", "work_items", "work_item_definition_revisions", "item_dependencies"},
+            ),
+            (
+                (
+                    "item",
+                    "definition-history",
+                    "--item-id",
+                    "work-c",
+                    "--limit",
+                    "1",
+                ),
+                "revisions=1",
+                {"project_meta", "work_items", "work_item_definition_revisions"},
+            ),
+        ):
+            with (
+                self.subTest(command=arguments[1]),
+                patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+                self.record_store_reads() as reads,
+            ):
+                result, stdout, stderr = self.run_cli(*common, *arguments)
+            self.assertEqual(0, result, stderr)
+            self.assertIn(expected_revision, stdout)
+            tables, statements = reads
+            self.assertEqual(expected_tables, tables)
+            self.assert_keyed_status_queries(work / "state.sqlite3", statements)
+
+    def test_definition_reads_reject_selected_corruption_and_ignore_unrelated_corruption(self) -> None:
+        state = self.state_with_preparation(
+            status=authority_models.PreparationLeaseStatus.RELEASED,
+            historical=True,
+            unrelated_count=1,
+        )
+        project, work, _store = self.initialized_state(state)
+        database = work / "state.sqlite3"
+        raw = sqlite3.connect(database)
+        try:
+            raw.execute(
+                "UPDATE work_item_definition_revisions SET definition_json = ? WHERE item_id = ?",
+                (b"{}", "unrelated-preparation-0"),
+            )
+            raw.commit()
+        finally:
+            raw.close()
+
+        selected_result, selected_stdout, selected_stderr = self.run_cli(
+            "--project-root",
+            str(project),
+            "--work-root",
+            str(work),
+            "item",
+            "definition",
+            "--item-id",
+            "work-c",
+        )
+        self.assertEqual(0, selected_result, selected_stderr)
+        self.assertIn("definition_revision=2", selected_stdout)
+        validation_result, validation_stdout, _validation_stderr = self.run_cli(
+            "--project-root", str(project), "--work-root", str(work), "validate"
+        )
+        self.assertEqual(10, validation_result)
+        self.assertIn("WORK_STATE_INVALID", validation_stdout)
+
+        selected_project, selected_work, _selected_store = self.initialized_state(state)
+        selected_database = selected_work / "state.sqlite3"
+        raw = sqlite3.connect(selected_database)
+        try:
+            raw.execute(
+                "UPDATE work_item_definition_revisions SET definition_json = ? WHERE item_id = ? AND definition_revision = ?",
+                (b"{}", "work-c", 2),
+            )
+            raw.commit()
+        finally:
+            raw.close()
+        corrupt_result, _corrupt_stdout, corrupt_stderr = self.run_cli(
+            "--project-root",
+            str(selected_project),
+            "--work-root",
+            str(selected_work),
+            "item",
+            "definition",
+            "--item-id",
+            "work-c",
+        )
+        self.assertEqual(12, corrupt_result)
+        self.assertIn("WORK_STATE_INVALID", corrupt_stderr)
+
+        history_project, history_work, _history_store = self.initialized_state(state)
+        raw = sqlite3.connect(history_work / "state.sqlite3")
+        try:
+            raw.execute(
+                "DELETE FROM work_item_definition_revisions WHERE item_id = ? AND definition_revision = ?",
+                ("work-c", 1),
+            )
+            raw.commit()
+        finally:
+            raw.close()
+        history_result, _history_stdout, history_stderr = self.run_cli(
+            "--project-root",
+            str(history_project),
+            "--work-root",
+            str(history_work),
+            "item",
+            "definition-history",
+            "--item-id",
+            "work-c",
+        )
+        self.assertEqual(12, history_result)
+        self.assertIn("WORK_STATE_INVALID", history_stderr)
+
+        dependency_project, dependency_work, _dependency_store = self.initialized_state(state)
+        raw = sqlite3.connect(dependency_work / "state.sqlite3")
+        try:
+            raw.execute(
+                "INSERT INTO item_dependencies (item_id, dependency_id, position) VALUES (?, ?, ?)",
+                ("work-c", "work-b", 0),
+            )
+            raw.commit()
+        finally:
+            raw.close()
+        dependency_result, _dependency_stdout, dependency_stderr = self.run_cli(
+            "--project-root",
+            str(dependency_project),
+            "--work-root",
+            str(dependency_work),
+            "item",
+            "definition",
+            "--item-id",
+            "work-c",
+        )
+        self.assertEqual(12, dependency_result)
+        self.assertIn("WORK_STATE_INVALID", dependency_stderr)
+
     def test_status_preserves_distinct_expiry_and_historical_pin_contracts(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_preparation())
         common = ("--project-root", str(project), "--work-root", str(work))

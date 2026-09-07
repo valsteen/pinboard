@@ -2,7 +2,7 @@ import json
 import unittest
 
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailureCode
+from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CandidateId, ItemId, ProposalId
 from pinboard.interfaces.errors import TransitionInputFailure
 from pinboard.interfaces.transition_input import (
@@ -349,6 +349,9 @@ class TransitionInputTest(unittest.TestCase):
                     action(decision_models.ActivateAction, ItemId("item-1")), json.dumps(value)
                 )
                 self.assertIsInstance(rejected, TransitionInputFailure)
+                assert isinstance(rejected, TransitionInputFailure)
+                assert rejected.details is not None
+                self.assertEqual(RetryDisposition.CORRECT_INPUT, rejected.details.retry)
 
 
 if __name__ == "__main__":

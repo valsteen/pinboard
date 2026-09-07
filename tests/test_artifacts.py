@@ -44,7 +44,8 @@ class ArtifactPersistenceTest(unittest.TestCase):
         )
 
         reloaded = SQLiteWorkStore(roots.database_path).snapshot()
-        self.assertIn(accepted, reloaded.artifact_references)
+        self.assertTrue(accepted.ledger_changed)
+        self.assertIn(accepted.reference, reloaded.artifact_references)
         self.assertEqual(13, reloaded.lifecycle.project.revision)
 
     def test_revision_is_published_immutably_and_identical_retry_is_reused(self) -> None:
@@ -137,10 +138,9 @@ class ArtifactPersistenceTest(unittest.TestCase):
             )
         )
         before_retry = store.snapshot()
-        self.assertEqual(
-            accepted,
-            expect_success(store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW)),
-        )
+        retry = expect_success(store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW))
+        self.assertEqual(accepted.reference, retry.reference)
+        self.assertFalse(retry.ledger_changed)
         self.assertEqual(before_retry, store.snapshot())
 
     def test_expected_stale_artifact_acceptance_returns_failure_and_rolls_back(self) -> None:

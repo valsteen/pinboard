@@ -93,7 +93,7 @@ def _work_item_definition_payload(
             strict=True,
         )
     except msgspec.ValidationError as error:
-        return DecisionFailure(DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Definition is invalid: {error}")
+        return DecisionFailure(DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Definition is invalid: {error}", None)
 
 
 def work_item_definition_bytes(definition: work_models.WorkItemDefinition) -> DecisionResult[bytes]:
@@ -114,11 +114,14 @@ def decode_work_item_definition(payload: bytes) -> DecisionResult[work_models.Wo
     try:
         record = msgspec.json.decode(payload, type=WorkItemDefinitionPayload, strict=True)
     except msgspec.DecodeError as error:
-        return DecisionFailure(DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Definition JSON is invalid: {error}")
+        return DecisionFailure(
+            DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Definition JSON is invalid: {error}", None
+        )
     if _encoded_record(record) != payload:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
             "Definition JSON must use the canonical encoding.",
+            None,
         )
     return work_models.WorkItemDefinition(
         record.title,

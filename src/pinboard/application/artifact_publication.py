@@ -1,12 +1,24 @@
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
 from pinboard.application import stored_state
 from pinboard.application.artifacts import ArtifactRef, NewArtifact, WorkBriefIdentity
-from pinboard.application.ports import WorkStore
+from pinboard.application.ports import WorkStore, WorkStoreError
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.errors import (
+    ArtifactAcceptanceAfterPublicationError,
+    ChangedSurface,
+    DecisionFailure,
+    DecisionFailureCode,
+    DecisionResult,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    FailureMismatch,
+    RetryDisposition,
+)
 
 
 class ArtifactPublisher(Protocol):
@@ -15,6 +27,8 @@ class ArtifactPublisher(Protocol):
 
     def publish(self, artifact: NewArtifact) -> ArtifactRef: ...
 
+    def revision_exists(self, artifact: NewArtifact) -> bool: ...
+
 
 class ArtifactReader(Protocol):
     def verify(self, reference: stored_state.ArtifactReference) -> None: ...
@@ -22,16 +36,56 @@ class ArtifactReader(Protocol):
     def path(self, reference: stored_state.ArtifactReference) -> Path: ...
 
 
+@dataclass(frozen=True, slots=True)
+class AcceptedArtifactPublication:
+    reference: stored_state.ArtifactReference
+    artifact_created: bool
+    ledger_changed: bool
+
+
+def _committed_artifact_details(
+    reference: ArtifactRef,
+    prior: FailureDetails | None,
+) -> FailureDetails:
+    return FailureDetails(
+        observed=(
+            FailureFact("published_artifact_selector", reference.selector),
+            *(() if prior is None else prior.observed),
+        ),
+        mismatches=() if prior is None else prior.mismatches,
+        retry=RetryDisposition.DO_NOT_RETRY,
+        effect=EffectDisposition.COMMITTED,
+        changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+        alternatives=(),
+    )
+
+
 def publish_accepted_artifact(
     store: WorkStore,
     publisher: ArtifactPublisher,
     artifact: NewArtifact,
     accepted_at: datetime,
-) -> DecisionResult[stored_state.ArtifactReference]:
+) -> DecisionResult[AcceptedArtifactPublication]:
     """Publish immutable bytes, then accept their verified reference in SQLite."""
 
+    artifact_existed = publisher.revision_exists(artifact)
     published_reference = publisher.publish(artifact)
-    return store.accept_artifact_reference(publisher.work_root, published_reference, accepted_at)
+    artifact_created = not artifact_existed
+    try:
+        accepted = store.accept_artifact_reference(publisher.work_root, published_reference, accepted_at)
+    except WorkStoreError as error:
+        if artifact_created:
+            raise ArtifactAcceptanceAfterPublicationError(published_reference.selector, error) from error
+        raise
+    if isinstance(accepted, DecisionFailure):
+        if artifact_created:
+            return DecisionFailure(
+                accepted.code,
+                accepted.message,
+                _committed_artifact_details(published_reference, accepted.details),
+            )
+        return accepted
+    return AcceptedArtifactPublication(accepted.reference, artifact_created, accepted.ledger_changed)
 
 
 def validate_transition_work_brief(  # noqa: C901, PLR0912
@@ -56,6 +110,7 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
                 return DecisionFailure(
                     DecisionFailureCode.TRANSITION_INPUT_INVALID,
                     "Resuming with a revised brief requires an existing attempt.",
+                    None,
                 )
             attempt_id = str(attempt.attempt_id)
             branch = attempt.branch
@@ -74,6 +129,7 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
                 return DecisionFailure(
                     DecisionFailureCode.TRANSITION_INPUT_INVALID,
                     "Rebinding requires an existing attempt.",
+                    None,
                 )
             item_id = str(attempt.item_id)
             branch = value.branch
@@ -87,6 +143,14 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             "The selected brief artifact identity was not decoded from the accepted reference.",
+            FailureDetails(
+                observed=(FailureFact("brief_identity", None),),
+                mismatches=(FailureMismatch("brief_identity", "decoded", None),),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
         )
     item = next((candidate for candidate in state.lifecycle.work_items if str(candidate.item_id) == item_id), None)
     if item is None:
@@ -99,17 +163,43 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
             "The selected work item has no current definition.",
+            None,
         )
     if isinstance(command, decision_models.ActivateCommand):
         preparation = command.action.capability.preparation_authority
-        if preparation is None or (
-            preparation.item,
-            preparation.definition_revision,
-            preparation.definition_digest,
-        ) != (item.item_id, definition.revision, definition.digest):
+        preparation_mismatches = (
+            (FailureMismatch("preparation_item", str(item.item_id), None),)
+            if preparation is None
+            else tuple(
+                mismatch
+                for mismatch in (
+                    FailureMismatch("preparation_item", str(item.item_id), str(preparation.item)),
+                    FailureMismatch(
+                        "preparation_definition_revision",
+                        definition.revision,
+                        preparation.definition_revision,
+                    ),
+                    FailureMismatch(
+                        "preparation_definition_digest",
+                        definition.digest,
+                        preparation.definition_digest,
+                    ),
+                )
+                if mismatch.expected != mismatch.observed
+            )
+        )
+        if preparation_mismatches:
             return DecisionFailure(
                 DecisionFailureCode.TRANSITION_INPUT_INVALID,
                 "The selected work brief does not match the live preparation pin.",
+                FailureDetails(
+                    observed=(),
+                    mismatches=preparation_mismatches,
+                    retry=RetryDisposition.REFRESH_ACTION,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
             )
     expected = WorkBriefIdentity(
         attempt_id,
@@ -119,10 +209,38 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
         definition.revision,
         definition.digest,
     )
-    if identity != expected:
+    identity_mismatches = tuple(
+        mismatch
+        for mismatch in (
+            FailureMismatch("attempt_id", expected.attempt_id, identity.attempt_id),
+            FailureMismatch("item_id", expected.item_id, identity.item_id),
+            FailureMismatch("branch", expected.branch, identity.branch),
+            FailureMismatch("base_revision", expected.base_revision, identity.base_revision),
+            FailureMismatch(
+                "accepted_scope_revision",
+                expected.accepted_scope_revision,
+                identity.accepted_scope_revision,
+            ),
+            FailureMismatch(
+                "accepted_scope_digest",
+                expected.accepted_scope_digest,
+                identity.accepted_scope_digest,
+            ),
+        )
+        if mismatch.expected != mismatch.observed
+    )
+    if identity_mismatches:
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             "The selected brief artifact does not match the attempt, item, branch, base revision, and accepted scope.",
+            FailureDetails(
+                observed=(),
+                mismatches=identity_mismatches,
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
         )
     return None
 

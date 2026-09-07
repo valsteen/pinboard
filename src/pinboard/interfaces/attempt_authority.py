@@ -34,11 +34,13 @@ def _present_latest_attempt_authority(
     retained = stored_state.retained_attempt(state, attempt_id)
     if retained is None:
         return CommandFailure(
-            DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, f"Attempt '{attempt_id}' has no retained authority."
+            DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, f"Attempt '{attempt_id}' has no retained authority.", None
         )
     lease, anchor = retained
     if anchor is None:
-        return CommandFailure(CommandErrorCode.WORK_STATE_INVALID, "Attempt authority has no exact identity anchor.")
+        return CommandFailure(
+            CommandErrorCode.WORK_STATE_INVALID, "Attempt authority has no exact identity anchor.", None
+        )
     values: dict[str, str | int] = {
         "attempt_id": str(attempt_id),
         **retained_authority_lease_fields((lease, anchor)),
@@ -62,7 +64,9 @@ def _find_attempt_record(
 ) -> CommandResult[stored_state.StoredAttempt]:
     attempt = next((value for value in observed_state.lifecycle.attempts if value.attempt_id == attempt_id), None)
     if attempt is None:
-        return CommandFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, f"Attempt '{attempt_id}' is not current.")
+        return CommandFailure(
+            DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, f"Attempt '{attempt_id}' is not current.", None
+        )
     return attempt
 
 
@@ -91,7 +95,7 @@ def _resolve_requested_attempt_acquisition(
         )
     inactive = project_inactive_attempt_authority(observed_state, attempt_id, requested_at)
     if isinstance(inactive, DecisionFailure):
-        return CommandFailure(inactive.code, inactive.message)
+        return CommandFailure(inactive.code, inactive.message, inactive.details)
     return authority_models.TransferAttemptAuthority(
         inactive,
         command.task_id,
@@ -116,7 +120,7 @@ def _resolve_supplied_attempt_authority(
         None,
     )
     if observed_authority is None:
-        return CommandFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority is not active.")
+        return CommandFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority is not active.", None)
     return observed_authority
 
 
@@ -174,7 +178,7 @@ def change_attempt_authority(
         return requested_change
     commit_result = decide_and_commit_attempt_authority_change(store, requested_change)
     if isinstance(commit_result, DecisionFailure):
-        return CommandFailure(commit_result.code, commit_result.message)
+        return CommandFailure(commit_result.code, commit_result.message, commit_result.details)
     refresh_result = work_views.refresh_shared_authority_views(roots, store, datetime.now(UTC))
     if refresh_result.warning is not None:
         print(refresh_result.warning.message, file=sys.stderr)

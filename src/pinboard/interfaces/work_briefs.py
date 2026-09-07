@@ -332,6 +332,7 @@ def read_transition_work_brief_identity(
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             f"The selected brief artifact is not a valid canonical typed work brief: {error}",
+            None,
         )
 
 

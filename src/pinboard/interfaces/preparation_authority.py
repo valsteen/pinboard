@@ -13,14 +13,14 @@ from uuid import uuid4
 
 from pinboard.adapters.files.models import AffectedViews
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state
+from pinboard.application import service, stored_state
 from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.application.service import decide_and_commit_preparation_authority_change
 from pinboard.domain import authority_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import ItemId, LeaseId
 from pinboard.interfaces import cli_commands, work_views
-from pinboard.interfaces.cli_output import retained_authority_lease_fields, write_json
+from pinboard.interfaces.cli_output import authority_lease_fields, retained_authority_lease_fields, write_json
 from pinboard.interfaces.errors import CommandErrorCode, CommandFailure, CommandResult
 
 
@@ -29,10 +29,14 @@ def _find_retained_preparation_claim(
 ) -> CommandResult[tuple[stored_state.StoredPreparationLease, stored_state.PreparationLeaseGeneration]]:
     retained = stored_state.retained_preparation(state, item_id)
     if retained is None:
-        return CommandFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item_id}' has no preparation claim.")
+        return CommandFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item_id}' has no preparation claim.", None
+        )
     lease, anchor = retained
     if anchor is None:
-        return CommandFailure(CommandErrorCode.WORK_STATE_INVALID, "Preparation authority has no identity anchor.")
+        return CommandFailure(
+            CommandErrorCode.WORK_STATE_INVALID, "Preparation authority has no identity anchor.", None
+        )
     if lease.state == authority_models.PreparationLeaseStatus.ACTIVE and lease.expires_at <= evaluated_at:
         lease = replace(lease, state=authority_models.PreparationLeaseStatus.EXPIRED)
     return lease, anchor
@@ -72,6 +76,48 @@ def show_preparation_authority_status(
     )
 
 
+def start_preparation(
+    roots: cli_commands.ResolvedRoots, command: cli_commands.PreparationStartCommand
+) -> CommandResult[int]:
+    store = SQLiteWorkStore(roots.work / "state.sqlite3")
+    requested_at = datetime.now(UTC)
+    committed = service.start_preparation(
+        store,
+        item_id=command.item_id,
+        task_id=command.task_id,
+        host_id=command.host_id,
+        lease_id=LeaseId(uuid4().hex),
+        acquired_at=requested_at,
+        expires_at=requested_at + timedelta(seconds=command.ttl_seconds),
+    )
+    if isinstance(committed, DecisionFailure):
+        return CommandFailure(committed.code, committed.message, committed.details)
+    refreshed = work_views.refresh(
+        roots, store, AffectedViews(queue=True, items=(command.item_id,), history=True), datetime.now(UTC)
+    )
+    if refreshed.warning is not None:
+        print(refreshed.warning.message, file=sys.stderr)
+    values = {
+        "item_id": committed.item,
+        "definition_revision": committed.definition_revision,
+        "definition_digest": committed.definition_digest,
+        **authority_lease_fields(
+            task_id=committed.task_id,
+            host_id=committed.host_id,
+            lease_id=committed.lease_id,
+            generation=committed.generation,
+            acquired_at=committed.acquired_at,
+            expires_at=committed.expires_at,
+            status=committed.state.value,
+        ),
+    }
+    if command.json:
+        write_json(values)
+    else:
+        print("OK " + " ".join(f"{key}={value}" for key, value in values.items()))
+    return 0
+
+
 def _resolve_supplied_preparation_authority(
     observed_state: stored_state.StoredWorkState,
     item_id: ItemId,
@@ -88,7 +134,7 @@ def _resolve_supplied_preparation_authority(
         None,
     )
     if observed_authority is None:
-        return CommandFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority is not active.")
+        return CommandFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority is not active.", None)
     return replace(observed_authority, lease_id=lease_id, generation=generation)
 
 
@@ -124,7 +170,9 @@ def _resolve_requested_preparation_change(
                 return retained
             lease, anchor = retained
             if lease.state == authority_models.PreparationLeaseStatus.ACTIVE:
-                return CommandFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority remains live.")
+                return CommandFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority remains live.", None
+                )
             return authority_models.TransferPreparationAuthority(
                 current=authority_models.InactivePreparationAuthority(
                     host_epoch=observed_state.lifecycle.project.host_epoch,
@@ -193,7 +241,7 @@ def change_preparation_authority(
         return requested_change
     commit_result = decide_and_commit_preparation_authority_change(store, requested_change)
     if isinstance(commit_result, DecisionFailure):
-        return CommandFailure(commit_result.code, commit_result.message)
+        return CommandFailure(commit_result.code, commit_result.message, commit_result.details)
     refresh_result = work_views.refresh(
         roots,
         store,

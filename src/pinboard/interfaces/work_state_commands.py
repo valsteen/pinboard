@@ -19,6 +19,7 @@ from pinboard.interfaces.work_state import (
 from pinboard.interfaces.work_state_models import (
     Diagnostic,
     DiagnosticView,
+    InitializationView,
     RootView,
     Severity,
     ValidationReport,
@@ -112,21 +113,36 @@ def _read_user_config_and_recommend_body_after_prefix() -> str | None:
     )
 
 
-def initialize_state(roots: cli_commands.ResolvedRoots, _command: cli_commands.InitializeCommand) -> int:
+def initialize_state(roots: cli_commands.ResolvedRoots, command: cli_commands.InitializeCommand) -> int:
     selected_work = roots.work if roots.explicit_work_root else None
     operation_time = datetime.now(UTC)
     receipt = initialize_work_state(roots.shared_repository, selected_work, now=operation_time)
-    print(f"OK WORK_STATE_INITIALIZED {receipt.work_root}")
-    if not receipt.resumed:
+    optional_next_skills = (
+        () if receipt.resumed else ("repository-readiness", "slop-cleanup", "maintaining-agent-guidance")
+    )
+    recommendation = (
+        None
+        if receipt.resumed or os.environ.get("PINBOARD_RUNTIME") == "claude"
+        else _read_user_config_and_recommend_body_after_prefix()
+    )
+    view = InitializationView(
+        "pinboard-work-state-initialized/v1",
+        str(receipt.work_root),
+        receipt.resumed,
+        optional_next_skills,
+        recommendation,
+    )
+    if command.json:
+        write_json(view)
+        return 0
+    print(f"OK WORK_STATE_INITIALIZED {view.work_root}")
+    if view.optional_next_skills:
         print(
             "Optional next steps: $repository-readiness maps safe change paths; $slop-cleanup removes unsupported "
             "residue; $maintaining-agent-guidance places durable AI guidance."
         )
-        if (
-            os.environ.get("PINBOARD_RUNTIME") != "claude"
-            and (recommendation := _read_user_config_and_recommend_body_after_prefix()) is not None
-        ):
-            print(recommendation)
+        if view.configuration_recommendation is not None:
+            print(view.configuration_recommendation)
     return 0
 
 

@@ -194,6 +194,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             DecisionFailure(
                 DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID,
                 "A terminal work item cannot be revised.",
+                None,
             ),
             rejected,
         )

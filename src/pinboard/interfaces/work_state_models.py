@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Literal
 
 import msgspec
 
@@ -56,3 +57,11 @@ class DiagnosticView(msgspec.Struct, frozen=True):
 class ValidationView(msgspec.Struct, frozen=True):
     valid: bool
     diagnostics: tuple[DiagnosticView, ...]
+
+
+class InitializationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-work-state-initialized/v1"]
+    work_root: str
+    resumed: bool
+    optional_next_skills: tuple[str, ...]
+    configuration_recommendation: str | None

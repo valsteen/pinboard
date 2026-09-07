@@ -1,8 +1,35 @@
 """Installed read-only work-inspection presentation records."""
 
+from typing import Literal
+
 import msgspec
 
 from pinboard.application import query_models
+
+
+class AttemptView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    continuation: query_models.AttemptContinuation
+
+
+class TransitionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    action_id: str
+    committed_revision: str
+    continuation: query_models.AttemptContinuation | None
+
+
+class ReviewJobView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-review-job/v1"]
+    attempt_id: str
+    candidate_revision: str
+    owner_task_id: str
+    brief_path: str
+    brief_sha256: str
+    accepted_scope_revision: int
+    accepted_scope_digest: str
+    result_path: str
+    result_sha256: str
+    prompt: str
+    return_contract: str
 
 
 class StatusView(msgspec.Struct, frozen=True):
@@ -38,10 +65,10 @@ class ActionView(msgspec.Struct, frozen=True, omit_defaults=True):
     subject: str
     label: str
     expected_revision: str
-    subject_revision: str
+    subject_revision: str | None
     authorization: str
-    lease_id: str
-    generation: int
+    lease_id: str | None
+    generation: int | None
     semantics: ActionSemanticsView
     input_contract: InputContractView | None = None
 

@@ -3,7 +3,7 @@ from typing import Final, assert_never
 import msgspec
 
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailureCode
+from pinboard.domain.errors import DecisionFailureCode, EffectDisposition, FailureDetails, RetryDisposition
 from pinboard.domain.identifiers import (
     ArtifactRefId,
     AttemptId,
@@ -72,6 +72,7 @@ def _input_model(kind: decision_models.ActionKind) -> TransitionInputResult[tran
         return TransitionInputFailure(
             DecisionFailureCode.ACTION_NOT_MUTATING,
             f"Action '{kind.value}' is not a canonical transition.",
+            None,
         )
     return model
 
@@ -86,6 +87,14 @@ def _decode[PayloadT: transition_models.InputPayload](
         return TransitionInputFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             f"Cannot decode transition JSON: {error}",
+            FailureDetails(
+                observed=(),
+                mismatches=(),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
         )
 
 
@@ -274,6 +283,7 @@ def parse_transition_command(  # noqa: C901, PLR0912, PLR0915 - one visible exha
             return TransitionInputFailure(
                 DecisionFailureCode.ACTION_NOT_MUTATING,
                 f"Action '{action.kind.value}' is not a canonical transition.",
+                None,
             )
         case _ as unreachable:
             assert_never(unreachable)

@@ -8,6 +8,7 @@ roots, open resources, dispatch commands, or perform product decisions.
 
 import argparse
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import assert_never
@@ -29,11 +30,21 @@ class _CompoundCommand(Enum):
 class _RawCliArguments(argparse.Namespace):
     command_selection: type[cli_commands.CliCommand] | _CompoundCommand | None
     selected_parser: argparse.ArgumentParser | None
+    contract_variants: tuple[tuple[str, type[cli_commands.CliCommand]], ...]
 
     def __init__(self) -> None:
         super().__init__()
         self.command_selection = None
         self.selected_parser = None
+        self.contract_variants = ()
+
+
+@dataclass(frozen=True, slots=True)
+class InstalledCommandVariant:
+    operation_id: str
+    variant: str
+    command_type: type[cli_commands.CliCommand]
+    cli_usage: str
 
 
 class _BriefSourcesArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -64,6 +75,7 @@ class _TransitionArguments(msgspec.Struct, frozen=True):
     expected_revision: str
     payload: Path
     subject_revision: str | None
+    json: bool
 
 
 class _ProjectTransitionArguments(
@@ -120,6 +132,7 @@ class _DispatchArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     prompt: Path | None
     brief_review: Path | None
     review_id: cli_commands.KebabReviewId | None
+    json: bool
 
     def __post_init__(self) -> None:
         if (self.brief_review is None) != (self.review_id is None):
@@ -163,6 +176,7 @@ def _decode_transition[RawT](values: dict[str, RawT]) -> cli_commands.Transition
                 task_id=arguments.task_id,
                 host_id=arguments.host_id,
                 subject_revision=arguments.subject_revision,
+                json=arguments.json,
             )
         case _AttemptTransitionArguments():
             return cli_commands.AttemptTransitionCommand(
@@ -172,6 +186,7 @@ def _decode_transition[RawT](values: dict[str, RawT]) -> cli_commands.Transition
                 payload=arguments.payload,
                 lease_id=arguments.lease_id,
                 subject_revision=arguments.subject_revision,
+                json=arguments.json,
             )
         case _PreparationTransitionArguments():
             return cli_commands.PreparationTransitionCommand(
@@ -181,6 +196,7 @@ def _decode_transition[RawT](values: dict[str, RawT]) -> cli_commands.Transition
                 payload=arguments.payload,
                 lease_id=arguments.lease_id,
                 subject_revision=arguments.subject_revision,
+                json=arguments.json,
             )
         case _ as unreachable:
             assert_never(unreachable)
@@ -197,6 +213,7 @@ def _decode_dispatch[RawT](values: dict[str, RawT]) -> cli_commands.DispatchComm
             checkpoint=arguments.checkpoint,
             environment=arguments.environment,
             prompt=arguments.prompt,
+            json=arguments.json,
         )
     assert arguments.review_id is not None
     return cli_commands.ProjectReviewedDispatchCommand(
@@ -209,6 +226,7 @@ def _decode_dispatch[RawT](values: dict[str, RawT]) -> cli_commands.DispatchComm
         brief_review=arguments.brief_review,
         prompt=arguments.prompt,
         review_id=arguments.review_id,
+        json=arguments.json,
     )
 
 
@@ -235,7 +253,38 @@ def _select_command(
     parser: argparse.ArgumentParser,
     command_selection: type[cli_commands.CliCommand] | _CompoundCommand,
 ) -> None:
-    parser.set_defaults(command_selection=command_selection, selected_parser=parser)
+    if isinstance(command_selection, type):
+        variants = (("default", command_selection),)
+    else:
+        match command_selection:
+            case _CompoundCommand.ACTIONS:
+                variants = (
+                    ("unleased", cli_commands.ActionsCommand),
+                    ("leased", cli_commands.LeasedActionsCommand),
+                )
+            case _CompoundCommand.BRIEF_SOURCES:
+                variants = (
+                    ("plan", cli_commands.BriefSourcesPlanCommand),
+                    ("emit", cli_commands.BriefSourcesEmitCommand),
+                )
+            case _CompoundCommand.DISPATCH:
+                variants = (
+                    ("without-review", cli_commands.ProjectDispatchCommand),
+                    ("with-review", cli_commands.ProjectReviewedDispatchCommand),
+                )
+            case _CompoundCommand.TRANSITION:
+                variants = (
+                    ("project", cli_commands.ProjectTransitionCommand),
+                    ("attempt", cli_commands.AttemptTransitionCommand),
+                    ("preparation", cli_commands.PreparationTransitionCommand),
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
+    parser.set_defaults(
+        command_selection=command_selection,
+        selected_parser=parser,
+        contract_variants=variants,
+    )
 
 
 def _add_attempt_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -273,11 +322,22 @@ def _add_attempt_parser(commands: argparse._SubParsersAction[argparse.ArgumentPa
     status.add_argument("--attempt-id", required=True)
     status.add_argument("--json", action="store_true")
     _select_command(status, cli_commands.AttemptStatusCommand)
+    inspect = operations.add_parser("inspect", help="Read the exact attempt and its current continuation.")
+    inspect.add_argument("--attempt-id", required=True)
+    inspect.add_argument("--json", action="store_true")
+    _select_command(inspect, cli_commands.AttemptInspectCommand)
 
 
-def _add_preparation_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def _add_preparation_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # noqa: PLR0915 - complete preparation grammar
     preparation = commands.add_parser("preparation", help="Manage a renewable ready-item preparation claim.")
     operations = preparation.add_subparsers(required=True)
+    start = operations.add_parser("start", help="Claim the current eligible definition atomically.")
+    start.add_argument("--item-id", required=True)
+    start.add_argument("--task-id", required=True)
+    start.add_argument("--host-id", required=True)
+    start.add_argument("--ttl-seconds", required=True, type=int)
+    start.add_argument("--json", action="store_true")
+    _select_command(start, cli_commands.PreparationStartCommand)
     acquire = operations.add_parser("acquire")
     acquire.add_argument("--item-id", required=True)
     acquire.add_argument("--expected-project-revision", required=True)
@@ -395,6 +455,19 @@ def _add_inspection_parsers(commands: argparse._SubParsersAction[argparse.Argume
     input_contract.add_argument("action_kind", choices=transition_input.INPUT_CONTRACT_ACTION_KINDS)
     input_contract.add_argument("--json", action="store_true")
     _select_command(input_contract, cli_commands.InputContractCommand)
+    tool_contract = commands.add_parser(
+        "tool-contract", help="Discover installed command and action contracts without opening project state."
+    )
+    selection = tool_contract.add_mutually_exclusive_group()
+    selection.add_argument("--operation", help="Installed operation ID, optionally followed by :variant.")
+    selection.add_argument("--action-kind", choices=transition_input.INPUT_CONTRACT_ACTION_KINDS)
+    selection.add_argument(
+        "--brief-starter",
+        choices=cli_commands.BRIEF_BOUNDARIES,
+        help="Return one compact complete unresolved work-brief starter for this boundary.",
+    )
+    tool_contract.add_argument("--json", action="store_true")
+    _select_command(tool_contract, cli_commands.ToolContractCommand)
     brief_sources = commands.add_parser(
         "brief-sources",
         help="Plan or emit deterministic context-bounded authority source batches.",
@@ -416,23 +489,29 @@ def _add_brief_parser(commands: argparse._SubParsersAction[argparse.ArgumentPars
     _select_command(publish, cli_commands.BriefPublishCommand)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="pinboard", description="Inspect and transition one pinboard.")
-    parser.add_argument("--version", action="version", version=__version__)
+def _add_root_selection(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project-root", type=Path, help="Select the exact source checkout for authority reads.")
     parser.add_argument("--work-root", type=Path)
+
+
+def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - complete top-level grammar
+    parser = argparse.ArgumentParser(prog="pinboard", description="Inspect and transition one pinboard.")
+    parser.add_argument("--version", action="version", version=__version__)
+    _add_root_selection(parser)
     commands = parser.add_subparsers(required=True)
     _add_inspection_parsers(commands)
     handover = commands.add_parser("handover", help="Export one complete tool-neutral project handover.")
     handover.add_argument("--json", action="store_true", required=True)
     _select_command(handover, cli_commands.HandoverCommand)
     initialize = commands.add_parser("init", help="Create an empty current SQLite work state.")
+    initialize.add_argument("--json", action="store_true")
     _select_command(initialize, cli_commands.InitializeCommand)
     _add_brief_parser(commands)
     proposal = commands.add_parser("proposal", help="Create one intake item without activating it.")
     proposal.add_argument("--file", type=Path, required=True)
     proposal.add_argument("--task-id", required=True)
     proposal.add_argument("--host-id", required=True)
+    proposal.add_argument("--json", action="store_true")
     _select_command(proposal, cli_commands.ProposalCommand)
     transition = commands.add_parser(
         "transition", help="Apply one selected lifecycle-changing action returned by the actions command."
@@ -450,8 +529,14 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
     transition.add_argument("--payload", required=True, type=Path)
+    transition.add_argument("--json", action="store_true")
     _select_command(transition, _CompoundCommand.TRANSITION)
     dispatch = commands.add_parser("dispatch", help="Prepare or verify a canonical worker launch.")
+    review_job = commands.add_parser("review-job", help="Render a read-only job for the exact review candidate.")
+    review_job.add_argument("--attempt-id", required=True)
+    review_job.add_argument("--candidate-revision", required=True)
+    review_job.add_argument("--json", action="store_true")
+    _select_command(review_job, cli_commands.ReviewJobCommand)
     dispatch.add_argument("--action-id", required=True, help="Exact dispatch action returned by project actions.")
     dispatch.add_argument("--expected-revision", required=True, help="Ledger revision from the dispatch action.")
     dispatch.add_argument("--task-id", required=True)
@@ -477,6 +562,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--review-id",
         help="Kebab-case identity used only when preserving a differing later review.",
     )
+    dispatch.add_argument("--json", action="store_true")
     _select_command(dispatch, _CompoundCommand.DISPATCH)
     _add_attempt_parser(commands)
     _add_preparation_parser(commands)
@@ -496,7 +582,7 @@ def _decode_invocation(
     if selected_parser is None or command_selection is None:
         parser.error("the selected command has no decoder")
     untyped_values = vars(raw).copy()
-    for metadata_name in ("command_selection", "selected_parser"):
+    for metadata_name in ("command_selection", "selected_parser", "contract_variants"):
         untyped_values.pop(metadata_name, None)
     try:
         root_values = {
@@ -515,3 +601,31 @@ def parse_invocation(argv: Sequence[str] | None = None) -> cli_commands.CliInvoc
     parser = build_parser()
     raw = parser.parse_args(argv, namespace=_RawCliArguments())
     return _decode_invocation(parser, raw)
+
+
+def installed_command_variants() -> tuple[InstalledCommandVariant, ...]:
+    """Read exact decoded variants from the installed parser leaves."""
+
+    discovered: list[InstalledCommandVariant] = []
+    root_selection_parser = argparse.ArgumentParser(prog="pinboard", add_help=False)
+    _add_root_selection(root_selection_parser)
+    root_usage = " ".join(root_selection_parser.format_usage().removeprefix("usage: ").split())
+
+    def visit(parser: argparse.ArgumentParser) -> None:
+        variants = parser.get_default("contract_variants")
+        if variants:
+            operation_id = parser.prog.removeprefix("pinboard ").replace(" ", "/")
+            leaf_usage = " ".join(parser.format_usage().removeprefix("usage: ").split())
+            cli_usage = root_usage + leaf_usage.removeprefix("pinboard")
+            discovered.extend(
+                InstalledCommandVariant(operation_id, variant, command_type, cli_usage)
+                for variant, command_type in variants
+            )
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for child in action.choices.values():
+                    if isinstance(child, argparse.ArgumentParser):
+                        visit(child)
+
+    visit(build_parser())
+    return tuple(discovered)

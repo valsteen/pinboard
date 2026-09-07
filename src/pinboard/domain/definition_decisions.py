@@ -47,23 +47,27 @@ def decide_definition_revision(
             return DecisionFailure(
                 DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID,
                 "A terminal work item cannot be revised.",
+                None,
             )
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item}' does not exist.")
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item}' does not exist.", None)
     if value.item_id != item:
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             "The revision payload item does not match the selected action.",
+            None,
         )
     current = snapshot.definition(item)
     if current is None:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
             "The work item has no current definition.",
+            None,
         )
     if (value.expected_revision, value.expected_digest) != (current.revision, current.digest):
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_STALE,
             "The expected definition revision and digest are stale.",
+            None,
         )
     digest = work_item_definition_digest(value.definition)
     if isinstance(digest, DecisionFailure):
@@ -73,11 +77,13 @@ def decide_definition_revision(
         return DecisionFailure(
             DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
             "Definition dependencies must name existing work items.",
+            None,
         )
     if introduces_dependency_cycle(snapshot, item, value.definition.dependencies):
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEPENDENCY_CYCLE,
             "Definition dependencies must not introduce a cycle.",
+            None,
         )
     return DefinitionRevisionDecision(
         item,

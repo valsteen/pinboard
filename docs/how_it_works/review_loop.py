@@ -1,5 +1,5 @@
 from pinboard.domain import decision_models
-from pinboard.interfaces import work_brief_models
+from pinboard.interfaces import work_brief_models, work_inspection_models
 
 from .model import Box, Connector, Diagram, Guide, Note, Section
 
@@ -16,6 +16,7 @@ REVIEW_LOOP_ACTIONS = frozenset(
 SOURCE_SYMBOL_NAMES: dict[str, str] = {
     "WorkBrief": work_brief_models.WorkBrief.__name__,
     "WorkBriefReview": work_brief_models.WorkBriefReview.__name__,
+    "ReviewJobView": work_inspection_models.ReviewJobView.__name__,
 }
 
 
@@ -32,9 +33,9 @@ DIAGRAM = Diagram(
     title="One accepted target anchors an ordinary implementation and review loop",
     description=(
         "On the left, an ordinary coding harness repeatedly interprets a prose request, repository code, and review "
-        "feedback. On the right, Pinboard gives the implementer and independent reviewer the same accepted structured "
-        "brief, exact candidate, and evidence, so corrections remain tied to that target without claiming that model "
-        "judgment is infallible or that convergence is guaranteed."
+        "feedback. On the right, Pinboard binds the accepted structured brief, exact candidate, and evidence into a "
+        "read-only review job for an independent reviewer, so corrections remain tied to that target without claiming "
+        "that model judgment is infallible or that convergence is guaranteed."
     ),
     width=1400,
     height=800,
@@ -140,10 +141,10 @@ DIAGRAM = Diagram(
         ),
         Box(
             "candidate",
-            "Submission",
+            "Read-only review job",
             "Candidate + evidence",
-            ("exact revision under review", "tests + observations"),
-            ("candidate identity",),
+            ("exact revision under review", "brief + result digests"),
+            ("outcome owner retained",),
             1050,
             290,
             300,

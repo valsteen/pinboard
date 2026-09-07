@@ -1,4 +1,5 @@
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
@@ -7,6 +8,16 @@ from pinboard.application import stored_state
 from pinboard.application.artifacts import ArtifactRef
 from pinboard.application.mutation_models import MutationReceipt, StoredStateMutation
 from pinboard.domain.errors import DecisionResult
+
+
+class WorkStoreError(RuntimeError):
+    """Infrastructure failure owned by the work-store port."""
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactReferenceAcceptance:
+    reference: stored_state.ArtifactReference
+    ledger_changed: bool
 
 
 class WorkTransaction(Protocol):
@@ -25,4 +36,4 @@ class WorkStore(Protocol):
         work_root: Path,
         published: ArtifactRef,
         accepted_at: datetime,
-    ) -> DecisionResult[stored_state.ArtifactReference]: ...
+    ) -> DecisionResult[ArtifactReferenceAcceptance]: ...

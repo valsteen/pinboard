@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -11,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+import msgspec
 from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files import views as file_views
@@ -30,7 +32,7 @@ from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
 from pinboard.interfaces import transitions as transition_interface
-from pinboard.interfaces import work_brief_models
+from pinboard.interfaces import work_brief_models, work_inspection_models
 from pinboard.interfaces.cli import build_parser, main
 from pinboard.interfaces.errors import WorkBriefError, WorkBriefErrorCode
 from pinboard.interfaces.work_briefs import canonical_work_brief_bytes
@@ -91,7 +93,9 @@ class CliTest(unittest.TestCase):
             self.fail("JSON value must be an integer")
         return value
 
-    def run_transition(self, common: tuple[str, ...], action: JsonObject, payload: Path) -> tuple[int, str, str]:
+    def run_transition(
+        self, common: tuple[str, ...], action: JsonObject, payload: Path, *, json_output: bool
+    ) -> tuple[int, str, str]:
         arguments = [
             *common,
             "transition",
@@ -111,7 +115,25 @@ class CliTest(unittest.TestCase):
         else:
             arguments.extend(("--task-id", "project-task", "--host-id", "studio"))
         arguments.extend(("--payload", str(payload)))
-        return self.run_cli(*arguments)
+        if json_output:
+            arguments.append("--json")
+        result, stdout, stderr = self.run_cli(*arguments)
+        if result == 0 and json_output:
+            transition = msgspec.json.decode(stdout, type=work_inspection_models.TransitionView)
+            if transition.continuation is not None:
+                inspected = self.run_json_cli(
+                    *common, "attempt", "inspect", "--attempt-id", transition.continuation.attempt_id
+                )
+                self.assertEqual(
+                    json.loads(msgspec.json.encode(work_inspection_models.AttemptView(transition.continuation))),
+                    inspected,
+                )
+        elif result == 0 and "\n{" in stdout:
+            encoded = stdout[stdout.index("\n{") + 1 :].encode()
+            view = msgspec.json.decode(encoded, type=work_inspection_models.AttemptView)
+            inspected = self.run_json_cli(*common, "attempt", "inspect", "--attempt-id", view.continuation.attempt_id)
+            self.assertEqual(json.loads(encoded), inspected)
+        return result, stdout, stderr
 
     def project_action(self, common: tuple[str, ...], action_id: str) -> JsonObject:
         return self.json_object(
@@ -162,9 +184,14 @@ class CliTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        rejected, _stdout, rejected_stderr = self.run_transition(common, action, wrong_reference_payload)
+        rejected, rejected_stdout, rejected_stderr = self.run_transition(
+            common, action, wrong_reference_payload, json_output=True
+        )
         self.assertNotEqual(0, rejected)
-        self.assertIn("TRANSITION_INPUT_INVALID", rejected_stderr)
+        self.assertEqual("", rejected_stderr)
+        rejected_payload = self.json_object(json.loads(rejected_stdout))
+        self.assertEqual("TRANSITION_INPUT_INVALID", rejected_payload["code"])
+        self.assertEqual("correct-input", rejected_payload["retry"])
         self.assertEqual(before_rejection, store.snapshot())
 
         expires_at = datetime.fromisoformat(str(prepared["expires_at"]))
@@ -194,9 +221,11 @@ class CliTest(unittest.TestCase):
                 patch("pinboard.interfaces.action_selection.datetime") as action_clock,
             ):
                 action_clock.now.return_value = observed_at
-                rejected, _stdout, rejected_stderr = self.run_transition(common, action, valid_payload)
+                rejected, _stdout, rejected_stderr = self.run_transition(
+                    common, action, valid_payload, json_output=False
+                )
             self.assertEqual(11, rejected)
-            self.assertIn("ACTION_NOT_AVAILABLE", rejected_stderr)
+            self.assertIn("ACTION_AUTHORITY_EXPIRED", rejected_stderr)
             self.assertEqual(before_expired_activation, store.snapshot())
         return self.assert_installed_activation_identity_rejections(common, action, project, store, valid_payload)
 
@@ -217,7 +246,9 @@ class CliTest(unittest.TestCase):
             mismatched_payload = project / f"activate-wrong-{field}.json"
             mismatched_payload.write_text(json.dumps({**payload_values, field: mismatch}), encoding="utf-8")
             before = store.snapshot()
-            rejected, _stdout, rejected_stderr = self.run_transition(common, action, mismatched_payload)
+            rejected, _stdout, rejected_stderr = self.run_transition(
+                common, action, mismatched_payload, json_output=False
+            )
             self.assertEqual(11, rejected)
             self.assertIn("TRANSITION_INPUT_INVALID", rejected_stderr)
             self.assertEqual(before, store.snapshot())
@@ -253,7 +284,7 @@ class CliTest(unittest.TestCase):
             patch("pinboard.interfaces.action_selection.select_current_action", return_value=wrong_action),
             patch("pinboard.application.service.project_decision_snapshot", return_value=wrong_snapshot),
         ):
-            rejected, _stdout, rejected_stderr = self.run_transition(common, action, valid_payload)
+            rejected, _stdout, rejected_stderr = self.run_transition(common, action, valid_payload, json_output=False)
         self.assertEqual(11, rejected)
         self.assertIn("live preparation pin", rejected_stderr)
         self.assertEqual(before, store.snapshot())
@@ -325,7 +356,7 @@ class CliTest(unittest.TestCase):
                 )[0]
             )
             before = store.snapshot()
-            rejected, _stdout, rejected_stderr = self.run_transition(common, current_action, payload)
+            rejected, _stdout, rejected_stderr = self.run_transition(common, current_action, payload, json_output=False)
             self.assertEqual(11, rejected)
             self.assertIn("TRANSITION_INPUT_INVALID", rejected_stderr)
             self.assertEqual(before, store.snapshot())
@@ -472,6 +503,130 @@ class CliTest(unittest.TestCase):
             ),
         )
 
+    def test_preparation_start_selects_current_definition_and_transfers_inactive_claims(self) -> None:
+        for retained_status in (None, "expired", "released", "revoked"):
+            with self.subTest(retained_status=retained_status):
+                state = complete_sqlite_state()
+                if retained_status is not None:
+                    state = self.prepared_state(SQLITE_NOW + timedelta(minutes=1))
+                    if retained_status != "expired":
+                        state = replace(
+                            state,
+                            authority=replace(
+                                state.authority,
+                                preparation_leases=(
+                                    replace(
+                                        state.authority.preparation_leases[0],
+                                        state=authority_models.PreparationLeaseStatus(retained_status),
+                                    ),
+                                ),
+                            ),
+                        )
+                project, work, store = self.initialized_state(state)
+                common = ("--project-root", str(project), "--work-root", str(work))
+                started = self.run_json_cli(
+                    *common,
+                    "preparation",
+                    "start",
+                    "--item-id",
+                    "work-c",
+                    "--task-id",
+                    "new-preparer",
+                    "--host-id",
+                    "studio",
+                    "--ttl-seconds",
+                    "300",
+                )
+                fresh = SQLiteWorkStore(work / "state.sqlite3").snapshot()
+                definition = next(value for value in fresh.lifecycle.definition_revisions if value.item_id == "work-c")
+                self.assertEqual(definition.digest, started["definition_digest"])
+                self.assertEqual(definition.revision, started["definition_revision"])
+                self.assertEqual("new-preparer", started["task_id"])
+                self.assertEqual(1 if retained_status is None else 2, started["generation"])
+                before = store.snapshot()
+                rejected, _, _ = self.run_cli(
+                    *common,
+                    "preparation",
+                    "start",
+                    "--item-id",
+                    "work-c",
+                    "--task-id",
+                    "racing-preparer",
+                    "--host-id",
+                    "studio",
+                    "--ttl-seconds",
+                    "300",
+                )
+                self.assertEqual(11, rejected)
+                self.assertEqual(before, store.snapshot())
+                self.run_cli_parse_error(
+                    *common,
+                    "preparation",
+                    "start",
+                    "--item-id",
+                    "work-c",
+                    "--task-id",
+                    "new-preparer",
+                    "--host-id",
+                    "studio",
+                    "--ttl-seconds",
+                    "0",
+                )
+
+    def test_ordinary_preparation_start_rejects_unknown_or_ineligible_items_without_change(self) -> None:
+        state = complete_sqlite_state()
+        state = with_definition_dependencies(state, ItemId("work-c"), (ItemId("intake-work"),))
+        project, work, store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        before = store.snapshot()
+        for item_id in ("unknown", "work-a", "work-c", "intake-work"):
+            with self.subTest(item=item_id):
+                result, _, _ = self.run_cli(
+                    *common,
+                    "preparation",
+                    "start",
+                    "--item-id",
+                    item_id,
+                    "--task-id",
+                    "preparer",
+                    "--host-id",
+                    "host-a",
+                    "--ttl-seconds",
+                    "300",
+                )
+                self.assertEqual(11, result)
+                self.assertEqual(before, store.snapshot())
+
+    def test_active_definition_replacement_requires_pause_before_rebinding(self) -> None:
+        project, work, store = self.initialized_state(complete_sqlite_state())
+        common = ("--project-root", str(project), "--work-root", str(work))
+        definition, digest = test_definition(ItemId("work-a"))
+        payload = self.write_item_revision(
+            project / "active-definition.json",
+            ItemId("work-a"),
+            1,
+            digest,
+            definition,
+            objective="Follow the new accepted target.",
+        )
+        result, stdout, stderr = self.run_transition(
+            common, self.project_action(common, "revise-item:work-a"), payload, json_output=True
+        )
+        self.assertEqual(0, result, stderr)
+        continuation = self.json_object(json.loads(stdout)["continuation"])
+        self.assertEqual("active", continuation["state"])
+        self.assertEqual("pause", self.json_object(continuation["next_operation"])["action_kind"])
+        self.assertEqual(work_a_brief(project).owner_task_id, continuation["owner_task_id"])
+        before = store.snapshot()
+        attempt = next(value for value in before.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
+        brief = next(
+            value for value in before.artifact_references if value.artifact_ref_id == attempt.brief_artifact_ref_id
+        )
+        (work / brief.selector).unlink()
+        rejected, _, _ = self.run_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1")
+        self.assertEqual(11, rejected)
+        self.assertEqual(before, store.snapshot())
+
     def test_current_command_surface_lists_every_command(self) -> None:
         parser = build_parser()
         help_text = parser.format_help()
@@ -493,6 +648,7 @@ class CliTest(unittest.TestCase):
             "attempt",
             "preparation",
             "parallel",
+            "review-job",
             "views",
         ):
             self.assertIn(retained, help_text)
@@ -685,7 +841,7 @@ class CliTest(unittest.TestCase):
             )
             action = self.json_object(action_values[0])
 
-            result, stdout, stderr = self.run_transition(common, action, payload)
+            result, stdout, stderr = self.run_transition(common, action, payload, json_output=False)
 
             with self.subTest(item_id=item_id):
                 self.assertNotEqual(0, result)
@@ -776,7 +932,9 @@ class CliTest(unittest.TestCase):
             for value in action_values
             if self.json_object(value)["action_id"] == "revise-item:work-a"
         )
-        revision_result, revision_stdout, revision_stderr = self.run_transition(common, revision_action, revision)
+        revision_result, revision_stdout, revision_stderr = self.run_transition(
+            common, revision_action, revision, json_output=False
+        )
         self.assertEqual(0, revision_result, revision_stderr)
         self.assertIn("OK TRANSITION_APPLIED revise-item:work-a", revision_stdout)
         after_ids = {
@@ -792,6 +950,15 @@ class CliTest(unittest.TestCase):
         }
         self.assertTrue(set(before_actions).isdisjoint(after_ids))
         after_revision = store.snapshot()
+        continuation = self.json_object(
+            self.run_json_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1")["continuation"]
+        )
+        self.assertEqual("return-for-correction", self.json_object(continuation["next_operation"])["action_kind"])
+        rejected, _, _ = self.run_cli(
+            *common, "review-job", "--attempt-id", "work-a-1", "--candidate-revision", "candidate-review"
+        )
+        self.assertEqual(11, rejected)
+        self.assertEqual(after_revision, store.snapshot())
         payloads = {
             "accept-checkpoint:work-a-1": '{"checkpoint":"checkpoint-a","candidate":"candidate-review","evidence":"accepted"}',
             "accept-review-and-continue:work-a-1": '{"candidate":"candidate-review","evidence":"accepted"}',
@@ -801,12 +968,12 @@ class CliTest(unittest.TestCase):
             payload = project / f"{action_id.split(':', 1)[0]}.json"
             payload.write_text(payloads[action_id], encoding="utf-8")
 
-            result, stdout, stderr = self.run_transition(common, action, payload)
+            result, stdout, stderr = self.run_transition(common, action, payload, json_output=False)
 
             with self.subTest(action_id=action_id):
                 self.assertNotEqual(0, result)
                 self.assertEqual("", stdout)
-                self.assertIn("ACTION_NOT_AVAILABLE", stderr)
+                self.assertIn("ACTION_LIFECYCLE_UNAVAILABLE", stderr)
                 self.assertEqual(after_revision, store.snapshot())
 
     def test_item_revise_post_commit_view_warning_preserves_receipt_and_repairs(self) -> None:
@@ -891,6 +1058,8 @@ class CliTest(unittest.TestCase):
             self.assertIsInstance(action_id, str)
             assert isinstance(action_id, str)
             action_ids.append(action_id)
+            self.assertIsNone(action.get("lease_id"))
+            self.assertIsNone(action.get("generation"))
         self.assertEqual(["inspect:ledger"], action_ids)
         self.assertEqual(
             "pinboard-parallel-preview/v1",
@@ -904,6 +1073,26 @@ class CliTest(unittest.TestCase):
         )
         self.assertEqual(11, exact_result)
         self.assertIn("ACTION_NOT_AVAILABLE", exact_stderr)
+
+    def test_fresh_init_has_one_structured_json_receipt(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        work = project / ".codex" / "work"
+
+        created = self.run_json_cli(
+            "--project-root",
+            str(project),
+            "--work-root",
+            str(work),
+            "init",
+        )
+
+        self.assertEqual("pinboard-work-state-initialized/v1", created["schema"])
+        self.assertEqual(str(work), created["work_root"])
+        self.assertFalse(created["resumed"])
+        self.assertEqual(
+            ["repository-readiness", "slop-cleanup", "maintaining-agent-guidance"],
+            created["optional_next_skills"],
+        )
 
     def test_fresh_init_accepts_a_proposal_and_rejects_its_stale_receipt_without_changes(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
@@ -965,13 +1154,28 @@ class CliTest(unittest.TestCase):
         )
         store = SQLiteWorkStore(work / "state.sqlite3")
         before_stale = store.snapshot()
-        rejected, _stdout, rejected_stderr = self.run_transition(common, stale_action, payload)
+        rejected, rejected_stdout, rejected_stderr = self.run_transition(
+            common, stale_action, payload, json_output=True
+        )
         self.assertEqual(11, rejected)
-        self.assertIn("STALE_ACTION", rejected_stderr)
+        self.assertEqual("", rejected_stderr)
+        rejection = self.json_object(json.loads(rejected_stdout))
+        self.assertEqual("ACTION_REVISION_STALE", rejection["code"])
+        self.assertFalse(rejection["state_changed"])
+        alternatives = self.json_list(rejection["next_actions"])
+        fresh_accept = next(
+            self.json_object(value)
+            for value in alternatives
+            if self.json_object(value).get("action_id") == "accept-proposal:fresh-proposal"
+        )
+        self.assertEqual("action", fresh_accept["kind"])
+        self.assertEqual("project", fresh_accept["role"])
+        self.assertEqual(before_stale.lifecycle.project.revision, int(str(fresh_accept["expected_revision"])))
+        self.assertIsNone(fresh_accept["generation"])
         self.assertEqual(before_stale, SQLiteWorkStore(work / "state.sqlite3").snapshot())
 
         current_action = self.project_action(common, "accept-proposal:fresh-proposal")
-        accepted, stdout, stderr = self.run_transition(common, current_action, payload)
+        accepted, stdout, stderr = self.run_transition(common, current_action, payload, json_output=False)
         self.assertEqual(0, accepted, stderr)
         self.assertIn("OK TRANSITION_APPLIED accept-proposal:fresh-proposal", stdout)
         reloaded = SQLiteWorkStore(work / "state.sqlite3").snapshot()
@@ -1312,19 +1516,20 @@ class CliTest(unittest.TestCase):
             transition_clock.now.side_effect = (
                 activation_expiry - timedelta(microseconds=2),
                 activation_expiry - timedelta(microseconds=1),
+                activation_expiry,
             )
-            result, _stdout, stderr = self.run_transition(common, activation, payload)
+            result, _stdout, stderr = self.run_transition(common, activation, payload, json_output=False)
         self.assertEqual(0, result, stderr)
         self.assertIn("generated views need repair", stderr)
         self.assertEqual(1, selection_clock.now.call_count)
-        self.assertEqual(2, transition_clock.now.call_count)
+        self.assertEqual(3, transition_clock.now.call_count)
         self.assertEqual(
             "revoked", self.run_json_cli(*common, "preparation", "status", "--item-id", "work-c")["status"]
         )
         activated_state = store.snapshot()
-        duplicate, _stdout, duplicate_stderr = self.run_transition(common, activation, payload)
+        duplicate, _stdout, duplicate_stderr = self.run_transition(common, activation, payload, json_output=False)
         self.assertEqual(11, duplicate)
-        self.assertIn("ACTION_NOT_AVAILABLE", duplicate_stderr)
+        self.assertIn("ACTION_AUTHORITY_WRONG", duplicate_stderr)
         self.assertEqual(activated_state, store.snapshot())
 
     def test_activation_requires_exact_preparation_and_brief_identity(self) -> None:
@@ -1708,7 +1913,7 @@ class CliTest(unittest.TestCase):
                     self.assertIn("ACTION_NOT_AVAILABLE", stderr)
                     self.assertEqual(before, store.snapshot())
 
-    def test_checkpoint_acceptance_archives_exact_attempt_receipts_in_one_transition(self) -> None:
+    def test_checkpoint_acceptance_archives_exact_attempt_receipts_in_one_transition(self) -> None:  # noqa: PLR0915 - one transaction scenario
         state = complete_sqlite_state()
         now = datetime.now(UTC)
         state = replace(
@@ -1760,7 +1965,9 @@ class CliTest(unittest.TestCase):
         )
         before_missing = store.snapshot()
 
-        missing_result, _missing_stdout, missing_stderr = self.run_transition(common, action, payload)
+        missing_result, _missing_stdout, missing_stderr = self.run_transition(
+            common, action, payload, json_output=False
+        )
 
         self.assertNotEqual(0, missing_result)
         self.assertIn("TRANSITION_INPUT_INVALID", missing_stderr)
@@ -1769,18 +1976,32 @@ class CliTest(unittest.TestCase):
 
         with patch(
             "pinboard.adapters.sqlite.state.append_history",
-            side_effect=StorageError(StorageErrorCode.IO_ERROR, "injected checkpoint write failure"),
+            side_effect=StorageError(
+                StorageErrorCode.IO_ERROR,
+                "injected checkpoint write failure",
+                retryable=True,
+            ),
         ):
-            failed_result, _failed_stdout, failed_stderr = self.run_transition(common, action, payload)
+            failed_result, failed_stdout, failed_stderr = self.run_transition(common, action, payload, json_output=True)
 
         self.assertNotEqual(0, failed_result)
-        self.assertIn("STORAGE_IO_ERROR", failed_stderr)
+        self.assertEqual("", failed_stderr)
+        failure = self.json_object(json.loads(failed_stdout))
+        self.assertEqual("pinboard-rejected-operation/v1", failure["schema"])
+        self.assertEqual("committed-effect", failure["status"])
+        self.assertEqual("transition:project", failure["operation"])
+        self.assertEqual("STORAGE_IO_ERROR", failure["code"])
+        self.assertTrue(failure["state_changed"])
+        self.assertEqual(["immutable-artifact"], failure["changed_surfaces"])
+        self.assertEqual("do-not-retry", failure["retry"])
         self.assertEqual(before_missing, store.snapshot())
         self.assertEqual(result_bytes, (work / "artifacts/results/work-a-1-checkpoint-a-result/1.md").read_bytes())
         self.assertEqual(review_bytes, (work / "artifacts/evidence/work-a-1-checkpoint-a-review/1.md").read_bytes())
 
         (attempt_root / "review.md").write_bytes(b"conflicting review\n")
-        collision_result, _collision_stdout, collision_stderr = self.run_transition(common, action, payload)
+        collision_result, _collision_stdout, collision_stderr = self.run_transition(
+            common, action, payload, json_output=False
+        )
 
         self.assertNotEqual(0, collision_result)
         self.assertIn("STORAGE_INVARIANT_VIOLATION", collision_stderr)
@@ -1788,7 +2009,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(review_bytes, (work / "artifacts/evidence/work-a-1-checkpoint-a-review/1.md").read_bytes())
         (attempt_root / "review.md").write_bytes(review_bytes)
 
-        accepted_result, _accepted_stdout, accepted_stderr = self.run_transition(common, action, payload)
+        accepted_result, _accepted_stdout, accepted_stderr = self.run_transition(
+            common, action, payload, json_output=False
+        )
 
         self.assertEqual(0, accepted_result, accepted_stderr)
         reloaded = SQLiteWorkStore(work / "state.sqlite3").snapshot()
@@ -2127,7 +2350,9 @@ Not launchable:
             objective="Accept a corrected definition while the attempt remains paused.",
         )
         revision_action = self.project_action(common, "revise-item:work-a")
-        revision_result, _revision_stdout, revision_stderr = self.run_transition(common, revision_action, revision)
+        revision_result, _revision_stdout, revision_stderr = self.run_transition(
+            common, revision_action, revision, json_output=False
+        )
         self.assertEqual(0, revision_result, revision_stderr)
 
         actions = tuple(
@@ -2213,7 +2438,7 @@ Not launchable:
             '{"reason":"Waiting for the intake prerequisite.","depends_on":["intake-work"]}\n',
             encoding="utf-8",
         )
-        block_result, _block_stdout, block_stderr = self.run_transition(common, block, block_payload)
+        block_result, _block_stdout, block_stderr = self.run_transition(common, block, block_payload, json_output=False)
         self.assertEqual(0, block_result, block_stderr)
 
         blocked = SQLiteWorkStore(work / "state.sqlite3").snapshot()
@@ -2260,7 +2485,9 @@ Not launchable:
         self.assertEqual("resume:work-a", resume["action_id"])
         resume_payload = project / "resume.json"
         resume_payload.write_text("{}\n", encoding="utf-8")
-        resume_result, _resume_stdout, resume_stderr = self.run_transition(common, resume, resume_payload)
+        resume_result, _resume_stdout, resume_stderr = self.run_transition(
+            common, resume, resume_payload, json_output=False
+        )
         self.assertEqual(0, resume_result, resume_stderr)
         resumed = SQLiteWorkStore(work / "state.sqlite3").snapshot()
         resumed_item = next(value for value in resumed.lifecycle.work_items if value.item_id == ItemId("work-a"))
@@ -2297,7 +2524,9 @@ Not launchable:
         pause_payload.write_text('{"reason":"Pause before accepting revised scope."}\n', encoding="utf-8")
 
         pause_action = self.project_action(common, "pause:work-a-1")
-        pause_result, _pause_stdout, pause_stderr = self.run_transition(common, pause_action, pause_payload)
+        pause_result, _pause_stdout, pause_stderr = self.run_transition(
+            common, pause_action, pause_payload, json_output=False
+        )
         self.assertEqual(0, pause_result, pause_stderr)
         proposal_path = project / "required-first.json"
         proposal_path.write_text(
@@ -2374,7 +2603,9 @@ Not launchable:
         )
 
         resume_action = self.project_action(common, "resume:work-a")
-        resume_result, resume_stdout, resume_stderr = self.run_transition(common, resume_action, resume_payload)
+        resume_result, resume_stdout, resume_stderr = self.run_transition(
+            common, resume_action, resume_payload, json_output=False
+        )
         self.assertEqual(0, resume_result, resume_stderr)
 
         reloaded = SQLiteWorkStore(work / "state.sqlite3").snapshot()
@@ -2439,7 +2670,9 @@ Not launchable:
             objective="Accept current scope while correcting the Git lineage.",
         )
         revision_action = self.project_action(common, "revise-item:work-a")
-        revision_result, _revision_stdout, revision_stderr = self.run_transition(common, revision_action, revision)
+        revision_result, _revision_stdout, revision_stderr = self.run_transition(
+            common, revision_action, revision, json_output=False
+        )
         self.assertEqual(0, revision_result, revision_stderr)
         original = store.snapshot()
         original_attempt = original.lifecycle.attempts[0]
@@ -2495,7 +2728,7 @@ Not launchable:
         self.assertEqual("rebind-attempt", contract["action_kind"])
         action = self.project_action(common, "rebind-attempt:work-a-1")
 
-        result, stdout, stderr = self.run_transition(common, action, payload)
+        result, stdout, stderr = self.run_transition(common, action, payload, json_output=False)
 
         self.assertEqual(0, result, stderr)
         self.assertIn("OK TRANSITION_APPLIED rebind-attempt:work-a-1", stdout)
@@ -2627,6 +2860,46 @@ Not launchable:
         self.assertIn(f"- Starting revision: {replacement.base_revision}", dispatch_stdout)
         self.assertEqual(checkout_bytes, checkout_file.read_bytes())
 
+        review_path.write_bytes(
+            ready_review(
+                replacement,
+                reviewer="different-reviewer",
+                result="A different reviewer reached the same coverage verdict.",
+            )
+        )
+        current_dispatch = self.project_action(common, "dispatch:work-a-1")
+        collision_result, collision_stdout, collision_stderr = self.run_cli(
+            *common,
+            "dispatch",
+            "--action-id",
+            str(current_dispatch["action_id"]),
+            "--expected-revision",
+            str(current_dispatch["expected_revision"]),
+            "--task-id",
+            "replacement-worker",
+            "--host-id",
+            "studio",
+            "--checkpoint",
+            CHECKPOINT_ID,
+            "--environment",
+            str(corrected_environment_path),
+            "--brief-review",
+            str(review_path),
+            "--review-id",
+            "collision-review",
+            "--json",
+        )
+        self.assertEqual(14, collision_result)
+        self.assertEqual("", collision_stderr)
+        collision = self.json_object(json.loads(collision_stdout))
+        self.assertEqual("committed-effect", collision["status"])
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_COLLISION", collision["code"])
+        self.assertTrue(collision["state_changed"])
+        self.assertEqual(
+            ["immutable-artifact", "accepted-artifact-reference", "ledger"],
+            collision["changed_surfaces"],
+        )
+
     def test_revised_brief_identity_mismatches_reject_at_command_boundary_without_effects(self) -> None:
         base_brief = replace_struct(work_a_brief(Path(tempfile.mkdtemp()).resolve()), artifact_revision=2)
         checkpoint = base_brief.checkpoint
@@ -2708,7 +2981,7 @@ Not launchable:
                     if path.is_file()
                 )
 
-                result, stdout, stderr = self.run_transition(common, action, payload)
+                result, stdout, stderr = self.run_transition(common, action, payload, json_output=False)
 
                 self.assertNotEqual(0, result)
                 self.assertEqual("", stdout)
@@ -2760,7 +3033,7 @@ Not launchable:
             "pinboard.interfaces.work_views.read_attempt_brief_views",
             side_effect=WorkBriefError(WorkBriefErrorCode.BRIEF_INVALID, "injected projection failure"),
         ):
-            result, stdout, stderr = self.run_transition(common, action, payload)
+            result, stdout, stderr = self.run_transition(common, action, payload, json_output=False)
 
         self.assertEqual(0, result, stderr)
         self.assertIn("OK TRANSITION_APPLIED submit-review:work-a-1 revision=13", stdout)
@@ -2810,7 +3083,7 @@ Not launchable:
             patch("pinboard.interfaces.work_views.read_attempt_brief_views", side_effect=RuntimeError("unexpected")),
             self.assertRaisesRegex(RuntimeError, "unexpected"),
         ):
-            self.run_transition(common, action, payload)
+            self.run_transition(common, action, payload, json_output=False)
 
         reloaded = SQLiteWorkStore(work / "state.sqlite3").snapshot()
         attempt = next(value for value in reloaded.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
@@ -2859,7 +3132,7 @@ Not launchable:
         self.assertIn("pinboard attempt acquire", identifier_stderr)
         self.assertIn("$.task_id", identifier_stderr)
 
-    def test_direct_transition_selects_exact_worker_capability(self) -> None:
+    def test_direct_transition_selects_exact_worker_capability(self) -> None:  # noqa: PLR0915 - one submit and read-only review journey
         state = complete_sqlite_state()
         now = datetime.now(UTC)
         state = replace(
@@ -2892,7 +3165,9 @@ Not launchable:
         mismatched_payload = project / "pause-payload.json"
         mismatched_payload.write_text('{"reason":"pause"}\n', encoding="utf-8")
 
-        mismatch_result, _mismatch_stdout, mismatch_stderr = self.run_transition(common, action, mismatched_payload)
+        mismatch_result, _mismatch_stdout, mismatch_stderr = self.run_transition(
+            common, action, mismatched_payload, json_output=False
+        )
 
         self.assertEqual(11, mismatch_result)
         self.assertIn("TRANSITION_INPUT_INVALID:", mismatch_stderr)
@@ -2901,18 +3176,57 @@ Not launchable:
         payload = project / "submit-review.json"
         payload.write_text('{"candidate":"candidate-cli-direct"}\n', encoding="utf-8")
 
-        result, stdout, stderr = self.run_transition(common, action, payload)
+        result, stdout, stderr = self.run_transition(common, action, payload, json_output=False)
         self.assertEqual(0, result, stderr)
         self.assertIn("OK TRANSITION_APPLIED submit-review:work-a-1", stdout)
 
+        inspected = self.run_json_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1")
+        continuation = self.json_object(inspected["continuation"])
+        self.assertEqual("review", continuation["state"])
+        self.assertFalse(continuation["terminal"])
+        self.assertFalse(continuation["user_input_required"])
+        self.assertEqual(work_a_brief(project).owner_task_id, continuation["owner_task_id"])
+        self.assertEqual("review-subagent", self.json_object(continuation["next_operation"])["kind"])
+        self.assertEqual("candidate-cli-direct", self.json_object(continuation["next_operation"])["candidate_revision"])
+        before_review_job = SQLiteWorkStore(work / "state.sqlite3").snapshot()
+        self.assertIsNone(before_review_job.lifecycle.attempts[0].result_artifact_ref_id)
+        review_arguments = (
+            *common,
+            "review-job",
+            "--attempt-id",
+            "work-a-1",
+            "--candidate-revision",
+            "candidate-cli-direct",
+        )
+        missing, _, _ = self.run_cli(*review_arguments)
+        self.assertEqual(11, missing)
+        result_path = work / "attempts" / "work-a-1" / "result.md"
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text("Candidate evidence.\n", encoding="utf-8")
+        job = self.run_json_cli(*review_arguments)
+        self.assertEqual(str(result_path), job["result_path"])
+        self.assertEqual(hashlib.sha256(result_path.read_bytes()).hexdigest(), job["result_sha256"])
+        self.assertEqual("candidate-cli-direct", job["candidate_revision"])
+        self.assertEqual(before_review_job, SQLiteWorkStore(work / "state.sqlite3").snapshot())
+        result_path.write_text("", encoding="utf-8")
+        empty, _, _ = self.run_cli(*review_arguments)
+        self.assertEqual(11, empty)
+        result_path.unlink()
+        result_path.mkdir()
+        unreadable, _, _ = self.run_cli(*review_arguments)
+        self.assertEqual(11, unreadable)
+        mismatch, _, _ = self.run_cli(*review_arguments[:-1], "different-candidate")
+        self.assertEqual(11, mismatch)
+        self.assertEqual(before_review_job, SQLiteWorkStore(work / "state.sqlite3").snapshot())
+
         invalid_cases = (
-            (("--action-id", "invalid"), "ACTION_ID_INVALID"),
+            (("--action-id", "invalid"), "ACTION_ID_MALFORMED"),
             (
                 (
                     "--action-id",
                     "invented:work-a",
                 ),
-                "ACTION_ID_INVALID",
+                "ACTION_KIND_UNKNOWN",
             ),
         )
         for replacement, code in invalid_cases:
@@ -2943,7 +3257,7 @@ Not launchable:
                 self.assertEqual(11, invalid_result)
                 self.assertIn(code, invalid_stderr)
 
-    def test_review_acceptance_and_continuation_uses_the_exact_project_capability(self) -> None:
+    def test_review_acceptance_and_correction_continue_in_the_same_attempt(self) -> None:
         state = complete_sqlite_state()
         now = datetime.now(UTC)
         state = replace(
@@ -2975,33 +3289,65 @@ Not launchable:
                 ),
             ),
         )
-        project, work, store = self.initialized_state(state)
+        for action_id, value in (
+            ("accept-review-and-continue:work-a-1", '{"candidate":"candidate-cli-review","evidence":"accepted"}'),
+            ("return-for-correction:work-a-1", '{"reason":"Correct the candidate."}'),
+        ):
+            with self.subTest(action=action_id):
+                project, work, store = self.initialized_state(state)
+                common = ("--project-root", str(project), "--work-root", str(work))
+                action = self.project_action(common, action_id)
+                payload = project / "review-disposition.json"
+                payload.write_text(value, encoding="utf-8")
+                result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
+                self.assertEqual(0, result, stderr)
+                rendered = msgspec.json.decode(stdout, type=work_inspection_models.TransitionView)
+                self.assertIsNotNone(rendered.continuation)
+                assert rendered.continuation is not None
+                self.assertEqual(work_a_brief(project).owner_task_id, rendered.continuation.owner_task_id)
+                self.assertEqual(work_models.AttemptState.ACTIVE, rendered.continuation.state)
+                reloaded = store.snapshot()
+                attempt = next(
+                    value for value in reloaded.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1")
+                )
+                self.assertEqual(work_models.AttemptState.ACTIVE, attempt.state)
+                self.assertIsNone(attempt.candidate_revision)
+                rejected, _, _ = self.run_cli(
+                    *common, "review-job", "--attempt-id", "work-a-1", "--candidate-revision", "candidate-cli-review"
+                )
+                self.assertEqual(11, rejected)
+                self.assertEqual(reloaded, store.snapshot())
+
+    def test_completion_continuation_is_terminal_and_inspection_is_read_only(self) -> None:
+        project, work, store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))
-        exact = self.json_list(
-            self.run_json_cli(
-                *common,
-                "actions",
-                "--role",
-                "project",
-                "--action-id",
-                "accept-review-and-continue:work-a-1",
-            )["actions"]
-        )
-        action = self.json_object(exact[0])
-        payload = project / "accept-review-and-continue.json"
-        payload.write_text(
-            '{"candidate":"candidate-cli-review","evidence":"accepted through the CLI"}\n',
-            encoding="utf-8",
-        )
-
-        result, stdout, stderr = self.run_transition(common, action, payload)
-
+        action = self.project_action(common, "complete:work-a-1")
+        payload = project / "complete.json"
+        payload.write_text('{"evidence":"All accepted work is complete."}', encoding="utf-8")
+        with patch(
+            "pinboard.interfaces.work_views.read_attempt_brief_views",
+            side_effect=WorkBriefError(WorkBriefErrorCode.BRIEF_INVALID, "injected view failure"),
+        ):
+            result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
         self.assertEqual(0, result, stderr)
-        self.assertIn("OK TRANSITION_APPLIED accept-review-and-continue:work-a-1", stdout)
-        reloaded = store.snapshot()
-        attempt = next(value for value in reloaded.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
-        self.assertEqual(work_models.AttemptState.ACTIVE, attempt.state)
-        self.assertIsNone(attempt.candidate_revision)
+        self.assertIn("injected view failure", stderr)
+        rendered = msgspec.json.decode(stdout, type=work_inspection_models.TransitionView)
+        continuation = rendered.continuation
+        assert continuation is not None
+        self.assertEqual(work_models.AttemptState.DONE, continuation.state)
+        self.assertTrue(continuation.terminal)
+        self.assertIsNone(continuation.owner_task_id)
+        self.assertIsNone(continuation.next_operation)
+        self.assertEqual((), continuation.legal_actions)
+        before = store.snapshot()
+        for arguments in (
+            ("attempt", "inspect", "--attempt-id", "unknown"),
+            ("review-job", "--attempt-id", "work-a-1", "--candidate-revision", "candidate"),
+            ("review-job", "--attempt-id", "unknown", "--candidate-revision", "candidate"),
+        ):
+            rejected, _, _ = self.run_cli(*common, *arguments)
+            self.assertEqual(11, rejected)
+            self.assertEqual(before, store.snapshot())
 
     def test_direct_transition_reports_its_own_revision_across_a_disjoint_commit(self) -> None:
         state = complete_sqlite_state()
@@ -3040,7 +3386,7 @@ Not launchable:
             *,
             actor_task_id: TaskId | None,
             actor_host_id: HostId | None,
-            transition_brief_identity: WorkBriefIdentity | None = None,
+            transition_brief_identity: WorkBriefIdentity | None,
         ) -> DecisionResult[MutationReceipt]:
             commit_result = commit_transition(
                 selected_store,
@@ -3069,7 +3415,7 @@ Not launchable:
             "pinboard.interfaces.transitions.decide_and_commit_transition",
             side_effect=commit_then_create_disjoint_proposal,
         ):
-            result, stdout, stderr = self.run_transition(common, action, payload)
+            result, stdout, stderr = self.run_transition(common, action, payload, json_output=False)
 
         self.assertEqual(0, result, stderr)
         self.assertIn("OK TRANSITION_APPLIED pause:work-a-1 revision=13", stdout)
@@ -3082,6 +3428,73 @@ Not launchable:
                 (receipt.action_kind, receipt.project_revision) for receipt in store.snapshot().transition_receipts[-2:]
             ),
         )
+
+    def test_locked_rejection_returns_fresh_same_subject_alternatives(self) -> None:
+        project, work, store = self.initialized_state(complete_sqlite_state())
+        common = ("--project-root", str(project), "--work-root", str(work))
+        action = self.project_action(common, "pause:work-a-1")
+        payload = project / "pause-after-race.json"
+        payload.write_text('{"reason":"Pause after current work."}\n', encoding="utf-8")
+        commit_transition = transition_interface.decide_and_commit_transition
+
+        def commit_disjoint_change_then_recheck(
+            selected_store: WorkStore,
+            command: decision_models.NonCheckpointTransitionCommand,
+            decided_at: datetime,
+            *,
+            actor_task_id: TaskId | None,
+            actor_host_id: HostId | None,
+            transition_brief_identity: WorkBriefIdentity | None,
+        ) -> DecisionResult[MutationReceipt]:
+            current_actions = expect_success(
+                discover_actions(store.snapshot(), decision_models.Role.PROJECT, now=decided_at)
+            )
+            defer_action = next(
+                value
+                for value in current_actions
+                if isinstance(value, decision_models.DeferAction) and str(value.capability.subject) == "work-c"
+            )
+            competing = decision_models.DeferCommand(
+                defer_action,
+                work_models.DeferInput(
+                    work_models.Timing.SAFE_TO_DEFER,
+                    "Reopen after the observed transition race.",
+                ),
+            )
+            competing_result = commit_transition(
+                selected_store,
+                competing,
+                decided_at,
+                actor_task_id=actor_task_id,
+                actor_host_id=actor_host_id,
+            )
+            self.assertNotIsInstance(competing_result, DecisionFailure)
+            return commit_transition(
+                selected_store,
+                command,
+                decided_at,
+                actor_task_id=actor_task_id,
+                actor_host_id=actor_host_id,
+                transition_brief_identity=transition_brief_identity,
+            )
+
+        with patch(
+            "pinboard.interfaces.transitions.decide_and_commit_transition",
+            side_effect=commit_disjoint_change_then_recheck,
+        ):
+            result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
+
+        self.assertEqual(11, result)
+        self.assertEqual("", stderr)
+        rejection = self.json_object(json.loads(stdout))
+        self.assertEqual("ACTION_NOT_AVAILABLE", rejection["code"])
+        self.assertFalse(rejection["state_changed"])
+        alternatives = tuple(self.json_object(value) for value in self.json_list(rejection["next_actions"]))
+        fresh_pause = next(value for value in alternatives if value.get("action_id") == "pause:work-a-1")
+        self.assertEqual("13", fresh_pause["expected_revision"])
+        self.assertIsNone(fresh_pause["generation"])
+        work_c = next(value for value in store.snapshot().lifecycle.work_items if value.item_id == ItemId("work-c"))
+        self.assertEqual(stored_state.StoredWorkItemState.DEFERRED, work_c.state)
 
     def test_proposal_persists_once_through_native_intake(self) -> None:
         project, work, store = self.initialized_state(complete_sqlite_state())
@@ -3107,7 +3520,7 @@ Not launchable:
             encoding="utf-8",
         )
         common = ("--project-root", str(project), "--work-root", str(work))
-        before_revision = store.snapshot().lifecycle.project.revision
+        before = store.snapshot()
 
         proposal_arguments = (
             *common,
@@ -3119,17 +3532,34 @@ Not launchable:
             "--host-id",
             "studio",
         )
-        result, stdout, stderr = self.run_cli(*proposal_arguments)
+        created = self.run_json_cli(*proposal_arguments)
         duplicate_result, _, duplicate_stderr = self.run_cli(*proposal_arguments)
 
-        self.assertEqual(0, result, stderr)
-        self.assertIn("OK PROPOSAL_CREATED cli-sqlite-proposal", stdout)
+        self.assertEqual("pinboard-proposal-created/v1", created["schema"])
+        self.assertEqual("cli-sqlite-proposal", created["proposal_id"])
+        self.assertEqual("intake", created["state"])
         after = SQLiteWorkStore(work / "state.sqlite3").snapshot()
-        self.assertEqual(before_revision + 1, after.lifecycle.project.revision)
+        self.assertEqual(str(after.lifecycle.project.revision), created["committed_revision"])
+        self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
+        self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
+        self.assertEqual(before.authority, after.authority)
+        self.assertEqual(
+            before.lifecycle.definition_revisions,
+            tuple(
+                value
+                for value in after.lifecycle.definition_revisions
+                if value.item_id != ItemId("cli-sqlite-proposal")
+            ),
+        )
+        self.assertEqual(
+            before.lifecycle.work_items,
+            tuple(value for value in after.lifecycle.work_items if value.item_id != ItemId("cli-sqlite-proposal")),
+        )
         persisted_proposal = next(
             value for value in after.proposals.proposals if str(value.proposal_id) == "cli-sqlite-proposal"
         )
         intake_item = next(value for value in after.lifecycle.work_items if str(value.item_id) == "cli-sqlite-proposal")
+        self.assertEqual(intake_item.queue_position, created["position"])
         self.assertEqual(
             (
                 datetime(2026, 8, 25, 10, tzinfo=UTC),
@@ -3283,7 +3713,7 @@ Not launchable:
                 payload_path = project / f"{action_id.split(':', 1)[0]}.json"
                 payload_path.write_text(json.dumps(payload), encoding="utf-8")
 
-                applied, _stdout, stderr = self.run_transition(common, action, payload_path)
+                applied, _stdout, stderr = self.run_transition(common, action, payload_path, json_output=False)
 
                 self.assertEqual(0, applied, stderr)
                 assert_partial_matches_full(work, common, ("items/zz-proposal-a.md",))
@@ -3356,6 +3786,23 @@ Not launchable:
         )
         self.assertEqual(2, missing)
         self.assertIn("PROPOSAL_INVALID", missing_stderr)
+        rejected, rejected_stdout, rejected_stderr = self.run_cli(
+            *common,
+            "proposal",
+            "--file",
+            str(project / "missing.json"),
+            "--task-id",
+            "discovering-task",
+            "--host-id",
+            "studio",
+            "--json",
+        )
+        self.assertEqual(2, rejected)
+        self.assertEqual("", rejected_stderr)
+        rejected_payload = self.json_object(json.loads(rejected_stdout))
+        self.assertEqual("pinboard-rejected-operation/v1", rejected_payload["schema"])
+        self.assertEqual("PROPOSAL_INVALID", rejected_payload["code"])
+        self.assertFalse(rejected_payload["state_changed"])
 
     def test_status_uses_one_snapshot_and_query_failures_are_stable(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())
@@ -3633,8 +4080,19 @@ Not launchable:
         )
         for arguments, route in cases:
             with self.subTest(arguments=arguments):
-                stderr = self.run_cli_parse_error(*arguments)
-                self.assertIn(route, stderr)
+                if "--json" in arguments:
+                    result, stdout, stderr = self.run_cli(*arguments)
+                    self.assertEqual(2, result)
+                    self.assertEqual("", stderr)
+                    rejection = self.json_object(json.loads(stdout))
+                    self.assertEqual("CLI_ARGUMENT_INVALID", rejection["code"])
+                    message = rejection["message"]
+                    self.assertIsInstance(message, str)
+                    assert isinstance(message, str)
+                    self.assertIn(route, message)
+                else:
+                    stderr = self.run_cli_parse_error(*arguments)
+                    self.assertIn(route, stderr)
 
     def test_transition_requires_explicit_authorization(self) -> None:
         stderr = self.run_cli_parse_error(

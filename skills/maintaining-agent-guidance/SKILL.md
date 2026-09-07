@@ -73,6 +73,8 @@ Do not use prose to compensate for a misleading API, missing type, broken comman
 
 When agents are expected to adopt a schema, vocabulary, filename, or entry point, give that interface a deliberate owner and identify a real producer or consumer. Do not create an agent-facing convention that no supported workflow uses.
 
+When repeated agent failures come from discovering or recovering a mechanical operation, repair the executable interface before adding more prose. A weak-model-friendly boundary exposes the exact supported operation, strict input or starter, observable effect, stable mismatch facts, retry safety, and bounded next action without source archaeology. Keep the residual limitation explicit when correctness still depends on semantic source selection, independent review, or a runtime capability the tool cannot provide.
+
 ## Minimize context and maintenance cost
 
 - Prefer updating an existing authority over adding another copy.

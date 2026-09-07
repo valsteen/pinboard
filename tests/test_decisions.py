@@ -566,7 +566,7 @@ class LifecycleDecisionTest(unittest.TestCase):
         outcome = decision_outcome(snapshot, command, NOW)
 
         self.assertEqual(
-            DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, "Attempt 'missing-attempt' does not exist."),
+            DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, "Attempt 'missing-attempt' does not exist.", None),
             outcome,
         )
 

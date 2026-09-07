@@ -57,6 +57,7 @@ For a **Subagent**:
 1. Keep the current task as the outcome owner and resolve incomplete, ambiguous, or interactive decisions there.
 2. Follow the main skill's delegated-attempt procedure, including the canonical attempt brief and exact dispatch prompt.
 3. Launch it through the environment's subagent capability only after the dispatch check succeeds; its result returns automatically to the owning task.
+4. If the runtime lacks subagent capability, preserve the prepared attempt and report that exact limitation. Do not create or wake a user-owned task, return routine ownership to a parent task, or silently change the selected execution form.
 
 Task creation is an external effect, not a ledger transaction. Do not claim atomic launch or try to roll back a successfully created task because a later creation failed.
 

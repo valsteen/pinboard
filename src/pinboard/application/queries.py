@@ -7,9 +7,105 @@ current facts without reading files, mutating state, or presenting output.
 from datetime import datetime
 
 from pinboard.application import query_models, stored_state
-from pinboard.domain import authority_models, work_models
+from pinboard.application.actions import discover_actions
+from pinboard.application.decision_projection import project_decision_snapshot
+from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import ItemId
+from pinboard.domain.identifiers import AttemptId, ItemId, TaskId
+
+
+def project_attempt_continuation(
+    state: stored_state.StoredWorkState, attempt_id: AttemptId, owner_task_id: TaskId | None, now: datetime
+) -> DecisionResult[query_models.AttemptContinuation]:
+    """Select a continuation from canonical state and the currently advertised actions.
+
+    A lifecycle state does not prove that a human decision is missing. Recorded
+    pause conditions and accepted scope still determine whether the task must ask.
+    The caller resolves the owner from the verified accepted brief.
+    """
+    attempt = next((value for value in state.lifecycle.attempts if value.attempt_id == attempt_id), None)
+    if attempt is None:
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Attempt '{attempt_id}' does not exist.", None
+        )
+    terminal = attempt.state == work_models.AttemptState.DONE
+    available = discover_actions(state, decision_models.Role.PROJECT, now=now)
+    if isinstance(available, DecisionFailure):
+        return available
+    actions = tuple(value for value in available if value.capability.subject in (attempt_id, attempt.item_id))
+    operation: (
+        query_models.ActionContinuation | query_models.ReviewContinuation | query_models.DependencyContinuation | None
+    ) = None
+    if not terminal:
+        selected = _next_attempt_operation(state, attempt, actions, now)
+        if isinstance(selected, DecisionFailure):
+            return selected
+        operation = selected
+    return query_models.AttemptContinuation(
+        "pinboard-attempt-continuation/v1",
+        attempt_id,
+        attempt.item_id,
+        state.lifecycle.project.revision,
+        attempt.state,
+        None if terminal else owner_task_id,
+        terminal,
+        False,
+        operation,
+        tuple(decision_models.action_id(value) for value in actions) if not terminal else (),
+        ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
+    )
+
+
+def _next_attempt_operation(
+    state: stored_state.StoredWorkState,
+    attempt: stored_state.StoredAttempt,
+    actions: tuple[decision_models.Action, ...],
+    now: datetime,
+) -> DecisionResult[
+    query_models.ActionContinuation | query_models.ReviewContinuation | query_models.DependencyContinuation
+]:
+    for action in actions:
+        if isinstance(action, decision_models.AcceptCheckpointAction):
+            if attempt.candidate_revision is None:
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE, "Review has no protected candidate.", None
+                )
+            return query_models.ReviewContinuation(attempt.attempt_id, attempt.candidate_revision, "runtime-subagent")
+        if isinstance(action, decision_models.ContinueAction):
+            return query_models.ActionContinuation(
+                decision_models.action_id(action), action.kind, "Follow the accepted brief."
+            )
+    for action in actions:
+        if isinstance(action, decision_models.ReturnForCorrectionAction):
+            return query_models.ActionContinuation(
+                decision_models.action_id(action),
+                action.kind,
+                "Clear the stale protected candidate, then bind the revised accepted brief.",
+            )
+        if isinstance(action, decision_models.PauseAction):
+            return query_models.ActionContinuation(
+                decision_models.action_id(action),
+                action.kind,
+                "Preserve the attempt before binding a revised accepted brief.",
+            )
+        if isinstance(action, decision_models.ResumeAction):
+            return query_models.ActionContinuation(
+                decision_models.action_id(action),
+                action.kind,
+                "Resolve the recorded pause or dependency condition and provide the matching current accepted brief.",
+            )
+    snapshot = project_decision_snapshot(state, now)
+    item = snapshot.item(attempt.item_id)
+    dependencies = (
+        () if item is None else tuple(str(value) for value in item.depends_on if snapshot.item(value) is not None)
+    )
+    if dependencies:
+        return query_models.DependencyContinuation(dependencies)
+    return DecisionFailure(
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        f"Attempt '{attempt.attempt_id}' has no supported continuation among its current legal actions.",
+        None,
+    )
 
 
 def _dependency_key(value: stored_state.ItemDependency) -> tuple[int, str]:
@@ -192,13 +288,15 @@ def project_item_status(
 ) -> DecisionResult[query_models.ItemStatus]:
     item = next((candidate for candidate in state.lifecycle.work_items if candidate.item_id == item_id), None)
     if item is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' was not found.")
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' was not found.", None)
     definition = next(
         (value.definition for value in reversed(state.lifecycle.definition_revisions) if value.item_id == item_id),
         None,
     )
     if definition is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Item '{item_id}' has no definition.")
+        return DecisionFailure(
+            DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Item '{item_id}' has no definition.", None
+        )
     attempts = tuple(
         query_models.ItemStatusAttempt(str(attempt.attempt_id), attempt.state, attempt.candidate_revision)
         for attempt in sorted(
@@ -246,7 +344,7 @@ def project_item_definition(
 ) -> DecisionResult[query_models.ItemDefinition]:
     item = next((value for value in state.lifecycle.work_items if value.item_id == item_id), None)
     if item is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.")
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.", None)
     current_definition = next(
         (value for value in reversed(state.lifecycle.definition_revisions) if value.item_id == item_id),
         None,
@@ -255,6 +353,7 @@ def project_item_definition(
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
             f"Item '{item_id}' has no accepted definition.",
+            None,
         )
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
@@ -276,7 +375,7 @@ def project_item_definition_history(
     before_revision: int | None = None,
 ) -> DecisionResult[query_models.ItemDefinitionHistory]:
     if not any(item.item_id == item_id for item in state.lifecycle.work_items):
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.")
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.", None)
     available = tuple(
         value
         for value in reversed(state.lifecycle.definition_revisions)

@@ -38,7 +38,9 @@ Terminal state remains queryable as history and does not appear as live work.
 
 ## Leases and revocation
 
-Project transitions are direct atomic SQLite changes authorized by the invoking task and host identity. They do not acquire or retain a project-wide lease. During contention, one exact transition commits completely or the prior revision remains; stale actions must be refreshed rather than replayed.
+Project transitions are direct atomic SQLite changes made by a trusted local task. The supplied task and host strings are audit attribution, not authenticated credentials. Project transitions do not acquire or retain a project-wide lease. During contention, one exact transition commits completely or the prior revision remains; stale actions must be refreshed rather than replayed.
+
+When `--json` returns `pinboard-rejected-operation/v1`, decide recovery from its effect facts before reading the message. `state_changed: false` means the failed invocation changed no Pinboard surface. `status: committed-effect` means the listed immutable artifact, accepted artifact reference, or ledger surface already changed; do not replay it. Use a returned action receipt only as one fresh same-subject alternative, copying its non-null lease and generation together. If no bounded alternative is returned, reacquire or reselect through the contract's named operation rather than inventing authority.
 
 Attempt ownership is renewable and fenced. A worker presents its current attempt lease for item-local transitions. Replacing the attempt owner fences actions retained by the previous owner.
 

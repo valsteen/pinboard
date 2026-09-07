@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from threading import Event
+from threading import Barrier, Event, Thread
 from unittest.mock import patch
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
@@ -14,19 +14,116 @@ from pinboard.adapters.sqlite.database import initialize_database, open_database
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import query_models, stored_state
+from pinboard.application import query_models, service, stored_state
+from pinboard.application.actions import discover_actions
 from pinboard.application.decision_projection import project_decision_snapshot
+from pinboard.application.mutations import project_transition_mutation
 from pinboard.application.queries import project_overview, project_parallel_preview
 from pinboard.application.service import create_proposal, decide_and_commit_preparation_authority_change
-from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain import authority_models, decision_models, decisions, work_models
 from pinboard.domain.authority_decisions import decide_preparation_authority
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import HostId, ItemId, LeaseId, ProposalId, TaskId
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
+from tests.domain_support import expect_success
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, reject_table_inserts
 
 
 class PreparationAuthorityTest(unittest.TestCase):
+    def test_ordinary_start_selects_definition_after_waiting_for_a_revision_commit(self) -> None:
+        store, database_path = self._store()
+        before = store.snapshot()
+        current = next(value for value in before.lifecycle.definition_revisions if value.item_id == ItemId("work-c"))
+        action = next(
+            value
+            for value in expect_success(discover_actions(before, decision_models.Role.PROJECT, now=SQLITE_NOW))
+            if isinstance(value, decision_models.ReviseItemAction) and value.capability.subject == ItemId("work-c")
+        )
+        assert isinstance(action, decision_models.ReviseItemAction)
+        command = decision_models.ReviseItemCommand(
+            action,
+            work_models.ReviseItemDefinitionInput(
+                ItemId("work-c"),
+                current.revision,
+                current.digest,
+                TaskId("definition-owner"),
+                "Use the revised definition after the lock is released.",
+                replace(current.definition, objective="Revised before preparation acquires the write lock."),
+            ),
+        )
+        decision = expect_success(decisions.decide(project_decision_snapshot(before, SQLITE_NOW), command, SQLITE_NOW))
+        assert isinstance(decision, decision_models.TransitionDecision)
+        mutation = project_transition_mutation(before, decision, TaskId("definition-owner"), HostId("host-a"))
+        started = Event()
+        finished = Event()
+        results: list[DecisionFailure | authority_models.PreparationLeaseAuthority] = []
+
+        def start() -> None:
+            started.set()
+            results.append(
+                service.start_preparation(
+                    SQLiteWorkStore(database_path),
+                    item_id=ItemId("work-c"),
+                    task_id=TaskId("preparer"),
+                    host_id=HostId("host-a"),
+                    lease_id=LeaseId("preparation"),
+                    acquired_at=SQLITE_NOW,
+                    expires_at=SQLITE_NOW + timedelta(minutes=1),
+                )
+            )
+            finished.set()
+
+        with store.write() as transaction:
+            thread = Thread(target=start)
+            thread.start()
+            self.assertTrue(started.wait(timeout=5))
+            self.assertFalse(finished.wait(timeout=0.1))
+            expect_success(transaction.commit(mutation))
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        acquired = expect_success(results[0])
+        after = SQLiteWorkStore(database_path).snapshot()
+        revised = next(
+            value for value in reversed(after.lifecycle.definition_revisions) if value.item_id == ItemId("work-c")
+        )
+        self.assertEqual(2, acquired.definition_revision)
+        self.assertEqual(revised.digest, acquired.definition_digest)
+        self.assertEqual(acquired.definition_digest, after.authority.preparation_leases[0].definition_digest)
+
+    def test_competing_ordinary_starts_commit_one_exact_claim(self) -> None:
+        store, database_path = self._store()
+        before = store.snapshot()
+        barrier = Barrier(2)
+        results: list[DecisionFailure | authority_models.PreparationLeaseAuthority] = []
+
+        def start(identity: str) -> None:
+            barrier.wait(timeout=5)
+            results.append(
+                service.start_preparation(
+                    SQLiteWorkStore(database_path),
+                    item_id=ItemId("work-c"),
+                    task_id=TaskId(identity),
+                    host_id=HostId("host-a"),
+                    lease_id=LeaseId(identity),
+                    acquired_at=SQLITE_NOW,
+                    expires_at=SQLITE_NOW + timedelta(minutes=1),
+                )
+            )
+
+        threads = [Thread(target=start, args=(identity,)) for identity in ("first", "second")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(1, sum(isinstance(value, DecisionFailure) for value in results))
+        committed = next(value for value in results if isinstance(value, authority_models.PreparationLeaseAuthority))
+        after = SQLiteWorkStore(database_path).snapshot()
+        self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
+        self.assertEqual(1, len(after.authority.preparation_leases))
+        self.assertEqual(committed.lease_id, after.authority.preparation_generations[0].lease_id)
+        self.assertEqual(committed.definition_digest, after.authority.preparation_leases[0].definition_digest)
+
     def _store(self, state: stored_state.StoredWorkState | None = None) -> tuple[SQLiteWorkStore, Path]:
         project = Path(tempfile.mkdtemp()).resolve()
         roots = resolve_durable_roots(project)
@@ -168,7 +265,7 @@ class PreparationAuthorityTest(unittest.TestCase):
                 before = observed
                 decision = decide_preparation_authority(None, 0, requested, observed, SQLITE_NOW)
 
-                self.assertEqual(DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, message), decision)
+                self.assertEqual(DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, message, None), decision)
                 self.assertEqual(before, observed)
 
     def test_initial_acquisition_keeps_internal_host_epoch_rejection(self) -> None:
@@ -182,6 +279,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             DecisionFailure(
                 DecisionFailureCode.ACTION_NOT_AVAILABLE,
                 "Initial preparation requires the exact dependency-satisfied ready item and definition.",
+                None,
             ),
             decision,
         )

@@ -14,6 +14,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Literal, Self, assert_never
 
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.artifacts import (
     accept_artifact_reference as write_artifact_reference,
@@ -33,6 +34,7 @@ from pinboard.adapters.sqlite.database import (
     require_one_changed_row,
     translate_database_error,
 )
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     insert_attempt,
     insert_definition_revision,
@@ -55,10 +57,22 @@ from pinboard.application.mutation_models import (
     TransitionMutation,
 )
 from pinboard.application.mutations import stored_transition_receipt
+from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ItemId
+
+
+def _translate_artifact_verification_error(error: ArtifactError) -> StorageError:
+    match error.code:
+        case ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION:
+            code = StorageErrorCode.INVARIANT_VIOLATION
+        case ArtifactErrorCode.STORAGE_IO_ERROR:
+            code = StorageErrorCode.IO_ERROR
+        case _ as unreachable:
+            assert_never(unreachable)
+    return StorageError(code, str(error), retryable=False)
 
 
 def _persist_definition_revision(
@@ -113,6 +127,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     "Activation requires exact preparation authority.",
+                    None,
                 )
             if (failure := consume_preparation_authority(connection, preparation, now)) is not None:
                 return failure
@@ -287,21 +302,38 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 return failure
             if (failure := fence_attempt_authority(connection, authority, now)) is not None:
                 return failure
-        case decision_models.CompletionChange(
-            item=item,
-            item_before=item_before,
-            attempt=attempt,
-            attempt_before=attempt_before,
-            evidence=evidence,
-            authority_change=authority,
-        ):
+        case (
+            decision_models.CompletionChange(
+                item=item,
+                item_before=item_before,
+                attempt=attempt,
+                attempt_before=attempt_before,
+                evidence=evidence,
+                authority_change=authority,
+            )
+            | decision_models.AttemptClosureChange(
+                item=item,
+                item_before=item_before,
+                evidence=evidence,
+                attempt=attempt,
+                attempt_before=attempt_before,
+                authority_change=authority,
+            )
+        ) as terminal_change:
+            match terminal_change:
+                case decision_models.CompletionChange():
+                    terminal_item_state = stored_state.StoredWorkItemState.DONE
+                case decision_models.AttemptClosureChange(terminal_state=terminal_state):
+                    terminal_item_state = stored_state.stored_close_outcome(terminal_state)
+                case _ as unreachable:
+                    assert_never(unreachable)
             if (
                 failure := set_item_state(
                     connection,
                     state,
                     item,
                     item_before,
-                    stored_state.StoredWorkItemState.DONE,
+                    terminal_item_state,
                     revision,
                     now,
                     evidence,
@@ -340,42 +372,6 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                     evidence,
                 )
             ) is not None:
-                return failure
-        case decision_models.AttemptClosureChange(
-            item=item,
-            item_before=item_before,
-            terminal_state=terminal_state,
-            evidence=evidence,
-            attempt=attempt,
-            attempt_before=attempt_before,
-            authority_change=authority,
-        ):
-            if (
-                failure := set_item_state(
-                    connection,
-                    state,
-                    item,
-                    item_before,
-                    stored_state.stored_close_outcome(terminal_state),
-                    revision,
-                    now,
-                    evidence,
-                )
-            ) is not None:
-                return failure
-            if (
-                failure := set_attempt_state(
-                    connection,
-                    state,
-                    attempt,
-                    attempt_before,
-                    work_models.AttemptState.DONE,
-                    revision,
-                    now,
-                )
-            ) is not None:
-                return failure
-            if authority is not None and (failure := fence_attempt_authority(connection, authority, now)) is not None:
                 return failure
         case decision_models.AcceptedProposalChange():
             if (failure := accept_proposal(connection, state, change, revision, now)) is not None:
@@ -535,6 +531,7 @@ def _persist(
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             "The targeted mutation receipt does not identify the next project revision exactly.",
+            None,
         )
     connection.execute("PRAGMA defer_foreign_keys = ON")
     if (failure := _persist_state_change(connection, state, mutation)) is not None:
@@ -650,16 +647,19 @@ class SQLiteWorkStore:
         work_root: Path,
         published: ArtifactRef,
         accepted_at: datetime,
-    ) -> DecisionResult[stored_state.ArtifactReference]:
+    ) -> DecisionResult[ArtifactReferenceAcceptance]:
         with _SQLiteWorkTransaction(self._path) as transaction:
             connection = transaction.connection
-            result = write_artifact_reference(
-                connection,
-                sqlite_state.read_state(connection),
-                work_root,
-                published,
-                accepted_at,
-            )
+            try:
+                result = write_artifact_reference(
+                    connection,
+                    sqlite_state.read_state(connection),
+                    work_root,
+                    published,
+                    accepted_at,
+                )
+            except ArtifactError as error:
+                raise _translate_artifact_verification_error(error) from error
             if isinstance(result, DecisionFailure):
                 return transaction._select(result)
             sqlite_state.read_state(connection)

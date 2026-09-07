@@ -24,6 +24,16 @@ class ArtifactRef:
 
 
 @dataclass(frozen=True, slots=True)
+class BriefArtifactRef:
+    key: str
+    revision: int
+    selector: str
+    content_sha256: str
+    size_bytes: int
+    kind: Literal[work_models.ArtifactKind.BRIEF]
+
+
+@dataclass(frozen=True, slots=True)
 class ResultArtifactRef:
     key: str
     revision: int

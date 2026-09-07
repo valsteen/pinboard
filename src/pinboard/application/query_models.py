@@ -5,9 +5,9 @@ from typing import Literal
 
 import msgspec
 
-from pinboard.application import stored_state
+from pinboard.application import artifacts, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
-from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +68,57 @@ class AttemptContinuation(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     next_operation: ActionContinuation | ReviewContinuation | DependencyContinuation | None
     legal_actions: tuple[str, ...]
     forbidden_routes: tuple[Literal["create-user-task", "wake-user-task", "return-ownership-to-parent"], ...]
+
+
+type NonterminalItemState = Literal[
+    stored_state.StoredWorkItemState.ACTIVE,
+    stored_state.StoredWorkItemState.PAUSED,
+    stored_state.StoredWorkItemState.BLOCKED,
+    stored_state.StoredWorkItemState.REVIEW,
+]
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptContextItemFacts:
+    item_id: ItemId
+    state: NonterminalItemState
+    current_definition_revision: int
+    current_definition_digest: str
+    live_dependencies: tuple[ItemId, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalAttemptContextFacts:
+    project_revision: int
+    attempt_id: AttemptId
+    item_id: ItemId
+
+
+type NonterminalAttemptState = Literal[
+    work_models.AttemptState.ACTIVE,
+    work_models.AttemptState.PAUSED,
+    work_models.AttemptState.BLOCKED,
+    work_models.AttemptState.REVIEW,
+]
+
+
+@dataclass(frozen=True, slots=True)
+class NonterminalAttemptContextFacts:
+    project_revision: int
+    attempt_id: AttemptId
+    item_id: ItemId
+    state: NonterminalAttemptState
+    branch: str
+    base_revision: str
+    accepted_scope_revision: int
+    accepted_scope_digest: str
+    candidate_revision: str | None
+    brief_artifact_ref_id: ArtifactRefId
+    item: AttemptContextItemFacts
+    brief_reference: artifacts.BriefArtifactRef
+
+
+type AttemptContextFacts = TerminalAttemptContextFacts | NonterminalAttemptContextFacts
 
 
 type ItemStatusSchema = Literal["pinboard-item-status/v1"]

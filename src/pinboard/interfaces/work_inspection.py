@@ -7,6 +7,7 @@ authority, refresh generated views, obtain a lease, or own a transaction.
 
 import sys
 from collections import Counter
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -17,7 +18,7 @@ import msgspec
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import actions as action_queries
-from pinboard.application import queries, query_models, stored_state
+from pinboard.application import ports, queries, query_models, stored_state
 from pinboard.domain import decision_models, work_models
 from pinboard.domain import errors as domain_errors
 from pinboard.domain.identifiers import AttemptId, TaskId
@@ -27,15 +28,10 @@ from pinboard.interfaces.work_briefs import decode_canonical_work_brief
 
 
 def _read_attempt_brief(
-    roots: cli_commands.ResolvedRoots, state: stored_state.StoredWorkState, attempt: stored_state.StoredAttempt
-) -> errors.CommandResult[tuple[stored_state.ArtifactReference, work_brief_models.WorkBrief]]:
-    reference = next(
-        (value for value in state.artifact_references if value.artifact_ref_id == attempt.brief_artifact_ref_id), None
-    )
-    if reference is None:
-        return errors.CommandFailure(
-            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, "Accepted brief is missing.", None
-        )
+    roots: cli_commands.ResolvedRoots,
+    context: query_models.NonterminalAttemptContextFacts,
+) -> errors.CommandResult[work_brief_models.WorkBrief]:
+    reference = context.brief_reference
     brief = decode_canonical_work_brief(read_reference(roots.work, reference))
     if isinstance(brief, errors.WorkBriefFailure):
         return errors.CommandFailure(domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, str(brief), None)
@@ -47,87 +43,119 @@ def _read_attempt_brief(
         brief.accepted_scope.revision,
         brief.accepted_scope.digest,
     ) != (
-        attempt.attempt_id,
-        attempt.item_id,
-        attempt.branch,
-        attempt.base_revision,
-        attempt.accepted_scope_revision,
-        attempt.accepted_scope_digest,
+        context.attempt_id,
+        context.item_id,
+        context.branch,
+        context.base_revision,
+        context.accepted_scope_revision,
+        context.accepted_scope_digest,
     ):
         return errors.CommandFailure(
             domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
             "Accepted brief identity differs from the attempt.",
             None,
         )
-    return reference, brief
+    return brief
+
+
+@dataclass(frozen=True, slots=True)
+class _TerminalAttemptInspection:
+    context: query_models.TerminalAttemptContextFacts
+    continuation: query_models.AttemptContinuation
+
+
+@dataclass(frozen=True, slots=True)
+class _NonterminalAttemptInspection:
+    context: query_models.NonterminalAttemptContextFacts
+    brief: work_brief_models.WorkBrief
+    continuation: query_models.AttemptContinuation
+
+
+type _AttemptInspection = _TerminalAttemptInspection | _NonterminalAttemptInspection
+
+
+def _inspect_selected_attempt(
+    roots: cli_commands.ResolvedRoots,
+    context: query_models.AttemptContextFacts,
+    now: datetime,
+) -> errors.CommandResult[_AttemptInspection]:
+    match context:
+        case query_models.TerminalAttemptContextFacts():
+            continuation = queries.project_attempt_continuation(context, None, now)
+            if isinstance(continuation, domain_errors.DecisionFailure):
+                return errors.CommandFailure(continuation.code, continuation.message, continuation.details)
+            return _TerminalAttemptInspection(context, continuation)
+        case query_models.NonterminalAttemptContextFacts():
+            brief = _read_attempt_brief(roots, context)
+            if isinstance(brief, errors.CommandFailure):
+                return brief
+            continuation = queries.project_attempt_continuation(context, TaskId(brief.owner_task_id), now)
+            if isinstance(continuation, domain_errors.DecisionFailure):
+                return errors.CommandFailure(continuation.code, continuation.message, continuation.details)
+            return _NonterminalAttemptInspection(context, brief, continuation)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _inspect_attempt(
+    roots: cli_commands.ResolvedRoots,
+    reader: ports.AttemptContextReader,
+    attempt_id: AttemptId,
+    now: datetime,
+) -> errors.CommandResult[_AttemptInspection]:
+    context = queries.select_attempt_context(reader, attempt_id)
+    if isinstance(context, domain_errors.DecisionFailure):
+        return errors.CommandFailure(context.code, context.message, context.details)
+    return _inspect_selected_attempt(roots, context, now)
 
 
 def read_attempt_continuation(
-    roots: cli_commands.ResolvedRoots, state: stored_state.StoredWorkState, attempt_id: AttemptId, now: datetime
+    roots: cli_commands.ResolvedRoots,
+    reader: ports.AttemptContextReader,
+    attempt_id: AttemptId,
+    now: datetime,
 ) -> errors.CommandResult[query_models.AttemptContinuation]:
-    """Resolve accepted owner evidence and derive continuation from the supplied fresh snapshot."""
-    attempt = next((value for value in state.lifecycle.attempts if value.attempt_id == attempt_id), None)
-    if attempt is None:
-        return errors.CommandFailure(
-            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            f"Attempt '{attempt_id}' does not exist.",
-            None,
-        )
-    owner_task_id = None
-    if attempt.state != work_models.AttemptState.DONE:
-        selected = _read_attempt_brief(roots, state, attempt)
-        if isinstance(selected, errors.CommandFailure):
-            return selected
-        _reference, brief = selected
-        owner_task_id = TaskId(brief.owner_task_id)
-    continuation = queries.project_attempt_continuation(state, attempt_id, owner_task_id, now)
-    if isinstance(continuation, domain_errors.DecisionFailure):
-        return errors.CommandFailure(continuation.code, continuation.message, continuation.details)
-    return continuation
+    """Resolve accepted owner evidence and derive continuation from one exact read."""
+    selected = _inspect_attempt(roots, reader, attempt_id, now)
+    return selected if isinstance(selected, errors.CommandFailure) else selected.continuation
 
 
 def show_attempt(
     roots: cli_commands.ResolvedRoots, store: SQLiteWorkStore, command: cli_commands.AttemptInspectCommand
 ) -> errors.CommandResult[int]:
-    state = store.snapshot()
-    continuation = read_attempt_continuation(roots, state, command.attempt_id, datetime.now(UTC))
-    if isinstance(continuation, errors.CommandFailure):
-        return continuation
+    selected = _inspect_attempt(roots, store, command.attempt_id, datetime.now(UTC))
+    if isinstance(selected, errors.CommandFailure):
+        return selected
     # The same strict record is useful in both interactive and machine inspection.
-    write_json(work_inspection_models.AttemptView(continuation))
+    write_json(work_inspection_models.AttemptView(selected.continuation))
     return 0
 
 
 def show_review_job(
     roots: cli_commands.ResolvedRoots, store: SQLiteWorkStore, command: cli_commands.ReviewJobCommand
 ) -> errors.CommandResult[int]:
-    state = store.snapshot()
-    attempt = next((value for value in state.lifecycle.attempts if value.attempt_id == command.attempt_id), None)
-    if attempt is None:
-        return errors.CommandFailure(
-            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            "Review job requires the current review attempt and exact protected candidate.",
-            None,
-        )
-    selected = _read_attempt_brief(roots, state, attempt)
+    unavailable = errors.CommandFailure(
+        domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        "Review job requires the current review attempt and exact protected candidate.",
+        None,
+    )
+    context = queries.select_attempt_context(store, command.attempt_id)
+    if isinstance(context, domain_errors.DecisionFailure):
+        return unavailable
+    selected = _inspect_selected_attempt(roots, context, datetime.now(UTC))
     if isinstance(selected, errors.CommandFailure):
         return selected
-    reference, brief = selected
-    continuation = queries.project_attempt_continuation(
-        state, command.attempt_id, TaskId(brief.owner_task_id), datetime.now(UTC)
-    )
-    if isinstance(continuation, domain_errors.DecisionFailure):
-        return errors.CommandFailure(continuation.code, continuation.message, continuation.details)
-    operation = continuation.next_operation
+    if isinstance(selected, _TerminalAttemptInspection):
+        return unavailable
+    attempt = selected.context
+    reference = attempt.brief_reference
+    brief = selected.brief
+    operation = selected.continuation.next_operation
     if (
         not isinstance(operation, query_models.ReviewContinuation)
         or operation.candidate_revision != command.candidate_revision
     ):
-        return errors.CommandFailure(
-            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            "Review job requires the current review attempt and exact protected candidate.",
-            None,
-        )
+        return unavailable
     result_path = roots.work / "attempts" / command.attempt_id / "result.md"
     try:
         result_bytes = result_path.read_bytes()

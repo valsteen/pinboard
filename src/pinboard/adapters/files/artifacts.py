@@ -11,7 +11,7 @@ from pinboard.adapters.files.file_io import (
     ensure_directory_chain,
 )
 from pinboard.application import stored_state
-from pinboard.application.artifacts import ArtifactRef, NewArtifact
+from pinboard.application.artifacts import ArtifactRef, BriefArtifactRef, NewArtifact
 from pinboard.domain import work_models
 
 _DIRECTORIES: dict[work_models.ArtifactKind, str] = {
@@ -48,7 +48,9 @@ def _build_selector(kind: work_models.ArtifactKind, key: str, revision: int, suf
     ).as_posix()
 
 
-def _validate_and_resolve_reference_path(reference: ArtifactRef | stored_state.ArtifactReference) -> Path:
+def _validate_and_resolve_reference_path(
+    reference: ArtifactRef | BriefArtifactRef | stored_state.ArtifactReference,
+) -> Path:
     pure = PurePosixPath(reference.selector)
     parts = pure.parts
     if pure.is_absolute() or not parts or any(part in {"", ".", ".."} for part in parts):
@@ -72,7 +74,10 @@ def _validate_and_resolve_reference_path(reference: ArtifactRef | stored_state.A
     return Path(*parts)
 
 
-def read_reference(work_root: Path, reference: ArtifactRef | stored_state.ArtifactReference) -> bytes:
+def read_reference(
+    work_root: Path,
+    reference: ArtifactRef | BriefArtifactRef | stored_state.ArtifactReference,
+) -> bytes:
     relative = _validate_and_resolve_reference_path(reference)
     try:
         data = (work_root / relative).read_bytes()
@@ -89,7 +94,10 @@ def read_reference(work_root: Path, reference: ArtifactRef | stored_state.Artifa
     return data
 
 
-def verify_reference(work_root: Path, reference: ArtifactRef | stored_state.ArtifactReference) -> None:
+def verify_reference(
+    work_root: Path,
+    reference: ArtifactRef | BriefArtifactRef | stored_state.ArtifactReference,
+) -> None:
     read_reference(work_root, reference)
 
 

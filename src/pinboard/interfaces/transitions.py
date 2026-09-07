@@ -243,16 +243,14 @@ def _present_committed_transition(
     if view_result.warning is not None:
         print(view_result.warning.message, file=sys.stderr)
     committed_revision = str(committed_mutation.project_revision)
-    latest_state = store.snapshot()
     if affected_attempt is None and changed_item is not None:
+        latest_state = store.snapshot()
         affected_attempt = next(
             (value.attempt_id for value in latest_state.lifecycle.attempts if value.item_id == changed_item), None
         )
     continuation = None
     if affected_attempt is not None:
-        continuation = work_inspection.read_attempt_continuation(
-            roots, latest_state, affected_attempt, datetime.now(UTC)
-        )
+        continuation = work_inspection.read_attempt_continuation(roots, store, affected_attempt, datetime.now(UTC))
         if isinstance(continuation, CommandFailure):
             # The mutation already committed. An unavailable read projection is a warning, not rollback.
             print(f"Transition committed; continuation unavailable: {continuation}", file=sys.stderr)

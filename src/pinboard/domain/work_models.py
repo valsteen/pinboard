@@ -363,6 +363,18 @@ class AttemptRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectAttemptActionContext:
+    item: ItemId
+    item_state: WorkState
+    attempt: AttemptId
+    attempt_record: AttemptRecord | None
+    current_definition_revision: int | None
+    current_definition_digest: str | None
+    live_dependencies: tuple[ItemId, ...]
+    revision_available: bool
+
+
+@dataclass(frozen=True, slots=True)
 class SubjectRevision:
     subject: ItemId | AttemptId | ProposalId
     revision: str

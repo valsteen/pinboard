@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from itertools import pairwise
 
+import msgspec
+
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.application import query_models, stored_state
@@ -50,6 +52,53 @@ class _SubjectRevisionRow:
 @dataclass(frozen=True, slots=True)
 class _DependencyRow:
     dependency_id: ItemId
+
+
+class _AttemptItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: ItemId
+    state: stored_state.StoredWorkItemState
+
+
+class _AttemptContextRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    item_id: ItemId
+    state: work_models.AttemptState
+    branch: str
+    base_revision: str
+    brief_artifact_ref_id: ArtifactRefId
+    candidate_revision: str | None
+    accepted_scope_revision: int
+    accepted_scope_digest: str
+
+
+class _DependencyStateRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    dependency_id: ItemId
+    state: stored_state.StoredWorkItemState
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalAttemptContextSelection:
+    project_revision: int
+    attempt_id: AttemptId
+    item_id: ItemId
+
+
+@dataclass(frozen=True, slots=True)
+class NonterminalAttemptContextSelection:
+    project_revision: int
+    attempt_id: AttemptId
+    item_id: ItemId
+    state: query_models.NonterminalAttemptState
+    branch: str
+    base_revision: str
+    accepted_scope_revision: int
+    accepted_scope_digest: str
+    candidate_revision: str | None
+    brief_artifact_ref_id: ArtifactRefId
+    item: query_models.AttemptContextItemFacts
+
+
+type AttemptContextSelection = TerminalAttemptContextSelection | NonterminalAttemptContextSelection
 
 
 def _definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionRevision:
@@ -163,6 +212,119 @@ def read_item_status(connection: sqlite3.Connection, item_id: ItemId) -> query_m
         item,
         None if definition is None else definition.definition.title,
         attempts,
+    )
+
+
+def read_attempt_context(
+    connection: sqlite3.Connection,
+    attempt_id: AttemptId,
+) -> AttemptContextSelection | None:
+    project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_revision_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
+    attempt_row = connection.execute(
+        """
+        SELECT attempt_id, item_id, state, branch, base_revision, brief_artifact_ref_id,
+               candidate_revision, accepted_scope_revision, accepted_scope_digest
+        FROM attempts
+        WHERE attempt_id = ?
+        """,
+        (attempt_id,),
+    ).fetchone()
+    if attempt_row is None:
+        return None
+    attempt = decode_row(attempt_row, _AttemptContextRow)
+    if attempt.state == work_models.AttemptState.DONE:
+        return TerminalAttemptContextSelection(project_revision, attempt.attempt_id, attempt.item_id)
+    match attempt.state:
+        case (
+            work_models.AttemptState.ACTIVE
+            | work_models.AttemptState.PAUSED
+            | work_models.AttemptState.BLOCKED
+            | work_models.AttemptState.REVIEW
+        ) as attempt_state:
+            pass
+        case _:
+            raise StorageError(StorageErrorCode.INVALID_STATE, "The selected attempt state is unsupported.")
+
+    item_row = connection.execute(
+        "SELECT item_id, state FROM work_items WHERE item_id = ?",
+        (attempt.item_id,),
+    ).fetchone()
+    if item_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "The selected nonterminal attempt has no work item.")
+    item = decode_row(item_row, _AttemptItemRow)
+    match item.state:
+        case (
+            stored_state.StoredWorkItemState.ACTIVE
+            | stored_state.StoredWorkItemState.PAUSED
+            | stored_state.StoredWorkItemState.BLOCKED
+            | stored_state.StoredWorkItemState.REVIEW
+        ) as item_state:
+            if item_state.value != attempt_state.value:
+                raise StorageError(
+                    StorageErrorCode.INVALID_STATE,
+                    "The selected attempt and work item states do not match.",
+                )
+        case _:
+            raise StorageError(
+                StorageErrorCode.INVALID_STATE, "The selected attempt and work item states do not match."
+            )
+
+    definition_row = connection.execute(
+        """
+        SELECT item_id, definition_revision AS revision, definition_digest AS digest,
+               definition_json, reason, source_task_id, before_digest, after_digest,
+               accepted_project_revision, accepted_at
+        FROM work_item_definition_revisions
+        WHERE item_id = ?
+        ORDER BY definition_revision DESC
+        LIMIT 1
+        """,
+        (attempt.item_id,),
+    ).fetchone()
+    if definition_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "The selected attempt item has no definition.")
+    definition = _definition_revision(definition_row)
+    dependencies = tuple(
+        decode_row(row, _DependencyStateRow)
+        for row in connection.execute(
+            """
+            SELECT dependency.dependency_id, item.state
+            FROM item_dependencies AS dependency
+            JOIN work_items AS item ON item.item_id = dependency.dependency_id
+            WHERE dependency.item_id = ?
+            ORDER BY dependency.position
+            """,
+            (attempt.item_id,),
+        ).fetchall()
+    )
+    if tuple(value.dependency_id for value in dependencies) != definition.definition.dependencies:
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE,
+            "Current definition dependencies do not match relational dependencies.",
+        )
+    return NonterminalAttemptContextSelection(
+        project_revision,
+        attempt.attempt_id,
+        attempt.item_id,
+        attempt_state,
+        attempt.branch,
+        attempt.base_revision,
+        attempt.accepted_scope_revision,
+        attempt.accepted_scope_digest,
+        attempt.candidate_revision,
+        attempt.brief_artifact_ref_id,
+        query_models.AttemptContextItemFacts(
+            item.item_id,
+            item_state,
+            definition.revision,
+            definition.digest,
+            tuple(
+                value.dependency_id for value in dependencies if stored_state.live_work_state(value.state) is not None
+            ),
+        ),
     )
 
 

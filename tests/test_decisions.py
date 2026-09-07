@@ -3,6 +3,7 @@ from dataclasses import replace as replace_dataclass
 from datetime import UTC, datetime
 
 from pinboard.domain import decision_models, work_models
+from pinboard.domain.decisions import ActionCapabilityFactory, project_attempt_action_groups
 from pinboard.domain.decisions import available_actions as available_actions_outcome
 from pinboard.domain.decisions import decide as decision_outcome
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
@@ -91,6 +92,147 @@ def definition_anchor(
 
 
 class LifecycleDecisionTest(unittest.TestCase):
+    def test_project_attempt_action_owner_preserves_every_continuation_sequence(self) -> None:
+        actor = decision_models.ActorAuthority(
+            decision_models.Role.PROJECT,
+            decision_models.AuthorizationKind.PROJECT,
+            0,
+        )
+        factory = ActionCapabilityFactory("revision", actor)
+        current_definition = definition_anchor("target", 1, DIGEST_A)
+        dependency = item("dependency", work_models.WorkState.READY)
+        cases = (
+            (
+                "active-current",
+                work_models.WorkState.ACTIVE,
+                work_models.AttemptState.ACTIVE,
+                DIGEST_A,
+                (),
+                (
+                    "continue:target-1",
+                    "dispatch:target-1",
+                    "rebind-attempt:target-1",
+                    "pause:target-1",
+                    "block:target-1",
+                    "complete:target-1",
+                    "revise-item:target",
+                ),
+            ),
+            (
+                "active-stale",
+                work_models.WorkState.ACTIVE,
+                work_models.AttemptState.ACTIVE,
+                DIGEST_B,
+                (),
+                (
+                    "rebind-attempt:target-1",
+                    "pause:target-1",
+                    "block:target-1",
+                    "revise-item:target",
+                ),
+            ),
+            (
+                "review-current",
+                work_models.WorkState.REVIEW,
+                work_models.AttemptState.REVIEW,
+                DIGEST_A,
+                (),
+                (
+                    "complete:target-1",
+                    "return-for-correction:target-1",
+                    "accept-checkpoint:target-1",
+                    "accept-review-and-continue:target-1",
+                    "revise-item:target",
+                ),
+            ),
+            (
+                "review-stale",
+                work_models.WorkState.REVIEW,
+                work_models.AttemptState.REVIEW,
+                DIGEST_B,
+                (),
+                ("return-for-correction:target-1", "revise-item:target"),
+            ),
+            (
+                "paused-live-dependencies",
+                work_models.WorkState.PAUSED,
+                work_models.AttemptState.PAUSED,
+                DIGEST_A,
+                (ItemId("dependency"),),
+                ("revise-item:target", "rebind-attempt:target-1", "close:target"),
+            ),
+            (
+                "paused-clear",
+                work_models.WorkState.PAUSED,
+                work_models.AttemptState.PAUSED,
+                DIGEST_A,
+                (),
+                ("revise-item:target", "rebind-attempt:target-1", "resume:target", "close:target"),
+            ),
+            (
+                "blocked-live-dependencies",
+                work_models.WorkState.BLOCKED,
+                work_models.AttemptState.BLOCKED,
+                DIGEST_A,
+                (ItemId("dependency"),),
+                ("revise-item:target", "close:target"),
+            ),
+            (
+                "blocked-clear",
+                work_models.WorkState.BLOCKED,
+                work_models.AttemptState.BLOCKED,
+                DIGEST_A,
+                (),
+                ("revise-item:target", "resume:target", "close:target"),
+            ),
+        )
+        for name, item_state, attempt_state, accepted_digest, live_dependencies, expected in cases:
+            with self.subTest(name=name):
+                target = replace_dataclass(
+                    item("target", item_state, attempt="target-1"),
+                    depends_on=live_dependencies,
+                )
+                attempt = AttemptRecord(
+                    "target-1",
+                    "target",
+                    attempt_state,
+                    accepted_scope_revision=1,
+                    accepted_scope_digest=accepted_digest,
+                    protected_candidate_revision="candidate-a"
+                    if attempt_state == work_models.AttemptState.REVIEW
+                    else None,
+                )
+                snapshot = LedgerSnapshot(
+                    "revision",
+                    (target, dependency) if live_dependencies else (target,),
+                    attempts=(attempt,),
+                    definitions=(current_definition,),
+                )
+                global_actions = available_actions(snapshot, actor)
+                selected_global = tuple(
+                    decision_models.action_id(action)
+                    for action in global_actions
+                    if action.capability.subject in {ItemId("target"), AttemptId("target-1")}
+                )
+                groups = project_attempt_action_groups(
+                    work_models.ProjectAttemptActionContext(
+                        ItemId("target"),
+                        item_state,
+                        AttemptId("target-1"),
+                        attempt,
+                        1,
+                        DIGEST_A,
+                        live_dependencies,
+                        True,
+                    ),
+                    factory,
+                )
+                selected_exact = tuple(
+                    decision_models.action_id(action) for action in (*groups.attempt_actions, *groups.item_actions)
+                )
+                self.assertEqual(expected, selected_global)
+                self.assertEqual(expected, selected_exact)
+
     def test_every_action_kind_has_one_complete_domain_semantics_descriptor(self) -> None:
         descriptors = tuple(decision_models.action_semantics(kind) for kind in decision_models.ActionKind)
 

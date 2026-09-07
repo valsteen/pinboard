@@ -7,13 +7,13 @@ snapshot. These functions never read files, mutate state, or present output.
 
 from dataclasses import replace
 from datetime import datetime
+from typing import assert_never
 
 from pinboard.application import ports, query_models, stored_state
-from pinboard.application.actions import discover_actions
-from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain.decisions import ActionCapabilityFactory, project_attempt_action_groups
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import AttemptId, ItemId, TaskId
+from pinboard.domain.identifiers import AttemptId, CandidateId, ItemId, TaskId
 
 
 def select_attempt_authority_status(
@@ -44,63 +44,116 @@ def select_preparation_authority_status(
     return selected
 
 
+def select_attempt_context(
+    reader: ports.AttemptContextReader,
+    attempt_id: AttemptId,
+) -> DecisionResult[query_models.AttemptContextFacts]:
+    selected = reader.read_attempt_context(attempt_id)
+    if selected is None:
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            f"Attempt '{attempt_id}' does not exist.",
+            None,
+        )
+    return selected
+
+
 def project_attempt_continuation(
-    state: stored_state.StoredWorkState, attempt_id: AttemptId, owner_task_id: TaskId | None, now: datetime
+    context: query_models.AttemptContextFacts,
+    owner_task_id: TaskId | None,
+    observed_at: datetime,
 ) -> DecisionResult[query_models.AttemptContinuation]:
-    """Select a continuation from canonical state and the currently advertised actions.
+    """Select a continuation from one exact named-attempt context.
 
     A lifecycle state does not prove that a human decision is missing. Recorded
     pause conditions and accepted scope still determine whether the task must ask.
     The caller resolves the owner from the verified accepted brief.
     """
-    attempt = next((value for value in state.lifecycle.attempts if value.attempt_id == attempt_id), None)
-    if attempt is None:
-        return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Attempt '{attempt_id}' does not exist.", None
-        )
-    terminal = attempt.state == work_models.AttemptState.DONE
-    available = discover_actions(state, decision_models.Role.PROJECT, now=now)
-    if isinstance(available, DecisionFailure):
-        return available
-    actions = tuple(value for value in available if value.capability.subject in (attempt_id, attempt.item_id))
-    operation: (
-        query_models.ActionContinuation | query_models.ReviewContinuation | query_models.DependencyContinuation | None
-    ) = None
-    if not terminal:
-        selected = _next_attempt_operation(state, attempt, actions, now)
-        if isinstance(selected, DecisionFailure):
-            return selected
-        operation = selected
-    return query_models.AttemptContinuation(
-        "pinboard-attempt-continuation/v1",
-        attempt_id,
-        attempt.item_id,
-        state.lifecycle.project.revision,
-        attempt.state,
-        None if terminal else owner_task_id,
-        terminal,
-        False,
-        operation,
-        tuple(decision_models.action_id(value) for value in actions) if not terminal else (),
-        ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
-    )
+    _ = observed_at  # Preserve the installed operation's single observation-time boundary.
+    match context:
+        case query_models.TerminalAttemptContextFacts():
+            return query_models.AttemptContinuation(
+                "pinboard-attempt-continuation/v1",
+                context.attempt_id,
+                context.item_id,
+                context.project_revision,
+                work_models.AttemptState.DONE,
+                None,
+                True,
+                False,
+                None,
+                (),
+                ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
+            )
+        case query_models.NonterminalAttemptContextFacts():
+            item = context.item
+            attempt_record = work_models.AttemptRecord(
+                context.attempt_id,
+                context.item_id,
+                context.state,
+                context.accepted_scope_revision,
+                context.accepted_scope_digest,
+                None if context.candidate_revision is None else CandidateId(context.candidate_revision),
+                context.brief_artifact_ref_id,
+            )
+            groups = project_attempt_action_groups(
+                work_models.ProjectAttemptActionContext(
+                    item.item_id,
+                    work_models.WorkState(item.state.value),
+                    context.attempt_id,
+                    attempt_record,
+                    item.current_definition_revision,
+                    item.current_definition_digest,
+                    item.live_dependencies,
+                    True,
+                ),
+                ActionCapabilityFactory(
+                    str(context.project_revision),
+                    decision_models.ActorAuthority(
+                        decision_models.Role.PROJECT,
+                        decision_models.AuthorizationKind.PROJECT,
+                        0,
+                    ),
+                ),
+            )
+            actions = (*groups.attempt_actions, *groups.item_actions)
+            selected = _next_attempt_operation(context, actions)
+            if isinstance(selected, DecisionFailure):
+                return selected
+            return query_models.AttemptContinuation(
+                "pinboard-attempt-continuation/v1",
+                context.attempt_id,
+                context.item_id,
+                context.project_revision,
+                context.state,
+                owner_task_id,
+                False,
+                False,
+                selected,
+                tuple(decision_models.action_id(value) for value in actions),
+                ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _next_attempt_operation(
-    state: stored_state.StoredWorkState,
-    attempt: stored_state.StoredAttempt,
+    context: query_models.NonterminalAttemptContextFacts,
     actions: tuple[decision_models.Action, ...],
-    now: datetime,
 ) -> DecisionResult[
     query_models.ActionContinuation | query_models.ReviewContinuation | query_models.DependencyContinuation
 ]:
     for action in actions:
         if isinstance(action, decision_models.AcceptCheckpointAction):
-            if attempt.candidate_revision is None:
+            if context.candidate_revision is None:
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE, "Review has no protected candidate.", None
                 )
-            return query_models.ReviewContinuation(attempt.attempt_id, attempt.candidate_revision, "runtime-subagent")
+            return query_models.ReviewContinuation(
+                context.attempt_id,
+                context.candidate_revision,
+                "runtime-subagent",
+            )
         if isinstance(action, decision_models.ContinueAction):
             return query_models.ActionContinuation(
                 decision_models.action_id(action), action.kind, "Follow the accepted brief."
@@ -124,16 +177,11 @@ def _next_attempt_operation(
                 action.kind,
                 "Resolve the recorded pause or dependency condition and provide the matching current accepted brief.",
             )
-    snapshot = project_decision_snapshot(state, now)
-    item = snapshot.item(attempt.item_id)
-    dependencies = (
-        () if item is None else tuple(str(value) for value in item.depends_on if snapshot.item(value) is not None)
-    )
-    if dependencies:
-        return query_models.DependencyContinuation(dependencies)
+    if context.item.live_dependencies:
+        return query_models.DependencyContinuation(tuple(str(value) for value in context.item.live_dependencies))
     return DecisionFailure(
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
-        f"Attempt '{attempt.attempt_id}' has no supported continuation among its current legal actions.",
+        f"Attempt '{context.attempt_id}' has no supported continuation among its current legal actions.",
         None,
     )
 

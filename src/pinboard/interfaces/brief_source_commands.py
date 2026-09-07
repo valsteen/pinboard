@@ -10,7 +10,7 @@ from typing import assert_never
 
 from pinboard.interfaces import brief_source_models, brief_sources, cli_commands
 from pinboard.interfaces.cli_output import write_json
-from pinboard.interfaces.errors import BriefSourceError, BriefSourceErrorCode
+from pinboard.interfaces.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
 
 
 def _project_brief_source_segment(
@@ -65,25 +65,31 @@ def _project_brief_source_plan(plan: brief_source_models.BriefSourcePlan) -> bri
 def plan_or_emit_brief_sources(
     roots: cli_commands.ResolvedRoots,
     command: cli_commands.BriefSourcesPlanCommand | cli_commands.BriefSourcesEmitCommand,
-) -> int:
+) -> BriefSourceResult[int]:
     try:
         manifest_bytes = command.file.read_bytes()
     except OSError as error:
-        raise BriefSourceError(
+        return BriefSourceFailure(
             BriefSourceErrorCode.MANIFEST_INVALID,
             f"Cannot read brief source manifest '{command.file}': {error}",
-        ) from error
+        )
     decoded_manifest = brief_sources.decode_brief_source_manifest(manifest_bytes)
+    if isinstance(decoded_manifest, BriefSourceFailure):
+        return decoded_manifest
     source_plan = brief_sources.plan_brief_sources(
         roots.source_checkout,
         decoded_manifest,
         command.max_batch_bytes,
     )
+    if isinstance(source_plan, BriefSourceFailure):
+        return source_plan
     match command:
         case cli_commands.BriefSourcesPlanCommand():
             write_json(_project_brief_source_plan(source_plan))
         case cli_commands.BriefSourcesEmitCommand(emit_batch=batch_index):
             rendered_batch = brief_sources.render_brief_source_batch(source_plan, batch_index)
+            if isinstance(rendered_batch, BriefSourceFailure):
+                return rendered_batch
             sys.stdout.write(rendered_batch.decode("utf-8"))
         case _ as unreachable:
             assert_never(unreachable)

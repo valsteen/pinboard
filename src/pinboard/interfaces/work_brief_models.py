@@ -5,7 +5,7 @@ from typing import Annotated, Literal, assert_never
 import msgspec
 
 from pinboard.interfaces.brief_source_models import parse_authority_selector
-from pinboard.interfaces.errors import BriefSourceError
+from pinboard.interfaces.errors import BriefSourceFailure
 
 type NonEmptyText = Annotated[str, msgspec.Meta(min_length=1)]
 type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A\S(?:[^\n]*\S)?\z")]
@@ -309,10 +309,8 @@ def _validate_architecture_impact(impact: ArchitectureImpact) -> None:
         case NoArchitectureImpact():
             return
         case ReadOnlyArchitecture(selector=selector) | UpdateRequiredArchitecture(selector=selector):
-            try:
-                parse_authority_selector(selector)
-            except BriefSourceError as error:
-                raise ValueError(f"Architecture impact selector is invalid: {error.message}") from error
+            if isinstance(failure := parse_authority_selector(selector), BriefSourceFailure):
+                raise ValueError(f"Architecture impact selector is invalid: {failure.message}")
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -343,12 +341,10 @@ def _reviewed_authority_keys(checkpoint: CrossBoundaryCheckpoint) -> frozenset[t
     for authority in checkpoint.reviewed_authorities:
         if len(set(authority.families)) != len(authority.families):
             raise ValueError(f"Reviewed authority '{authority.authority_id}' repeats a family.")
-        try:
-            parse_authority_selector(authority.selector)
-        except BriefSourceError as error:
+        if isinstance(failure := parse_authority_selector(authority.selector), BriefSourceFailure):
             raise ValueError(
-                f"Reviewed authority '{authority.authority_id}' has an invalid selector: {error.message}"
-            ) from error
+                f"Reviewed authority '{authority.authority_id}' has an invalid selector: {failure.message}"
+            )
     return authority_keys
 
 

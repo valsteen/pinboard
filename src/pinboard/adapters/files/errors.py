@@ -1,3 +1,5 @@
+"""Filesystem-boundary failures for artifact and durable-path operations."""
+
 from enum import Enum
 
 

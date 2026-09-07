@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 import msgspec
 
-from pinboard.interfaces.errors import BriefSourceError, BriefSourceErrorCode
+from pinboard.interfaces.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
 
 type BriefSourceManifestSchema = Literal["pinboard-brief-sources/v1"]
 type BriefSourcePlanSchema = Literal["pinboard-brief-source-plan/v1"]
@@ -18,7 +18,7 @@ class AuthoritySelector:
     heading: str | None
 
 
-def parse_authority_selector(value: str) -> AuthoritySelector:
+def parse_authority_selector(value: str) -> BriefSourceResult[AuthoritySelector]:
     relative, separator, heading = value.partition("#")
     relative_path = PurePosixPath(relative)
     if (
@@ -29,7 +29,7 @@ def parse_authority_selector(value: str) -> AuthoritySelector:
         or not relative_path.parts
         or (separator and not heading)
     ):
-        raise BriefSourceError(
+        return BriefSourceFailure(
             BriefSourceErrorCode.MANIFEST_INVALID,
             f"Authority selector '{value}' must name one project-relative file and optional literal heading.",
         )
@@ -47,7 +47,8 @@ class BriefSourceRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     families: tuple[BriefSourceIdentity, ...]
 
     def __post_init__(self) -> None:
-        parse_authority_selector(self.selector)
+        if isinstance(failure := parse_authority_selector(self.selector), BriefSourceFailure):
+            raise ValueError(failure.message)
         if not self.families or len(set(self.families)) != len(self.families):
             raise ValueError("families must contain one or more unique kebab-case values")
 

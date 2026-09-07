@@ -17,7 +17,21 @@ from pinboard.interfaces.brief_sources import (
     render_brief_source_batch,
 )
 from pinboard.interfaces.cli import main
-from pinboard.interfaces.errors import BriefSourceError, BriefSourceErrorCode
+from pinboard.interfaces.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
+
+
+def expect_brief_source_success[T](result: BriefSourceResult[T]) -> T:
+    if isinstance(result, BriefSourceFailure):
+        raise AssertionError(str(result))
+    return result
+
+
+def expect_brief_source_failure[T](result: BriefSourceResult[T], code: BriefSourceErrorCode) -> BriefSourceFailure:
+    if not isinstance(result, BriefSourceFailure):
+        raise AssertionError(f"Expected {code.value}, received success: {result!r}")
+    if result.code != code:
+        raise AssertionError(f"Expected {code.value}, received {result.code.value}: {result.message}")
+    return result
 
 
 class BriefSourcesTest(unittest.TestCase):
@@ -45,9 +59,8 @@ class BriefSourcesTest(unittest.TestCase):
         )
 
         for raw in cases:
-            with self.subTest(raw=raw), self.assertRaises(BriefSourceError) as raised:
-                decode_brief_source_manifest(raw)
-            self.assertEqual(BriefSourceErrorCode.MANIFEST_INVALID, raised.exception.code)
+            with self.subTest(raw=raw):
+                expect_brief_source_failure(decode_brief_source_manifest(raw), BriefSourceErrorCode.MANIFEST_INVALID)
 
     def test_plan_normalizes_heading_bytes_and_batches_every_selected_byte_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -56,13 +69,15 @@ class BriefSourcesTest(unittest.TestCase):
                 b"# Architecture\r\n\r\n## Contract\r\n\r\nSelected.\r\n\r\n## Sibling\r\nExcluded.\r\n"
             )
             (project / "acceptance.txt").write_bytes(b"first line\nsecond line\n")
-            plan = plan_brief_sources(
-                project,
-                self.manifest(
-                    BriefSourceRequest("architecture", "architecture.md#Contract", ("contract",)),
-                    BriefSourceRequest("acceptance", "acceptance.txt", ("acceptance",)),
-                ),
-                max_batch_bytes=24,
+            plan = expect_brief_source_success(
+                plan_brief_sources(
+                    project,
+                    self.manifest(
+                        BriefSourceRequest("architecture", "architecture.md#Contract", ("contract",)),
+                        BriefSourceRequest("acceptance", "acceptance.txt", ("acceptance",)),
+                    ),
+                    max_batch_bytes=24,
+                )
             )
 
         selected = b"## Contract\n\nSelected.\n\n"
@@ -84,35 +99,38 @@ class BriefSourcesTest(unittest.TestCase):
                 BriefSourceRequest("whole", "source.md", ("contract",)),
                 BriefSourceRequest("section", "source.md#Contract", ("acceptance",)),
             )
-            with self.assertRaises(BriefSourceError) as overlap:
-                plan_brief_sources(project, overlapping, max_batch_bytes=128)
-            self.assertEqual(BriefSourceErrorCode.SELECTOR_OVERLAP, overlap.exception.code)
+            expect_brief_source_failure(
+                plan_brief_sources(project, overlapping, max_batch_bytes=128),
+                BriefSourceErrorCode.SELECTOR_OVERLAP,
+            )
 
             (project / "binary.dat").write_bytes(b"\xff\xfe")
-            with self.assertRaises(BriefSourceError) as non_utf8:
+            expect_brief_source_failure(
                 plan_brief_sources(
                     project,
                     self.manifest(BriefSourceRequest("binary", "binary.dat", ("contract",))),
                     max_batch_bytes=128,
-                )
-            self.assertEqual(BriefSourceErrorCode.SOURCE_NOT_UTF8, non_utf8.exception.code)
+                ),
+                BriefSourceErrorCode.SOURCE_NOT_UTF8,
+            )
 
-            with self.assertRaises(BriefSourceError) as too_large:
+            expect_brief_source_failure(
                 plan_brief_sources(
                     project,
                     self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
                     max_batch_bytes=8,
-                )
-            self.assertEqual(BriefSourceErrorCode.LINE_TOO_LARGE, too_large.exception.code)
-
-            plan = plan_brief_sources(
-                project,
-                self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
-                max_batch_bytes=128,
+                ),
+                BriefSourceErrorCode.LINE_TOO_LARGE,
             )
-            with self.assertRaises(BriefSourceError) as unknown_batch:
-                render_brief_source_batch(plan, 1)
-            self.assertEqual(BriefSourceErrorCode.BATCH_NOT_FOUND, unknown_batch.exception.code)
+
+            plan = expect_brief_source_success(
+                plan_brief_sources(
+                    project,
+                    self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
+                    max_batch_bytes=128,
+                )
+            )
+            expect_brief_source_failure(render_brief_source_batch(plan, 1), BriefSourceErrorCode.BATCH_NOT_FOUND)
 
     def test_cli_plans_and_emits_without_work_state_or_project_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

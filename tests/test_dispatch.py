@@ -70,7 +70,7 @@ def prepare_dispatch_from_artifact(
     accepted_review: bytes | None = None,
 ) -> DispatchResult[str]:
     brief = _read_dispatch_brief(
-        attempt_path,
+        attempt_path.read_bytes(),
         attempt_id,
         attempt_branch,
         attempt_base_revision,

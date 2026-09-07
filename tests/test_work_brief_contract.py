@@ -3,12 +3,18 @@ import unittest
 import msgspec
 
 from pinboard.interfaces import work_brief_models
-from pinboard.interfaces.errors import WorkBriefError
+from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
 from pinboard.interfaces.work_brief_contract import WorkBriefStructuralChoice, describe_work_brief_contract
 from pinboard.interfaces.work_briefs import decode_work_brief
 from tests.work_brief_support import example_work_brief, work_c_brief
 
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
+
+
+def expect_work_brief_success[T](result: WorkBriefResult[T]) -> T:
+    if isinstance(result, WorkBriefFailure):
+        raise AssertionError(str(result))
+    return result
 
 
 def json_object(value: JsonValue) -> dict[str, JsonValue]:
@@ -164,8 +170,7 @@ class WorkBriefContractTest(unittest.TestCase):
             checkpoint = json_object(payload["checkpoint"])
             checkpoint_keys = {field.name for field in msgspec.structs.fields(checkpoint_type)} | {"boundary"}
             self.assertEqual(checkpoint_keys, checkpoint.keys())
-            with self.assertRaises(WorkBriefError):
-                decode_work_brief(bytes(starter))
+            self.assertIsInstance(decode_work_brief(bytes(starter)), WorkBriefFailure)
 
         local_payload = json_object(msgspec.json.decode(bytes(contract.local_starter)))
         local_checkpoint = json_object(local_payload["checkpoint"])
@@ -228,7 +233,9 @@ class WorkBriefContractTest(unittest.TestCase):
         ):
             template = msgspec.json.decode(bytes(starter))
             completed_payload = msgspec.json.decode(msgspec.json.encode(completed))
-            decoded = decode_work_brief(msgspec.json.encode(complete_starter(template, completed_payload)))
+            decoded = expect_work_brief_success(
+                decode_work_brief(msgspec.json.encode(complete_starter(template, completed_payload)))
+            )
             self.assertIsInstance(decoded.checkpoint, checkpoint_type)
             self.assertEqual(completed, decoded)
 
@@ -299,7 +306,9 @@ class WorkBriefContractTest(unittest.TestCase):
                     "required",
                 )
                 completed_payload = msgspec.json.decode(msgspec.json.encode(completed))
-                decoded = decode_work_brief(msgspec.json.encode(complete_starter(starter, completed_payload)))
+                decoded = expect_work_brief_success(
+                    decode_work_brief(msgspec.json.encode(complete_starter(starter, completed_payload)))
+                )
                 self.assertEqual(completed, decoded)
 
     def test_contract_states_every_relational_rule_needed_to_complete_a_starter(self) -> None:

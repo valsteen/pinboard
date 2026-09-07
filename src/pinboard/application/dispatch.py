@@ -168,8 +168,7 @@ def publish_dispatch_review(
     key = f"{attempt_id}-brief-review-{checkpoint_sha256}"
     existing = _find_ready_review_reference(store, attempt_id, checkpoint_sha256)
     if existing is not None:
-        artifacts.verify(existing)
-        if artifacts.path(existing).read_bytes() == candidate:
+        if artifacts.read(existing) == candidate:
             return AcceptedDispatchReview(existing, None)
         rejected_acceptance = publish_accepted_artifact(
             store,

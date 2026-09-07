@@ -8,6 +8,13 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.domain import decision_models
 from pinboard.interfaces import cli_parser, tool_contract
 from pinboard.interfaces.cli import main
+from pinboard.interfaces.errors import CommandFailure, CommandResult
+
+
+def expect_command_success[T](result: CommandResult[T]) -> T:
+    if isinstance(result, CommandFailure):
+        raise AssertionError(str(result))
+    return result
 
 
 class ToolContractTest(unittest.TestCase):
@@ -35,7 +42,9 @@ class ToolContractTest(unittest.TestCase):
         )
         for operation in contract.operations:
             with self.subTest(operation=operation.detail_selector):
-                detail = tool_contract.describe_operation(operation.operation_id, operation.variant)
+                detail = expect_command_success(
+                    tool_contract.describe_operation(operation.operation_id, operation.variant)
+                )
                 self.assertEqual("pinboard-agent-tool-operation/v1", detail.schema)
                 self.assertTrue(detail.purpose)
                 self.assertTrue(detail.success_postcondition)
@@ -46,7 +55,7 @@ class ToolContractTest(unittest.TestCase):
                 self.assertTrue(detail.success_postcondition)
 
     def test_selected_command_and_action_expose_bounded_execution_facts(self) -> None:
-        command = tool_contract.describe_operation("transition", "attempt")
+        command = expect_command_success(tool_contract.describe_operation("transition", "attempt"))
         self.assertIsInstance(command, tool_contract.OperationContract)
         assert isinstance(command, tool_contract.OperationContract)
         self.assertEqual("pinboard-agent-tool-operation/v1", command.schema)
@@ -64,7 +73,7 @@ class ToolContractTest(unittest.TestCase):
         self.assertIsNotNone(command.input_schema)
         self.assertEqual("never-retry-with-stale-action-facts", command.retry_semantics)
 
-        project_command = tool_contract.describe_operation("transition", "project")
+        project_command = expect_command_success(tool_contract.describe_operation("transition", "project"))
         self.assertIsInstance(project_command, tool_contract.OperationContract)
         assert isinstance(project_command, tool_contract.OperationContract)
         self.assertEqual(
@@ -82,7 +91,7 @@ class ToolContractTest(unittest.TestCase):
         self.assertIsNotNone(action.input_schema)
         self.assertEqual("reselect-after-any-rejection", action.retry_semantics)
 
-        brief = tool_contract.describe_operation("brief/publish", "default")
+        brief = expect_command_success(tool_contract.describe_operation("brief/publish", "default"))
         self.assertIsInstance(brief, tool_contract.OperationContract)
         assert isinstance(brief, tool_contract.OperationContract)
         self.assertIsNone(brief.artifact_schema)
@@ -90,7 +99,7 @@ class ToolContractTest(unittest.TestCase):
         assert brief.work_brief is not None
         self.assertEqual("pinboard-work-brief-contract/v1", brief.work_brief.schema)
 
-        proposal = tool_contract.describe_operation("proposal", "default")
+        proposal = expect_command_success(tool_contract.describe_operation("proposal", "default"))
         self.assertIsInstance(proposal, tool_contract.OperationContract)
         assert isinstance(proposal, tool_contract.OperationContract)
         assert proposal.artifact_schema is not None
@@ -111,7 +120,7 @@ class ToolContractTest(unittest.TestCase):
         )
 
     def test_acquisition_and_initialization_contracts_name_actual_authority_and_receipts(self) -> None:
-        preparation_start = tool_contract.describe_operation("preparation/start", "default")
+        preparation_start = expect_command_success(tool_contract.describe_operation("preparation/start", "default"))
         self.assertIsInstance(preparation_start, tool_contract.OperationContract)
         assert isinstance(preparation_start, tool_contract.OperationContract)
         self.assertEqual(
@@ -124,7 +133,7 @@ class ToolContractTest(unittest.TestCase):
         self.assertIn("lease_id", preparation_start.success_postcondition)
         self.assertIn("generation", preparation_start.success_postcondition)
 
-        preparation_acquire = tool_contract.describe_operation("preparation/acquire", "default")
+        preparation_acquire = expect_command_success(tool_contract.describe_operation("preparation/acquire", "default"))
         self.assertIsInstance(preparation_acquire, tool_contract.OperationContract)
         assert isinstance(preparation_acquire, tool_contract.OperationContract)
         self.assertEqual(
@@ -132,7 +141,9 @@ class ToolContractTest(unittest.TestCase):
             preparation_acquire.required_authority,
         )
 
-        preparation_transfer = tool_contract.describe_operation("preparation/transfer", "default")
+        preparation_transfer = expect_command_success(
+            tool_contract.describe_operation("preparation/transfer", "default")
+        )
         self.assertIsInstance(preparation_transfer, tool_contract.OperationContract)
         assert isinstance(preparation_transfer, tool_contract.OperationContract)
         self.assertEqual(
@@ -140,7 +151,7 @@ class ToolContractTest(unittest.TestCase):
             preparation_transfer.required_authority,
         )
 
-        attempt_acquire = tool_contract.describe_operation("attempt/acquire", "default")
+        attempt_acquire = expect_command_success(tool_contract.describe_operation("attempt/acquire", "default"))
         self.assertIsInstance(attempt_acquire, tool_contract.OperationContract)
         assert isinstance(attempt_acquire, tool_contract.OperationContract)
         self.assertEqual(
@@ -150,7 +161,7 @@ class ToolContractTest(unittest.TestCase):
         self.assertIn("lease_id", attempt_acquire.success_postcondition)
         self.assertIn("generation", attempt_acquire.success_postcondition)
 
-        initialized = tool_contract.describe_operation("init", "default")
+        initialized = expect_command_success(tool_contract.describe_operation("init", "default"))
         self.assertIsInstance(initialized, tool_contract.OperationContract)
         assert isinstance(initialized, tool_contract.OperationContract)
         self.assertIn("work_root", initialized.success_postcondition)

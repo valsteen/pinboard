@@ -16,10 +16,17 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.artifacts import NewArtifact
 from pinboard.domain import work_models
 from pinboard.interfaces.cli import main
+from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
 from pinboard.interfaces.work_briefs import canonical_work_brief_bytes, render_work_brief_markdown
 from pinboard.interfaces.work_state import initialize_work_state
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.work_brief_support import work_a_brief
+
+
+def expect_work_brief_success[T](result: WorkBriefResult[T]) -> T:
+    if isinstance(result, WorkBriefFailure):
+        raise AssertionError(str(result))
+    return result
 
 
 def _malformed_brief(_project: Path) -> bytes:
@@ -49,7 +56,7 @@ class SQLiteValidationTest(unittest.TestCase):
 
     def test_fresh_current_state_is_valid_and_stale_views_are_warnings(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
-        receipt = initialize_work_state(project, now=SQLITE_NOW)
+        receipt = expect_work_brief_success(initialize_work_state(project, now=SQLITE_NOW))
 
         result, stdout, stderr = self.run_cli(
             "--project-root", str(project), "--work-root", str(receipt.work_root), "validate"
@@ -86,15 +93,15 @@ class SQLiteValidationTest(unittest.TestCase):
 
     def test_initialization_resumes_current_state(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
-        first = initialize_work_state(project, now=SQLITE_NOW)
-        second = initialize_work_state(project, now=SQLITE_NOW)
+        first = expect_work_brief_success(initialize_work_state(project, now=SQLITE_NOW))
+        second = expect_work_brief_success(initialize_work_state(project, now=SQLITE_NOW))
         self.assertFalse(first.resumed)
         self.assertTrue(second.resumed)
         self.assertEqual(first.database_path, second.database_path)
 
     def test_initialization_reconciles_owned_publication_residue(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
-        first = initialize_work_state(project, now=SQLITE_NOW)
+        first = expect_work_brief_success(initialize_work_state(project, now=SQLITE_NOW))
         roots = resolve_durable_roots(project)
         brief = work_a_brief(project)
         published = write_revision(
@@ -124,7 +131,7 @@ class SQLiteValidationTest(unittest.TestCase):
         staging_journal = staging.with_name(f"{staging.name}-journal")
         staging_journal.write_bytes(b"owned publication residue")
 
-        resumed = initialize_work_state(project, now=SQLITE_NOW)
+        resumed = expect_work_brief_success(initialize_work_state(project, now=SQLITE_NOW))
 
         self.assertTrue(resumed.resumed)
         self.assertEqual(first.database_path, resumed.database_path)
@@ -137,7 +144,7 @@ class SQLiteValidationTest(unittest.TestCase):
 
     def test_initialization_rejects_conflicting_publication_residue_without_mutation(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
-        receipt = initialize_work_state(project, now=SQLITE_NOW)
+        receipt = expect_work_brief_success(initialize_work_state(project, now=SQLITE_NOW))
         staging = receipt.database_path.with_name(f".{receipt.database_path.name}.pinboard-stage")
         staging.write_bytes(b"different file")
         database_before = receipt.database_path.read_bytes()
@@ -152,7 +159,7 @@ class SQLiteValidationTest(unittest.TestCase):
 
     def test_initialization_rejects_malformed_database_before_residue_cleanup(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
-        receipt = initialize_work_state(project, now=SQLITE_NOW)
+        receipt = expect_work_brief_success(initialize_work_state(project, now=SQLITE_NOW))
         staging = receipt.database_path.with_name(f".{receipt.database_path.name}.pinboard-stage")
         staging.hardlink_to(receipt.database_path)
         receipt.database_path.write_bytes(b"malformed database")
@@ -188,8 +195,8 @@ class SQLiteValidationTest(unittest.TestCase):
         original_exclude = exclude.read_bytes()
         original_gitignore = gitignore.read_bytes()
 
-        first = initialize_work_state(project, now=SQLITE_NOW)
-        second = initialize_work_state(project, now=SQLITE_NOW)
+        first = expect_work_brief_success(initialize_work_state(project, now=SQLITE_NOW))
+        second = expect_work_brief_success(initialize_work_state(project, now=SQLITE_NOW))
 
         self.assertEqual(project / ".codex" / "pinboard", first.work_root)
         self.assertEqual(first.work_root, second.work_root)
@@ -205,7 +212,7 @@ class SQLiteValidationTest(unittest.TestCase):
         original_exclude = exclude.read_bytes()
         destination = Path(tempfile.mkdtemp()).resolve() / "selected-work-root"
 
-        receipt = initialize_work_state(project, destination, now=SQLITE_NOW)
+        receipt = expect_work_brief_success(initialize_work_state(project, destination, now=SQLITE_NOW))
 
         self.assertEqual(destination, receipt.work_root)
         self.assertEqual(original_exclude, exclude.read_bytes())

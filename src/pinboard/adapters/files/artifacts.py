@@ -132,14 +132,8 @@ class ArtifactRepository:
     def work_root(self) -> Path:
         return self.roots.work_root
 
-    def verify(self, reference: stored_state.ArtifactReference) -> None:
-        verify_reference(self.work_root, reference)
-
     def read(self, reference: stored_state.ArtifactReference) -> bytes:
         return read_reference(self.work_root, reference)
-
-    def path(self, reference: stored_state.ArtifactReference) -> Path:
-        return self.work_root / _validate_and_resolve_reference_path(reference)
 
     def revision_exists(self, artifact: NewArtifact) -> bool:
         """Return whether this exact immutable artifact revision already has a filesystem entry."""

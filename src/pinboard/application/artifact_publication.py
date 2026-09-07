@@ -31,9 +31,7 @@ class ArtifactPublisher(Protocol):
 
 
 class ArtifactReader(Protocol):
-    def verify(self, reference: stored_state.ArtifactReference) -> None: ...
-
-    def path(self, reference: stored_state.ArtifactReference) -> Path: ...
+    def read(self, reference: stored_state.ArtifactReference) -> bytes: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +64,12 @@ def publish_accepted_artifact(
     artifact: NewArtifact,
     accepted_at: datetime,
 ) -> DecisionResult[AcceptedArtifactPublication]:
-    """Publish immutable bytes, then accept their verified reference in SQLite."""
+    """Publish immutable bytes, then accept their verified reference in SQLite.
+
+    A newly published immutable artifact cannot be rolled back if SQLite acceptance fails, so that
+    infrastructure sequence retains ``ArtifactAcceptanceAfterPublicationError`` rather than presenting
+    an unchanged-result failure.
+    """
 
     artifact_existed = publisher.revision_exists(artifact)
     published_reference = publisher.publish(artifact)

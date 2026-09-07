@@ -16,14 +16,14 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.domain.identifiers import AttemptId
 from pinboard.interfaces import cli_commands
-from pinboard.interfaces.errors import WorkBriefError
+from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
 from pinboard.interfaces.work_briefs import build_attempt_brief_views
 
 
 def read_attempt_brief_views(
     roots: cli_commands.ResolvedRoots,
     state: stored_state.StoredWorkState,
-) -> dict[AttemptId, bytes]:
+) -> WorkBriefResult[dict[AttemptId, bytes]]:
     return build_attempt_brief_views(
         state,
         ArtifactRepository(resolve_durable_roots(roots.shared_repository, roots.work)),
@@ -37,13 +37,12 @@ def refresh(
     now: datetime,
 ) -> ViewRefreshResult:
     current_state = store.snapshot()
-    try:
-        attempt_briefs = read_attempt_brief_views(roots, current_state)
-    except WorkBriefError as error:
+    attempt_briefs = read_attempt_brief_views(roots, current_state)
+    if isinstance(attempt_briefs, WorkBriefFailure):
         return ViewRefreshResult(
             current_state.lifecycle.project.revision,
             ViewWarning(
-                f"The SQLite transition succeeded, but generated views need repair: {error} "
+                f"The SQLite transition succeeded, but generated views need repair: {attempt_briefs} "
                 "Run 'pinboard views rebuild'.",
                 "Run 'pinboard views rebuild'.",
             ),
@@ -63,13 +62,12 @@ def refresh_shared_authority_views(
 
 def rebuild(roots: cli_commands.ResolvedRoots, store: SQLiteWorkStore, now: datetime) -> ViewRefreshResult:
     current_state = store.snapshot()
-    try:
-        attempt_briefs = read_attempt_brief_views(roots, current_state)
-    except WorkBriefError as error:
+    attempt_briefs = read_attempt_brief_views(roots, current_state)
+    if isinstance(attempt_briefs, WorkBriefFailure):
         return ViewRefreshResult(
             current_state.lifecycle.project.revision,
             ViewWarning(
-                f"Generated views could not be rebuilt: {error} "
+                f"Generated views could not be rebuilt: {attempt_briefs} "
                 "Resolve the accepted work-brief problem and run 'pinboard views rebuild' again.",
                 "Resolve the accepted work-brief problem and run 'pinboard views rebuild' again.",
             ),

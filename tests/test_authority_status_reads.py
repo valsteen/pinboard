@@ -721,6 +721,34 @@ class AuthorityStatusReadTest(unittest.TestCase):
         self.assertEqual(12, selected_result)
         self.assertIn("WORK_STATE_INVALID", selected_stderr)
 
+    def test_selected_parallel_preview_rejects_inconsistent_open_attempt_relationships(self) -> None:
+        state = complete_sqlite_state()
+        for item_id, state_after in (("work-a", "ready"), ("work-c", "active")):
+            project, work, _store = self.initialized_state(state)
+            connection = sqlite3.connect(work / "state.sqlite3")
+            try:
+                connection.execute(
+                    "UPDATE work_items SET state = ? WHERE item_id = ?",
+                    (state_after, item_id),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with self.subTest(item_id=item_id, state=state_after):
+                result, _stdout, stderr = self.run_cli(
+                    "--project-root",
+                    str(project),
+                    "--work-root",
+                    str(work),
+                    "parallel",
+                    "preview",
+                    "--item",
+                    item_id,
+                )
+            self.assertEqual(12, result)
+            self.assertIn("WORK_STATE_INVALID", stderr)
+
     def test_installed_definition_reads_are_keyed_and_bounded_by_the_requested_page(self) -> None:
         project, work, _store = self.initialized_state(
             self.state_with_preparation(

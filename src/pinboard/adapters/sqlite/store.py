@@ -46,6 +46,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     insert_definition_revision,
     read_attempt_context,
     read_item_status,
+    read_parallel_preview_lifecycle,
     rebind_attempt,
     replace_dependencies,
     set_attempt_state,
@@ -741,6 +742,51 @@ class SQLiteWorkStore:
                         )
                     case _ as unreachable:
                         assert_never(unreachable)
+        finally:
+            connection.close()
+
+    def read_parallel_preview(self, item_ids: tuple[ItemId, ...]) -> query_models.ParallelPreviewFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                lifecycle = read_parallel_preview_lifecycle(connection, item_ids)
+                if lifecycle is None:
+                    return None
+                items: list[query_models.ParallelPreviewItemFacts] = []
+                for item in lifecycle.items:
+                    preparation_status = read_preparation_authority_status(connection, item.item_id)
+                    preparation = (
+                        None
+                        if preparation_status is None
+                        else query_models.ParallelPreparationFacts(
+                            preparation_status.status,
+                            preparation_status.expires_at,
+                        )
+                    )
+                    attempt = None
+                    if item.attempt is not None:
+                        authority = (
+                            read_attempt_authority_status(connection, item.attempt.attempt_id)
+                            if item.attempt.state == work_models.AttemptState.ACTIVE
+                            else None
+                        )
+                        attempt = query_models.ParallelAttemptFacts(
+                            item.attempt.attempt_id,
+                            item.attempt.state,
+                            None if authority is None else authority.status,
+                            None if authority is None else authority.expires_at,
+                        )
+                    items.append(
+                        query_models.ParallelPreviewItemFacts(
+                            item.item_id,
+                            item.label,
+                            item.state,
+                            item.live_dependencies,
+                            preparation,
+                            attempt,
+                        )
+                    )
+                return query_models.ParallelPreviewFacts(lifecycle.project_revision, tuple(items))
         finally:
             connection.close()
 

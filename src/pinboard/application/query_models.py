@@ -213,6 +213,36 @@ class ParallelSelectionInvalid:
 
 
 @dataclass(frozen=True, slots=True)
+class ParallelPreparationFacts:
+    status: authority_models.PreparationLeaseStatus
+    expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ParallelAttemptFacts:
+    attempt_id: AttemptId
+    state: NonterminalAttemptState
+    authority_status: authority_models.AttemptLeaseStatus | None
+    authority_expires_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class ParallelPreviewItemFacts:
+    item_id: ItemId
+    label: str
+    state: work_models.WorkState
+    live_dependencies: tuple[ItemId, ...]
+    preparation: ParallelPreparationFacts | None
+    attempt: ParallelAttemptFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class ParallelPreviewFacts:
+    project_revision: int
+    items: tuple[ParallelPreviewItemFacts, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class DependencyReason:
     item_id: str
     reason: str

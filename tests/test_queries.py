@@ -14,6 +14,7 @@ from pinboard.application.queries import (
     project_parallel_preview,
     select_item_definition,
     select_item_definition_history,
+    select_parallel_preview,
 )
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
@@ -101,7 +102,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         historical = replace(active, attempt_id=type(active.attempt_id)("aaa-old"), state=work_models.AttemptState.DONE)
         store = self._store(replace(state, lifecycle=replace(state.lifecycle, attempts=(historical, active))))
 
-        preview = project_parallel_preview(store.snapshot(), selected=("work-a",), now=SQLITE_NOW)
+        preview = select_parallel_preview(store, selected=("work-a",), now=SQLITE_NOW)
         self.assertIsInstance(preview, query_models.ParallelPreview)
         assert isinstance(preview, query_models.ParallelPreview)
 
@@ -263,7 +264,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertEqual(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, missing_worker.code)
         self.assertEqual(state, store.snapshot())
 
-        invalid_selection = project_parallel_preview(store.snapshot(), selected=("missing",), now=SQLITE_NOW)
+        invalid_selection = select_parallel_preview(store, selected=("missing",), now=SQLITE_NOW)
         self.assertIsInstance(invalid_selection, query_models.ParallelSelectionInvalid)
         assert isinstance(invalid_selection, query_models.ParallelSelectionInvalid)
         self.assertEqual("Selected item identities must be current items.", invalid_selection.message)

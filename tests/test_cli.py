@@ -3899,6 +3899,20 @@ Not launchable:
         self.assertEqual("12", status["revision"])
         self.assertEqual(1, calls)
 
+        def forbidden_snapshot(_store: SQLiteWorkStore) -> stored_state.StoredWorkState:
+            self.fail("explicit parallel selection must not load a complete snapshot")
+
+        with patch.object(SQLiteWorkStore, "snapshot", forbidden_snapshot):
+            selected = self.run_json_cli(*common, "parallel", "preview", "--item", "work-c")
+        self.assertEqual("selected", selected["selection"])
+        self.assertTrue(selected["safe"])
+
+        calls = 0
+        with patch.object(SQLiteWorkStore, "snapshot", counted):
+            all_safe = self.run_json_cli(*common, "parallel", "preview")
+        self.assertEqual("all-safe", all_safe["selection"])
+        self.assertEqual(1, calls)
+
         result, _, stderr = self.run_cli(*common, "parallel", "preview", "--item", "missing")
         self.assertEqual(11, result)
         self.assertIn("PARALLEL_SELECTION_INVALID", stderr)

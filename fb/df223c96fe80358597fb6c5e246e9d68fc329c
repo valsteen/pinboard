@@ -1,0 +1,30 @@
+.github/workflows/ci.yml
+  s_829cd28cedc8d8::t_19f846452a7c0d 69-71
+  s_829cd28cedc8d8::t_c4f370757a0efd 68
+README.md
+  s_829cd28cedc8d8::t_f66cb8b891e67b 164,167,171-174,177
+.claude-plugin/marketplace.json
+  s_829cd28cedc8d8::t_613d884ed081fd 1-2,7-10,13-15
+  s_829cd28cedc8d8::t_37e5111d027c3b 3-6,11-12
+scripts/validate-metadata.py
+  s_829cd28cedc8d8::t_0d681d8c49b28b 313-314,323
+  s_829cd28cedc8d8::t_f55a8c7efe47b7 118,122,127,132,134-135,139,141-160
+  s_829cd28cedc8d8::t_5754cdc0fc6745 273-275
+  s_829cd28cedc8d8::t_41beb912e27b65 256,258,260,272,276-289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "fbdf223c96fe80358597fb6c5e246e9d68fc329c",
+  "prompts": {},
+  "sessions": {
+    "s_829cd28cedc8d8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "129b30aa-d1a7-49a6-9b72-552cfd5d76e9",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Vincent Alsteen <vincent.alsteen@deliveryhero.com>"
+    }
+  }
+}

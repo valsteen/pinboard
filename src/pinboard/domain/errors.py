@@ -23,6 +23,18 @@ class ChangedSurface(Enum):
     LEDGER = "ledger"
 
 
+class ArtifactAcceptanceAfterPublicationError(RuntimeError):
+    """Infrastructure failed after this invocation published new immutable bytes."""
+
+    selector: str
+    cause: Exception
+
+    def __init__(self, selector: str, cause: Exception) -> None:
+        self.selector = selector
+        self.cause = cause
+        super().__init__(str(cause))
+
+
 @dataclass(frozen=True, slots=True)
 class FailureFact:
     field: str

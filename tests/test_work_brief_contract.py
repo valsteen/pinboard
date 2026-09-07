@@ -4,7 +4,7 @@ import msgspec
 
 from pinboard.interfaces import work_brief_models
 from pinboard.interfaces.errors import WorkBriefError
-from pinboard.interfaces.work_brief_contract import describe_work_brief_contract
+from pinboard.interfaces.work_brief_contract import WorkBriefStructuralChoice, describe_work_brief_contract
 from pinboard.interfaces.work_briefs import decode_work_brief
 from tests.work_brief_support import example_work_brief, work_c_brief
 
@@ -27,11 +27,53 @@ def complete_starter(template: JsonValue, completed: JsonValue) -> JsonValue:
         if not isinstance(completed, list):
             raise AssertionError("Expected a JSON array.")
         if not template:
-            return template
+            return completed
         if len(template) != len(completed):
             return completed
         return [complete_starter(value, completed[index]) for index, value in enumerate(template)]
     return template
+
+
+def replace_at_selection_path(value: JsonValue, path: str, replacement: JsonValue) -> None:
+    if not path.startswith("$."):
+        raise AssertionError(f"Unsupported selection path: {path}")
+
+    def replace(current: JsonValue, remaining: list[str]) -> None:
+        current_object = json_object(current)
+        segment = remaining[0]
+        repeated = segment.endswith("[*]")
+        key = segment.removesuffix("[*]")
+        if len(remaining) == 1:
+            if repeated:
+                selected = current_object[key]
+                if not isinstance(selected, list):
+                    raise AssertionError("Expected a JSON array at repeated selection path.")
+                current_object[key] = [msgspec.json.decode(msgspec.json.encode(replacement)) for _ in selected]
+            else:
+                current_object[key] = msgspec.json.decode(msgspec.json.encode(replacement))
+            return
+        selected = current_object[key]
+        if repeated:
+            if not isinstance(selected, list):
+                raise AssertionError("Expected a JSON array at repeated selection path.")
+            for item in selected:
+                replace(item, remaining[1:])
+        else:
+            replace(selected, remaining[1:])
+
+    replace(value, path[2:].split("."))
+
+
+def select_structural_variant(
+    starter: JsonValue,
+    choice: WorkBriefStructuralChoice,
+    selection_path: str,
+    selector: str,
+) -> None:
+    if selection_path not in choice.selection_paths:
+        raise AssertionError(f"Selection path is not advertised: {selection_path}")
+    variant = next(value for value in choice.variants if value.selector == selector)
+    replace_at_selection_path(starter, selection_path, msgspec.json.decode(bytes(variant.template)))
 
 
 def json_strings(value: JsonValue) -> set[str]:
@@ -45,6 +87,35 @@ def json_strings(value: JsonValue) -> set[str]:
 
 
 class WorkBriefContractTest(unittest.TestCase):
+    def test_structural_choices_cover_every_supported_union_variant(self) -> None:
+        contract = describe_work_brief_contract()
+        choices = {choice.choice_id: choice for choice in contract.cross_boundary_structural_choices}
+
+        self.assertEqual(
+            {
+                "architecture-impact": {"none", "read-only", "update-required"},
+                "authorization-basis": {
+                    "accepted-scope",
+                    "authority",
+                    "repository-policy",
+                    "existing-consumer",
+                },
+                "coverage-owner": {"contract", "acceptance", "deferred", "not-applicable"},
+                "lifecycle-partition": {"not-applicable", "required"},
+            },
+            {choice_id: {variant.selector for variant in choice.variants} for choice_id, choice in choices.items()},
+        )
+        self.assertEqual(
+            {"architecture-impact"},
+            {choice.choice_id for choice in contract.local_structural_choices},
+        )
+        for choice in choices.values():
+            self.assertTrue(choice.selection_paths)
+            for variant in choice.variants:
+                template = msgspec.json.decode(bytes(variant.template))
+                self.assertIsInstance(template, dict)
+                self.assertTrue(template)
+
     def test_contract_exposes_generated_schema_and_complete_unresolved_starter_shapes(self) -> None:
         contract = describe_work_brief_contract()
 
@@ -160,6 +231,76 @@ class WorkBriefContractTest(unittest.TestCase):
             decoded = decode_work_brief(msgspec.json.encode(complete_starter(template, completed_payload)))
             self.assertIsInstance(decoded.checkpoint, checkpoint_type)
             self.assertEqual(completed, decoded)
+
+    def test_cross_boundary_choices_mechanically_build_non_default_structures(self) -> None:
+        contract = describe_work_brief_contract()
+        choices = {choice.choice_id: choice for choice in contract.cross_boundary_structural_choices}
+        base = example_work_brief()
+        checkpoint = base.checkpoint
+        assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        required_lifecycle = work_brief_models.RequiredLifecyclePartition(
+            (
+                work_brief_models.LifecycleRecord(
+                    "submit-review",
+                    "active attempt",
+                    "current attempt lease",
+                    "exact candidate",
+                    "review state and protected candidate",
+                    "stale attempt lease rejects unchanged",
+                ),
+            )
+        )
+        owners: tuple[tuple[str, work_brief_models.CoverageOwner], ...] = (
+            ("contract", work_brief_models.ContractCoverageOwner(checkpoint.contracts[0].invariant)),
+            ("acceptance", work_brief_models.AcceptanceCoverageOwner(1)),
+            ("deferred", work_brief_models.DeferredCoverageOwner("later-work")),
+            ("not-applicable", work_brief_models.NotApplicableCoverageOwner("No separate obligation.")),
+        )
+
+        for owner_selector, owner in owners:
+            with self.subTest(owner=owner_selector):
+                completed = msgspec.structs.replace(
+                    base,
+                    checkpoint=msgspec.structs.replace(
+                        checkpoint,
+                        coverage=(msgspec.structs.replace(checkpoint.coverage[0], owner=owner),),
+                        lifecycle_partition=required_lifecycle,
+                    ),
+                )
+                starter = msgspec.json.decode(bytes(contract.cross_boundary_starter))
+                select_structural_variant(
+                    starter,
+                    choices["architecture-impact"],
+                    "$.checkpoint.architecture_impact",
+                    "update-required",
+                )
+                select_structural_variant(
+                    starter,
+                    choices["authorization-basis"],
+                    "$.checkpoint.contracts[*].authorization_basis",
+                    "accepted-scope",
+                )
+                select_structural_variant(
+                    starter,
+                    choices["authorization-basis"],
+                    "$.checkpoint.verification[*].authorization_basis",
+                    "repository-policy",
+                )
+                select_structural_variant(
+                    starter,
+                    choices["coverage-owner"],
+                    "$.checkpoint.coverage[*].owner",
+                    owner_selector,
+                )
+                select_structural_variant(
+                    starter,
+                    choices["lifecycle-partition"],
+                    "$.checkpoint.lifecycle_partition",
+                    "required",
+                )
+                completed_payload = msgspec.json.decode(msgspec.json.encode(completed))
+                decoded = decode_work_brief(msgspec.json.encode(complete_starter(starter, completed_payload)))
+                self.assertEqual(completed, decoded)
 
     def test_contract_states_every_relational_rule_needed_to_complete_a_starter(self) -> None:
         contract = describe_work_brief_contract()

@@ -251,20 +251,25 @@ def _roles_and_authority(
 ) -> tuple[tuple[str, ...], str]:
     if command_type in (
         cli_commands.AttemptTransitionCommand,
-        cli_commands.AttemptAcquireCommand,
         cli_commands.AttemptRenewCommand,
         cli_commands.AttemptReleaseCommand,
     ):
         return ("worker",), "attempt-lease"
+    if command_type is cli_commands.AttemptAcquireCommand:
+        return ("worker",), "direct-attempt-claim-with-task-host-attribution"
     if command_type in (
         cli_commands.PreparationTransitionCommand,
-        cli_commands.PreparationStartCommand,
-        cli_commands.PreparationAcquireCommand,
-        cli_commands.PreparationTransferCommand,
         cli_commands.PreparationRenewCommand,
         cli_commands.PreparationReleaseCommand,
     ):
         return ("preparer",), "preparation-lease"
+    if command_type in (
+        cli_commands.PreparationStartCommand,
+        cli_commands.PreparationAcquireCommand,
+    ):
+        return ("preparer",), "direct-preparation-claim-with-task-host-attribution"
+    if command_type is cli_commands.PreparationTransferCommand:
+        return ("preparer",), "inactive-preparation-claim-with-task-host-attribution"
     if command_type is cli_commands.LeasedActionsCommand:
         return ("worker", "preparer"), "selected-lease"
     if command_type is cli_commands.ActionsCommand:
@@ -287,12 +292,13 @@ def _roles_and_authority(
     return ("observer",), "none"
 
 
-def _subject_and_precondition(
+def _subject_and_precondition(  # noqa: C901, PLR0912 - exhaustive installed precondition owner
     operation_id: str,
     command_type: type[cli_commands.CliCommand],
 ) -> tuple[str, str]:
+    if command_type is cli_commands.AttemptAcquireCommand:
+        return "attempt", "active-attempt-with-no-live-lease"
     if command_type in (
-        cli_commands.AttemptAcquireCommand,
         cli_commands.AttemptRenewCommand,
         cli_commands.AttemptReleaseCommand,
         cli_commands.AttemptRevokeCommand,
@@ -301,10 +307,11 @@ def _subject_and_precondition(
         cli_commands.ReviewJobCommand,
     ):
         return "attempt", "attempt-exists"
+    if command_type in (cli_commands.PreparationStartCommand, cli_commands.PreparationAcquireCommand):
+        return "item", "eligible-ready-item"
+    if command_type is cli_commands.PreparationTransferCommand:
+        return "item", "eligible-ready-item-with-inactive-preparation-claim"
     if command_type in (
-        cli_commands.PreparationStartCommand,
-        cli_commands.PreparationAcquireCommand,
-        cli_commands.PreparationTransferCommand,
         cli_commands.PreparationRenewCommand,
         cli_commands.PreparationReleaseCommand,
         cli_commands.PreparationRevokeCommand,
@@ -374,7 +381,35 @@ def _artifact_schema(command_type: type[cli_commands.CliCommand]) -> msgspec.Raw
     return msgspec.Raw(msgspec.json.encode(msgspec.json.schema(model), order="sorted"))
 
 
-def _success_postcondition(mutation_class: MutationClass) -> str:
+def _success_postcondition(
+    command_type: type[cli_commands.CliCommand],
+    mutation_class: MutationClass,
+) -> str:
+    if command_type is cli_commands.InitializeCommand:
+        return "Return work_root, resumed state, and any optional next guidance."
+    if command_type is cli_commands.PreparationStartCommand:
+        return (
+            "Commit the selected definition claim and return item_id, definition_revision, definition_digest, "
+            "lease_id, generation, holder, timing, and status."
+        )
+    if command_type in (
+        cli_commands.PreparationAcquireCommand,
+        cli_commands.PreparationTransferCommand,
+        cli_commands.PreparationRenewCommand,
+        cli_commands.PreparationReleaseCommand,
+        cli_commands.PreparationRevokeCommand,
+    ):
+        return (
+            "Commit the authority change and return item_id, definition identity, lease_id, generation, holder, "
+            "timing, and status."
+        )
+    if command_type in (
+        cli_commands.AttemptAcquireCommand,
+        cli_commands.AttemptRenewCommand,
+        cli_commands.AttemptReleaseCommand,
+        cli_commands.AttemptRevokeCommand,
+    ):
+        return "Commit the authority change and return attempt_id, lease_id, generation, holder, timing, and status."
     match mutation_class:
         case "read-only":
             return "Return current output without changing authoritative or replaceable state."
@@ -439,7 +474,7 @@ def _operation_contract(variant: cli_parser.InstalledCommandVariant) -> Operatio
         work_brief_contract.describe_work_brief_contract()
         if variant.command_type is cli_commands.BriefPublishCommand
         else None,
-        _success_postcondition(mutation_class),
+        _success_postcondition(variant.command_type, mutation_class),
         _retry_semantics(variant.operation_id, mutation_class),
     )
 

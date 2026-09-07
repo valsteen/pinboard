@@ -84,9 +84,9 @@ DIAGRAM = Diagram(
         "A document-anatomy view of the canonical work brief. Artifact identity and accepted-scope identity anchor the "
         "whole-work definition. A cross-boundary checkpoint then names its boundary and outcome before expanding into "
         "acceptance criteria, architecture impact, reviewed authorities, contracts, coverage, lifecycle distinctions, "
-        "verification, and deferrals. Static discovery provides complete unresolved starters without choosing their "
-        "meaning. Humans and language models interpret those named relationships, while Pinboard code validates the "
-        "completed envelope and stable artifact identity."
+        "verification, and deferrals. Static discovery provides complete unresolved starters plus exact templates for "
+        "every structural choice without choosing their meaning. Humans and language models select and interpret those "
+        "named relationships, while Pinboard code validates the completed envelope and stable artifact identity."
     ),
     width=1200,
     height=1040,
@@ -113,7 +113,7 @@ DIAGRAM = Diagram(
             "brief",
             "pinboard-work-brief/v2",
             "One accepted artifact",
-            ("unresolved starter → completed brief",),
+            ("starter → structural choices → completed brief",),
             ("WorkBriefContract · WorkBrief",),
             400,
             70,
@@ -271,7 +271,7 @@ DIAGRAM = Diagram(
             "validation",
             "Pinboard tool + code responsibility",
             "Guide and verify the envelope",
-            ("starter · schema · decode · cross-check",),
+            ("starter · variants · schema · decode",),
             ("canonicalize · bind bytes",),
             615,
             900,

@@ -3,6 +3,7 @@ from datetime import datetime
 
 from pinboard.application import stored_state
 from pinboard.application.actions import discover_actions
+from pinboard.application.artifact_publication import publish_accepted_artifact
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.dispatch_models import (
     DispatchArtifactPort,
@@ -170,71 +171,51 @@ def publish_dispatch_review(
         artifacts.verify(existing)
         if artifacts.path(existing).read_bytes() == candidate:
             return AcceptedDispatchReview(existing, None)
-        rejected = artifacts.publish(
-            NewArtifact(
-                work_models.ArtifactKind.EVIDENCE,
-                f"{key}-rejected-{review_id}",
-                1,
-                ".json",
-                candidate,
-            )
-        )
-        rejected_acceptance = store.accept_artifact_reference(
-            artifacts.work_root,
-            rejected,
+        rejected_acceptance = publish_accepted_artifact(
+            store,
+            artifacts,
+            NewArtifact(work_models.ArtifactKind.EVIDENCE, f"{key}-rejected-{review_id}", 1, ".json", candidate),
             accepted_at,
         )
         if isinstance(rejected_acceptance, DecisionFailure):
             return DispatchFailure(
                 DispatchRejectionCode.STALE_ACTION,
                 rejected_acceptance.message,
-                FailureDetails(
-                    observed=(FailureFact("published_artifact_selector", rejected.selector),),
-                    mismatches=(),
-                    retry=RetryDisposition.DO_NOT_RETRY,
-                    effect=EffectDisposition.COMMITTED,
-                    changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
-                    alternatives=(),
-                ),
+                rejected_acceptance.details,
             )
+        rejected = rejected_acceptance.reference
         return DispatchFailure(
             DispatchRejectionCode.REVIEW_COLLISION,
             f"Ready review already differs; later evidence is preserved at '{rejected.selector}'.",
             FailureDetails(
                 observed=(
                     FailureFact("published_artifact_selector", rejected.selector),
-                    FailureFact("accepted_revision", rejected_acceptance.accepted_revision),
+                    FailureFact("accepted_revision", rejected.accepted_revision),
                 ),
                 mismatches=(),
                 retry=RetryDisposition.DO_NOT_RETRY,
                 effect=EffectDisposition.COMMITTED,
                 changed_surfaces=(
-                    ChangedSurface.IMMUTABLE_ARTIFACT,
+                    *((ChangedSurface.IMMUTABLE_ARTIFACT,) if rejected_acceptance.artifact_created else ()),
                     ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE,
                     ChangedSurface.LEDGER,
                 ),
                 alternatives=(),
             ),
         )
-    published = artifacts.publish(NewArtifact(work_models.ArtifactKind.EVIDENCE, key, 1, ".json", candidate))
-    accepted = store.accept_artifact_reference(
-        artifacts.work_root,
-        published,
+    accepted_publication = publish_accepted_artifact(
+        store,
+        artifacts,
+        NewArtifact(work_models.ArtifactKind.EVIDENCE, key, 1, ".json", candidate),
         accepted_at,
     )
-    if isinstance(accepted, DecisionFailure):
+    if isinstance(accepted_publication, DecisionFailure):
         return DispatchFailure(
             DispatchRejectionCode.STALE_ACTION,
-            accepted.message,
-            FailureDetails(
-                observed=(FailureFact("published_artifact_selector", published.selector),),
-                mismatches=(),
-                retry=RetryDisposition.DO_NOT_RETRY,
-                effect=EffectDisposition.COMMITTED,
-                changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
-                alternatives=(),
-            ),
+            accepted_publication.message,
+            accepted_publication.details,
         )
+    accepted = accepted_publication.reference
     return AcceptedDispatchReview(accepted, accepted.accepted_revision)
 
 

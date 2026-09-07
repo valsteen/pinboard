@@ -12,14 +12,28 @@ class WorkBriefRelationalConstraint(msgspec.Struct, frozen=True, forbid_unknown_
     rule: work_brief_models.NonEmptyText
 
 
+class WorkBriefStructuralVariant(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    selector: work_brief_models.KebabId
+    template: msgspec.Raw
+
+
+class WorkBriefStructuralChoice(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    choice_id: work_brief_models.KebabId
+    selection_paths: tuple[work_brief_models.NonEmptyLine, ...]
+    variants: tuple[WorkBriefStructuralVariant, ...]
+
+
 class WorkBriefContract(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-work-brief-contract/v1"]
     completion_rule: work_brief_models.NonEmptyText
+    structural_selection_rule: work_brief_models.NonEmptyText
     canonicalization_rule: work_brief_models.NonEmptyText
     fact_validation_boundary: work_brief_models.NonEmptyText
     payload_schema: msgspec.Raw
     local_starter: msgspec.Raw
     cross_boundary_starter: msgspec.Raw
+    local_structural_choices: tuple[WorkBriefStructuralChoice, ...]
+    cross_boundary_structural_choices: tuple[WorkBriefStructuralChoice, ...]
     relational_constraints: tuple[WorkBriefRelationalConstraint, ...]
 
 
@@ -27,9 +41,11 @@ class WorkBriefStarterContract(msgspec.Struct, frozen=True, forbid_unknown_field
     schema: Literal["pinboard-work-brief-starter/v1"]
     boundary: Literal["local", "cross-boundary"]
     completion_rule: work_brief_models.NonEmptyText
+    structural_selection_rule: work_brief_models.NonEmptyText
     canonicalization_rule: work_brief_models.NonEmptyText
     fact_validation_boundary: work_brief_models.NonEmptyText
     starter: msgspec.Raw
+    structural_choices: tuple[WorkBriefStructuralChoice, ...]
     relational_constraints: tuple[WorkBriefRelationalConstraint, ...]
 
 
@@ -48,6 +64,28 @@ class _UnresolvedNoArchitectureImpact(
     reason: None
 
 
+class _UnresolvedReadOnlyArchitecture(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="read-only",
+    tag_field="kind",
+):
+    selector: None
+    reason: None
+
+
+class _UnresolvedUpdateRequiredArchitecture(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="update-required",
+    tag_field="kind",
+):
+    selector: None
+    reason: None
+
+
 class _UnresolvedAcceptedScopeAuthorization(
     msgspec.Struct,
     frozen=True,
@@ -57,6 +95,39 @@ class _UnresolvedAcceptedScopeAuthorization(
 ):
     item_id: None
     scope_revision: None
+
+
+class _UnresolvedAuthorityAuthorization(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="authority",
+    tag_field="kind",
+):
+    authority_id: None
+    family: None
+
+
+class _UnresolvedRepositoryPolicyAuthorization(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="repository-policy",
+    tag_field="kind",
+):
+    authority_id: None
+    family: None
+
+
+class _UnresolvedExistingConsumerAuthorization(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="existing-consumer",
+    tag_field="kind",
+):
+    authority_id: None
+    family: None
 
 
 class _UnresolvedAcceptanceCriterion(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -96,6 +167,36 @@ class _UnresolvedContractCoverageOwner(
     contract_invariant: None
 
 
+class _UnresolvedAcceptanceCoverageOwner(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="acceptance",
+    tag_field="disposition",
+):
+    criterion: None
+
+
+class _UnresolvedDeferredCoverageOwner(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="deferred",
+    tag_field="disposition",
+):
+    deferral_id: None
+
+
+class _UnresolvedNotApplicableCoverageOwner(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="not-applicable",
+    tag_field="disposition",
+):
+    reason: None
+
+
 class _UnresolvedCoverageRecord(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     authority_id: None
     family: None
@@ -113,6 +214,25 @@ class _UnresolvedNoLifecyclePartition(
     tag_field="kind",
 ):
     reason: None
+
+
+class _UnresolvedLifecycleRecord(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    operation: None
+    source_state: None
+    authority: None
+    evidence: None
+    effects: None
+    illegal_sibling: None
+
+
+class _UnresolvedRequiredLifecyclePartition(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="required",
+    tag_field="kind",
+):
+    operations: tuple[_UnresolvedLifecycleRecord, ...]
 
 
 class _UnresolvedLocalCheckpoint(
@@ -247,6 +367,83 @@ def _cross_boundary_starter() -> _UnresolvedWorkBrief:
     return msgspec.structs.replace(local, checkpoint=checkpoint)
 
 
+def _raw[T](value: T) -> msgspec.Raw:
+    return msgspec.Raw(msgspec.json.encode(value, order="sorted"))
+
+
+_ARCHITECTURE_CHOICE = WorkBriefStructuralChoice(
+    "architecture-impact",
+    ("$.checkpoint.architecture_impact",),
+    (
+        WorkBriefStructuralVariant("none", _raw(_UnresolvedNoArchitectureImpact(None))),
+        WorkBriefStructuralVariant("read-only", _raw(_UnresolvedReadOnlyArchitecture(None, None))),
+        WorkBriefStructuralVariant(
+            "update-required",
+            _raw(_UnresolvedUpdateRequiredArchitecture(None, None)),
+        ),
+    ),
+)
+
+_AUTHORIZATION_CHOICE = WorkBriefStructuralChoice(
+    "authorization-basis",
+    (
+        "$.checkpoint.contracts[*].authorization_basis",
+        "$.checkpoint.verification[*].authorization_basis",
+    ),
+    (
+        WorkBriefStructuralVariant(
+            "accepted-scope",
+            _raw(_UnresolvedAcceptedScopeAuthorization(None, None)),
+        ),
+        WorkBriefStructuralVariant("authority", _raw(_UnresolvedAuthorityAuthorization(None, None))),
+        WorkBriefStructuralVariant(
+            "repository-policy",
+            _raw(_UnresolvedRepositoryPolicyAuthorization(None, None)),
+        ),
+        WorkBriefStructuralVariant(
+            "existing-consumer",
+            _raw(_UnresolvedExistingConsumerAuthorization(None, None)),
+        ),
+    ),
+)
+
+_COVERAGE_OWNER_CHOICE = WorkBriefStructuralChoice(
+    "coverage-owner",
+    ("$.checkpoint.coverage[*].owner",),
+    (
+        WorkBriefStructuralVariant("contract", _raw(_UnresolvedContractCoverageOwner(None))),
+        WorkBriefStructuralVariant("acceptance", _raw(_UnresolvedAcceptanceCoverageOwner(None))),
+        WorkBriefStructuralVariant("deferred", _raw(_UnresolvedDeferredCoverageOwner(None))),
+        WorkBriefStructuralVariant(
+            "not-applicable",
+            _raw(_UnresolvedNotApplicableCoverageOwner(None)),
+        ),
+    ),
+)
+
+_LIFECYCLE_PARTITION_CHOICE = WorkBriefStructuralChoice(
+    "lifecycle-partition",
+    ("$.checkpoint.lifecycle_partition",),
+    (
+        WorkBriefStructuralVariant("not-applicable", _raw(_UnresolvedNoLifecyclePartition(None))),
+        WorkBriefStructuralVariant(
+            "required",
+            _raw(
+                _UnresolvedRequiredLifecyclePartition((_UnresolvedLifecycleRecord(None, None, None, None, None, None),))
+            ),
+        ),
+    ),
+)
+
+_LOCAL_STRUCTURAL_CHOICES = (_ARCHITECTURE_CHOICE,)
+_CROSS_BOUNDARY_STRUCTURAL_CHOICES = (
+    _ARCHITECTURE_CHOICE,
+    _AUTHORIZATION_CHOICE,
+    _COVERAGE_OWNER_CHOICE,
+    _LIFECYCLE_PARTITION_CHOICE,
+)
+
+
 _RELATIONAL_CONSTRAINTS = (
     WorkBriefRelationalConstraint(
         "accepted-scope-identity",
@@ -300,8 +497,14 @@ def describe_work_brief_contract() -> WorkBriefContract:
     return WorkBriefContract(
         schema="pinboard-work-brief-contract/v1",
         completion_rule=(
-            "Every null is an unresolved required value. Fill it from accepted scope, reviewed authorities, and observed "
-            "production consumers before publication; never infer missing facts. Empty optional collections may remain empty."
+            "After selecting every applicable structural variant, every null is an unresolved required value. Fill it "
+            "from accepted scope, reviewed authorities, and observed production consumers before publication; never "
+            "infer missing facts. Empty optional collections may remain empty."
+        ),
+        structural_selection_rule=(
+            "For every applicable selection path, choose exactly one returned variant and replace the starter value at "
+            "that path with its complete template before filling nulls. A starter's existing tagged value is only the "
+            "first valid option, not a fixed semantic choice. Preserve all fields outside those explicit replacements."
         ),
         canonicalization_rule=(
             "Encode the completed typed brief as JSON with lexicographically sorted object keys, no insignificant "
@@ -317,6 +520,8 @@ def describe_work_brief_contract() -> WorkBriefContract:
         ),
         local_starter=msgspec.Raw(msgspec.json.encode(_local_starter(), order="sorted")),
         cross_boundary_starter=msgspec.Raw(msgspec.json.encode(_cross_boundary_starter(), order="sorted")),
+        local_structural_choices=_LOCAL_STRUCTURAL_CHOICES,
+        cross_boundary_structural_choices=_CROSS_BOUNDARY_STRUCTURAL_CHOICES,
         relational_constraints=_RELATIONAL_CONSTRAINTS,
     )
 
@@ -325,12 +530,17 @@ def describe_work_brief_starter(boundary: Literal["local", "cross-boundary"]) ->
     """Return one complete unresolved starter without the much larger validation schema."""
     contract = describe_work_brief_contract()
     starter = contract.local_starter if boundary == "local" else contract.cross_boundary_starter
+    structural_choices = (
+        contract.local_structural_choices if boundary == "local" else contract.cross_boundary_structural_choices
+    )
     return WorkBriefStarterContract(
         schema="pinboard-work-brief-starter/v1",
         boundary=boundary,
         completion_rule=contract.completion_rule,
+        structural_selection_rule=contract.structural_selection_rule,
         canonicalization_rule=contract.canonicalization_rule,
         fact_validation_boundary=contract.fact_validation_boundary,
         starter=starter,
+        structural_choices=structural_choices,
         relational_constraints=contract.relational_constraints,
     )

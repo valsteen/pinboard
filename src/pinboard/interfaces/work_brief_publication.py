@@ -62,18 +62,19 @@ def publish_brief(
     )
     if isinstance(accepted_reference, DecisionFailure):
         return CommandFailure(accepted_reference.code, accepted_reference.message, accepted_reference.details)
+    reference = accepted_reference.reference
     rebuilt_views = work_views.rebuild(roots, store, datetime.now(UTC))
     if rebuilt_views.warning is not None:
         print(rebuilt_views.warning.message, rebuilt_views.warning.repair, sep="\n", file=sys.stderr)
     publication_view = BriefPublicationView(
-        int(accepted_reference.artifact_ref_id),
-        accepted_reference.kind.value,
-        accepted_reference.key,
-        accepted_reference.revision,
-        accepted_reference.selector,
-        accepted_reference.content_sha256,
-        accepted_reference.size_bytes,
-        accepted_reference.accepted_revision,
+        int(reference.artifact_ref_id),
+        reference.kind.value,
+        reference.key,
+        reference.revision,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+        reference.accepted_revision,
     )
     if command.json:
         write_json(publication_view)

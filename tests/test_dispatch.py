@@ -15,6 +15,7 @@ from msgspec.structs import replace
 from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.application.actions import discover_actions
@@ -452,6 +453,68 @@ class DispatchTest(unittest.TestCase):
         self.assertTrue(
             any("rejected-later-review" in reference.key for reference in store.snapshot().artifact_references)
         )
+
+    def test_installed_dispatch_reports_new_ready_and_collision_artifacts_after_database_failure(self) -> None:
+        project, roots, store, value, action, environment = self.initialized()
+        environment_path = project / "environment.json"
+        environment_path.write_bytes(msgspec.json.encode(environment))
+        review_path = project / "review.json"
+        review_path.write_bytes(ready_review(value))
+        common = ("--project-root", str(project), "--work-root", str(roots.work_root))
+
+        def arguments(selected: decision_models.DispatchAction, review_id: str) -> tuple[str, ...]:
+            return (
+                *common,
+                "dispatch",
+                "--action-id",
+                str(decision_models.action_id(selected)),
+                "--expected-revision",
+                selected.capability.expected_revision,
+                "--task-id",
+                "project-task",
+                "--host-id",
+                "host-a",
+                "--checkpoint",
+                CHECKPOINT_ID,
+                "--environment",
+                str(environment_path),
+                "--brief-review",
+                str(review_path),
+                "--review-id",
+                review_id,
+                "--json",
+            )
+
+        database_failure = StorageError(StorageErrorCode.BUSY, "database failed", retryable=True)
+        with patch.object(SQLiteWorkStore, "accept_artifact_reference", side_effect=database_failure):
+            result, stdout, stderr = self.run_cli(*arguments(action(), "new-ready"))
+        self.assertEqual(12, result, stderr)
+        ready_failure = msgspec.json.decode(stdout.encode())
+        self.assertEqual("committed-effect", ready_failure["status"])
+        self.assertEqual(["immutable-artifact"], ready_failure["changed_surfaces"])
+        self.assertEqual("do-not-retry", ready_failure["retry"])
+
+        accepted = expect_dispatch_success(
+            prepare_dispatch(
+                store,
+                ArtifactRepository(roots),
+                project,
+                action(),
+                CHECKPOINT_ID,
+                environment,
+                supplied_review=SuppliedDispatchReview(ready_review(value), ReviewId("accepted-ready")),
+            )
+        )
+        self.assertIn(f"Checkpoint: {CHECKPOINT_ID}", accepted)
+        review_path.write_bytes(ready_review(value, result="Different complete result."))
+
+        with patch.object(SQLiteWorkStore, "accept_artifact_reference", side_effect=database_failure):
+            result, stdout, stderr = self.run_cli(*arguments(action(), "new-collision"))
+        self.assertEqual(12, result, stderr)
+        collision_failure = msgspec.json.decode(stdout.encode())
+        self.assertEqual("committed-effect", collision_failure["status"])
+        self.assertEqual(["immutable-artifact"], collision_failure["changed_surfaces"])
+        self.assertEqual("do-not-retry", collision_failure["retry"])
 
     def test_dispatch_rechecks_authority_after_an_unrelated_revision(self) -> None:
         project, roots, store, value, action, environment = self.initialized()

@@ -110,6 +110,53 @@ class ToolContractTest(unittest.TestCase):
             proposal_schema["$defs"]["FollowUpProposalRelation"]["properties"]["item"]["type"],
         )
 
+    def test_acquisition_and_initialization_contracts_name_actual_authority_and_receipts(self) -> None:
+        preparation_start = tool_contract.describe_operation("preparation/start", "default")
+        self.assertIsInstance(preparation_start, tool_contract.OperationContract)
+        assert isinstance(preparation_start, tool_contract.OperationContract)
+        self.assertEqual(
+            "direct-preparation-claim-with-task-host-attribution",
+            preparation_start.required_authority,
+        )
+        self.assertEqual("eligible-ready-item", preparation_start.lifecycle_precondition)
+        self.assertIn("definition_revision", preparation_start.success_postcondition)
+        self.assertIn("definition_digest", preparation_start.success_postcondition)
+        self.assertIn("lease_id", preparation_start.success_postcondition)
+        self.assertIn("generation", preparation_start.success_postcondition)
+
+        preparation_acquire = tool_contract.describe_operation("preparation/acquire", "default")
+        self.assertIsInstance(preparation_acquire, tool_contract.OperationContract)
+        assert isinstance(preparation_acquire, tool_contract.OperationContract)
+        self.assertEqual(
+            "direct-preparation-claim-with-task-host-attribution",
+            preparation_acquire.required_authority,
+        )
+
+        preparation_transfer = tool_contract.describe_operation("preparation/transfer", "default")
+        self.assertIsInstance(preparation_transfer, tool_contract.OperationContract)
+        assert isinstance(preparation_transfer, tool_contract.OperationContract)
+        self.assertEqual(
+            "inactive-preparation-claim-with-task-host-attribution",
+            preparation_transfer.required_authority,
+        )
+
+        attempt_acquire = tool_contract.describe_operation("attempt/acquire", "default")
+        self.assertIsInstance(attempt_acquire, tool_contract.OperationContract)
+        assert isinstance(attempt_acquire, tool_contract.OperationContract)
+        self.assertEqual(
+            "direct-attempt-claim-with-task-host-attribution",
+            attempt_acquire.required_authority,
+        )
+        self.assertIn("lease_id", attempt_acquire.success_postcondition)
+        self.assertIn("generation", attempt_acquire.success_postcondition)
+
+        initialized = tool_contract.describe_operation("init", "default")
+        self.assertIsInstance(initialized, tool_contract.OperationContract)
+        assert isinstance(initialized, tool_contract.OperationContract)
+        self.assertIn("work_root", initialized.success_postcondition)
+        self.assertIn("resumed", initialized.success_postcondition)
+        self.assertNotIn("committed revision", initialized.success_postcondition)
+
     def test_action_contract_names_the_execution_route_and_exact_authority(self) -> None:
         transition = tool_contract.describe_action(decision_models.ActionKind.SUBMIT_REVIEW)
         self.assertEqual("transition", transition.execution_route)

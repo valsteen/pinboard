@@ -13,6 +13,7 @@ from msgspec.structs import replace
 
 from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
 from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.artifact_publication import validate_transition_work_brief
 from pinboard.application.artifacts import NewArtifact
@@ -499,17 +500,52 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         candidate = project / "brief.json"
         candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
 
-        with (
-            patch.object(SQLiteWorkStore, "accept_artifact_reference", side_effect=RuntimeError("database failed")),
-            self.assertRaises(RuntimeError),
-        ):
-            self.run_cli(*common, "brief", "publish", "--file", str(candidate))
+        database_failure = StorageError(StorageErrorCode.BUSY, "database failed", retryable=True)
+        with patch.object(SQLiteWorkStore, "accept_artifact_reference", side_effect=database_failure):
+            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
+
+        self.assertEqual(12, result, stderr)
+        committed = msgspec.json.decode(stdout.encode())
+        self.assertEqual("committed-effect", committed["status"])
+        self.assertTrue(committed["state_changed"])
+        self.assertEqual(["immutable-artifact"], committed["changed_surfaces"])
+        self.assertEqual("do-not-retry", committed["retry"])
 
         orphan = work / "artifacts" / "briefs" / example_work_brief().attempt_id / "1.json"
         self.assertEqual(canonical_work_brief_bytes(example_work_brief()), orphan.read_bytes())
+
+        with patch.object(SQLiteWorkStore, "accept_artifact_reference", side_effect=database_failure):
+            retry_result, retry_stdout, retry_stderr = self.run_cli(
+                *common, "brief", "publish", "--file", str(candidate), "--json"
+            )
+        self.assertEqual(12, retry_result, retry_stderr)
+        unchanged = msgspec.json.decode(retry_stdout.encode())
+        self.assertEqual("rejected", unchanged["status"])
+        self.assertFalse(unchanged["state_changed"])
+        self.assertEqual([], unchanged["changed_surfaces"])
+        self.assertEqual("retry-same-input", unchanged["retry"])
+
         result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate))
         self.assertEqual(0, result, stderr)
         self.assertIn("BRIEF_PUBLISHED", stdout)
+
+    def test_returned_publication_rejection_reports_new_immutable_artifact(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        work = project / ".codex" / "work"
+        common = ("--project-root", str(project), "--work-root", str(work))
+        self.assertEqual(0, self.run_cli(*common, "init")[0])
+        candidate = project / "brief.json"
+        candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
+        rejected = DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "acceptance changed", None)
+
+        with patch.object(SQLiteWorkStore, "accept_artifact_reference", return_value=rejected):
+            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
+
+        self.assertEqual(11, result, stderr)
+        failure = msgspec.json.decode(stdout.encode())
+        self.assertEqual("committed-effect", failure["status"])
+        self.assertEqual(["immutable-artifact"], failure["changed_surfaces"])
+        self.assertEqual("do-not-retry", failure["retry"])
 
 
 if __name__ == "__main__":

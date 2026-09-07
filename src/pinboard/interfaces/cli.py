@@ -13,7 +13,15 @@ from typing import assert_never
 
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, RootError
 from pinboard.adapters.sqlite.errors import StorageError
-from pinboard.domain.errors import DecisionFailureCode, EffectDisposition, FailureDetails, RetryDisposition
+from pinboard.domain.errors import (
+    ArtifactAcceptanceAfterPublicationError,
+    ChangedSurface,
+    DecisionFailureCode,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    RetryDisposition,
+)
 from pinboard.interfaces import (
     attempt_authority,
     brief_source_commands,
@@ -168,7 +176,7 @@ def _present_expected_result(result: CliResult[int], operation: str, *, json_req
     return exit_code
 
 
-def _run_invocation(
+def _run_invocation(  # noqa: PLR0912 - one exhaustive process-boundary failure router
     invocation: cli_commands.CliInvocation,
     operation: str,
     *,
@@ -181,6 +189,26 @@ def _run_invocation(
             cli_output.write_operation_rejection(operation, error.code, error.message, error.details, ())
         else:
             print(str(error), file=sys.stderr)
+        return 12
+    except ArtifactAcceptanceAfterPublicationError as error:
+        cause = error.cause
+        code = (
+            cause.code.value
+            if isinstance(cause, (StorageError, ArtifactError, FileIOError))
+            else "ARTIFACT_ACCEPTANCE_FAILED"
+        )
+        details = FailureDetails(
+            observed=(FailureFact("published_artifact_selector", error.selector),),
+            mismatches=(),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.COMMITTED,
+            changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+            alternatives=(),
+        )
+        if json_requested:
+            cli_output.write_operation_rejection(operation, code, str(cause), details, ())
+        else:
+            print(f"{cause}; immutable artifact published at '{error.selector}'", file=sys.stderr)
         return 12
     except (RootError, OSError) as error:
         if json_requested:

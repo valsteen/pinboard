@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
@@ -7,6 +8,8 @@ from pinboard.application.artifacts import ArtifactRef, NewArtifact, WorkBriefId
 from pinboard.application.ports import WorkStore
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
+    ArtifactAcceptanceAfterPublicationError,
+    ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
     DecisionResult,
@@ -24,6 +27,8 @@ class ArtifactPublisher(Protocol):
 
     def publish(self, artifact: NewArtifact) -> ArtifactRef: ...
 
+    def revision_exists(self, artifact: NewArtifact) -> bool: ...
+
 
 class ArtifactReader(Protocol):
     def verify(self, reference: stored_state.ArtifactReference) -> None: ...
@@ -31,16 +36,55 @@ class ArtifactReader(Protocol):
     def path(self, reference: stored_state.ArtifactReference) -> Path: ...
 
 
+@dataclass(frozen=True, slots=True)
+class AcceptedArtifactPublication:
+    reference: stored_state.ArtifactReference
+    artifact_created: bool
+
+
+def _committed_artifact_details(
+    reference: ArtifactRef,
+    prior: FailureDetails | None,
+) -> FailureDetails:
+    return FailureDetails(
+        observed=(
+            FailureFact("published_artifact_selector", reference.selector),
+            *(() if prior is None else prior.observed),
+        ),
+        mismatches=() if prior is None else prior.mismatches,
+        retry=RetryDisposition.DO_NOT_RETRY,
+        effect=EffectDisposition.COMMITTED,
+        changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+        alternatives=(),
+    )
+
+
 def publish_accepted_artifact(
     store: WorkStore,
     publisher: ArtifactPublisher,
     artifact: NewArtifact,
     accepted_at: datetime,
-) -> DecisionResult[stored_state.ArtifactReference]:
+) -> DecisionResult[AcceptedArtifactPublication]:
     """Publish immutable bytes, then accept their verified reference in SQLite."""
 
+    artifact_existed = publisher.revision_exists(artifact)
     published_reference = publisher.publish(artifact)
-    return store.accept_artifact_reference(publisher.work_root, published_reference, accepted_at)
+    artifact_created = not artifact_existed
+    try:
+        accepted = store.accept_artifact_reference(publisher.work_root, published_reference, accepted_at)
+    except Exception as error:
+        if artifact_created:
+            raise ArtifactAcceptanceAfterPublicationError(published_reference.selector, error) from error
+        raise
+    if isinstance(accepted, DecisionFailure):
+        if artifact_created:
+            return DecisionFailure(
+                accepted.code,
+                accepted.message,
+                _committed_artifact_details(published_reference, accepted.details),
+            )
+        return accepted
+    return AcceptedArtifactPublication(accepted, artifact_created)
 
 
 def validate_transition_work_brief(  # noqa: C901, PLR0912

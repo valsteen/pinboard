@@ -117,6 +117,55 @@ def read_item_definition(connection: sqlite3.Connection, item_id: ItemId) -> que
     )
 
 
+def read_item_status(connection: sqlite3.Connection, item_id: ItemId) -> query_models.ItemStatusLifecycleFacts:
+    project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_revision_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
+    item_row = connection.execute(
+        """
+        SELECT item_id, state, timing, outcome_evidence, next_action, source, notes, queue_position
+        FROM work_items
+        WHERE item_id = ?
+        """,
+        (item_id,),
+    ).fetchone()
+    if item_row is None:
+        return query_models.ItemStatusLifecycleFacts(project_revision, None, None, ())
+    item = decode_row(item_row, query_models.ItemStatusItemFacts)
+    definition_row = connection.execute(
+        """
+        SELECT item_id, definition_revision AS revision, definition_digest AS digest,
+               definition_json, reason, source_task_id, before_digest, after_digest,
+               accepted_project_revision, accepted_at
+        FROM work_item_definition_revisions
+        WHERE item_id = ?
+        ORDER BY definition_revision DESC
+        LIMIT 1
+        """,
+        (item_id,),
+    ).fetchone()
+    definition = None if definition_row is None else _definition_revision(definition_row)
+    attempts = tuple(
+        decode_row(row, query_models.ItemStatusAttemptFacts)
+        for row in connection.execute(
+            """
+            SELECT attempt_id, state, candidate_revision
+            FROM attempts
+            WHERE item_id = ?
+            ORDER BY attempt_id
+            """,
+            (item_id,),
+        ).fetchall()
+    )
+    return query_models.ItemStatusLifecycleFacts(
+        project_revision,
+        item,
+        None if definition is None else definition.definition.title,
+        attempts,
+    )
+
+
 def read_item_definition_history(
     connection: sqlite3.Connection,
     item_id: ItemId,

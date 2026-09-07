@@ -52,3 +52,7 @@ class ItemDefinitionReader(Protocol):
     def read_item_definition_history(
         self, item_id: ItemId, *, limit: int, before_revision: int | None
     ) -> query_models.ItemDefinitionHistoryFacts: ...
+
+
+class ItemStatusReader(Protocol):
+    def read_item_status(self, item_id: ItemId) -> query_models.ItemStatusFacts: ...

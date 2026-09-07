@@ -1,10 +1,10 @@
--- SQLite authority schema version 4.
+-- SQLite authority schema version 5.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE project_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     application TEXT NOT NULL CHECK (application = 'pinboard'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 4),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 5),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
     created_at TEXT NOT NULL,
@@ -106,6 +106,9 @@ CREATE TABLE attempts (
 CREATE UNIQUE INDEX one_live_attempt_per_item
 ON attempts(item_id)
 WHERE state != 'done';
+
+CREATE INDEX attempts_by_item
+ON attempts(item_id, attempt_id);
 
 CREATE TABLE proposals (
     proposal_id TEXT PRIMARY KEY,

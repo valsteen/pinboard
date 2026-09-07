@@ -41,6 +41,7 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     insert_attempt,
     insert_definition_revision,
+    read_item_status,
     rebind_attempt,
     replace_dependencies,
     set_attempt_state,
@@ -678,6 +679,22 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return select_item_definition(connection, item_id)
+        finally:
+            connection.close()
+
+    def read_item_status(self, item_id: ItemId) -> query_models.ItemStatusFacts:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                lifecycle = read_item_status(connection, item_id)
+                preparation = None if lifecycle.item is None else read_preparation_authority_status(connection, item_id)
+                return query_models.ItemStatusFacts(
+                    lifecycle.project_revision,
+                    lifecycle.item,
+                    lifecycle.definition_title,
+                    lifecycle.attempts,
+                    preparation,
+                )
         finally:
             connection.close()
 

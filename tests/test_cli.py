@@ -1050,9 +1050,9 @@ class CliTest(unittest.TestCase):
         self.assertFalse((work / "authority.json").exists())
         self.assertFalse((work / "queue.md").exists())
         self.assertTrue(self.run_json_cli(*common, "validate")["valid"])
-        self.assertEqual("sqlite-v4", self.run_json_cli(*common, "status")["authority"])
+        self.assertEqual("sqlite-v5", self.run_json_cli(*common, "status")["authority"])
         overview = self.run_json_cli(*common, "overview")
-        self.assertEqual("sqlite-v4", overview["authority"])
+        self.assertEqual("sqlite-v5", overview["authority"])
         self.assertEqual("pinboard-overview/v3", overview["schema"])
         actions = self.run_json_cli(*common, "actions", "--role", "observer")["actions"]
         self.assertIsInstance(actions, list)
@@ -2052,7 +2052,7 @@ class CliTest(unittest.TestCase):
         common = ("--project-root", str(project), "--work-root", str(work))
 
         status = self.run_json_cli(*common, "status")
-        self.assertEqual("sqlite-v4", status["authority"])
+        self.assertEqual("sqlite-v5", status["authority"])
         self.assertEqual(2, status["intake_item_count"])
         status_result, status_stdout, status_stderr = self.run_cli(*common, "status")
         self.assertEqual(0, status_result, status_stderr)
@@ -3859,7 +3859,6 @@ Not launchable:
 
         for arguments in (
             ("overview", "--json"),
-            ("item", "status", "--item-id", "work-a", "--json"),
             ("actions", "--role", "observer", "--json"),
             ("parallel", "preview", "--json"),
         ):
@@ -3876,6 +3875,7 @@ Not launchable:
             self.assertEqual(1, calls)
 
         for arguments in (
+            ("item", "status", "--item-id", "work-a", "--json"),
             ("item", "definition", "--item-id", "work-a", "--json"),
             ("item", "definition-history", "--item-id", "work-a", "--json"),
         ):
@@ -3995,7 +3995,7 @@ Not launchable:
                 main(arguments)
             self.assertEqual(0, raised.exception.code)
 
-    def test_item_status_emits_exact_json_and_text_from_one_snapshot(self) -> None:
+    def test_item_status_emits_exact_json_and_text_without_a_complete_snapshot(self) -> None:
         state = complete_sqlite_state()
         active = state.lifecycle.attempts[0]
         done_item = replace(
@@ -4026,22 +4026,12 @@ Not launchable:
         )
         project, work, _store = self.initialized_state(state)
         common = ("--project-root", str(project), "--work-root", str(work))
-        original_snapshot = SQLiteWorkStore.snapshot
-        calls = 0
-
-        def counted(store: SQLiteWorkStore) -> stored_state.StoredWorkState:
-            nonlocal calls
-            calls += 1
-            return original_snapshot(store)
-
-        with patch.object(SQLiteWorkStore, "snapshot", counted):
+        with patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")):
             status = self.run_json_cli(*common, "item", "status", "--item-id", "work-b")
-
-        self.assertEqual(1, calls)
         self.assertEqual(
             {
                 "schema": "pinboard-item-status/v1",
-                "authority": "sqlite-v4",
+                "authority": "sqlite-v5",
                 "revision": "12",
                 "item_id": "work-b",
                 "label": "Work work-b",
@@ -4060,7 +4050,7 @@ Not launchable:
         self.assertEqual(
             {
                 "schema": "pinboard-item-status/v1",
-                "authority": "sqlite-v4",
+                "authority": "sqlite-v5",
                 "revision": "12",
                 "item_id": "work-a",
                 "label": "Work work-a",
@@ -4078,7 +4068,7 @@ Not launchable:
         )
         result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", "work-b")
         self.assertEqual(0, result, stderr)
-        self.assertIn("OK ITEM_STATUS item=work-b state=done revision=12 authority=sqlite-v4", stdout)
+        self.assertIn("OK ITEM_STATUS item=work-b state=done revision=12 authority=sqlite-v5", stdout)
         self.assertIn("queue_position=none", stdout)
         self.assertIn("outcome_evidence=accepted completion", stdout)
         self.assertIn("source=none notes=none", stdout)

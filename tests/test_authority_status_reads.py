@@ -276,6 +276,102 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
         self.assert_keyed_status_queries(work / "state.sqlite3", preparation_statements)
 
+    def test_installed_item_status_reads_only_selected_item_facts(self) -> None:
+        project, work, _store = self.initialized_state(self.state_with_preparation(unrelated_count=64))
+        common = ("--project-root", str(project), "--work-root", str(work))
+
+        with (
+            patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+            self.record_store_reads() as item_reads,
+        ):
+            result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", "work-c")
+
+        self.assertEqual(0, result, stderr)
+        self.assertIn("OK ITEM_STATUS item=work-c", stdout)
+        read_tables, statements = item_reads
+        self.assertEqual(
+            {
+                "attempts",
+                "preparation_lease_counters",
+                "preparation_lease_generations",
+                "preparation_leases",
+                "project_meta",
+                "work_item_definition_revisions",
+                "work_items",
+            },
+            read_tables,
+        )
+        self.assert_keyed_status_queries(work / "state.sqlite3", statements)
+
+    def test_item_status_rejects_selected_corruption_and_ignores_unrelated_corruption(self) -> None:
+        state = self.state_with_preparation(unrelated_count=1)
+        project, work, _store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        database = work / "state.sqlite3"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(
+                "UPDATE work_item_definition_revisions SET definition_json = ? WHERE item_id = ?",
+                (b"{}", "unrelated-preparation-0"),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", "work-c")
+        self.assertEqual(0, result, stderr)
+        self.assertIn("OK ITEM_STATUS item=work-c", stdout)
+        validation, validation_stdout, _validation_stderr = self.run_cli(*common, "validate")
+        self.assertEqual(10, validation)
+        self.assertIn("WORK_STATE_INVALID", validation_stdout)
+
+        selected_project, selected_work, _selected_store = self.initialized_state(state)
+        selected_connection = sqlite3.connect(selected_work / "state.sqlite3")
+        try:
+            selected_connection.execute(
+                "UPDATE work_item_definition_revisions SET definition_json = ? WHERE item_id = ?",
+                (b"{}", "work-c"),
+            )
+            selected_connection.commit()
+        finally:
+            selected_connection.close()
+        selected_result, _selected_stdout, selected_stderr = self.run_cli(
+            "--project-root",
+            str(selected_project),
+            "--work-root",
+            str(selected_work),
+            "item",
+            "status",
+            "--item-id",
+            "work-c",
+        )
+        self.assertEqual(12, selected_result)
+        self.assertIn("WORK_STATE_INVALID", selected_stderr)
+
+        authority_project, authority_work, _authority_store = self.initialized_state(state)
+        authority_connection = sqlite3.connect(authority_work / "state.sqlite3")
+        try:
+            authority_connection.execute("PRAGMA foreign_keys = OFF")
+            authority_connection.execute(
+                "DELETE FROM preparation_lease_generations WHERE item_id = ?",
+                ("work-c",),
+            )
+            authority_connection.commit()
+        finally:
+            authority_connection.close()
+        authority_result, _authority_stdout, authority_stderr = self.run_cli(
+            "--project-root",
+            str(authority_project),
+            "--work-root",
+            str(authority_work),
+            "item",
+            "status",
+            "--item-id",
+            "work-c",
+        )
+        self.assertEqual(12, authority_result)
+        self.assertIn("WORK_STATE_INVALID", authority_stderr)
+
     def test_installed_definition_reads_are_keyed_and_bounded_by_the_requested_page(self) -> None:
         project, work, _store = self.initialized_state(
             self.state_with_preparation(

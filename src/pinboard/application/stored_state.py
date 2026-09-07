@@ -82,7 +82,7 @@ def stored_close_outcome(value: work_models.CloseOutcome) -> StoredWorkItemState
 @dataclass(frozen=True, slots=True)
 class ProjectRecord:
     application: Literal["pinboard"]
-    schema_version: Literal[4]
+    schema_version: Literal[5]
     revision: int
     host_epoch: int
     created_at: datetime

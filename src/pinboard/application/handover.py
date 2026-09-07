@@ -18,7 +18,7 @@ class ContentEncoding(Enum):
 
 class HandoverProject(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     application: Literal["pinboard"]
-    schema_version: Literal[4]
+    schema_version: Literal[5]
     created_at: str
     updated_at: str
 
@@ -210,7 +210,7 @@ class HandoverArtifactContent(msgspec.Struct, frozen=True, forbid_unknown_fields
 
 class ProjectHandover(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-project-handover/v2"]
-    authority: Literal["sqlite-v4"]
+    authority: Literal["sqlite-v5"]
     revision: int
     project: HandoverProject
     work_items: tuple[HandoverWorkItem, ...]
@@ -330,7 +330,7 @@ def project_handover_from_state(
     }
     return ProjectHandover(
         "pinboard-project-handover/v2",
-        "sqlite-v4",
+        "sqlite-v5",
         state.lifecycle.project.revision,
         HandoverProject(
             state.lifecycle.project.application,

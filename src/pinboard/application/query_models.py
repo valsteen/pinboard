@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Literal
 
@@ -6,6 +7,33 @@ import msgspec
 
 from pinboard.application import stored_state
 from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptAuthorityStatus:
+    attempt_id: AttemptId
+    task_id: TaskId
+    host_id: HostId
+    lease_id: LeaseId
+    generation: int
+    acquired_at: datetime
+    expires_at: datetime
+    status: authority_models.AttemptLeaseStatus
+
+
+@dataclass(frozen=True, slots=True)
+class PreparationAuthorityStatus:
+    item_id: ItemId
+    definition_revision: int
+    definition_digest: str
+    task_id: TaskId
+    host_id: HostId
+    lease_id: LeaseId
+    generation: int
+    acquired_at: datetime
+    expires_at: datetime
+    status: authority_models.PreparationLeaseStatus
 
 
 class ActionContinuation(msgspec.Struct, tag="action", tag_field="kind", frozen=True, forbid_unknown_fields=True):

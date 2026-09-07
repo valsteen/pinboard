@@ -25,6 +25,8 @@ from pinboard.adapters.sqlite.artifacts import (
 from pinboard.adapters.sqlite.authority import (
     consume_preparation_authority,
     fence_attempt_authority,
+    read_attempt_authority_status,
+    read_preparation_authority_status,
     write_attempt_authority,
     write_preparation_authority,
 )
@@ -33,6 +35,7 @@ from pinboard.adapters.sqlite.database import (
     read_operation,
     require_one_changed_row,
     translate_database_error,
+    verify_database_integrity,
 )
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
@@ -45,7 +48,7 @@ from pinboard.adapters.sqlite.lifecycle import (
 )
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.proposals import accept_proposal, create_proposal, set_proposal_disposition
-from pinboard.application import stored_state
+from pinboard.application import query_models, stored_state
 from pinboard.application.artifacts import ArtifactRef
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
@@ -61,7 +64,7 @@ from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import ItemId
+from pinboard.domain.identifiers import AttemptId, ItemId
 
 
 def _translate_artifact_verification_error(error: ArtifactError) -> StorageError:
@@ -636,6 +639,31 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return sqlite_state.read_state(connection)
+        finally:
+            connection.close()
+
+    def validated_snapshot(self) -> stored_state.StoredWorkState:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                verify_database_integrity(connection)
+                return sqlite_state.read_state(connection)
+        finally:
+            connection.close()
+
+    def read_attempt_authority_status(self, attempt_id: AttemptId) -> query_models.AttemptAuthorityStatus | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_attempt_authority_status(connection, attempt_id)
+        finally:
+            connection.close()
+
+    def read_preparation_authority_status(self, item_id: ItemId) -> query_models.PreparationAuthorityStatus | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_preparation_authority_status(connection, item_id)
         finally:
             connection.close()
 

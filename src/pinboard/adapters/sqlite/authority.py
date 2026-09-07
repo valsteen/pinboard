@@ -8,11 +8,165 @@ reads the filesystem, or obtains time. Expected stale CAS writes return a
 import sqlite3
 from datetime import datetime
 
+import msgspec
+
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, stale_write
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.application import stored_state
+from pinboard.application import query_models, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.identifiers import AttemptId, ItemId
+
+
+class _PreparationItemFacts(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    state: stored_state.StoredWorkItemState
+
+
+class _DefinitionIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    definition_revision: int
+    definition_digest: str
+
+
+class _ProjectUpdate(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    updated_at: datetime
+
+
+def read_attempt_authority_status(
+    connection: sqlite3.Connection, attempt_id: AttemptId
+) -> query_models.AttemptAuthorityStatus | None:
+    lease_row = connection.execute(
+        """
+        SELECT attempt_id, generation, acquired_at, expires_at, status AS state
+        FROM attempt_leases
+        WHERE attempt_id = ?
+        """,
+        (attempt_id,),
+    ).fetchone()
+    if lease_row is None:
+        return None
+    lease = decode_row(lease_row, stored_state.StoredAttemptLease)
+    counter_row = connection.execute(
+        "SELECT attempt_id, generation_high_water FROM attempt_lease_counters WHERE attempt_id = ?",
+        (attempt_id,),
+    ).fetchone()
+    anchor_row = connection.execute(
+        """
+        SELECT attempt_id, generation, lease_id, task_id, host_id
+        FROM attempt_lease_generations
+        WHERE attempt_id = ? AND generation = ?
+        """,
+        (attempt_id, lease.generation),
+    ).fetchone()
+    attempt_row = connection.execute(
+        "SELECT attempt_id FROM attempts WHERE attempt_id = ?",
+        (attempt_id,),
+    ).fetchone()
+    if counter_row is None or anchor_row is None or attempt_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Attempt authority has no exact identity anchor.")
+    counter = decode_row(counter_row, stored_state.AttemptLeaseCounter)
+    anchor = decode_row(anchor_row, stored_state.AttemptLeaseGeneration)
+    if counter.generation_high_water != lease.generation or anchor.generation != lease.generation:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "The current attempt lease does not match its counter.")
+    return query_models.AttemptAuthorityStatus(
+        lease.attempt_id,
+        anchor.task_id,
+        anchor.host_id,
+        anchor.lease_id,
+        lease.generation,
+        lease.acquired_at,
+        lease.expires_at,
+        lease.state,
+    )
+
+
+def read_preparation_authority_status(
+    connection: sqlite3.Connection, item_id: ItemId
+) -> query_models.PreparationAuthorityStatus | None:
+    lease_row = connection.execute(
+        """
+        SELECT item_id, generation, definition_revision, definition_digest,
+               acquired_at, expires_at, status AS state
+        FROM preparation_leases
+        WHERE item_id = ?
+        """,
+        (item_id,),
+    ).fetchone()
+    if lease_row is None:
+        return None
+    lease = decode_row(lease_row, stored_state.StoredPreparationLease)
+    counter_row = connection.execute(
+        "SELECT item_id, generation_high_water FROM preparation_lease_counters WHERE item_id = ?",
+        (item_id,),
+    ).fetchone()
+    anchor_row = connection.execute(
+        """
+        SELECT item_id, generation, lease_id, task_id, host_id
+        FROM preparation_lease_generations
+        WHERE item_id = ? AND generation = ?
+        """,
+        (item_id, lease.generation),
+    ).fetchone()
+    item_row = connection.execute(
+        "SELECT state FROM work_items WHERE item_id = ?",
+        (item_id,),
+    ).fetchone()
+    referenced_definition_row = connection.execute(
+        """
+        SELECT definition_revision, definition_digest
+        FROM work_item_definition_revisions
+        WHERE item_id = ? AND definition_revision = ? AND definition_digest = ?
+        """,
+        (item_id, lease.definition_revision, lease.definition_digest),
+    ).fetchone()
+    current_definition_row = connection.execute(
+        """
+        SELECT definition_revision, definition_digest
+        FROM work_item_definition_revisions
+        WHERE item_id = ?
+        ORDER BY definition_revision DESC
+        LIMIT 1
+        """,
+        (item_id,),
+    ).fetchone()
+    project_row = connection.execute("SELECT updated_at FROM project_meta WHERE singleton = 1").fetchone()
+    if (
+        counter_row is None
+        or anchor_row is None
+        or item_row is None
+        or referenced_definition_row is None
+        or current_definition_row is None
+        or project_row is None
+    ):
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Preparation authority has no exact identity anchor.")
+    counter = decode_row(counter_row, stored_state.PreparationLeaseCounter)
+    anchor = decode_row(anchor_row, stored_state.PreparationLeaseGeneration)
+    item = decode_row(item_row, _PreparationItemFacts)
+    referenced_definition = decode_row(referenced_definition_row, _DefinitionIdentity)
+    current_definition = decode_row(current_definition_row, _DefinitionIdentity)
+    project = decode_row(project_row, _ProjectUpdate)
+    if counter.generation_high_water != lease.generation or anchor.generation != lease.generation:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "The current preparation lease does not match its counter.")
+    if (
+        lease.state == authority_models.PreparationLeaseStatus.ACTIVE
+        and lease.expires_at > project.updated_at
+        and (item.state != stored_state.StoredWorkItemState.READY or referenced_definition != current_definition)
+    ):
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE,
+            "An active preparation lease must name a ready item and its current definition.",
+        )
+    return query_models.PreparationAuthorityStatus(
+        lease.item_id,
+        lease.definition_revision,
+        lease.definition_digest,
+        anchor.task_id,
+        anchor.host_id,
+        anchor.lease_id,
+        lease.generation,
+        lease.acquired_at,
+        lease.expires_at,
+        lease.state,
+    )
 
 
 def validate_attempt_authority(state: stored_state.StoredWorkState, error_code: StorageErrorCode) -> None:

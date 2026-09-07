@@ -6,7 +6,7 @@ from typing import Literal
 
 import msgspec
 
-from pinboard.application import stored_state
+from pinboard.application import query_models, stored_state
 from pinboard.domain.errors import EffectDisposition, FailureDetails, FailureFactValue, RetryDisposition
 from pinboard.interfaces.errors import BriefSourceFailure, CliFailure, CommittedEffectFailure, WorkBriefFailure
 
@@ -14,6 +14,7 @@ type RetainedAuthorityLease = (
     tuple[stored_state.StoredAttemptLease, stored_state.AttemptLeaseGeneration]
     | tuple[stored_state.StoredPreparationLease, stored_state.PreparationLeaseGeneration]
 )
+type AuthorityStatus = query_models.AttemptAuthorityStatus | query_models.PreparationAuthorityStatus
 
 
 class FailureFactView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -105,6 +106,20 @@ def retained_authority_lease_fields(retained: RetainedAuthorityLease) -> dict[st
         acquired_at=lease.acquired_at,
         expires_at=lease.expires_at,
         status=lease.state.value,
+    )
+
+
+def authority_status_fields(status: AuthorityStatus) -> dict[str, str | int]:
+    """Project common output fields from one exact authority-status result."""
+
+    return authority_lease_fields(
+        task_id=status.task_id,
+        host_id=status.host_id,
+        lease_id=status.lease_id,
+        generation=status.generation,
+        acquired_at=status.acquired_at,
+        expires_at=status.expires_at,
+        status=status.status.value,
     )
 
 

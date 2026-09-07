@@ -13,14 +13,19 @@ from uuid import uuid4
 
 from pinboard.adapters.files.models import AffectedViews
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import service, stored_state
+from pinboard.application import queries, service, stored_state
 from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.application.service import decide_and_commit_preparation_authority_change
 from pinboard.domain import authority_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import ItemId, LeaseId
 from pinboard.interfaces import cli_commands, work_views
-from pinboard.interfaces.cli_output import authority_lease_fields, retained_authority_lease_fields, write_json
+from pinboard.interfaces.cli_output import (
+    authority_lease_fields,
+    authority_status_fields,
+    retained_authority_lease_fields,
+    write_json,
+)
 from pinboard.interfaces.errors import CommandErrorCode, CommandFailure, CommandResult
 
 
@@ -70,10 +75,22 @@ def show_preparation_authority_status(
     roots: cli_commands.ResolvedRoots, command: cli_commands.PreparationStatusCommand
 ) -> CommandResult[int]:
     presented_at = datetime.now(UTC)
-    latest_committed_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
-    return _present_latest_preparation_authority(
-        latest_committed_state, command.item_id, presented_at, json=command.json
+    selected = queries.select_preparation_authority_status(
+        SQLiteWorkStore(roots.work / "state.sqlite3"), command.item_id, presented_at
     )
+    if isinstance(selected, DecisionFailure):
+        return CommandFailure(selected.code, selected.message, selected.details)
+    values: dict[str, str | int] = {
+        "item_id": str(selected.item_id),
+        "definition_revision": selected.definition_revision,
+        "definition_digest": selected.definition_digest,
+        **authority_status_fields(selected),
+    }
+    if command.json:
+        write_json(values)
+    else:
+        print("OK " + " ".join(f"{key}={value}" for key, value in values.items()))
+    return 0
 
 
 def start_preparation(

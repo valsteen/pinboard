@@ -3831,7 +3831,7 @@ Not launchable:
         common = ("--project-root", str(project), "--work-root", str(work))
         initialized, _stdout, stderr = self.run_cli(*common, "init")
         self.assertEqual(0, initialized, stderr)
-        original_snapshot = SQLiteWorkStore.snapshot
+        original_snapshot = SQLiteWorkStore.validated_snapshot
         calls = 0
 
         def counted(store: SQLiteWorkStore) -> stored_state.StoredWorkState:
@@ -3839,7 +3839,7 @@ Not launchable:
             calls += 1
             return original_snapshot(store)
 
-        with patch.object(SQLiteWorkStore, "snapshot", counted):
+        with patch.object(SQLiteWorkStore, "validated_snapshot", counted):
             result, stdout, stderr = self.run_cli(*common, "validate")
 
         self.assertEqual(0, result, stderr)

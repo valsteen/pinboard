@@ -115,31 +115,49 @@ class ProjectMetadata(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     scripts: dict[str, str]
 
 
-class MarketplaceInterface(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class CodexMarketplaceInterface(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     display_name: str = msgspec.field(name="displayName")
 
 
-class PluginSource(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class CodexPluginSource(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     source: str
     path: str
 
 
-class PluginPolicy(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class CodexPluginPolicy(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     installation: str
     authentication: str
 
 
-class MarketplacePlugin(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class CodexMarketplacePlugin(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     name: str
-    source: PluginSource
-    policy: PluginPolicy
+    source: CodexPluginSource
+    policy: CodexPluginPolicy
     category: str
 
 
-class MarketplaceManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class CodexMarketplaceManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     name: str
-    interface: MarketplaceInterface
-    plugins: tuple[MarketplacePlugin, ...]
+    interface: CodexMarketplaceInterface
+    plugins: tuple[CodexMarketplacePlugin, ...]
+
+
+class ClaudeMarketplaceOwner(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    name: str
+    url: str
+
+
+class ClaudeMarketplacePlugin(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    name: str
+    description: str
+    source: str
+
+
+class ClaudeMarketplaceManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    name: str
+    description: str
+    owner: ClaudeMarketplaceOwner
+    plugins: tuple[ClaudeMarketplacePlugin, ...]
 
 
 class SkillFrontmatter(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -235,11 +253,11 @@ def validate_project_metadata() -> None:
         raise ValueError("pinboard must be the only project entry point to the current engine")
 
 
-def validate_marketplace() -> None:
+def validate_codex_marketplace() -> None:
     path = ROOT / ".agents" / "plugins" / "marketplace.json"
-    value = msgspec.json.decode(path.read_bytes(), type=MarketplaceManifest)
+    value = msgspec.json.decode(path.read_bytes(), type=CodexMarketplaceManifest)
     if len(value.plugins) != 1:
-        raise ValueError("marketplace metadata must install the repository-root plugin")
+        raise ValueError("Codex marketplace metadata must install the repository-root plugin")
     plugin = value.plugins[0]
     if (
         value.name,
@@ -251,7 +269,24 @@ def validate_marketplace() -> None:
         plugin.policy.authentication,
         plugin.category,
     ) != (PLUGIN_NAME, "Pinboard", PLUGIN_NAME, "local", ".", "AVAILABLE", "ON_INSTALL", "Productivity"):
-        raise ValueError("marketplace metadata must install the repository-root plugin")
+        raise ValueError("Codex marketplace metadata must install the repository-root plugin")
+
+
+def validate_claude_marketplace() -> None:
+    path = ROOT / ".claude-plugin" / "marketplace.json"
+    value = msgspec.json.decode(path.read_bytes(), type=ClaudeMarketplaceManifest)
+    if len(value.plugins) != 1:
+        raise ValueError("Claude marketplace metadata must install the repository-root plugin")
+    plugin = value.plugins[0]
+    if (value.name, value.owner.name, plugin.name, plugin.source) != (
+        PLUGIN_NAME,
+        "Vincent Alsteen",
+        PLUGIN_NAME,
+        ".",
+    ):
+        raise ValueError("Claude marketplace metadata must install the repository-root plugin")
+    if value.description != plugin.description:
+        raise ValueError("Claude marketplace and plugin descriptions must match")
 
 
 def validate_skill(path: Path) -> None:
@@ -275,7 +310,8 @@ def main() -> None:
     validate_plugin()
     validate_claude_plugin()
     validate_project_metadata()
-    validate_marketplace()
+    validate_codex_marketplace()
+    validate_claude_marketplace()
     skill_paths = tuple(sorted((ROOT / "skills").glob("*/SKILL.md")))
     if {path.parent.name for path in skill_paths} != EXPECTED_SKILLS:
         raise ValueError(
@@ -284,7 +320,7 @@ def main() -> None:
         )
     for path in skill_paths:
         validate_skill(path)
-    print(f"validated Codex and Claude plugins, Codex marketplace, and {len(skill_paths)} skills")
+    print(f"validated Codex and Claude plugins, Codex and Claude marketplaces, and {len(skill_paths)} skills")
 
 
 if __name__ == "__main__":

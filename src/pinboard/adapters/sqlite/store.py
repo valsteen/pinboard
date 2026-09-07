@@ -14,6 +14,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Literal, Self, assert_never
 
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.artifacts import (
     accept_artifact_reference as write_artifact_reference,
@@ -33,6 +34,7 @@ from pinboard.adapters.sqlite.database import (
     require_one_changed_row,
     translate_database_error,
 )
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     insert_attempt,
     insert_definition_revision,
@@ -60,6 +62,17 @@ from pinboard.domain import decision_models, work_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ItemId
+
+
+def _translate_artifact_verification_error(error: ArtifactError) -> StorageError:
+    match error.code:
+        case ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION:
+            code = StorageErrorCode.INVARIANT_VIOLATION
+        case ArtifactErrorCode.STORAGE_IO_ERROR:
+            code = StorageErrorCode.IO_ERROR
+        case _ as unreachable:
+            assert_never(unreachable)
+    return StorageError(code, str(error), retryable=False)
 
 
 def _persist_definition_revision(
@@ -637,13 +650,16 @@ class SQLiteWorkStore:
     ) -> DecisionResult[ArtifactReferenceAcceptance]:
         with _SQLiteWorkTransaction(self._path) as transaction:
             connection = transaction.connection
-            result = write_artifact_reference(
-                connection,
-                sqlite_state.read_state(connection),
-                work_root,
-                published,
-                accepted_at,
-            )
+            try:
+                result = write_artifact_reference(
+                    connection,
+                    sqlite_state.read_state(connection),
+                    work_root,
+                    published,
+                    accepted_at,
+                )
+            except ArtifactError as error:
+                raise _translate_artifact_verification_error(error) from error
             if isinstance(result, DecisionFailure):
                 return transaction._select(result)
             sqlite_state.read_state(connection)

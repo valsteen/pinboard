@@ -12,6 +12,7 @@ import msgspec
 from msgspec.structs import replace
 
 from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -510,6 +511,9 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         self.assertTrue(committed["state_changed"])
         self.assertEqual(["immutable-artifact"], committed["changed_surfaces"])
         self.assertEqual("do-not-retry", committed["retry"])
+        orphan = work / "artifacts" / "briefs" / example_work_brief().attempt_id / "1.json"
+        self.assertEqual(canonical_work_brief_bytes(example_work_brief()), orphan.read_bytes())
+        self.assertEqual((), SQLiteWorkStore(work / "state.sqlite3").snapshot().artifact_references)
 
         orphan = work / "artifacts" / "briefs" / example_work_brief().attempt_id / "1.json"
         self.assertEqual(canonical_work_brief_bytes(example_work_brief()), orphan.read_bytes())
@@ -528,6 +532,71 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate))
         self.assertEqual(0, result, stderr)
         self.assertIn("BRIEF_PUBLISHED", stdout)
+
+    def test_store_verification_failure_preserves_exact_publication_effect(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        work = project / ".codex" / "work"
+        common = ("--project-root", str(project), "--work-root", str(work))
+        self.assertEqual(0, self.run_cli(*common, "init")[0])
+        candidate = project / "brief.json"
+        candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
+        verification_failure = ArtifactError(
+            ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION,
+            "store verification failed",
+        )
+
+        with patch(
+            "pinboard.adapters.sqlite.artifacts.verify_reference",
+            side_effect=verification_failure,
+        ):
+            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
+
+        self.assertEqual(12, result, stderr)
+        committed = msgspec.json.decode(stdout.encode())
+        self.assertEqual("committed-effect", committed["status"])
+        self.assertTrue(committed["state_changed"])
+        self.assertEqual(["immutable-artifact"], committed["changed_surfaces"])
+        self.assertEqual("do-not-retry", committed["retry"])
+
+        with patch(
+            "pinboard.adapters.sqlite.artifacts.verify_reference",
+            side_effect=verification_failure,
+        ):
+            retry_result, retry_stdout, retry_stderr = self.run_cli(
+                *common,
+                "brief",
+                "publish",
+                "--file",
+                str(candidate),
+                "--json",
+            )
+
+        self.assertEqual(12, retry_result, retry_stderr)
+        unchanged = msgspec.json.decode(retry_stdout.encode())
+        self.assertEqual("rejected", unchanged["status"])
+        self.assertFalse(unchanged["state_changed"])
+        self.assertEqual([], unchanged["changed_surfaces"])
+        self.assertEqual("do-not-retry", unchanged["retry"])
+        self.assertEqual((), SQLiteWorkStore(work / "state.sqlite3").snapshot().artifact_references)
+
+    def test_store_programming_failures_propagate_after_publication(self) -> None:
+        for programming_failure in (AssertionError("assertion failed"), ValueError("value failed")):
+            with self.subTest(error=type(programming_failure).__name__):
+                project = Path(tempfile.mkdtemp()).resolve()
+                work = project / ".codex" / "work"
+                common = ("--project-root", str(project), "--work-root", str(work))
+                self.assertEqual(0, self.run_cli(*common, "init")[0])
+                candidate = project / "brief.json"
+                candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
+
+                with (
+                    patch(
+                        "pinboard.adapters.sqlite.artifacts.verify_reference",
+                        side_effect=programming_failure,
+                    ),
+                    self.assertRaises(type(programming_failure)),
+                ):
+                    self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
 
     def test_returned_publication_rejection_reports_new_immutable_artifact(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

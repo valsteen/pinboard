@@ -1,0 +1,15 @@
+{
+  "name": "pinboard",
+  "description": "Coordinate repository work with canonical execution briefs and validated state transitions.",
+  "owner": {
+    "name": "Vincent Alsteen",
+    "url": "https://github.com/valsteen"
+  },
+  "plugins": [
+    {
+      "name": "pinboard",
+      "description": "Coordinate repository work with canonical execution briefs and validated state transitions.",
+      "source": "."
+    }
+  ]
+}

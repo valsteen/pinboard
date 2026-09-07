@@ -161,15 +161,20 @@ Start a Codex task in the repository and ask:
 
 > Set up the pinboard here and explain how I can use it from one chat or several chats.
 
-For the experimental Claude Code integration, clone this repository, validate the local plugin without model use, then point one session at it:
+For the experimental Claude Code integration, clone this repository, then either try it for one session or install it as a local marketplace plugin:
 
 ```sh
+# One session only, no persistent registration:
 claude plugin validate /path/to/pinboard --strict
 cd /path/to/your-project
 claude --plugin-dir /path/to/pinboard
+
+# Or install it once and keep it across sessions:
+claude plugin marketplace add /path/to/pinboard
+claude plugin install pinboard@pinboard
 ```
 
-Ask Claude Code to set up the Pinboard in the opened project. The shared skills invoke the same `pinboard` CLI and `.codex/pinboard` SQLite authority. This is local `--plugin-dir` support, not an Anthropic marketplace installation or a claim of live Codex/Claude sharing. The free Claude chat plan and Claude Code access are separate product surfaces; check [Anthropic's current authentication options](https://code.claude.com/docs/en/authentication) before the authenticated smoke because access can change.
+Ask Claude Code to set up the Pinboard in the opened project. The shared skills invoke the same `pinboard` CLI and `.codex/pinboard` SQLite authority. This is a local, repository-sourced Claude Code plugin, not an Anthropic marketplace installation or a claim of live Codex/Claude sharing. The free Claude chat plan and Claude Code access are separate product surfaces; check [Anthropic's current authentication options](https://code.claude.com/docs/en/authentication) before the authenticated smoke because access can change.
 
 After the first successful setup, Pinboard prints one optional next-steps pointer to `$repository-readiness`, `$slop-cleanup`, and `$maintaining-agent-guidance`. It does not run a skill, create work, or change configuration, and reopening an existing Pinboard or a failed setup does not print it.
 

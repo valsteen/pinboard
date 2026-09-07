@@ -117,7 +117,7 @@ def read_item_definition(connection: sqlite3.Connection, item_id: ItemId) -> que
     )
 
 
-def read_item_status(connection: sqlite3.Connection, item_id: ItemId) -> query_models.ItemStatusLifecycleFacts:
+def read_item_status(connection: sqlite3.Connection, item_id: ItemId) -> query_models.ItemStatusLifecycleFacts | None:
     project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
     if project_revision_row is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
@@ -131,7 +131,7 @@ def read_item_status(connection: sqlite3.Connection, item_id: ItemId) -> query_m
         (item_id,),
     ).fetchone()
     if item_row is None:
-        return query_models.ItemStatusLifecycleFacts(project_revision, None, None, ())
+        return None
     item = decode_row(item_row, query_models.ItemStatusItemFacts)
     definition_row = connection.execute(
         """

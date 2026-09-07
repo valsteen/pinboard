@@ -96,7 +96,7 @@ class ItemStatusAttemptFacts:
 @dataclass(frozen=True, slots=True)
 class ItemStatusLifecycleFacts:
     project_revision: int
-    item: ItemStatusItemFacts | None
+    item: ItemStatusItemFacts
     definition_title: str | None
     attempts: tuple[ItemStatusAttemptFacts, ...]
 
@@ -104,7 +104,7 @@ class ItemStatusLifecycleFacts:
 @dataclass(frozen=True, slots=True)
 class ItemStatusFacts:
     project_revision: int
-    item: ItemStatusItemFacts | None
+    item: ItemStatusItemFacts
     definition_title: str | None
     attempts: tuple[ItemStatusAttemptFacts, ...]
     preparation: PreparationAuthorityStatus | None
@@ -141,7 +141,7 @@ class ItemStatus(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     notes: str | None
     queue_position: int | None
     attempts: tuple[ItemStatusAttempt, ...]
-    preparation: PreparationStatusView | None = None
+    preparation: PreparationStatusView | None
 
 
 class ParallelSelection(Enum):

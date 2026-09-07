@@ -160,6 +160,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                 "Current work remains bounded.",
                 2,
                 (query_models.ItemStatusAttempt("work-a-1", work_models.AttemptState.ACTIVE, None),),
+                None,
             ),
             live,
         )
@@ -178,6 +179,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                 None,
                 None,
                 (query_models.ItemStatusAttempt("work-b-z", work_models.AttemptState.DONE, "candidate-z"),),
+                None,
             ),
             done,
         )

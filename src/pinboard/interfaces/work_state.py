@@ -20,6 +20,7 @@ from pinboard.adapters.sqlite.models import InitReceipt, OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.domain.identifiers import AttemptId
+from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
 from pinboard.interfaces.work_briefs import build_attempt_brief_views
 from pinboard.interfaces.work_state_models import Diagnostic, Severity, ValidationReport
 
@@ -29,7 +30,7 @@ def initialize_work_state(
     work_root: Path | None = None,
     *,
     now: datetime | None = None,
-) -> InitReceipt:
+) -> WorkBriefResult[InitReceipt]:
     if work_root is None:
         ensure_default_git_exclude(shared_repository_root)
     roots = resolve_durable_roots(shared_repository_root, work_root)
@@ -45,6 +46,8 @@ def initialize_work_state(
     store = SQLiteWorkStore(roots.database_path)
     current_state = store.snapshot()
     rendered_attempt_briefs = build_attempt_brief_views(current_state, ArtifactRepository(roots))
+    if isinstance(rendered_attempt_briefs, WorkBriefFailure):
+        return rendered_attempt_briefs
     rebuild_result = rebuild_state(current_state, roots.work_root, rendered_attempt_briefs, now=operation_time)
     if rebuild_result.warning is not None:
         raise FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, rebuild_result.warning.message)

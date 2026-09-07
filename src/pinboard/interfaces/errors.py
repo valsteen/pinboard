@@ -4,18 +4,16 @@ from enum import Enum
 from pinboard.domain.errors import DecisionFailureCode, FailureDetails
 
 
-class CommittedEffectError(RuntimeError):
-    """An operation failed after one or more durable surfaces were already changed."""
+@dataclass(frozen=True, slots=True)
+class CommittedEffectFailure:
+    """A typed failure after one or more durable surfaces were already changed."""
 
     code: str
     message: str
     details: FailureDetails
 
-    def __init__(self, code: str, message: str, details: FailureDetails) -> None:
-        self.code = code
-        self.message = message
-        self.details = details
-        super().__init__(f"{code}: {message}")
+    def __str__(self) -> str:
+        return f"{self.code}: {self.message}"
 
 
 class CommandErrorCode(Enum):
@@ -117,10 +115,6 @@ class DispatchFailure:
 type DispatchResult[T] = T | DispatchFailure
 
 
-type CliFailure = CommandFailure | ProposalFailure | DispatchFailure
-type CliResult[T] = T | CliFailure
-
-
 class BriefSourceErrorCode(Enum):
     BATCH_NOT_FOUND = "BRIEF_SOURCE_BATCH_NOT_FOUND"
     LINE_TOO_LARGE = "BRIEF_SOURCE_LINE_TOO_LARGE"
@@ -131,14 +125,16 @@ class BriefSourceErrorCode(Enum):
     SOURCE_UNREADABLE = "BRIEF_SOURCE_UNREADABLE"
 
 
-class BriefSourceError(ValueError):
+@dataclass(frozen=True, slots=True)
+class BriefSourceFailure:
     code: BriefSourceErrorCode
     message: str
 
-    def __init__(self, code: BriefSourceErrorCode, message: str) -> None:
-        self.code = code
-        self.message = message
-        super().__init__(f"{code.value}: {message}")
+    def __str__(self) -> str:
+        return f"{self.code.value}: {self.message}"
+
+
+type BriefSourceResult[T] = T | BriefSourceFailure
 
 
 class WorkBriefErrorCode(Enum):
@@ -151,11 +147,17 @@ class WorkBriefErrorCode(Enum):
     REVIEW_STALE = "WORK_BRIEF_REVIEW_STALE"
 
 
-class WorkBriefError(ValueError):
+@dataclass(frozen=True, slots=True)
+class WorkBriefFailure:
     code: WorkBriefErrorCode
     message: str
 
-    def __init__(self, code: WorkBriefErrorCode, message: str) -> None:
-        self.code = code
-        self.message = message
-        super().__init__(f"{code.value}: {message}")
+    def __str__(self) -> str:
+        return f"{self.code.value}: {self.message}"
+
+
+type WorkBriefResult[T] = T | WorkBriefFailure
+type CliFailure = (
+    CommandFailure | ProposalFailure | DispatchFailure | BriefSourceFailure | WorkBriefFailure | CommittedEffectFailure
+)
+type CliResult[T] = T | CliFailure

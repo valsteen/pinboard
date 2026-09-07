@@ -140,7 +140,7 @@ The command stories move from observation and repair to an ordinary mutation and
 
 - **Initialize through a verified publication.** A new ledger is built and verified in a staging file before atomic publication. A returning ledger is schema-checked before Pinboard reconciles only its own same-file publication residue and ensures its directories. Both routes use explicit roots and one operation time, then verify accepted brief content, rebuild generated views, and present the receipt. A failed rebuild leaves the authoritative database available for retry. After a successful first initialization, the interface points once to the optional `$repository-readiness`, `$slop-cleanup`, and `$maintaining-agent-guidance` skills without running them or creating work. The default Codex runtime may separately recommend one absent Codex long-task default; the explicit Claude runtime suppresses only that line. Neither path writes configuration or claims to override trusted project settings. Resumed and failed initialization stay quiet, while unreadable or malformed user config suppresses only the setting recommendation.
 
-- **Plan reviewed sources without opening the ledger.** `brief-sources` reads one strict manifest, selects whole files or unique Markdown headings from the chosen source checkout, rejects overlaps and oversized lines, assigns every selected byte to one ordered segment and batch, and presents the complete plan or one requested batch. It never edits the project.
+- **Plan reviewed sources without opening the ledger.** `brief-sources` reads one strict manifest, selects whole files or unique Markdown headings from the chosen source checkout, rejects overlaps and oversized lines, assigns every selected byte to one ordered segment and batch, and presents the complete plan or one requested batch. Malformed manifests, invalid selectors, unreadable selected sources, and missing batches travel as an explicit typed source failure to the command boundary; infrastructure and programming failures are not folded into that advertised rejection. It never edits the project.
 
 ### Discover and recover an exact operation
 
@@ -188,8 +188,8 @@ The relational ledger groups sixteen tables into six kinds of memory: current wo
 
 **Immutable artifacts enter through three paths:**
 
-1. **Brief publication** strictly decodes and cross-validates the selected candidate, canonicalizes and publishes its bytes, accepts the stable reference in SQLite, and rebuilds generated views. Activation, resume, or rebind then selects that accepted brief for the attempt.
-2. **Dispatch preparation** validates the environment, optional prompt or review files, exact current action, accepted brief identity, and reviewed sources before choosing the local, existing-review, or new-review path. It may publish or reuse independent ready-review evidence by exact identity, renders the prompt, rechecks authority, and only then emits it. Dispatch prepares a prompt; it does not create a task. Declared permissions remain brief declarations, not grants enforced by Pinboard.
+1. **Brief publication** strictly decodes and cross-validates the selected candidate, returning malformed input as a typed work-brief failure before it canonicalizes and publishes valid bytes, accepts the stable reference in SQLite, and rebuilds generated views. Activation, resume, or rebind then reads and verifies that accepted brief through the artifact capability before using its typed identity.
+2. **Dispatch preparation** validates the environment, optional prompt or review files, exact current action, verified accepted brief bytes, and reviewed sources before choosing the local, existing-review, or new-review path. It may publish or reuse independent ready-review evidence by exact identity, renders the prompt with a presentation-only path derived after verification, rechecks authority, and only then emits it. Dispatch prepares a prompt; it does not create a task. Declared permissions remain brief declarations, not grants enforced by Pinboard.
 3. **Checkpoint acceptance** publishes the exact result and independent review, then atomically records the attempt result, accepted review evidence, lifecycle change, and receipt. Publication alone changes no lifecycle state; rejection or rollback preserves the previous relationships and reports a committed immutable-artifact effect when that invocation created the evidence before stopping.
 
 Once submission protects a candidate, `review-job` is a separate read-only projection. It verifies the accepted brief, reads nonempty current result evidence, and emits paths, render-time digests, the exact outcome owner, and a bounded prompt. The Codex runtime—not Pinboard—creates the fresh reviewer. If that runtime cannot create a subagent, the candidate stays in review with its evidence intact; another user-owned task is not used as a substitute.
@@ -211,7 +211,7 @@ The package is split into four layers because each removes a different kind of a
 
 Every arrow in this view means “may depend on.”
 
-- **Interfaces** absorb command lines, JSON, project files, and human-readable output. A small exhaustive entry point routes exact commands; thematic interface modules own composition that needs concrete adapters.
+- **Interfaces** absorb command lines, JSON, project files, and human-readable output. A small exhaustive entry point routes exact commands and turns typed advertised failures into stable exit statuses; thematic interface modules own composition that needs concrete adapters and expose their expected exits in result types. Decoder mechanisms, accepted-artifact I/O, SQLite failures, and programming-contract violations remain exceptional at their named boundaries.
 - **Application code** reads complete stored state through capabilities and projects an accepted decision into one targeted storage mutation.
 - **The domain** decides legality as pure data.
 - **Adapters** make accepted facts durable and recoverable.
@@ -231,6 +231,8 @@ def _output_path(item: tuple[Path, str]) -> str:
 
 
 def build_outputs(root: Path) -> dict[Path, str]:
+    """Validate the complete guide and raise if no coherent output set can be built."""
+
     product.validate()
     layers.validate(root)
     journey.validate()

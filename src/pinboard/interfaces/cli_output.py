@@ -8,7 +8,7 @@ import msgspec
 
 from pinboard.application import stored_state
 from pinboard.domain.errors import EffectDisposition, FailureDetails, FailureFactValue, RetryDisposition
-from pinboard.interfaces.errors import CliFailure
+from pinboard.interfaces.errors import BriefSourceFailure, CliFailure, CommittedEffectFailure, WorkBriefFailure
 
 type RetainedAuthorityLease = (
     tuple[stored_state.StoredAttemptLease, stored_state.AttemptLeaseGeneration]
@@ -117,7 +117,13 @@ def write_json[T](value: T) -> None:
 
 def write_rejected_operation(operation: str, failure: CliFailure) -> None:
     """Present one expected failure without reconstructing facts from its prose message."""
-    details = failure.details
+    assert not isinstance(failure, CommittedEffectFailure)
+    details = None if isinstance(failure, (BriefSourceFailure, WorkBriefFailure)) else failure.details
+    default_retry = (
+        RetryDisposition.CORRECT_INPUT
+        if isinstance(failure, (BriefSourceFailure, WorkBriefFailure))
+        else RetryDisposition.DO_NOT_RETRY
+    )
     write_operation_rejection(
         operation,
         failure.code.value,
@@ -125,7 +131,7 @@ def write_rejected_operation(operation: str, failure: CliFailure) -> None:
         FailureDetails(
             observed=(),
             mismatches=(),
-            retry=RetryDisposition.DO_NOT_RETRY,
+            retry=default_retry,
             effect=EffectDisposition.UNCHANGED,
             changed_surfaces=(),
             alternatives=(),

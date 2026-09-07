@@ -39,13 +39,13 @@ from pinboard.interfaces import (
     work_state_commands,
 )
 from pinboard.interfaces.errors import (
-    BriefSourceError,
+    BriefSourceFailure,
     CliResult,
     CommandFailure,
-    CommittedEffectError,
+    CommittedEffectFailure,
     DispatchFailure,
     ProposalFailure,
-    WorkBriefError,
+    WorkBriefFailure,
 )
 
 build_parser = cli_parser.build_parser
@@ -161,6 +161,12 @@ def _failure_exit_code(result: CliResult[int]) -> int:
             return 13
         case DispatchFailure():
             return 14
+        case BriefSourceFailure():
+            return 15
+        case WorkBriefFailure():
+            return 16
+        case CommittedEffectFailure():
+            return 12
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -170,13 +176,16 @@ def _present_expected_result(result: CliResult[int], operation: str, *, json_req
     if isinstance(result, int):
         return exit_code
     if json_requested:
-        cli_output.write_rejected_operation(operation, result)
+        if isinstance(result, CommittedEffectFailure):
+            cli_output.write_operation_rejection(operation, result.code, result.message, result.details, ())
+        else:
+            cli_output.write_rejected_operation(operation, result)
     else:
         print(str(result), file=sys.stderr)
     return exit_code
 
 
-def _run_invocation(  # noqa: PLR0912 - one exhaustive process-boundary failure router
+def _run_invocation(
     invocation: cli_commands.CliInvocation,
     operation: str,
     *,
@@ -184,12 +193,6 @@ def _run_invocation(  # noqa: PLR0912 - one exhaustive process-boundary failure 
 ) -> int:
     try:
         return _present_expected_result(_dispatch(invocation), operation, json_requested=json_requested)
-    except CommittedEffectError as error:
-        if json_requested:
-            cli_output.write_operation_rejection(operation, error.code, error.message, error.details, ())
-        else:
-            print(str(error), file=sys.stderr)
-        return 12
     except ArtifactAcceptanceAfterPublicationError as error:
         cause = error.cause
         code = (
@@ -254,25 +257,6 @@ def _run_invocation(  # noqa: PLR0912 - one exhaustive process-boundary failure 
         else:
             print(str(error), file=sys.stderr)
         return 12
-    except (BriefSourceError, WorkBriefError) as error:
-        if json_requested:
-            cli_output.write_operation_rejection(
-                operation,
-                error.code.value,
-                error.message,
-                FailureDetails(
-                    observed=(),
-                    mismatches=(),
-                    retry=RetryDisposition.CORRECT_INPUT,
-                    effect=EffectDisposition.UNCHANGED,
-                    changed_surfaces=(),
-                    alternatives=(),
-                ),
-                (),
-            )
-        else:
-            print(str(error), file=sys.stderr)
-        return 15 if isinstance(error, BriefSourceError) else 16
 
 
 def main(argv: Sequence[str] | None = None) -> int:

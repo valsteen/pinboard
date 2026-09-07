@@ -47,7 +47,7 @@ from pinboard.interfaces.cli_output import write_json
 from pinboard.interfaces.errors import (
     CommandFailure,
     CommandResult,
-    CommittedEffectError,
+    CommittedEffectFailure,
     TransitionInputFailure,
 )
 from pinboard.interfaces.transition_input import parse_item_revision_input, parse_transition_command
@@ -74,8 +74,8 @@ class _CheckpointArtifactPublication:
     created_immutable_artifact: bool
 
 
-def _committed_immutable_artifact_error(error: ArtifactError | StorageError) -> CommittedEffectError:
-    return CommittedEffectError(
+def _committed_immutable_artifact_failure(error: ArtifactError | StorageError) -> CommittedEffectFailure:
+    return CommittedEffectFailure(
         error.code.value,
         str(error),
         FailureDetails(
@@ -107,7 +107,9 @@ def _item_changed_by_transition(
             assert_never(unreachable)
 
 
-def close(roots: cli_commands.ResolvedRoots, command: cli_commands.CloseCommand) -> CommandResult[int]:
+def close(
+    roots: cli_commands.ResolvedRoots, command: cli_commands.CloseCommand
+) -> CommandResult[int] | CommittedEffectFailure:
     encoded_transition = msgspec.json.encode(
         {"outcome": command.outcome.value, "reason": command.reason}, order="sorted"
     )
@@ -117,7 +119,7 @@ def close(roots: cli_commands.ResolvedRoots, command: cli_commands.CloseCommand)
         command.host_id,
         _EncodedProjectTransitionRequest(ActionId(f"close:{command.item_id}"), encoded_transition),
     )
-    if isinstance(transition_revision, CommandFailure):
+    if isinstance(transition_revision, (CommandFailure, CommittedEffectFailure)):
         return transition_revision
     value = transition_models.CloseView(command.item_id, command.outcome.value, command.reason, transition_revision)
     if command.json:
@@ -127,7 +129,9 @@ def close(roots: cli_commands.ResolvedRoots, command: cli_commands.CloseCommand)
     return 0
 
 
-def revise_item(roots: cli_commands.ResolvedRoots, command: cli_commands.ItemReviseCommand) -> CommandResult[int]:
+def revise_item(
+    roots: cli_commands.ResolvedRoots, command: cli_commands.ItemReviseCommand
+) -> CommandResult[int] | CommittedEffectFailure:
     try:
         revision_bytes = command.file.read_bytes()
     except OSError as error:
@@ -144,7 +148,7 @@ def revise_item(roots: cli_commands.ResolvedRoots, command: cli_commands.ItemRev
         command.host_id,
         _ValidatedItemRevisionRequest(validated_revision),
     )
-    if isinstance(transition_revision, CommandFailure):
+    if isinstance(transition_revision, (CommandFailure, CommittedEffectFailure)):
         return transition_revision
     value = transition_models.ItemRevisionView(
         str(validated_revision.item_id),
@@ -162,7 +166,9 @@ def revise_item(roots: cli_commands.ResolvedRoots, command: cli_commands.ItemRev
     return 0
 
 
-def transition(roots: cli_commands.ResolvedRoots, cli_command: cli_commands.TransitionCommand) -> CommandResult[int]:
+def transition(
+    roots: cli_commands.ResolvedRoots, cli_command: cli_commands.TransitionCommand
+) -> CommandResult[int] | CommittedEffectFailure:
     supplied_action_receipt = action_selection.parse_action_receipt(cli_command)
     if isinstance(supplied_action_receipt, CommandFailure):
         return supplied_action_receipt
@@ -189,6 +195,8 @@ def transition(roots: cli_commands.ResolvedRoots, cli_command: cli_commands.Tran
         case _ as unreachable:
             assert_never(unreachable)
     commit_result = _execute_transition_command(roots, store, artifacts, decoded_command, actor_task_id, actor_host_id)
+    if isinstance(commit_result, CommittedEffectFailure):
+        return commit_result
     if isinstance(commit_result, CommandFailure):
         return action_selection.with_current_alternatives(roots, supplied_action_receipt, commit_result)
     return _present_committed_transition(roots, store, selected_action, commit_result, json=cli_command.json)
@@ -264,7 +272,7 @@ def publish_checkpoint_artifacts(
     roots: cli_commands.ResolvedRoots,
     command: decision_models.AcceptCheckpointCommand,
     artifacts: ArtifactRepository,
-) -> CommandResult[_CheckpointArtifactPublication]:
+) -> CommandResult[_CheckpointArtifactPublication] | CommittedEffectFailure:
     action = command.action
     value = command.value
     attempt_id = str(action.capability.subject)
@@ -303,7 +311,7 @@ def publish_checkpoint_artifacts(
         created_immutable_artifact = created_immutable_artifact or not review_existed
     except ArtifactError as error:
         if created_immutable_artifact:
-            raise _committed_immutable_artifact_error(error) from error
+            return _committed_immutable_artifact_failure(error)
         raise
     return _CheckpointArtifactPublication(
         CheckpointArtifacts(
@@ -321,14 +329,14 @@ def _execute_transition_command(
     command: decision_models.TransitionCommand,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
-) -> CommandResult[MutationReceipt]:
+) -> CommandResult[MutationReceipt] | CommittedEffectFailure:
     transition_brief_identity = read_brief_identity(store, command, artifacts)
     if isinstance(transition_brief_identity, CommandFailure):
         return transition_brief_identity
     match command:
         case decision_models.AcceptCheckpointCommand():
             checkpoint_artifacts = publish_checkpoint_artifacts(roots, command, artifacts)
-            if isinstance(checkpoint_artifacts, CommandFailure):
+            if isinstance(checkpoint_artifacts, (CommandFailure, CommittedEffectFailure)):
                 return checkpoint_artifacts
             try:
                 result = decide_and_commit_checkpoint_acceptance(
@@ -342,7 +350,7 @@ def _execute_transition_command(
                 )
             except StorageError as error:
                 if checkpoint_artifacts.created_immutable_artifact:
-                    raise _committed_immutable_artifact_error(error) from error
+                    return _committed_immutable_artifact_failure(error)
                 raise
             if isinstance(result, DecisionFailure) and checkpoint_artifacts.created_immutable_artifact:
                 details = (
@@ -442,7 +450,7 @@ def execute_project_transition(
     task_id: TaskId,
     host_id: HostId,
     request: _ProjectTransitionRequest,
-) -> CommandResult[str]:
+) -> CommandResult[str] | CommittedEffectFailure:
     """Select and commit one exact current project action."""
 
     store = SQLiteWorkStore(roots.work / "state.sqlite3")
@@ -470,6 +478,8 @@ def execute_project_transition(
     if isinstance(decoded_transition, CommandFailure):
         return decoded_transition
     committed_mutation = _execute_transition_command(roots, store, artifacts, decoded_transition, task_id, host_id)
+    if isinstance(committed_mutation, CommittedEffectFailure):
+        return committed_mutation
     if isinstance(committed_mutation, CommandFailure):
         return action_selection.with_current_alternatives(
             roots,

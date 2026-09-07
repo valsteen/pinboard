@@ -1,3 +1,5 @@
+"""SQLite-boundary failures that preserve transaction and storage diagnostics."""
+
 from enum import Enum
 
 from pinboard.application.ports import WorkStoreError

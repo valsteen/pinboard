@@ -13,10 +13,16 @@ from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.artifacts import NewArtifact
 from pinboard.domain import work_models
-from pinboard.interfaces.errors import WorkBriefError, WorkBriefErrorCode
+from pinboard.interfaces.errors import WorkBriefErrorCode, WorkBriefFailure, WorkBriefResult
 from pinboard.interfaces.work_briefs import build_attempt_brief_views, canonical_work_brief_bytes
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.work_brief_support import work_a_brief
+
+
+def expect_work_brief_success[T](result: WorkBriefResult[T]) -> T:
+    if isinstance(result, WorkBriefFailure):
+        raise AssertionError(str(result))
+    return result
 
 
 class GeneratedViewsTest(unittest.TestCase):
@@ -99,7 +105,9 @@ class GeneratedViewsTest(unittest.TestCase):
         state = replace(state, artifact_references=(reference, *state.artifact_references[1:]))
         store = SQLiteWorkStore(roots.database_path)
         initialize_store(store, state)
-        attempt_briefs = build_attempt_brief_views(store.snapshot(), ArtifactRepository(roots))
+        attempt_briefs = expect_work_brief_success(
+            build_attempt_brief_views(store.snapshot(), ArtifactRepository(roots))
+        )
 
         result = rebuild_state(store.snapshot(), roots.work_root, attempt_briefs, now=SQLITE_NOW)
 
@@ -112,7 +120,7 @@ class GeneratedViewsTest(unittest.TestCase):
         rebuild_state(
             store.snapshot(),
             roots.work_root,
-            build_attempt_brief_views(store.snapshot(), ArtifactRepository(roots)),
+            expect_work_brief_success(build_attempt_brief_views(store.snapshot(), ArtifactRepository(roots))),
             now=SQLITE_NOW,
         )
         self.assertEqual(text, path.read_text(encoding="utf-8"))
@@ -121,11 +129,11 @@ class GeneratedViewsTest(unittest.TestCase):
         project = Path(tempfile.mkdtemp()).resolve()
         roots = resolve_durable_roots(project)
 
-        with self.assertRaises(WorkBriefError) as raised:
-            build_attempt_brief_views(complete_sqlite_state(), ArtifactRepository(roots))
-
-        self.assertEqual(WorkBriefErrorCode.BRIEF_INVALID, raised.exception.code)
-        self.assertIn("work-a-1", raised.exception.message)
+        failure = build_attempt_brief_views(complete_sqlite_state(), ArtifactRepository(roots))
+        self.assertIsInstance(failure, WorkBriefFailure)
+        assert isinstance(failure, WorkBriefFailure)
+        self.assertEqual(WorkBriefErrorCode.BRIEF_INVALID, failure.code)
+        self.assertIn("work-a-1", failure.message)
 
 
 if __name__ == "__main__":

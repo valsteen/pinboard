@@ -34,7 +34,7 @@ from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, Task
 from pinboard.interfaces import transitions as transition_interface
 from pinboard.interfaces import work_brief_models, work_inspection_models
 from pinboard.interfaces.cli import build_parser, main
-from pinboard.interfaces.errors import WorkBriefError, WorkBriefErrorCode
+from pinboard.interfaces.errors import WorkBriefErrorCode, WorkBriefFailure
 from pinboard.interfaces.work_briefs import canonical_work_brief_bytes
 
 from .domain_support import expect_success
@@ -623,8 +623,9 @@ class CliTest(unittest.TestCase):
             value for value in before.artifact_references if value.artifact_ref_id == attempt.brief_artifact_ref_id
         )
         (work / brief.selector).unlink()
-        rejected, _, _ = self.run_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1")
-        self.assertEqual(11, rejected)
+        rejected, _, rejected_stderr = self.run_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1")
+        self.assertEqual(12, rejected)
+        self.assertIn("STORAGE_INVARIANT_VIOLATION", rejected_stderr)
         self.assertEqual(before, store.snapshot())
 
     def test_current_command_surface_lists_every_command(self) -> None:
@@ -993,7 +994,7 @@ class CliTest(unittest.TestCase):
 
         with patch(
             "pinboard.interfaces.work_views.read_attempt_brief_views",
-            side_effect=WorkBriefError(WorkBriefErrorCode.BRIEF_INVALID, "injected revision projection failure"),
+            return_value=WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, "injected revision projection failure"),
         ):
             result, stdout, stderr = self.run_cli(
                 *common,
@@ -3031,7 +3032,7 @@ Not launchable:
 
         with patch(
             "pinboard.interfaces.work_views.read_attempt_brief_views",
-            side_effect=WorkBriefError(WorkBriefErrorCode.BRIEF_INVALID, "injected projection failure"),
+            return_value=WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, "injected projection failure"),
         ):
             result, stdout, stderr = self.run_transition(common, action, payload, json_output=False)
 
@@ -3326,7 +3327,7 @@ Not launchable:
         payload.write_text('{"evidence":"All accepted work is complete."}', encoding="utf-8")
         with patch(
             "pinboard.interfaces.work_views.read_attempt_brief_views",
-            side_effect=WorkBriefError(WorkBriefErrorCode.BRIEF_INVALID, "injected view failure"),
+            return_value=WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, "injected view failure"),
         ):
             result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
         self.assertEqual(0, result, stderr)

@@ -148,8 +148,25 @@ type OperationDetail = OperationContract | PresentationContract
 type OperationKey = tuple[str, str]
 
 
-class UnknownToolContractSelector(ValueError):
-    pass
+def _unknown_selector(supplied: str, message: str) -> CommandFailure:
+    return CommandFailure(
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+        message,
+        FailureDetails(
+            observed=(FailureFact("operation", supplied),),
+            mismatches=(
+                FailureMismatch(
+                    "operation",
+                    "selector returned by pinboard tool-contract --json",
+                    supplied,
+                ),
+            ),
+            retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
 
 
 def _mutation_class(command_type: type[cli_commands.CliCommand]) -> MutationClass:
@@ -579,7 +596,7 @@ def describe_action(kind: decision_models.ActionKind) -> ActionContract:
     )
 
 
-def _presentation_contract(presentation: str) -> PresentationContract:
+def _presentation_contract(presentation: str) -> CommandResult[PresentationContract]:
     match presentation:
         case "root":
             purpose = "Present the installed CLI root and require one exact command."
@@ -594,7 +611,7 @@ def _presentation_contract(presentation: str) -> PresentationContract:
             schema = msgspec.Raw(b'{"const":["--version"]}')
             postcondition = "Print the installed version and exit successfully without opening project state."
         case _:
-            raise UnknownToolContractSelector(f"unknown installed presentation: {presentation}")
+            return _unknown_selector(f"presentation/{presentation}", f"unknown installed presentation: {presentation}")
     return PresentationContract(
         "pinboard-agent-tool-presentation/v1",
         presentation,
@@ -678,7 +695,7 @@ def installed_tool_contract() -> ToolContractIndex:
     )
 
 
-def describe_operation(operation_id: str, variant: str) -> OperationDetail:
+def describe_operation(operation_id: str, variant: str) -> CommandResult[OperationDetail]:
     if operation_id.startswith("presentation/"):
         return _presentation_contract(operation_id.removeprefix("presentation/"))
     selected = tuple(
@@ -687,11 +704,11 @@ def describe_operation(operation_id: str, variant: str) -> OperationDetail:
         if candidate.operation_id == operation_id and candidate.variant == variant
     )
     if len(selected) != 1:
-        raise UnknownToolContractSelector(f"unknown installed operation: {operation_id}:{variant}")
+        return _unknown_selector(f"{operation_id}:{variant}", f"unknown installed operation: {operation_id}:{variant}")
     return _operation_contract(selected[0])
 
 
-def describe_operation_selector(operation_id: str) -> OperationContract | OperationVariantIndex:
+def describe_operation_selector(operation_id: str) -> CommandResult[OperationContract | OperationVariantIndex]:
     selected = tuple(
         candidate for candidate in cli_parser.installed_command_variants() if candidate.operation_id == operation_id
     )
@@ -704,7 +721,7 @@ def describe_operation_selector(operation_id: str) -> OperationContract | Operat
             tuple(_operation_index_entry(candidate) for candidate in selected),
             "Choose the detail_selector whose variant matches the action authority or artifact path, then request it exactly.",
         )
-    raise UnknownToolContractSelector(f"unknown installed operation: {operation_id}")
+    return _unknown_selector(operation_id, f"unknown installed operation: {operation_id}")
 
 
 def operation_identity(command: cli_commands.CliCommand) -> str:
@@ -718,7 +735,9 @@ def operation_identity(command: cli_commands.CliCommand) -> str:
     return variant.operation_id if variant.variant == "default" else f"{variant.operation_id}:{variant.variant}"
 
 
-def select_tool_contract(command: cli_commands.ToolContractCommand) -> ToolContractIndex | ToolContractDetail:
+def select_tool_contract(
+    command: cli_commands.ToolContractCommand,
+) -> CommandResult[ToolContractIndex | ToolContractDetail]:
     if command.brief_starter is not None:
         return work_brief_contract.describe_work_brief_starter(command.brief_starter)
     if command.action_kind is not None:
@@ -730,36 +749,9 @@ def select_tool_contract(command: cli_commands.ToolContractCommand) -> ToolContr
 
 
 def show_tool_contract(command: cli_commands.ToolContractCommand) -> CommandResult[int]:
-    try:
-        selected = select_tool_contract(command)
-    except UnknownToolContractSelector as error:
-        if command.brief_starter is not None:
-            field = "brief_starter"
-            supplied = command.brief_starter
-        elif command.action_kind is not None:
-            field = "action_kind"
-            supplied = command.action_kind.value
-        else:
-            field = "operation"
-            supplied = command.operation
-        return CommandFailure(
-            DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            str(error),
-            FailureDetails(
-                observed=(FailureFact(field, supplied),),
-                mismatches=(
-                    FailureMismatch(
-                        field,
-                        "selector returned by pinboard tool-contract --json",
-                        supplied,
-                    ),
-                ),
-                retry=RetryDisposition.CORRECT_INPUT,
-                effect=EffectDisposition.UNCHANGED,
-                changed_surfaces=(),
-                alternatives=(),
-            ),
-        )
+    selected = select_tool_contract(command)
+    if isinstance(selected, CommandFailure):
+        return selected
     if command.json:
         write_json(selected)
     elif isinstance(selected, ToolContractIndex):

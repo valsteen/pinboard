@@ -15,7 +15,6 @@ from typing import assert_never
 import msgspec
 
 from pinboard.adapters.files.artifacts import read_reference
-from pinboard.adapters.files.errors import ArtifactError
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import actions as action_queries
 from pinboard.application import queries, query_models, stored_state
@@ -37,10 +36,9 @@ def _read_attempt_brief(
         return errors.CommandFailure(
             domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, "Accepted brief is missing.", None
         )
-    try:
-        brief = decode_canonical_work_brief(read_reference(roots.work, reference))
-    except (ArtifactError, errors.WorkBriefError) as error:
-        return errors.CommandFailure(domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, str(error), None)
+    brief = decode_canonical_work_brief(read_reference(roots.work, reference))
+    if isinstance(brief, errors.WorkBriefFailure):
+        return errors.CommandFailure(domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, str(brief), None)
     if (
         brief.attempt_id,
         brief.item_id,

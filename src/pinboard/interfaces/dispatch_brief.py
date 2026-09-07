@@ -33,15 +33,15 @@ from pinboard.interfaces.errors import (
     DispatchErrorCode,
     DispatchFailure,
     DispatchResult,
-    WorkBriefError,
     WorkBriefErrorCode,
+    WorkBriefFailure,
 )
 from pinboard.interfaces.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_work_brief_review_bytes,
+    decode_canonical_work_brief,
     decode_canonical_work_brief_review,
     decode_work_brief_review,
-    read_work_brief,
     validate_reviewed_authority_digests,
     validate_work_brief_review,
 )
@@ -108,7 +108,7 @@ def read_dispatch_environment(path: Path) -> DispatchResult[DispatchEnvironment]
         )
 
 
-def _review_failure(error: WorkBriefError) -> DispatchFailure:
+def _review_failure(error: WorkBriefFailure) -> DispatchFailure:
     match error.code:
         case (
             WorkBriefErrorCode.BRIEF_INVALID
@@ -240,7 +240,7 @@ def _validate_dispatch_identity(
 
 
 def _read_dispatch_brief(
-    attempt_path: Path,
+    accepted_brief_bytes: bytes,
     attempt_id: str,
     attempt_branch: str,
     attempt_base_revision: str,
@@ -251,10 +251,9 @@ def _read_dispatch_brief(
     accepted_scope_revision: int | None,
     accepted_scope_digest: str | None,
 ) -> DispatchResult[work_brief_models.WorkBrief]:
-    try:
-        brief = read_work_brief(attempt_path)
-    except WorkBriefError as error:
-        return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, error.message, None)
+    brief = decode_canonical_work_brief(accepted_brief_bytes)
+    if isinstance(brief, WorkBriefFailure):
+        return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, brief.message, None)
     if (
         failure := _validate_dispatch_identity(
             brief,
@@ -308,12 +307,12 @@ def _select_dispatch_review(
         case work_brief_models.CrossBoundaryCheckpoint() as checkpoint:
             if supplied_review is None:
                 return ReuseAcceptedDispatchReview(hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest())
-            try:
-                review = decode_work_brief_review(supplied_review.content)
-                validate_work_brief_review(review, brief)
-                candidate = canonical_work_brief_review_bytes(review)
-            except WorkBriefError as error:
-                return _review_failure(error)
+            review = decode_work_brief_review(supplied_review.content)
+            if isinstance(review, WorkBriefFailure):
+                return _review_failure(review)
+            if (failure := validate_work_brief_review(review, brief)) is not None:
+                return _review_failure(failure)
+            candidate = canonical_work_brief_review_bytes(review)
             return PublishSuppliedDispatchReview(review.checkpoint_sha256, candidate, supplied_review.review_id)
         case _ as unreachable:
             assert_never(unreachable)
@@ -337,11 +336,11 @@ def _validate_accepted_review(
                     "The exact ready brief review is absent.",
                     None,
                 )
-            try:
-                review = decode_canonical_work_brief_review(accepted_review)
-                validate_work_brief_review(review, brief)
-            except WorkBriefError as error:
-                return _review_failure(error)
+            review = decode_canonical_work_brief_review(accepted_review)
+            if isinstance(review, WorkBriefFailure):
+                return _review_failure(review)
+            if (failure := validate_work_brief_review(review, brief)) is not None:
+                return _review_failure(failure)
         case _ as unreachable:
             assert_never(unreachable)
     return None
@@ -383,10 +382,10 @@ def prepare_dispatch(
     assert isinstance(action, decision_models.DispatchAction)
     attempt = selected_dispatch.attempt
     accepted_brief_reference = selected_dispatch.brief_reference
-    artifacts.verify(accepted_brief_reference)
-    accepted_brief_path = artifacts.path(accepted_brief_reference)
+    accepted_brief_bytes = artifacts.read(accepted_brief_reference)
+    accepted_brief_path = artifacts.work_root / accepted_brief_reference.selector
     validated_brief = _read_dispatch_brief(
-        accepted_brief_path,
+        accepted_brief_bytes,
         str(selected_dispatch.attempt.attempt_id),
         selected_dispatch.attempt.branch,
         selected_dispatch.attempt.base_revision,
@@ -411,8 +410,7 @@ def prepare_dispatch(
             accepted_review_reference = find_dispatch_review(store, attempt.attempt_id, checkpoint_sha256)
             if isinstance(accepted_review_reference, ApplicationDispatchFailure):
                 return _dispatch_failure(accepted_review_reference)
-            artifacts.verify(accepted_review_reference)
-            accepted_review_bytes = artifacts.path(accepted_review_reference).read_bytes()
+            accepted_review_bytes = artifacts.read(accepted_review_reference)
         case PublishSuppliedDispatchReview(
             checkpoint_sha256=checkpoint_sha256,
             candidate=candidate,
@@ -431,8 +429,7 @@ def prepare_dispatch(
                 return _dispatch_failure(accepted_review)
             accepted_review_reference = accepted_review.reference
             own_review_publication_revision = accepted_review.own_publication_revision
-            artifacts.verify(accepted_review_reference)
-            accepted_review_bytes = artifacts.path(accepted_review_reference).read_bytes()
+            accepted_review_bytes = artifacts.read(accepted_review_reference)
         case _ as unreachable:
             assert_never(unreachable)
     rendered_prompt = _render_dispatch_prompt(

@@ -20,7 +20,12 @@ from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.interfaces import cli_commands, work_briefs, work_views
 from pinboard.interfaces.cli_output import write_json
-from pinboard.interfaces.errors import CommandFailure, CommandResult, WorkBriefError, WorkBriefErrorCode
+from pinboard.interfaces.errors import (
+    CommandFailure,
+    CommandResult,
+    WorkBriefErrorCode,
+    WorkBriefFailure,
+)
 
 
 class BriefPublicationView(msgspec.Struct, frozen=True):
@@ -37,15 +42,17 @@ class BriefPublicationView(msgspec.Struct, frozen=True):
 def publish_brief(
     roots: cli_commands.ResolvedRoots,
     command: cli_commands.BriefPublishCommand,
-) -> CommandResult[int]:
+) -> CommandResult[int] | WorkBriefFailure:
     try:
         candidate_bytes = command.file.read_bytes()
     except OSError as error:
-        raise WorkBriefError(
+        return WorkBriefFailure(
             WorkBriefErrorCode.BRIEF_INVALID,
             f"Cannot read work brief candidate '{command.file}': {error}",
-        ) from error
+        )
     validated_brief = work_briefs.decode_work_brief(candidate_bytes)
+    if isinstance(validated_brief, WorkBriefFailure):
+        return validated_brief
     canonical_brief_bytes = work_briefs.canonical_work_brief_bytes(validated_brief)
     store = SQLiteWorkStore(roots.work / "state.sqlite3")
     accepted_reference = artifact_publication.publish_accepted_artifact(

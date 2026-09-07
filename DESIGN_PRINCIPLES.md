@@ -89,6 +89,8 @@ Let failures remain exceptions when execution cannot proceed as designed. Exampl
 
 Do not catch every exception and convert it to a result. Catch only the exact boundary exceptions owned by an advertised failure contract. Do not use a decorator or framework to hide that conversion. Return and propagate expected failures in ordinary typed control flow; let genuine infrastructure and programming failures remain visibly exceptional. The transaction owner rolls back both categories.
 
+A custom exception needs more than an effectful implementation site. Its nearest contract must identify the decoding, infrastructure, persisted-invariant, programming-contract, transaction, or cohesive partial-publication failure that prevents normal continuation. If an immediate caller would catch the exception only to reconstruct the same returned failure, return that frozen failure directly and include it in the function's result alias. Keep short-circuiting visible with ordinary early returns; do not replace them with a fluent result API, decorator, or boolean chain.
+
 ## Make impossible states unrepresentable
 
 Supported typed code must not represent impossible states through exceptions, result variants, sentinels, fallback branches, placeholder initializers, optional-parameter coupling, or tests that fabricate malformed typed values. Encode the valid combinations in concrete records, nominal identifiers, closed unions, and exhaustive matching so an invalid construction or call is rejected statically or has no callable surface.

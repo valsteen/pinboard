@@ -24,35 +24,35 @@ from pinboard.interfaces.brief_source_models import (
     SelectedBriefSource,
     authority_selector,
 )
-from pinboard.interfaces.errors import BriefSourceError, BriefSourceErrorCode
+from pinboard.interfaces.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
 
 MARKDOWN_HEADING: Final = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
 
-def decode_brief_source_manifest(raw: bytes) -> BriefSourceManifest:
+def decode_brief_source_manifest(raw: bytes) -> BriefSourceResult[BriefSourceManifest]:
     try:
         manifest = msgspec.json.decode(raw, type=BriefSourceManifest)
     except (msgspec.DecodeError, ValueError) as error:
-        raise BriefSourceError(
+        return BriefSourceFailure(
             BriefSourceErrorCode.MANIFEST_INVALID,
             f"Cannot decode brief source manifest: {error}",
-        ) from error
+        )
     return manifest
 
 
-def _find_heading_range(lines: tuple[str, ...], heading: str, path: Path) -> tuple[int, int]:
+def _find_heading_range(lines: tuple[str, ...], heading: str, path: Path) -> BriefSourceResult[tuple[int, int]]:
     matches: list[tuple[int, int]] = []
     for index, line in enumerate(lines):
         match = MARKDOWN_HEADING.fullmatch(line)
         if match is not None and match.group(2) == heading:
             matches.append((index, len(match.group(1))))
     if not matches:
-        raise BriefSourceError(
+        return BriefSourceFailure(
             BriefSourceErrorCode.SELECTOR_INVALID,
             f"Heading '{heading}' is not in '{path}'.",
         )
     if len(matches) != 1:
-        raise BriefSourceError(
+        return BriefSourceFailure(
             BriefSourceErrorCode.SELECTOR_INVALID,
             f"Heading '{heading}' is not unique in '{path}'.",
         )
@@ -71,37 +71,40 @@ def select_brief_source(
     selector: AuthoritySelector,
     *,
     require_utf8: bool,
-) -> SelectedBriefSource:
+) -> BriefSourceResult[SelectedBriefSource]:
     path = source_checkout_root / Path(*selector.relative_path.parts)
     try:
         raw = path.read_bytes()
     except OSError as error:
-        raise BriefSourceError(
+        return BriefSourceFailure(
             BriefSourceErrorCode.SOURCE_UNREADABLE,
             f"Cannot read authority at '{path}': {error}",
-        ) from error
+        )
     if selector.heading is None:
         if require_utf8:
             try:
                 raw.decode("utf-8")
-            except UnicodeDecodeError as error:
-                raise BriefSourceError(
+            except UnicodeDecodeError:
+                return BriefSourceFailure(
                     BriefSourceErrorCode.SOURCE_NOT_UTF8,
                     f"Authority '{path}' is not UTF-8 text.",
-                ) from error
+                )
         raw_lines = raw.splitlines(keepends=True)
         lines = tuple(BriefSourceLine(index, content) for index, content in enumerate(raw_lines, start=1))
         return SelectedBriefSource(selector, raw, 1 if lines else 0, len(lines), True, lines)
 
     try:
         text = raw.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise BriefSourceError(
+    except UnicodeDecodeError:
+        return BriefSourceFailure(
             BriefSourceErrorCode.SOURCE_NOT_UTF8,
             f"Heading-selected authority '{path}' is not UTF-8 text.",
-        ) from error
+        )
     text_lines = tuple(text.splitlines())
-    start, end = _find_heading_range(text_lines, selector.heading, path)
+    heading_range = _find_heading_range(text_lines, selector.heading, path)
+    if isinstance(heading_range, BriefSourceFailure):
+        return heading_range
+    start, end = heading_range
     selected_lines = tuple(BriefSourceLine(index + 1, f"{text_lines[index]}\n".encode()) for index in range(start, end))
     return SelectedBriefSource(
         selector,
@@ -113,17 +116,20 @@ def select_brief_source(
     )
 
 
-def _reject_overlaps(selected: tuple[tuple[BriefSourceRequest, SelectedBriefSource], ...]) -> None:
+def _reject_overlaps(
+    selected: tuple[tuple[BriefSourceRequest, SelectedBriefSource], ...],
+) -> BriefSourceFailure | None:
     for index, (left_request, left) in enumerate(selected):
         for right_request, right in selected[index + 1 :]:
             if left.selector.relative_path != right.selector.relative_path:
                 continue
             if max(left.start_line, right.start_line) <= min(left.end_line, right.end_line):
-                raise BriefSourceError(
+                return BriefSourceFailure(
                     BriefSourceErrorCode.SELECTOR_OVERLAP,
                     f"Authorities '{left_request.authority_id}' and '{right_request.authority_id}' select "
                     f"overlapping lines in '{left.selector.relative_path}'.",
                 )
+    return None
 
 
 def _compose_segment(
@@ -148,7 +154,7 @@ def _split_source_into_segments(
     request: BriefSourceRequest,
     selected: SelectedBriefSource,
     max_batch_bytes: int,
-) -> tuple[BriefSourceSegment, ...]:
+) -> BriefSourceResult[tuple[BriefSourceSegment, ...]]:
     if not selected.lines:
         return (_compose_segment(request, 0, ()),)
     segments: list[BriefSourceSegment] = []
@@ -157,7 +163,7 @@ def _split_source_into_segments(
     for line in selected.lines:
         line_bytes = len(line.content)
         if line_bytes > max_batch_bytes:
-            raise BriefSourceError(
+            return BriefSourceFailure(
                 BriefSourceErrorCode.LINE_TOO_LARGE,
                 f"Line {line.number} selected by '{request.authority_id}' is {line_bytes} bytes; "
                 f"the limit is {max_batch_bytes}.",
@@ -222,23 +228,26 @@ def plan_brief_sources(
     source_checkout_root: Path,
     manifest: BriefSourceManifest,
     max_batch_bytes: int,
-) -> BriefSourcePlan:
-    selected = tuple(
-        (
-            request,
-            select_brief_source(
-                source_checkout_root,
-                authority_selector(request.selector),
-                require_utf8=True,
-            ),
+) -> BriefSourceResult[BriefSourcePlan]:
+    selected_values: list[tuple[BriefSourceRequest, SelectedBriefSource]] = []
+    for request in manifest.sources:
+        selected = select_brief_source(
+            source_checkout_root,
+            authority_selector(request.selector),
+            require_utf8=True,
         )
-        for request in manifest.sources
-    )
-    _reject_overlaps(selected)
+        if isinstance(selected, BriefSourceFailure):
+            return selected
+        selected_values.append((request, selected))
+    selected_sources = tuple(selected_values)
+    if (failure := _reject_overlaps(selected_sources)) is not None:
+        return failure
     planned_sources: list[PlannedBriefSource] = []
     all_segments: list[BriefSourceSegment] = []
-    for request, authority in selected:
+    for request, authority in selected_sources:
         segments = _split_source_into_segments(request, authority, max_batch_bytes)
+        if isinstance(segments, BriefSourceFailure):
+            return segments
         all_segments.extend(segments)
         planned_sources.append(
             PlannedBriefSource(
@@ -263,9 +272,9 @@ def plan_brief_sources(
     )
 
 
-def render_brief_source_batch(plan: BriefSourcePlan, batch_index: int) -> bytes:
+def render_brief_source_batch(plan: BriefSourcePlan, batch_index: int) -> BriefSourceResult[bytes]:
     if batch_index < 0 or batch_index >= len(plan.batches):
-        raise BriefSourceError(
+        return BriefSourceFailure(
             BriefSourceErrorCode.BATCH_NOT_FOUND,
             f"Batch {batch_index} is outside the available range 0..{len(plan.batches) - 1}.",
         )

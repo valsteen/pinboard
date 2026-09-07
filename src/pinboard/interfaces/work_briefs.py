@@ -13,11 +13,16 @@ from pinboard.domain.identifiers import AttemptId
 from pinboard.interfaces import work_brief_models
 from pinboard.interfaces.brief_source_models import authority_selector
 from pinboard.interfaces.brief_sources import select_brief_source
-from pinboard.interfaces.errors import BriefSourceError, WorkBriefError, WorkBriefErrorCode
+from pinboard.interfaces.errors import (
+    BriefSourceFailure,
+    WorkBriefErrorCode,
+    WorkBriefFailure,
+    WorkBriefResult,
+)
 
 
-def _invalid(message: str) -> WorkBriefError:
-    return WorkBriefError(WorkBriefErrorCode.BRIEF_INVALID, message)
+def _invalid(message: str) -> WorkBriefFailure:
+    return WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, message)
 
 
 def _canonical_bytes[T](value: T) -> bytes:
@@ -38,21 +43,23 @@ def _owner_key(owner: work_brief_models.CoverageOwner) -> tuple[str, str | int]:
             assert_never(unreachable)
 
 
-def decode_work_brief(data: bytes) -> work_brief_models.WorkBrief:
+def decode_work_brief(data: bytes) -> WorkBriefResult[work_brief_models.WorkBrief]:
     try:
         return msgspec.json.decode(data, type=work_brief_models.WorkBrief)
     except msgspec.DecodeError as error:
-        raise _invalid(f"Cannot decode canonical work brief: {error}") from error
+        return _invalid(f"Cannot decode canonical work brief: {error}")
 
 
 def canonical_work_brief_bytes(brief: work_brief_models.WorkBrief) -> bytes:
     return _canonical_bytes(brief) + b"\n"
 
 
-def decode_canonical_work_brief(data: bytes) -> work_brief_models.WorkBrief:
+def decode_canonical_work_brief(data: bytes) -> WorkBriefResult[work_brief_models.WorkBrief]:
     brief = decode_work_brief(data)
+    if isinstance(brief, WorkBriefFailure):
+        return brief
     if data != canonical_work_brief_bytes(brief):
-        raise WorkBriefError(
+        return WorkBriefFailure(
             WorkBriefErrorCode.BRIEF_NOT_CANONICAL,
             "Accepted work brief bytes are not the canonical msgspec encoding.",
         )
@@ -72,14 +79,13 @@ def validate_reviewed_authority_digests(
     authorities: tuple[work_brief_models.ReviewedAuthority, ...],
 ) -> work_brief_models.ReviewedAuthorityValidationFailure | None:
     for authority in authorities:
-        try:
-            selected = select_brief_source(
-                source_checkout_root,
-                authority_selector(authority.selector),
-                require_utf8=True,
-            )
-        except BriefSourceError as error:
-            return work_brief_models.ReviewedAuthoritySelectionFailure(authority.authority_id, error.message)
+        selected = select_brief_source(
+            source_checkout_root,
+            authority_selector(authority.selector),
+            require_utf8=True,
+        )
+        if isinstance(selected, BriefSourceFailure):
+            return work_brief_models.ReviewedAuthoritySelectionFailure(authority.authority_id, selected.message)
         observed_sha256 = hashlib.sha256(selected.content).hexdigest()
         if observed_sha256 != authority.reviewed_sha256:
             return work_brief_models.ReviewedAuthorityDigestMismatch(
@@ -90,24 +96,26 @@ def validate_reviewed_authority_digests(
     return None
 
 
-def decode_work_brief_review(data: bytes) -> work_brief_models.WorkBriefReview:
+def decode_work_brief_review(data: bytes) -> WorkBriefResult[work_brief_models.WorkBriefReview]:
     try:
         return msgspec.json.decode(data, type=work_brief_models.WorkBriefReview)
     except msgspec.DecodeError as error:
-        raise WorkBriefError(
+        return WorkBriefFailure(
             WorkBriefErrorCode.REVIEW_INVALID,
             f"Cannot decode canonical work brief review: {error}",
-        ) from error
+        )
 
 
 def canonical_work_brief_review_bytes(review: work_brief_models.WorkBriefReview) -> bytes:
     return _canonical_bytes(review) + b"\n"
 
 
-def decode_canonical_work_brief_review(data: bytes) -> work_brief_models.WorkBriefReview:
+def decode_canonical_work_brief_review(data: bytes) -> WorkBriefResult[work_brief_models.WorkBriefReview]:
     review = decode_work_brief_review(data)
+    if isinstance(review, WorkBriefFailure):
+        return review
     if data != canonical_work_brief_review_bytes(review):
-        raise WorkBriefError(
+        return WorkBriefFailure(
             WorkBriefErrorCode.REVIEW_NOT_CANONICAL,
             "Accepted work brief review bytes are not the canonical msgspec encoding.",
         )
@@ -118,18 +126,18 @@ def validate_work_brief_review(
     review: work_brief_models.WorkBriefReview,
     brief: work_brief_models.WorkBrief,
     reviewer_task_id: str | None = None,
-) -> None:
+) -> WorkBriefFailure | None:
     checkpoint = brief.checkpoint
     if not isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
-        raise WorkBriefError(WorkBriefErrorCode.REVIEW_INVALID, "Local checkpoints do not use brief reviews.")
+        return WorkBriefFailure(WorkBriefErrorCode.REVIEW_INVALID, "Local checkpoints do not use brief reviews.")
     if review.attempt_id != brief.attempt_id or review.checkpoint_id != checkpoint.checkpoint_id:
-        raise WorkBriefError(
+        return WorkBriefFailure(
             WorkBriefErrorCode.REVIEW_INVALID,
             "Brief review names a different attempt or checkpoint.",
         )
     owner_task_id = brief.owner_task_id if reviewer_task_id is None else reviewer_task_id
     if review.reviewer_task_id == owner_task_id:
-        raise WorkBriefError(
+        return WorkBriefFailure(
             WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT,
             "The brief reviewer must be a different task from the attempt owner.",
         )
@@ -137,17 +145,18 @@ def validate_work_brief_review(
         review.reviewed_authority_set_sha256
         != hashlib.sha256(canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)).hexdigest()
     ):
-        raise WorkBriefError(
+        return WorkBriefFailure(
             WorkBriefErrorCode.REVIEW_STALE,
             "Brief review is not bound to the current checkpoint and reviewed authorities.",
         )
     expected = {(record.authority_id, record.family, _owner_key(record.owner)) for record in checkpoint.coverage}
     observed = {(record.authority_id, record.family, _owner_key(record.owner)) for record in review.coverage}
     if len(observed) != len(review.coverage) or observed != expected:
-        raise WorkBriefError(
+        return WorkBriefFailure(
             WorkBriefErrorCode.REVIEW_NOT_READY,
             "Brief review must contain exactly one covered result for every coverage owner.",
         )
+    return None
 
 
 def _authorization_text(
@@ -297,16 +306,10 @@ def render_work_brief_markdown(brief: work_brief_models.WorkBrief) -> bytes:
     return "\n".join(lines).encode()
 
 
-def read_work_brief(path: Path, *, canonical: bool = True) -> work_brief_models.WorkBrief:
-    try:
-        data = path.read_bytes()
-    except OSError as error:
-        raise WorkBriefError(WorkBriefErrorCode.BRIEF_INVALID, f"Cannot read work brief '{path}': {error}") from error
-    return decode_canonical_work_brief(data) if canonical else decode_work_brief(data)
-
-
-def decode_work_brief_identity(data: bytes) -> WorkBriefIdentity:
+def decode_work_brief_identity(data: bytes) -> WorkBriefResult[WorkBriefIdentity]:
     brief = decode_canonical_work_brief(data)
+    if isinstance(brief, WorkBriefFailure):
+        return brief
     return WorkBriefIdentity(
         brief.attempt_id,
         brief.item_id,
@@ -325,18 +328,19 @@ def read_transition_work_brief_identity(
     reference = transition_work_brief_reference(state, command)
     if reference is None:
         return None
-    artifacts.verify(reference)
-    try:
-        return decode_work_brief_identity(artifacts.path(reference).read_bytes())
-    except WorkBriefError as error:
+    identity = decode_work_brief_identity(artifacts.read(reference))
+    if isinstance(identity, WorkBriefFailure):
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            f"The selected brief artifact is not a valid canonical typed work brief: {error}",
+            f"The selected brief artifact is not a valid canonical typed work brief: {identity}",
             None,
         )
+    return identity
 
 
-def build_attempt_brief_views(state: stored_state.StoredWorkState, artifacts: ArtifactReader) -> dict[AttemptId, bytes]:
+def build_attempt_brief_views(
+    state: stored_state.StoredWorkState, artifacts: ArtifactReader
+) -> WorkBriefResult[dict[AttemptId, bytes]]:
     result: dict[AttemptId, bytes] = {}
     references = {value.artifact_ref_id: value for value in state.artifact_references}
     for attempt in state.lifecycle.attempts:
@@ -344,11 +348,12 @@ def build_attempt_brief_views(state: stored_state.StoredWorkState, artifacts: Ar
             continue
         reference = references.get(attempt.brief_artifact_ref_id)
         if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
-            raise _invalid(f"Live attempt '{attempt.attempt_id}' has no accepted brief reference.")
+            return _invalid(f"Live attempt '{attempt.attempt_id}' has no accepted brief reference.")
         if not reference.selector.endswith(".json"):
-            raise _invalid(f"Live attempt '{attempt.attempt_id}' accepted brief is not canonical v2 JSON.")
-        artifacts.verify(reference)
-        brief = read_work_brief(artifacts.path(reference))
+            return _invalid(f"Live attempt '{attempt.attempt_id}' accepted brief is not canonical v2 JSON.")
+        brief = decode_canonical_work_brief(artifacts.read(reference))
+        if isinstance(brief, WorkBriefFailure):
+            return brief
         expected = (
             str(attempt.attempt_id),
             str(attempt.item_id),
@@ -366,6 +371,6 @@ def build_attempt_brief_views(state: stored_state.StoredWorkState, artifacts: Ar
             brief.accepted_scope.digest,
         )
         if observed != expected:
-            raise _invalid(f"Live attempt '{attempt.attempt_id}' brief identity does not match SQLite.")
+            return _invalid(f"Live attempt '{attempt.attempt_id}' brief identity does not match SQLite.")
         result[attempt.attempt_id] = render_work_brief_markdown(brief)
     return result

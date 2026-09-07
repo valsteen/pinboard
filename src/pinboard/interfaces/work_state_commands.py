@@ -10,7 +10,7 @@ from pinboard.adapters.files.root import resolve_shared_repository_root, resolve
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.interfaces import cli_commands, work_views
 from pinboard.interfaces.cli_output import write_json
-from pinboard.interfaces.errors import WorkBriefError
+from pinboard.interfaces.errors import CliResult, WorkBriefFailure
 from pinboard.interfaces.work_state import (
     initialize_work_state,
     read_state_for_validation,
@@ -71,13 +71,13 @@ def validate_state(roots: cli_commands.ResolvedRoots, command: cli_commands.Vali
         validation_report = loaded_state
     else:
         current_state = loaded_state
-        brief_error: WorkBriefError | None = None
+        brief_error: WorkBriefFailure | None = None
         try:
             attempt_briefs = work_views.read_attempt_brief_views(roots, current_state)
-        except WorkBriefError as error:
-            brief_error = error
-            attempt_briefs = None
         except ArtifactError:
+            attempt_briefs = None
+        if isinstance(attempt_briefs, WorkBriefFailure):
+            brief_error = attempt_briefs
             attempt_briefs = None
         validation_report = validate_loaded_work_state(roots.work, current_state, attempt_briefs, now=operation_time)
         if brief_error is not None:
@@ -113,10 +113,12 @@ def _read_user_config_and_recommend_body_after_prefix() -> str | None:
     )
 
 
-def initialize_state(roots: cli_commands.ResolvedRoots, command: cli_commands.InitializeCommand) -> int:
+def initialize_state(roots: cli_commands.ResolvedRoots, command: cli_commands.InitializeCommand) -> CliResult[int]:
     selected_work = roots.work if roots.explicit_work_root else None
     operation_time = datetime.now(UTC)
     receipt = initialize_work_state(roots.shared_repository, selected_work, now=operation_time)
+    if isinstance(receipt, WorkBriefFailure):
+        return receipt
     optional_next_skills = (
         () if receipt.resumed else ("repository-readiness", "slop-cleanup", "maintaining-agent-guidance")
     )

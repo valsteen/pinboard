@@ -164,6 +164,14 @@ def _verify_current_schema(connection: sqlite3.Connection) -> None:
     try:
         if _read_schema_signature(connection) != _build_expected_schema_signature():
             raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact current schema.")
+    except sqlite3.Error as error:
+        raise translate_database_error(error, opening=True) from error
+
+
+def verify_database_integrity(connection: sqlite3.Connection) -> None:
+    """Run the explicit whole-database integrity checks."""
+
+    try:
         quick_check = connection.execute("PRAGMA quick_check").fetchone()
         foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchone()
     except sqlite3.Error as error:
@@ -325,6 +333,7 @@ def initialize_database(roots: DurableRoots, now: datetime) -> None:
                     (APPLICATION, SCHEMA_VERSION, timestamp, timestamp),
                 )
             _verify_current_schema(connection)
+            verify_database_integrity(connection)
         finally:
             if connection is not None:
                 connection.close()

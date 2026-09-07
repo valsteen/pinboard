@@ -68,7 +68,7 @@ def read_state_for_validation(work_root: Path) -> stored_state.StoredWorkState |
 
     database = work_root / "state.sqlite3"
     try:
-        return SQLiteWorkStore(database).snapshot()
+        return SQLiteWorkStore(database).validated_snapshot()
     except StorageError as error:
         return ValidationReport((_error_diagnostic(error.code.value, database, str(error)),))
 

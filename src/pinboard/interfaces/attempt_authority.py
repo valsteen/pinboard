@@ -7,7 +7,7 @@ from typing import assert_never
 from uuid import uuid4
 
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state
+from pinboard.application import queries, stored_state
 from pinboard.application.decision_projection import (
     project_decision_snapshot,
     project_inactive_attempt_authority,
@@ -17,7 +17,7 @@ from pinboard.domain import authority_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import AttemptId, LeaseId
 from pinboard.interfaces import cli_commands, work_views
-from pinboard.interfaces.cli_output import retained_authority_lease_fields, write_json
+from pinboard.interfaces.cli_output import authority_status_fields, retained_authority_lease_fields, write_json
 from pinboard.interfaces.errors import CommandErrorCode, CommandFailure, CommandResult
 
 type AttemptAuthorityCommand = (
@@ -55,8 +55,20 @@ def _present_latest_attempt_authority(
 def show_attempt_authority_status(
     roots: cli_commands.ResolvedRoots, command: cli_commands.AttemptStatusCommand
 ) -> CommandResult[int]:
-    latest_committed_state = SQLiteWorkStore(roots.work / "state.sqlite3").snapshot()
-    return _present_latest_attempt_authority(latest_committed_state, command.attempt_id, json=command.json)
+    selected = queries.select_attempt_authority_status(
+        SQLiteWorkStore(roots.work / "state.sqlite3"), command.attempt_id
+    )
+    if isinstance(selected, DecisionFailure):
+        return CommandFailure(selected.code, selected.message, selected.details)
+    values: dict[str, str | int] = {
+        "attempt_id": str(selected.attempt_id),
+        **authority_status_fields(selected),
+    }
+    if command.json:
+        write_json(values)
+    else:
+        print("OK " + " ".join(f"{key}={value}" for key, value in values.items()))
+    return 0
 
 
 def _find_attempt_record(

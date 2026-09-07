@@ -1,17 +1,47 @@
-"""Project read-only application views from one already-loaded stored snapshot.
+"""Project read-only application views from exact capabilities or stored snapshots.
 
-Callers own SQLite access and time sampling. These functions select and compose
-current facts without reading files, mutating state, or presenting output.
+Callers own SQLite access and time sampling. Exact status use cases request only
+their operation facts; remaining projections select from an already-loaded complete
+snapshot. These functions never read files, mutate state, or present output.
 """
 
+from dataclasses import replace
 from datetime import datetime
 
-from pinboard.application import query_models, stored_state
+from pinboard.application import ports, query_models, stored_state
 from pinboard.application.actions import discover_actions
 from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import AttemptId, ItemId, TaskId
+
+
+def select_attempt_authority_status(
+    reader: ports.AuthorityStatusReader, attempt_id: AttemptId
+) -> DecisionResult[query_models.AttemptAuthorityStatus]:
+    selected = reader.read_attempt_authority_status(attempt_id)
+    if selected is None:
+        return DecisionFailure(
+            DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+            f"Attempt '{attempt_id}' has no retained authority.",
+            None,
+        )
+    return selected
+
+
+def select_preparation_authority_status(
+    reader: ports.AuthorityStatusReader, item_id: ItemId, observed_at: datetime
+) -> DecisionResult[query_models.PreparationAuthorityStatus]:
+    selected = reader.read_preparation_authority_status(item_id)
+    if selected is None:
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            f"Item '{item_id}' has no preparation claim.",
+            None,
+        )
+    if selected.status == authority_models.PreparationLeaseStatus.ACTIVE and selected.expires_at <= observed_at:
+        return replace(selected, status=authority_models.PreparationLeaseStatus.EXPIRED)
+    return selected
 
 
 def project_attempt_continuation(

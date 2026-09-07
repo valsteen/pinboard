@@ -4,10 +4,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from pinboard.application import stored_state
+from pinboard.application import query_models, stored_state
 from pinboard.application.artifacts import ArtifactRef
 from pinboard.application.mutation_models import MutationReceipt, StoredStateMutation
 from pinboard.domain.errors import DecisionResult
+from pinboard.domain.identifiers import AttemptId, ItemId
 
 
 class WorkStoreError(RuntimeError):
@@ -37,3 +38,9 @@ class WorkStore(Protocol):
         published: ArtifactRef,
         accepted_at: datetime,
     ) -> DecisionResult[ArtifactReferenceAcceptance]: ...
+
+
+class AuthorityStatusReader(Protocol):
+    def read_attempt_authority_status(self, attempt_id: AttemptId) -> query_models.AttemptAuthorityStatus | None: ...
+
+    def read_preparation_authority_status(self, item_id: ItemId) -> query_models.PreparationAuthorityStatus | None: ...

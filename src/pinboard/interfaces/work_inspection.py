@@ -571,11 +571,10 @@ def show_parallel_preview(
     command: cli_commands.ParallelPreviewCommand,
 ) -> errors.CommandResult[int]:
     operation_time = datetime.now(UTC)
-    current_state = store.snapshot()
-    preview = queries.project_parallel_preview(
-        current_state,
-        selected=tuple(command.item),
-        now=operation_time,
+    preview = (
+        queries.select_parallel_preview(store, selected=tuple(command.item), now=operation_time)
+        if command.item
+        else queries.project_parallel_preview(store.snapshot(), now=operation_time)
     )
     if isinstance(preview, query_models.ParallelSelectionInvalid):
         return errors.CommandFailure(errors.CommandErrorCode.PARALLEL_SELECTION_INVALID, preview.message, None)

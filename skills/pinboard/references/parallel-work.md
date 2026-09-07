@@ -13,7 +13,7 @@ Use [the coding-agent runtime adapters](runtime-adapters.md) for native task, su
 ## Build the preview
 
 1. Require authority `sqlite-v5`.
-2. Run `pinboard parallel preview --json`.
+2. Run `pinboard parallel preview --json`. This all-safe discovery form is intentionally project-wide because its question spans every current item.
 3. Present the result in two compact groups:
    - **Ready together:** the unambiguous all-safe set.
    - **Not ready:** excluded items with the command's exact reason translated into ordinary language.
@@ -33,7 +33,7 @@ Treat either of these as explicit launch authority:
 
 “All safe” means the preview's **Ready together** group.
 
-Before creating anything, rerun one selected preview containing every authorized item:
+Before creating anything, rerun one selected preview containing every authorized item. This explicit form reads only those current items and their direct launch constraints:
 
 ```text
 pinboard parallel preview --item <first> --item <second> --json

@@ -1,6 +1,7 @@
 import contextlib
 import hashlib
 import io
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -328,6 +329,73 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
         self.assert_keyed_status_queries(work / "state.sqlite3", statements)
 
+    def test_selected_parallel_preview_reads_only_selected_facts_and_preserves_metadata(self) -> None:
+        project, work, _store = self.initialized_state(self.state_with_unrelated_attempt_authority())
+        database = work / "state.sqlite3"
+        unrelated_view = work / "views" / "unrelated.md"
+        unrelated_view.parent.mkdir(parents=True, exist_ok=True)
+        unrelated_view.write_text("Unrelated projection.\n", encoding="utf-8")
+        before = (
+            database.read_bytes(),
+            database.stat().st_mtime_ns,
+            unrelated_view.read_bytes(),
+            unrelated_view.stat().st_ino,
+            unrelated_view.stat().st_mtime_ns,
+        )
+        common = ("--project-root", str(project), "--work-root", str(work))
+
+        with (
+            patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+            patch("pinboard.interfaces.work_inspection.datetime") as clock,
+            self.record_store_reads() as preview_reads,
+        ):
+            clock.now.return_value = SQLITE_NOW
+            result, stdout, stderr = self.run_cli(
+                *common,
+                "parallel",
+                "preview",
+                "--item",
+                "work-c",
+                "--item",
+                "work-a",
+                "--json",
+            )
+
+        self.assertEqual(0, result, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual("12", payload["revision"])
+        self.assertEqual("selected", payload["selection"])
+        self.assertFalse(payload["safe"])
+        self.assertEqual(["work-c"], [value["item_id"] for value in payload["launchable"]])
+        self.assertEqual(["work-a"], [value["item_id"] for value in payload["excluded"]])
+        self.assertEqual(1, clock.now.call_count)
+        self.assertEqual(
+            before,
+            (
+                database.read_bytes(),
+                database.stat().st_mtime_ns,
+                unrelated_view.read_bytes(),
+                unrelated_view.stat().st_ino,
+                unrelated_view.stat().st_mtime_ns,
+            ),
+        )
+        read_tables, statements = preview_reads
+        self.assertEqual(
+            {
+                "attempt_lease_counters",
+                "attempt_lease_generations",
+                "attempt_leases",
+                "attempts",
+                "item_dependencies",
+                "preparation_leases",
+                "project_meta",
+                "work_item_definition_revisions",
+                "work_items",
+            },
+            read_tables,
+        )
+        self.assert_keyed_status_queries(database, statements)
+
     def test_installed_attempt_reads_only_selected_continuation_facts(self) -> None:
         state = self.state_with_unrelated_attempt_authority()
         project, work, _store = self.initialized_attempt_context(state)
@@ -607,6 +675,51 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
         self.assertEqual(12, authority_result)
         self.assertIn("WORK_STATE_INVALID", authority_stderr)
+
+    def test_selected_parallel_preview_rejects_selected_corruption_and_ignores_unrelated_corruption(self) -> None:
+        state = complete_sqlite_state()
+        project, work, _store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        database = work / "state.sqlite3"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(
+                "UPDATE work_item_definition_revisions SET definition_json = ? WHERE item_id = ?",
+                (b"{}", "work-b"),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        result, stdout, stderr = self.run_cli(*common, "parallel", "preview", "--item", "work-c")
+        self.assertEqual(0, result, stderr)
+        self.assertIn("OK PARALLEL_PREVIEW", stdout)
+        validation, validation_stdout, _validation_stderr = self.run_cli(*common, "validate")
+        self.assertEqual(10, validation)
+        self.assertIn("WORK_STATE_INVALID", validation_stdout)
+
+        selected_project, selected_work, _selected_store = self.initialized_state(state)
+        selected_connection = sqlite3.connect(selected_work / "state.sqlite3")
+        try:
+            selected_connection.execute(
+                "UPDATE work_item_definition_revisions SET definition_json = ? WHERE item_id = ?",
+                (b"{}", "work-c"),
+            )
+            selected_connection.commit()
+        finally:
+            selected_connection.close()
+        selected_result, _selected_stdout, selected_stderr = self.run_cli(
+            "--project-root",
+            str(selected_project),
+            "--work-root",
+            str(selected_work),
+            "parallel",
+            "preview",
+            "--item",
+            "work-c",
+        )
+        self.assertEqual(12, selected_result)
+        self.assertIn("WORK_STATE_INVALID", selected_stderr)
 
     def test_installed_definition_reads_are_keyed_and_bounded_by_the_requested_page(self) -> None:
         project, work, _store = self.initialized_state(

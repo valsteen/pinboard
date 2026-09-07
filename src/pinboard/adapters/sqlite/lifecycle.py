@@ -76,6 +76,16 @@ class _DependencyStateRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     state: stored_state.StoredWorkItemState
 
 
+class _ParallelPreviewItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: ItemId
+    state: stored_state.StoredWorkItemState
+
+
+class _ParallelPreviewAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+
+
 @dataclass(frozen=True, slots=True)
 class TerminalAttemptContextSelection:
     project_revision: int
@@ -101,6 +111,27 @@ class NonterminalAttemptContextSelection:
 type AttemptContextSelection = TerminalAttemptContextSelection | NonterminalAttemptContextSelection
 
 
+@dataclass(frozen=True, slots=True)
+class ParallelPreviewLifecycleAttempt:
+    attempt_id: AttemptId
+    state: query_models.NonterminalAttemptState
+
+
+@dataclass(frozen=True, slots=True)
+class ParallelPreviewLifecycleItem:
+    item_id: ItemId
+    label: str
+    state: work_models.WorkState
+    live_dependencies: tuple[ItemId, ...]
+    attempt: ParallelPreviewLifecycleAttempt | None
+
+
+@dataclass(frozen=True, slots=True)
+class ParallelPreviewLifecycleSelection:
+    project_revision: int
+    items: tuple[ParallelPreviewLifecycleItem, ...]
+
+
 def _definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionRevision:
     value = decode_row(row, _DefinitionRevisionRow)
     definition = decode_work_item_definition(value.definition_json)
@@ -124,6 +155,48 @@ def _definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionRevisio
         value.accepted_project_revision,
         value.accepted_at,
     )
+
+
+def _current_definition_with_dependency_states(
+    connection: sqlite3.Connection,
+    item_id: ItemId,
+    *,
+    missing_message: str,
+) -> tuple[stored_state.ItemDefinitionRevision, tuple[_DependencyStateRow, ...]]:
+    definition_row = connection.execute(
+        """
+        SELECT item_id, definition_revision AS revision, definition_digest AS digest,
+               definition_json, reason, source_task_id, before_digest, after_digest,
+               accepted_project_revision, accepted_at
+        FROM work_item_definition_revisions
+        WHERE item_id = ?
+        ORDER BY definition_revision DESC
+        LIMIT 1
+        """,
+        (item_id,),
+    ).fetchone()
+    if definition_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, missing_message)
+    definition = _definition_revision(definition_row)
+    dependencies = tuple(
+        decode_row(row, _DependencyStateRow)
+        for row in connection.execute(
+            """
+            SELECT dependency.dependency_id, item.state
+            FROM item_dependencies AS dependency
+            JOIN work_items AS item ON item.item_id = dependency.dependency_id
+            WHERE dependency.item_id = ?
+            ORDER BY dependency.position
+            """,
+            (item_id,),
+        ).fetchall()
+    )
+    if tuple(value.dependency_id for value in dependencies) != definition.definition.dependencies:
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE,
+            "Current definition dependencies do not match relational dependencies.",
+        )
+    return definition, dependencies
 
 
 def read_item_definition(connection: sqlite3.Connection, item_id: ItemId) -> query_models.ItemDefinitionFacts:
@@ -215,6 +288,70 @@ def read_item_status(connection: sqlite3.Connection, item_id: ItemId) -> query_m
     )
 
 
+def read_parallel_preview_lifecycle(
+    connection: sqlite3.Connection,
+    item_ids: tuple[ItemId, ...],
+) -> ParallelPreviewLifecycleSelection | None:
+    project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_revision_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
+    selected: list[ParallelPreviewLifecycleItem] = []
+    for item_id in item_ids:
+        item_row = connection.execute(
+            "SELECT item_id, state FROM work_items WHERE item_id = ?",
+            (item_id,),
+        ).fetchone()
+        if item_row is None:
+            return None
+        item = decode_row(item_row, _ParallelPreviewItemRow)
+        state = stored_state.live_work_state(item.state)
+        if state is None:
+            return None
+        definition, dependencies = _current_definition_with_dependency_states(
+            connection,
+            item_id,
+            missing_message="The selected work item has no definition.",
+        )
+        attempt_row = connection.execute(
+            """
+            SELECT attempt_id, state
+            FROM attempts
+            WHERE item_id = ? AND state != 'done'
+            ORDER BY attempt_id
+            LIMIT 1
+            """,
+            (item_id,),
+        ).fetchone()
+        attempt = None
+        if attempt_row is not None:
+            decoded_attempt = decode_row(attempt_row, _ParallelPreviewAttemptRow)
+            match decoded_attempt.state:
+                case (
+                    work_models.AttemptState.ACTIVE
+                    | work_models.AttemptState.PAUSED
+                    | work_models.AttemptState.BLOCKED
+                    | work_models.AttemptState.REVIEW
+                ) as attempt_state:
+                    attempt = ParallelPreviewLifecycleAttempt(decoded_attempt.attempt_id, attempt_state)
+                case _:
+                    raise StorageError(StorageErrorCode.INVALID_STATE, "The selected open attempt state is invalid.")
+        selected.append(
+            ParallelPreviewLifecycleItem(
+                item.item_id,
+                definition.definition.title,
+                state,
+                tuple(
+                    value.dependency_id
+                    for value in dependencies
+                    if stored_state.live_work_state(value.state) is not None
+                ),
+                attempt,
+            )
+        )
+    return ParallelPreviewLifecycleSelection(project_revision, tuple(selected))
+
+
 def read_attempt_context(
     connection: sqlite3.Connection,
     attempt_id: AttemptId,
@@ -272,39 +409,11 @@ def read_attempt_context(
                 StorageErrorCode.INVALID_STATE, "The selected attempt and work item states do not match."
             )
 
-    definition_row = connection.execute(
-        """
-        SELECT item_id, definition_revision AS revision, definition_digest AS digest,
-               definition_json, reason, source_task_id, before_digest, after_digest,
-               accepted_project_revision, accepted_at
-        FROM work_item_definition_revisions
-        WHERE item_id = ?
-        ORDER BY definition_revision DESC
-        LIMIT 1
-        """,
-        (attempt.item_id,),
-    ).fetchone()
-    if definition_row is None:
-        raise StorageError(StorageErrorCode.INVALID_STATE, "The selected attempt item has no definition.")
-    definition = _definition_revision(definition_row)
-    dependencies = tuple(
-        decode_row(row, _DependencyStateRow)
-        for row in connection.execute(
-            """
-            SELECT dependency.dependency_id, item.state
-            FROM item_dependencies AS dependency
-            JOIN work_items AS item ON item.item_id = dependency.dependency_id
-            WHERE dependency.item_id = ?
-            ORDER BY dependency.position
-            """,
-            (attempt.item_id,),
-        ).fetchall()
+    definition, dependencies = _current_definition_with_dependency_states(
+        connection,
+        attempt.item_id,
+        missing_message="The selected attempt item has no definition.",
     )
-    if tuple(value.dependency_id for value in dependencies) != definition.definition.dependencies:
-        raise StorageError(
-            StorageErrorCode.INVALID_STATE,
-            "Current definition dependencies do not match relational dependencies.",
-        )
     return NonterminalAttemptContextSelection(
         project_revision,
         attempt.attempt_id,

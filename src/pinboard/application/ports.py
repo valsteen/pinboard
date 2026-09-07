@@ -60,3 +60,7 @@ class ItemStatusReader(Protocol):
 
 class AttemptContextReader(Protocol):
     def read_attempt_context(self, attempt_id: AttemptId) -> query_models.AttemptContextFacts | None: ...
+
+
+class ParallelPreviewReader(Protocol):
+    def read_parallel_preview(self, item_ids: tuple[ItemId, ...]) -> query_models.ParallelPreviewFacts | None: ...

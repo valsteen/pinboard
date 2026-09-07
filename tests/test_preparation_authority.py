@@ -18,7 +18,7 @@ from pinboard.application import query_models, service, stored_state
 from pinboard.application.actions import discover_actions
 from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.application.mutations import project_transition_mutation
-from pinboard.application.queries import project_overview, project_parallel_preview
+from pinboard.application.queries import project_overview, select_parallel_preview
 from pinboard.application.service import create_proposal, decide_and_commit_preparation_authority_change
 from pinboard.domain import authority_models, decision_models, decisions, work_models
 from pinboard.domain.authority_decisions import decide_preparation_authority
@@ -408,11 +408,10 @@ class PreparationAuthorityTest(unittest.TestCase):
         self.assertEqual(authority_models.PreparationLeaseStatus.EXPIRED, at_item.preparation.status)
         self.assertNotIn("work-c", before.immediate_options)
         self.assertIn("work-c", at.immediate_options)
-        loaded = store.snapshot()
-        before_parallel = project_parallel_preview(
-            loaded, selected=("work-c",), now=expires_at - timedelta(microseconds=1)
+        before_parallel = select_parallel_preview(
+            store, selected=("work-c",), now=expires_at - timedelta(microseconds=1)
         )
-        at_parallel = project_parallel_preview(loaded, selected=("work-c",), now=expires_at)
+        at_parallel = select_parallel_preview(store, selected=("work-c",), now=expires_at)
         assert not isinstance(before_parallel, query_models.ParallelSelectionInvalid)
         assert not isinstance(at_parallel, query_models.ParallelSelectionInvalid)
         self.assertFalse(before_parallel.safe)

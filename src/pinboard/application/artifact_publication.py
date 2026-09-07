@@ -5,7 +5,7 @@ from typing import Protocol
 
 from pinboard.application import stored_state
 from pinboard.application.artifacts import ArtifactRef, NewArtifact, WorkBriefIdentity
-from pinboard.application.ports import WorkStore
+from pinboard.application.ports import WorkStore, WorkStoreError
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
     ArtifactAcceptanceAfterPublicationError,
@@ -40,6 +40,7 @@ class ArtifactReader(Protocol):
 class AcceptedArtifactPublication:
     reference: stored_state.ArtifactReference
     artifact_created: bool
+    ledger_changed: bool
 
 
 def _committed_artifact_details(
@@ -72,7 +73,7 @@ def publish_accepted_artifact(
     artifact_created = not artifact_existed
     try:
         accepted = store.accept_artifact_reference(publisher.work_root, published_reference, accepted_at)
-    except Exception as error:
+    except WorkStoreError as error:
         if artifact_created:
             raise ArtifactAcceptanceAfterPublicationError(published_reference.selector, error) from error
         raise
@@ -84,7 +85,7 @@ def publish_accepted_artifact(
                 _committed_artifact_details(published_reference, accepted.details),
             )
         return accepted
-    return AcceptedArtifactPublication(accepted, artifact_created)
+    return AcceptedArtifactPublication(accepted.reference, artifact_created, accepted.ledger_changed)
 
 
 def validate_transition_work_brief(  # noqa: C901, PLR0912

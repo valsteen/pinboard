@@ -74,6 +74,21 @@ class _CheckpointArtifactPublication:
     created_immutable_artifact: bool
 
 
+def _committed_immutable_artifact_error(error: ArtifactError | StorageError) -> CommittedEffectError:
+    return CommittedEffectError(
+        error.code.value,
+        str(error),
+        FailureDetails(
+            observed=(),
+            mismatches=(),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.COMMITTED,
+            changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+            alternatives=(),
+        ),
+    )
+
+
 def _item_changed_by_transition(
     action: decision_models.Action,
     receipt: decision_models.TransitionReceipt,
@@ -288,18 +303,7 @@ def publish_checkpoint_artifacts(
         created_immutable_artifact = created_immutable_artifact or not review_existed
     except ArtifactError as error:
         if created_immutable_artifact:
-            raise CommittedEffectError(
-                error.code.value,
-                str(error),
-                FailureDetails(
-                    observed=(),
-                    mismatches=(),
-                    retry=RetryDisposition.DO_NOT_RETRY,
-                    effect=EffectDisposition.COMMITTED,
-                    changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
-                    alternatives=(),
-                ),
-            ) from error
+            raise _committed_immutable_artifact_error(error) from error
         raise
     return _CheckpointArtifactPublication(
         CheckpointArtifacts(
@@ -338,20 +342,7 @@ def _execute_transition_command(
                 )
             except StorageError as error:
                 if checkpoint_artifacts.created_immutable_artifact:
-                    raise CommittedEffectError(
-                        error.code.value,
-                        str(error),
-                        FailureDetails(
-                            observed=(),
-                            mismatches=(),
-                            retry=(
-                                RetryDisposition.RETRY_SAME_INPUT if error.retryable else RetryDisposition.DO_NOT_RETRY
-                            ),
-                            effect=EffectDisposition.COMMITTED,
-                            changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
-                            alternatives=(),
-                        ),
-                    ) from error
+                    raise _committed_immutable_artifact_error(error) from error
                 raise
             if isinstance(result, DecisionFailure) and checkpoint_artifacts.created_immutable_artifact:
                 details = (

@@ -19,6 +19,7 @@ from pinboard.application.artifacts import (
     EvidenceArtifactRef,
     ResultArtifactRef,
 )
+from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.domain.errors import DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId
 
@@ -116,7 +117,7 @@ def accept_artifact_reference(
     work_root: Path,
     published: ArtifactRef,
     accepted_at: datetime,
-) -> DecisionResult[stored_state.ArtifactReference]:
+) -> DecisionResult[ArtifactReferenceAcceptance]:
     """Accept one verified reference; the caller owns transaction and readback."""
 
     verify_reference(work_root, published)
@@ -131,7 +132,7 @@ def accept_artifact_reference(
                 StorageErrorCode.INVARIANT_VIOLATION,
                 "An accepted artifact identity already names different bytes.",
             )
-        return existing
+        return ArtifactReferenceAcceptance(existing, False)
     reference = stored_state.ArtifactReference(
         ArtifactRefId(1 + max((int(value.artifact_ref_id) for value in before.artifact_references), default=0)),
         published.key,
@@ -159,4 +160,4 @@ def accept_artifact_reference(
         )
     ) is not None:
         return failure
-    return reference
+    return ArtifactReferenceAcceptance(reference, True)

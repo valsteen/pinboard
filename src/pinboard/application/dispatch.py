@@ -184,6 +184,14 @@ def publish_dispatch_review(
                 rejected_acceptance.details,
             )
         rejected = rejected_acceptance.reference
+        changed_surfaces = (
+            *((ChangedSurface.IMMUTABLE_ARTIFACT,) if rejected_acceptance.artifact_created else ()),
+            *(
+                (ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE, ChangedSurface.LEDGER)
+                if rejected_acceptance.ledger_changed
+                else ()
+            ),
+        )
         return DispatchFailure(
             DispatchRejectionCode.REVIEW_COLLISION,
             f"Ready review already differs; later evidence is preserved at '{rejected.selector}'.",
@@ -194,12 +202,8 @@ def publish_dispatch_review(
                 ),
                 mismatches=(),
                 retry=RetryDisposition.DO_NOT_RETRY,
-                effect=EffectDisposition.COMMITTED,
-                changed_surfaces=(
-                    *((ChangedSurface.IMMUTABLE_ARTIFACT,) if rejected_acceptance.artifact_created else ()),
-                    ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE,
-                    ChangedSurface.LEDGER,
-                ),
+                effect=EffectDisposition.COMMITTED if changed_surfaces else EffectDisposition.UNCHANGED,
+                changed_surfaces=changed_surfaces,
                 alternatives=(),
             ),
         )

@@ -10,7 +10,14 @@ import msgspec
 from pinboard import __version__
 from pinboard.application import dispatch_models
 from pinboard.domain import decision_models
-from pinboard.domain.errors import DecisionFailureCode
+from pinboard.domain.errors import (
+    DecisionFailureCode,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    FailureMismatch,
+    RetryDisposition,
+)
 from pinboard.interfaces import (
     brief_source_models,
     cli_commands,
@@ -726,7 +733,33 @@ def show_tool_contract(command: cli_commands.ToolContractCommand) -> CommandResu
     try:
         selected = select_tool_contract(command)
     except UnknownToolContractSelector as error:
-        return CommandFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, str(error), None)
+        if command.brief_starter is not None:
+            field = "brief_starter"
+            supplied = command.brief_starter
+        elif command.action_kind is not None:
+            field = "action_kind"
+            supplied = command.action_kind.value
+        else:
+            field = "operation"
+            supplied = command.operation
+        return CommandFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            str(error),
+            FailureDetails(
+                observed=(FailureFact(field, supplied),),
+                mismatches=(
+                    FailureMismatch(
+                        field,
+                        "selector returned by pinboard tool-contract --json",
+                        supplied,
+                    ),
+                ),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
     if command.json:
         write_json(selected)
     elif isinstance(selected, ToolContractIndex):

@@ -55,6 +55,7 @@ from pinboard.application.mutation_models import (
     TransitionMutation,
 )
 from pinboard.application.mutations import stored_transition_receipt
+from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
@@ -633,7 +634,7 @@ class SQLiteWorkStore:
         work_root: Path,
         published: ArtifactRef,
         accepted_at: datetime,
-    ) -> DecisionResult[stored_state.ArtifactReference]:
+    ) -> DecisionResult[ArtifactReferenceAcceptance]:
         with _SQLiteWorkTransaction(self._path) as transaction:
             connection = transaction.connection
             result = write_artifact_reference(

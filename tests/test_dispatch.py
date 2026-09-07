@@ -17,10 +17,10 @@ from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state
 from pinboard.application.actions import discover_actions
 from pinboard.application.artifacts import ArtifactRef, NewArtifact
 from pinboard.application.dispatch_models import DispatchEnvironment, DispatchPermission
+from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionResult
 from pinboard.domain.identifiers import ReviewId
@@ -453,6 +453,27 @@ class DispatchTest(unittest.TestCase):
         self.assertTrue(
             any("rejected-later-review" in reference.key for reference in store.snapshot().artifact_references)
         )
+        before_identical_retry = store.snapshot()
+        identical_retry = prepare_dispatch(
+            store,
+            ArtifactRepository(roots),
+            project,
+            action(),
+            CHECKPOINT_ID,
+            environment,
+            supplied_review=SuppliedDispatchReview(
+                ready_review(value, result="Different complete result."),
+                ReviewId("later-review"),
+            ),
+        )
+        repeated_collision = expect_dispatch_failure(
+            identical_retry,
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_COLLISION,
+        )
+        assert repeated_collision.details is not None
+        self.assertEqual("unchanged", repeated_collision.details.effect.value)
+        self.assertEqual((), repeated_collision.details.changed_surfaces)
+        self.assertEqual(before_identical_retry, store.snapshot())
 
     def test_installed_dispatch_reports_new_ready_and_collision_artifacts_after_database_failure(self) -> None:
         project, roots, store, value, action, environment = self.initialized()
@@ -515,6 +536,14 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual("committed-effect", collision_failure["status"])
         self.assertEqual(["immutable-artifact"], collision_failure["changed_surfaces"])
         self.assertEqual("do-not-retry", collision_failure["retry"])
+
+        with (
+            patch.object(
+                SQLiteWorkStore, "accept_artifact_reference", side_effect=AssertionError("programming defect")
+            ),
+            self.assertRaisesRegex(AssertionError, "programming defect"),
+        ):
+            self.run_cli(*arguments(action(), "assertion-must-propagate"))
 
     def test_dispatch_rechecks_authority_after_an_unrelated_revision(self) -> None:
         project, roots, store, value, action, environment = self.initialized()
@@ -581,7 +610,7 @@ class DispatchTest(unittest.TestCase):
             work_root: Path,
             published: ArtifactRef,
             accepted_at: datetime,
-        ) -> DecisionResult[stored_state.ArtifactReference]:
+        ) -> DecisionResult[ArtifactReferenceAcceptance]:
             expect_success(
                 accept_reference(
                     work_root,

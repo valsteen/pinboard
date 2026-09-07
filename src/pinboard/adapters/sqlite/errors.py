@@ -1,5 +1,7 @@
 from enum import Enum
 
+from pinboard.application.ports import WorkStoreError
+
 
 class StorageErrorCode(Enum):
     BUSY = "STORAGE_BUSY"
@@ -10,7 +12,7 @@ class StorageErrorCode(Enum):
     OPERATION_FAILED = "STORAGE_OPERATION_FAILED"
 
 
-class StorageError(RuntimeError):
+class StorageError(WorkStoreError):
     code: StorageErrorCode
     retryable: bool
 

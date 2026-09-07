@@ -259,6 +259,22 @@ class ToolContractTest(unittest.TestCase):
         self.assertEqual("tool-contract", payload["operation"])
         self.assertEqual("TRANSITION_INPUT_INVALID", payload["code"])
         self.assertFalse(payload["state_changed"])
+        self.assertEqual("correct-input", payload["retry"])
+        self.assertEqual([{"field": "operation", "value": "not-installed"}], payload["observed"])
+        self.assertEqual(
+            [
+                {
+                    "field": "operation",
+                    "expected": "selector returned by pinboard tool-contract --json",
+                    "observed": "not-installed",
+                }
+            ],
+            payload["mismatches"],
+        )
+        self.assertEqual(
+            [{"kind": "command", "command": "pinboard tool-contract --json"}],
+            payload["next_actions"],
+        )
 
     def test_json_parse_and_infrastructure_failures_are_structured(self) -> None:
         stdout = io.StringIO()

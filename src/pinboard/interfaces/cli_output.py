@@ -132,7 +132,9 @@ def write_rejected_operation(operation: str, failure: CliFailure) -> None:
         )
         if details is None
         else details,
-        (),
+        ("pinboard tool-contract --json",)
+        if operation == "tool-contract" and failure.code.value == "TRANSITION_INPUT_INVALID"
+        else (),
     )
 
 

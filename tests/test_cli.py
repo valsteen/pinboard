@@ -1976,7 +1976,11 @@ class CliTest(unittest.TestCase):
 
         with patch(
             "pinboard.adapters.sqlite.state.append_history",
-            side_effect=StorageError(StorageErrorCode.IO_ERROR, "injected checkpoint write failure"),
+            side_effect=StorageError(
+                StorageErrorCode.IO_ERROR,
+                "injected checkpoint write failure",
+                retryable=True,
+            ),
         ):
             failed_result, failed_stdout, failed_stderr = self.run_transition(common, action, payload, json_output=True)
 

@@ -682,12 +682,14 @@ class SQLiteWorkStore:
         finally:
             connection.close()
 
-    def read_item_status(self, item_id: ItemId) -> query_models.ItemStatusFacts:
+    def read_item_status(self, item_id: ItemId) -> query_models.ItemStatusFacts | None:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
                 lifecycle = read_item_status(connection, item_id)
-                preparation = None if lifecycle.item is None else read_preparation_authority_status(connection, item_id)
+                if lifecycle is None:
+                    return None
+                preparation = read_preparation_authority_status(connection, item_id)
                 return query_models.ItemStatusFacts(
                     lifecycle.project_revision,
                     lifecycle.item,

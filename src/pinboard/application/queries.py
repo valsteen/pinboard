@@ -340,9 +340,9 @@ def project_item_status(
     now: datetime,
 ) -> DecisionResult[query_models.ItemStatus]:
     facts = reader.read_item_status(item_id)
-    item = facts.item
-    if item is None:
+    if facts is None:
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' was not found.", None)
+    item = facts.item
     if facts.definition_title is None:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Item '{item_id}' has no definition.", None

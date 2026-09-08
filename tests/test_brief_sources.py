@@ -148,6 +148,40 @@ class BriefSourcesTest(unittest.TestCase):
                 render_brief_source_batch(project, plan, 0), BriefSourceErrorCode.SOURCE_CHANGED
             )
 
+    def test_cli_plans_and_emits_an_empty_selected_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "empty.md").write_bytes(b"")
+            manifest_path = project / "manifest.json"
+            manifest_path.write_bytes(
+                msgspec.json.encode(
+                    self.manifest(BriefSourceRequest("empty", "empty.md", ("contract",))),
+                    order="sorted",
+                )
+            )
+
+            planned_result, planned_stdout, planned_stderr = self.run_cli(
+                "--project-root",
+                str(project),
+                "brief-sources",
+                "--file",
+                str(manifest_path),
+                "--json",
+            )
+
+            self.assertEqual((0, ""), (planned_result, planned_stderr))
+            plan = json.loads(planned_stdout)
+            self.assertEqual((0, 0), (plan["sources"][0]["start_line"], plan["sources"][0]["end_line"]))
+            plan_path = project / "plan.json"
+            plan_path.write_text(planned_stdout, encoding="utf-8")
+
+            emitted_result, emitted_stdout, emitted_stderr = self.run_cli(
+                "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "0"
+            )
+
+            self.assertEqual((0, ""), (emitted_result, emitted_stderr))
+            self.assertIn("authority=empty selector=empty.md lines=0-0 segment=0", emitted_stdout)
+
     def test_render_reads_only_sources_represented_in_the_selected_batch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)

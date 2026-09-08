@@ -74,6 +74,10 @@ class _DependencyRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     dependency_id: ItemId
 
 
+class _ItemIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: ItemId
+
+
 class _ArtifactRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     artifact_ref_id: ArtifactRefId
     kind: work_models.ArtifactKind
@@ -127,6 +131,10 @@ class _PreparationLeaseRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
 
 def _attempt_row_key(value: _AttemptRow) -> str:
     return str(value.attempt_id)
+
+
+def _item_row_identity_key(value: _ItemRow) -> str:
+    return str(value.item_id)
 
 
 def _project(connection: sqlite3.Connection) -> _ProjectRow:
@@ -317,22 +325,29 @@ def _proposal_record(
 def read_current_snapshot(
     connection: sqlite3.Connection,
     now: datetime,
-    artifact_ref_ids: tuple[ArtifactRefId, ...],
+    *,
+    include_proposals: bool,
+    include_action_authorities: bool,
 ) -> LedgerSnapshot:
     """Return only facts whose current meaning can affect ordinary project decisions."""
 
     project = _project(connection)
     item_rows = tuple(
-        decode_row(row, _ItemRow)
-        for row in connection.execute(
-            """
-            SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
-                   subject_revision, queue_position
-            FROM work_items
-            WHERE queue_position IS NOT NULL
-            ORDER BY queue_position, item_id
-            """
-        ).fetchall()
+        sorted(
+            (
+                decode_row(row, _ItemRow)
+                for row in connection.execute(
+                    """
+                    SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
+                           subject_revision, queue_position
+                    FROM work_items
+                    WHERE queue_position IS NOT NULL
+                    ORDER BY queue_position
+                    """
+                ).fetchall()
+            ),
+            key=_item_row_identity_key,
+        )
     )
     live_item_ids = {row.item_id for row in item_rows}
     attempt_rows = tuple(
@@ -374,11 +389,15 @@ def read_current_snapshot(
     if {value.item_id for value in definitions} != live_item_ids:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Every current work item must have a current definition.")
 
-    proposal_rows = tuple(
-        proposal
-        for item in item_rows
-        for item_id in (item.item_id,)
-        if (proposal := _read_selected_proposal(connection, ProposalId(item_id))) is not None
+    proposal_rows = (
+        tuple(
+            proposal
+            for item in item_rows
+            for item_id in (item.item_id,)
+            if (proposal := _read_selected_proposal(connection, ProposalId(item_id))) is not None
+        )
+        if include_proposals
+        else ()
     )
     evidence: dict[ProposalId, list[str]] = defaultdict(list)
     freshness: dict[ProposalId, list[str]] = defaultdict(list)
@@ -396,37 +415,17 @@ def read_current_snapshot(
             selected = decode_row(row, _ProposalTextRow)
             freshness[selected.proposal_id].append(selected.value)
 
-    referenced_artifact_ids = tuple(
-        dict.fromkeys(
-            (
-                *artifact_ref_ids,
-                *(
-                    artifact_id
-                    for attempt in attempt_rows
-                    for artifact_id in (attempt.brief_artifact_ref_id, attempt.result_artifact_ref_id)
-                    if artifact_id is not None
-                ),
-            )
+    attempt_authorities: tuple[work_models.AttemptAuthority, ...] = ()
+    command_attempt_authorities: tuple[work_models.CommandAttemptAuthority, ...] = ()
+    preparation_authorities: tuple[work_models.PreparationAuthority, ...] = ()
+    command_preparation_authorities: tuple[work_models.PreparationCommandAuthority, ...] = ()
+    if include_action_authorities:
+        attempt_authorities, command_attempt_authorities = _read_attempt_authorities(
+            connection, (attempt.attempt_id for attempt in attempt_rows), project.host_epoch, now
         )
-    )
-    artifacts: tuple[work_models.ArtifactRecord, ...] = ()
-    if referenced_artifact_ids:
-        placeholders = ", ".join("?" for _value in referenced_artifact_ids)
-        artifacts = tuple(
-            work_models.ArtifactRecord(selected.artifact_ref_id, selected.kind)
-            for row in connection.execute(
-                f"SELECT artifact_ref_id, kind FROM artifact_refs WHERE artifact_ref_id IN ({placeholders}) ORDER BY artifact_ref_id",
-                referenced_artifact_ids,
-            ).fetchall()
-            for selected in (decode_row(row, _ArtifactRow),)
+        preparation_authorities, command_preparation_authorities = _read_preparation_authorities(
+            connection, (item.item_id for item in item_rows), project.host_epoch, now
         )
-
-    attempt_authorities, command_attempt_authorities = _read_attempt_authorities(
-        connection, (attempt.attempt_id for attempt in attempt_rows), project.host_epoch, now
-    )
-    preparation_authorities, command_preparation_authorities = _read_preparation_authorities(
-        connection, (item.item_id for item in item_rows), project.host_epoch, now
-    )
 
     history_items = tuple(
         dict.fromkeys(
@@ -446,7 +445,7 @@ def read_current_snapshot(
             for item in item_rows
         ),
         attempts=tuple(_attempt_record(attempt) for attempt in attempt_rows),
-        artifacts=artifacts,
+        artifacts=(),
         proposals=tuple(
             _proposal_record(
                 proposal,
@@ -490,6 +489,23 @@ def _read_selected_item(connection: sqlite3.Connection, item_id: ItemId) -> _Ite
     return None if row is None else decode_row(row, _ItemRow)
 
 
+def _read_selected_dependencies(connection: sqlite3.Connection, item_id: ItemId) -> tuple[ItemId, ...]:
+    return tuple(
+        decode_row(row, _DependencyRow).dependency_id
+        for row in connection.execute(
+            "SELECT item_id, dependency_id FROM item_dependencies WHERE item_id = ? ORDER BY position",
+            (item_id,),
+        ).fetchall()
+    )
+
+
+def _read_required_definition(connection: sqlite3.Connection, item_id: ItemId) -> stored_state.ItemDefinitionRevision:
+    definition = read_current_definition(connection, item_id)
+    if definition is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Every selected work item must have a current definition.")
+    return definition
+
+
 def _read_selected_attempt(connection: sqlite3.Connection, attempt_id: AttemptId) -> _AttemptLineageRow | None:
     row = connection.execute(
         """
@@ -520,59 +536,91 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
     scope: query_models.DecisionScope,
     now: datetime,
 ) -> query_models.DecisionFacts:
-    """Read one decision's selected identities and their dependency closure."""
+    """Read only the explicitly selected relationships needed by one decision."""
 
     project = _project(connection)
     attempts: dict[AttemptId, _AttemptLineageRow] = {}
-    pending_items = list(scope.item_ids)
+    primary_item_ids = list(scope.item_ids)
     for attempt_id in scope.attempt_ids:
         attempt = _read_selected_attempt(connection, attempt_id)
         if attempt is not None:
             attempts[attempt.attempt_id] = attempt
-            pending_items.append(attempt.item_id)
+            primary_item_ids.append(attempt.item_id)
 
     proposals: dict[ProposalId, _ProposalRow] = {}
     for proposal_id in scope.proposal_ids:
         proposal = _read_selected_proposal(connection, proposal_id)
         if proposal is not None:
             proposals[proposal.proposal_id] = proposal
-            pending_items.append(ItemId(proposal.proposal_id))
-            if proposal.relation_item_id is not None:
-                pending_items.append(proposal.relation_item_id)
+            primary_item_ids.append(ItemId(proposal.proposal_id))
 
     item_rows: dict[ItemId, _ItemRow] = {}
     history_items: list[ItemId] = []
     dependencies: dict[ItemId, list[ItemId]] = defaultdict(list)
     definitions: dict[ItemId, stored_state.ItemDefinitionRevision] = {}
-    visited: set[ItemId] = set()
-    while pending_items:
-        item_id = pending_items.pop()
-        if item_id in visited:
-            continue
-        visited.add(item_id)
-        item = _read_selected_item(connection, item_id)
+    contextual_item_ids: set[ItemId] = set()
+    dependency_item_ids: set[ItemId] = set()
+
+    def read_item(
+        item_id: ItemId,
+        *,
+        include_dependencies: bool,
+        include_definition: bool,
+        context: bool,
+    ) -> _ItemRow | None:
+        item = item_rows.get(item_id)
         if item is None:
-            continue
-        if stored_state.live_work_state(item.state) is None:
+            item = _read_selected_item(connection, item_id)
+        if item is None:
+            return None
+        live = stored_state.live_work_state(item.state) is not None
+        if live:
+            item_rows[item_id] = item
+        else:
             history_items.append(item_id)
+        if include_dependencies and item_id not in dependency_item_ids:
+            dependencies[item_id].extend(_read_selected_dependencies(connection, item_id))
+            dependency_item_ids.add(item_id)
+        if include_definition and item_id not in definitions:
+            definitions[item_id] = _read_required_definition(connection, item_id)
+        if context and live:
+            contextual_item_ids.add(item_id)
+        return item
+
+    for item_id in dict.fromkeys(primary_item_ids):
+        read_item(item_id, include_dependencies=True, include_definition=True, context=True)
+
+    pending_closure = list(scope.dependency_closure_roots)
+    visited_closure: set[ItemId] = set()
+    while pending_closure:
+        item_id = pending_closure.pop()
+        if item_id in visited_closure:
             continue
-        item_rows[item_id] = item
+        visited_closure.add(item_id)
+        selected = read_item(item_id, include_dependencies=True, include_definition=True, context=False)
+        if selected is not None:
+            pending_closure.extend(dependencies[item_id])
+
+    related_item_ids = list(scope.related_item_ids)
+    for item_id in contextual_item_ids:
+        related_item_ids.extend(dependencies[item_id])
+    for item_id in scope.live_dependent_roots:
         for row in connection.execute(
             """
-            SELECT item_id, dependency_id FROM item_dependencies
-            WHERE item_id = ? ORDER BY position
+            SELECT dependency.item_id
+            FROM item_dependencies AS dependency INDEXED BY item_dependencies_by_dependency
+            JOIN work_items AS item ON item.item_id = dependency.item_id
+            WHERE dependency.dependency_id = ? AND item.queue_position IS NOT NULL
+            ORDER BY dependency.item_id
             """,
             (item_id,),
         ).fetchall():
-            dependency = decode_row(row, _DependencyRow)
-            dependencies[item_id].append(dependency.dependency_id)
-            pending_items.append(dependency.dependency_id)
-        definition = read_current_definition(connection, item_id)
-        if definition is None:
-            raise StorageError(
-                StorageErrorCode.INVALID_STATE, "Every current work item must have a current definition."
-            )
-        definitions[item_id] = definition
+            dependent_id = decode_row(row, _ItemIdRow).item_id
+            read_item(dependent_id, include_dependencies=True, include_definition=False, context=False)
+    for item_id in dict.fromkeys(related_item_ids):
+        read_item(item_id, include_dependencies=False, include_definition=False, context=False)
+
+    for item_id in contextual_item_ids:
         linked_attempt = connection.execute(
             """
             SELECT attempt_id, item_id, state, branch, base_revision, accepted_scope_revision,
@@ -585,13 +633,6 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         if linked_attempt is not None:
             selected_attempt = decode_row(linked_attempt, _AttemptLineageRow)
             attempts[selected_attempt.attempt_id] = selected_attempt
-
-    # Proposal semantics can annotate an item's dependency or review state. Select
-    # only proposals attached to the already selected item/dependency closure.
-    for item_id in tuple(visited):
-        proposal = _read_selected_proposal(connection, ProposalId(item_id))
-        if proposal is not None:
-            proposals[proposal.proposal_id] = proposal
 
     evidence: dict[ProposalId, list[str]] = defaultdict(list)
     freshness: dict[ProposalId, list[str]] = defaultdict(list)
@@ -609,21 +650,8 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
             selected = decode_row(row, _ProposalTextRow)
             freshness[proposal_id].append(selected.value)
 
-    artifact_ids = tuple(
-        dict.fromkeys(
-            (
-                *scope.artifact_ref_ids,
-                *(
-                    artifact_id
-                    for attempt in attempts.values()
-                    for artifact_id in (attempt.brief_artifact_ref_id, attempt.result_artifact_ref_id)
-                    if artifact_id is not None
-                ),
-            )
-        )
-    )
     artifacts: list[work_models.ArtifactRecord] = []
-    for artifact_id in artifact_ids:
+    for artifact_id in scope.artifact_ref_ids:
         row = connection.execute(
             "SELECT artifact_ref_id, kind FROM artifact_refs WHERE artifact_ref_id = ?",
             (artifact_id,),
@@ -636,7 +664,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         connection, (attempt.attempt_id for attempt in attempts.values()), project.host_epoch, now
     )
     preparation_authorities, command_preparation_authorities = _read_preparation_authorities(
-        connection, item_rows, project.host_epoch, now
+        connection, contextual_item_ids, project.host_epoch, now
     )
 
     attempts_by_item = {
@@ -676,7 +704,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         command_attempt_authorities=command_attempt_authorities,
         preparation_authorities=preparation_authorities,
         command_preparation_authorities=command_preparation_authorities,
-        history_items=tuple(history_items),
+        history_items=tuple(dict.fromkeys(history_items)),
         definitions=tuple(
             work_models.DefinitionAnchor(value.item_id, value.revision, value.digest, value.definition)
             for value in definitions.values()

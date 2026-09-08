@@ -287,7 +287,7 @@ class CliTest(unittest.TestCase):
             capability=replace(typed_action.capability, preparation_authority=wrong_authority),
         )
         decision_facts = store.read_decision_facts(
-            query_models.DecisionScope((ItemId("work-c"),), (), (), ()), observed_at
+            query_models.DecisionScope((ItemId("work-c"),), (), (), (), (), (), ()), observed_at
         )
         wrong_snapshot = replace(decision_facts.snapshot, command_preparation_authorities=(wrong_authority,))
         wrong_facts = replace(decision_facts, snapshot=wrong_snapshot)

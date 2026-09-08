@@ -238,7 +238,7 @@ def change_preparation_authority(
 ) -> CommandResult[int]:
     requested_at = datetime.now(UTC)
     snapshot = store.read_decision_facts(
-        query_models.DecisionScope((command.item_id,), (), (), ()), requested_at
+        query_models.DecisionScope((command.item_id,), (), (), (), (), (), ()), requested_at
     ).snapshot
     requested_change = _resolve_requested_preparation_change(store, snapshot, command, requested_at)
     if isinstance(requested_change, CommandFailure):

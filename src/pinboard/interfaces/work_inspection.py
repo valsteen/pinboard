@@ -486,7 +486,7 @@ def show_actions(
         case _ as unreachable:
             assert_never(unreachable)
     operation_time = datetime.now(UTC)
-    current_snapshot = store.read_current_snapshot(operation_time, ())
+    current_snapshot = store.read_current_action_snapshot(operation_time)
     available_actions = action_queries.discover_current_actions(
         current_snapshot,
         command.role,
@@ -568,7 +568,7 @@ def show_parallel_preview(
         queries.select_parallel_preview(store, selected=tuple(command.item), now=operation_time)
         if command.item
         else queries.project_current_parallel_preview(
-            store.read_current_snapshot(operation_time, ()), now=operation_time
+            store.read_current_parallel_snapshot(operation_time), now=operation_time
         )
     )
     if isinstance(preview, query_models.ParallelSelectionInvalid):

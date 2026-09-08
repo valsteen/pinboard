@@ -78,13 +78,45 @@ def _project_action_scope(action_id: ActionId) -> query_models.DecisionScope:
     semantics = decision_models.action_semantics(decision_models.ActionKind(kind_value))
     match semantics.subject_kind:
         case decision_models.ActionSubjectKind.ITEM:
-            return query_models.DecisionScope((ItemId(subject),), (), (), ())
+            return query_models.DecisionScope(
+                item_ids=(ItemId(subject),),
+                related_item_ids=(),
+                dependency_closure_roots=(),
+                live_dependent_roots=(),
+                attempt_ids=(),
+                proposal_ids=(),
+                artifact_ref_ids=(),
+            )
         case decision_models.ActionSubjectKind.ATTEMPT:
-            return query_models.DecisionScope((), (AttemptId(subject),), (), ())
+            return query_models.DecisionScope(
+                item_ids=(),
+                related_item_ids=(),
+                dependency_closure_roots=(),
+                live_dependent_roots=(),
+                attempt_ids=(AttemptId(subject),),
+                proposal_ids=(),
+                artifact_ref_ids=(),
+            )
         case decision_models.ActionSubjectKind.PROPOSAL:
-            return query_models.DecisionScope((), (), (ProposalId(subject),), ())
+            return query_models.DecisionScope(
+                item_ids=(),
+                related_item_ids=(),
+                dependency_closure_roots=(),
+                live_dependent_roots=(),
+                attempt_ids=(),
+                proposal_ids=(ProposalId(subject),),
+                artifact_ref_ids=(),
+            )
         case decision_models.ActionSubjectKind.LEDGER:
-            return query_models.DecisionScope((), (), (), ())
+            return query_models.DecisionScope(
+                item_ids=(),
+                related_item_ids=(),
+                dependency_closure_roots=(),
+                live_dependent_roots=(),
+                attempt_ids=(),
+                proposal_ids=(),
+                artifact_ref_ids=(),
+            )
         case _ as unreachable:
             assert_never(unreachable)
 

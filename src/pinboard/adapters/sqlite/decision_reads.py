@@ -386,8 +386,17 @@ def read_current_snapshot(
         for item in item_rows
         if (definition := read_current_definition(connection, item.item_id)) is not None
     )
-    if {value.item_id for value in definitions} != live_item_ids:
+    definitions_by_item = {value.item_id: value for value in definitions}
+    if definitions_by_item.keys() != live_item_ids:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Every current work item must have a current definition.")
+    if any(
+        tuple(dependencies[item_id]) != definition.definition.dependencies
+        for item_id, definition in definitions_by_item.items()
+    ):
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE,
+            "Current definition dependencies do not match relational dependencies.",
+        )
 
     proposal_rows = (
         tuple(

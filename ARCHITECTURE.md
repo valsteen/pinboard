@@ -78,8 +78,8 @@ Expected rejections return typed failure values. Domain and stale-persistence pa
 | --- | --- |
 | `stored_state.py` | Complete typed read aggregate plus storage-specific vocabulary |
 | `mutation_models.py`, `mutations.py`, `ports.py` | Closed exact mutation and committed-effect records, exhaustive decision-to-relational conversion, storage-independent transactional and exact-read capabilities, and separately named complete-state capabilities for explicit full-project work |
-| `decision_projection.py`, `service.py` | Full-state projection retained for explicit whole-project consumers and exact-fact locked mutation orchestration for ordinary work |
-| `actions.py`, `query_models.py`, `queries.py`, `handover.py` | Exact selected and current-project facts and results; legal-action discovery, overview, all-safe preview and exact attempt continuation; generated-view projection facts; and strict portable handover projection from an explicit complete stored snapshot |
+| `service.py` | Exact-fact locked mutation orchestration for ordinary work |
+| `actions.py`, `query_models.py`, `queries.py`, `handover.py` | Exact selected and current-project facts and results; legal-action discovery, overview, all-safe preview and exact attempt continuation; generated-view projection facts; full projection retained only for explicit rebuild consumers; and strict portable handover projection from an explicit complete stored snapshot |
 | `artifacts.py`, `artifact_publication.py`, `dispatch_models.py`, `dispatch.py` | Immutable artifact references and typed brief identity, artifact-acceptance capabilities, activation, resume, and rebind brief guards, and result-shaped dispatch selection, review publication, and final authority confirmation |
 
 SQLite rows are not active domain objects. `StoredWorkState` is the exact typed read aggregate without SQL handles or filesystem paths, while live mutations carry only the accepted decision, receipt, and affected auxiliary values. `LedgerSnapshot` remains the storage-independent decision input.

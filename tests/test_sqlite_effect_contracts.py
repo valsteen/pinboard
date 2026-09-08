@@ -2,6 +2,7 @@ import sqlite3
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,10 +23,11 @@ from pinboard.application import query_models, stored_state
 from pinboard.application.artifacts import EvidenceArtifactRef
 from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.application.mutations import project_transition_mutation
+from pinboard.application.service import start_preparation
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import available_actions, decide
 from pinboard.domain.errors import DecisionFailure
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, ItemId, ProposalId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, ProposalId, TaskId
 from tests.support import (
     SQLITE_NOW,
     complete_sqlite_state,
@@ -292,6 +294,99 @@ class SQLiteEffectContractTest(unittest.TestCase):
         self.assertEqual((ItemId("work-c"),), facts.items[0].dependencies)
         self.assertIsNotNone(facts.items[0].overview)
         self.assertFalse(any("'intake-work'" in statement for statement in statements), statements)
+
+    def test_committed_effect_refreshes_reverse_dependents_only_for_liveness_changes(self) -> None:
+        def project_action(
+            state: stored_state.StoredWorkState,
+            item_id: ItemId,
+            kind: decision_models.ActionKind,
+        ) -> decision_models.Action:
+            snapshot = project_decision_snapshot(state, SQLITE_NOW)
+            actions = available_actions(
+                snapshot,
+                decision_models.ActorAuthority(
+                    decision_models.Role.PROJECT,
+                    decision_models.AuthorizationKind.PROJECT,
+                    0,
+                ),
+            )
+            assert not isinstance(actions, DecisionFailure)
+            return next(value for value in actions if value.capability.subject == item_id and value.kind == kind)
+
+        def reverse_dependency_queries(statements: list[str]) -> tuple[str, ...]:
+            return tuple(
+                statement
+                for statement in statements
+                if "FROM item_dependencies AS dependency" in statement and "WHERE dependency.dependency_id" in statement
+            )
+
+        state = complete_sqlite_state()
+        _path, store = self._store(state)
+        defer_action = project_action(state, ItemId("work-c"), decision_models.ActionKind.DEFER)
+        assert isinstance(defer_action, decision_models.DeferAction)
+        defer_decision = decide(
+            project_decision_snapshot(state, SQLITE_NOW),
+            decision_models.DeferCommand(
+                defer_action,
+                work_models.DeferInput(work_models.Timing.SAFE_TO_DEFER, "Reopen after the current review."),
+            ),
+            SQLITE_NOW,
+        )
+        assert not isinstance(defer_decision, DecisionFailure)
+        statements: list[str] = []
+        with store.write() as transaction:
+            transaction.connection.set_trace_callback(statements.append)
+            deferred = transaction.commit(project_transition_mutation(mutation_allocation(state), defer_decision))
+        assert not isinstance(deferred, DecisionFailure)
+        self.assertEqual((ItemId("work-c"),), deferred.item_ids)
+        self.assertEqual((), reverse_dependency_queries(statements))
+
+        _path, store = self._store()
+        statements = []
+        original_open = sqlite_store.open_database
+
+        def traced_open(database_path: Path, mode: OpenMode) -> sqlite3.Connection:
+            connection = original_open(database_path, mode)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(sqlite_store, "open_database", traced_open):
+            prepared = start_preparation(
+                store,
+                item_id=ItemId("work-c"),
+                task_id=TaskId("preparer"),
+                host_id=HostId("host-a"),
+                lease_id=LeaseId("preparation-work-c"),
+                acquired_at=SQLITE_NOW,
+                expires_at=SQLITE_NOW + timedelta(minutes=5),
+            )
+        assert not isinstance(prepared, DecisionFailure)
+        self.assertEqual((ItemId("work-c"),), prepared.effect.item_ids)
+        self.assertEqual((), reverse_dependency_queries(statements))
+
+        state = complete_sqlite_state()
+        _path, store = self._store(state)
+        close_action = project_action(state, ItemId("intake-work"), decision_models.ActionKind.CLOSE)
+        assert isinstance(close_action, decision_models.CloseAction)
+        close_decision = decide(
+            project_decision_snapshot(state, SQLITE_NOW),
+            decision_models.CloseCommand(
+                close_action,
+                work_models.CloseInput(work_models.CloseOutcome.DROPPED, "No longer needed."),
+            ),
+            SQLITE_NOW,
+        )
+        assert not isinstance(close_decision, DecisionFailure), close_decision
+        statements = []
+        with store.write() as transaction:
+            transaction.connection.set_trace_callback(statements.append)
+            closed = transaction.commit(project_transition_mutation(mutation_allocation(state), close_decision))
+        assert not isinstance(closed, DecisionFailure)
+        self.assertEqual(
+            (ItemId("intake-work"), ItemId("work-a"), ItemId("work-c"), ItemId("zz-proposal-a")),
+            closed.item_ids,
+        )
+        self.assertEqual(1, len(reverse_dependency_queries(statements)), reverse_dependency_queries(statements))
 
     def test_complete_state_rejects_missing_project_invalid_queue_and_reinitialization(self) -> None:
         path, store = self._store()

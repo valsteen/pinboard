@@ -283,6 +283,7 @@ def _committed_effect_ids(
 ) -> tuple[tuple[ItemId, ...], tuple[AttemptId, ...]]:
     item_ids, attempt_ids = _mutation_subjects(mutation)
     affected_items = list(item_ids)
+    liveness_flip_roots: list[ItemId] = []
     match mutation:
         case ProposalCreationMutation(decision=decision):
             affected_items.append(decision.intake_item.item_id)
@@ -311,6 +312,7 @@ def _committed_effect_ids(
                     | decision_models.RejectedProposalChange(proposal=item)
                 ):
                     selected_item = ItemId(item)
+                    liveness_flip_roots.append(selected_item)
                     selected = connection.execute(
                         "SELECT queue_position FROM work_items WHERE item_id = ?", (selected_item,)
                     ).fetchone()
@@ -342,14 +344,13 @@ def _committed_effect_ids(
                     assert_never(unreachable)
         case _ as unreachable:
             assert_never(unreachable)
-    direct_items = tuple(dict.fromkeys(affected_items))
-    for item_id in direct_items:
+    for item_id in dict.fromkeys(liveness_flip_roots):
         affected_items.extend(
             decode_row(row, _ItemIdRow).item_id
             for row in connection.execute(
                 """
                 SELECT owner.item_id
-                FROM item_dependencies AS dependency
+                FROM item_dependencies AS dependency INDEXED BY item_dependencies_by_dependency
                 JOIN work_items AS owner ON owner.item_id = dependency.item_id
                 WHERE dependency.dependency_id = ?
                   AND owner.queue_position IS NOT NULL

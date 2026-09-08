@@ -80,15 +80,23 @@ class BriefSourcesTest(unittest.TestCase):
                 )
             )
 
+            rendered_batches = tuple(
+                (
+                    batch,
+                    expect_brief_source_success(render_brief_source_batch(project, plan, batch.index)),
+                )
+                for batch in plan.batches
+            )
+            rendered = b"".join(content for _batch, content in rendered_batches)
+
         selected = b"## Contract\n\nSelected.\n\n"
-        self.assertEqual(selected, b"".join(segment.content for segment in plan.sources[0].segments))
+        self.assertIn(selected, rendered)
         self.assertEqual(hashlib.sha256(selected).hexdigest(), plan.sources[0].selected_sha256)
         self.assertEqual((3, 6), (plan.sources[0].start_line, plan.sources[0].end_line))
-        self.assertEqual(
-            b"first line\nsecond line\n",
-            b"".join(segment.content for segment in plan.sources[1].segments),
-        )
+        self.assertIn(b"first line\nsecond line\n", rendered)
+        self.assertFalse(hasattr(plan.sources[0].segments[0], "content"))
         self.assertTrue(all(batch.content_byte_count <= 24 for batch in plan.batches))
+        self.assertTrue(all(len(content) == batch.estimated_rendered_byte_count for batch, content in rendered_batches))
         self.assertEqual(tuple(range(len(plan.batches))), tuple(batch.index for batch in plan.batches))
 
     def test_plan_rejects_overlap_non_utf8_oversized_lines_and_unknown_batches(self) -> None:
@@ -130,7 +138,14 @@ class BriefSourcesTest(unittest.TestCase):
                     max_batch_bytes=128,
                 )
             )
-            expect_brief_source_failure(render_brief_source_batch(plan, 1), BriefSourceErrorCode.BATCH_NOT_FOUND)
+            expect_brief_source_failure(
+                render_brief_source_batch(project, plan, 1), BriefSourceErrorCode.BATCH_NOT_FOUND
+            )
+
+            (project / "source.md").write_text("# Source\n\nChanged.\n", encoding="utf-8")
+            expect_brief_source_failure(
+                render_brief_source_batch(project, plan, 0), BriefSourceErrorCode.SOURCE_CHANGED
+            )
 
     def test_cli_plans_and_emits_without_work_state_or_project_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

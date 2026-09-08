@@ -2,16 +2,16 @@ import unittest
 from dataclasses import replace
 from datetime import timedelta
 
-from pinboard.application.decision_projection import (
-    project_decision_snapshot,
-    project_inactive_attempt_authority,
-)
 from pinboard.domain import authority_models
 from pinboard.domain.authority_decisions import (
     decide_attempt_authority,
 )
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import HostId, LeaseId, TaskId
+from tests.decision_support import (
+    project_decision_snapshot,
+    project_inactive_attempt_authority,
+)
 from tests.support import SQLITE_NOW, complete_sqlite_state
 
 

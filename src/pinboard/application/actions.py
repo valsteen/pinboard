@@ -1,14 +1,7 @@
-"""Discover currently legal actions from one already-loaded stored snapshot.
+"""Discover currently legal actions from application-owned decision facts."""
 
-The caller owns SQLite access and time sampling. This module projects the
-snapshot into domain decision facts and asks the domain for legal actions.
-"""
-
-from datetime import datetime
 from typing import assert_never
 
-from pinboard.application import stored_state
-from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.domain import decision_models
 from pinboard.domain.decisions import available_actions
 from pinboard.domain.errors import DecisionResult
@@ -58,22 +51,6 @@ def action_subject_ids(
             return (), (), ()
         case _ as unreachable:
             assert_never(unreachable)
-
-
-def discover_actions(
-    state: stored_state.StoredWorkState,
-    role: decision_models.Role,
-    *,
-    lease_id: LeaseId | None = None,
-    generation: int | None = None,
-    now: datetime,
-) -> DecisionResult[tuple[decision_models.Action, ...]]:
-    return discover_current_actions(
-        project_decision_snapshot(state, now),
-        role,
-        lease_id=lease_id,
-        generation=generation,
-    )
 
 
 def discover_current_actions(

@@ -141,22 +141,6 @@ class ParallelPreviewReader(Protocol):
     def read_parallel_preview(self, item_ids: tuple[ItemId, ...]) -> query_models.ParallelPreviewFacts | None: ...
 
 
-class ProjectStatusReader(Protocol):
-    def read_project_status(self) -> query_models.ProjectStatusFacts: ...
-
-
-class CurrentProjectReader(Protocol):
-    def read_current_action_snapshot(self, now: datetime) -> LedgerSnapshot: ...
-
-    def read_current_parallel_snapshot(self, now: datetime) -> LedgerSnapshot: ...
-
-    def read_project_overview(self, now: datetime) -> query_models.ProjectOverviewFacts: ...
-
-
-class DecisionFactsReader(Protocol):
-    def read_decision_facts(self, scope: query_models.DecisionScope, now: datetime) -> query_models.DecisionFacts: ...
-
-
 class GeneratedViewReader(Protocol):
     def read_generated_view_facts(
         self,

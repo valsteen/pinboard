@@ -87,7 +87,7 @@ def plan_or_emit_brief_sources(
         case cli_commands.BriefSourcesPlanCommand():
             write_json(_project_brief_source_plan(source_plan))
         case cli_commands.BriefSourcesEmitCommand(emit_batch=batch_index):
-            rendered_batch = brief_sources.render_brief_source_batch(source_plan, batch_index)
+            rendered_batch = brief_sources.render_brief_source_batch(roots.source_checkout, source_plan, batch_index)
             if isinstance(rendered_batch, BriefSourceFailure):
                 return rendered_batch
             sys.stdout.write(rendered_batch.decode("utf-8"))

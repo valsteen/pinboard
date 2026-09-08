@@ -329,6 +329,21 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
         self.assert_keyed_status_queries(work / "state.sqlite3", statements)
 
+    def test_terminal_item_status_does_not_read_retained_attempt_history(self) -> None:
+        project, work, _store = self.initialized_state(self.state_with_unrelated_attempt_authority(count=64))
+        common = ("--project-root", str(project), "--work-root", str(work))
+
+        with self.record_store_reads() as item_reads:
+            result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", "work-b", "--json")
+
+        self.assertEqual(0, result, stderr)
+        self.assertEqual([], json.loads(stdout)["attempts"])
+        _read_tables, statements = item_reads
+        self.assert_keyed_status_queries(work / "state.sqlite3", statements)
+        attempt_selects = tuple(statement.lower() for statement in statements if "from attempts" in statement.lower())
+        self.assertEqual(1, len(attempt_selects))
+        self.assertIn("state != 'done'", attempt_selects[0])
+
     def test_selected_parallel_preview_reads_only_selected_facts_and_preserves_metadata(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_unrelated_attempt_authority())
         database = work / "state.sqlite3"

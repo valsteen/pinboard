@@ -12,7 +12,6 @@ from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
-from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     MutationReceipt,
@@ -36,6 +35,7 @@ from pinboard.domain.identifiers import (
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.interfaces.transition_input import parse_transition_command
+from tests.decision_support import project_decision_snapshot
 from tests.domain_support import expect_success, expect_transition_command
 from tests.support import (
     SQLITE_NOW,
@@ -348,7 +348,7 @@ class MutationPersistenceTest(unittest.TestCase):
 
         self.assertNotIsInstance(committed, DecisionFailure)
         assert not isinstance(committed, DecisionFailure)
-        self.assertEqual(ActionId("revise-item:work-a"), committed.transition.action_id)
+        self.assertEqual(ActionId("revise-item:work-a"), committed.receipt.transition.action_id)
         reopened = store.snapshot()
         reopened_item = project_decision_snapshot(reopened, SQLITE_NOW).item(ItemId("work-a"))
         assert reopened_item is not None

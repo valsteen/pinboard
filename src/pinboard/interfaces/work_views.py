@@ -14,7 +14,7 @@ from pinboard.adapters.files.views import rebuild_state as rebuild_file_views
 from pinboard.adapters.files.views import refresh_facts as refresh_file_views
 from pinboard.application import ports, stored_state
 from pinboard.application.mutation_models import CommittedEffect
-from pinboard.domain.identifiers import AttemptId, HistoryId
+from pinboard.domain.identifiers import AttemptId
 from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
 from pinboard.interfaces.work_briefs import build_attempt_brief_views, build_selected_attempt_brief_views
 
@@ -49,24 +49,13 @@ def refresh(
     return refresh_file_views(facts, durable.work_root, attempt_briefs)
 
 
-def refresh_shared_authority_views(
-    durable: DurableRoots,
-    store: ports.GeneratedViewReader,
-    history_id: HistoryId,
-    now: datetime,
-) -> ViewRefreshResult:
-    """Publish the one history receipt created by an authority change."""
-
-    return refresh(durable, store, AffectedViews((), (), (history_id,)), now)
-
-
 def refresh_effect(
     durable: DurableRoots, store: ports.GeneratedViewReader, effect: CommittedEffect, now: datetime
 ) -> ViewRefreshResult:
     return refresh(
         durable,
         store,
-        AffectedViews(effect.item_ids, effect.attempt_ids, (effect.history_id,)),
+        AffectedViews(effect.item_ids, effect.attempt_ids, (effect.receipt.history_id,)),
         now,
     )
 

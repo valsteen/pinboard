@@ -11,7 +11,6 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
-from pinboard.application.actions import discover_actions
 from pinboard.application.artifact_publication import validate_transition_work_brief
 from pinboard.application.artifacts import WorkBriefIdentity
 from pinboard.application.dispatch import publish_dispatch_review, recheck_dispatch_authority
@@ -21,6 +20,7 @@ from pinboard.domain.errors import ChangedSurface, EffectDisposition, RetryDispo
 from pinboard.domain.identifiers import ActionId, ArtifactRefId, AttemptId, HostId, LeaseId, ReviewId, TaskId
 from pinboard.interfaces import action_selection, cli_commands
 from pinboard.interfaces.errors import CommandErrorCode, CommandFailure
+from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
 from tests.support import SQLITE_DIGEST, SQLITE_NOW, complete_sqlite_state, decision_facts, initialize_store
 

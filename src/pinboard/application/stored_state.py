@@ -289,37 +289,3 @@ class StoredWorkState:
     artifact_references: tuple[ArtifactReference, ...]
     authority: AuthorityRecords
     transition_receipts: tuple[StoredTransitionReceipt, ...]
-
-
-def retained_attempt(
-    state: StoredWorkState, attempt_id: AttemptId
-) -> tuple[StoredAttemptLease, AttemptLeaseGeneration | None] | None:
-    lease = next((value for value in state.authority.attempt_leases if value.attempt_id == attempt_id), None)
-    if lease is None:
-        return None
-    anchor = next(
-        (
-            value
-            for value in state.authority.attempt_generations
-            if value.attempt_id == attempt_id and value.generation == lease.generation
-        ),
-        None,
-    )
-    return lease, anchor
-
-
-def retained_preparation(
-    state: StoredWorkState, item_id: ItemId
-) -> tuple[StoredPreparationLease, PreparationLeaseGeneration | None] | None:
-    lease = next((value for value in state.authority.preparation_leases if value.item_id == item_id), None)
-    if lease is None:
-        return None
-    anchor = next(
-        (
-            value
-            for value in state.authority.preparation_generations
-            if value.item_id == item_id and value.generation == lease.generation
-        ),
-        None,
-    )
-    return lease, anchor

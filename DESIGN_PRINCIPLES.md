@@ -68,6 +68,14 @@ Prefer these properties:
 
 A helper that takes bread and cheese may return a sandwich. It must not also collect the mail, call another service, or decide whether the meal was authorized.
 
+## Keep resource work proportional to the result
+
+Trace data scope end to end: command input, application selection, domain processing, storage reads and writes, generated projections, and returned output. A focused operation names the subject and relationships its result needs, and no intervening layer widens that selection merely because a complete-state API or convenient aggregate already exists. Reads, comparisons, validation, mutations, and file replacement all follow the same semantic scope.
+
+A result that intentionally describes the current portfolio or complete project may scale with that advertised result. Name that wider scope at the entry point and capability boundary, exclude unrelated retained data, and keep the large dimension as narrow as the result permits. Process large selected collections progressively when practical; if full materialization remains deliberate, record its consequence and reopening condition in `ARCHITECTURE.md`.
+
+Do not make one hot file, hidden cache, log, or projection accumulate without a product-owned retention or segmentation decision. Immutable evidence and normalized rows may grow when provenance is the product requirement, but ordinary work must reach them through keys, bounded pages, or explicit whole-project operations. Tests should grow unrelated retained data and observe that focused operations neither read, rewrite, nor republish it.
+
 ## Make code and guide tell the same story
 
 Treat explanatory code as part of the delivered product. A computer-literate reader should be able to start from the product overview, enter one representative implementation path, and retell the same ordered story without first learning Python's type system or guessing what a noun-shaped helper might do.

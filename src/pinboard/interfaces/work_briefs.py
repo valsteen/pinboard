@@ -5,9 +5,9 @@ from typing import assert_never
 import msgspec
 
 from pinboard.application import query_models, stored_state
-from pinboard.application.artifact_publication import ArtifactReader, transition_work_brief_reference
+from pinboard.application.artifact_publication import ArtifactReader
 from pinboard.application.artifacts import BriefArtifactRef, WorkBriefIdentity
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import AttemptId
 from pinboard.interfaces import work_brief_models
@@ -318,24 +318,6 @@ def decode_work_brief_identity(data: bytes) -> WorkBriefResult[WorkBriefIdentity
         brief.accepted_scope.revision,
         brief.accepted_scope.digest,
     )
-
-
-def read_transition_work_brief_identity(
-    state: stored_state.StoredWorkState,
-    command: decision_models.TransitionCommand,
-    artifacts: ArtifactReader,
-) -> DecisionResult[WorkBriefIdentity | None]:
-    reference = transition_work_brief_reference(state, command)
-    if reference is None:
-        return None
-    identity = decode_work_brief_identity(artifacts.read(reference))
-    if isinstance(identity, WorkBriefFailure):
-        return DecisionFailure(
-            DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            f"The selected brief artifact is not a valid canonical typed work brief: {identity}",
-            None,
-        )
-    return identity
 
 
 def read_selected_work_brief_identity(

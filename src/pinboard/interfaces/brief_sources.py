@@ -7,7 +7,7 @@ opening Pinboard work state or writing project files.
 
 import hashlib
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 import msgspec
@@ -116,19 +116,20 @@ def select_brief_source(
     )
 
 
-def _reject_overlaps(
-    selected: tuple[tuple[BriefSourceRequest, SelectedBriefSource], ...],
+def _reject_overlap(
+    request: BriefSourceRequest,
+    selected: SelectedBriefSource,
+    prior_ranges: list[tuple[str, PurePosixPath, int, int]],
 ) -> BriefSourceFailure | None:
-    for index, (left_request, left) in enumerate(selected):
-        for right_request, right in selected[index + 1 :]:
-            if left.selector.relative_path != right.selector.relative_path:
-                continue
-            if max(left.start_line, right.start_line) <= min(left.end_line, right.end_line):
-                return BriefSourceFailure(
-                    BriefSourceErrorCode.SELECTOR_OVERLAP,
-                    f"Authorities '{left_request.authority_id}' and '{right_request.authority_id}' select "
-                    f"overlapping lines in '{left.selector.relative_path}'.",
-                )
+    for prior_id, prior_path, prior_start, prior_end in prior_ranges:
+        if selected.selector.relative_path != prior_path:
+            continue
+        if max(selected.start_line, prior_start) <= min(selected.end_line, prior_end):
+            return BriefSourceFailure(
+                BriefSourceErrorCode.SELECTOR_OVERLAP,
+                f"Authorities '{prior_id}' and '{request.authority_id}' select overlapping lines in "
+                f"'{selected.selector.relative_path}'.",
+            )
     return None
 
 
@@ -144,9 +145,9 @@ def _compose_segment(
         index,
         lines[0].number if lines else 0,
         lines[-1].number if lines else 0,
-        content,
         len(content),
         hashlib.sha256(content).hexdigest(),
+        content.endswith(b"\n"),
     )
 
 
@@ -179,21 +180,25 @@ def _split_source_into_segments(
     return tuple(segments)
 
 
-def _render_segments(segments: tuple[BriefSourceSegment, ...]) -> bytes:
+def _segment_header(segment: BriefSourceSegment) -> bytes:
+    return (
+        f"===== BEGIN BRIEF SOURCE authority={segment.authority_id} selector={segment.selector} "
+        f"lines={segment.start_line}-{segment.end_line} segment={segment.index} =====\n"
+    ).encode()
+
+
+def _segment_footer(segment: BriefSourceSegment) -> bytes:
+    return f"===== END BRIEF SOURCE authority={segment.authority_id} segment={segment.index} =====\n".encode()
+
+
+def _render_segments(segments: tuple[tuple[BriefSourceSegment, bytes], ...]) -> bytes:
     rendered: list[bytes] = []
-    for segment in segments:
-        rendered.append(
-            (
-                f"===== BEGIN BRIEF SOURCE authority={segment.authority_id} selector={segment.selector} "
-                f"lines={segment.start_line}-{segment.end_line} segment={segment.index} =====\n"
-            ).encode()
-        )
-        rendered.append(segment.content)
-        if segment.content and not segment.content.endswith(b"\n"):
+    for segment, content in segments:
+        rendered.append(_segment_header(segment))
+        rendered.append(content)
+        if content and not content.endswith(b"\n"):
             rendered.append(b"\n")
-        rendered.append(
-            f"===== END BRIEF SOURCE authority={segment.authority_id} segment={segment.index} =====\n".encode()
-        )
+        rendered.append(_segment_footer(segment))
     return b"".join(rendered)
 
 
@@ -201,7 +206,13 @@ def _compose_batch(index: int, segments: tuple[BriefSourceSegment, ...]) -> Brie
     return BriefSourceBatch(
         index,
         sum(segment.content_byte_count for segment in segments),
-        len(_render_segments(segments)),
+        sum(
+            len(_segment_header(segment))
+            + segment.content_byte_count
+            + (1 if segment.content_byte_count and not segment.ends_with_newline else 0)
+            + len(_segment_footer(segment))
+            for segment in segments
+        ),
         segments,
     )
 
@@ -229,7 +240,9 @@ def plan_brief_sources(
     manifest: BriefSourceManifest,
     max_batch_bytes: int,
 ) -> BriefSourceResult[BriefSourcePlan]:
-    selected_values: list[tuple[BriefSourceRequest, SelectedBriefSource]] = []
+    selected_ranges: list[tuple[str, PurePosixPath, int, int]] = []
+    planned_sources: list[PlannedBriefSource] = []
+    all_segments: list[BriefSourceSegment] = []
     for request in manifest.sources:
         selected = select_brief_source(
             source_checkout_root,
@@ -238,14 +251,12 @@ def plan_brief_sources(
         )
         if isinstance(selected, BriefSourceFailure):
             return selected
-        selected_values.append((request, selected))
-    selected_sources = tuple(selected_values)
-    if (failure := _reject_overlaps(selected_sources)) is not None:
-        return failure
-    planned_sources: list[PlannedBriefSource] = []
-    all_segments: list[BriefSourceSegment] = []
-    for request, authority in selected_sources:
-        segments = _split_source_into_segments(request, authority, max_batch_bytes)
+        if (failure := _reject_overlap(request, selected, selected_ranges)) is not None:
+            return failure
+        selected_ranges.append(
+            (request.authority_id, selected.selector.relative_path, selected.start_line, selected.end_line)
+        )
+        segments = _split_source_into_segments(request, selected, max_batch_bytes)
         if isinstance(segments, BriefSourceFailure):
             return segments
         all_segments.extend(segments)
@@ -254,11 +265,11 @@ def plan_brief_sources(
                 request.authority_id,
                 request.selector,
                 request.families,
-                hashlib.sha256(authority.content).hexdigest(),
-                len(authority.content),
-                authority.start_line,
-                authority.end_line,
-                authority.whole_file,
+                hashlib.sha256(selected.content).hexdigest(),
+                len(selected.content),
+                selected.start_line,
+                selected.end_line,
+                selected.whole_file,
                 segments,
             )
         )
@@ -272,10 +283,52 @@ def plan_brief_sources(
     )
 
 
-def render_brief_source_batch(plan: BriefSourcePlan, batch_index: int) -> BriefSourceResult[bytes]:
+def render_brief_source_batch(
+    source_checkout_root: Path, plan: BriefSourcePlan, batch_index: int
+) -> BriefSourceResult[bytes]:
     if batch_index < 0 or batch_index >= len(plan.batches):
         return BriefSourceFailure(
             BriefSourceErrorCode.BATCH_NOT_FOUND,
             f"Batch {batch_index} is outside the available range 0..{len(plan.batches) - 1}.",
         )
-    return _render_segments(plan.batches[batch_index].segments)
+    sources = {source.authority_id: source for source in plan.sources}
+    rendered_segments: list[tuple[BriefSourceSegment, bytes]] = []
+    selected_id: str | None = None
+    selected_source: SelectedBriefSource | None = None
+    for segment in plan.batches[batch_index].segments:
+        source = sources[segment.authority_id]
+        if segment.authority_id != selected_id:
+            selected = select_brief_source(
+                source_checkout_root,
+                authority_selector(source.selector),
+                require_utf8=True,
+            )
+            if isinstance(selected, BriefSourceFailure):
+                return selected
+            if (
+                hashlib.sha256(selected.content).hexdigest() != source.selected_sha256
+                or len(selected.content) != source.selected_byte_count
+                or selected.start_line != source.start_line
+                or selected.end_line != source.end_line
+            ):
+                return BriefSourceFailure(
+                    BriefSourceErrorCode.SOURCE_CHANGED,
+                    f"Authority '{segment.authority_id}' changed after its source plan was created.",
+                )
+            selected_source = selected
+            selected_id = segment.authority_id
+        assert selected_source is not None
+        content = b"".join(
+            line.content for line in selected_source.lines if segment.start_line <= line.number <= segment.end_line
+        )
+        if (
+            len(content) != segment.content_byte_count
+            or hashlib.sha256(content).hexdigest() != segment.content_sha256
+            or content.endswith(b"\n") != segment.ends_with_newline
+        ):
+            return BriefSourceFailure(
+                BriefSourceErrorCode.SOURCE_CHANGED,
+                f"Authority '{segment.authority_id}' changed after its source plan was created.",
+            )
+        rendered_segments.append((segment, content))
+    return _render_segments(tuple(rendered_segments))

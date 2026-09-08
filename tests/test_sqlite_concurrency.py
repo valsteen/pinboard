@@ -20,7 +20,6 @@ from pinboard.application.artifacts import (
     ResultArtifactRef,
     WorkBriefIdentity,
 )
-from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.application.mutations import project_checkpoint_acceptance_mutation, project_transition_mutation
 from pinboard.application.service import (
     create_proposal,
@@ -46,6 +45,7 @@ from pinboard.domain.identifiers import (
     TaskId,
 )
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
+from tests.decision_support import project_decision_snapshot
 from tests.domain_support import expect_success
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, mutation_allocation
 

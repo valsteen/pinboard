@@ -30,7 +30,7 @@ from pinboard.interfaces.work_briefs import (
     canonical_work_brief_bytes,
     decode_work_brief,
     decode_work_brief_review,
-    read_transition_work_brief_identity,
+    read_selected_work_brief_identity,
     render_work_brief_markdown,
     validate_reviewed_authority_digests,
     validate_work_brief_review,
@@ -379,7 +379,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 )
                 artifacts = ArtifactRepository(roots)
 
-                identity = read_transition_work_brief_identity(state, command, artifacts)
+                identity = read_selected_work_brief_identity(reference, artifacts)
                 self.assertNotIsInstance(identity, DecisionFailure)
                 assert identity is not None
                 self.assertIsNone(validate_transition_work_brief(decision_facts(state, SQLITE_NOW), command, identity))
@@ -419,9 +419,9 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     patch.object(ArtifactRepository, "read", side_effect=artifact_failure),
                     self.assertRaises(ArtifactError),
                 ):
-                    read_transition_work_brief_identity(state, command, artifacts)
+                    read_selected_work_brief_identity(reference, artifacts)
                 with patch.object(ArtifactRepository, "read", return_value=b"{}"):
-                    invalid_identity = read_transition_work_brief_identity(state, command, artifacts)
+                    invalid_identity = read_selected_work_brief_identity(reference, artifacts)
                 self.assertIsInstance(invalid_identity, DecisionFailure)
                 assert isinstance(invalid_identity, DecisionFailure)
                 self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, invalid_identity.code)
@@ -433,7 +433,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     ),
                     self.assertRaisesRegex(ValueError, "unrelated value failure"),
                 ):
-                    read_transition_work_brief_identity(state, command, artifacts)
+                    read_selected_work_brief_identity(reference, artifacts)
 
                 mismatched = replace(value, branch="codex/different")
                 mismatch = write_revision(
@@ -457,7 +457,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     state,
                     artifact_references=(mismatched_reference, *state.artifact_references[1:]),
                 )
-                mismatched_identity = read_transition_work_brief_identity(mismatched_state, command, artifacts)
+                mismatched_identity = read_selected_work_brief_identity(mismatched_reference, artifacts)
                 self.assertNotIsInstance(mismatched_identity, DecisionFailure)
                 failure = validate_transition_work_brief(
                     decision_facts(mismatched_state, SQLITE_NOW), command, mismatched_identity

@@ -18,10 +18,6 @@ from pinboard.application.artifacts import (
     ResultArtifactRef,
     WorkBriefIdentity,
 )
-from pinboard.application.decision_projection import (
-    project_decision_snapshot,
-    project_inactive_attempt_authority,
-)
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.service import (
     create_proposal,
@@ -52,6 +48,10 @@ from pinboard.domain.proposal_models import (
     ProposalIntake,
 )
 from pinboard.interfaces.transition_input import parse_transition_command
+from tests.decision_support import (
+    project_decision_snapshot,
+    project_inactive_attempt_authority,
+)
 from tests.domain_support import expect_transition_command
 from tests.support import (
     SQLITE_NOW,
@@ -383,8 +383,8 @@ class ServiceTest(unittest.TestCase):
         committed_mutation = self._commit_transition(store, command, SQLITE_NOW + timedelta(seconds=1))
         self.assertNotIsInstance(committed_mutation, DecisionFailure)
         assert not isinstance(committed_mutation, DecisionFailure)
-        self.assertEqual(before.lifecycle.project.revision + 1, committed_mutation.project_revision)
-        self.assertEqual(ActionId("submit-review:work-a-1"), committed_mutation.transition.action_id)
+        self.assertEqual(before.lifecycle.project.revision + 1, committed_mutation.receipt.project_revision)
+        self.assertEqual(ActionId("submit-review:work-a-1"), committed_mutation.receipt.transition.action_id)
         self.assertEqual("review", store.snapshot().lifecycle.attempts[0].state.value)
 
     def test_positive_item_state_variants_reload_from_fresh_stores(self) -> None:

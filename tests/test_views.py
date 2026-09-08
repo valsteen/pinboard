@@ -7,8 +7,7 @@ from unittest.mock import patch
 from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
-from pinboard.adapters.files.models import AffectedViews
-from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_state, refresh_state
+from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_state, refresh_facts
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.artifacts import NewArtifact
@@ -74,12 +73,10 @@ class GeneratedViewsTest(unittest.TestCase):
             side_effect=FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "disk full"),
         ):
             receipt = store.snapshot().transition_receipts[0]
-            result = refresh_state(
-                store.snapshot(),
+            result = refresh_facts(
+                store.read_generated_view_facts((), (), (receipt.history_id,), SQLITE_NOW),
                 work_root,
-                AffectedViews((), (), (receipt.history_id,)),
                 {},
-                now=SQLITE_NOW,
             )
 
         self.assertEqual(12, result.database_revision)

@@ -49,18 +49,6 @@ class CommittedEffect:
     attempt_ids: tuple[AttemptId, ...]
     continuation_attempt_id: AttemptId | None
 
-    @property
-    def transition(self) -> decision_models.TransitionReceipt:
-        return self.receipt.transition
-
-    @property
-    def history_id(self) -> HistoryId:
-        return self.receipt.history_id
-
-    @property
-    def project_revision(self) -> int:
-        return self.receipt.project_revision
-
 
 @dataclass(frozen=True, slots=True)
 class PreparationStart:

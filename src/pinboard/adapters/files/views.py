@@ -181,27 +181,6 @@ def _write_selected_views(
             atomic_replace(history_root / f"{history_id}.md", _render_history(receipt))
 
 
-def refresh_state(
-    state: stored_state.StoredWorkState,
-    work_root: Path,
-    affected: AffectedViews,
-    attempt_briefs: Mapping[AttemptId, bytes],
-    *,
-    now: datetime,
-) -> ViewRefreshResult:
-    try:
-        _write_selected_views(work_root, state, affected, attempt_briefs, now)
-    except (FileIOError, ViewProjectionError) as error:
-        return ViewRefreshResult(
-            state.lifecycle.project.revision,
-            ViewWarning(
-                f"The SQLite transition succeeded, but generated views need repair: {error}",
-                "Run 'pinboard views rebuild'.",
-            ),
-        )
-    return ViewRefreshResult(state.lifecycle.project.revision, None)
-
-
 def refresh_facts(
     facts: query_models.GeneratedViewFacts,
     work_root: Path,

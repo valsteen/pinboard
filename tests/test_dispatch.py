@@ -17,7 +17,6 @@ from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application.actions import discover_actions
 from pinboard.application.artifacts import ArtifactRef, NewArtifact
 from pinboard.application.dispatch_models import DispatchEnvironment, DispatchPermission
 from pinboard.application.ports import ArtifactReferenceAcceptance
@@ -35,6 +34,7 @@ from pinboard.interfaces.dispatch_brief import (
 )
 from pinboard.interfaces.errors import DispatchErrorCode, DispatchFailure, DispatchResult
 from pinboard.interfaces.work_briefs import canonical_work_brief_bytes, canonical_work_brief_review_bytes
+from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
 from tests.support import SQLITE_DIGEST, SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.work_brief_support import CHECKPOINT_ID, ready_review, work_a_brief

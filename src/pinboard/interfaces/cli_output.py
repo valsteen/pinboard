@@ -6,14 +6,10 @@ from typing import Literal
 
 import msgspec
 
-from pinboard.application import query_models, stored_state
+from pinboard.application import query_models
 from pinboard.domain.errors import EffectDisposition, FailureDetails, FailureFactValue, RetryDisposition
 from pinboard.interfaces.errors import BriefSourceFailure, CliFailure, CommittedEffectFailure, WorkBriefFailure
 
-type RetainedAuthorityLease = (
-    tuple[stored_state.StoredAttemptLease, stored_state.AttemptLeaseGeneration]
-    | tuple[stored_state.StoredPreparationLease, stored_state.PreparationLeaseGeneration]
-)
 type AuthorityStatus = query_models.AttemptAuthorityStatus | query_models.PreparationAuthorityStatus
 
 
@@ -92,21 +88,6 @@ def authority_lease_fields(
         "expires_at": expires_at.isoformat(),
         "status": status,
     }
-
-
-def retained_authority_lease_fields(retained: RetainedAuthorityLease) -> dict[str, str | int]:
-    """Project common status fields from one retained attempt or preparation lease."""
-
-    lease, anchor = retained
-    return authority_lease_fields(
-        task_id=str(anchor.task_id),
-        host_id=str(anchor.host_id),
-        lease_id=str(anchor.lease_id),
-        generation=lease.generation,
-        acquired_at=lease.acquired_at,
-        expires_at=lease.expires_at,
-        status=lease.state.value,
-    )
 
 
 def authority_status_fields(status: AuthorityStatus) -> dict[str, str | int]:

@@ -7,7 +7,7 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
-from pinboard.application.actions import discover_actions, discover_current_actions
+from pinboard.application.actions import discover_current_actions
 from pinboard.application.queries import (
     project_current_overview,
     project_item_status,
@@ -24,6 +24,7 @@ from pinboard.domain.identifiers import (
     ItemId,
     LeaseId,
 )
+from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
 from tests.support import (
     SQLITE_NOW,
@@ -234,7 +235,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                 None,
                 None,
                 None,
-                (query_models.ItemStatusAttempt("work-b-z", work_models.AttemptState.DONE, "candidate-z"),),
+                (),
                 None,
             ),
             done,

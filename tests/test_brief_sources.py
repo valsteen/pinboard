@@ -314,6 +314,65 @@ class BriefSourcesTest(unittest.TestCase):
         self.assertEqual(15, result)
         self.assertIn(BriefSourceErrorCode.PLAN_INVALID.value, stderr)
 
+    def test_cli_rejects_plan_segments_that_do_not_exactly_partition_the_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "source.md").write_bytes(b"first\nother\nthird\n")
+            manifest_path = project / "manifest.json"
+            manifest_path.write_bytes(
+                msgspec.json.encode(
+                    self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
+                    order="sorted",
+                )
+            )
+            planned_result, planned_stdout, planned_stderr = self.run_cli(
+                "--project-root",
+                str(project),
+                "brief-sources",
+                "--file",
+                str(manifest_path),
+                "--max-batch-bytes",
+                "6",
+                "--json",
+            )
+            self.assertEqual((0, ""), (planned_result, planned_stderr))
+            original = json.loads(planned_stdout)
+            cases = {
+                "duplicate-and-gap": (1, 2),
+                "reordered": (0, 1),
+                "before-source": (0, None),
+            }
+            for name, (target_index, copied_index) in cases.items():
+                with self.subTest(name=name):
+                    plan = json.loads(json.dumps(original))
+                    target = plan["sources"][0]["segments"][target_index]
+                    batch_target = plan["batches"][target_index]["segments"][0]
+                    if copied_index is None:
+                        target["start_line"] = 0
+                        target["end_line"] = 0
+                        batch_target["start_line"] = 0
+                        batch_target["end_line"] = 0
+                    else:
+                        copied = plan["sources"][0]["segments"][copied_index]
+                        for field in (
+                            "start_line",
+                            "end_line",
+                            "content_byte_count",
+                            "content_sha256",
+                            "ends_with_newline",
+                        ):
+                            target[field] = copied[field]
+                            batch_target[field] = copied[field]
+                    plan_path = project / f"invalid-{name}.json"
+                    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+
+                    result, _stdout, stderr = self.run_cli(
+                        "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "0"
+                    )
+
+                    self.assertEqual(15, result)
+                    self.assertIn(BriefSourceErrorCode.PLAN_INVALID.value, stderr)
+
     def test_cli_rejects_a_plan_whose_rendered_size_is_false(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)

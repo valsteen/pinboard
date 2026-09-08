@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
@@ -158,6 +159,15 @@ class BriefSourceView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
             segment.authority_id != self.authority_id or segment.selector != self.selector for segment in self.segments
         ):
             raise ValueError("source segments must repeat their owning authority and selector")
+        if (
+            self.start_line < 1
+            or self.end_line < self.start_line
+            or self.segments[0].start_line != self.start_line
+            or self.segments[-1].end_line != self.end_line
+            or any(segment.end_line < segment.start_line for segment in self.segments)
+            or any(previous.end_line + 1 != following.start_line for previous, following in pairwise(self.segments))
+        ):
+            raise ValueError("source segments must exactly partition the selected line range in order")
         if sum(segment.content_byte_count for segment in self.segments) != self.selected_byte_count:
             raise ValueError("source segment sizes must equal the selected source size")
 

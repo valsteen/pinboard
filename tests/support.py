@@ -10,7 +10,6 @@ from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
-from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.application.mutation_models import CheckpointMutationAllocation
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.history import work_item_definition_digest
@@ -26,6 +25,7 @@ from pinboard.domain.identifiers import (
     ProposalId,
     TaskId,
 )
+from tests.decision_support import project_decision_snapshot
 from tests.sqlite_support import insert_initial_state
 
 

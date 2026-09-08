@@ -100,7 +100,7 @@ def create_proposal(
         decoded_proposal.proposal_id,
         intake_status.item.queue_position,
         intake_status.item.state.value,
-        str(creation_result.project_revision),
+        str(creation_result.receipt.project_revision),
     )
     if command.json:
         write_json(created)

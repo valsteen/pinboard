@@ -86,9 +86,9 @@ class BriefSourceSegment:
     index: int
     start_line: int
     end_line: int
-    content: bytes
     content_byte_count: int
     content_sha256: str
+    ends_with_newline: bool
 
 
 @dataclass(frozen=True, slots=True)

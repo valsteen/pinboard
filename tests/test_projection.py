@@ -1,7 +1,7 @@
 import unittest
 
-from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.domain.identifiers import ItemId, LeaseId
+from tests.decision_support import project_decision_snapshot
 from tests.support import SQLITE_NOW, complete_sqlite_state
 
 

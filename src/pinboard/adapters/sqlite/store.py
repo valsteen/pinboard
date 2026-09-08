@@ -98,10 +98,6 @@ class _AttemptIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: AttemptId
 
 
-class _DependencyIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    dependency_id: ItemId
-
-
 class _DependencyViewRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     dependency_id: ItemId
     queue_position: int | None
@@ -189,15 +185,19 @@ class _PersistenceFacts:
             ) from None
 
 
-def _mutation_subjects(  # noqa: PLR0912
+def _mutation_subjects(
     mutation: StoredStateMutation,
 ) -> tuple[tuple[ItemId, ...], tuple[AttemptId, ...]]:
     match mutation:
         case TransitionMutation(decision=decision):
             match decision.change:
-                case decision_models.ItemStateChange(item=item) | decision_models.BlockItemChange(item=item):
-                    return (item,), ()
-                case decision_models.ActivationChange(item=item):
+                case (
+                    decision_models.ItemStateChange(item=item)
+                    | decision_models.BlockItemChange(item=item)
+                    | decision_models.ActivationChange(item=item)
+                    | decision_models.ItemClosureChange(item=item)
+                    | DefinitionRevisionDecision(item=item)
+                ):
                     return (item,), ()
                 case (
                     decision_models.AttemptStateChange(item=item, attempt=attempt)
@@ -208,20 +208,16 @@ def _mutation_subjects(  # noqa: PLR0912
                     | decision_models.ReviewReturnChange(item=item, attempt=attempt)
                     | decision_models.CompletionChange(item=item, attempt=attempt)
                     | decision_models.AttemptClosureChange(item=item, attempt=attempt)
+                    | decision_models.RebindAttemptChange(item=item, attempt=attempt)
                 ):
                     return (item,), (attempt,)
-                case decision_models.RebindAttemptChange(item=item, attempt=attempt):
-                    return (item,), (attempt,)
-                case decision_models.ItemClosureChange(item=item) | DefinitionRevisionDecision(item=item):
-                    return (item,), ()
                 case decision_models.AcceptedProposalChange(accepted_item=accepted):
                     return (accepted.item,), ()
                 case (
                     decision_models.MergedProposalChange(proposal=proposal)
                     | decision_models.RejectedProposalChange(proposal=proposal)
+                    | decision_models.ReturnedProposalChange(proposal=proposal)
                 ):
-                    return (ItemId(proposal),), ()
-                case decision_models.ReturnedProposalChange(proposal=proposal):
                     return (ItemId(proposal),), ()
                 case _ as unreachable:
                     assert_never(unreachable)

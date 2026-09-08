@@ -1,9 +1,10 @@
 from datetime import datetime
 
 from pinboard.application import stored_state
-from pinboard.domain import authority_models, work_models
+from pinboard.application.actions import discover_current_actions
+from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import AttemptId, CandidateId, ItemId, ProposalId
+from pinboard.domain.identifiers import AttemptId, CandidateId, ItemId, LeaseId, ProposalId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
@@ -15,12 +16,19 @@ def project_inactive_attempt_authority(
     """Select exact retained inactive authority after ordinary interruption recovery."""
 
     attempt = next((value for value in state.lifecycle.attempts if value.attempt_id == attempt_id), None)
-    retained = stored_state.retained_attempt(state, attempt_id)
-    if attempt is None or retained is None:
+    lease = next((value for value in state.authority.attempt_leases if value.attempt_id == attempt_id), None)
+    if attempt is None or lease is None:
         return DecisionFailure(
             DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED, "No retained attempt authority exists.", None
         )
-    lease, anchor = retained
+    anchor = next(
+        (
+            value
+            for value in state.authority.attempt_generations
+            if value.attempt_id == attempt_id and value.generation == lease.generation
+        ),
+        None,
+    )
     if anchor is None:
         return DecisionFailure(
             DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
@@ -251,4 +259,22 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
         ),
         definitions=definitions,
         host_epoch=state.lifecycle.project.host_epoch,
+    )
+
+
+def discover_actions(
+    state: stored_state.StoredWorkState,
+    role: decision_models.Role,
+    *,
+    lease_id: LeaseId | None = None,
+    generation: int | None = None,
+    now: datetime,
+) -> DecisionResult[tuple[decision_models.Action, ...]]:
+    """Project a complete fixture and discover its currently legal actions."""
+
+    return discover_current_actions(
+        project_decision_snapshot(state, now),
+        role,
+        lease_id=lease_id,
+        generation=generation,
     )

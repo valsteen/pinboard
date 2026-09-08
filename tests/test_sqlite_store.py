@@ -28,7 +28,6 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
-from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.application.mutations import project_transition_mutation
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import available_actions as available_actions_outcome
@@ -45,6 +44,7 @@ from pinboard.domain.identifiers import (
     TaskId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
+from tests.decision_support import project_decision_snapshot
 from tests.domain_support import expect_success
 from tests.domain_support import replace as replace_dataclass
 from tests.support import SQLITE_DIGEST, SQLITE_NOW, complete_sqlite_state, initialize_store, mutation_allocation
@@ -778,7 +778,7 @@ class SQLiteStoreTest(unittest.TestCase):
             self.assertEqual(initial, store.snapshot())
             receipt = expect_success(transaction.commit(mutation))
         committed = store.snapshot()
-        self.assertEqual(decision_models.ActionKind.PAUSE.value, receipt.transition.outcome)
+        self.assertEqual(decision_models.ActionKind.PAUSE.value, receipt.receipt.transition.outcome)
         self.assertEqual(13, committed.lifecycle.project.revision)
         self.assertEqual(stored_state.StoredWorkItemState.PAUSED, committed.lifecycle.work_items[1].state)
         self.assertEqual(work_models.AttemptState.PAUSED, committed.lifecycle.attempts[0].state)
@@ -947,7 +947,7 @@ class SQLiteStoreTest(unittest.TestCase):
         attempt = completed.lifecycle.attempts[0]
         self.assertEqual(
             ("complete", "accepted direct completion"),
-            (receipt.transition.outcome, receipt.transition.evidence),
+            (receipt.receipt.transition.outcome, receipt.receipt.transition.evidence),
         )
         self.assertEqual(
             (stored_state.StoredWorkItemState.DONE, "accepted direct completion"), (item.state, item.outcome_evidence)

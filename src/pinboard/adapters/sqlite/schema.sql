@@ -110,9 +110,6 @@ CREATE UNIQUE INDEX one_live_attempt_per_item
 ON attempts(item_id)
 WHERE state != 'done';
 
-CREATE INDEX attempts_by_item
-ON attempts(item_id, attempt_id);
-
 CREATE TABLE proposals (
     proposal_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,

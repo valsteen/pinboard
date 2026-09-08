@@ -253,26 +253,3 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
             ),
         )
     return None
-
-
-def transition_work_brief_reference(
-    state: stored_state.StoredWorkState,
-    command: decision_models.TransitionCommand,
-) -> stored_state.ArtifactReference | None:
-    match command:
-        case (
-            decision_models.ActivateCommand(value=value)
-            | decision_models.ResumeCommand(value=value)
-            | decision_models.RebindAttemptCommand(value=value)
-        ) if value.brief_artifact_ref_id is not None:
-            artifact_ref_id = value.brief_artifact_ref_id
-        case _:
-            return None
-    return next(
-        (
-            candidate
-            for candidate in state.artifact_references
-            if candidate.artifact_ref_id == artifact_ref_id and candidate.kind == work_models.ArtifactKind.BRIEF
-        ),
-        None,
-    )

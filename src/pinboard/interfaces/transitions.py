@@ -263,7 +263,7 @@ def _present_committed_transition(
     view_result = work_views.refresh_effect(durable, store, committed_mutation, datetime.now(UTC))
     if view_result.warning is not None:
         print(view_result.warning.message, file=sys.stderr)
-    committed_revision = str(committed_mutation.project_revision)
+    committed_revision = str(committed_mutation.receipt.project_revision)
     if affected_attempt is None:
         affected_attempt = committed_mutation.continuation_attempt_id
     continuation = None
@@ -527,4 +527,4 @@ def execute_project_transition(
     view_result = work_views.refresh_effect(durable, store, committed_mutation, datetime.now(UTC))
     if view_result.warning is not None:
         print(view_result.warning.message, file=sys.stderr)
-    return str(committed_mutation.project_revision)
+    return str(committed_mutation.receipt.project_revision)

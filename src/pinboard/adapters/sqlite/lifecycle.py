@@ -303,18 +303,15 @@ def read_item_status(connection: sqlite3.Connection, item_id: ItemId) -> query_m
         (item_id,),
     ).fetchone()
     definition = None if definition_row is None else decode_definition_revision(definition_row)
-    attempts = tuple(
-        decode_row(row, query_models.ItemStatusAttemptFacts)
-        for row in connection.execute(
-            """
-            SELECT attempt_id, state, candidate_revision
-            FROM attempts
-            WHERE item_id = ?
-            ORDER BY attempt_id
-            """,
-            (item_id,),
-        ).fetchall()
-    )
+    attempt_row = connection.execute(
+        """
+        SELECT attempt_id, state, candidate_revision
+        FROM attempts INDEXED BY one_live_attempt_per_item
+        WHERE item_id = ? AND state != 'done'
+        """,
+        (item_id,),
+    ).fetchone()
+    attempts = () if attempt_row is None else (decode_row(attempt_row, query_models.ItemStatusAttemptFacts),)
     return query_models.ItemStatusLifecycleFacts(
         project_revision,
         item,
@@ -605,24 +602,6 @@ def read_lifecycle(
         ).fetchall()
     )
     return stored_state.LifecycleRecords(project, items, dependencies, attempts, definitions)
-
-
-def require_stored_item(state: stored_state.StoredWorkState, item_id: ItemId) -> stored_state.StoredWorkItem:
-    value = next((candidate for candidate in state.lifecycle.work_items if candidate.item_id == item_id), None)
-    if value is None:
-        raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "The targeted mutation item is missing.")
-    return value
-
-
-def require_stored_attempt(state: stored_state.StoredWorkState, attempt_id: AttemptId) -> stored_state.StoredAttempt:
-    value = next((candidate for candidate in state.lifecycle.attempts if candidate.attempt_id == attempt_id), None)
-    if value is None:
-        raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "The targeted mutation attempt is missing.")
-    return value
-
-
-def _queue_position(value: stored_state.StoredWorkItem) -> int:
-    return value.queue_position or 0
 
 
 def compact_queue(

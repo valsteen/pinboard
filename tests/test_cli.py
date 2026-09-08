@@ -26,7 +26,6 @@ from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
-from pinboard.application.actions import discover_actions
 from pinboard.application.artifacts import NewArtifact, WorkBriefIdentity
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.ports import WorkStore
@@ -45,6 +44,7 @@ from pinboard.interfaces import transitions as transition_interface
 from pinboard.interfaces.cli import build_parser, main
 from pinboard.interfaces.errors import WorkBriefErrorCode, WorkBriefFailure
 from pinboard.interfaces.work_briefs import canonical_work_brief_bytes
+from tests.decision_support import discover_actions
 
 from .domain_support import expect_success
 from .support import (
@@ -4117,7 +4117,7 @@ Not launchable:
                 "source": None,
                 "notes": None,
                 "queue_position": None,
-                "attempts": [{"attempt_id": "work-b-1", "state": "done", "candidate_revision": "candidate-b"}],
+                "attempts": [],
                 "preparation": None,
             },
             status,
@@ -4147,7 +4147,7 @@ Not launchable:
         self.assertIn("queue_position=none", stdout)
         self.assertIn("outcome_evidence=accepted completion", stdout)
         self.assertIn("source=none notes=none", stdout)
-        self.assertIn("attempt=work-b-1 state=done candidate=candidate-b", stdout)
+        self.assertIn("attempts=none", stdout)
 
     def test_item_status_rejects_missing_and_malformed_identities(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())

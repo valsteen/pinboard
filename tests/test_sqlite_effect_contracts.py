@@ -21,13 +21,13 @@ from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
 from pinboard.application.artifacts import EvidenceArtifactRef
-from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.application.mutations import project_transition_mutation
 from pinboard.application.service import start_preparation
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import available_actions, decide
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, ProposalId, TaskId
+from tests.decision_support import project_decision_snapshot
 from tests.support import (
     SQLITE_NOW,
     complete_sqlite_state,
@@ -421,16 +421,9 @@ class SQLiteEffectContractTest(unittest.TestCase):
         self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, occupied.exception.code)
         self.assertEqual(before, store.snapshot())
 
-    def test_lifecycle_lookup_and_cas_failures_preserve_the_ledger(self) -> None:
+    def test_queue_cas_failures_preserve_the_ledger(self) -> None:
         path, store = self._store()
         before = store.snapshot()
-        with self.assertRaises(StorageError) as missing_item:
-            lifecycle.require_stored_item(before, ItemId("missing"))
-        self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, missing_item.exception.code)
-        with self.assertRaises(StorageError) as missing_attempt:
-            lifecycle.require_stored_attempt(before, AttemptId("missing-1"))
-        self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, missing_attempt.exception.code)
-
         for effect, argument in ((lifecycle.compact_queue, 1), (lifecycle.make_queue_space, 1)):
             connection = open_database(path, OpenMode.READ_WRITE)
             try:

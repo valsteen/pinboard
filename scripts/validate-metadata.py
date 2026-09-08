@@ -282,7 +282,7 @@ def validate_claude_marketplace() -> None:
         PLUGIN_NAME,
         "Vincent Alsteen",
         PLUGIN_NAME,
-        ".",
+        "./",
     ):
         raise ValueError("Claude marketplace metadata must install the repository-root plugin")
     if value.description != plugin.description:

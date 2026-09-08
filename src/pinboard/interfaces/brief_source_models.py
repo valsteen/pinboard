@@ -44,16 +44,20 @@ def authority_selector(value: BriefSourceSelector) -> AuthoritySelector:
     return AuthoritySelector(PurePosixPath(relative), heading if separator else None)
 
 
+def _validate_source_identity(selector: BriefSourceSelector, families: tuple[BriefSourceIdentity, ...]) -> None:
+    if isinstance(failure := parse_authority_selector(selector), BriefSourceFailure):
+        raise ValueError(failure.message)
+    if not families or len(set(families)) != len(families):
+        raise ValueError("families must contain one or more unique kebab-case values")
+
+
 class BriefSourceRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     authority_id: BriefSourceIdentity
     selector: BriefSourceSelector
     families: tuple[BriefSourceIdentity, ...]
 
     def __post_init__(self) -> None:
-        if isinstance(failure := parse_authority_selector(self.selector), BriefSourceFailure):
-            raise ValueError(failure.message)
-        if not self.families or len(set(self.families)) != len(self.families):
-            raise ValueError("families must contain one or more unique kebab-case values")
+        _validate_source_identity(self.selector, self.families)
 
 
 class BriefSourceManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -147,10 +151,7 @@ class BriefSourceView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     segments: tuple[BriefSourceSegmentView, ...]
 
     def __post_init__(self) -> None:
-        if isinstance(failure := parse_authority_selector(self.selector), BriefSourceFailure):
-            raise ValueError(failure.message)
-        if not self.families or len(set(self.families)) != len(self.families):
-            raise ValueError("families must contain one or more unique kebab-case values")
+        _validate_source_identity(self.selector, self.families)
         if not self.segments or tuple(segment.index for segment in self.segments) != tuple(range(len(self.segments))):
             raise ValueError("source segments must be nonempty and have contiguous zero-based indexes")
         if any(

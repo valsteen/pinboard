@@ -153,6 +153,8 @@ class BriefSourceView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
     def __post_init__(self) -> None:
         _validate_source_identity(self.selector, self.families)
+        if self.whole_file != (authority_selector(self.selector).heading is None):
+            raise ValueError("source whole-file flag must match the selector")
         if not self.segments or tuple(segment.index for segment in self.segments) != tuple(range(len(self.segments))):
             raise ValueError("source segments must be nonempty and have contiguous zero-based indexes")
         if any(

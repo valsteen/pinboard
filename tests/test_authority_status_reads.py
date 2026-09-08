@@ -1030,6 +1030,34 @@ class AuthorityStatusReadTest(unittest.TestCase):
         self.assertEqual(12, dependency_result)
         self.assertIn("WORK_STATE_INVALID", dependency_stderr)
 
+    def test_definition_history_rejects_an_existing_item_without_definitions(self) -> None:
+        project, work, _store = self.initialized_state(
+            self.state_with_preparation(
+                status=authority_models.PreparationLeaseStatus.RELEASED,
+                historical=True,
+            )
+        )
+        raw = sqlite3.connect(work / "state.sqlite3")
+        try:
+            raw.execute("DELETE FROM work_item_definition_revisions WHERE item_id = ?", ("work-c",))
+            raw.commit()
+        finally:
+            raw.close()
+
+        result, _stdout, stderr = self.run_cli(
+            "--project-root",
+            str(project),
+            "--work-root",
+            str(work),
+            "item",
+            "definition-history",
+            "--item-id",
+            "work-c",
+        )
+
+        self.assertEqual(12, result)
+        self.assertIn("WORK_STATE_INVALID", stderr)
+
     def test_status_preserves_distinct_expiry_and_historical_pin_contracts(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_preparation())
         common = ("--project-root", str(project), "--work-root", str(work))

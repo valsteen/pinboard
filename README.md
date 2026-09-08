@@ -73,6 +73,7 @@ That makes this codebase one concrete case study, not proof that Pinboard elimin
 
 - **Intake:** preserve a discovery without silently changing priority or starting work.
 - **Planning:** make readiness, deferral, closure, and dependencies explicit.
+- **Readable evidence:** link every conversational item or evidence reference to its confirmed human-readable Markdown artifact, so the supporting context is directly usable without exposing machine-only workflow state.
 - **Revisioned definitions:** replace a complete accepted definition with compare-and-swap safety, retain every prior revision, and inspect current or paginated history as typed JSON.
 - **Execution:** start preparation atomically from the current accepted definition, then give each accepted attempt an exact brief and independent renewable ownership.
 - **Interruption and recovery:** block, deliberately pause otherwise runnable work, rebind current accepted scope with a corrected Git baseline, resume, or recover without rebuilding context from chat history or silently changing the checkout.

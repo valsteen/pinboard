@@ -17,10 +17,11 @@ Use [the coding-agent runtime adapters](runtime-adapters.md) for native task, su
 3. Present the result in two compact groups:
    - **Ready together:** the unambiguous all-safe set.
    - **Not ready:** excluded items with the command's exact reason translated into ordinary language.
-4. Add one execution-form recommendation to every launchable item:
+4. Make every item label a native clickable link to its confirmed item view under the main Pinboard skill's readable-artifact rule.
+5. Add one execution-form recommendation to every launchable item:
    - Use a **Subagent** for bounded work that belongs to the current outcome and should return to its owning task. Keep design, refinement, new-authority, live-application, external-write, and likely user-input decisions in the owning task until the work has a complete accepted brief, an independently buildable checkpoint, and already-authorized permissions.
    - Use a **Separate task** only for a genuinely independent outcome that the human intends to follow in that task's own conversation. It is not a subordinate worker and does not return its result to the current task.
-5. Explain the recommendation in one short phrase and identify the task the human should follow. Do not recommend a separate task merely because work is incomplete, interactive, approval-sensitive, or structurally independent.
+6. Explain the recommendation in one short phrase and identify the task the human should follow. Do not recommend a separate task merely because work is incomplete, interactive, approval-sensitive, or structurally independent.
 
 If the request was only to list or preview, stop after presenting the groups. A read-only preview is not launch permission.
 
@@ -48,7 +49,7 @@ Work through the authorized items in the presented order. Before each external c
 For a **Separate task**:
 
 1. Use the environment's native task creation capability. This is authorized by the user's exact batch request.
-2. Give it the repository root, item identity, and fresh preview revision, with an instruction to use Pinboard to inspect the item and apply only its own legal transitions. When its checkout or worktree must be selected, use the main skill's project-specific baseline inference and confirmation rule; do not assume that a local branch named `main` is current or that any fixed remote name is authoritative.
+2. Give it the repository root, item identity, confirmed item-view link when available, and fresh preview revision, with an instruction to use Pinboard to inspect the item and apply only its own legal transitions. When its checkout or worktree must be selected, use the main skill's project-specific baseline inference and confirmation rule; do not assume that a local branch named `main` is current or that any fixed remote name is authoritative.
 3. Tell the human to follow that independent outcome in the new task. It reports and requests decisions there; do not use task-to-task messaging to return its result to the current task.
 4. Do not replace it with a subagent when separate-task creation is unavailable, because the human selected a separate outcome and conversation.
 
@@ -67,6 +68,6 @@ Keep the report compact and exact:
 
 | Item | Form | Result |
 | --- | --- | --- |
-| `<item>` | separate task or subagent | created with task identifier, or not created with exact cause |
+| linked item label | separate task or subagent | created with task identifier, or not created with exact cause |
 
-Say `batch launched` only when every authorized item was created. Otherwise say `partial launch`, identify what exists, name the first changed-state or transport failure, and state whether retry needs user action. Never count a prepared prompt, retained proposal, or attempted message as a created task.
+Make each item value a native clickable link to its confirmed item view. Use a plain item label only when that readable view is unavailable; never invent a path. Say `batch launched` only when every authorized item was created. Otherwise say `partial launch`, identify what exists, name the first changed-state or transport failure, and state whether retry needs user action. Never count a prepared prompt, retained proposal, or attempted message as a created task.

@@ -961,6 +961,13 @@ def _accept_checkpoint(
             "The attempt has not accepted the item's current definition.",
             None,
         )
+    attempt = snapshot.attempt(attempt_id)
+    if attempt is None or attempt.protected_candidate_revision != value.candidate:
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "Checkpoint acceptance requires the exact protected candidate.",
+            None,
+        )
     authorities = tuple(candidate for candidate in snapshot.attempt_authorities if candidate.attempt == attempt_id)
     if len(authorities) != 1:
         return DecisionFailure(

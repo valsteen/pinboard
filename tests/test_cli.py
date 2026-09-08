@@ -3641,7 +3641,13 @@ Not launchable:
         finally:
             connection.close()
 
-        discovery, _discovery_stdout, discovery_stderr = self.run_cli(
+        portfolio_discovery, _portfolio_stdout, portfolio_stderr = self.run_cli(
+            *common,
+            "actions",
+            "--role",
+            "project",
+        )
+        exact_discovery, _exact_stdout, exact_stderr = self.run_cli(
             *common,
             "actions",
             "--role",
@@ -3651,8 +3657,10 @@ Not launchable:
         )
         result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
 
-        self.assertEqual(12, discovery)
-        self.assertIn("WORK_STATE_INVALID", discovery_stderr)
+        self.assertEqual(12, portfolio_discovery)
+        self.assertIn("WORK_STATE_INVALID", portfolio_stderr)
+        self.assertEqual(12, exact_discovery)
+        self.assertIn("WORK_STATE_INVALID", exact_stderr)
         self.assertEqual(12, result)
         self.assertEqual("", stderr)
         rejection = self.json_object(json.loads(stdout))

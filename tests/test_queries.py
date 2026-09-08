@@ -9,6 +9,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
 from pinboard.application.actions import discover_actions
 from pinboard.application.queries import (
+    project_current_overview,
     project_item_status,
     project_overview,
     project_parallel_preview,
@@ -95,6 +96,21 @@ class SQLiteQueriesTest(unittest.TestCase):
                 self.assertTrue(item.eligible)
                 self.assertEqual(relation.kind, item.review_flags[0].kind)
                 self.assertEqual(None if relation.item is None else "work-c", item.review_flags[0].related_item)
+
+    def test_focused_overview_preserves_returned_proposal_review_flags(self) -> None:
+        state = complete_sqlite_state()
+        proposal = state.proposals.proposals[0]
+        returned = replace(
+            proposal,
+            disposition=work_models.ReturnedProposalDisposition("Clarify the retained boundary.", SQLITE_NOW),
+        )
+        store = self._store(replace(state, proposals=replace(state.proposals, proposals=(returned,))))
+
+        full = project_overview(store.snapshot(), SQLITE_NOW)
+        focused = project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW)
+
+        self.assertEqual(full, focused)
+        self.assertEqual("Clarify the retained boundary.", focused.items[-1].review_flags[0].reason)
 
     def test_parallel_preview_reports_the_current_attempt_not_retained_terminal_history(self) -> None:
         state = complete_sqlite_state()

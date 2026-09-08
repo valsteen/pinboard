@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -7,7 +9,68 @@ import msgspec
 
 from pinboard.application import artifacts, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, ProposalId, TaskId
+from pinboard.domain.ledger import LedgerSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectStatusFacts:
+    project_revision: int
+    active_attempts: tuple[AttemptId, ...]
+    counts: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectOverviewFacts:
+    snapshot: LedgerSnapshot
+    proposals: tuple[stored_state.StoredProposal, ...]
+    preparations: tuple[PreparationAuthorityStatus, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionScope:
+    """Persisted identities whose current relationships can affect one decision."""
+
+    item_ids: tuple[ItemId, ...]
+    attempt_ids: tuple[AttemptId, ...]
+    proposal_ids: tuple[ProposalId, ...]
+    artifact_ref_ids: tuple[ArtifactRefId, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptLineage:
+    attempt_id: AttemptId
+    item_id: ItemId
+    branch: str
+    base_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionFacts:
+    snapshot: LedgerSnapshot
+    attempt_lineage: tuple[AttemptLineage, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ItemProjectionFacts:
+    item: stored_state.StoredWorkItem
+    dependencies: tuple[ItemId, ...]
+    overview: OverviewItem | None
+    definition: stored_state.ItemDefinitionRevision
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptProjectionFacts:
+    attempt: stored_state.StoredAttempt
+    brief_reference: artifacts.BriefArtifactRef | None
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedViewFacts:
+    project_revision: int
+    items: tuple[ItemProjectionFacts, ...]
+    attempts: tuple[AttemptProjectionFacts, ...]
+    receipts: tuple[stored_state.StoredTransitionReceipt, ...]
 
 
 @dataclass(frozen=True, slots=True)

@@ -41,6 +41,7 @@ from tests.support import (
     SQLITE_NOW,
     complete_sqlite_state,
     initialize_store,
+    mutation_allocation,
     reject_table_deletes,
     reject_table_inserts,
 )
@@ -242,10 +243,10 @@ class MutationPersistenceTest(unittest.TestCase):
         )
         before_commit = store.snapshot()
         with reject_table_inserts("attempts"), self.assertRaises(StorageError), store.write() as transaction:
-            transaction.commit(project_transition_mutation(transaction.snapshot(), decision))
+            transaction.commit(project_transition_mutation(mutation_allocation(store.snapshot()), decision))
         self.assertEqual(before_commit, store.snapshot())
         with reject_table_deletes("work_items"), store.write() as transaction:
-            transaction.commit(project_transition_mutation(transaction.snapshot(), decision))
+            transaction.commit(project_transition_mutation(mutation_allocation(store.snapshot()), decision))
 
         reopened = store.snapshot()
         attempt = next(value for value in reopened.lifecycle.attempts if value.attempt_id == AttemptId("work-c-1"))
@@ -337,7 +338,12 @@ class MutationPersistenceTest(unittest.TestCase):
 
         with store.write() as transaction:
             committed = transaction.commit(
-                project_transition_mutation(transaction.snapshot(), decision, TaskId("project-task"), HostId("host-a"))
+                project_transition_mutation(
+                    mutation_allocation(store.snapshot()),
+                    decision,
+                    TaskId("project-task"),
+                    HostId("host-a"),
+                )
             )
 
         self.assertNotIsInstance(committed, DecisionFailure)
@@ -438,7 +444,12 @@ class MutationPersistenceTest(unittest.TestCase):
 
         with store.write() as transaction:
             transaction.commit(
-                project_transition_mutation(transaction.snapshot(), decision, TaskId("project-task"), HostId("host-a"))
+                project_transition_mutation(
+                    mutation_allocation(store.snapshot()),
+                    decision,
+                    TaskId("project-task"),
+                    HostId("host-a"),
+                )
             )
 
         persisted = next(
@@ -479,7 +490,12 @@ class MutationPersistenceTest(unittest.TestCase):
         self.assertIsInstance(decision.change, decision_models.AcceptedProposalChange)
         with reject_table_deletes("work_items"), store.write() as transaction:
             transaction.commit(
-                project_transition_mutation(transaction.snapshot(), decision, TaskId("project-task"), HostId("host-a"))
+                project_transition_mutation(
+                    mutation_allocation(store.snapshot()),
+                    decision,
+                    TaskId("project-task"),
+                    HostId("host-a"),
+                )
             )
 
         reopened = store.snapshot()
@@ -537,7 +553,9 @@ class MutationPersistenceTest(unittest.TestCase):
             ),
             SQLITE_NOW + timedelta(seconds=1),
         )
-        first_mutation = project_transition_mutation(before, first_decision, TaskId("first-task"), HostId("host-a"))
+        first_mutation = project_transition_mutation(
+            mutation_allocation(before), first_decision, TaskId("first-task"), HostId("host-a")
+        )
         with first.write() as transaction:
             transaction.commit(first_mutation)
         after = first.snapshot()
@@ -600,7 +618,10 @@ class MutationPersistenceTest(unittest.TestCase):
                 with store.write() as transaction:
                     transaction.commit(
                         project_transition_mutation(
-                            transaction.snapshot(), decision, TaskId("project-task"), HostId("host-a")
+                            mutation_allocation(store.snapshot()),
+                            decision,
+                            TaskId("project-task"),
+                            HostId("host-a"),
                         )
                     )
                 proposal = store.snapshot().proposals.proposals[0]
@@ -628,7 +649,12 @@ class MutationPersistenceTest(unittest.TestCase):
         )
         with store.write() as transaction:
             transaction.commit(
-                project_transition_mutation(transaction.snapshot(), decision, TaskId("project-task"), HostId("host-a"))
+                project_transition_mutation(
+                    mutation_allocation(store.snapshot()),
+                    decision,
+                    TaskId("project-task"),
+                    HostId("host-a"),
+                )
             )
         reopened = store.snapshot()
         self.assertEqual(stored_state.StoredWorkItemState.DEFERRED, reopened.lifecycle.work_items[0].state)
@@ -733,7 +759,9 @@ class MutationPersistenceTest(unittest.TestCase):
                     expect_transition_command(parse_transition_command(action, payload)),
                     SQLITE_NOW + timedelta(seconds=1),
                 )
-                mutation = project_transition_mutation(before, decision, TaskId("project-task"), HostId("host-a"))
+                mutation = project_transition_mutation(
+                    mutation_allocation(before), decision, TaskId("project-task"), HostId("host-a")
+                )
                 connection = open_database(roots.database_path, OpenMode.READ_WRITE)
                 connection.execute(trigger)
 

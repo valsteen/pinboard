@@ -90,6 +90,15 @@ def _sqlite_store_constructors(source_root: Path = SOURCE_ROOT) -> tuple[Path, .
     return tuple(constructors)
 
 
+def _sqlite_store_importers(source_root: Path = SOURCE_ROOT) -> tuple[Path, ...]:
+    concrete_module = "pinboard.adapters.sqlite.store"
+    return tuple(
+        path.relative_to(source_root)
+        for path in sorted(source_root.rglob("*.py"))
+        if concrete_module in _imports(path, source_root)
+    )
+
+
 def _database_location_literals(source_root: Path = SOURCE_ROOT) -> tuple[Path, ...]:
     owners: list[Path] = []
     for path in sorted(source_root.rglob("*.py")):
@@ -147,6 +156,7 @@ class ArchitectureDependencyTest(unittest.TestCase):
 
     def test_sqlite_location_and_store_composition_have_one_explicit_owner(self) -> None:
         self.assertEqual((Path("adapters/files/file_io.py"),), _database_location_literals())
+        self.assertEqual((Path("interfaces/work_state_commands.py"),), _sqlite_store_importers())
         self.assertEqual((Path("interfaces/work_state_commands.py"),), _sqlite_store_constructors())
 
 

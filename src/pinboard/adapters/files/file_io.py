@@ -158,8 +158,8 @@ def atomic_replace(path: Path, content: bytes) -> None:
     try:
         if path.is_file(follow_symlinks=False) and path.read_bytes() == content:
             return
-    except OSError:
-        pass
+    except OSError as error:
+        raise FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, f"Replacement file could not be read: {path}") from error
     staging = parent / f".pinboard-stage-{secrets.token_hex(16)}"
     try:
         _write_and_sync(staging, content)
@@ -171,3 +171,18 @@ def atomic_replace(path: Path, content: bytes) -> None:
         ) from error
     finally:
         _cleanup_staging(staging, parent)
+
+
+def remove_replaceable(path: Path) -> None:
+    """Remove one known generated file without discovering sibling paths."""
+
+    parent = _verified_directory(path.parent, label="Replacement-file parent")
+    try:
+        existed = path.exists(follow_symlinks=False)
+        path.unlink(missing_ok=True)
+        if existed:
+            _sync_directory(parent)
+    except OSError as error:
+        raise FileIOError(
+            FileIOErrorCode.FILE_PUBLISH_FAILED, f"Replaceable file could not be removed: {path}"
+        ) from error

@@ -106,6 +106,21 @@ def _read_history(connection: sqlite3.Connection) -> tuple[stored_state.StoredTr
     )
 
 
+def read_history_receipt(
+    connection: sqlite3.Connection, history_id: HistoryId
+) -> stored_state.StoredTransitionReceipt | None:
+    row = connection.execute(
+        """
+        SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
+               authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
+               input_json, outcome_schema, outcome_json, committed_at
+        FROM transition_history WHERE history_id = ?
+        """,
+        (history_id,),
+    ).fetchone()
+    return None if row is None else decode_row(row, _StoredTransitionRow).receipt()
+
+
 def _definition_revision_number(value: stored_state.ItemDefinitionRevision) -> int:
     return value.revision
 

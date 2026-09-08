@@ -8,7 +8,6 @@ import msgspec
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.dispatch import (
     find_dispatch_review,
     publish_dispatch_review,
@@ -457,7 +456,7 @@ def prepare_dispatch(
 def prepare_dispatch_command(
     roots: cli_commands.ResolvedRoots,
     durable: DurableRoots,
-    store: SQLiteWorkStore,
+    store: WorkStore,
     command: cli_commands.DispatchCommand,
 ) -> CliResult[int]:
     """Prepare one installed dispatch request and return every advertised rejection."""

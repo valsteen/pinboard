@@ -22,7 +22,7 @@ from pinboard.domain.identifiers import ActionId, ArtifactRefId, AttemptId, Host
 from pinboard.interfaces import action_selection, cli_commands
 from pinboard.interfaces.errors import CommandErrorCode, CommandFailure
 from tests.domain_support import expect_success
-from tests.support import SQLITE_DIGEST, SQLITE_NOW, complete_sqlite_state, initialize_store
+from tests.support import SQLITE_DIGEST, SQLITE_NOW, complete_sqlite_state, decision_facts, initialize_store
 
 
 class OperationFailureTest(unittest.TestCase):
@@ -216,7 +216,7 @@ class OperationFailureTest(unittest.TestCase):
         )
         supplied = WorkBriefIdentity("wrong-attempt", "wrong-item", "wrong-branch", "wrong-base", 2, "f" * 64)
 
-        failure = validate_transition_work_brief(state, command, supplied)
+        failure = validate_transition_work_brief(decision_facts(state, SQLITE_NOW), command, supplied)
 
         self.assertIsNotNone(failure)
         assert failure is not None

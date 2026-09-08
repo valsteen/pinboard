@@ -67,6 +67,22 @@ class SQLiteValidationTest(unittest.TestCase):
 
     def test_fresh_current_state_is_valid_and_stale_views_are_warnings(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
+        roots = resolve_durable_roots(project)
+        initialize_database(roots, SQLITE_NOW)
+        state = complete_sqlite_state()
+        state = replace(
+            state,
+            lifecycle=replace(state.lifecycle, attempts=()),
+            artifact_references=(),
+            authority=replace(
+                state.authority,
+                attempt_counters=(),
+                attempt_generations=(),
+                attempt_leases=(),
+            ),
+            transition_receipts=(),
+        )
+        initialize_store(SQLiteWorkStore(roots.database_path), state)
         receipt = expect_work_brief_success(self.initialize_work_state(project))
 
         result, stdout, stderr = self.run_cli(
@@ -75,7 +91,7 @@ class SQLiteValidationTest(unittest.TestCase):
         self.assertEqual(0, result, stderr)
         self.assertEqual("OK WORK_STATE_VALID\n", stdout)
 
-        view = receipt.work_root / "views" / "queue.md"
+        view = next((receipt.work_root / "views" / "items").glob("*.md"))
         view.write_text("stale\n", encoding="utf-8")
         stale_result, stale_stdout, stale_stderr = self.run_cli(
             "--project-root", str(project), "--work-root", str(receipt.work_root), "validate"

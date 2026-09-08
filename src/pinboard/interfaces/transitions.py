@@ -8,10 +8,9 @@ import msgspec
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.adapters.files.models import AffectedViews
 from pinboard.adapters.sqlite.errors import StorageError
-from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application.actions import discover_actions
+from pinboard.application import ports, query_models
+from pinboard.application.actions import discover_current_actions
 from pinboard.application.artifacts import (
     CheckpointArtifacts,
     EvidenceArtifactRef,
@@ -19,7 +18,7 @@ from pinboard.application.artifacts import (
     ResultArtifactRef,
     WorkBriefIdentity,
 )
-from pinboard.application.mutation_models import MutationReceipt
+from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.service import (
     decide_and_commit_checkpoint_acceptance,
     decide_and_commit_transition,
@@ -34,7 +33,7 @@ from pinboard.domain.errors import (
     RetryDisposition,
 )
 from pinboard.domain.history import work_item_definition_digest
-from pinboard.domain.identifiers import ActionId, AttemptId, HostId, ItemId, TaskId
+from pinboard.domain.identifiers import ActionId, AttemptId, HostId, ItemId, ProposalId, TaskId
 from pinboard.interfaces import (
     action_selection,
     cli_commands,
@@ -51,7 +50,7 @@ from pinboard.interfaces.errors import (
     TransitionInputFailure,
 )
 from pinboard.interfaces.transition_input import parse_item_revision_input, parse_transition_command
-from pinboard.interfaces.work_briefs import read_transition_work_brief_identity
+from pinboard.interfaces.work_briefs import read_selected_work_brief_identity
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +73,22 @@ class _CheckpointArtifactPublication:
     created_immutable_artifact: bool
 
 
+def _project_action_scope(action_id: ActionId) -> query_models.DecisionScope:
+    kind_value, subject = str(action_id).split(":", 1)
+    semantics = decision_models.action_semantics(decision_models.ActionKind(kind_value))
+    match semantics.subject_kind:
+        case decision_models.ActionSubjectKind.ITEM:
+            return query_models.DecisionScope((ItemId(subject),), (), (), ())
+        case decision_models.ActionSubjectKind.ATTEMPT:
+            return query_models.DecisionScope((), (AttemptId(subject),), (), ())
+        case decision_models.ActionSubjectKind.PROPOSAL:
+            return query_models.DecisionScope((), (), (ProposalId(subject),), ())
+        case decision_models.ActionSubjectKind.LEDGER:
+            return query_models.DecisionScope((), (), (), ())
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _committed_immutable_artifact_failure(error: ArtifactError | StorageError) -> CommittedEffectFailure:
     return CommittedEffectFailure(
         error.code.value,
@@ -89,28 +104,10 @@ def _committed_immutable_artifact_failure(error: ArtifactError | StorageError) -
     )
 
 
-def _item_changed_by_transition(
-    action: decision_models.Action,
-    receipt: decision_models.TransitionReceipt,
-) -> ItemId | None:
-    subject_kind = decision_models.action_semantics(action.kind).subject_kind
-    match subject_kind:
-        case decision_models.ActionSubjectKind.PROPOSAL:
-            return ItemId(action.capability.subject)
-        case (
-            decision_models.ActionSubjectKind.ATTEMPT
-            | decision_models.ActionSubjectKind.ITEM
-            | decision_models.ActionSubjectKind.LEDGER
-        ):
-            return receipt.item
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
 def close(
     roots: cli_commands.ResolvedRoots,
     durable: DurableRoots,
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     command: cli_commands.CloseCommand,
 ) -> CommandResult[int] | CommittedEffectFailure:
     encoded_transition = msgspec.json.encode(
@@ -137,7 +134,7 @@ def close(
 def revise_item(
     roots: cli_commands.ResolvedRoots,
     durable: DurableRoots,
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     command: cli_commands.ItemReviseCommand,
 ) -> CommandResult[int] | CommittedEffectFailure:
     try:
@@ -179,7 +176,7 @@ def revise_item(
 def transition(
     roots: cli_commands.ResolvedRoots,
     durable: DurableRoots,
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     cli_command: cli_commands.TransitionCommand,
 ) -> CommandResult[int] | CommittedEffectFailure:
     supplied_action_receipt = action_selection.parse_action_receipt(cli_command)
@@ -217,37 +214,26 @@ def transition(
 def _present_committed_transition(
     roots: cli_commands.ResolvedRoots,
     durable: DurableRoots,
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     selected_action: decision_models.Action,
-    committed_mutation: MutationReceipt,
+    committed_mutation: CommittedEffect,
     *,
     json: bool,
 ) -> int:
     """Refresh replaceable views, reload canonical continuation, then present the committed receipt."""
 
-    committed_receipt = committed_mutation.transition
     subject_kind = decision_models.action_semantics(selected_action.kind).subject_kind
     affected_attempt = (
         AttemptId(selected_action.capability.subject)
         if subject_kind == decision_models.ActionSubjectKind.ATTEMPT
         else None
     )
-    changed_item = _item_changed_by_transition(selected_action, committed_receipt)
-    affected = AffectedViews(
-        queue=True,
-        history=True,
-        items=(changed_item,) if changed_item is not None else (),
-        attempts=(affected_attempt,) if affected_attempt is not None else (),
-    )
-    view_result = work_views.refresh(durable, store, affected, datetime.now(UTC))
+    view_result = work_views.refresh_effect(durable, store, committed_mutation, datetime.now(UTC))
     if view_result.warning is not None:
         print(view_result.warning.message, file=sys.stderr)
     committed_revision = str(committed_mutation.project_revision)
-    if affected_attempt is None and changed_item is not None:
-        latest_state = store.snapshot()
-        affected_attempt = next(
-            (value.attempt_id for value in latest_state.lifecycle.attempts if value.item_id == changed_item), None
-        )
+    if affected_attempt is None:
+        affected_attempt = committed_mutation.continuation_attempt_id
     continuation = None
     if affected_attempt is not None:
         continuation = work_inspection.read_attempt_continuation(roots, store, affected_attempt, datetime.now(UTC))
@@ -269,11 +255,20 @@ def _present_committed_transition(
 
 
 def read_brief_identity(
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     command: decision_models.TransitionCommand,
     artifacts: ArtifactRepository,
 ) -> CommandResult[WorkBriefIdentity | None]:
-    identity = read_transition_work_brief_identity(store.snapshot(), command, artifacts)
+    match command:
+        case (
+            decision_models.ActivateCommand(value=value)
+            | decision_models.ResumeCommand(value=value)
+            | decision_models.RebindAttemptCommand(value=value)
+        ) if value.brief_artifact_ref_id is not None:
+            reference = store.read_artifact_reference_by_id(value.brief_artifact_ref_id)
+        case _:
+            reference = None
+    identity = read_selected_work_brief_identity(reference, artifacts)
     if isinstance(identity, DecisionFailure):
         return CommandFailure(identity.code, identity.message, identity.details)
     return identity
@@ -335,12 +330,12 @@ def publish_checkpoint_artifacts(
 
 def _execute_transition_command(
     roots: cli_commands.ResolvedRoots,
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     artifacts: ArtifactRepository,
     command: decision_models.TransitionCommand,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
-) -> CommandResult[MutationReceipt] | CommittedEffectFailure:
+) -> CommandResult[CommittedEffect] | CommittedEffectFailure:
     transition_brief_identity = read_brief_identity(store, command, artifacts)
     if isinstance(transition_brief_identity, CommandFailure):
         return transition_brief_identity
@@ -459,7 +454,7 @@ def _decode_selected_project_transition(
 def execute_project_transition(
     roots: cli_commands.ResolvedRoots,
     durable: DurableRoots,
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     task_id: TaskId,
     host_id: HostId,
     request: _ProjectTransitionRequest,
@@ -467,15 +462,14 @@ def execute_project_transition(
     """Select and commit one exact current project action."""
 
     artifacts = ArtifactRepository(durable)
-    observed_state = store.snapshot()
-    current_actions = discover_actions(
-        observed_state,
+    requested_action_id = _requested_project_action_id(request)
+    observed_at = datetime.now(UTC)
+    current_actions = discover_current_actions(
+        store.read_decision_facts(_project_action_scope(requested_action_id), observed_at).snapshot,
         decision_models.Role.PROJECT,
-        now=datetime.now(UTC),
     )
     if isinstance(current_actions, DecisionFailure):
         return CommandFailure(current_actions.code, current_actions.message, current_actions.details)
-    requested_action_id = _requested_project_action_id(request)
     selected_action = next(
         (candidate for candidate in current_actions if decision_models.action_id(candidate) == requested_action_id),
         None,
@@ -498,7 +492,7 @@ def execute_project_transition(
             action_selection.ParsedActionReceipt(selected_action, decision_models.Role.PROJECT, 0),
             committed_mutation,
         )
-    rebuild_result = work_views.rebuild(durable, store, datetime.now(UTC))
-    if rebuild_result.warning is not None:
-        print(rebuild_result.warning.message, file=sys.stderr)
+    view_result = work_views.refresh_effect(durable, store, committed_mutation, datetime.now(UTC))
+    if view_result.warning is not None:
+        print(view_result.warning.message, file=sys.stderr)
     return str(committed_mutation.project_revision)

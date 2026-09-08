@@ -6,7 +6,6 @@ authority, refresh generated views, obtain a lease, or own a transaction.
 """
 
 import sys
-from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -16,9 +15,8 @@ from typing import assert_never
 import msgspec
 
 from pinboard.adapters.files.artifacts import read_reference
-from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import actions as action_queries
-from pinboard.application import ports, queries, query_models, stored_state
+from pinboard.application import ports, queries, query_models
 from pinboard.domain import decision_models, work_models
 from pinboard.domain import errors as domain_errors
 from pinboard.domain.identifiers import AttemptId, TaskId
@@ -121,7 +119,7 @@ def read_attempt_continuation(
 
 
 def show_attempt(
-    roots: cli_commands.ResolvedRoots, store: SQLiteWorkStore, command: cli_commands.AttemptInspectCommand
+    roots: cli_commands.ResolvedRoots, store: ports.WorkStore, command: cli_commands.AttemptInspectCommand
 ) -> errors.CommandResult[int]:
     selected = _inspect_attempt(roots, store, command.attempt_id, datetime.now(UTC))
     if isinstance(selected, errors.CommandFailure):
@@ -132,7 +130,7 @@ def show_attempt(
 
 
 def show_review_job(
-    roots: cli_commands.ResolvedRoots, store: SQLiteWorkStore, command: cli_commands.ReviewJobCommand
+    roots: cli_commands.ResolvedRoots, store: ports.WorkStore, command: cli_commands.ReviewJobCommand
 ) -> errors.CommandResult[int]:
     unavailable = errors.CommandFailure(
         domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
@@ -315,31 +313,28 @@ def project_parallel_preview(
 
 
 def compose_status(
-    state: stored_state.StoredWorkState,
+    facts: query_models.ProjectStatusFacts,
     work: Path,
     source_checkout: Path,
     shared_repository: Path,
-    now: datetime,
 ) -> work_inspection_models.StatusView:
-    overview_value = queries.project_overview(state, now)
+    counts = dict(facts.counts)
     return work_inspection_models.StatusView(
         stored_state_opened=True,
         source_checkout_root=str(source_checkout),
         shared_repository_root=str(shared_repository),
         work_root=str(work),
-        revision=str(state.lifecycle.project.revision),
-        active_attempts=overview_value.active_attempts,
-        counts=dict(Counter(item.state.value for item in state.lifecycle.work_items)),
-        intake_item_count=sum(1 for item in overview_value.items if item.state == work_models.WorkState.INTAKE),
+        revision=str(facts.project_revision),
+        active_attempts=tuple(str(value) for value in facts.active_attempts),
+        counts=counts,
+        intake_item_count=counts.get(work_models.WorkState.INTAKE.value, 0),
         authority="sqlite-v5",
     )
 
 
-def show_status(roots: cli_commands.ResolvedRoots, store: SQLiteWorkStore, command: cli_commands.StatusCommand) -> int:
-    operation_time = datetime.now(UTC)
-    current_state = store.snapshot()
+def show_status(roots: cli_commands.ResolvedRoots, store: ports.WorkStore, command: cli_commands.StatusCommand) -> int:
     status_projection = compose_status(
-        current_state, roots.work, roots.source_checkout, roots.shared_repository, operation_time
+        store.read_project_status(), roots.work, roots.source_checkout, roots.shared_repository
     )
     if command.json:
         write_json(status_projection)
@@ -350,10 +345,9 @@ def show_status(roots: cli_commands.ResolvedRoots, store: SQLiteWorkStore, comma
     return 0
 
 
-def show_overview(store: SQLiteWorkStore, command: cli_commands.OverviewCommand) -> int:
+def show_overview(store: ports.WorkStore, command: cli_commands.OverviewCommand) -> int:
     operation_time = datetime.now(UTC)
-    current_state = store.snapshot()
-    overview_projection = queries.project_overview(current_state, operation_time)
+    overview_projection = queries.project_current_overview(store.read_project_overview(operation_time), operation_time)
     if command.json:
         write_json(overview_projection)
         return 0
@@ -386,7 +380,7 @@ def show_overview(store: SQLiteWorkStore, command: cli_commands.OverviewCommand)
 
 
 def show_item_status(
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     command: cli_commands.ItemStatusCommand,
 ) -> errors.CommandResult[int]:
     operation_time = datetime.now(UTC)
@@ -430,7 +424,7 @@ def show_item_status(
 
 
 def show_item_definition(
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     command: cli_commands.ItemDefinitionCommand,
 ) -> errors.CommandResult[int]:
     definition_projection = queries.select_item_definition(store, command.item_id)
@@ -453,7 +447,7 @@ def show_item_definition(
 
 
 def show_item_definition_history(
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     command: cli_commands.ItemDefinitionHistoryCommand,
 ) -> errors.CommandResult[int]:
     history_projection = queries.select_item_definition_history(
@@ -480,7 +474,7 @@ def show_item_definition_history(
 
 
 def show_actions(
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     command: cli_commands.ActionsCommand | cli_commands.LeasedActionsCommand,
 ) -> errors.CommandResult[int]:
     match command:
@@ -492,13 +486,12 @@ def show_actions(
         case _ as unreachable:
             assert_never(unreachable)
     operation_time = datetime.now(UTC)
-    current_state = store.snapshot()
-    available_actions = action_queries.discover_actions(
-        current_state,
+    current_snapshot = store.read_current_snapshot(operation_time, ())
+    available_actions = action_queries.discover_current_actions(
+        current_snapshot,
         command.role,
         lease_id=lease_id,
         generation=generation,
-        now=operation_time,
     )
     if isinstance(available_actions, domain_errors.DecisionFailure):
         return errors.CommandFailure(available_actions.code, available_actions.message, available_actions.details)
@@ -567,14 +560,16 @@ def _print_parallel_group(title: str, items: tuple[work_inspection_models.Parall
 
 
 def show_parallel_preview(
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     command: cli_commands.ParallelPreviewCommand,
 ) -> errors.CommandResult[int]:
     operation_time = datetime.now(UTC)
     preview = (
         queries.select_parallel_preview(store, selected=tuple(command.item), now=operation_time)
         if command.item
-        else queries.project_parallel_preview(store.snapshot(), now=operation_time)
+        else queries.project_current_parallel_preview(
+            store.read_current_snapshot(operation_time, ()), now=operation_time
+        )
     )
     if isinstance(preview, query_models.ParallelSelectionInvalid):
         return errors.CommandFailure(errors.CommandErrorCode.PARALLEL_SELECTION_INVALID, preview.message, None)

@@ -6,6 +6,8 @@ from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     CheckpointAcceptanceMutation,
     CheckpointArtifactChanges,
+    CheckpointMutationAllocation,
+    MutationAllocation,
     MutationReceipt,
     PreparationAuthorityMutation,
     ProposalCreationMutation,
@@ -17,7 +19,6 @@ from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.history import HistoryOutcome, encode_transition_receipt_outcome
 from pinboard.domain.identifiers import (
     ArtifactRefId,
-    HistoryId,
     HistorySubjectId,
     HostId,
     SubjectId,
@@ -103,7 +104,7 @@ def stored_transition_receipt(mutation: StoredStateMutation) -> stored_state.Sto
 
 
 def _checkpoint_artifact_ids(
-    before: stored_state.StoredWorkState,
+    allocation: CheckpointMutationAllocation,
     artifacts: CheckpointArtifacts,
 ) -> CheckpointArtifactChanges:
     assigned: list[tuple[work_models.ArtifactKind, str, int, ArtifactRefId, str, str, int]] = [
@@ -116,9 +117,9 @@ def _checkpoint_artifact_ids(
             value.content_sha256,
             value.size_bytes,
         )
-        for value in before.artifact_references
+        for value in allocation.accepted_artifacts
     ]
-    next_id = 1 + max((int(value[3]) for value in assigned), default=0)
+    next_id = int(allocation.next_artifact_ref_id)
 
     def identify(published: ResultArtifactRef | EvidenceArtifactRef) -> ArtifactRefId:
         nonlocal next_id
@@ -149,7 +150,7 @@ def _checkpoint_artifact_ids(
 
 
 def _transition_receipt[SubjectT: SubjectId](
-    before: stored_state.StoredWorkState,
+    allocation: MutationAllocation,
     capability: decision_models.MutationActionCapability[SubjectT],
     action_kind: decision_models.ActionKind,
     transition: decision_models.TransitionReceipt,
@@ -165,10 +166,10 @@ def _transition_receipt[SubjectT: SubjectId](
         preparation = capability.preparation_authority
         if preparation is not None:
             actor_task_id, actor_host_id = preparation.task_id, preparation.host_id
-    revision = before.lifecycle.project.revision + 1
+    revision = allocation.project_revision + 1
     return MutationReceipt(
         transition,
-        HistoryId(1 + max((int(value.history_id) for value in before.transition_receipts), default=0)),
+        allocation.next_history_id,
         revision,
         action_kind,
         HistorySubjectId(capability.subject),
@@ -182,7 +183,7 @@ def _transition_receipt[SubjectT: SubjectId](
 
 
 def project_transition_mutation(
-    before: stored_state.StoredWorkState,
+    allocation: MutationAllocation,
     decision: decision_models.TransitionDecision,
     actor_task_id: TaskId | None = None,
     actor_host_id: HostId | None = None,
@@ -192,7 +193,7 @@ def project_transition_mutation(
     return TransitionMutation(
         decision,
         _transition_receipt(
-            before,
+            allocation,
             decision.action.capability,
             decision.action.kind,
             decision.receipt,
@@ -204,7 +205,7 @@ def project_transition_mutation(
 
 
 def project_checkpoint_acceptance_mutation(
-    before: stored_state.StoredWorkState,
+    allocation: CheckpointMutationAllocation,
     decision: decision_models.CheckpointAcceptanceDecision,
     artifacts: CheckpointArtifacts,
     actor_task_id: TaskId | None = None,
@@ -212,11 +213,11 @@ def project_checkpoint_acceptance_mutation(
 ) -> CheckpointAcceptanceMutation:
     """Project checkpoint acceptance with its exact result and review artifacts."""
 
-    checkpoint_changes = _checkpoint_artifact_ids(before, artifacts)
+    checkpoint_changes = _checkpoint_artifact_ids(allocation, artifacts)
     return CheckpointAcceptanceMutation(
         decision,
         _transition_receipt(
-            before,
+            allocation,
             decision.action.capability,
             decision.action.kind,
             decision.receipt,

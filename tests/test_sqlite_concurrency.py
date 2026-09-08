@@ -47,7 +47,7 @@ from pinboard.domain.identifiers import (
 )
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
 from tests.domain_support import expect_success
-from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
+from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, mutation_allocation
 
 
 def _commit_same_pause(
@@ -65,7 +65,9 @@ def _commit_same_pause(
     selected_command = decision_models.PauseCommand(action, work_models.ReasonInput("Concurrent pause."))
     decision = expect_success(decide(snapshot, selected_command, SQLITE_NOW))
     assert isinstance(decision, decision_models.TransitionDecision)
-    mutation = project_transition_mutation(before, decision, TaskId("project-task"), HostId("host-a"))
+    mutation = project_transition_mutation(
+        mutation_allocation(before), decision, TaskId("project-task"), HostId("host-a")
+    )
     barrier.wait()
     with store.write() as transaction:
         result = transaction.commit(mutation)
@@ -92,7 +94,9 @@ def _commit_same_rebind(
     )
     decision = expect_success(decide(snapshot, selected_command, SQLITE_NOW))
     assert isinstance(decision, decision_models.TransitionDecision)
-    mutation = project_transition_mutation(before, decision, TaskId("project-task"), HostId("host-a"))
+    mutation = project_transition_mutation(
+        mutation_allocation(before), decision, TaskId("project-task"), HostId("host-a")
+    )
     barrier.wait()
     with store.write() as transaction:
         result = transaction.commit(mutation)
@@ -140,7 +144,7 @@ def _commit_same_checkpoint(
         EvidenceArtifactRef(review.key, review.revision, review.selector, review.content_sha256, review.size_bytes),
     )
     mutation = project_checkpoint_acceptance_mutation(
-        before, decision, artifacts, TaskId("project-task"), HostId("host-a")
+        mutation_allocation(before), decision, artifacts, TaskId("project-task"), HostId("host-a")
     )
     barrier.wait()
     with store.write() as transaction:
@@ -183,7 +187,9 @@ def _commit_same_definition_revision(
     )
     decision = expect_success(decide(snapshot, selected_command, SQLITE_NOW))
     assert isinstance(decision, decision_models.TransitionDecision)
-    mutation = project_transition_mutation(before, decision, TaskId("project-task"), HostId("host-a"))
+    mutation = project_transition_mutation(
+        mutation_allocation(before), decision, TaskId("project-task"), HostId("host-a")
+    )
     barrier.wait()
     with store.write() as transaction:
         result = transaction.commit(mutation)
@@ -567,8 +573,9 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         )
         submit_decision = expect_success(decide(snapshot, submit_command, SQLITE_NOW))
         assert isinstance(submit_decision, decision_models.TransitionDecision)
+        state = store.snapshot()
         with store.write() as transaction:
-            transaction.commit(project_transition_mutation(transaction.snapshot(), submit_decision))
+            transaction.commit(project_transition_mutation(mutation_allocation(state), submit_decision))
         state = store.snapshot()
 
         context = multiprocessing.get_context("spawn")

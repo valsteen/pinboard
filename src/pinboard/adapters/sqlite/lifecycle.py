@@ -87,6 +87,11 @@ class _ParallelPreviewAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fie
     state: work_models.AttemptState
 
 
+class _QueuePositionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: ItemId
+    queue_position: int
+
+
 @dataclass(frozen=True, slots=True)
 class TerminalAttemptContextSelection:
     project_revision: int
@@ -156,7 +161,7 @@ def _validate_parallel_preview_attempt(
         )
 
 
-def _definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionRevision:
+def decode_definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionRevision:
     value = decode_row(row, _DefinitionRevisionRow)
     definition = decode_work_item_definition(value.definition_json)
     if isinstance(definition, DecisionFailure):
@@ -181,13 +186,10 @@ def _definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionRevisio
     )
 
 
-def _current_definition_with_dependency_states(
-    connection: sqlite3.Connection,
-    item_id: ItemId,
-    *,
-    missing_message: str,
-) -> tuple[stored_state.ItemDefinitionRevision, tuple[_DependencyStateRow, ...]]:
-    definition_row = connection.execute(
+def read_current_definition(
+    connection: sqlite3.Connection, item_id: ItemId
+) -> stored_state.ItemDefinitionRevision | None:
+    row = connection.execute(
         """
         SELECT item_id, definition_revision AS revision, definition_digest AS digest,
                definition_json, reason, source_task_id, before_digest, after_digest,
@@ -199,9 +201,18 @@ def _current_definition_with_dependency_states(
         """,
         (item_id,),
     ).fetchone()
-    if definition_row is None:
+    return None if row is None else decode_definition_revision(row)
+
+
+def _current_definition_with_dependency_states(
+    connection: sqlite3.Connection,
+    item_id: ItemId,
+    *,
+    missing_message: str,
+) -> tuple[stored_state.ItemDefinitionRevision, tuple[_DependencyStateRow, ...]]:
+    definition = read_current_definition(connection, item_id)
+    if definition is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, missing_message)
-    definition = _definition_revision(definition_row)
     dependencies = tuple(
         decode_row(row, _DependencyStateRow)
         for row in connection.execute(
@@ -244,7 +255,7 @@ def read_item_definition(connection: sqlite3.Connection, item_id: ItemId) -> que
         """,
         (item_id,),
     ).fetchone()
-    selected_definition = None if definition is None else _definition_revision(definition)
+    selected_definition = None if definition is None else decode_definition_revision(definition)
     if selected_definition is not None:
         dependency_rows = connection.execute(
             "SELECT dependency_id FROM item_dependencies WHERE item_id = ? ORDER BY position",
@@ -291,7 +302,7 @@ def read_item_status(connection: sqlite3.Connection, item_id: ItemId) -> query_m
         """,
         (item_id,),
     ).fetchone()
-    definition = None if definition_row is None else _definition_revision(definition_row)
+    definition = None if definition_row is None else decode_definition_revision(definition_row)
     attempts = tuple(
         decode_row(row, query_models.ItemStatusAttemptFacts)
         for row in connection.execute(
@@ -490,7 +501,7 @@ def read_item_definition_history(
         """,
         (*parameters, limit + 1),
     ).fetchall()
-    definitions = tuple(_definition_revision(row) for row in rows)
+    definitions = tuple(decode_definition_revision(row) for row in rows)
     if any(
         newer.revision != older.revision + 1 or newer.before_digest != older.digest
         for newer, older in pairwise(definitions)
@@ -514,7 +525,7 @@ def read_item_definition_history(
             (item_id, before_revision),
         ).fetchone()
         if anchor_row is not None:
-            anchor = _definition_revision(anchor_row)
+            anchor = decode_definition_revision(anchor_row)
             if definitions and (
                 anchor.revision != definitions[0].revision + 1 or anchor.before_digest != definitions[0].digest
             ):
@@ -582,7 +593,7 @@ def read_lifecycle(
         ).fetchall()
     )
     definitions = tuple(
-        _definition_revision(row)
+        decode_definition_revision(row)
         for row in connection.execute(
             """
             SELECT item_id, definition_revision AS revision, definition_digest AS digest,
@@ -616,25 +627,21 @@ def _queue_position(value: stored_state.StoredWorkItem) -> int:
 
 def compact_queue(
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
     removed_position: int,
 ) -> DecisionFailure | None:
-    for value in sorted(
-        (
-            candidate
-            for candidate in state.lifecycle.work_items
-            if candidate.queue_position is not None and candidate.queue_position > removed_position
-        ),
-        key=_queue_position,
-    ):
-        position = value.queue_position
-        if position is None:  # pragma: no cover - narrowed by the collection filter
-            continue
+    rows = connection.execute(
+        "SELECT item_id, queue_position FROM work_items WHERE queue_position > ? ORDER BY queue_position",
+        (removed_position,),
+    ).fetchall()
+    for row in rows:
+        selected = decode_row(row, _QueuePositionRow)
+        item_id = selected.item_id
+        position = selected.queue_position
         if (
             failure := require_one_changed_row(
                 connection.execute(
                     "UPDATE work_items SET queue_position = ? WHERE item_id = ? AND queue_position = ?",
-                    (position - 1, value.item_id, position),
+                    (position - 1, item_id, position),
                 ),
                 "The live queue changed before terminal persistence.",
             )
@@ -645,26 +652,21 @@ def compact_queue(
 
 def make_queue_space(
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
     position: int,
 ) -> DecisionFailure | None:
-    for value in sorted(
-        (
-            candidate
-            for candidate in state.lifecycle.work_items
-            if candidate.queue_position is not None and candidate.queue_position >= position
-        ),
-        key=_queue_position,
-        reverse=True,
-    ):
-        current = value.queue_position
-        if current is None:  # pragma: no cover - narrowed by the collection filter
-            continue
+    rows = connection.execute(
+        "SELECT item_id, queue_position FROM work_items WHERE queue_position >= ? ORDER BY queue_position DESC",
+        (position,),
+    ).fetchall()
+    for row in rows:
+        selected = decode_row(row, _QueuePositionRow)
+        item_id = selected.item_id
+        current = selected.queue_position
         if (
             failure := require_one_changed_row(
                 connection.execute(
                     "UPDATE work_items SET queue_position = ? WHERE item_id = ? AND queue_position = ?",
-                    (current + 1, value.item_id, current),
+                    (current + 1, item_id, current),
                 ),
                 "The live queue changed before proposal persistence.",
             )
@@ -675,15 +677,14 @@ def make_queue_space(
 
 def set_item_state(
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
-    item_id: ItemId,
+    current: stored_state.StoredWorkItem,
     before_state: work_models.WorkState,
     after_state: stored_state.StoredWorkItemState,
     revision: int,
     now: datetime,
     outcome_evidence: str | None = None,
 ) -> DecisionFailure | None:
-    current = require_stored_item(state, item_id)
+    item_id = current.item_id
     terminal = after_state in {
         stored_state.StoredWorkItemState.DONE,
         stored_state.StoredWorkItemState.SUPERSEDED,
@@ -713,14 +714,13 @@ def set_item_state(
     ) is not None:
         return failure
     if terminal and current.queue_position is not None:
-        return compact_queue(connection, state, current.queue_position)
+        return compact_queue(connection, current.queue_position)
     return None
 
 
 def set_attempt_state(
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
-    attempt_id: AttemptId,
+    current: stored_state.StoredAttempt,
     before_state: work_models.AttemptState,
     after_state: work_models.AttemptState,
     revision: int,
@@ -731,7 +731,7 @@ def set_attempt_state(
     candidate_revision: str | None = None,
     candidate_recorded_at: datetime | None = None,
 ) -> DecisionFailure | None:
-    current = require_stored_attempt(state, attempt_id)
+    attempt_id = current.attempt_id
     if after_state == work_models.AttemptState.REVIEW:
         stored_candidate = candidate_revision
         stored_candidate_at = None if candidate_recorded_at is None else candidate_recorded_at.isoformat()
@@ -778,12 +778,11 @@ def set_attempt_state(
 
 def rebind_attempt(
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
+    current: stored_state.StoredAttempt,
     change: decision_models.RebindAttemptChange,
     revision: int,
     now: datetime,
 ) -> DecisionFailure | None:
-    current = require_stored_attempt(state, change.attempt)
     return require_one_changed_row(
         connection.execute(
             """
@@ -823,21 +822,17 @@ def replace_dependencies(connection: sqlite3.Connection, item_id: ItemId, depend
 
 def insert_definition_revision(
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
+    current_item: stored_state.StoredWorkItem,
+    current: stored_state.ItemDefinitionRevision,
     revision: stored_state.ItemDefinitionRevision,
 ) -> DecisionFailure | None:
-    current = next(
-        (value for value in reversed(state.lifecycle.definition_revisions) if value.item_id == revision.item_id),
-        None,
-    )
-    if current is None or revision.revision != current.revision + 1 or revision.before_digest != current.digest:
+    if revision.revision != current.revision + 1 or revision.before_digest != current.digest:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_STALE,
             "The current definition changed before persistence.",
             None,
         )
     append_definition_revision(connection, revision)
-    current_item = require_stored_item(state, revision.item_id)
     return require_one_changed_row(
         connection.execute(
             """
@@ -874,17 +869,13 @@ def append_definition_revision(
 
 def insert_attempt(
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
+    current_item: stored_state.StoredWorkItem,
+    definition: stored_state.ItemDefinitionRevision,
     change: decision_models.ActivationChange,
     revision: int,
     now: datetime,
 ) -> DecisionFailure | None:
-    require_stored_item(state, change.item)
-    definition = next(
-        (value for value in reversed(state.lifecycle.definition_revisions) if value.item_id == change.item),
-        None,
-    )
-    if definition is None:
+    if current_item.item_id != change.item or definition.item_id != change.item:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
             "The activated work item has no current definition.",

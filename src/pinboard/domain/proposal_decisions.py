@@ -14,6 +14,7 @@ from pinboard.domain.proposal_models import (
 def decide_proposal_creation(
     snapshot: LedgerSnapshot,
     operation: CreateProposalOperation,
+    live_item_count: int,
 ) -> DecisionResult[ProposalCreationDecision]:
     intake = operation.intake
     if snapshot.proposal(intake.proposal_id) is not None:
@@ -29,12 +30,11 @@ def decide_proposal_creation(
         and intake.relation.item not in snapshot.history_items
     ):
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, "The related work item does not exist.", None)
-    live_count = len(snapshot.items)
-    position = intake.position if intake.position is not None else live_count + 1
-    if position > live_count + 1:
+    position = intake.position if intake.position is not None else live_item_count + 1
+    if position > live_item_count + 1:
         return DecisionFailure(
             DecisionFailureCode.PROPOSAL_INVALID,
-            f"Proposal position must be between 1 and {live_count + 1}.",
+            f"Proposal position must be between 1 and {live_item_count + 1}.",
             None,
         )
     dependencies = (intake.relation.item,) if isinstance(intake.relation, work_models.FollowUpProposalRelation) else ()

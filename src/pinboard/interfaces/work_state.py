@@ -17,8 +17,7 @@ from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_st
 from pinboard.adapters.sqlite.database import initialize_database, open_database, reconcile_database_publication
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import InitReceipt, OpenMode
-from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state
+from pinboard.application import ports, stored_state
 from pinboard.domain.identifiers import AttemptId
 from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
 from pinboard.interfaces.work_briefs import build_attempt_brief_views
@@ -30,7 +29,7 @@ def initialize_work_state(
     roots: DurableRoots,
     *,
     default_work_root: bool,
-    store: SQLiteWorkStore,
+    store: ports.CompleteStateReader,
     now: datetime | None = None,
 ) -> WorkBriefResult[InitReceipt]:
     if default_work_root:
@@ -64,7 +63,7 @@ def _error_diagnostic(code: str, path: Path, message: str, hint: str | None = No
 
 
 def read_state_for_validation(
-    database_path: Path, store: SQLiteWorkStore
+    database_path: Path, store: ports.ValidatedStateReader
 ) -> stored_state.StoredWorkState | ValidationReport:
     """Read and structurally validate the authoritative SQLite snapshot once."""
 
@@ -77,7 +76,7 @@ def read_state_for_validation(
 def validate_loaded_work_state(
     work_root: Path,
     state: stored_state.StoredWorkState,
-    attempt_briefs: Mapping[AttemptId, bytes] | None = None,
+    attempt_briefs: Mapping[AttemptId, bytes],
     *,
     now: datetime,
 ) -> ValidationReport:

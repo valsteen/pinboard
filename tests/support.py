@@ -9,7 +9,9 @@ from unittest.mock import patch
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state
+from pinboard.application import query_models, stored_state
+from pinboard.application.decision_projection import project_decision_snapshot
+from pinboard.application.mutation_models import CheckpointMutationAllocation
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import (
@@ -25,6 +27,26 @@ from pinboard.domain.identifiers import (
     TaskId,
 )
 from tests.sqlite_support import insert_initial_state
+
+
+def mutation_allocation(state: stored_state.StoredWorkState) -> CheckpointMutationAllocation:
+    return CheckpointMutationAllocation(
+        state.lifecycle.project.revision,
+        HistoryId(1 + max((int(value.history_id) for value in state.transition_receipts), default=0)),
+        ArtifactRefId(1 + max((int(value.artifact_ref_id) for value in state.artifact_references), default=0)),
+        state.artifact_references,
+    )
+
+
+def decision_facts(state: stored_state.StoredWorkState, now: datetime) -> query_models.DecisionFacts:
+    return query_models.DecisionFacts(
+        project_decision_snapshot(state, now),
+        tuple(
+            query_models.AttemptLineage(value.attempt_id, value.item_id, value.branch, value.base_revision)
+            for value in state.lifecycle.attempts
+        ),
+    )
+
 
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
 type JsonObject = dict[str, JsonValue]

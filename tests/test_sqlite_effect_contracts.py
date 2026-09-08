@@ -3,10 +3,12 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import lifecycle, proposals
 from pinboard.adapters.sqlite import state as sqlite_state
+from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.artifacts import accept_checkpoint_artifact
 from pinboard.adapters.sqlite.authority import (
     validate_attempt_authority,
@@ -18,10 +20,12 @@ from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.artifacts import EvidenceArtifactRef
 from pinboard.application.decision_projection import project_decision_snapshot
+from pinboard.application.mutations import project_transition_mutation
 from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain.decisions import available_actions, decide
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, ItemId, ProposalId
-from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
+from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, mutation_allocation
 
 
 class SQLiteEffectContractTest(unittest.TestCase):
@@ -50,7 +54,6 @@ class SQLiteEffectContractTest(unittest.TestCase):
                 existing.artifact_ref_id,
                 accept_checkpoint_artifact(
                     connection,
-                    state,
                     published,
                     existing.artifact_ref_id,
                     state.lifecycle.project.revision + 1,
@@ -60,13 +63,137 @@ class SQLiteEffectContractTest(unittest.TestCase):
             with self.assertRaises(StorageError) as conflicting:
                 accept_checkpoint_artifact(
                     connection,
-                    state,
                     replace(published, content_sha256="0" * 64),
                     ArtifactRefId(int(existing.artifact_ref_id) + 1),
                     state.lifecycle.project.revision + 1,
                     SQLITE_NOW,
                 )
             self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, conflicting.exception.code)
+        finally:
+            connection.close()
+
+    def test_commit_does_not_assemble_complete_state_before_or_after_persistence(self) -> None:
+        _path, store = self._store()
+        before = store.snapshot()
+        with store.write() as transaction:
+            snapshot = project_decision_snapshot(before, SQLITE_NOW)
+            actions = available_actions(
+                snapshot,
+                decision_models.ActorAuthority(
+                    decision_models.Role.PROJECT,
+                    decision_models.AuthorizationKind.PROJECT,
+                    0,
+                ),
+            )
+            assert not isinstance(actions, DecisionFailure)
+            action = next(
+                value
+                for value in actions
+                if str(value.capability.subject) == "intake-work"
+                and value.kind == decision_models.ActionKind.MARK_READY
+            )
+            assert isinstance(action, decision_models.MarkReadyAction)
+            decision = decide(
+                snapshot,
+                decision_models.MarkReadyCommand(action, work_models.ReasonInput("Ready for delivery.")),
+                SQLITE_NOW,
+            )
+            assert not isinstance(decision, DecisionFailure)
+            mutation = project_transition_mutation(mutation_allocation(before), decision)
+            with patch.object(sqlite_state, "read_state", side_effect=AssertionError("complete state assembled")):
+                committed = transaction.commit(mutation)
+        self.assertNotIsInstance(committed, DecisionFailure)
+
+    def test_mutation_allocations_read_only_their_indexed_scalar_and_selected_artifact_facts(self) -> None:
+        _path, store = self._store()
+        state = store.snapshot()
+        existing = next(value for value in state.artifact_references if value.kind == work_models.ArtifactKind.EVIDENCE)
+        published = EvidenceArtifactRef(
+            existing.key,
+            existing.revision,
+            existing.selector,
+            existing.content_sha256,
+            existing.size_bytes,
+        )
+
+        with store.write() as transaction:
+            statements: list[str] = []
+            transaction.connection.set_trace_callback(statements.append)
+            transaction.read_mutation_allocation()
+            allocation_statements = tuple(statements)
+            statements.clear()
+
+            transaction.read_live_item_count()
+            queue_statements = tuple(statements)
+            statements.clear()
+
+            transaction.read_checkpoint_mutation_allocation((published,))
+            checkpoint_statements = tuple(statements)
+            plans = {
+                table: transaction.connection.execute(f"EXPLAIN QUERY PLAN {statement}").fetchone()["detail"]
+                for table, statement in (
+                    ("work_items", "SELECT COALESCE(MAX(queue_position), 0) FROM work_items"),
+                    ("transition_history", "SELECT COALESCE(MAX(history_id), 0) + 1 FROM transition_history"),
+                    ("artifact_refs", "SELECT COALESCE(MAX(artifact_ref_id), 0) + 1 FROM artifact_refs"),
+                    (
+                        "item_dependencies",
+                        """
+                        SELECT owner.item_id
+                        FROM item_dependencies AS dependency
+                        JOIN work_items AS owner ON owner.item_id = dependency.item_id
+                        WHERE dependency.dependency_id = 'work-c'
+                          AND owner.queue_position IS NOT NULL
+                        ORDER BY owner.queue_position, owner.item_id
+                        """,
+                    ),
+                )
+            }
+
+        allocation_sql = " ".join(allocation_statements).lower()
+        self.assertIn("transition_history", allocation_sql)
+        self.assertNotIn("work_items", allocation_sql)
+        self.assertNotIn("artifact_refs", allocation_sql)
+
+        queue_sql = " ".join(queue_statements).lower()
+        self.assertIn("max(queue_position)", queue_sql)
+        self.assertNotIn("count(", queue_sql)
+
+        checkpoint_sql = " ".join(checkpoint_statements).lower()
+        self.assertNotIn("work_items", checkpoint_sql)
+        self.assertIn("max(artifact_ref_id)", checkpoint_sql)
+        self.assertIn("where kind =", checkpoint_sql)
+        self.assertIn("artifact_key =", checkpoint_sql)
+        self.assertIn("artifact_revision =", checkpoint_sql)
+        self.assertTrue(all("scan" not in detail.lower() for detail in plans.values()), plans)
+
+    def test_current_project_reads_do_not_scan_retained_rows(self) -> None:
+        path, store = self._store()
+        statements: list[str] = []
+        original_open = sqlite_store.open_database
+
+        def traced_open(database_path: Path, mode: OpenMode) -> sqlite3.Connection:
+            connection = original_open(database_path, mode)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(sqlite_store, "open_database", traced_open):
+            store.read_project_status()
+            store.read_project_overview(SQLITE_NOW)
+            store.read_current_snapshot(SQLITE_NOW, ())
+
+        connection = sqlite3.connect(path)
+        try:
+            for statement in statements:
+                if not statement.lstrip().upper().startswith("SELECT"):
+                    continue
+                with self.subTest(statement=statement):
+                    plan = tuple(
+                        str(row[3]).upper() for row in connection.execute(f"EXPLAIN QUERY PLAN {statement}").fetchall()
+                    )
+                    retained_scans = tuple(
+                        detail for detail in plan if "SCAN " in detail and "ONE_LIVE_ATTEMPT_PER_ITEM" not in detail
+                    )
+                    self.assertEqual((), retained_scans, plan)
         finally:
             connection.close()
 
@@ -126,7 +253,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
                     """
                 )
                 with write_transaction(connection):
-                    result = effect(connection, before, argument)
+                    result = effect(connection, argument)
             finally:
                 connection.close()
             self.assertIsInstance(result, DecisionFailure)
@@ -221,12 +348,21 @@ class SQLiteEffectContractTest(unittest.TestCase):
             item=attempt.item_id,
             attempt=AttemptId("other-live-attempt"),
         )
+        work_c = next(value for value in before.lifecycle.work_items if value.item_id == ItemId("work-c"))
+        work_c_definition = next(
+            value for value in before.lifecycle.definition_revisions if value.item_id == ItemId("work-c")
+        )
+        work_a = next(value for value in before.lifecycle.work_items if value.item_id == attempt.item_id)
+        work_a_definition = next(
+            value for value in before.lifecycle.definition_revisions if value.item_id == attempt.item_id
+        )
         connection = open_database(path, OpenMode.READ_WRITE)
         try:
             with write_transaction(connection):
                 stale_attempt = lifecycle.insert_attempt(
                     connection,
-                    before,
+                    work_c,
+                    work_c_definition,
                     duplicate_attempt,
                     before.lifecycle.project.revision + 1,
                     SQLITE_NOW,
@@ -236,7 +372,8 @@ class SQLiteEffectContractTest(unittest.TestCase):
             with self.assertRaises(StorageError) as unrelated_unique, write_transaction(connection):
                 lifecycle.insert_attempt(
                     connection,
-                    before,
+                    work_a,
+                    work_a_definition,
                     unrelated_live_attempt_conflict,
                     before.lifecycle.project.revision + 1,
                     SQLITE_NOW,
@@ -246,7 +383,8 @@ class SQLiteEffectContractTest(unittest.TestCase):
             with self.assertRaises(StorageError) as unrelated_foreign_key, write_transaction(connection):
                 lifecycle.insert_attempt(
                     connection,
-                    before,
+                    replace(work_c, item_id=ItemId("missing-item")),
+                    replace(work_c_definition, item_id=ItemId("missing-item")),
                     replace(
                         duplicate_attempt,
                         item=ItemId("missing-item"),

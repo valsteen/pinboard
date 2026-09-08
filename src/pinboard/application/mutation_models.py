@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 
+from pinboard.application import stored_state
 from pinboard.application.artifacts import EvidenceArtifactRef, ResultArtifactRef
 from pinboard.domain import authority_models, decision_models, work_models
-from pinboard.domain.identifiers import ArtifactRefId, HistoryId, HistorySubjectId, HostId, TaskId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, HistorySubjectId, HostId, ItemId, TaskId
 from pinboard.domain.proposal_models import ProposalCreationDecision
 
 
@@ -21,6 +22,50 @@ class MutationReceipt:
     actor_host_id: HostId | None
     input_schema: str
     input_payload: work_models.CanonicalJson
+
+
+@dataclass(frozen=True, slots=True)
+class MutationAllocation:
+    """Exact singleton allocation facts read inside one locked write transaction."""
+
+    project_revision: int
+    next_history_id: HistoryId
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointMutationAllocation(MutationAllocation):
+    """Additional identities required only by checkpoint artifact acceptance."""
+
+    next_artifact_ref_id: ArtifactRefId
+    accepted_artifacts: tuple[stored_state.ArtifactReference, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedEffect:
+    """One receipt plus the exact generated projections changed by its commit."""
+
+    receipt: MutationReceipt
+    item_ids: tuple[ItemId, ...]
+    attempt_ids: tuple[AttemptId, ...]
+    continuation_attempt_id: AttemptId | None
+
+    @property
+    def transition(self) -> decision_models.TransitionReceipt:
+        return self.receipt.transition
+
+    @property
+    def history_id(self) -> HistoryId:
+        return self.receipt.history_id
+
+    @property
+    def project_revision(self) -> int:
+        return self.receipt.project_revision
+
+
+@dataclass(frozen=True, slots=True)
+class PreparationStart:
+    effect: CommittedEffect
+    authority: authority_models.PreparationLeaseAuthority
 
 
 @dataclass(frozen=True, slots=True)

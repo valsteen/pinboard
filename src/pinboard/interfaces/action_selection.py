@@ -2,9 +2,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import assert_never
 
-from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state
-from pinboard.application.actions import discover_actions
+from pinboard.application import ports, query_models
+from pinboard.application.actions import action_subject_ids, discover_current_actions
 from pinboard.domain import decision_models
 from pinboard.domain.errors import (
     DecisionFailure,
@@ -16,6 +15,7 @@ from pinboard.domain.errors import (
     RetryDisposition,
 )
 from pinboard.domain.identifiers import AttemptId, ItemId, LedgerId, ProposalId, SubjectId
+from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.interfaces import cli_commands
 from pinboard.interfaces.errors import CommandErrorCode, CommandFailure, CommandResult
 
@@ -59,18 +59,20 @@ def _failure_alternatives(
 
 
 def with_current_alternatives(
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     supplied: ParsedActionReceipt,
     failure: CommandFailure,
 ) -> CommandFailure:
     """Attach fresh same-subject actions after a locked execution rejection."""
-    current_state = store.snapshot()
-    current_actions = discover_actions(
-        current_state,
+    observed_at = datetime.now(UTC)
+    item_ids, attempt_ids, proposal_ids = action_subject_ids(supplied.action)
+    current_actions = discover_current_actions(
+        store.read_decision_facts(
+            query_models.DecisionScope(item_ids, attempt_ids, proposal_ids, ()), observed_at
+        ).snapshot,
         supplied.role,
         lease_id=supplied.action.capability.lease_id,
         generation=supplied.generation,
-        now=datetime.now(UTC),
     )
     if isinstance(current_actions, DecisionFailure):
         return failure
@@ -334,7 +336,7 @@ def _retained_authority_failure(
 
 
 def _authority_failure(
-    state: stored_state.StoredWorkState,
+    store: ports.WorkStore,
     supplied: ParsedActionReceipt,
     operation_time: datetime,
 ) -> CommandFailure | None:
@@ -343,23 +345,21 @@ def _authority_failure(
         case decision_models.Role.PROJECT:
             return None
         case decision_models.Role.WORKER:
-            retained = stored_state.retained_attempt(state, AttemptId(str(capability.subject)))
+            retained = store.read_attempt_authority_status(AttemptId(str(capability.subject)))
             if retained is None:
                 return _wrong_authority_failure(supplied, None, None)
-            lease, anchor = retained
-            current_generation = lease.generation
-            current_lease_id = None if anchor is None else str(anchor.lease_id)
-            status = lease.state.value
-            expires_at = lease.expires_at
+            current_generation = retained.generation
+            current_lease_id = str(retained.lease_id)
+            status = retained.status.value
+            expires_at = retained.expires_at
         case decision_models.Role.PREPARER:
-            retained = stored_state.retained_preparation(state, ItemId(str(capability.subject)))
+            retained = store.read_preparation_authority_status(ItemId(str(capability.subject)))
             if retained is None:
                 return _wrong_authority_failure(supplied, None, None)
-            lease, anchor = retained
-            current_generation = lease.generation
-            current_lease_id = None if anchor is None else str(anchor.lease_id)
-            status = lease.state.value
-            expires_at = lease.expires_at
+            current_generation = retained.generation
+            current_lease_id = str(retained.lease_id)
+            status = retained.status.value
+            expires_at = retained.expires_at
     return _retained_authority_failure(
         supplied,
         current_generation,
@@ -370,18 +370,18 @@ def _authority_failure(
     )
 
 
-def _subject_state(state: stored_state.StoredWorkState, action: decision_models.Action) -> str | None:
+def _subject_state(snapshot: LedgerSnapshot, action: decision_models.Action) -> str | None:
     subject = str(action.capability.subject)
     match decision_models.action_semantics(action.kind).subject_kind:
         case decision_models.ActionSubjectKind.ATTEMPT:
             attempt = next(
-                (value for value in state.lifecycle.attempts if str(value.attempt_id) == subject),
+                (value for value in snapshot.attempts if str(value.attempt) == subject),
                 None,
             )
             return None if attempt is None else attempt.state.value
         case decision_models.ActionSubjectKind.ITEM | decision_models.ActionSubjectKind.PROPOSAL:
             item = next(
-                (value for value in state.lifecycle.work_items if str(value.item_id) == subject),
+                (value for value in snapshot.items if str(value.item) == subject),
                 None,
             )
             return None if item is None else item.state.value
@@ -390,21 +390,23 @@ def _subject_state(state: stored_state.StoredWorkState, action: decision_models.
 
 
 def select_current_action(
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     supplied: ParsedActionReceipt,
 ) -> CommandResult[decision_models.Action]:
     supplied_action = supplied.action
     supplied_capability = supplied_action.capability
     operation_time = datetime.now(UTC)
-    current_state = store.snapshot()
-    if (authority_failure := _authority_failure(current_state, supplied, operation_time)) is not None:
+    if (authority_failure := _authority_failure(store, supplied, operation_time)) is not None:
         return authority_failure
-    current_actions = discover_actions(
-        current_state,
+    item_ids, attempt_ids, proposal_ids = action_subject_ids(supplied_action)
+    current_snapshot = store.read_decision_facts(
+        query_models.DecisionScope(item_ids, attempt_ids, proposal_ids, ()), operation_time
+    ).snapshot
+    current_actions = discover_current_actions(
+        current_snapshot,
         supplied.role,
         lease_id=supplied_capability.lease_id,
         generation=supplied.generation,
-        now=operation_time,
     )
     if isinstance(current_actions, DecisionFailure):
         return CommandFailure(current_actions.code, current_actions.message, current_actions.details)
@@ -419,7 +421,7 @@ def select_current_action(
     alternatives = _failure_alternatives(current_actions, supplied)
     if current_action is None:
         semantics = decision_models.action_semantics(supplied_action.kind)
-        observed_state = _subject_state(current_state, supplied_action)
+        observed_state = _subject_state(current_snapshot, supplied_action)
         return CommandFailure(
             CommandErrorCode.ACTION_LIFECYCLE_UNAVAILABLE,
             f"Action '{decision_models.action_id(supplied_action)}' is not currently legal.",

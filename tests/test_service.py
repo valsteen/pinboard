@@ -22,7 +22,7 @@ from pinboard.application.decision_projection import (
     project_decision_snapshot,
     project_inactive_attempt_authority,
 )
-from pinboard.application.mutation_models import MutationReceipt
+from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.service import (
     create_proposal,
     decide_and_commit_attempt_authority_change,
@@ -121,7 +121,7 @@ class ServiceTest(unittest.TestCase):
         now: datetime,
         *,
         transition_brief_identity: WorkBriefIdentity | None = None,
-    ) -> DecisionFailure | MutationReceipt:
+    ) -> DecisionFailure | CommittedEffect:
         is_project = command.action.capability.authorization == decision_models.AuthorizationKind.PROJECT
         return decide_and_commit_transition(
             store,
@@ -134,7 +134,7 @@ class ServiceTest(unittest.TestCase):
 
     def _create_proposal(
         self, store: SQLiteWorkStore, operation: CreateProposalOperation, now: datetime
-    ) -> DecisionFailure | MutationReceipt:
+    ) -> DecisionFailure | CommittedEffect:
         return create_proposal(
             store,
             operation,

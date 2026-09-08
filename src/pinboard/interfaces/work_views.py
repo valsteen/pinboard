@@ -1,8 +1,8 @@
 """Read accepted brief content and refresh replaceable generated views.
 
-Each refresh or rebuild reads one SQLite snapshot, derives complete attempt
-brief projections from verified artifacts, and then writes only generated view
-files. SQLite and accepted artifacts remain authoritative.
+An ordinary refresh reads only facts and accepted brief bytes named by the
+committed effect. Explicit rebuild reads the complete project and reconciles
+the declared generated files. SQLite and accepted artifacts remain authoritative.
 """
 
 from datetime import datetime
@@ -11,12 +11,12 @@ from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
 from pinboard.adapters.files.views import rebuild_state as rebuild_file_views
-from pinboard.adapters.files.views import refresh_state as refresh_file_views
-from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state
-from pinboard.domain.identifiers import AttemptId
+from pinboard.adapters.files.views import refresh_facts as refresh_file_views
+from pinboard.application import ports, stored_state
+from pinboard.application.mutation_models import CommittedEffect
+from pinboard.domain.identifiers import AttemptId, HistoryId
 from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
-from pinboard.interfaces.work_briefs import build_attempt_brief_views
+from pinboard.interfaces.work_briefs import build_attempt_brief_views, build_selected_attempt_brief_views
 
 
 def read_attempt_brief_views(
@@ -31,35 +31,47 @@ def read_attempt_brief_views(
 
 def refresh(
     durable: DurableRoots,
-    store: SQLiteWorkStore,
+    store: ports.GeneratedViewReader,
     affected: AffectedViews,
     now: datetime,
 ) -> ViewRefreshResult:
-    current_state = store.snapshot()
-    attempt_briefs = read_attempt_brief_views(durable, current_state)
+    facts = store.read_generated_view_facts(affected.items, affected.attempts, affected.history_receipts, now)
+    attempt_briefs = build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(durable))
     if isinstance(attempt_briefs, WorkBriefFailure):
         return ViewRefreshResult(
-            current_state.lifecycle.project.revision,
+            facts.project_revision,
             ViewWarning(
                 f"The SQLite transition succeeded, but generated views need repair: {attempt_briefs} "
                 "Run 'pinboard views rebuild'.",
                 "Run 'pinboard views rebuild'.",
             ),
         )
-    return refresh_file_views(current_state, durable.work_root, affected, attempt_briefs, now=now)
+    return refresh_file_views(facts, durable.work_root, attempt_briefs)
 
 
 def refresh_shared_authority_views(
     durable: DurableRoots,
-    store: SQLiteWorkStore,
+    store: ports.GeneratedViewReader,
+    history_id: HistoryId,
     now: datetime,
 ) -> ViewRefreshResult:
-    """Refresh the queue and history affected by subject authority changes."""
+    """Publish the one history receipt created by an authority change."""
 
-    return refresh(durable, store, AffectedViews(queue=True, history=True), now)
+    return refresh(durable, store, AffectedViews((), (), (history_id,)), now)
 
 
-def rebuild(durable: DurableRoots, store: SQLiteWorkStore, now: datetime) -> ViewRefreshResult:
+def refresh_effect(
+    durable: DurableRoots, store: ports.GeneratedViewReader, effect: CommittedEffect, now: datetime
+) -> ViewRefreshResult:
+    return refresh(
+        durable,
+        store,
+        AffectedViews(effect.item_ids, effect.attempt_ids, (effect.history_id,)),
+        now,
+    )
+
+
+def rebuild(durable: DurableRoots, store: ports.CompleteStateReader, now: datetime) -> ViewRefreshResult:
     current_state = store.snapshot()
     attempt_briefs = read_attempt_brief_views(durable, current_state)
     if isinstance(attempt_briefs, WorkBriefFailure):

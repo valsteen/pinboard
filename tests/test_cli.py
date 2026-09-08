@@ -2068,6 +2068,8 @@ class CliTest(unittest.TestCase):
                     for value in state.lifecycle.attempts
                 ),
             ),
+            artifact_references=(state.artifact_references[0],),
+            transition_receipts=(),
         )
         project, work, store = self.initialized_state(state)
         common = ("--project-root", str(project), "--work-root", str(work))
@@ -2076,9 +2078,15 @@ class CliTest(unittest.TestCase):
         result_bytes = b"candidate result\n"
         review_bytes = b"independent review\n"
         (attempt_root / "result.md").write_bytes(result_bytes)
+        (attempt_root / "review.md").write_bytes(review_bytes)
         payload = project / "accept-checkpoint.json"
         payload.write_text(
             '{"checkpoint":"checkpoint-a","candidate":"candidate-a","evidence":"Accepted."}\n',
+            encoding="utf-8",
+        )
+        mismatch_payload = project / "accept-mismatched-checkpoint.json"
+        mismatch_payload.write_text(
+            '{"checkpoint":"checkpoint-a","candidate":"candidate-b","evidence":"Rejected."}\n',
             encoding="utf-8",
         )
         action = next(
@@ -2093,6 +2101,131 @@ class CliTest(unittest.TestCase):
             )
             if self.json_object(value)["action_id"] == "accept-checkpoint:work-a-1"
         )
+        artifacts_root = work / "artifacts"
+
+        def artifact_inventory() -> tuple[tuple[str, bytes], ...]:
+            return tuple(
+                (str(path.relative_to(artifacts_root)), path.read_bytes())
+                for path in sorted(artifacts_root.rglob("*"))
+                if path.is_file()
+            )
+
+        before_mismatch = store.validated_snapshot()
+        artifacts_before_mismatch = artifact_inventory()
+        status_before_mismatch = self.run_json_cli(*common, "item", "status", "--item-id", "work-a")
+        handover_before_mismatch = self.run_json_cli(*common, "handover")
+        stale_action = action.copy()
+        stale_action["expected_revision"] = "stale"
+
+        stale_result, _stale_stdout, stale_stderr = self.run_transition(
+            common, stale_action, mismatch_payload, json_output=False
+        )
+
+        self.assertNotEqual(0, stale_result)
+        self.assertIn("ACTION_REVISION_STALE", stale_stderr)
+        self.assertEqual(before_mismatch, store.validated_snapshot())
+        self.assertEqual(artifacts_before_mismatch, artifact_inventory())
+
+        original_read_decision_facts = SQLiteWorkStore.read_decision_facts
+        decision_read_count = 0
+
+        def read_after_review_return(
+            selected_store: SQLiteWorkStore,
+            scope: query_models.DecisionScope,
+            observed_at: datetime,
+        ) -> query_models.DecisionFacts:
+            nonlocal decision_read_count
+            decision_read_count += 1
+            facts = original_read_decision_facts(selected_store, scope, observed_at)
+            if decision_read_count != 2:
+                return facts
+            return replace(
+                facts,
+                snapshot=replace(
+                    facts.snapshot,
+                    revision="concurrent-review-return",
+                    items=tuple(
+                        replace(value, state=work_models.WorkState.ACTIVE) if value.item == ItemId("work-a") else value
+                        for value in facts.snapshot.items
+                    ),
+                    attempts=tuple(
+                        replace(
+                            value,
+                            state=work_models.AttemptState.ACTIVE,
+                            protected_candidate_revision=None,
+                        )
+                        if value.attempt == AttemptId("work-a-1")
+                        else value
+                        for value in facts.snapshot.attempts
+                    ),
+                ),
+            )
+
+        with patch.object(SQLiteWorkStore, "read_decision_facts", read_after_review_return):
+            raced_result, raced_stdout, raced_stderr = self.run_transition(
+                common, action, mismatch_payload, json_output=True
+            )
+
+        self.assertNotEqual(0, raced_result)
+        self.assertEqual("", raced_stderr)
+        raced = self.json_object(json.loads(raced_stdout))
+        self.assertEqual("ACTION_NOT_AVAILABLE", raced["code"])
+        self.assertFalse(raced["state_changed"])
+        self.assertEqual([], raced["changed_surfaces"])
+        self.assertEqual(before_mismatch, store.validated_snapshot())
+        self.assertEqual(artifacts_before_mismatch, artifact_inventory())
+
+        decision_read_count = 0
+
+        def fail_preflight_read(
+            selected_store: SQLiteWorkStore,
+            scope: query_models.DecisionScope,
+            observed_at: datetime,
+        ) -> query_models.DecisionFacts:
+            nonlocal decision_read_count
+            decision_read_count += 1
+            if decision_read_count == 2:
+                raise StorageError(
+                    StorageErrorCode.IO_ERROR,
+                    "injected checkpoint preflight read failure",
+                    retryable=True,
+                )
+            return original_read_decision_facts(selected_store, scope, observed_at)
+
+        with patch.object(SQLiteWorkStore, "read_decision_facts", fail_preflight_read):
+            read_failure_result, read_failure_stdout, read_failure_stderr = self.run_transition(
+                common, action, mismatch_payload, json_output=True
+            )
+
+        self.assertNotEqual(0, read_failure_result)
+        self.assertEqual("", read_failure_stderr)
+        read_failure = self.json_object(json.loads(read_failure_stdout))
+        self.assertEqual("rejected", read_failure["status"])
+        self.assertEqual("STORAGE_IO_ERROR", read_failure["code"])
+        self.assertEqual("retry-same-input", read_failure["retry"])
+        self.assertFalse(read_failure["state_changed"])
+        self.assertEqual([], read_failure["changed_surfaces"])
+        self.assertEqual(before_mismatch, store.validated_snapshot())
+        self.assertEqual(artifacts_before_mismatch, artifact_inventory())
+
+        mismatch_result, mismatch_stdout, mismatch_stderr = self.run_transition(
+            common, action, mismatch_payload, json_output=True
+        )
+
+        self.assertNotEqual(0, mismatch_result)
+        self.assertEqual("", mismatch_stderr)
+        mismatch = self.json_object(json.loads(mismatch_stdout))
+        self.assertEqual("rejected", mismatch["status"])
+        self.assertEqual("TRANSITION_INPUT_INVALID", mismatch["code"])
+        self.assertEqual("Checkpoint acceptance requires the exact protected candidate.", mismatch["message"])
+        self.assertFalse(mismatch["state_changed"])
+        self.assertEqual([], mismatch["changed_surfaces"])
+        self.assertEqual(before_mismatch, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
+        self.assertEqual(artifacts_before_mismatch, artifact_inventory())
+        self.assertEqual(status_before_mismatch, self.run_json_cli(*common, "item", "status", "--item-id", "work-a"))
+        self.assertEqual(handover_before_mismatch, self.run_json_cli(*common, "handover"))
+
+        (attempt_root / "review.md").unlink()
         before_missing = store.validated_snapshot()
 
         missing_result, _missing_stdout, missing_stderr = self.run_transition(

@@ -24,6 +24,7 @@ from pinboard.application.service import (
     decide_and_commit_attempt_authority_change,
     decide_and_commit_checkpoint_acceptance,
     decide_and_commit_transition,
+    preflight_checkpoint_candidate,
 )
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import (
@@ -472,7 +473,9 @@ class ServiceTest(unittest.TestCase):
                 self.assertEqual(expected_item, item.state)
                 self.assertEqual(expected_attempt, attempt.state)
 
-    def test_checkpoint_acceptance_requires_protected_candidate_and_reloads_from_fresh_store(self) -> None:
+    def test_checkpoint_acceptance_requires_protected_candidate_and_reloads_from_fresh_store(  # noqa: PLR0915 - one preflight and locked acceptance scenario
+        self,
+    ) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         roots = resolve_durable_roots(project)
         initialize_database(roots, SQLITE_NOW)
@@ -528,6 +531,16 @@ class ServiceTest(unittest.TestCase):
         )
         before_acceptance = submitted_store.validated_snapshot()
 
+        preflight_rejection = preflight_checkpoint_candidate(
+            submitted_store,
+            mismatch,
+            SQLITE_NOW + timedelta(seconds=2),
+        )
+
+        self.assertIsInstance(preflight_rejection, DecisionFailure)
+        self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, preflight_rejection.code)
+        self.assertEqual(before_acceptance, submitted_store.validated_snapshot())
+
         rejected = decide_and_commit_checkpoint_acceptance(
             submitted_store,
             mismatch,
@@ -548,6 +561,13 @@ class ServiceTest(unittest.TestCase):
                     CandidateId("protected-candidate"),
                     "Checkpoint evidence is accepted.",
                 ),
+            )
+        )
+        self.assertIsNone(
+            preflight_checkpoint_candidate(
+                submitted_store,
+                accept,
+                SQLITE_NOW + timedelta(seconds=2),
             )
         )
 

@@ -1,6 +1,6 @@
 # Proof-read code as a product story
 
-Use this optional pass only after the human chooses it. Its outcome is not “more comments” or one preferred architecture. Its outcome is a supported flow whose overview and implementation let a computer-literate newcomer tell the same accurate story.
+Use this detailed method when the selected assessment exposes a reading failure or the human requests a dedicated readability pass. Code comprehension is part of every Repository Readiness assessment; this reference deepens that check without expanding its selected scope or granting improvement authority. Its outcome is a supported flow whose overview and implementation let the next coding agent or a computer-literate newcomer tell the same accurate story from current local context.
 
 ## Establish the reading contract
 

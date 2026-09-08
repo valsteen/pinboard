@@ -944,6 +944,22 @@ def _return_for_correction(
     )
 
 
+def validate_checkpoint_candidate(
+    snapshot: LedgerSnapshot,
+    command: decision_models.AcceptCheckpointCommand,
+) -> DecisionFailure | None:
+    """Return the canonical failure when checkpoint candidate protection does not match."""
+
+    attempt = snapshot.attempt(command.action.capability.subject)
+    if attempt is not None and attempt.protected_candidate_revision == command.value.candidate:
+        return None
+    return DecisionFailure(
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+        "Checkpoint acceptance requires the exact protected candidate.",
+        None,
+    )
+
+
 def _accept_checkpoint(
     snapshot: LedgerSnapshot,
     command: decision_models.AcceptCheckpointCommand,
@@ -961,13 +977,8 @@ def _accept_checkpoint(
             "The attempt has not accepted the item's current definition.",
             None,
         )
-    attempt = snapshot.attempt(attempt_id)
-    if attempt is None or attempt.protected_candidate_revision != value.candidate:
-        return DecisionFailure(
-            DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            "Checkpoint acceptance requires the exact protected candidate.",
-            None,
-        )
+    if (failure := validate_checkpoint_candidate(snapshot, command)) is not None:
+        return failure
     authorities = tuple(candidate for candidate in snapshot.attempt_authorities if candidate.attempt == attempt_id)
     if len(authorities) != 1:
         return DecisionFailure(

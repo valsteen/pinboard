@@ -23,7 +23,7 @@ from pinboard.domain.authority_decisions import (
     decide_attempt_authority,
     decide_preparation_authority,
 )
-from pinboard.domain.decisions import decide, validate_supplied_action
+from pinboard.domain.decisions import decide, validate_checkpoint_candidate, validate_supplied_action
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import (
     ActionId,
@@ -576,6 +576,22 @@ def decide_and_commit_transition(
         allocation = transaction.read_mutation_allocation()
         mutation = project_transition_mutation(allocation, accepted_decision, actor_task_id, actor_host_id)
         return transaction.commit(mutation)
+
+
+def preflight_checkpoint_candidate(
+    store: WorkStore,
+    command: decision_models.AcceptCheckpointCommand,
+    now: datetime,
+) -> DecisionFailure | None:
+    """Revalidate action currentness, then reject only candidate mismatch."""
+
+    facts = store.read_decision_facts(_transition_decision_scope(command), now)
+    actor_authority = _resolve_actor_authority(facts.snapshot, command.action, now)
+    if isinstance(actor_authority, DecisionFailure):
+        return actor_authority
+    if (failure := validate_supplied_action(facts.snapshot, actor_authority, command.action)) is not None:
+        return failure
+    return validate_checkpoint_candidate(facts.snapshot, command)
 
 
 def decide_and_commit_checkpoint_acceptance(

@@ -22,6 +22,7 @@ from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.service import (
     decide_and_commit_checkpoint_acceptance,
     decide_and_commit_transition,
+    preflight_checkpoint_candidate,
 )
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
@@ -355,6 +356,8 @@ def _execute_transition_command(
         return transition_brief_identity
     match command:
         case decision_models.AcceptCheckpointCommand():
+            if (candidate_failure := preflight_checkpoint_candidate(store, command, datetime.now(UTC))) is not None:
+                return CommandFailure(candidate_failure.code, candidate_failure.message, candidate_failure.details)
             checkpoint_artifacts = publish_checkpoint_artifacts(roots, command, artifacts)
             if isinstance(checkpoint_artifacts, (CommandFailure, CommittedEffectFailure)):
                 return checkpoint_artifacts

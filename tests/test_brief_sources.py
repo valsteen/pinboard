@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import chdir
 from pathlib import Path
+from unittest.mock import patch
 
 import msgspec
 
@@ -146,6 +147,37 @@ class BriefSourcesTest(unittest.TestCase):
             expect_brief_source_failure(
                 render_brief_source_batch(project, plan, 0), BriefSourceErrorCode.SOURCE_CHANGED
             )
+
+    def test_render_reads_only_sources_represented_in_the_selected_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            first = project / "first.md"
+            second = project / "second.md"
+            first.write_bytes(b"first\n")
+            second.write_bytes(b"second\n")
+            plan = expect_brief_source_success(
+                plan_brief_sources(
+                    project,
+                    self.manifest(
+                        BriefSourceRequest("first", first.name, ("contract",)),
+                        BriefSourceRequest("second", second.name, ("acceptance",)),
+                    ),
+                    max_batch_bytes=10,
+                )
+            )
+            read_paths: list[Path] = []
+            original_read_bytes = Path.read_bytes
+
+            def tracked_read_bytes(path: Path) -> bytes:
+                read_paths.append(path)
+                return original_read_bytes(path)
+
+            with patch.object(Path, "read_bytes", autospec=True, side_effect=tracked_read_bytes):
+                rendered = expect_brief_source_success(render_brief_source_batch(project, plan, 0))
+
+        self.assertIn(b"authority=first", rendered)
+        self.assertNotIn(b"authority=second", rendered)
+        self.assertEqual([first], read_paths)
 
     def test_cli_plans_and_emits_without_work_state_or_project_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

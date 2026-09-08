@@ -474,14 +474,14 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         self.assertEqual(0, result, stderr)
         candidate = project / "brief.json"
         candidate.write_bytes(msgspec.json.format(msgspec.json.encode(example_work_brief()), indent=2))
-        before = SQLiteWorkStore(work / "state.sqlite3").snapshot()
+        before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
 
         result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
 
         self.assertEqual(0, result, stderr)
         receipt = msgspec.json.decode(stdout.encode())
         self.assertEqual("artifacts/briefs/make-canonical-briefs-typed-json-1/1.json", receipt["selector"])
-        after = SQLiteWorkStore(work / "state.sqlite3").snapshot()
+        after = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
         self.assertEqual(before.lifecycle.work_items, after.lifecycle.work_items)
         self.assertEqual(before.authority, after.authority)
         self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
@@ -493,7 +493,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(0, retry_result, retry_stderr)
         self.assertEqual(receipt, msgspec.json.decode(retry_stdout.encode()))
-        self.assertEqual(after, SQLiteWorkStore(work / "state.sqlite3").snapshot())
+        self.assertEqual(after, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
         candidate.write_bytes(canonical_work_brief_bytes(replace(example_work_brief(), title="Different title")))
         collision_result, _collision_stdout, collision_stderr = self.run_cli(
@@ -510,7 +510,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         self.assertEqual(0, self.run_cli(*common, "init")[0])
         candidate = project / "brief.json"
         candidate.write_text("{}\n", encoding="utf-8")
-        before = SQLiteWorkStore(work / "state.sqlite3").snapshot()
+        before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
 
         result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
 
@@ -522,7 +522,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         self.assertEqual(WorkBriefErrorCode.BRIEF_INVALID.value, failure["code"])
         self.assertFalse(failure["state_changed"])
         self.assertEqual("correct-input", failure["retry"])
-        self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").snapshot())
+        self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
     def test_publication_failure_leaves_reusable_verified_orphan(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
@@ -544,7 +544,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         self.assertEqual("do-not-retry", committed["retry"])
         orphan = work / "artifacts" / "briefs" / example_work_brief().attempt_id / "1.json"
         self.assertEqual(canonical_work_brief_bytes(example_work_brief()), orphan.read_bytes())
-        self.assertEqual((), SQLiteWorkStore(work / "state.sqlite3").snapshot().artifact_references)
+        self.assertEqual((), SQLiteWorkStore(work / "state.sqlite3").validated_snapshot().artifact_references)
 
         orphan = work / "artifacts" / "briefs" / example_work_brief().attempt_id / "1.json"
         self.assertEqual(canonical_work_brief_bytes(example_work_brief()), orphan.read_bytes())
@@ -608,7 +608,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         self.assertFalse(unchanged["state_changed"])
         self.assertEqual([], unchanged["changed_surfaces"])
         self.assertEqual("do-not-retry", unchanged["retry"])
-        self.assertEqual((), SQLiteWorkStore(work / "state.sqlite3").snapshot().artifact_references)
+        self.assertEqual((), SQLiteWorkStore(work / "state.sqlite3").validated_snapshot().artifact_references)
 
     def test_store_programming_failures_propagate_after_publication(self) -> None:
         for programming_failure in (AssertionError("assertion failed"), ValueError("value failed")):

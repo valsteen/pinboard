@@ -7,13 +7,17 @@ from unittest.mock import patch
 from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
-from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_state, refresh_facts
+from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_facts, refresh_facts
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.artifacts import NewArtifact
 from pinboard.domain import work_models
 from pinboard.interfaces.errors import WorkBriefErrorCode, WorkBriefFailure, WorkBriefResult
-from pinboard.interfaces.work_briefs import build_attempt_brief_views, canonical_work_brief_bytes
+from pinboard.interfaces.work_briefs import (
+    build_attempt_brief_views,
+    build_selected_attempt_brief_views,
+    canonical_work_brief_bytes,
+)
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.work_brief_support import work_a_brief
 
@@ -35,9 +39,10 @@ class GeneratedViewsTest(unittest.TestCase):
 
     def test_generated_views_are_stable_across_unrelated_project_revisions(self) -> None:
         work_root, store = self._state()
-        state = store.snapshot()
+        state = store.validated_snapshot()
+        facts = store.read_all_generated_view_facts(SQLITE_NOW)
 
-        result = rebuild_state(state, work_root, {}, now=SQLITE_NOW)
+        result = rebuild_facts(facts, work_root, {})
 
         self.assertIsNone(result.warning)
         for selector in (
@@ -72,7 +77,7 @@ class GeneratedViewsTest(unittest.TestCase):
             "pinboard.adapters.files.views.atomic_replace",
             side_effect=FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "disk full"),
         ):
-            receipt = store.snapshot().transition_receipts[0]
+            receipt = store.validated_snapshot().transition_receipts[0]
             result = refresh_facts(
                 store.read_generated_view_facts((), (), (receipt.history_id,), SQLITE_NOW),
                 work_root,
@@ -92,7 +97,7 @@ class GeneratedViewsTest(unittest.TestCase):
         (view_root / "queue.md").write_text("legacy queue\n", encoding="utf-8")
         (view_root / "history.md").write_text("legacy history\n", encoding="utf-8")
 
-        first = rebuild_state(store.snapshot(), work_root, {}, now=SQLITE_NOW)
+        first = rebuild_facts(store.read_all_generated_view_facts(SQLITE_NOW), work_root, {})
 
         self.assertIsNone(first.warning)
         self.assertFalse((view_root / "queue.md").exists())
@@ -100,7 +105,7 @@ class GeneratedViewsTest(unittest.TestCase):
         paths = tuple(path for path in view_root.rglob("*.md") if path.is_file())
         before = {path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns) for path in paths}
 
-        second = rebuild_state(store.snapshot(), work_root, {}, now=SQLITE_NOW)
+        second = rebuild_facts(store.read_all_generated_view_facts(SQLITE_NOW), work_root, {})
 
         self.assertIsNone(second.warning)
         self.assertEqual(
@@ -130,11 +135,12 @@ class GeneratedViewsTest(unittest.TestCase):
         state = replace(state, artifact_references=(reference, *state.artifact_references[1:]))
         store = SQLiteWorkStore(roots.database_path)
         initialize_store(store, state)
+        facts = store.read_all_generated_view_facts(SQLITE_NOW)
         attempt_briefs = expect_work_brief_success(
-            build_attempt_brief_views(store.snapshot(), ArtifactRepository(roots))
+            build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(roots))
         )
 
-        result = rebuild_state(store.snapshot(), roots.work_root, attempt_briefs, now=SQLITE_NOW)
+        result = rebuild_facts(facts, roots.work_root, attempt_briefs)
 
         self.assertIsNone(result.warning)
         path = roots.work_root / "views" / "attempts" / "work-a-1.md"
@@ -142,11 +148,11 @@ class GeneratedViewsTest(unittest.TestCase):
         self.assertNotIn("database_revision:", text)
         self.assertIn("typed-json-cutover", text)
         path.unlink()
-        rebuild_state(
-            store.snapshot(),
+        facts = store.read_all_generated_view_facts(SQLITE_NOW)
+        rebuild_facts(
+            facts,
             roots.work_root,
-            expect_work_brief_success(build_attempt_brief_views(store.snapshot(), ArtifactRepository(roots))),
-            now=SQLITE_NOW,
+            expect_work_brief_success(build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(roots))),
         )
         self.assertEqual(text, path.read_text(encoding="utf-8"))
 

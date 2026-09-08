@@ -14,7 +14,7 @@ from pinboard.domain.errors import (
     FailureMismatch,
     RetryDisposition,
 )
-from pinboard.domain.identifiers import AttemptId, ItemId, LedgerId, ProposalId, SubjectId
+from pinboard.domain.identifiers import ActionId, AttemptId, ItemId, LedgerId, ProposalId, SubjectId
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.interfaces import cli_commands
 from pinboard.interfaces.errors import CommandErrorCode, CommandFailure, CommandResult
@@ -25,6 +25,31 @@ class ParsedActionReceipt:
     action: decision_models.Action
     role: decision_models.MutationRole
     generation: int
+
+
+def action_identity_scope(action_id: ActionId) -> query_models.DecisionScope | None:
+    """Map one syntactically valid known action identity to its exact persisted subject."""
+
+    if ":" not in action_id:
+        return None
+    kind_value, subject = action_id.split(":", 1)
+    if not kind_value or not subject:
+        return None
+    try:
+        semantics = decision_models.action_semantics(decision_models.ActionKind(kind_value))
+    except ValueError:
+        return None
+    match semantics.subject_kind:
+        case decision_models.ActionSubjectKind.ITEM:
+            return query_models.DecisionScope((ItemId(subject),), (), (), (), (), (), ())
+        case decision_models.ActionSubjectKind.ATTEMPT:
+            return query_models.DecisionScope((), (), (), (), (AttemptId(subject),), (), ())
+        case decision_models.ActionSubjectKind.PROPOSAL:
+            return query_models.DecisionScope((), (), (), (), (), (ProposalId(subject),), ())
+        case decision_models.ActionSubjectKind.LEDGER:
+            return query_models.DecisionScope((), (), (), (), (), (), ())
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _failure_alternatives(

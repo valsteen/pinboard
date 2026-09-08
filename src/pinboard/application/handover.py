@@ -1,5 +1,7 @@
-"""Strict portable handover models and pure projection from one stored snapshot."""
+"""Strict portable handover models and pure projection from exact export facts."""
 
+from collections.abc import Iterable
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import PurePosixPath
 from typing import Literal, assert_never
@@ -225,6 +227,61 @@ class ProjectHandover(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     artifact_contents: tuple[HandoverArtifactContent, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class HandoverState:
+    """One batch of exported relations without local-only authority state."""
+
+    lifecycle: stored_state.LifecycleRecords
+    proposals: stored_state.ProposalRecords
+    artifact_references: tuple[stored_state.ArtifactReference, ...]
+    transition_receipts: tuple[stored_state.StoredTransitionReceipt, ...]
+
+
+def merge_handover_batches(batches: Iterable[HandoverState]) -> HandoverState:
+    """Materialize the current canonical result from a batch-capable source."""
+
+    iterator = iter(batches)
+    try:
+        first = next(iterator)
+    except StopIteration:
+        raise ValueError("Handover requires one project batch.") from None
+    lifecycle = first.lifecycle
+    proposals = first.proposals
+    artifact_references = list(first.artifact_references)
+    transition_receipts = list(first.transition_receipts)
+    work_items = list(lifecycle.work_items)
+    dependencies = list(lifecycle.dependencies)
+    attempts = list(lifecycle.attempts)
+    definition_revisions = list(lifecycle.definition_revisions)
+    proposal_values = list(proposals.proposals)
+    evidence = list(proposals.evidence)
+    freshness = list(proposals.freshness)
+    for batch in iterator:
+        if batch.lifecycle.project != lifecycle.project:
+            raise ValueError("Handover batches do not share one project revision.")
+        work_items.extend(batch.lifecycle.work_items)
+        dependencies.extend(batch.lifecycle.dependencies)
+        attempts.extend(batch.lifecycle.attempts)
+        definition_revisions.extend(batch.lifecycle.definition_revisions)
+        proposal_values.extend(batch.proposals.proposals)
+        evidence.extend(batch.proposals.evidence)
+        freshness.extend(batch.proposals.freshness)
+        artifact_references.extend(batch.artifact_references)
+        transition_receipts.extend(batch.transition_receipts)
+    return HandoverState(
+        stored_state.LifecycleRecords(
+            lifecycle.project,
+            tuple(work_items),
+            tuple(dependencies),
+            tuple(attempts),
+            tuple(definition_revisions),
+        ),
+        stored_state.ProposalRecords(tuple(proposal_values), tuple(evidence), tuple(freshness)),
+        tuple(artifact_references),
+        tuple(transition_receipts),
+    )
+
+
 def project_artifact_reference(
     reference: stored_state.ArtifactReference,
     *,
@@ -280,7 +337,7 @@ def _project_proposal_relation(value: stored_state.StoredProposal) -> HandoverPr
             assert_never(unreachable)
 
 
-def _project_item_artifact_links(state: stored_state.StoredWorkState) -> tuple[HandoverItemArtifactLink, ...]:
+def _project_item_artifact_links(state: HandoverState) -> tuple[HandoverItemArtifactLink, ...]:
     attempts = {str(value.attempt_id): value for value in state.lifecycle.attempts}
     item_ids = {str(value.item_id) for value in state.lifecycle.work_items}
     references = {value.artifact_ref_id: value for value in state.artifact_references}
@@ -308,11 +365,11 @@ def _project_item_artifact_links(state: stored_state.StoredWorkState) -> tuple[H
 
 
 def project_handover_from_state(
-    state: stored_state.StoredWorkState,
+    state: HandoverState,
     artifact_references: tuple[HandoverArtifactReference, ...],
     artifact_contents: tuple[HandoverArtifactContent, ...],
 ) -> ProjectHandover:
-    """Project one already-loaded stored snapshot without outer effects."""
+    """Project one already-loaded export selection without outer effects."""
 
     pending_proposals = tuple(value for value in state.proposals.proposals if value.disposition is None)
     proposal_ids = frozenset(value.proposal_id for value in pending_proposals)

@@ -24,6 +24,7 @@ def _project_brief_source_segment(
         segment.end_line,
         segment.content_byte_count,
         segment.content_sha256,
+        segment.ends_with_newline,
     )
 
 
@@ -66,27 +67,37 @@ def plan_or_emit_brief_sources(
     roots: cli_commands.ResolvedRoots,
     command: cli_commands.BriefSourcesPlanCommand | cli_commands.BriefSourcesEmitCommand,
 ) -> BriefSourceResult[int]:
-    try:
-        manifest_bytes = command.file.read_bytes()
-    except OSError as error:
-        return BriefSourceFailure(
-            BriefSourceErrorCode.MANIFEST_INVALID,
-            f"Cannot read brief source manifest '{command.file}': {error}",
-        )
-    decoded_manifest = brief_sources.decode_brief_source_manifest(manifest_bytes)
-    if isinstance(decoded_manifest, BriefSourceFailure):
-        return decoded_manifest
-    source_plan = brief_sources.plan_brief_sources(
-        roots.source_checkout,
-        decoded_manifest,
-        command.max_batch_bytes,
-    )
-    if isinstance(source_plan, BriefSourceFailure):
-        return source_plan
     match command:
-        case cli_commands.BriefSourcesPlanCommand():
+        case cli_commands.BriefSourcesPlanCommand(file=manifest_path, max_batch_bytes=max_batch_bytes):
+            try:
+                manifest_bytes = manifest_path.read_bytes()
+            except OSError as error:
+                return BriefSourceFailure(
+                    BriefSourceErrorCode.MANIFEST_INVALID,
+                    f"Cannot read brief source manifest '{manifest_path}': {error}",
+                )
+            decoded_manifest = brief_sources.decode_brief_source_manifest(manifest_bytes)
+            if isinstance(decoded_manifest, BriefSourceFailure):
+                return decoded_manifest
+            source_plan = brief_sources.plan_brief_sources(
+                roots.source_checkout,
+                decoded_manifest,
+                max_batch_bytes,
+            )
+            if isinstance(source_plan, BriefSourceFailure):
+                return source_plan
             write_json(_project_brief_source_plan(source_plan))
-        case cli_commands.BriefSourcesEmitCommand(emit_batch=batch_index):
+        case cli_commands.BriefSourcesEmitCommand(plan=plan_path, emit_batch=batch_index):
+            try:
+                plan_bytes = plan_path.read_bytes()
+            except OSError as error:
+                return BriefSourceFailure(
+                    BriefSourceErrorCode.PLAN_INVALID,
+                    f"Cannot read brief source plan '{plan_path}': {error}",
+                )
+            source_plan = brief_sources.decode_brief_source_plan(plan_bytes)
+            if isinstance(source_plan, BriefSourceFailure):
+                return source_plan
             rendered_batch = brief_sources.render_brief_source_batch(roots.source_checkout, source_plan, batch_index)
             if isinstance(rendered_batch, BriefSourceFailure):
                 return rendered_batch

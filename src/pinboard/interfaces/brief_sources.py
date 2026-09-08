@@ -18,8 +18,10 @@ from pinboard.interfaces.brief_source_models import (
     BriefSourceLine,
     BriefSourceManifest,
     BriefSourcePlan,
+    BriefSourcePlanView,
     BriefSourceRequest,
     BriefSourceSegment,
+    BriefSourceSegmentView,
     PlannedBriefSource,
     SelectedBriefSource,
     authority_selector,
@@ -38,6 +40,53 @@ def decode_brief_source_manifest(raw: bytes) -> BriefSourceResult[BriefSourceMan
             f"Cannot decode brief source manifest: {error}",
         )
     return manifest
+
+
+def decode_brief_source_plan(raw: bytes) -> BriefSourceResult[BriefSourcePlan]:
+    try:
+        plan = msgspec.json.decode(raw, type=BriefSourcePlanView)
+    except (msgspec.DecodeError, ValueError) as error:
+        return BriefSourceFailure(
+            BriefSourceErrorCode.PLAN_INVALID,
+            f"Cannot decode brief source plan: {error}",
+        )
+
+    def segment_from_view(segment: BriefSourceSegmentView) -> BriefSourceSegment:
+        return BriefSourceSegment(
+            segment.authority_id,
+            segment.selector,
+            segment.index,
+            segment.start_line,
+            segment.end_line,
+            segment.content_byte_count,
+            segment.content_sha256,
+            segment.ends_with_newline,
+        )
+
+    sources = tuple(
+        PlannedBriefSource(
+            source.authority_id,
+            source.selector,
+            source.families,
+            source.selected_sha256,
+            source.selected_byte_count,
+            source.start_line,
+            source.end_line,
+            source.whole_file,
+            tuple(segment_from_view(segment) for segment in source.segments),
+        )
+        for source in plan.sources
+    )
+    batches = tuple(
+        BriefSourceBatch(
+            batch.index,
+            batch.content_byte_count,
+            batch.estimated_rendered_byte_count,
+            tuple(segment_from_view(segment) for segment in batch.segments),
+        )
+        for batch in plan.batches
+    )
+    return BriefSourcePlan(plan.schema, plan.manifest_sha256, plan.max_batch_bytes, sources, batches)
 
 
 def _find_heading_range(lines: tuple[str, ...], heading: str, path: Path) -> BriefSourceResult[tuple[int, int]]:
@@ -331,4 +380,10 @@ def render_brief_source_batch(
                 f"Authority '{segment.authority_id}' changed after its source plan was created.",
             )
         rendered_segments.append((segment, content))
-    return _render_segments(tuple(rendered_segments))
+    rendered = _render_segments(tuple(rendered_segments))
+    if len(rendered) != plan.batches[batch_index].estimated_rendered_byte_count:
+        return BriefSourceFailure(
+            BriefSourceErrorCode.PLAN_INVALID,
+            f"Batch {batch_index} rendered size does not match its source plan.",
+        )
+    return rendered

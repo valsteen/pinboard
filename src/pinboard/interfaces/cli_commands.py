@@ -126,9 +126,8 @@ class BriefSourcesPlanCommand(msgspec.Struct, frozen=True, forbid_unknown_fields
 
 
 class BriefSourcesEmitCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    file: Path
+    plan: Path
     emit_batch: int
-    max_batch_bytes: PositiveInt = 24_000
 
 
 class BriefPublishCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

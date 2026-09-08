@@ -150,7 +150,7 @@ class OperationFailureTest(unittest.TestCase):
                 ),
             )
             status_store, _status_roots = self.initialized(state)
-            before = status_store.snapshot()
+            before = status_store.validated_snapshot()
             with patch("pinboard.interfaces.action_selection.datetime") as clock:
                 clock.now.return_value = SQLITE_NOW
                 rejected = action_selection.select_current_action(status_store, worker_receipt)
@@ -159,7 +159,7 @@ class OperationFailureTest(unittest.TestCase):
             self.assertEqual(expected_code, rejected.code)
             assert rejected.details is not None
             self.assertEqual(status.value, rejected.details.observed[0].value)
-            self.assertEqual(before, status_store.snapshot())
+            self.assertEqual(before, status_store.validated_snapshot())
 
         state = complete_sqlite_state()
         project_pause = next(
@@ -305,7 +305,7 @@ class OperationFailureTest(unittest.TestCase):
             collision.details.changed_surfaces,
         )
         self.assertTrue(str(collision.details.observed[0].value).endswith(f"rejected-{ReviewId('second')}/1.json"))
-        self.assertTrue(any("rejected-second" in value.key for value in store.snapshot().artifact_references))
+        self.assertTrue(any("rejected-second" in value.key for value in store.validated_snapshot().artifact_references))
 
 
 if __name__ == "__main__":

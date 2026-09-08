@@ -70,6 +70,7 @@ from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.proposals import accept_proposal, create_proposal, read_proposal, set_proposal_disposition
 from pinboard.application import queries, query_models, stored_state
 from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
+from pinboard.application.handover import HandoverState
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     CheckpointAcceptanceMutation,
@@ -86,7 +87,7 @@ from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, ItemId, ProposalId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, ItemId, LeaseId, ProposalId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
@@ -96,6 +97,10 @@ class _ItemIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class _AttemptIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: AttemptId
+
+
+class _HistoryIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: HistoryId
 
 
 class _DependencyViewRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -132,6 +137,128 @@ class _ProjectRevisionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 class _StateCountRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     state: str
     item_count: int
+
+
+def _read_generated_view_facts(
+    connection: sqlite3.Connection,
+    item_ids: tuple[ItemId, ...],
+    attempt_ids: tuple[AttemptId, ...],
+    history_ids: tuple[HistoryId, ...],
+    now: datetime,
+) -> query_models.GeneratedViewFacts:
+    project_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    project_revision = decode_row(project_row, _ProjectRevisionRow).revision
+    items: list[query_models.ItemProjectionFacts] = []
+    for item_id in item_ids:
+        item_row = connection.execute(
+            """
+            SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
+                   subject_revision, recorded_at, updated_at, queue_position
+            FROM work_items WHERE item_id = ?
+            """,
+            (item_id,),
+        ).fetchone()
+        definition_row = connection.execute(
+            """
+            SELECT item_id, definition_revision AS revision, definition_digest AS digest,
+                   definition_json, reason, source_task_id, before_digest, after_digest,
+                   accepted_project_revision, accepted_at
+            FROM work_item_definition_revisions
+            WHERE item_id = ? ORDER BY definition_revision DESC LIMIT 1
+            """,
+            (item_id,),
+        ).fetchone()
+        if item_row is None or definition_row is None:
+            raise StorageError(StorageErrorCode.INVALID_STATE, "An affected item projection is missing.")
+        dependency_rows = tuple(
+            decode_row(row, _DependencyViewRow)
+            for row in connection.execute(
+                """
+                SELECT dependency.dependency_id, item.queue_position
+                FROM item_dependencies AS dependency
+                JOIN work_items AS item ON item.item_id = dependency.dependency_id
+                WHERE dependency.item_id = ? ORDER BY dependency.position
+                """,
+                (item_id,),
+            ).fetchall()
+        )
+        dependencies = tuple(value.dependency_id for value in dependency_rows)
+        item = decode_row(item_row, stored_state.StoredWorkItem)
+        definition = decode_definition_revision(definition_row)
+        live_state = stored_state.live_work_state(item.state)
+        projected: query_models.OverviewItem | None = None
+        if live_state is not None:
+            attempt_row = connection.execute(
+                "SELECT attempt_id FROM attempts WHERE item_id = ? AND state != 'done'",
+                (item_id,),
+            ).fetchone()
+            attempt_id = None if attempt_row is None else decode_row(attempt_row, _AttemptIdRow).attempt_id
+            proposal_ids = tuple(dict.fromkeys((ProposalId(item_id), *(ProposalId(value) for value in dependencies))))
+            selected_proposals = tuple(
+                proposal
+                for proposal_id in proposal_ids
+                if (proposal := read_proposal(connection, proposal_id)) is not None
+            )
+            projected = queries.project_item_overview(
+                query_models.ItemOverviewFacts(
+                    work_models.WorkItem(
+                        item.item_id,
+                        live_state,
+                        item.timing.value if item.timing is not None else None,
+                        dependencies,
+                        attempt_id,
+                        item.source,
+                        item.next_action,
+                        item.notes,
+                        item.queue_position,
+                        item.outcome_evidence,
+                    ),
+                    tuple((value.dependency_id, value.queue_position is not None) for value in dependency_rows),
+                    work_models.DefinitionAnchor(
+                        definition.item_id,
+                        definition.revision,
+                        definition.digest,
+                        definition.definition,
+                    ),
+                    selected_proposals,
+                    read_preparation_authority_status(connection, item_id),
+                ),
+                now,
+            )
+        items.append(query_models.ItemProjectionFacts(item, dependencies, projected, definition))
+    attempts: list[query_models.AttemptProjectionFacts] = []
+    for attempt_id in attempt_ids:
+        attempt_row = connection.execute(
+            """
+            SELECT attempt_id, item_id, state, branch, base_revision, provenance,
+                   brief_artifact_ref_id, result_artifact_ref_id, candidate_revision,
+                   candidate_recorded_at, accepted_scope_revision, accepted_scope_digest,
+                   subject_revision, recorded_at, updated_at
+            FROM attempts WHERE attempt_id = ?
+            """,
+            (attempt_id,),
+        ).fetchone()
+        if attempt_row is None:
+            raise StorageError(StorageErrorCode.INVALID_STATE, "An affected attempt projection is missing.")
+        attempt = decode_row(attempt_row, stored_state.StoredAttempt)
+        attempts.append(
+            query_models.AttemptProjectionFacts(
+                attempt,
+                None
+                if attempt.state == work_models.AttemptState.DONE
+                else read_brief_artifact_reference(connection, attempt.brief_artifact_ref_id),
+            )
+        )
+    receipts = tuple(
+        receipt
+        for history_id in history_ids
+        if (receipt := sqlite_state.read_history_receipt(connection, history_id)) is not None
+    )
+    if len(receipts) != len(history_ids):
+        raise StorageError(StorageErrorCode.INVALID_STATE, "An affected history projection is missing.")
+    return query_models.GeneratedViewFacts(project_revision, tuple(items), tuple(attempts), receipts)
 
 
 def _translate_artifact_verification_error(error: ArtifactError) -> StorageError:
@@ -1010,20 +1137,20 @@ class SQLiteWorkStore:
     def __init__(self, path: Path) -> None:
         self._path = path
 
-    def snapshot(self) -> stored_state.StoredWorkState:
-        connection = open_database(self._path, OpenMode.READ_ONLY)
-        try:
-            with read_operation(connection):
-                return sqlite_state.read_state(connection)
-        finally:
-            connection.close()
-
     def validated_snapshot(self) -> stored_state.StoredWorkState:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
                 verify_database_integrity(connection)
                 return sqlite_state.read_state(connection)
+        finally:
+            connection.close()
+
+    def read_handover_batches(self) -> tuple[HandoverState, ...]:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return (sqlite_state.read_handover_state(connection),)
         finally:
             connection.close()
 
@@ -1104,6 +1231,64 @@ class SQLiteWorkStore:
     def read_current_action_snapshot(self, now: datetime) -> LedgerSnapshot:
         return self._read_current_project_snapshot(now, include_proposals=True)
 
+    def read_leased_action_snapshot(
+        self,
+        role: decision_models.Role,
+        lease_id: LeaseId,
+        generation: int,
+        now: datetime,
+    ) -> LedgerSnapshot:
+        """Read only current subjects reached by one supplied lease identity."""
+
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                match role:
+                    case decision_models.Role.WORKER:
+                        attempt_ids = tuple(
+                            decode_row(row, _AttemptIdRow).attempt_id
+                            for row in connection.execute(
+                                """
+                                SELECT anchor.attempt_id
+                                FROM attempt_lease_generations AS anchor
+                                JOIN attempt_leases AS lease
+                                  ON lease.attempt_id = anchor.attempt_id
+                                 AND lease.generation = anchor.generation
+                                WHERE anchor.lease_id = ? AND anchor.generation = ?
+                                ORDER BY anchor.attempt_id
+                                """,
+                                (lease_id, generation),
+                            ).fetchall()
+                        )
+                        scope = query_models.DecisionScope((), (), (), (), attempt_ids, (), ())
+                    case decision_models.Role.PREPARER:
+                        item_ids = tuple(
+                            decode_row(row, _ItemIdRow).item_id
+                            for row in connection.execute(
+                                """
+                                SELECT anchor.item_id
+                                FROM preparation_lease_generations AS anchor
+                                JOIN preparation_leases AS lease
+                                  ON lease.item_id = anchor.item_id
+                                 AND lease.generation = anchor.generation
+                                WHERE anchor.lease_id = ? AND anchor.generation = ?
+                                ORDER BY anchor.item_id
+                                """,
+                                (lease_id, generation),
+                            ).fetchall()
+                        )
+                        scope = query_models.DecisionScope(item_ids, (), (), (), (), (), ())
+                    case decision_models.Role.PROJECT | decision_models.Role.OBSERVER:
+                        raise StorageError(
+                            StorageErrorCode.INVARIANT_VIOLATION,
+                            "Only worker and preparer action discovery accepts lease selection.",
+                        )
+                    case _ as unreachable:
+                        assert_never(unreachable)
+                return read_selected_decision_facts(connection, scope, now).snapshot
+        finally:
+            connection.close()
+
     def read_current_parallel_snapshot(self, now: datetime) -> LedgerSnapshot:
         return self._read_current_project_snapshot(now, include_proposals=False)
 
@@ -1144,128 +1329,31 @@ class SQLiteWorkStore:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
-                project_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
-                if project_row is None:
-                    raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
-                project_revision = decode_row(project_row, _ProjectRevisionRow).revision
-                items: list[query_models.ItemProjectionFacts] = []
-                for item_id in item_ids:
-                    item_row = connection.execute(
-                        """
-                        SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
-                               subject_revision, recorded_at, updated_at, queue_position
-                        FROM work_items WHERE item_id = ?
-                        """,
-                        (item_id,),
-                    ).fetchone()
-                    definition_row = connection.execute(
-                        """
-                        SELECT item_id, definition_revision AS revision, definition_digest AS digest,
-                               definition_json, reason, source_task_id, before_digest, after_digest,
-                               accepted_project_revision, accepted_at
-                        FROM work_item_definition_revisions
-                        WHERE item_id = ? ORDER BY definition_revision DESC LIMIT 1
-                        """,
-                        (item_id,),
-                    ).fetchone()
-                    if item_row is None or definition_row is None:
-                        raise StorageError(StorageErrorCode.INVALID_STATE, "An affected item projection is missing.")
-                    dependency_rows = tuple(
-                        decode_row(row, _DependencyViewRow)
-                        for row in connection.execute(
-                            """
-                            SELECT dependency.dependency_id, item.queue_position
-                            FROM item_dependencies AS dependency
-                            JOIN work_items AS item ON item.item_id = dependency.dependency_id
-                            WHERE dependency.item_id = ? ORDER BY dependency.position
-                            """,
-                            (item_id,),
-                        ).fetchall()
-                    )
-                    dependencies = tuple(value.dependency_id for value in dependency_rows)
-                    item = decode_row(item_row, stored_state.StoredWorkItem)
-                    definition = decode_definition_revision(definition_row)
-                    live_state = stored_state.live_work_state(item.state)
-                    projected: query_models.OverviewItem | None = None
-                    if live_state is not None:
-                        attempt_row = connection.execute(
-                            "SELECT attempt_id FROM attempts WHERE item_id = ? AND state != 'done'",
-                            (item_id,),
-                        ).fetchone()
-                        attempt_id = None if attempt_row is None else decode_row(attempt_row, _AttemptIdRow).attempt_id
-                        proposal_ids = tuple(
-                            dict.fromkeys((ProposalId(item_id), *(ProposalId(value) for value in dependencies)))
-                        )
-                        selected_proposals = tuple(
-                            proposal
-                            for proposal_id in proposal_ids
-                            if (proposal := read_proposal(connection, proposal_id)) is not None
-                        )
-                        projected = queries.project_item_overview(
-                            query_models.ItemOverviewFacts(
-                                work_models.WorkItem(
-                                    item.item_id,
-                                    live_state,
-                                    item.timing.value if item.timing is not None else None,
-                                    dependencies,
-                                    attempt_id,
-                                    item.source,
-                                    item.next_action,
-                                    item.notes,
-                                    item.queue_position,
-                                    item.outcome_evidence,
-                                ),
-                                tuple(
-                                    (value.dependency_id, value.queue_position is not None) for value in dependency_rows
-                                ),
-                                work_models.DefinitionAnchor(
-                                    definition.item_id,
-                                    definition.revision,
-                                    definition.digest,
-                                    definition.definition,
-                                ),
-                                selected_proposals,
-                                read_preparation_authority_status(connection, item_id),
-                            ),
-                            now,
-                        )
-                    items.append(
-                        query_models.ItemProjectionFacts(
-                            item,
-                            dependencies,
-                            projected,
-                            definition,
-                        )
-                    )
-                attempts: list[query_models.AttemptProjectionFacts] = []
-                for attempt_id in attempt_ids:
-                    attempt_row = connection.execute(
-                        """
-                        SELECT attempt_id, item_id, state, branch, base_revision, provenance,
-                               brief_artifact_ref_id, result_artifact_ref_id, candidate_revision,
-                               candidate_recorded_at, accepted_scope_revision, accepted_scope_digest,
-                               subject_revision, recorded_at, updated_at
-                        FROM attempts WHERE attempt_id = ?
-                        """,
-                        (attempt_id,),
-                    ).fetchone()
-                    if attempt_row is None:
-                        raise StorageError(StorageErrorCode.INVALID_STATE, "An affected attempt projection is missing.")
-                    attempt = decode_row(attempt_row, stored_state.StoredAttempt)
-                    attempts.append(
-                        query_models.AttemptProjectionFacts(
-                            attempt,
-                            read_brief_artifact_reference(connection, attempt.brief_artifact_ref_id),
-                        )
-                    )
-                receipts = tuple(
-                    receipt
-                    for history_id in history_ids
-                    if (receipt := sqlite_state.read_history_receipt(connection, history_id)) is not None
+                return _read_generated_view_facts(connection, item_ids, attempt_ids, history_ids, now)
+        finally:
+            connection.close()
+
+    def read_all_generated_view_facts(self, now: datetime) -> query_models.GeneratedViewFacts:
+        """Read every declared generated projection, excluding unrelated stored state."""
+
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                item_ids = tuple(
+                    decode_row(row, _ItemIdRow).item_id
+                    for row in connection.execute("SELECT item_id FROM work_items ORDER BY item_id").fetchall()
                 )
-                if len(receipts) != len(history_ids):
-                    raise StorageError(StorageErrorCode.INVALID_STATE, "An affected history projection is missing.")
-                return query_models.GeneratedViewFacts(project_revision, tuple(items), tuple(attempts), receipts)
+                attempt_ids = tuple(
+                    decode_row(row, _AttemptIdRow).attempt_id
+                    for row in connection.execute("SELECT attempt_id FROM attempts ORDER BY attempt_id").fetchall()
+                )
+                history_ids = tuple(
+                    decode_row(row, _HistoryIdRow).history_id
+                    for row in connection.execute(
+                        "SELECT history_id FROM transition_history ORDER BY history_id"
+                    ).fetchall()
+                )
+                return _read_generated_view_facts(connection, item_ids, attempt_ids, history_ids, now)
         finally:
             connection.close()
 

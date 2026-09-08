@@ -29,7 +29,7 @@ Encode and measure the closed authority set in a temporary strict `pinboard-brie
 }
 ```
 
-Use one selector with several families instead of repeating or nesting the same selection. Run `pinboard brief-sources --file <manifest> --json` before reading any selected body. Correct overlap errors, inspect selected byte counts, spans, digests, and batches, then emit each batch once in ascending order.
+Use one selector with several families instead of repeating or nesting the same selection. Run `pinboard brief-sources --file <manifest> --json` before reading any selected body. Correct overlap errors, inspect selected byte counts, spans, digests, and batches, and preserve that exact output as the strict `pinboard-brief-source-plan/v1` input. Emit each batch once in ascending order with `pinboard brief-sources --plan <plan> --emit-batch <index>`; emission reads the plan and only the source files represented in that batch.
 
 Preserve each selector and selected digest as its read receipt. Across corrections, reuse exact unchanged receipts and reread only changed owners plus neighboring records whose meaning depends on them. If output truncates, continue from the first unread boundary without replaying returned content.
 

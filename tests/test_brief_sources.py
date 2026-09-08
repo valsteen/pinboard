@@ -179,6 +179,59 @@ class BriefSourcesTest(unittest.TestCase):
         self.assertNotIn(b"authority=second", rendered)
         self.assertEqual([first], read_paths)
 
+    def test_installed_emit_reads_the_plan_and_only_sources_in_the_selected_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            first = project / "first.md"
+            second = project / "second.md"
+            first.write_bytes(b"first\n")
+            second.write_bytes(b"second\n")
+            manifest_path = project / "manifest.json"
+            manifest_path.write_bytes(
+                msgspec.json.encode(
+                    self.manifest(
+                        BriefSourceRequest("first", first.name, ("contract",)),
+                        BriefSourceRequest("second", second.name, ("acceptance",)),
+                    ),
+                    order="sorted",
+                )
+            )
+            planned_result, planned_stdout, planned_stderr = self.run_cli(
+                "--project-root",
+                str(project),
+                "brief-sources",
+                "--file",
+                str(manifest_path),
+                "--max-batch-bytes",
+                "10",
+                "--json",
+            )
+            self.assertEqual((0, ""), (planned_result, planned_stderr))
+            plan_path = project / "plan.json"
+            plan_path.write_text(planned_stdout, encoding="utf-8")
+            read_paths: list[Path] = []
+            original_read_bytes = Path.read_bytes
+
+            def tracked_read_bytes(path: Path) -> bytes:
+                read_paths.append(path)
+                return original_read_bytes(path)
+
+            with patch.object(Path, "read_bytes", autospec=True, side_effect=tracked_read_bytes):
+                emitted_result, emitted_stdout, emitted_stderr = self.run_cli(
+                    "--project-root",
+                    str(project),
+                    "brief-sources",
+                    "--plan",
+                    str(plan_path),
+                    "--emit-batch",
+                    "0",
+                )
+
+        self.assertEqual((0, ""), (emitted_result, emitted_stderr))
+        self.assertIn("authority=first", emitted_stdout)
+        self.assertNotIn("authority=second", emitted_stdout)
+        self.assertEqual([plan_path, first.resolve()], read_paths)
+
     def test_cli_plans_and_emits_without_work_state_or_project_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
@@ -190,12 +243,33 @@ class BriefSourcesTest(unittest.TestCase):
                     order="sorted",
                 )
             )
-            before = {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()}
             common = ("--project-root", str(project), "brief-sources", "--file", str(manifest_path))
 
             planned_result, planned_stdout, planned_stderr = self.run_cli(*common, "--json")
-            emitted_result, emitted_stdout, emitted_stderr = self.run_cli(*common, "--emit-batch", "0")
-            missing_result, _, missing_stderr = self.run_cli(*common, "--emit-batch", "1")
+            plan_path = project / "plan.json"
+            plan_path.write_text(planned_stdout, encoding="utf-8")
+            before = {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()}
+            emitted_result, emitted_stdout, emitted_stderr = self.run_cli(
+                "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "0"
+            )
+            missing_result, _, missing_stderr = self.run_cli(
+                "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "1"
+            )
+            invalid_emit_stderr = io.StringIO()
+            with contextlib.redirect_stderr(invalid_emit_stderr), self.assertRaises(SystemExit) as invalid_emit:
+                main(
+                    (
+                        "--project-root",
+                        str(project),
+                        "brief-sources",
+                        "--plan",
+                        str(plan_path),
+                        "--max-batch-bytes",
+                        "10",
+                        "--emit-batch",
+                        "0",
+                    )
+                )
             after = {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()}
 
         self.assertEqual((0, ""), (planned_result, planned_stderr))
@@ -206,7 +280,66 @@ class BriefSourcesTest(unittest.TestCase):
         self.assertIn("BEGIN BRIEF SOURCE authority=source selector=source.md lines=1-3 segment=0", emitted_stdout)
         self.assertEqual(15, missing_result)
         self.assertIn(BriefSourceErrorCode.BATCH_NOT_FOUND.value, missing_stderr)
+        self.assertEqual(2, invalid_emit.exception.code)
+        self.assertIn(
+            "--max-batch-bytes is only valid while planning with --file",
+            invalid_emit_stderr.getvalue(),
+        )
         self.assertEqual(before, after)
+
+    def test_cli_rejects_a_plan_whose_source_and_batch_segments_disagree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "source.md").write_bytes(b"source\n")
+            manifest_path = project / "manifest.json"
+            manifest_path.write_bytes(
+                msgspec.json.encode(
+                    self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
+                    order="sorted",
+                )
+            )
+            planned_result, planned_stdout, planned_stderr = self.run_cli(
+                "--project-root", str(project), "brief-sources", "--file", str(manifest_path), "--json"
+            )
+            self.assertEqual((0, ""), (planned_result, planned_stderr))
+            plan = json.loads(planned_stdout)
+            plan["batches"][0]["segments"][0]["selector"] = "other.md"
+            plan_path = project / "invalid-plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+
+            result, _stdout, stderr = self.run_cli(
+                "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "0"
+            )
+
+        self.assertEqual(15, result)
+        self.assertIn(BriefSourceErrorCode.PLAN_INVALID.value, stderr)
+
+    def test_cli_rejects_a_plan_whose_rendered_size_is_false(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "source.md").write_bytes(b"source\n")
+            manifest_path = project / "manifest.json"
+            manifest_path.write_bytes(
+                msgspec.json.encode(
+                    self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
+                    order="sorted",
+                )
+            )
+            planned_result, planned_stdout, planned_stderr = self.run_cli(
+                "--project-root", str(project), "brief-sources", "--file", str(manifest_path), "--json"
+            )
+            self.assertEqual((0, ""), (planned_result, planned_stderr))
+            plan = json.loads(planned_stdout)
+            plan["batches"][0]["estimated_rendered_byte_count"] += 1
+            plan_path = project / "invalid-plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+
+            result, _stdout, stderr = self.run_cli(
+                "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "0"
+            )
+
+        self.assertEqual(15, result)
+        self.assertIn(BriefSourceErrorCode.PLAN_INVALID.value, stderr)
 
     def test_cli_reads_authority_bytes_from_the_selected_linked_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

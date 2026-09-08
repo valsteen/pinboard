@@ -32,7 +32,7 @@ from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, m
 class PreparationAuthorityTest(unittest.TestCase):
     def test_ordinary_start_selects_definition_after_waiting_for_a_revision_commit(self) -> None:
         store, database_path = self._store()
-        before = store.snapshot()
+        before = store.validated_snapshot()
         current = next(value for value in before.lifecycle.definition_revisions if value.item_id == ItemId("work-c"))
         action = next(
             value
@@ -84,7 +84,7 @@ class PreparationAuthorityTest(unittest.TestCase):
         thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
         acquired = expect_success(results[0]).authority
-        after = SQLiteWorkStore(database_path).snapshot()
+        after = SQLiteWorkStore(database_path).validated_snapshot()
         revised = next(
             value for value in reversed(after.lifecycle.definition_revisions) if value.item_id == ItemId("work-c")
         )
@@ -94,7 +94,7 @@ class PreparationAuthorityTest(unittest.TestCase):
 
     def test_competing_ordinary_starts_commit_one_exact_claim(self) -> None:
         store, database_path = self._store()
-        before = store.snapshot()
+        before = store.validated_snapshot()
         barrier = Barrier(2)
         results: list[DecisionFailure | PreparationStart] = []
 
@@ -120,7 +120,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             self.assertFalse(thread.is_alive())
         self.assertEqual(1, sum(isinstance(value, DecisionFailure) for value in results))
         committed = next(value.authority for value in results if isinstance(value, PreparationStart))
-        after = SQLiteWorkStore(database_path).snapshot()
+        after = SQLiteWorkStore(database_path).validated_snapshot()
         self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
         self.assertEqual(1, len(after.authority.preparation_leases))
         self.assertEqual(committed.lease_id, after.authority.preparation_generations[0].lease_id)
@@ -394,11 +394,11 @@ class PreparationAuthorityTest(unittest.TestCase):
         store, database_path = self._store()
         expires_at = SQLITE_NOW + timedelta(seconds=1)
         receipt = decide_and_commit_preparation_authority_change(
-            store, self._acquisition(store.snapshot(), expires_at=expires_at)
+            store, self._acquisition(store.validated_snapshot(), expires_at=expires_at)
         )
         self.assertNotIsInstance(receipt, DecisionFailure)
 
-        reloaded = SQLiteWorkStore(database_path).snapshot()
+        reloaded = SQLiteWorkStore(database_path).validated_snapshot()
         self.assertEqual((ItemId("work-c"),), tuple(value.item_id for value in reloaded.authority.preparation_leases))
         before = project_overview(reloaded, expires_at - timedelta(microseconds=1))
         at = project_overview(reloaded, expires_at)
@@ -430,7 +430,7 @@ class PreparationAuthorityTest(unittest.TestCase):
         store, database_path = self._store()
         expires_at = SQLITE_NOW + timedelta(seconds=1)
         acquired = decide_and_commit_preparation_authority_change(
-            store, self._acquisition(store.snapshot(), expires_at=expires_at)
+            store, self._acquisition(store.validated_snapshot(), expires_at=expires_at)
         )
         self.assertNotIsInstance(acquired, DecisionFailure)
         intake = ProposalIntake(
@@ -447,7 +447,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             ("source:local",),
             ("Work C remains ready.",),
         )
-        before = store.snapshot()
+        before = store.validated_snapshot()
 
         rejected = create_proposal(
             store,
@@ -458,7 +458,7 @@ class PreparationAuthorityTest(unittest.TestCase):
         )
 
         self.assertIsInstance(rejected, DecisionFailure)
-        self.assertEqual(before, store.snapshot())
+        self.assertEqual(before, store.validated_snapshot())
         accepted = create_proposal(
             store,
             CreateProposalOperation(intake),
@@ -469,7 +469,9 @@ class PreparationAuthorityTest(unittest.TestCase):
         self.assertNotIsInstance(accepted, DecisionFailure)
         self.assertIn(
             ProposalId("required-before-work-c"),
-            tuple(value.proposal_id for value in SQLiteWorkStore(database_path).snapshot().proposals.proposals),
+            tuple(
+                value.proposal_id for value in SQLiteWorkStore(database_path).validated_snapshot().proposals.proposals
+            ),
         )
 
     def test_prerequisite_proposal_rolls_back_after_partial_insert_and_target_mutation_failure(self) -> None:
@@ -488,7 +490,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             ("source:local",),
             ("Work C remains ready.",),
         )
-        before = store.snapshot()
+        before = store.validated_snapshot()
 
         for table in ("proposal_evidence", "item_dependencies"):
             with self.subTest(table=table), reject_table_inserts(table), self.assertRaises(StorageError):
@@ -499,8 +501,8 @@ class PreparationAuthorityTest(unittest.TestCase):
                     actor_task_id=TaskId("discovering-task"),
                     actor_host_id=HostId("host-a"),
                 )
-            self.assertEqual(before, store.snapshot())
-            self.assertEqual(before, SQLiteWorkStore(database_path).snapshot())
+            self.assertEqual(before, store.validated_snapshot())
+            self.assertEqual(before, SQLiteWorkStore(database_path).validated_snapshot())
 
     def test_transfer_repins_current_definition_and_revocation_fences_the_holder(self) -> None:
         snapshot = project_decision_snapshot(complete_sqlite_state(), SQLITE_NOW)
@@ -570,7 +572,7 @@ class PreparationAuthorityTest(unittest.TestCase):
         state = complete_sqlite_state()
         acquired_at = SQLITE_NOW
         store, database_path = self._store(state)
-        snapshot = project_decision_snapshot(store.snapshot(), acquired_at)
+        snapshot = project_decision_snapshot(store.validated_snapshot(), acquired_at)
         item = snapshot.item(ItemId("work-c"))
         definition = snapshot.definition(ItemId("work-c"))
         assert item is not None
@@ -593,7 +595,9 @@ class PreparationAuthorityTest(unittest.TestCase):
             ),
         )
         self.assertNotIsInstance(acquired, DecisionFailure)
-        command_authority = project_decision_snapshot(store.snapshot(), acquired_at).command_preparation_authorities[0]
+        command_authority = project_decision_snapshot(
+            store.validated_snapshot(), acquired_at
+        ).command_preparation_authorities[0]
         operation_start = expires_at - timedelta(microseconds=1)
         connection_ready = Event()
         lock_held = Event()
@@ -636,7 +640,8 @@ class PreparationAuthorityTest(unittest.TestCase):
 
         self.assertNotIsInstance(released, DecisionFailure)
         self.assertEqual(
-            authority_models.PreparationLeaseStatus.RELEASED, store.snapshot().authority.preparation_leases[0].state
+            authority_models.PreparationLeaseStatus.RELEASED,
+            store.validated_snapshot().authority.preparation_leases[0].state,
         )
 
 

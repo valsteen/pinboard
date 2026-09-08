@@ -224,6 +224,41 @@ def read_proposals(connection: sqlite3.Connection) -> stored_state.ProposalRecor
     return stored_state.ProposalRecords(proposals, evidence, freshness)
 
 
+def read_pending_proposals(connection: sqlite3.Connection) -> stored_state.ProposalRecords:
+    """Read only proposals and child records included in project handover."""
+
+    proposals = tuple(
+        decode_row(row, _StoredProposalRow).proposal()
+        for row in connection.execute(
+            """
+            SELECT proposal_id, created_at, recorded_at, source_task_id, user_label, trigger, why_it_matters,
+                   relation_kind, relation_item_id, effect, unlock, urgency_evidence, disposition,
+                   disposition_target_item_id, disposition_reason, subject_revision, disposition_recorded_at
+            FROM proposals
+            WHERE disposition IS NULL
+            ORDER BY proposal_id
+            """
+        ).fetchall()
+    )
+    evidence = tuple(
+        decode_row(row, stored_state.ProposalEvidence)
+        for proposal in proposals
+        for row in connection.execute(
+            "SELECT proposal_id, position, selector FROM proposal_evidence WHERE proposal_id = ? ORDER BY position",
+            (proposal.proposal_id,),
+        ).fetchall()
+    )
+    freshness = tuple(
+        decode_row(row, stored_state.ProposalFreshness)
+        for proposal in proposals
+        for row in connection.execute(
+            "SELECT proposal_id, position, assumption FROM proposal_freshness WHERE proposal_id = ? ORDER BY position",
+            (proposal.proposal_id,),
+        ).fetchall()
+    )
+    return stored_state.ProposalRecords(proposals, evidence, freshness)
+
+
 def read_proposal(connection: sqlite3.Connection, proposal_id: ProposalId) -> stored_state.StoredProposal | None:
     row = connection.execute(
         """

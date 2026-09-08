@@ -69,13 +69,16 @@ class RootResolutionTest(unittest.TestCase):
         original_exclude = (repository / ".git" / "info" / "exclude").read_bytes()
         with chdir(linked):
             self.assertEqual(0, main(("init",)))
+        exclude = repository / ".git" / "info" / "exclude"
+        exclude_mtime = exclude.stat().st_mtime_ns
         self.assertEqual(0, main(("--project-root", str(linked), "init")))
         self.assertTrue((repository / ".codex" / "pinboard" / "state.sqlite3").is_file())
         self.assertFalse((linked / ".codex" / "pinboard").exists())
         self.assertEqual(
             original_exclude + b"/.codex/pinboard/\n",
-            (repository / ".git" / "info" / "exclude").read_bytes(),
+            exclude.read_bytes(),
         )
+        self.assertEqual(exclude_mtime, exclude.stat().st_mtime_ns)
         (linked / ".codex").mkdir()
         (linked / ".codex" / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
         self.assertEqual("?? .codex/config.toml\n", self.run_git(linked, "status", "--short", "--untracked-files=all"))

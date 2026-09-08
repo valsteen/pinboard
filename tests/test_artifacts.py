@@ -43,7 +43,7 @@ class ArtifactPersistenceTest(unittest.TestCase):
             )
         )
 
-        reloaded = SQLiteWorkStore(roots.database_path).snapshot()
+        reloaded = SQLiteWorkStore(roots.database_path).validated_snapshot()
         self.assertTrue(accepted.ledger_changed)
         self.assertIn(accepted.reference, reloaded.artifact_references)
         self.assertEqual(13, reloaded.lifecycle.project.revision)
@@ -137,11 +137,11 @@ class ArtifactPersistenceTest(unittest.TestCase):
                 SQLITE_NOW,
             )
         )
-        before_retry = store.snapshot()
+        before_retry = store.validated_snapshot()
         retry = expect_success(store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW))
         self.assertEqual(accepted.reference, retry.reference)
         self.assertFalse(retry.ledger_changed)
-        self.assertEqual(before_retry, store.snapshot())
+        self.assertEqual(before_retry, store.validated_snapshot())
 
     def test_expected_stale_artifact_acceptance_returns_failure_and_rolls_back(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
@@ -153,7 +153,7 @@ class ArtifactPersistenceTest(unittest.TestCase):
             roots,
             NewArtifact(work_models.ArtifactKind.EVIDENCE, "stale-artifact", 1, ".md", b"ready\n"),
         )
-        before = store.snapshot()
+        before = store.validated_snapshot()
         connection = open_database(roots.database_path, OpenMode.READ_WRITE)
         connection.execute(
             """
@@ -172,7 +172,7 @@ class ArtifactPersistenceTest(unittest.TestCase):
         self.assertEqual(DecisionFailureCode.ACTION_NOT_AVAILABLE, result.code)
         with self.assertRaises(sqlite3.ProgrammingError):
             connection.execute("SELECT 1")
-        self.assertEqual(before, store.snapshot())
+        self.assertEqual(before, store.validated_snapshot())
 
 
 if __name__ == "__main__":

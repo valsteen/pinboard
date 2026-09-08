@@ -48,14 +48,21 @@ class InstalledCommandVariant:
 
 
 class _BriefSourcesArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    file: Path
-    max_batch_bytes: cli_commands.PositiveInt
+    file: Path | None
+    plan: Path | None
+    max_batch_bytes: cli_commands.PositiveInt | None
     json: bool
     emit_batch: int | None
 
     def __post_init__(self) -> None:
         if self.json == (self.emit_batch is not None):
             raise ValueError("exactly one of --json or --emit-batch is required")
+        if self.json and (self.file is None or self.plan is not None):
+            raise ValueError("planning requires --file and does not accept --plan")
+        if self.emit_batch is not None and (self.plan is None or self.file is not None):
+            raise ValueError("batch emission requires --plan and does not accept --file")
+        if self.emit_batch is not None and self.max_batch_bytes is not None:
+            raise ValueError("--max-batch-bytes is only valid while planning with --file")
 
 
 class _ActionsArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -144,12 +151,13 @@ def _decode_brief_sources[RawT](
 ) -> cli_commands.BriefSourcesPlanCommand | cli_commands.BriefSourcesEmitCommand:
     arguments = msgspec.convert(values, type=_BriefSourcesArguments, strict=True)
     if arguments.emit_batch is None:
-        return cli_commands.BriefSourcesPlanCommand(file=arguments.file, max_batch_bytes=arguments.max_batch_bytes)
-    return cli_commands.BriefSourcesEmitCommand(
-        file=arguments.file,
-        emit_batch=arguments.emit_batch,
-        max_batch_bytes=arguments.max_batch_bytes,
-    )
+        assert arguments.file is not None
+        return cli_commands.BriefSourcesPlanCommand(
+            file=arguments.file,
+            max_batch_bytes=arguments.max_batch_bytes or 24_000,
+        )
+    assert arguments.plan is not None
+    return cli_commands.BriefSourcesEmitCommand(plan=arguments.plan, emit_batch=arguments.emit_batch)
 
 
 def _decode_actions[RawT](values: dict[str, RawT]) -> cli_commands.ActionsCommand | cli_commands.LeasedActionsCommand:
@@ -472,8 +480,10 @@ def _add_inspection_parsers(commands: argparse._SubParsersAction[argparse.Argume
         "brief-sources",
         help="Plan or emit deterministic context-bounded authority source batches.",
     )
-    brief_sources.add_argument("--file", type=Path, required=True, help="pinboard-brief-sources/v1 manifest.")
-    brief_sources.add_argument("--max-batch-bytes", type=int, default=24_000)
+    brief_source_input = brief_sources.add_mutually_exclusive_group(required=True)
+    brief_source_input.add_argument("--file", type=Path, help="pinboard-brief-sources/v1 manifest to plan.")
+    brief_source_input.add_argument("--plan", type=Path, help="pinboard-brief-source-plan/v1 plan to emit.")
+    brief_sources.add_argument("--max-batch-bytes", type=int, help="Maximum selected content bytes per plan batch.")
     brief_source_output = brief_sources.add_mutually_exclusive_group(required=True)
     brief_source_output.add_argument("--json", action="store_true", help="Print the complete batch plan.")
     brief_source_output.add_argument("--emit-batch", type=int, help="Print exactly one zero-based planned batch.")

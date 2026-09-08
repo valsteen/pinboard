@@ -179,6 +179,9 @@ CREATE TABLE attempt_lease_generations (
     UNIQUE (attempt_id, lease_id, generation, task_id, host_id)
 ) STRICT;
 
+CREATE INDEX attempt_lease_generations_by_lease
+    ON attempt_lease_generations (lease_id, generation, attempt_id);
+
 CREATE TABLE attempt_leases (
     attempt_id TEXT PRIMARY KEY REFERENCES attempt_lease_counters(attempt_id) ON DELETE CASCADE,
     generation INTEGER NOT NULL CHECK (generation >= 1),
@@ -203,6 +206,9 @@ CREATE TABLE preparation_lease_generations (
     PRIMARY KEY (item_id, generation),
     UNIQUE (item_id, lease_id, generation, task_id, host_id)
 ) STRICT;
+
+CREATE INDEX preparation_lease_generations_by_lease
+    ON preparation_lease_generations (lease_id, generation, item_id);
 
 CREATE TABLE preparation_leases (
     item_id TEXT PRIMARY KEY REFERENCES preparation_lease_counters(item_id) ON DELETE CASCADE,

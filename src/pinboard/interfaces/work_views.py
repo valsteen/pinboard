@@ -1,8 +1,8 @@
 """Read accepted brief content and refresh replaceable generated views.
 
 An ordinary refresh reads only facts and accepted brief bytes named by the
-committed effect. Explicit rebuild reads the complete project and reconciles
-the declared generated files. SQLite and accepted artifacts remain authoritative.
+committed effect. Explicit rebuild reads the complete declared projection and
+reconciles its generated files. SQLite and accepted artifacts remain authoritative.
 """
 
 from datetime import datetime
@@ -10,7 +10,7 @@ from datetime import datetime
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
-from pinboard.adapters.files.views import rebuild_state as rebuild_file_views
+from pinboard.adapters.files.views import rebuild_facts as rebuild_file_views
 from pinboard.adapters.files.views import refresh_facts as refresh_file_views
 from pinboard.application import ports, stored_state
 from pinboard.application.mutation_models import CommittedEffect
@@ -60,16 +60,16 @@ def refresh_effect(
     )
 
 
-def rebuild(durable: DurableRoots, store: ports.CompleteStateReader, now: datetime) -> ViewRefreshResult:
-    current_state = store.snapshot()
-    attempt_briefs = read_attempt_brief_views(durable, current_state)
+def rebuild(durable: DurableRoots, store: ports.GeneratedViewSetReader, now: datetime) -> ViewRefreshResult:
+    facts = store.read_all_generated_view_facts(now)
+    attempt_briefs = build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(durable))
     if isinstance(attempt_briefs, WorkBriefFailure):
         return ViewRefreshResult(
-            current_state.lifecycle.project.revision,
+            facts.project_revision,
             ViewWarning(
                 f"Generated views could not be rebuilt: {attempt_briefs} "
                 "Resolve the accepted work-brief problem and run 'pinboard views rebuild' again.",
                 "Resolve the accepted work-brief problem and run 'pinboard views rebuild' again.",
             ),
         )
-    return rebuild_file_views(current_state, durable.work_root, attempt_briefs, now=now)
+    return rebuild_file_views(facts, durable.work_root, attempt_briefs)

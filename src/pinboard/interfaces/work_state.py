@@ -1,8 +1,8 @@
 """Compose initialization and read-only integrity validation.
 
-Initialization may publish SQLite state and rebuild generated views. Validation
-reads one SQLite snapshot, verifies accepted artifacts, and only classifies
-replaceable view drift; it never repairs state.
+Initialization may publish SQLite state and rebuild generated views from exact
+projection facts. Validation reads one complete SQLite snapshot, verifies accepted
+artifacts, and only classifies replaceable view drift; it never repairs state.
 """
 
 from collections.abc import Mapping
@@ -13,14 +13,14 @@ from pinboard.adapters.files.artifacts import ArtifactRepository, verify_referen
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, ensure_directory_chain
 from pinboard.adapters.files.root import ensure_default_git_exclude
-from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_state
+from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_facts
 from pinboard.adapters.sqlite.database import initialize_database, open_database, reconcile_database_publication
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import InitReceipt, OpenMode
 from pinboard.application import ports, stored_state
 from pinboard.domain.identifiers import AttemptId
 from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
-from pinboard.interfaces.work_briefs import build_attempt_brief_views
+from pinboard.interfaces.work_briefs import build_selected_attempt_brief_views
 from pinboard.interfaces.work_state_models import Diagnostic, Severity, ValidationReport
 
 
@@ -29,7 +29,7 @@ def initialize_work_state(
     roots: DurableRoots,
     *,
     default_work_root: bool,
-    store: ports.CompleteStateReader,
+    store: ports.GeneratedViewSetReader,
     now: datetime | None = None,
 ) -> WorkBriefResult[InitReceipt]:
     if default_work_root:
@@ -43,17 +43,17 @@ def initialize_work_state(
         ensure_directory_chain(roots)
     else:
         initialize_database(roots, operation_time)
-    current_state = store.snapshot()
-    rendered_attempt_briefs = build_attempt_brief_views(current_state, ArtifactRepository(roots))
+    projection_facts = store.read_all_generated_view_facts(operation_time)
+    rendered_attempt_briefs = build_selected_attempt_brief_views(projection_facts.attempts, ArtifactRepository(roots))
     if isinstance(rendered_attempt_briefs, WorkBriefFailure):
         return rendered_attempt_briefs
-    rebuild_result = rebuild_state(current_state, roots.work_root, rendered_attempt_briefs, now=operation_time)
+    rebuild_result = rebuild_facts(projection_facts, roots.work_root, rendered_attempt_briefs)
     if rebuild_result.warning is not None:
         raise FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, rebuild_result.warning.message)
     return InitReceipt(
         roots.work_root,
         roots.database_path,
-        current_state.lifecycle.project.revision,
+        projection_facts.project_revision,
         database_already_exists,
     )
 

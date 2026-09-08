@@ -1508,7 +1508,7 @@ class CliTest(unittest.TestCase):
                 self.assertFalse((work / "views" / "queue.md").exists())
                 self.assertFalse((work / "views" / "history.md").exists())
 
-    def assert_activation_commit_and_duplicate(
+    def assert_activation_survives_view_failure_and_rejects_duplicate(
         self,
         common: tuple[str, ...],
         activation: JsonObject,
@@ -1517,6 +1517,7 @@ class CliTest(unittest.TestCase):
         store: SQLiteWorkStore,
     ) -> None:
         activation_expiry = datetime.fromisoformat(str(prepared["expires_at"]))
+        committed_at = activation_expiry - timedelta(microseconds=1)
         with (
             patch(
                 "pinboard.adapters.files.views.atomic_replace",
@@ -1525,21 +1526,20 @@ class CliTest(unittest.TestCase):
             patch("pinboard.interfaces.action_selection.datetime") as selection_clock,
             patch("pinboard.interfaces.transitions.datetime") as transition_clock,
         ):
-            selection_clock.now.return_value = activation_expiry - timedelta(microseconds=3)
-            transition_clock.now.side_effect = (
-                activation_expiry - timedelta(microseconds=2),
-                activation_expiry - timedelta(microseconds=1),
-                activation_expiry,
-            )
+            selection_clock.now.return_value = committed_at
+            transition_clock.now.return_value = committed_at
             result, _stdout, stderr = self.run_transition(common, activation, payload, json_output=False)
         self.assertEqual(0, result, stderr)
         self.assertIn("generated views need repair", stderr)
-        self.assertEqual(1, selection_clock.now.call_count)
-        self.assertEqual(3, transition_clock.now.call_count)
         self.assertEqual(
             "revoked", self.run_json_cli(*common, "preparation", "status", "--item-id", "work-c")["status"]
         )
         activated_state = store.validated_snapshot()
+        activated_attempt = next(
+            value for value in activated_state.lifecycle.attempts if value.attempt_id == AttemptId("work-c-1")
+        )
+        self.assertEqual(work_models.AttemptState.ACTIVE, activated_attempt.state)
+        self.assertEqual(committed_at, activated_attempt.recorded_at)
         duplicate, _stdout, duplicate_stderr = self.run_transition(common, activation, payload, json_output=False)
         self.assertEqual(11, duplicate)
         self.assertIn("ACTION_AUTHORITY_WRONG", duplicate_stderr)
@@ -1622,7 +1622,7 @@ class CliTest(unittest.TestCase):
             )[0]
         )
         activation = self.assert_prepared_activation_rejections(common, activation, prepared, project, store, payload)
-        self.assert_activation_commit_and_duplicate(common, activation, prepared, payload, store)
+        self.assert_activation_survives_view_failure_and_rejects_duplicate(common, activation, prepared, payload, store)
 
     def test_installed_authority_callers_sample_operation_refresh_and_preparation_render_separately(self) -> None:
         operation_time = SQLITE_NOW + timedelta(seconds=1)

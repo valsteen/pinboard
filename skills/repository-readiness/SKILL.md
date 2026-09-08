@@ -47,6 +47,16 @@ Trace outward from the authority and backward from likely entry points. Record p
 
 When a selected change extends a decision surface with interacting conditions or operations, read [Preserve independent decision gates](references/developer-navigation.md#preserve-independent-decision-gates). When a command, closed family, or dynamic route makes the next implementation owner difficult to predict, read the full [developer-navigation.md](references/developer-navigation.md) routing audit. When code and its overview tell different stories, names make false promises, or a newcomer cannot accurately retell the flow, read [storytelling-readability.md](references/storytelling-readability.md). Load none of these references for an ordinary authority trace that does not need their lens.
 
+## Leave code understandable to the next agent
+
+Assess comprehension on every selected path, including production code and its tests. Follow names, calls, and local contracts to establish purpose, input provenance, decisions, effects, expected failures, important constraints, and the next owner. Record where understanding requires reconstructing history, tracing hidden wiring, or accepting an unsupported comment. Apply this criterion within the chosen assessment boundary; it does not turn a representative scan into a whole-repository audit.
+
+Look for misleading names, comments that defend behavior without current evidence, dynamic dispatch or selection tables whose alternatives and wiring are hidden, and exception paths that conceal rejection, recovery, or partial effects. These are investigation prompts, not automatic defects. Verify what each mechanism supports before proposing a change; retain justified open dispatch and exceptional boundaries when their contracts are locally discoverable.
+
+For each comprehension finding, identify the exact owner, the question a reader could not answer, what the evidence established, and the smallest durable repair. Recommend clearer names, simpler composition or explicit routing where justified, or a local comment or contract for an important reason that code structure cannot express. Keep consequential unresolved intent as an explicit human decision with the missing evidence and practical consequence. Do not turn a plausible explanation into a fact.
+
+In assessment-only work, recommend the concrete repair and its owning location. When improvements are authorized, apply the repair within scope and reread the affected path without relying on the investigation notes. The next agent should not need to repeat that investigation to understand current behavior. An audit explanation alone does not repair opaque code; stop when the understanding is locally discoverable and further edits would merely restyle clear work.
+
 ## Present the diagnosis
 
 Scale the result to the selected mode. Include:
@@ -55,6 +65,7 @@ Scale the result to the selected mode. Include:
 - the authority → consumers → projections → validation map;
 - a walkthrough from the user request to the owning implementation and checks;
 - evidence-backed risks and misleading alternatives;
+- comprehension findings with their unanswered questions, established evidence, concrete repair owners, and unresolved intent;
 - evidence-backed current limitations and operating assumptions within the selected boundary, including consequences and reopening conditions;
 - unresolved human decisions;
 - small safe improvements and larger follow-ups kept separate; and

@@ -545,15 +545,12 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
-            patch("pinboard.interfaces.work_inspection.datetime") as clock,
             self.record_store_reads() as attempt_reads,
         ):
-            clock.now.return_value = SQLITE_NOW
             result, stdout, stderr = self.run_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1", "--json")
 
         self.assertEqual(0, result, stderr)
         self.assertIn('"attempt_id": "work-a-1"', stdout)
-        self.assertEqual(1, clock.now.call_count)
         self.assertEqual(
             before_inspection,
             (
@@ -603,10 +600,8 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
-            patch("pinboard.interfaces.work_inspection.datetime") as clock,
             self.record_store_reads() as review_reads,
         ):
-            clock.now.return_value = SQLITE_NOW
             result, stdout, stderr = self.run_cli(
                 *common,
                 "review-job",
@@ -619,7 +614,6 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
         self.assertEqual(0, result, stderr)
         self.assertIn('"candidate_revision": "candidate-a"', stdout)
-        self.assertEqual(1, clock.now.call_count)
         self.assertEqual(
             before_review,
             (

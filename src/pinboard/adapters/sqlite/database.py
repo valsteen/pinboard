@@ -25,6 +25,7 @@ from pinboard.adapters.files.errors import FileIOError
 from pinboard.adapters.files.file_io import DurableRoots, ensure_directory_chain
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
+from pinboard.application import stored_state
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 
 APPLICATION = "pinboard"
@@ -331,6 +332,10 @@ def initialize_database(roots: DurableRoots, now: datetime) -> None:
                     ) VALUES (1, ?, ?, 0, 1, ?, ?)
                     """,
                     (APPLICATION, SCHEMA_VERSION, timestamp, timestamp),
+                )
+                connection.executemany(
+                    "INSERT INTO work_item_state_counts (state, item_count) VALUES (?, 0)",
+                    tuple((state.value,) for state in stored_state.StoredWorkItemState),
                 )
             _verify_current_schema(connection)
             verify_database_integrity(connection)

@@ -3904,7 +3904,10 @@ Not launchable:
         with patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")):
             status = self.run_json_cli(*common, "status")
         self.assertEqual("12", status["revision"])
-        self.assertNotIn("done", self.json_object(status["counts"]))
+        self.assertEqual(
+            {"active": 1, "intake": 2, "ready": 1, "superseded": 1},
+            self.json_object(status["counts"]),
+        )
 
         def forbidden_snapshot(_store: SQLiteWorkStore) -> stored_state.StoredWorkState:
             self.fail("explicit parallel selection must not load a complete snapshot")

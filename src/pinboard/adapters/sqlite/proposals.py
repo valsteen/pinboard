@@ -15,7 +15,9 @@ from pinboard.adapters.sqlite.database import decode_row, require_one_changed_ro
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     append_definition_revision,
+    increment_item_state_count,
     make_queue_space,
+    move_item_state_count,
     replace_dependencies,
 )
 from pinboard.application import stored_state
@@ -307,6 +309,11 @@ def accept_proposal(
         )
     ) is not None:
         return failure
+    move_item_state_count(
+        connection,
+        current.state,
+        stored_state.stored_live_work_state(accepted.state),
+    )
     replace_dependencies(connection, accepted.item, accepted.dependencies)
     return set_proposal_disposition(
         connection,
@@ -392,6 +399,7 @@ def create_proposal(
             intake_item.position,
         ),
     )
+    increment_item_state_count(connection, stored_state.StoredWorkItemState.INTAKE)
     append_definition_revision(
         connection,
         stored_state.ItemDefinitionRevision(

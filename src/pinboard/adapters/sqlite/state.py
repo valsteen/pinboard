@@ -7,6 +7,7 @@ persisted-invariant failures remain exceptional; the transaction owner stays in
 """
 
 import sqlite3
+from collections import Counter
 from datetime import datetime
 from itertools import pairwise
 
@@ -74,6 +75,11 @@ class _StoredTransitionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
             _stored_json("outcome_json", self.outcome_json),
             self.committed_at,
         )
+
+
+class _StateCountRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    state: stored_state.StoredWorkItemState
+    item_count: int
 
 
 def _read_project(connection: sqlite3.Connection) -> stored_state.ProjectRecord:
@@ -208,6 +214,23 @@ def _validate_current_state(state: stored_state.StoredWorkState, error_code: Sto
     _validate_dependencies(state, item_ids, current_definitions, error_code)
 
 
+def _validate_item_state_counts(
+    connection: sqlite3.Connection,
+    items: tuple[stored_state.StoredWorkItem, ...],
+) -> None:
+    rows = tuple(
+        decode_row(row, _StateCountRow)
+        for row in connection.execute("SELECT state, item_count FROM work_item_state_counts ORDER BY state").fetchall()
+    )
+    if tuple(sorted(value.state.value for value in rows)) != tuple(
+        sorted(value.value for value in stored_state.StoredWorkItemState)
+    ):
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Work-item state counts are incomplete.")
+    expected = Counter(value.state for value in items)
+    if any(value.item_count != expected[value.state] for value in rows):
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Work-item state counts do not match stored items.")
+
+
 def read_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
     project = _read_project(connection)
     state = stored_state.StoredWorkState(
@@ -218,6 +241,7 @@ def read_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
         _read_history(connection),
     )
     _validate_current_state(state, StorageErrorCode.INVALID_STATE)
+    _validate_item_state_counts(connection, state.lifecycle.work_items)
     return state
 
 

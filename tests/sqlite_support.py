@@ -254,6 +254,14 @@ def insert_initial_state(connection: sqlite3.Connection, state: stored_state.Sto
     connection.execute("PRAGMA defer_foreign_keys = ON")
     _insert_artifacts(connection, state.artifact_references)
     _insert_lifecycle(connection, state.lifecycle)
+    for item_state in stored_state.StoredWorkItemState:
+        connection.execute(
+            "UPDATE work_item_state_counts SET item_count = ? WHERE state = ?",
+            (
+                sum(1 for item in state.lifecycle.work_items if item.state == item_state),
+                item_state.value,
+            ),
+        )
     _insert_proposals(connection, state.proposals)
     _insert_authority(connection, state.authority)
     append_history(connection, state.transition_receipts)

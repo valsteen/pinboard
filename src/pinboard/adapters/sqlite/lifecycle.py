@@ -92,6 +92,38 @@ class _QueuePositionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     queue_position: int
 
 
+def increment_item_state_count(
+    connection: sqlite3.Connection,
+    state: stored_state.StoredWorkItemState,
+) -> None:
+    cursor = connection.execute(
+        "UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = ?",
+        (state.value,),
+    )
+    if cursor.rowcount != 1:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Work-item state counts are incomplete.")
+
+
+def move_item_state_count(
+    connection: sqlite3.Connection,
+    before: stored_state.StoredWorkItemState,
+    after: stored_state.StoredWorkItemState,
+) -> None:
+    if before == after:
+        return
+    decremented = connection.execute(
+        """
+        UPDATE work_item_state_counts
+        SET item_count = item_count - 1
+        WHERE state = ? AND item_count > 0
+        """,
+        (before.value,),
+    )
+    if decremented.rowcount != 1:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Work-item state counts do not match stored items.")
+    increment_item_state_count(connection, after)
+
+
 @dataclass(frozen=True, slots=True)
 class TerminalAttemptContextSelection:
     project_revision: int
@@ -692,6 +724,7 @@ def set_item_state(
         )
     ) is not None:
         return failure
+    move_item_state_count(connection, current.state, after_state)
     if terminal and current.queue_position is not None:
         return compact_queue(connection, current.queue_position)
     return None

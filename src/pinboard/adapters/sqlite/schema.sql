@@ -45,6 +45,14 @@ CREATE TABLE work_items (
     CHECK ((state IN ('done', 'superseded', 'dropped')) = (queue_position IS NULL))
 ) STRICT;
 
+CREATE TABLE work_item_state_counts (
+    state TEXT PRIMARY KEY CHECK (state IN (
+        'intake', 'ready', 'active', 'paused', 'blocked', 'deferred', 'review',
+        'done', 'superseded', 'dropped'
+    )),
+    item_count INTEGER NOT NULL CHECK (item_count >= 0)
+) STRICT;
+
 CREATE TABLE work_item_definition_revisions (
     item_id TEXT NOT NULL REFERENCES work_items(item_id) ON DELETE CASCADE,
     definition_revision INTEGER NOT NULL CHECK (definition_revision >= 1),

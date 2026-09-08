@@ -9,7 +9,7 @@
     {
       "name": "pinboard",
       "description": "Coordinate repository work with canonical execution briefs and validated state transitions.",
-      "source": "."
+      "source": "./"
     }
   ]
 }

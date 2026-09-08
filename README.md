@@ -174,7 +174,7 @@ claude plugin marketplace add /path/to/pinboard
 claude plugin install pinboard@pinboard
 ```
 
-Ask Claude Code to set up the Pinboard in the opened project. The shared skills invoke the same `pinboard` CLI and `.codex/pinboard` SQLite authority. This is a local, repository-sourced Claude Code plugin, not an Anthropic marketplace installation or a claim of live Codex/Claude sharing. The free Claude chat plan and Claude Code access are separate product surfaces; check [Anthropic's current authentication options](https://code.claude.com/docs/en/authentication) before the authenticated smoke because access can change.
+Ask Claude Code to set up the Pinboard in the opened project. The shared skills invoke the same `pinboard` CLI and `.codex/pinboard` SQLite authority. In either case, this is a local, repository-sourced Claude Code plugin. The persistent route uses Claude Code's marketplace mechanism; Pinboard is not published in or installed from Anthropic's official marketplace, and neither route claims live Codex/Claude sharing. The free Claude chat plan and Claude Code access are separate product surfaces; check [Anthropic's current authentication options](https://code.claude.com/docs/en/authentication) before the authenticated smoke because access can change.
 
 After the first successful setup, Pinboard prints one optional next-steps pointer to `$repository-readiness`, `$slop-cleanup`, and `$maintaining-agent-guidance`. It does not run a skill, create work, or change configuration, and reopening an existing Pinboard or a failed setup does not print it.
 

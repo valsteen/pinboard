@@ -808,6 +808,29 @@ class AuthorityStatusReadTest(unittest.TestCase):
         self.assertEqual(12, authority_result)
         self.assertIn("WORK_STATE_INVALID", authority_stderr)
 
+    def test_item_status_rejects_selected_item_attempt_state_mismatch(self) -> None:
+        lifecycle_project, lifecycle_work, _lifecycle_store = self.initialized_state(
+            self.state_with_preparation(unrelated_count=1)
+        )
+        lifecycle_connection = sqlite3.connect(lifecycle_work / "state.sqlite3")
+        try:
+            lifecycle_connection.execute("UPDATE work_items SET state = 'ready' WHERE item_id = ?", ("work-a",))
+            lifecycle_connection.commit()
+        finally:
+            lifecycle_connection.close()
+        lifecycle_result, _lifecycle_stdout, lifecycle_stderr = self.run_cli(
+            "--project-root",
+            str(lifecycle_project),
+            "--work-root",
+            str(lifecycle_work),
+            "item",
+            "status",
+            "--item-id",
+            "work-a",
+        )
+        self.assertEqual(12, lifecycle_result)
+        self.assertIn("WORK_STATE_INVALID", lifecycle_stderr)
+
     def test_selected_parallel_preview_rejects_selected_corruption_and_ignores_unrelated_corruption(self) -> None:
         state = complete_sqlite_state()
         project, work, _store = self.initialized_state(state)

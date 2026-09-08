@@ -1048,17 +1048,22 @@ class SQLiteWorkStore:
                         key=str,
                     )
                 )
-                counts = tuple(
-                    (selected.state, selected.item_count)
+                count_rows = tuple(
+                    decode_row(row, _StateCountRow)
                     for row in connection.execute(
                         """
-                        SELECT state, COUNT(*) AS item_count
-                        FROM work_items
-                        WHERE queue_position IS NOT NULL
-                        GROUP BY state ORDER BY state
-                        """
+                        SELECT state, item_count
+                        FROM work_item_state_counts
+                        WHERE state IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ORDER BY state
+                        """,
+                        tuple(state.value for state in stored_state.StoredWorkItemState),
                     ).fetchall()
-                    for selected in (decode_row(row, _StateCountRow),)
+                )
+                if len(count_rows) != len(stored_state.StoredWorkItemState):
+                    raise StorageError(StorageErrorCode.INVALID_STATE, "Work-item state counts are incomplete.")
+                counts = tuple(
+                    (selected.state, selected.item_count) for selected in count_rows if selected.item_count > 0
                 )
                 revision = decode_row(project_row, _ProjectRevisionRow).revision
                 return query_models.ProjectStatusFacts(revision, active_attempts, counts)

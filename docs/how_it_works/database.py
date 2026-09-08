@@ -5,6 +5,7 @@ from .model import Box, Connector, Diagram, Guide, Note, Section
 
 TABLE_GROUPS: dict[str, str] = {
     "work_items": "current work",
+    "work_item_state_counts": "current work",
     "attempts": "current work",
     "work_item_definition_revisions": "definitions and relationships",
     "item_dependencies": "scope and relationships",
@@ -81,7 +82,7 @@ DIAGRAM = Diagram(
     slug="database",
     title="Six kinds of memory in one relational ledger",
     description=(
-        "Sixteen SQLite tables preserve work identity, definitions, proposals, artifacts, mutation ownership, and history. "
+        "Seventeen SQLite tables preserve work identity, bounded status counts, definitions, proposals, artifacts, mutation ownership, and history. "
         "Relationship families are grouped for readability while the source seed accounts for every foreign key."
     ),
     width=1200,
@@ -129,7 +130,17 @@ DIAGRAM = Diagram(
         ),
         Box("proposal-evidence", "", "Evidence", ("why it was raised",), ("proposal_evidence",), 40, 260, 150, 90),
         Box("proposal-freshness", "", "Assumptions", ("facts to recheck",), ("proposal_freshness",), 210, 260, 170, 90),
-        Box("work-items", "", "Work items", ("durable identity",), ("work_items",), 430, 110, 140, 90),
+        Box(
+            "work-items",
+            "",
+            "Work items",
+            ("identity + totals",),
+            ("work_items",),
+            430,
+            110,
+            140,
+            90,
+        ),
         Box("attempts", "", "Attempts", ("one execution",), ("attempts",), 640, 110, 140, 90),
         Box("definitions", "", "Accepted versions", ("current definition",), ("plus its history",), 830, 110, 175, 90),
         Box("dependencies", "", "Dependencies", ("item → prerequisite",), ("item_dependencies",), 1020, 110, 160, 90),

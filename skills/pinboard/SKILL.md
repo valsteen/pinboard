@@ -125,7 +125,7 @@ Name the actor and expected next action in every user-facing review update. Desc
 
 Do not use or wake another coding-agent task to review or receive the same outcome. Dispatching work, clarifying or widening scope, or sending a prior message does not establish current responsibility. A separate task owns a genuinely independent outcome and reports in its own conversation; it is never a subordinate return path.
 
-If the current runtime cannot create a subagent, keep the exact candidate in review, preserve the durable result and accepted brief, and state that review is waiting for a runtime with subagent capability. Do not create or wake a user-owned task, return routine ownership to a parent task, substitute the implementer as reviewer, or imply that the human must review unless the human explicitly chooses that route.
+If the runtime adapter establishes that the current runtime cannot create a subagent, keep the exact candidate in review, preserve the durable result and accepted brief, and state that review is waiting for a runtime with subagent capability. Do not create or wake a user-owned task, return routine ownership to a parent task, substitute the implementer as reviewer, or imply that the human must review unless the human explicitly chooses that route.
 
 Treat an explicit user choice of the main checkout or an isolated worktree as settled. Do not ask again. For an explicit worktree choice, use that worktree without a generic warning about possible later integration conflicts. Discuss integration risk only when observed overlap or conflict makes it concrete, or when the later repository-disposition decision requires it.
 
@@ -137,7 +137,7 @@ When an active or paused attempt has a confirmed branch or base mismatch, an old
 
 Before repository writes begin in the main checkout, establish that it is available for the current task. Use current coding-agent task occupancy together with the exact active Pinboard attempt and its dispatch checkout as the existing ownership evidence; do not create persistent checkout ownership state. A matching current task, attempt, and dispatch checkout establishes availability for that task. Another writing task in the main checkout means it is occupied; name that task with its real title when available.
 
-When the user has not chosen a checkout, inspect main-checkout occupancy first, then ask one concise question. Base the recommendation on the observed context: prefer the main checkout when it is available and no concurrent isolation is useful; prefer an isolated worktree for independent concurrent work. End with `Quick reply: 1 main checkout · 2 isolated worktree`.
+When the user clearly authorized immediate work and has not chosen a checkout, inspect main-checkout occupancy first. If its integration baseline is strongly resolved, the checkout is available, and concurrent isolation has no concrete benefit, select the main checkout and continue without asking the user to confirm that default. If those conditions do not resolve a safe choice, ask the smallest checkout question supported by the baseline or contention evidence. Prefer an isolated worktree when independent concurrent work makes isolation concretely useful. When a genuine choice remains, end with `Quick reply: 1 main checkout · 2 isolated worktree`.
 
 When the main checkout is occupied, make a bounded overlap assessment from:
 

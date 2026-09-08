@@ -5,33 +5,59 @@ snapshot into domain decision facts and asks the domain for legal actions.
 """
 
 from datetime import datetime
+from typing import assert_never
 
 from pinboard.application import stored_state
 from pinboard.application.decision_projection import project_decision_snapshot
-from pinboard.domain import authority_models, decision_models
+from pinboard.domain import decision_models
 from pinboard.domain.decisions import available_actions
 from pinboard.domain.errors import DecisionResult
-from pinboard.domain.identifiers import AttemptId, LeaseId
+from pinboard.domain.identifiers import AttemptId, ItemId, LeaseId, ProposalId
+from pinboard.domain.ledger import LedgerSnapshot
 
 
-def _select_worker_attempts(
-    state: stored_state.StoredWorkState,
-    lease_id: LeaseId | None,
-    generation: int,
-    now: datetime,
-) -> tuple[AttemptId, ...]:
-    if lease_id is None:
-        return ()
-    anchors = {(value.attempt_id, value.generation): value for value in state.authority.attempt_generations}
-    return tuple(
-        lease.attempt_id
-        for lease in state.authority.attempt_leases
-        if lease.generation == generation
-        and lease.state == authority_models.AttemptLeaseStatus.ACTIVE
-        and lease.expires_at > now
-        and (anchor := anchors.get((lease.attempt_id, lease.generation))) is not None
-        and anchor.lease_id == lease_id
-    )
+def action_subject_ids(
+    action: decision_models.Action,
+) -> tuple[tuple[ItemId, ...], tuple[AttemptId, ...], tuple[ProposalId, ...]]:
+    """Return the exact persisted subject family selected by one action."""
+
+    match action:
+        case (
+            decision_models.AcceptCheckpointAction(capability=capability)
+            | decision_models.AcceptReviewAndContinueAction(capability=capability)
+            | decision_models.BlockAttemptAction(capability=capability)
+            | decision_models.CompleteAction(capability=capability)
+            | decision_models.ContinueAction(capability=capability)
+            | decision_models.DispatchAction(capability=capability)
+            | decision_models.PauseAction(capability=capability)
+            | decision_models.RebindAttemptAction(capability=capability)
+            | decision_models.ReportBlockerAction(capability=capability)
+            | decision_models.ReturnForCorrectionAction(capability=capability)
+            | decision_models.SubmitReviewAction(capability=capability)
+        ):
+            return (), (capability.subject,), ()
+        case (
+            decision_models.ActivateAction(capability=capability)
+            | decision_models.BlockItemAction(capability=capability)
+            | decision_models.CloseAction(capability=capability)
+            | decision_models.DeferAction(capability=capability)
+            | decision_models.MarkReadyAction(capability=capability)
+            | decision_models.ReopenAction(capability=capability)
+            | decision_models.ResumeAction(capability=capability)
+            | decision_models.ReviseItemAction(capability=capability)
+        ):
+            return (capability.subject,), (), ()
+        case (
+            decision_models.AcceptProposalAction(capability=capability)
+            | decision_models.MergeProposalAction(capability=capability)
+            | decision_models.RejectProposalAction(capability=capability)
+            | decision_models.ReturnProposalAction(capability=capability)
+        ):
+            return (), (), (capability.subject,)
+        case decision_models.InspectAction():
+            return (), (), ()
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def discover_actions(
@@ -42,7 +68,23 @@ def discover_actions(
     generation: int | None = None,
     now: datetime,
 ) -> DecisionResult[tuple[decision_models.Action, ...]]:
-    snapshot = project_decision_snapshot(state, now)
+    return discover_current_actions(
+        project_decision_snapshot(state, now),
+        role,
+        lease_id=lease_id,
+        generation=generation,
+    )
+
+
+def discover_current_actions(
+    snapshot: LedgerSnapshot,
+    role: decision_models.Role,
+    *,
+    lease_id: LeaseId | None = None,
+    generation: int | None = None,
+) -> DecisionResult[tuple[decision_models.Action, ...]]:
+    """Discover actions from application-owned current facts."""
+
     selected_generation = generation if generation is not None else 0
     match role:
         case decision_models.Role.OBSERVER:
@@ -52,7 +94,13 @@ def discover_actions(
                 decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
             )
         case decision_models.Role.WORKER:
-            attempts = _select_worker_attempts(state, lease_id, selected_generation, now)
+            attempts = tuple(
+                authority.attempt
+                for authority in snapshot.command_attempt_authorities
+                if lease_id is not None
+                and authority.lease_id == lease_id
+                and authority.generation == selected_generation
+            )
             actor = decision_models.ActorAuthority(
                 decision_models.Role.WORKER,
                 decision_models.AuthorizationKind.ATTEMPT,
@@ -62,21 +110,13 @@ def discover_actions(
                 False,
             )
         case decision_models.Role.PREPARER:
-            if lease_id is None:
-                preparations = ()
-            else:
-                anchors = {
-                    (value.item_id, value.generation): value for value in state.authority.preparation_generations
-                }
-                preparations = tuple(
-                    lease.item_id
-                    for lease in state.authority.preparation_leases
-                    if lease.generation == selected_generation
-                    and lease.state == authority_models.PreparationLeaseStatus.ACTIVE
-                    and lease.expires_at > now
-                    and (anchor := anchors.get((lease.item_id, lease.generation))) is not None
-                    and anchor.lease_id == lease_id
-                )
+            preparations = tuple(
+                authority.item
+                for authority in snapshot.command_preparation_authorities
+                if lease_id is not None
+                and authority.lease_id == lease_id
+                and authority.generation == selected_generation
+            )
             actor = decision_models.ActorAuthority(
                 decision_models.Role.PREPARER,
                 decision_models.AuthorizationKind.PREPARATION,

@@ -7,19 +7,15 @@ from typing import assert_never
 from uuid import uuid4
 
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import queries, stored_state
-from pinboard.application.decision_projection import (
-    project_decision_snapshot,
-    project_inactive_attempt_authority,
-)
+from pinboard.application import ports, queries, query_models
 from pinboard.application.service import decide_and_commit_attempt_authority_change
 from pinboard.domain import authority_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import AttemptId, LeaseId
+from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.interfaces import cli_commands, work_views
-from pinboard.interfaces.cli_output import authority_status_fields, retained_authority_lease_fields, write_json
-from pinboard.interfaces.errors import CommandErrorCode, CommandFailure, CommandResult
+from pinboard.interfaces.cli_output import authority_status_fields, write_json
+from pinboard.interfaces.errors import CommandFailure, CommandResult
 
 type AttemptAuthorityCommand = (
     cli_commands.AttemptAcquireCommand
@@ -30,21 +26,16 @@ type AttemptAuthorityCommand = (
 
 
 def _present_latest_attempt_authority(
-    state: stored_state.StoredWorkState, attempt_id: AttemptId, *, json: bool
+    store: ports.WorkStore, attempt_id: AttemptId, *, json: bool
 ) -> CommandResult[int]:
-    retained = stored_state.retained_attempt(state, attempt_id)
+    retained = store.read_attempt_authority_status(attempt_id)
     if retained is None:
         return CommandFailure(
             DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, f"Attempt '{attempt_id}' has no retained authority.", None
         )
-    lease, anchor = retained
-    if anchor is None:
-        return CommandFailure(
-            CommandErrorCode.WORK_STATE_INVALID, "Attempt authority has no exact identity anchor.", None
-        )
     values: dict[str, str | int] = {
         "attempt_id": str(attempt_id),
-        **retained_authority_lease_fields((lease, anchor)),
+        **authority_status_fields(retained),
     }
     if json:
         write_json(values)
@@ -54,7 +45,7 @@ def _present_latest_attempt_authority(
 
 
 def show_attempt_authority_status(
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     command: cli_commands.AttemptStatusCommand,
 ) -> CommandResult[int]:
     selected = queries.select_attempt_authority_status(store, command.attempt_id)
@@ -71,10 +62,8 @@ def show_attempt_authority_status(
     return 0
 
 
-def _find_attempt_record(
-    observed_state: stored_state.StoredWorkState, attempt_id: AttemptId
-) -> CommandResult[stored_state.StoredAttempt]:
-    attempt = next((value for value in observed_state.lifecycle.attempts if value.attempt_id == attempt_id), None)
+def _find_attempt_record(snapshot: LedgerSnapshot, attempt_id: AttemptId) -> CommandResult[work_models.AttemptRecord]:
+    attempt = snapshot.attempt(attempt_id)
     if attempt is None:
         return CommandFailure(
             DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, f"Attempt '{attempt_id}' is not current.", None
@@ -83,31 +72,43 @@ def _find_attempt_record(
 
 
 def _resolve_requested_attempt_acquisition(
-    observed_state: stored_state.StoredWorkState,
-    attempt_record: stored_state.StoredAttempt,
+    snapshot: LedgerSnapshot,
+    attempt_record: work_models.AttemptRecord,
+    retained: query_models.AttemptAuthorityStatus | None,
     command: cli_commands.AttemptAcquireCommand,
     requested_at: datetime,
 ) -> CommandResult[authority_models.AttemptAuthorityOperation]:
     attempt_id = command.attempt_id
-    retained_record = next(
-        (value for value in observed_state.authority.attempt_leases if value.attempt_id == attempt_id),
-        None,
-    )
     lease_id = LeaseId(uuid4().hex)
-    if retained_record is None:
+    if retained is None:
         return authority_models.AcquireInitialAttemptAuthority(
-            observed_state.lifecycle.project.host_epoch,
+            snapshot.host_epoch,
             attempt_id,
-            attempt_record.item_id,
+            attempt_record.item,
             command.task_id,
             command.host_id,
             lease_id,
             requested_at,
             requested_at + timedelta(seconds=command.ttl_seconds),
         )
-    inactive = project_inactive_attempt_authority(observed_state, attempt_id, requested_at)
-    if isinstance(inactive, DecisionFailure):
-        return CommandFailure(inactive.code, inactive.message, inactive.details)
+    state = retained.status
+    if state == authority_models.AttemptLeaseStatus.ACTIVE:
+        if retained.expires_at > requested_at:
+            return CommandFailure(
+                DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED, "Attempt authority remains live.", None
+            )
+        state = authority_models.AttemptLeaseStatus.EXPIRED
+    inactive = authority_models.InactiveAttemptAuthority(
+        snapshot.host_epoch,
+        attempt_id,
+        attempt_record.item,
+        retained.task_id,
+        retained.host_id,
+        retained.lease_id,
+        retained.generation,
+        retained.expires_at,
+        state,
+    )
     return authority_models.TransferAttemptAuthority(
         inactive,
         command.task_id,
@@ -119,16 +120,11 @@ def _resolve_requested_attempt_acquisition(
 
 
 def _resolve_supplied_attempt_authority(
-    observed_state: stored_state.StoredWorkState,
+    snapshot: LedgerSnapshot,
     attempt_id: AttemptId,
-    requested_at: datetime,
 ) -> CommandResult[work_models.CommandAttemptAuthority]:
     observed_authority = next(
-        (
-            value
-            for value in project_decision_snapshot(observed_state, requested_at).command_attempt_authorities
-            if value.attempt == attempt_id
-        ),
+        (value for value in snapshot.command_attempt_authorities if value.attempt == attempt_id),
         None,
     )
     if observed_authority is None:
@@ -137,16 +133,17 @@ def _resolve_supplied_attempt_authority(
 
 
 def _resolve_requested_attempt_change(
-    observed_state: stored_state.StoredWorkState,
-    attempt_record: stored_state.StoredAttempt,
+    snapshot: LedgerSnapshot,
+    attempt_record: work_models.AttemptRecord,
+    retained: query_models.AttemptAuthorityStatus | None,
     command: AttemptAuthorityCommand,
     requested_at: datetime,
 ) -> CommandResult[authority_models.AttemptAuthorityOperation]:
     match command:
         case cli_commands.AttemptAcquireCommand():
-            return _resolve_requested_attempt_acquisition(observed_state, attempt_record, command, requested_at)
+            return _resolve_requested_attempt_acquisition(snapshot, attempt_record, retained, command, requested_at)
         case cli_commands.AttemptRenewCommand():
-            supplied_authority = _resolve_supplied_attempt_authority(observed_state, command.attempt_id, requested_at)
+            supplied_authority = _resolve_supplied_attempt_authority(snapshot, command.attempt_id)
             if isinstance(supplied_authority, CommandFailure):
                 return supplied_authority
             return authority_models.RenewAttemptAuthority(
@@ -155,7 +152,7 @@ def _resolve_requested_attempt_change(
                 requested_at + timedelta(seconds=command.ttl_seconds),
             )
         case cli_commands.AttemptReleaseCommand():
-            supplied_authority = _resolve_supplied_attempt_authority(observed_state, command.attempt_id, requested_at)
+            supplied_authority = _resolve_supplied_attempt_authority(snapshot, command.attempt_id)
             if isinstance(supplied_authority, CommandFailure):
                 return supplied_authority
             return authority_models.ReleaseAttemptAuthority(
@@ -177,22 +174,25 @@ def _resolve_requested_attempt_change(
 
 def change_attempt_authority(
     durable: DurableRoots,
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     command: AttemptAuthorityCommand,
 ) -> CommandResult[int]:
-    observed_state = store.snapshot()
-    attempt_record = _find_attempt_record(observed_state, command.attempt_id)
+    requested_at = datetime.now(UTC)
+    snapshot = store.read_decision_facts(
+        query_models.DecisionScope((), (command.attempt_id,), (), ()), requested_at
+    ).snapshot
+    attempt_record = _find_attempt_record(snapshot, command.attempt_id)
     if isinstance(attempt_record, CommandFailure):
         return attempt_record
-    requested_at = datetime.now(UTC)
-    requested_change = _resolve_requested_attempt_change(observed_state, attempt_record, command, requested_at)
+    requested_change = _resolve_requested_attempt_change(
+        snapshot, attempt_record, store.read_attempt_authority_status(command.attempt_id), command, requested_at
+    )
     if isinstance(requested_change, CommandFailure):
         return requested_change
     commit_result = decide_and_commit_attempt_authority_change(store, requested_change)
     if isinstance(commit_result, DecisionFailure):
         return CommandFailure(commit_result.code, commit_result.message, commit_result.details)
-    refresh_result = work_views.refresh_shared_authority_views(durable, store, datetime.now(UTC))
+    refresh_result = work_views.refresh_effect(durable, store, commit_result, datetime.now(UTC))
     if refresh_result.warning is not None:
         print(refresh_result.warning.message, file=sys.stderr)
-    latest_committed_state = store.snapshot()
-    return _present_latest_attempt_authority(latest_committed_state, command.attempt_id, json=command.json)
+    return _present_latest_attempt_authority(store, command.attempt_id, json=command.json)

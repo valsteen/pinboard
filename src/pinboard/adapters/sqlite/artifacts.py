@@ -36,18 +36,57 @@ class _BriefArtifactReferenceRow(msgspec.Struct, frozen=True, forbid_unknown_fie
     size_bytes: int
 
 
-def _find_accepted_artifact(
-    state: stored_state.StoredWorkState,
+class _ArtifactAllocationRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    revision: int
+    artifact_ref_id: int
+
+
+def _read_accepted_artifact(
+    connection: sqlite3.Connection,
     published: ArtifactRef | ResultArtifactRef | EvidenceArtifactRef,
 ) -> stored_state.ArtifactReference | None:
-    return next(
-        (
-            value
-            for value in state.artifact_references
-            if (value.kind, value.key, value.revision) == (published.kind, published.key, published.revision)
-        ),
-        None,
-    )
+    row = connection.execute(
+        """
+        SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+               relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
+        FROM artifact_refs
+        WHERE kind = ? AND artifact_key = ? AND artifact_revision = ?
+        """,
+        (published.kind.value, published.key, published.revision),
+    ).fetchone()
+    return None if row is None else decode_row(row, stored_state.ArtifactReference)
+
+
+def read_artifact_reference(
+    connection: sqlite3.Connection,
+    kind: work_models.ArtifactKind,
+    key: str,
+    revision: int,
+) -> stored_state.ArtifactReference | None:
+    row = connection.execute(
+        """
+        SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+               relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
+        FROM artifact_refs
+        WHERE kind = ? AND artifact_key = ? AND artifact_revision = ?
+        """,
+        (kind.value, key, revision),
+    ).fetchone()
+    return None if row is None else decode_row(row, stored_state.ArtifactReference)
+
+
+def read_artifact_reference_by_id(
+    connection: sqlite3.Connection, artifact_ref_id: ArtifactRefId
+) -> stored_state.ArtifactReference | None:
+    row = connection.execute(
+        """
+        SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+               relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
+        FROM artifact_refs WHERE artifact_ref_id = ?
+        """,
+        (artifact_ref_id,),
+    ).fetchone()
+    return None if row is None else decode_row(row, stored_state.ArtifactReference)
 
 
 def _insert_artifact(connection: sqlite3.Connection, reference: stored_state.ArtifactReference) -> None:
@@ -114,13 +153,12 @@ def read_brief_artifact_reference(
 
 def accept_checkpoint_artifact(
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
     published: ResultArtifactRef | EvidenceArtifactRef,
     expected_id: ArtifactRefId,
     revision: int,
     now: datetime,
 ) -> ArtifactRefId:
-    existing = _find_accepted_artifact(state, published)
+    existing = _read_accepted_artifact(connection, published)
     if existing is not None:
         if existing.artifact_ref_id != expected_id or (
             existing.selector,
@@ -151,7 +189,6 @@ def accept_checkpoint_artifact(
 
 def accept_artifact_reference(
     connection: sqlite3.Connection,
-    before: stored_state.StoredWorkState,
     work_root: Path,
     published: ArtifactRef,
     accepted_at: datetime,
@@ -159,7 +196,7 @@ def accept_artifact_reference(
     """Accept one verified reference; the caller owns transaction and readback."""
 
     verify_reference(work_root, published)
-    existing = _find_accepted_artifact(before, published)
+    existing = _read_accepted_artifact(connection, published)
     if existing is not None:
         if (
             existing.selector,
@@ -171,18 +208,29 @@ def accept_artifact_reference(
                 "An accepted artifact identity already names different bytes.",
             )
         return ArtifactReferenceAcceptance(existing, False)
+    allocation = connection.execute(
+        """
+        SELECT project.revision,
+               COALESCE((SELECT MAX(artifact_ref_id) FROM artifact_refs), 0) + 1 AS artifact_ref_id
+        FROM project_meta AS project WHERE project.singleton = 1
+        """
+    ).fetchone()
+    if allocation is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    selected_allocation = decode_row(allocation, _ArtifactAllocationRow)
+    current_revision = selected_allocation.revision
     reference = stored_state.ArtifactReference(
-        ArtifactRefId(1 + max((int(value.artifact_ref_id) for value in before.artifact_references), default=0)),
+        ArtifactRefId(selected_allocation.artifact_ref_id),
         published.key,
         published.revision,
         published.kind,
         published.selector,
         published.content_sha256,
         published.size_bytes,
-        before.lifecycle.project.revision + 1,
+        current_revision + 1,
         accepted_at,
     )
-    revision = before.lifecycle.project.revision + 1
+    revision = current_revision + 1
     _insert_artifact(connection, reference)
     if (
         failure := require_one_changed_row(
@@ -192,7 +240,7 @@ def accept_artifact_reference(
                 SET revision = ?, updated_at = ?
                 WHERE singleton = 1 AND revision = ?
                 """,
-                (revision, accepted_at.isoformat(), before.lifecycle.project.revision),
+                (revision, accepted_at.isoformat(), current_revision),
             ),
             "The project revision changed before artifact acceptance.",
         )

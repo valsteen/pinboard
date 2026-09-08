@@ -1,10 +1,10 @@
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from pinboard.application import stored_state
-from pinboard.application.actions import discover_actions
+from pinboard.application import query_models, stored_state
+from pinboard.application.actions import discover_current_actions
 from pinboard.application.artifact_publication import publish_accepted_artifact
-from pinboard.application.artifacts import NewArtifact
+from pinboard.application.artifacts import BriefArtifactRef, NewArtifact
 from pinboard.application.dispatch_models import (
     DispatchArtifactPort,
     DispatchFailure,
@@ -27,8 +27,8 @@ from pinboard.domain.identifiers import AttemptId, ReviewId
 
 @dataclass(frozen=True, slots=True)
 class SelectedDispatch:
-    attempt: stored_state.StoredAttempt
-    brief_reference: stored_state.ArtifactReference
+    attempt: query_models.NonterminalAttemptContextFacts
+    brief_reference: BriefArtifactRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,11 +42,9 @@ def _rediscover_dispatch_action(
     supplied: decision_models.DispatchAction,
     now: datetime,
 ) -> DispatchResult[decision_models.Action | None]:
-    state = store.snapshot()
-    actions = discover_actions(
-        state,
+    actions = discover_current_actions(
+        store.read_decision_facts(query_models.DecisionScope((), (supplied.capability.subject,), (), ()), now).snapshot,
         decision_models.Role.PROJECT,
-        now=now,
     )
     if isinstance(actions, DecisionFailure):
         return DispatchFailure(actions.code, actions.message, actions.details)
@@ -111,22 +109,14 @@ def select_dispatch(
     current = _current_dispatch_action(store, action, now)
     if isinstance(current, DispatchFailure):
         return current
-    state = store.snapshot()
     attempt_id = current.capability.subject
-    attempt = next((value for value in state.lifecycle.attempts if value.attempt_id == attempt_id), None)
-    if attempt is None or attempt.state != work_models.AttemptState.ACTIVE:
+    attempt = store.read_attempt_context(attempt_id)
+    if (
+        not isinstance(attempt, query_models.NonterminalAttemptContextFacts)
+        or attempt.state != work_models.AttemptState.ACTIVE
+    ):
         return DispatchFailure(DispatchRejectionCode.ATTEMPT_NOT_ACTIVE, f"Attempt '{attempt_id}' is not active.", None)
-    reference = next(
-        (
-            value
-            for value in state.artifact_references
-            if value.artifact_ref_id == attempt.brief_artifact_ref_id and value.kind == work_models.ArtifactKind.BRIEF
-        ),
-        None,
-    )
-    if reference is None:
-        return DispatchFailure(DispatchRejectionCode.BRIEF_MISSING, "The attempt has no accepted brief artifact.", None)
-    return SelectedDispatch(attempt, reference)
+    return SelectedDispatch(attempt, attempt.brief_reference)
 
 
 def _find_ready_review_reference(
@@ -135,14 +125,7 @@ def _find_ready_review_reference(
     checkpoint_sha256: str,
 ) -> stored_state.ArtifactReference | None:
     key = f"{attempt_id}-brief-review-{checkpoint_sha256}"
-    return next(
-        (
-            value
-            for value in store.snapshot().artifact_references
-            if value.kind == work_models.ArtifactKind.EVIDENCE and value.key == key and value.revision == 1
-        ),
-        None,
-    )
+    return store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, key, 1)
 
 
 def find_dispatch_review(

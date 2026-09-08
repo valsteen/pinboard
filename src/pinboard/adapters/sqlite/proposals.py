@@ -17,12 +17,11 @@ from pinboard.adapters.sqlite.lifecycle import (
     append_definition_revision,
     make_queue_space,
     replace_dependencies,
-    require_stored_item,
 )
 from pinboard.application import stored_state
 from pinboard.application.mutation_models import ProposalCreationMutation
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import ItemId, ProposalId, TaskId
 
 
@@ -54,7 +53,7 @@ class _StoredProposalRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True
             self.user_label,
             self.trigger,
             self.why_it_matters,
-            _decode_stored_proposal_relation(self.relation_kind, self.relation_item_id),
+            decode_proposal_relation(self.relation_kind, self.relation_item_id),
             self.effect,
             self.unlock,
             self.urgency_evidence,
@@ -68,6 +67,10 @@ class _StoredProposalRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True
         )
 
 
+class _SubjectRevisionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    subject_revision: int
+
+
 def _require_relation_item(kind: work_models.ProposalRelationKind, value: ItemId | None) -> ItemId:
     if value is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, f"{kind.value} proposal has no related item.")
@@ -79,7 +82,7 @@ def _reject_relation_item(kind: work_models.ProposalRelationKind, value: ItemId 
         raise StorageError(StorageErrorCode.INVALID_STATE, f"{kind.value} proposal has a related item.")
 
 
-def _decode_stored_proposal_relation(
+def decode_proposal_relation(
     kind: work_models.ProposalRelationKind,
     value: ItemId | None,
 ) -> work_models.ProposalRelation:
@@ -219,6 +222,20 @@ def read_proposals(connection: sqlite3.Connection) -> stored_state.ProposalRecor
     return stored_state.ProposalRecords(proposals, evidence, freshness)
 
 
+def read_proposal(connection: sqlite3.Connection, proposal_id: ProposalId) -> stored_state.StoredProposal | None:
+    row = connection.execute(
+        """
+        SELECT proposal_id, created_at, recorded_at, source_task_id, user_label, trigger,
+               why_it_matters, relation_kind, relation_item_id, effect, unlock, urgency_evidence,
+               disposition, disposition_target_item_id, disposition_reason, subject_revision,
+               disposition_recorded_at
+        FROM proposals WHERE proposal_id = ?
+        """,
+        (proposal_id,),
+    ).fetchone()
+    return None if row is None else decode_row(row, _StoredProposalRow).proposal()
+
+
 def set_proposal_disposition(
     connection: sqlite3.Connection,
     proposal_id: ProposalId,
@@ -242,13 +259,14 @@ def set_proposal_disposition(
 
 def accept_proposal(
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
+    current: stored_state.StoredWorkItem,
     change: decision_models.AcceptedProposalChange,
     revision: int,
     now: datetime,
 ) -> DecisionFailure | None:
     accepted = change.accepted_item
-    current = require_stored_item(state, accepted.item)
+    if current.item_id != accepted.item:
+        raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "The accepted proposal item is missing.")
     if accepted.definition_digest_after != accepted.definition_digest_before:
         append_definition_revision(
             connection,
@@ -300,7 +318,6 @@ def accept_proposal(
 
 def create_proposal(
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
     mutation: ProposalCreationMutation,
 ) -> DecisionFailure | None:
     decision = mutation.decision
@@ -308,7 +325,21 @@ def create_proposal(
     intake_item = decision.intake_item
     revision = mutation.receipt.project_revision
     now = mutation.receipt.transition.decided_at
-    if (failure := make_queue_space(connection, state, intake_item.position)) is not None:
+    prerequisite = decision.prerequisite_change
+    prerequisite_subject_revision: int | None = None
+    if prerequisite is not None:
+        target = connection.execute(
+            "SELECT subject_revision FROM work_items WHERE item_id = ?",
+            (prerequisite.item_id,),
+        ).fetchone()
+        if target is None:
+            return DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                "The prerequisite target changed before persistence.",
+                None,
+            )
+        prerequisite_subject_revision = decode_row(target, _SubjectRevisionRow).subject_revision
+    if (failure := make_queue_space(connection, intake_item.position)) is not None:
         return failure
     relation = intake.relation
     connection.execute(
@@ -377,10 +408,9 @@ def create_proposal(
         ),
     )
     replace_dependencies(connection, intake_item.item_id, intake_item.dependencies)
-    prerequisite = decision.prerequisite_change
     if prerequisite is None:
         return None
-    target = require_stored_item(state, prerequisite.item_id)
+    assert prerequisite_subject_revision is not None
     if (
         failure := require_one_changed_row(
             connection.execute(
@@ -393,7 +423,7 @@ def create_proposal(
                     revision,
                     now.isoformat(),
                     prerequisite.item_id,
-                    target.subject_revision,
+                    prerequisite_subject_revision,
                 ),
             ),
             "The prerequisite target changed before persistence.",

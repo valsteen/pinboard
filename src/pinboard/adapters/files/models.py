@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from pinboard.domain.identifiers import AttemptId, ItemId
+from pinboard.domain.identifiers import AttemptId, HistoryId, ItemId
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,12 +12,11 @@ class ViewWarning:
 @dataclass(frozen=True, slots=True)
 class ViewRefreshResult:
     database_revision: int
-    warning: ViewWarning | None = None
+    warning: ViewWarning | None
 
 
 @dataclass(frozen=True, slots=True)
 class AffectedViews:
-    queue: bool = False
-    history: bool = False
-    items: tuple[ItemId, ...] = ()
-    attempts: tuple[AttemptId, ...] = ()
+    items: tuple[ItemId, ...]
+    attempts: tuple[AttemptId, ...]
+    history_receipts: tuple[HistoryId, ...]

@@ -140,7 +140,7 @@ class ArtifactRepository:
     def work_root(self) -> Path:
         return self.roots.work_root
 
-    def read(self, reference: stored_state.ArtifactReference) -> bytes:
+    def read(self, reference: stored_state.ArtifactReference | BriefArtifactRef) -> bytes:
         return read_reference(self.work_root, reference)
 
     def revision_exists(self, artifact: NewArtifact) -> bool:

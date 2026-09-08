@@ -2,23 +2,21 @@
 
 The command function reads the selected candidate, strictly decodes and
 cross-validates it, canonicalizes its bytes, publishes the immutable artifact,
-accepts its reference in SQLite, rebuilds generated views, and presents that
+accepts its reference in SQLite, and presents that
 stable reference. It returns advertised decision failures and lets filesystem,
 storage, and malformed boundary data remain exact exceptions.
 """
 
-import sys
 from datetime import UTC, datetime
 
 import msgspec
 
 from pinboard.adapters.files import artifacts as artifact_files
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import artifact_publication, artifacts
+from pinboard.application import artifact_publication, artifacts, ports
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
-from pinboard.interfaces import cli_commands, work_briefs, work_views
+from pinboard.interfaces import cli_commands, work_briefs
 from pinboard.interfaces.cli_output import write_json
 from pinboard.interfaces.errors import (
     CommandFailure,
@@ -41,7 +39,7 @@ class BriefPublicationView(msgspec.Struct, frozen=True):
 
 def publish_brief(
     durable: DurableRoots,
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     command: cli_commands.BriefPublishCommand,
 ) -> CommandResult[int] | WorkBriefFailure:
     try:
@@ -70,9 +68,6 @@ def publish_brief(
     if isinstance(accepted_reference, DecisionFailure):
         return CommandFailure(accepted_reference.code, accepted_reference.message, accepted_reference.details)
     reference = accepted_reference.reference
-    rebuilt_views = work_views.rebuild(durable, store, datetime.now(UTC))
-    if rebuilt_views.warning is not None:
-        print(rebuilt_views.warning.message, rebuilt_views.warning.repair, sep="\n", file=sys.stderr)
     publication_view = BriefPublicationView(
         int(reference.artifact_ref_id),
         reference.kind.value,

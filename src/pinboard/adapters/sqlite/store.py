@@ -9,10 +9,13 @@ reads artifact bytes directly, or invokes callbacks.
 """
 
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Literal, Self, assert_never
+
+import msgspec
 
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.sqlite import state as sqlite_state
@@ -21,6 +24,8 @@ from pinboard.adapters.sqlite.artifacts import (
 )
 from pinboard.adapters.sqlite.artifacts import (
     accept_checkpoint_artifact,
+    read_artifact_reference,
+    read_artifact_reference_by_id,
     read_brief_artifact_reference,
 )
 from pinboard.adapters.sqlite.authority import (
@@ -32,16 +37,19 @@ from pinboard.adapters.sqlite.authority import (
     write_preparation_authority,
 )
 from pinboard.adapters.sqlite.database import (
+    decode_row,
     open_database,
     read_operation,
     require_one_changed_row,
     translate_database_error,
     verify_database_integrity,
 )
+from pinboard.adapters.sqlite.decision_reads import read_current_snapshot, read_selected_decision_facts
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     NonterminalAttemptContextSelection,
     TerminalAttemptContextSelection,
+    decode_definition_revision,
     insert_attempt,
     insert_definition_revision,
     read_attempt_context,
@@ -59,13 +67,15 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_item_definition_history as select_item_definition_history,
 )
 from pinboard.adapters.sqlite.models import OpenMode
-from pinboard.adapters.sqlite.proposals import accept_proposal, create_proposal, set_proposal_disposition
-from pinboard.application import query_models, stored_state
-from pinboard.application.artifacts import ArtifactRef
+from pinboard.adapters.sqlite.proposals import accept_proposal, create_proposal, read_proposal, set_proposal_disposition
+from pinboard.application import queries, query_models, stored_state
+from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     CheckpointAcceptanceMutation,
-    MutationReceipt,
+    CheckpointMutationAllocation,
+    CommittedEffect,
+    MutationAllocation,
     PreparationAuthorityMutation,
     ProposalCreationMutation,
     StoredStateMutation,
@@ -76,7 +86,51 @@ from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import AttemptId, ItemId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, ItemId, ProposalId
+from pinboard.domain.ledger import LedgerSnapshot
+
+
+class _ItemIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: ItemId
+
+
+class _AttemptIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+
+
+class _DependencyIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    dependency_id: ItemId
+
+
+class _MutationAllocationRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    revision: int
+    next_history_id: int
+
+
+class _PersistedAllocationRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    revision: int
+    history_id: int
+
+
+class _ArtifactIdAllocationRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    next_artifact_ref_id: int
+
+
+class _LiveItemCountRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    live_item_count: int
+
+
+class _GenerationRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    generation_high_water: int
+
+
+class _ProjectRevisionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    revision: int
+
+
+class _StateCountRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    state: str
+    item_count: int
 
 
 def _translate_artifact_verification_error(error: ArtifactError) -> StorageError:
@@ -90,9 +144,221 @@ def _translate_artifact_verification_error(error: ArtifactError) -> StorageError
     return StorageError(code, str(error), retryable=False)
 
 
+def _read_overview_proposals(
+    connection: sqlite3.Connection, snapshot: LedgerSnapshot
+) -> tuple[stored_state.StoredProposal, ...]:
+    proposal_ids = tuple(
+        dict.fromkeys(ProposalId(item_id) for item in snapshot.items for item_id in (item.item, *item.depends_on))
+    )
+    return tuple(
+        proposal for proposal_id in proposal_ids if (proposal := read_proposal(connection, proposal_id)) is not None
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _PersistenceFacts:
+    items: dict[ItemId, stored_state.StoredWorkItem]
+    attempts: dict[AttemptId, stored_state.StoredAttempt]
+    definitions: dict[ItemId, stored_state.ItemDefinitionRevision]
+
+    def item(self, item_id: ItemId) -> stored_state.StoredWorkItem:
+        try:
+            return self.items[item_id]
+        except KeyError:
+            raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "The targeted mutation item is missing.") from None
+
+    def attempt(self, attempt_id: AttemptId) -> stored_state.StoredAttempt:
+        try:
+            return self.attempts[attempt_id]
+        except KeyError:
+            raise StorageError(
+                StorageErrorCode.INVARIANT_VIOLATION, "The targeted mutation attempt is missing."
+            ) from None
+
+    def definition(self, item_id: ItemId) -> stored_state.ItemDefinitionRevision:
+        try:
+            return self.definitions[item_id]
+        except KeyError:
+            raise StorageError(
+                StorageErrorCode.INVARIANT_VIOLATION, "The targeted mutation definition is missing."
+            ) from None
+
+
+def _mutation_subjects(  # noqa: PLR0912
+    mutation: StoredStateMutation,
+) -> tuple[tuple[ItemId, ...], tuple[AttemptId, ...]]:
+    match mutation:
+        case TransitionMutation(decision=decision):
+            match decision.change:
+                case decision_models.ItemStateChange(item=item) | decision_models.BlockItemChange(item=item):
+                    return (item,), ()
+                case decision_models.ActivationChange(item=item):
+                    return (item,), ()
+                case (
+                    decision_models.AttemptStateChange(item=item, attempt=attempt)
+                    | decision_models.BlockAttemptChange(item=item, attempt=attempt)
+                    | decision_models.ResumeAttemptChange(item=item, attempt=attempt)
+                    | decision_models.ReviewSubmissionChange(item=item, attempt=attempt)
+                    | decision_models.ReviewAcceptanceChange(item=item, attempt=attempt)
+                    | decision_models.ReviewReturnChange(item=item, attempt=attempt)
+                    | decision_models.CompletionChange(item=item, attempt=attempt)
+                    | decision_models.AttemptClosureChange(item=item, attempt=attempt)
+                ):
+                    return (item,), (attempt,)
+                case decision_models.RebindAttemptChange(item=item, attempt=attempt):
+                    return (item,), (attempt,)
+                case decision_models.ItemClosureChange(item=item) | DefinitionRevisionDecision(item=item):
+                    return (item,), ()
+                case decision_models.AcceptedProposalChange(accepted_item=accepted):
+                    return (accepted.item,), ()
+                case (
+                    decision_models.MergedProposalChange(proposal=proposal)
+                    | decision_models.RejectedProposalChange(proposal=proposal)
+                ):
+                    return (ItemId(proposal),), ()
+                case decision_models.ReturnedProposalChange(proposal=proposal):
+                    return (ItemId(proposal),), ()
+                case _ as unreachable:
+                    assert_never(unreachable)
+        case CheckpointAcceptanceMutation(decision=decision):
+            return (decision.change.item,), (decision.change.attempt,)
+        case ProposalCreationMutation() | AttemptAuthorityMutation() | PreparationAuthorityMutation():
+            return (), ()
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _read_persistence_facts(connection: sqlite3.Connection, mutation: StoredStateMutation) -> _PersistenceFacts:
+    item_ids, attempt_ids = _mutation_subjects(mutation)
+    items: dict[ItemId, stored_state.StoredWorkItem] = {}
+    for item_id in item_ids:
+        row = connection.execute(
+            """
+            SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
+                   subject_revision, recorded_at, updated_at, queue_position
+            FROM work_items WHERE item_id = ?
+            """,
+            (item_id,),
+        ).fetchone()
+        if row is not None:
+            items[item_id] = decode_row(row, stored_state.StoredWorkItem)
+    attempts: dict[AttemptId, stored_state.StoredAttempt] = {}
+    for attempt_id in attempt_ids:
+        row = connection.execute(
+            """
+            SELECT attempt_id, item_id, state, branch, base_revision, provenance,
+                   brief_artifact_ref_id, result_artifact_ref_id, candidate_revision,
+                   candidate_recorded_at, accepted_scope_revision, accepted_scope_digest,
+                   subject_revision, recorded_at, updated_at
+            FROM attempts WHERE attempt_id = ?
+            """,
+            (attempt_id,),
+        ).fetchone()
+        if row is not None:
+            attempts[attempt_id] = decode_row(row, stored_state.StoredAttempt)
+    definitions: dict[ItemId, stored_state.ItemDefinitionRevision] = {}
+    for item_id in item_ids:
+        row = connection.execute(
+            """
+            SELECT item_id, definition_revision AS revision, definition_digest AS digest,
+                   definition_json, reason, source_task_id, before_digest, after_digest,
+                   accepted_project_revision, accepted_at
+            FROM work_item_definition_revisions
+            WHERE item_id = ? ORDER BY definition_revision DESC LIMIT 1
+            """,
+            (item_id,),
+        ).fetchone()
+        if row is not None:
+            definitions[item_id] = decode_definition_revision(row)
+    return _PersistenceFacts(items, attempts, definitions)
+
+
+def _committed_effect_ids(
+    connection: sqlite3.Connection, mutation: StoredStateMutation
+) -> tuple[tuple[ItemId, ...], tuple[AttemptId, ...]]:
+    item_ids, attempt_ids = _mutation_subjects(mutation)
+    affected_items = list(item_ids)
+    match mutation:
+        case ProposalCreationMutation(decision=decision):
+            affected_items.append(decision.intake_item.item_id)
+            if decision.prerequisite_change is not None:
+                affected_items.append(decision.prerequisite_change.item_id)
+            affected_items.extend(
+                decode_row(row, _ItemIdRow).item_id
+                for row in connection.execute(
+                    "SELECT item_id FROM work_items WHERE queue_position >= ? ORDER BY queue_position",
+                    (decision.intake_item.position,),
+                ).fetchall()
+            )
+        case PreparationAuthorityMutation(decision=decision):
+            affected_items.append(decision.proposed_replacement.item)
+        case AttemptAuthorityMutation():
+            pass
+        case TransitionMutation(decision=decision) | CheckpointAcceptanceMutation(decision=decision):
+            match decision.change:
+                case decision_models.ActivationChange(attempt=attempt):
+                    attempt_ids = (*attempt_ids, attempt)
+                case (
+                    decision_models.CompletionChange(item=item)
+                    | decision_models.AttemptClosureChange(item=item)
+                    | decision_models.ItemClosureChange(item=item)
+                    | decision_models.MergedProposalChange(proposal=item)
+                    | decision_models.RejectedProposalChange(proposal=item)
+                ):
+                    selected_item = ItemId(item)
+                    selected = connection.execute(
+                        "SELECT queue_position FROM work_items WHERE item_id = ?", (selected_item,)
+                    ).fetchone()
+                    if selected is not None and selected["queue_position"] is not None:
+                        affected_items.extend(
+                            decode_row(row, _ItemIdRow).item_id
+                            for row in connection.execute(
+                                "SELECT item_id FROM work_items WHERE queue_position > ? ORDER BY queue_position",
+                                (selected["queue_position"],),
+                            ).fetchall()
+                        )
+                case (
+                    decision_models.ItemStateChange()
+                    | decision_models.AttemptStateChange()
+                    | decision_models.BlockAttemptChange()
+                    | decision_models.BlockItemChange()
+                    | decision_models.RebindAttemptChange()
+                    | decision_models.ResumeAttemptChange()
+                    | decision_models.ReviewSubmissionChange()
+                    | decision_models.ReviewReturnChange()
+                    | decision_models.ReviewAcceptanceChange()
+                    | decision_models.AcceptedProposalChange()
+                    | decision_models.ReturnedProposalChange()
+                    | DefinitionRevisionDecision()
+                    | decision_models.CheckpointAcceptanceChange()
+                ):
+                    pass
+                case _ as unreachable:
+                    assert_never(unreachable)
+        case _ as unreachable:
+            assert_never(unreachable)
+    direct_items = tuple(dict.fromkeys(affected_items))
+    for item_id in direct_items:
+        affected_items.extend(
+            decode_row(row, _ItemIdRow).item_id
+            for row in connection.execute(
+                """
+                SELECT owner.item_id
+                FROM item_dependencies AS dependency
+                JOIN work_items AS owner ON owner.item_id = dependency.item_id
+                WHERE dependency.dependency_id = ?
+                  AND owner.queue_position IS NOT NULL
+                ORDER BY owner.queue_position, owner.item_id
+                """,
+                (item_id,),
+            ).fetchall()
+        )
+    return tuple(dict.fromkeys(affected_items)), tuple(dict.fromkeys(attempt_ids))
+
+
 def _persist_definition_revision(
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
+    facts: _PersistenceFacts,
     decision: DefinitionRevisionDecision,
     project_revision: int,
 ) -> DecisionFailure | None:
@@ -108,7 +374,11 @@ def _persist_definition_revision(
         project_revision,
         decision.decided_at,
     )
-    if (failure := insert_definition_revision(connection, state, stored)) is not None:
+    if (
+        failure := insert_definition_revision(
+            connection, facts.item(decision.item), facts.definition(decision.item), stored
+        )
+    ) is not None:
         return failure
     replace_dependencies(connection, decision.item, decision.definition.dependencies)
     return None
@@ -116,7 +386,7 @@ def _persist_definition_revision(
 
 def _persist_transition(  # noqa: C901, PLR0912, PLR0915
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
+    facts: _PersistenceFacts,
     mutation: TransitionMutation,
 ) -> DecisionFailure | None:
     change = mutation.decision.change
@@ -126,14 +396,24 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
         case decision_models.ItemStateChange(item=item, before=before, after=after):
             if (
                 failure := set_item_state(
-                    connection, state, item, before, stored_state.stored_live_work_state(after), revision, now
+                    connection,
+                    facts.item(item),
+                    before,
+                    stored_state.stored_live_work_state(after),
+                    revision,
+                    now,
                 )
             ) is not None:
                 return failure
         case decision_models.ActivationChange(item=item, item_before=before):
             if (
                 failure := set_item_state(
-                    connection, state, item, before, stored_state.StoredWorkItemState.ACTIVE, revision, now
+                    connection,
+                    facts.item(item),
+                    before,
+                    stored_state.StoredWorkItemState.ACTIVE,
+                    revision,
+                    now,
                 )
             ) is not None:
                 return failure
@@ -146,7 +426,9 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 )
             if (failure := consume_preparation_authority(connection, preparation, now)) is not None:
                 return failure
-            if (failure := insert_attempt(connection, state, change, revision, now)) is not None:
+            if (
+                failure := insert_attempt(connection, facts.item(item), facts.definition(item), change, revision, now)
+            ) is not None:
                 return failure
         case decision_models.AttemptStateChange(
             item=item,
@@ -159,8 +441,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    state,
-                    item,
+                    facts.item(item),
                     item_before,
                     stored_state.stored_live_work_state(item_after),
                     revision,
@@ -169,7 +450,9 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             ) is not None:
                 return failure
             if (
-                failure := set_attempt_state(connection, state, attempt, attempt_before, attempt_after, revision, now)
+                failure := set_attempt_state(
+                    connection, facts.attempt(attempt), attempt_before, attempt_after, revision, now
+                )
             ) is not None:
                 return failure
         case decision_models.BlockAttemptChange(
@@ -182,8 +465,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    state,
-                    item,
+                    facts.item(item),
                     item_before,
                     stored_state.StoredWorkItemState.BLOCKED,
                     revision,
@@ -194,8 +476,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_attempt_state(
                     connection,
-                    state,
-                    attempt,
+                    facts.attempt(attempt),
                     attempt_before,
                     work_models.AttemptState.BLOCKED,
                     revision,
@@ -208,8 +489,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    state,
-                    item,
+                    facts.item(item),
                     item_before,
                     stored_state.StoredWorkItemState.BLOCKED,
                     revision,
@@ -219,7 +499,9 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 return failure
             replace_dependencies(connection, item, dependencies)
         case decision_models.RebindAttemptChange(authority_change=authority):
-            if (failure := rebind_attempt(connection, state, change, revision, now)) is not None:
+            if (
+                failure := rebind_attempt(connection, facts.attempt(change.attempt), change, revision, now)
+            ) is not None:
                 return failure
             if (failure := fence_attempt_authority(connection, authority, now)) is not None:
                 return failure
@@ -233,8 +515,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    state,
-                    item,
+                    facts.item(item),
                     item_before,
                     stored_state.StoredWorkItemState.ACTIVE,
                     revision,
@@ -245,8 +526,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_attempt_state(
                     connection,
-                    state,
-                    attempt,
+                    facts.attempt(attempt),
                     attempt_before,
                     work_models.AttemptState.ACTIVE,
                     revision,
@@ -264,8 +544,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    state,
-                    item,
+                    facts.item(item),
                     work_models.WorkState.ACTIVE,
                     stored_state.StoredWorkItemState.REVIEW,
                     revision,
@@ -276,8 +555,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_attempt_state(
                     connection,
-                    state,
-                    attempt,
+                    facts.attempt(attempt),
                     work_models.AttemptState.ACTIVE,
                     work_models.AttemptState.REVIEW,
                     revision,
@@ -294,8 +572,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    state,
-                    item,
+                    facts.item(item),
                     work_models.WorkState.REVIEW,
                     stored_state.StoredWorkItemState.ACTIVE,
                     revision,
@@ -306,8 +583,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_attempt_state(
                     connection,
-                    state,
-                    attempt,
+                    facts.attempt(attempt),
                     work_models.AttemptState.REVIEW,
                     work_models.AttemptState.ACTIVE,
                     revision,
@@ -345,8 +621,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    state,
-                    item,
+                    facts.item(item),
                     item_before,
                     terminal_item_state,
                     revision,
@@ -358,8 +633,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_attempt_state(
                     connection,
-                    state,
-                    attempt,
+                    facts.attempt(attempt),
                     attempt_before,
                     work_models.AttemptState.DONE,
                     revision,
@@ -378,8 +652,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    state,
-                    item,
+                    facts.item(item),
                     item_before,
                     stored_state.stored_close_outcome(terminal_state),
                     revision,
@@ -389,17 +662,18 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             ) is not None:
                 return failure
         case decision_models.AcceptedProposalChange():
-            if (failure := accept_proposal(connection, state, change, revision, now)) is not None:
+            if (
+                failure := accept_proposal(connection, facts.item(change.accepted_item.item), change, revision, now)
+            ) is not None:
                 return failure
         case DefinitionRevisionDecision():
-            if (failure := _persist_definition_revision(connection, state, change, revision)) is not None:
+            if (failure := _persist_definition_revision(connection, facts, change, revision)) is not None:
                 return failure
         case decision_models.MergedProposalChange(proposal=proposal, target_item=target, disposed_at=disposed_at):
             if (
                 failure := set_item_state(
                     connection,
-                    state,
-                    ItemId(proposal),
+                    facts.item(ItemId(proposal)),
                     work_models.WorkState.INTAKE,
                     stored_state.StoredWorkItemState.SUPERSEDED,
                     revision,
@@ -431,8 +705,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    state,
-                    ItemId(proposal),
+                    facts.item(ItemId(proposal)),
                     work_models.WorkState.INTAKE,
                     stored_state.StoredWorkItemState.DROPPED,
                     revision,
@@ -457,7 +730,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
 
 def _persist_checkpoint_acceptance(
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
+    facts: _PersistenceFacts,
     mutation: CheckpointAcceptanceMutation,
 ) -> DecisionFailure | None:
     change = mutation.decision.change
@@ -466,7 +739,6 @@ def _persist_checkpoint_acceptance(
     now = mutation.decision.receipt.decided_at
     accept_checkpoint_artifact(
         connection,
-        state,
         artifacts.result,
         artifacts.result_id,
         revision,
@@ -474,7 +746,6 @@ def _persist_checkpoint_acceptance(
     )
     accept_checkpoint_artifact(
         connection,
-        state,
         artifacts.review,
         artifacts.review_id,
         revision,
@@ -483,8 +754,7 @@ def _persist_checkpoint_acceptance(
     if (
         failure := set_item_state(
             connection,
-            state,
-            change.item,
+            facts.item(change.item),
             work_models.WorkState.REVIEW,
             stored_state.StoredWorkItemState.PAUSED,
             revision,
@@ -495,8 +765,7 @@ def _persist_checkpoint_acceptance(
     if (
         failure := set_attempt_state(
             connection,
-            state,
-            change.attempt,
+            facts.attempt(change.attempt),
             work_models.AttemptState.REVIEW,
             work_models.AttemptState.PAUSED,
             revision,
@@ -512,16 +781,16 @@ def _persist_checkpoint_acceptance(
 
 def _persist_state_change(
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
+    facts: _PersistenceFacts,
     mutation: StoredStateMutation,
 ) -> DecisionFailure | None:
     match mutation:
         case TransitionMutation():
-            return _persist_transition(connection, state, mutation)
+            return _persist_transition(connection, facts, mutation)
         case CheckpointAcceptanceMutation():
-            return _persist_checkpoint_acceptance(connection, state, mutation)
+            return _persist_checkpoint_acceptance(connection, facts, mutation)
         case ProposalCreationMutation():
-            return create_proposal(connection, state, mutation)
+            return create_proposal(connection, mutation)
         case AttemptAuthorityMutation(decision=decision):
             return write_attempt_authority(connection, decision)
         case PreparationAuthorityMutation(decision=decision):
@@ -532,24 +801,33 @@ def _persist_state_change(
 
 def _persist(
     connection: sqlite3.Connection,
-    state: stored_state.StoredWorkState,
     mutation: StoredStateMutation,
 ) -> DecisionFailure | None:
     """Persist one targeted accepted mutation without rebuilding unrelated relations."""
 
     receipt = stored_transition_receipt(mutation)
-    expected_history_id = 1 + max((int(value.history_id) for value in state.transition_receipts), default=0)
-    if (
-        int(receipt.history_id) != expected_history_id
-        or receipt.project_revision != state.lifecycle.project.revision + 1
-    ):
+    allocation = connection.execute(
+        """
+        SELECT project.revision,
+               COALESCE((SELECT MAX(history_id) FROM transition_history), 0) AS history_id
+        FROM project_meta AS project
+        WHERE project.singleton = 1
+        """
+    ).fetchone()
+    if allocation is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    selected_allocation = decode_row(allocation, _PersistedAllocationRow)
+    current_revision = selected_allocation.revision
+    expected_history_id = selected_allocation.history_id + 1
+    if int(receipt.history_id) != expected_history_id or receipt.project_revision != current_revision + 1:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             "The targeted mutation receipt does not identify the next project revision exactly.",
             None,
         )
+    facts = _read_persistence_facts(connection, mutation)
     connection.execute("PRAGMA defer_foreign_keys = ON")
-    if (failure := _persist_state_change(connection, state, mutation)) is not None:
+    if (failure := _persist_state_change(connection, facts, mutation)) is not None:
         return failure
     if (
         failure := require_one_changed_row(
@@ -562,7 +840,7 @@ def _persist(
                 (
                     receipt.project_revision,
                     receipt.committed_at.isoformat(),
-                    state.lifecycle.project.revision,
+                    current_revision,
                 ),
             ),
             "The project revision changed before targeted persistence.",
@@ -630,16 +908,103 @@ class _SQLiteWorkTransaction:
             self._rejected = True
         return result
 
-    def snapshot(self) -> stored_state.StoredWorkState:
-        return sqlite_state.read_state(self.connection)
+    def read_current_snapshot(self, now: datetime, artifact_ref_ids: tuple[ArtifactRefId, ...]) -> LedgerSnapshot:
+        return read_current_snapshot(self.connection, now, artifact_ref_ids)
 
-    def commit(self, mutation: StoredStateMutation) -> DecisionResult[MutationReceipt]:
-        connection = self.connection
-        current = sqlite_state.read_state(connection)
-        if (failure := _persist(connection, current, mutation)) is not None:
+    def read_decision_facts(self, scope: query_models.DecisionScope, now: datetime) -> query_models.DecisionFacts:
+        return read_selected_decision_facts(self.connection, scope, now)
+
+    def read_mutation_allocation(self) -> MutationAllocation:
+        allocation = self.connection.execute(
+            """
+            SELECT project.revision,
+                   COALESCE((SELECT MAX(history_id) FROM transition_history), 0) + 1 AS next_history_id
+            FROM project_meta AS project
+            WHERE project.singleton = 1
+            """
+        ).fetchone()
+        if allocation is None:
+            raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+        selected = decode_row(allocation, _MutationAllocationRow)
+        return MutationAllocation(selected.revision, HistoryId(selected.next_history_id))
+
+    def read_checkpoint_mutation_allocation(
+        self, artifacts: tuple[ArtifactRef | ResultArtifactRef | EvidenceArtifactRef, ...]
+    ) -> CheckpointMutationAllocation:
+        allocation = self.read_mutation_allocation()
+        artifact_allocation = self.connection.execute(
+            "SELECT COALESCE(MAX(artifact_ref_id), 0) + 1 AS next_artifact_ref_id FROM artifact_refs"
+        ).fetchone()
+        if artifact_allocation is None:
+            raise StorageError(StorageErrorCode.INVALID_STATE, "Artifact allocation is unavailable.")
+        accepted: list[stored_state.ArtifactReference] = []
+        for artifact in artifacts:
+            row = self.connection.execute(
+                """
+                SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+                       relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
+                FROM artifact_refs
+                WHERE kind = ? AND artifact_key = ? AND artifact_revision = ?
+                """,
+                (artifact.kind.value, artifact.key, artifact.revision),
+            ).fetchone()
+            if row is not None:
+                accepted.append(decode_row(row, stored_state.ArtifactReference))
+        selected_artifact_allocation = decode_row(artifact_allocation, _ArtifactIdAllocationRow)
+        return CheckpointMutationAllocation(
+            allocation.project_revision,
+            allocation.next_history_id,
+            ArtifactRefId(selected_artifact_allocation.next_artifact_ref_id),
+            tuple(accepted),
+        )
+
+    def read_live_item_count(self) -> int:
+        row = self.connection.execute(
+            "SELECT COALESCE(MAX(queue_position), 0) AS live_item_count FROM work_items"
+        ).fetchone()
+        if row is None:
+            raise StorageError(StorageErrorCode.INVALID_STATE, "Live queue allocation is unavailable.")
+        return decode_row(row, _LiveItemCountRow).live_item_count
+
+    def read_attempt_authority_status(self, attempt_id: AttemptId) -> query_models.AttemptAuthorityStatus | None:
+        return read_attempt_authority_status(self.connection, attempt_id)
+
+    def read_preparation_authority_status(self, item_id: ItemId) -> query_models.PreparationAuthorityStatus | None:
+        return read_preparation_authority_status(self.connection, item_id)
+
+    def read_attempt_generation(self, attempt_id: AttemptId) -> int:
+        row = self.connection.execute(
+            "SELECT generation_high_water FROM attempt_lease_counters WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+        return 0 if row is None else decode_row(row, _GenerationRow).generation_high_water
+
+    def read_preparation_generation(self, item_id: ItemId) -> int:
+        row = self.connection.execute(
+            "SELECT generation_high_water FROM preparation_lease_counters WHERE item_id = ?",
+            (item_id,),
+        ).fetchone()
+        return 0 if row is None else decode_row(row, _GenerationRow).generation_high_water
+
+    def commit(self, mutation: StoredStateMutation) -> DecisionResult[CommittedEffect]:
+        item_ids, attempt_ids = _committed_effect_ids(self.connection, mutation)
+        continuation_attempt_id = attempt_ids[0] if attempt_ids else None
+        if continuation_attempt_id is None and mutation.receipt.transition.item is not None:
+            row = self.connection.execute(
+                "SELECT attempt_id FROM attempts WHERE item_id = ? AND state != 'done'",
+                (mutation.receipt.transition.item,),
+            ).fetchone()
+            if row is not None:
+                continuation_attempt_id = decode_row(row, _AttemptIdRow).attempt_id
+        if (failure := _persist(self.connection, mutation)) is not None:
             return self._select(failure)
-        sqlite_state.read_state(connection)
-        return self._select(mutation.receipt)
+        if (
+            continuation_attempt_id is None
+            and isinstance(mutation, TransitionMutation)
+            and isinstance(mutation.decision.change, decision_models.ActivationChange)
+        ):
+            continuation_attempt_id = mutation.decision.change.attempt
+        return self._select(CommittedEffect(mutation.receipt, item_ids, attempt_ids, continuation_attempt_id))
 
 
 class SQLiteWorkStore:
@@ -660,6 +1025,194 @@ class SQLiteWorkStore:
             with read_operation(connection):
                 verify_database_integrity(connection)
                 return sqlite_state.read_state(connection)
+        finally:
+            connection.close()
+
+    def read_project_status(self) -> query_models.ProjectStatusFacts:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                project_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+                if project_row is None:
+                    raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+                active_attempts = tuple(
+                    sorted(
+                        (
+                            decode_row(row, _AttemptIdRow).attempt_id
+                            for row in connection.execute(
+                                """
+                                SELECT attempt_id FROM attempts INDEXED BY one_live_attempt_per_item
+                                WHERE state != 'done' AND state = 'active'
+                                """
+                            ).fetchall()
+                        ),
+                        key=str,
+                    )
+                )
+                counts = tuple(
+                    (selected.state, selected.item_count)
+                    for row in connection.execute(
+                        """
+                        SELECT state, COUNT(*) AS item_count
+                        FROM work_items
+                        WHERE queue_position IS NOT NULL
+                        GROUP BY state ORDER BY state
+                        """
+                    ).fetchall()
+                    for selected in (decode_row(row, _StateCountRow),)
+                )
+                revision = decode_row(project_row, _ProjectRevisionRow).revision
+                return query_models.ProjectStatusFacts(revision, active_attempts, counts)
+        finally:
+            connection.close()
+
+    def read_artifact_reference(
+        self, kind: work_models.ArtifactKind, key: str, revision: int
+    ) -> stored_state.ArtifactReference | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_artifact_reference(connection, kind, key, revision)
+        finally:
+            connection.close()
+
+    def read_artifact_reference_by_id(self, artifact_ref_id: ArtifactRefId) -> stored_state.ArtifactReference | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_artifact_reference_by_id(connection, artifact_ref_id)
+        finally:
+            connection.close()
+
+    def read_current_snapshot(self, now: datetime, artifact_ref_ids: tuple[ArtifactRefId, ...]) -> LedgerSnapshot:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_current_snapshot(connection, now, artifact_ref_ids)
+        finally:
+            connection.close()
+
+    def read_decision_facts(self, scope: query_models.DecisionScope, now: datetime) -> query_models.DecisionFacts:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_selected_decision_facts(connection, scope, now)
+        finally:
+            connection.close()
+
+    def read_project_overview(self, now: datetime) -> query_models.ProjectOverviewFacts:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                snapshot = read_current_snapshot(connection, now, ())
+                return query_models.ProjectOverviewFacts(
+                    snapshot,
+                    _read_overview_proposals(connection, snapshot),
+                    tuple(
+                        status
+                        for item in snapshot.items
+                        if (status := read_preparation_authority_status(connection, item.item)) is not None
+                    ),
+                )
+        finally:
+            connection.close()
+
+    def read_generated_view_facts(
+        self,
+        item_ids: tuple[ItemId, ...],
+        attempt_ids: tuple[AttemptId, ...],
+        history_ids: tuple[HistoryId, ...],
+        now: datetime,
+    ) -> query_models.GeneratedViewFacts:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                decision_facts = read_selected_decision_facts(
+                    connection, query_models.DecisionScope(item_ids, (), (), ()), now
+                )
+                preparation_statuses = tuple(
+                    selected
+                    for item_id in item_ids
+                    if (selected := read_preparation_authority_status(connection, item_id)) is not None
+                )
+                overview = queries.project_current_overview(
+                    query_models.ProjectOverviewFacts(
+                        decision_facts.snapshot,
+                        _read_overview_proposals(connection, decision_facts.snapshot),
+                        preparation_statuses,
+                    ),
+                    now,
+                )
+                overview_by_item = {ItemId(value.item_id): value for value in overview.items}
+                items: list[query_models.ItemProjectionFacts] = []
+                for item_id in item_ids:
+                    item_row = connection.execute(
+                        """
+                        SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
+                               subject_revision, recorded_at, updated_at, queue_position
+                        FROM work_items WHERE item_id = ?
+                        """,
+                        (item_id,),
+                    ).fetchone()
+                    definition_row = connection.execute(
+                        """
+                        SELECT item_id, definition_revision AS revision, definition_digest AS digest,
+                               definition_json, reason, source_task_id, before_digest, after_digest,
+                               accepted_project_revision, accepted_at
+                        FROM work_item_definition_revisions
+                        WHERE item_id = ? ORDER BY definition_revision DESC LIMIT 1
+                        """,
+                        (item_id,),
+                    ).fetchone()
+                    if item_row is None or definition_row is None:
+                        raise StorageError(StorageErrorCode.INVALID_STATE, "An affected item projection is missing.")
+                    dependencies = tuple(
+                        decode_row(row, _DependencyIdRow).dependency_id
+                        for row in connection.execute(
+                            "SELECT dependency_id FROM item_dependencies WHERE item_id = ? ORDER BY position",
+                            (item_id,),
+                        ).fetchall()
+                    )
+                    projected = overview_by_item.get(item_id)
+                    items.append(
+                        query_models.ItemProjectionFacts(
+                            decode_row(item_row, stored_state.StoredWorkItem),
+                            dependencies,
+                            projected,
+                            decode_definition_revision(definition_row),
+                        )
+                    )
+                attempts: list[query_models.AttemptProjectionFacts] = []
+                for attempt_id in attempt_ids:
+                    attempt_row = connection.execute(
+                        """
+                        SELECT attempt_id, item_id, state, branch, base_revision, provenance,
+                               brief_artifact_ref_id, result_artifact_ref_id, candidate_revision,
+                               candidate_recorded_at, accepted_scope_revision, accepted_scope_digest,
+                               subject_revision, recorded_at, updated_at
+                        FROM attempts WHERE attempt_id = ?
+                        """,
+                        (attempt_id,),
+                    ).fetchone()
+                    if attempt_row is None:
+                        raise StorageError(StorageErrorCode.INVALID_STATE, "An affected attempt projection is missing.")
+                    attempt = decode_row(attempt_row, stored_state.StoredAttempt)
+                    attempts.append(
+                        query_models.AttemptProjectionFacts(
+                            attempt,
+                            read_brief_artifact_reference(connection, attempt.brief_artifact_ref_id),
+                        )
+                    )
+                receipts = tuple(
+                    receipt
+                    for history_id in history_ids
+                    if (receipt := sqlite_state.read_history_receipt(connection, history_id)) is not None
+                )
+                if len(receipts) != len(history_ids):
+                    raise StorageError(StorageErrorCode.INVALID_STATE, "An affected history projection is missing.")
+                return query_models.GeneratedViewFacts(
+                    int(decision_facts.snapshot.revision), tuple(items), tuple(attempts), receipts
+                )
         finally:
             connection.close()
 
@@ -814,7 +1367,6 @@ class SQLiteWorkStore:
             try:
                 result = write_artifact_reference(
                     connection,
-                    sqlite_state.read_state(connection),
                     work_root,
                     published,
                     accepted_at,
@@ -823,5 +1375,10 @@ class SQLiteWorkStore:
                 raise _translate_artifact_verification_error(error) from error
             if isinstance(result, DecisionFailure):
                 return transaction._select(result)
-            sqlite_state.read_state(connection)
+            reloaded = read_artifact_reference_by_id(connection, result.reference.artifact_ref_id)
+            if reloaded != result.reference:
+                raise StorageError(
+                    StorageErrorCode.INVARIANT_VIOLATION,
+                    "The accepted artifact reference did not reload exactly.",
+                )
             return transaction._select(result)

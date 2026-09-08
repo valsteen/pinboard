@@ -38,19 +38,18 @@ class GeneratedViewsTest(unittest.TestCase):
         work_root, store = self._state()
         state = store.snapshot()
 
-        result = rebuild_state(state, work_root, now=SQLITE_NOW)
+        result = rebuild_state(state, work_root, {}, now=SQLITE_NOW)
 
         self.assertIsNone(result.warning)
         for selector in (
-            "views/queue.md",
             "views/items/work-a.md",
             "views/attempts/work-a-1.md",
-            "views/history.md",
+            f"views/history/{state.transition_receipts[0].history_id}.md",
         ):
             text = (work_root / selector).read_text(encoding="utf-8")
             self.assertNotIn("database_revision:", text)
-        history = (work_root / "views" / "history.md").read_text(encoding="utf-8")
-        self.assertIn("| Accepted test definition. | test-source |", history)
+        self.assertFalse((work_root / "views" / "queue.md").exists())
+        self.assertFalse((work_root / "views" / "history.md").exists())
         sparse_item = (work_root / "views" / "items" / "intake-work.md").read_text(encoding="utf-8")
         self.assertIn("- Source: none", sparse_item)
         self.assertIn("- Notes: none", sparse_item)
@@ -64,8 +63,8 @@ class GeneratedViewsTest(unittest.TestCase):
             lifecycle=replace(state.lifecycle, project=replace(state.lifecycle.project, revision=13)),
         )
         self.assertEqual(
-            derive_expected_view_bytes(state, now=SQLITE_NOW),
-            derive_expected_view_bytes(advanced, now=SQLITE_NOW),
+            derive_expected_view_bytes(state, {}, now=SQLITE_NOW),
+            derive_expected_view_bytes(advanced, {}, now=SQLITE_NOW),
         )
 
     def test_post_commit_refresh_failure_is_a_repairable_warning(self) -> None:
@@ -74,13 +73,42 @@ class GeneratedViewsTest(unittest.TestCase):
             "pinboard.adapters.files.views.atomic_replace",
             side_effect=FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "disk full"),
         ):
-            result = refresh_state(store.snapshot(), work_root, AffectedViews(queue=True), now=SQLITE_NOW)
+            receipt = store.snapshot().transition_receipts[0]
+            result = refresh_state(
+                store.snapshot(),
+                work_root,
+                AffectedViews((), (), (receipt.history_id,)),
+                {},
+                now=SQLITE_NOW,
+            )
 
         self.assertEqual(12, result.database_revision)
         self.assertIsNotNone(result.warning)
         assert result.warning is not None
         self.assertIn("generated views need repair", result.warning.message)
         self.assertIn("pinboard views rebuild", result.warning.repair)
+
+    def test_rebuild_removes_legacy_aggregates_and_preserves_equal_projection_metadata(self) -> None:
+        work_root, store = self._state()
+        view_root = work_root / "views"
+        view_root.mkdir(parents=True)
+        (view_root / "queue.md").write_text("legacy queue\n", encoding="utf-8")
+        (view_root / "history.md").write_text("legacy history\n", encoding="utf-8")
+
+        first = rebuild_state(store.snapshot(), work_root, {}, now=SQLITE_NOW)
+
+        self.assertIsNone(first.warning)
+        self.assertFalse((view_root / "queue.md").exists())
+        self.assertFalse((view_root / "history.md").exists())
+        paths = tuple(path for path in view_root.rglob("*.md") if path.is_file())
+        before = {path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns) for path in paths}
+
+        second = rebuild_state(store.snapshot(), work_root, {}, now=SQLITE_NOW)
+
+        self.assertIsNone(second.warning)
+        self.assertEqual(
+            before, {path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns) for path in paths}
+        )
 
     def test_live_v2_attempt_view_is_a_complete_rebuildable_projection(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

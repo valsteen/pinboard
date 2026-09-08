@@ -35,7 +35,7 @@ from pinboard.interfaces.work_briefs import (
     validate_reviewed_authority_digests,
     validate_work_brief_review,
 )
-from tests.support import complete_sqlite_state
+from tests.support import SQLITE_NOW, complete_sqlite_state, decision_facts
 from tests.work_brief_support import example_work_brief, work_a_brief, work_c_brief
 
 
@@ -382,7 +382,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 identity = read_transition_work_brief_identity(state, command, artifacts)
                 self.assertNotIsInstance(identity, DecisionFailure)
                 assert identity is not None
-                self.assertIsNone(validate_transition_work_brief(state, command, identity))
+                self.assertIsNone(validate_transition_work_brief(decision_facts(state, SQLITE_NOW), command, identity))
                 for identity_mismatch in (
                     dataclass_replace(identity, attempt_id="different-1"),
                     dataclass_replace(identity, item_id="different"),
@@ -392,7 +392,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     dataclass_replace(identity, accepted_scope_digest="f" * 64),
                 ):
                     self.assertIsInstance(
-                        validate_transition_work_brief(state, command, identity_mismatch),
+                        validate_transition_work_brief(decision_facts(state, SQLITE_NOW), command, identity_mismatch),
                         DecisionFailure,
                     )
                 if isinstance(command, decision_models.ActivateCommand):
@@ -409,7 +409,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                         ),
                     )
                     self.assertIsInstance(
-                        validate_transition_work_brief(state, wrong_pin, identity),
+                        validate_transition_work_brief(decision_facts(state, SQLITE_NOW), wrong_pin, identity),
                         DecisionFailure,
                     )
                 artifact_failure = ArtifactError(
@@ -459,7 +459,9 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 )
                 mismatched_identity = read_transition_work_brief_identity(mismatched_state, command, artifacts)
                 self.assertNotIsInstance(mismatched_identity, DecisionFailure)
-                failure = validate_transition_work_brief(mismatched_state, command, mismatched_identity)
+                failure = validate_transition_work_brief(
+                    decision_facts(mismatched_state, SQLITE_NOW), command, mismatched_identity
+                )
                 self.assertIsNotNone(failure)
                 assert failure is not None
                 self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, failure.code)

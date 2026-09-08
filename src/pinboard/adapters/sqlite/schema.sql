@@ -71,6 +71,9 @@ CREATE TABLE item_dependencies (
     CHECK (item_id <> dependency_id)
 ) STRICT;
 
+CREATE INDEX item_dependencies_by_dependency
+ON item_dependencies(dependency_id, item_id);
+
 CREATE TABLE attempts (
     attempt_id TEXT PRIMARY KEY,
     item_id TEXT NOT NULL REFERENCES work_items(item_id),

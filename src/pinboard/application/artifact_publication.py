@@ -3,8 +3,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from pinboard.application import stored_state
-from pinboard.application.artifacts import ArtifactRef, NewArtifact, WorkBriefIdentity
+from pinboard.application import query_models, stored_state
+from pinboard.application.artifacts import ArtifactRef, BriefArtifactRef, NewArtifact, WorkBriefIdentity
 from pinboard.application.ports import WorkStore, WorkStoreError
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
@@ -31,7 +31,7 @@ class ArtifactPublisher(Protocol):
 
 
 class ArtifactReader(Protocol):
-    def read(self, reference: stored_state.ArtifactReference) -> bytes: ...
+    def read(self, reference: stored_state.ArtifactReference | BriefArtifactRef) -> bytes: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,11 +92,13 @@ def publish_accepted_artifact(
 
 
 def validate_transition_work_brief(  # noqa: C901, PLR0912
-    state: stored_state.StoredWorkState,
+    facts: query_models.DecisionFacts,
     command: decision_models.TransitionCommand,
     identity: WorkBriefIdentity | None,
 ) -> DecisionFailure | None:
-    """Validate activation, resume, or rebind brief identity against the locked SQLite snapshot."""
+    """Validate a selected brief identity against exact locked decision facts."""
+
+    snapshot = facts.snapshot
 
     match command:
         case decision_models.ActivateCommand(action=action, value=value):
@@ -107,7 +109,7 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
         case decision_models.ResumeCommand(action=action, value=value) if value.brief_artifact_ref_id is not None:
             item_id = str(action.capability.subject)
             attempt = next(
-                (candidate for candidate in state.lifecycle.attempts if str(candidate.item_id) == item_id), None
+                (candidate for candidate in facts.attempt_lineage if str(candidate.item_id) == item_id), None
             )
             if attempt is None:
                 return DecisionFailure(
@@ -121,11 +123,7 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
         case decision_models.RebindAttemptCommand(action=action, value=value):
             attempt_id = str(action.capability.subject)
             attempt = next(
-                (
-                    candidate
-                    for candidate in state.lifecycle.attempts
-                    if candidate.attempt_id == action.capability.subject
-                ),
+                (candidate for candidate in facts.attempt_lineage if candidate.attempt_id == action.capability.subject),
                 None,
             )
             if attempt is None:
@@ -139,7 +137,19 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
             base_revision = value.base_revision
         case _:
             return None
-    reference = transition_work_brief_reference(state, command)
+    match command:
+        case (
+            decision_models.ActivateCommand(value=value)
+            | decision_models.ResumeCommand(value=value)
+            | decision_models.RebindAttemptCommand(value=value)
+        ) if value.brief_artifact_ref_id is not None:
+            brief_artifact_ref_id = value.brief_artifact_ref_id
+        case _:
+            return None
+    reference = next(
+        (candidate for candidate in snapshot.artifacts if candidate.artifact_ref_id == brief_artifact_ref_id),
+        None,
+    )
     if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
         return None
     if identity is None:
@@ -155,13 +165,10 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
                 alternatives=(),
             ),
         )
-    item = next((candidate for candidate in state.lifecycle.work_items if str(candidate.item_id) == item_id), None)
+    item = next((candidate for candidate in snapshot.items if str(candidate.item) == item_id), None)
     if item is None:
         return None
-    definition = next(
-        (value for value in reversed(state.lifecycle.definition_revisions) if value.item_id == item.item_id),
-        None,
-    )
+    definition = snapshot.definition(item.item)
     if definition is None:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
@@ -171,12 +178,12 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
     if isinstance(command, decision_models.ActivateCommand):
         preparation = command.action.capability.preparation_authority
         preparation_mismatches = (
-            (FailureMismatch("preparation_item", str(item.item_id), None),)
+            (FailureMismatch("preparation_item", str(item.item), None),)
             if preparation is None
             else tuple(
                 mismatch
                 for mismatch in (
-                    FailureMismatch("preparation_item", str(item.item_id), str(preparation.item)),
+                    FailureMismatch("preparation_item", str(item.item), str(preparation.item)),
                     FailureMismatch(
                         "preparation_definition_revision",
                         definition.revision,

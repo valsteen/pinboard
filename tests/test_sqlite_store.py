@@ -47,7 +47,7 @@ from pinboard.domain.identifiers import (
 from pinboard.domain.ledger import LedgerSnapshot
 from tests.domain_support import expect_success
 from tests.domain_support import replace as replace_dataclass
-from tests.support import SQLITE_DIGEST, SQLITE_NOW, complete_sqlite_state, initialize_store
+from tests.support import SQLITE_DIGEST, SQLITE_NOW, complete_sqlite_state, initialize_store, mutation_allocation
 
 
 def available_actions(
@@ -772,10 +772,10 @@ class SQLiteStoreTest(unittest.TestCase):
             decision_models.PauseCommand(action, work_models.ReasonInput("Pause at the checkpoint boundary.")),
             SQLITE_NOW,
         )
-        mutation = project_transition_mutation(initial, decision)
+        mutation = project_transition_mutation(mutation_allocation(initial), decision)
 
         with store.write() as transaction:
-            self.assertEqual(initial, transaction.snapshot())
+            self.assertEqual(initial, store.snapshot())
             receipt = expect_success(transaction.commit(mutation))
         committed = store.snapshot()
         self.assertEqual(decision_models.ActionKind.PAUSE.value, receipt.transition.outcome)
@@ -826,7 +826,7 @@ class SQLiteStoreTest(unittest.TestCase):
             decision_models.PauseCommand(failed_action, work_models.ReasonInput("This write is interrupted.")),
             SQLITE_NOW,
         )
-        failed_mutation = project_transition_mutation(failed_initial, failed_decision)
+        failed_mutation = project_transition_mutation(mutation_allocation(failed_initial), failed_decision)
         connection = open_database(failed_path, OpenMode.READ_WRITE)
         try:
             with write_transaction(connection):
@@ -866,7 +866,7 @@ class SQLiteStoreTest(unittest.TestCase):
             decision_models.PauseCommand(action, work_models.ReasonInput("This write raises a programming failure.")),
             SQLITE_NOW,
         )
-        mutation = project_transition_mutation(before, decision)
+        mutation = project_transition_mutation(mutation_allocation(before), decision)
         application_error = RuntimeError("injected runtime store failure")
         runtime_connection = open_database(path, OpenMode.READ_WRITE)
 
@@ -909,7 +909,7 @@ class SQLiteStoreTest(unittest.TestCase):
                 BEGIN SELECT RAISE(ABORT, 'unrelated artifact relation was rewritten'); END
                 """
             )
-            transaction.commit(project_transition_mutation(before, decision))
+            transaction.commit(project_transition_mutation(mutation_allocation(before), decision))
             transaction.connection.execute("DROP TRIGGER reject_unrelated_artifact_rewrite")
 
         reopened = SQLiteWorkStore(path).snapshot()
@@ -938,7 +938,9 @@ class SQLiteStoreTest(unittest.TestCase):
         )
 
         with store.write() as transaction:
-            receipt = expect_success(transaction.commit(project_transition_mutation(before, decision)))
+            receipt = expect_success(
+                transaction.commit(project_transition_mutation(mutation_allocation(before), decision))
+            )
 
         completed = store.snapshot()
         item = next(value for value in completed.lifecycle.work_items if value.item_id == ItemId("work-a"))
@@ -983,7 +985,7 @@ class SQLiteStoreTest(unittest.TestCase):
         )
 
         with store.write() as transaction:
-            transaction.commit(project_transition_mutation(before, decision))
+            transaction.commit(project_transition_mutation(mutation_allocation(before), decision))
 
         committed = store.snapshot()
         attempt = committed.lifecycle.attempts[0]
@@ -1026,7 +1028,7 @@ class SQLiteStoreTest(unittest.TestCase):
         )
 
         with store.write() as transaction:
-            transaction.commit(project_transition_mutation(review_state, decision))
+            transaction.commit(project_transition_mutation(mutation_allocation(review_state), decision))
 
         returned = store.snapshot()
         returned_attempt = returned.lifecycle.attempts[0]

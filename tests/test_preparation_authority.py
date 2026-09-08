@@ -17,6 +17,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, service, stored_state
 from pinboard.application.actions import discover_actions
 from pinboard.application.decision_projection import project_decision_snapshot
+from pinboard.application.mutation_models import PreparationStart
 from pinboard.application.mutations import project_transition_mutation
 from pinboard.application.queries import project_overview, select_parallel_preview
 from pinboard.application.service import create_proposal, decide_and_commit_preparation_authority_change
@@ -26,7 +27,7 @@ from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import HostId, ItemId, LeaseId, ProposalId, TaskId
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
 from tests.domain_support import expect_success
-from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, reject_table_inserts
+from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, mutation_allocation, reject_table_inserts
 
 
 class PreparationAuthorityTest(unittest.TestCase):
@@ -53,10 +54,12 @@ class PreparationAuthorityTest(unittest.TestCase):
         )
         decision = expect_success(decisions.decide(project_decision_snapshot(before, SQLITE_NOW), command, SQLITE_NOW))
         assert isinstance(decision, decision_models.TransitionDecision)
-        mutation = project_transition_mutation(before, decision, TaskId("definition-owner"), HostId("host-a"))
+        mutation = project_transition_mutation(
+            mutation_allocation(before), decision, TaskId("definition-owner"), HostId("host-a")
+        )
         started = Event()
         finished = Event()
-        results: list[DecisionFailure | authority_models.PreparationLeaseAuthority] = []
+        results: list[DecisionFailure | PreparationStart] = []
 
         def start() -> None:
             started.set()
@@ -81,7 +84,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             expect_success(transaction.commit(mutation))
         thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
-        acquired = expect_success(results[0])
+        acquired = expect_success(results[0]).authority
         after = SQLiteWorkStore(database_path).snapshot()
         revised = next(
             value for value in reversed(after.lifecycle.definition_revisions) if value.item_id == ItemId("work-c")
@@ -94,7 +97,7 @@ class PreparationAuthorityTest(unittest.TestCase):
         store, database_path = self._store()
         before = store.snapshot()
         barrier = Barrier(2)
-        results: list[DecisionFailure | authority_models.PreparationLeaseAuthority] = []
+        results: list[DecisionFailure | PreparationStart] = []
 
         def start(identity: str) -> None:
             barrier.wait(timeout=5)
@@ -117,7 +120,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             thread.join(timeout=5)
             self.assertFalse(thread.is_alive())
         self.assertEqual(1, sum(isinstance(value, DecisionFailure) for value in results))
-        committed = next(value for value in results if isinstance(value, authority_models.PreparationLeaseAuthority))
+        committed = next(value.authority for value in results if isinstance(value, PreparationStart))
         after = SQLiteWorkStore(database_path).snapshot()
         self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
         self.assertEqual(1, len(after.authority.preparation_leases))
@@ -416,11 +419,13 @@ class PreparationAuthorityTest(unittest.TestCase):
         assert not isinstance(at_parallel, query_models.ParallelSelectionInvalid)
         self.assertFalse(before_parallel.safe)
         self.assertTrue(at_parallel.safe)
-        before_views = derive_expected_view_bytes(reloaded, now=expires_at - timedelta(microseconds=1))
-        at_views = derive_expected_view_bytes(reloaded, now=expires_at)
+        before_views = derive_expected_view_bytes(reloaded, {}, now=expires_at - timedelta(microseconds=1))
+        at_views = derive_expected_view_bytes(reloaded, {}, now=expires_at)
         self.assertIn(b"- Preparation: active", before_views["items/work-c.md"])
         self.assertIn(b"- Preparation: expired", at_views["items/work-c.md"])
-        self.assertNotEqual(before_views["queue.md"], at_views["queue.md"])
+        self.assertNotEqual(before_views["items/work-c.md"], at_views["items/work-c.md"])
+        self.assertNotIn("queue.md", before_views)
+        self.assertNotIn("history.md", before_views)
 
     def test_live_preparation_rejects_prerequisite_proposal_atomically_then_expiry_admits_it(self) -> None:
         store, database_path = self._store()

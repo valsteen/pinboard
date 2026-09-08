@@ -25,10 +25,10 @@ from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import service, stored_state
+from pinboard.application import query_models, stored_state
 from pinboard.application.actions import discover_actions
 from pinboard.application.artifacts import NewArtifact, WorkBriefIdentity
-from pinboard.application.mutation_models import MutationReceipt
+from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.ports import WorkStore
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionResult
@@ -286,16 +286,19 @@ class CliTest(unittest.TestCase):
             typed_action,
             capability=replace(typed_action.capability, preparation_authority=wrong_authority),
         )
-        decision_snapshot = service.project_decision_snapshot(store.snapshot(), observed_at)
-        wrong_snapshot = replace(decision_snapshot, command_preparation_authorities=(wrong_authority,))
+        decision_facts = store.read_decision_facts(
+            query_models.DecisionScope((ItemId("work-c"),), (), (), ()), observed_at
+        )
+        wrong_snapshot = replace(decision_facts.snapshot, command_preparation_authorities=(wrong_authority,))
+        wrong_facts = replace(decision_facts, snapshot=wrong_snapshot)
         before = store.snapshot()
         with (
             patch("pinboard.interfaces.action_selection.select_current_action", return_value=wrong_action),
-            patch("pinboard.application.service.project_decision_snapshot", return_value=wrong_snapshot),
+            patch("pinboard.adapters.sqlite.store.read_selected_decision_facts", return_value=wrong_facts),
         ):
             rejected, _stdout, rejected_stderr = self.run_transition(common, action, valid_payload, json_output=False)
         self.assertEqual(11, rejected)
-        self.assertIn("live preparation pin", rejected_stderr)
+        self.assertIn("exact live preparation authority and definition pin", rejected_stderr)
         self.assertEqual(before, store.snapshot())
 
         candidate = work_c_brief()
@@ -1002,7 +1005,7 @@ class CliTest(unittest.TestCase):
         )
 
         with patch(
-            "pinboard.interfaces.work_views.read_attempt_brief_views",
+            "pinboard.interfaces.work_views.build_selected_attempt_brief_views",
             return_value=WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, "injected revision projection failure"),
         ):
             result, stdout, stderr = self.run_cli(
@@ -1500,10 +1503,8 @@ class CliTest(unittest.TestCase):
                     f"- Preparation: {expected_status}".encode(),
                     (work / "views" / "items" / "work-c.md").read_bytes(),
                 )
-                self.assertIn(
-                    f"| {expected_status} |".encode(),
-                    (work / "views" / "queue.md").read_bytes(),
-                )
+                self.assertFalse((work / "views" / "queue.md").exists())
+                self.assertFalse((work / "views" / "history.md").exists())
 
     def assert_activation_commit_and_duplicate(
         self,
@@ -1731,7 +1732,7 @@ class CliTest(unittest.TestCase):
         with patch("pinboard.interfaces.work_brief_publication.datetime") as publication_clock:
             publication_clock.now.side_effect = (commit_time, render_time)
             self.run_json_cli(*common, "brief", "publish", "--file", str(brief_path))
-        self.assertEqual(2, publication_clock.now.call_count)
+        self.assertEqual(1, publication_clock.now.call_count)
 
     def test_installed_brief_publication_repairs_a_post_acceptance_attempt_view_failure(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())
@@ -1741,6 +1742,9 @@ class CliTest(unittest.TestCase):
         brief_path = project / "repairable-brief.json"
         brief_path.write_bytes(canonical_candidate)
         attempt_view = work / "views/attempts/work-a-1.md"
+        rebuilt, _stdout, rebuild_stderr = self.run_cli(*common, "views", "rebuild")
+        self.assertEqual(0, rebuilt, rebuild_stderr)
+        before_attempt_view = (attempt_view.read_bytes(), attempt_view.stat().st_ino, attempt_view.stat().st_mtime_ns)
         atomic_replace = file_views.atomic_replace
 
         def fail_attempt_view(path: Path, content: bytes) -> None:
@@ -1759,8 +1763,11 @@ class CliTest(unittest.TestCase):
             )
 
         self.assertEqual(0, result, stderr)
-        self.assertIn("injected attempt-view failure", stderr)
-        self.assertIn("pinboard views rebuild", stderr)
+        self.assertEqual("", stderr)
+        self.assertEqual(
+            before_attempt_view,
+            (attempt_view.read_bytes(), attempt_view.stat().st_ino, attempt_view.stat().st_mtime_ns),
+        )
         publication = self.json_object(json.loads(stdout))
         fresh_state = SQLiteWorkStore(work / "state.sqlite3").snapshot()
         accepted_reference = next(
@@ -1863,9 +1870,9 @@ class CliTest(unittest.TestCase):
                 )
                 self.assertEqual(2, work_state_clock.now.call_count)
                 item_bytes = (work / "views" / "items" / "work-c.md").read_bytes()
-                queue_bytes = (work / "views" / "queue.md").read_bytes()
                 self.assertIn(f"- Preparation: {expected_status}".encode(), item_bytes)
-                self.assertIn(f"| {expected_status} |".encode(), queue_bytes)
+                self.assertFalse((work / "views" / "queue.md").exists())
+                self.assertFalse((work / "views" / "history.md").exists())
 
     def test_installed_prerequisite_proposal_observes_preparation_expiry_boundary(self) -> None:
         expires_at = SQLITE_NOW + timedelta(minutes=1)
@@ -2530,6 +2537,8 @@ Not launchable:
         state = with_definition_dependencies(state, ItemId("work-a"), ())
         project, work, store = self.initialized_state(state)
         common = ("--project-root", str(project), "--work-root", str(work))
+        rebuilt, _stdout, rebuild_stderr = self.run_cli(*common, "views", "rebuild")
+        self.assertEqual(0, rebuilt, rebuild_stderr)
         pause_payload = project / "pause.json"
         pause_payload.write_text('{"reason":"Pause before accepting revised scope."}\n', encoding="utf-8")
 
@@ -3040,7 +3049,7 @@ Not launchable:
         payload.write_text('{"candidate":"projection-failure-candidate"}\n', encoding="utf-8")
 
         with patch(
-            "pinboard.interfaces.work_views.read_attempt_brief_views",
+            "pinboard.interfaces.work_views.build_selected_attempt_brief_views",
             return_value=WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, "injected projection failure"),
         ):
             result, stdout, stderr = self.run_transition(common, action, payload, json_output=False)
@@ -3090,7 +3099,10 @@ Not launchable:
         payload.write_text('{"candidate":"unexpected-projection-candidate"}\n', encoding="utf-8")
 
         with (
-            patch("pinboard.interfaces.work_views.read_attempt_brief_views", side_effect=RuntimeError("unexpected")),
+            patch(
+                "pinboard.interfaces.work_views.build_selected_attempt_brief_views",
+                side_effect=RuntimeError("unexpected"),
+            ),
             self.assertRaisesRegex(RuntimeError, "unexpected"),
         ):
             self.run_transition(common, action, payload, json_output=False)
@@ -3335,7 +3347,7 @@ Not launchable:
         payload = project / "complete.json"
         payload.write_text('{"evidence":"All accepted work is complete."}', encoding="utf-8")
         with patch(
-            "pinboard.interfaces.work_views.read_attempt_brief_views",
+            "pinboard.interfaces.work_views.build_selected_attempt_brief_views",
             return_value=WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, "injected view failure"),
         ):
             result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
@@ -3466,7 +3478,7 @@ Not launchable:
             actor_task_id: TaskId | None,
             actor_host_id: HostId | None,
             transition_brief_identity: WorkBriefIdentity | None,
-        ) -> DecisionResult[MutationReceipt]:
+        ) -> DecisionResult[CommittedEffect]:
             commit_result = commit_transition(
                 selected_store,
                 command,
@@ -3524,7 +3536,7 @@ Not launchable:
             actor_task_id: TaskId | None,
             actor_host_id: HostId | None,
             transition_brief_identity: WorkBriefIdentity | None,
-        ) -> DecisionResult[MutationReceipt]:
+        ) -> DecisionResult[CommittedEffect]:
             current_actions = expect_success(
                 discover_actions(store.snapshot(), decision_models.Role.PROJECT, now=decided_at)
             )
@@ -3811,9 +3823,10 @@ Not launchable:
         )
         project, work, store = self.initialized_state(state)
         common = ("--project-root", str(project), "--work-root", str(work))
+        next_history_id = max(int(value.history_id) for value in state.transition_receipts) + 1
         rebuilt, _stdout, stderr = self.run_cli(*common, "views", "rebuild")
         self.assertEqual(0, rebuilt, stderr)
-        selectors = ("queue.md", "history.md")
+        selectors = ("items/work-a.md", "attempts/work-a-1.md", "history/1.md")
 
         def snapshots() -> dict[str, tuple[bytes, int, int]]:
             return {
@@ -3843,12 +3856,14 @@ Not launchable:
         self.assertEqual(0, renewed, stderr)
         self.assertEqual(state.lifecycle.project.revision + 1, store.snapshot().lifecycle.project.revision)
         after_renewal = snapshots()
-        self.assertEqual(before["queue.md"], after_renewal["queue.md"])
-        self.assertNotEqual(before["history.md"][0], after_renewal["history.md"][0])
-        self.assertNotEqual(before["history.md"][1], after_renewal["history.md"][1])
+        self.assertEqual(before, after_renewal)
+        newest_history = work / "views" / "history" / f"{next_history_id}.md"
+        self.assertTrue(newest_history.exists())
+        self.assertIn(b"renew-attempt-authority", newest_history.read_bytes())
         rebuilt, _stdout, stderr = self.run_cli(*common, "views", "rebuild")
         self.assertEqual(0, rebuilt, stderr)
         self.assertEqual(after_renewal, snapshots())
+        self.assertTrue(newest_history.exists())
 
     def test_proposal_file_failure_is_stable(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())
@@ -3883,21 +3898,13 @@ Not launchable:
         self.assertEqual("PROPOSAL_INVALID", rejected_payload["code"])
         self.assertFalse(rejected_payload["state_changed"])
 
-    def test_status_uses_one_snapshot_and_query_failures_are_stable(self) -> None:
+    def test_status_uses_exact_facts_and_query_failures_are_stable(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))
-        original_snapshot = SQLiteWorkStore.snapshot
-        calls = 0
-
-        def counted(store: SQLiteWorkStore) -> stored_state.StoredWorkState:
-            nonlocal calls
-            calls += 1
-            return original_snapshot(store)
-
-        with patch.object(SQLiteWorkStore, "snapshot", counted):
+        with patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")):
             status = self.run_json_cli(*common, "status")
         self.assertEqual("12", status["revision"])
-        self.assertEqual(1, calls)
+        self.assertNotIn("done", self.json_object(status["counts"]))
 
         def forbidden_snapshot(_store: SQLiteWorkStore) -> stored_state.StoredWorkState:
             self.fail("explicit parallel selection must not load a complete snapshot")
@@ -3907,11 +3914,9 @@ Not launchable:
         self.assertEqual("selected", selected["selection"])
         self.assertTrue(selected["safe"])
 
-        calls = 0
-        with patch.object(SQLiteWorkStore, "snapshot", counted):
+        with patch.object(SQLiteWorkStore, "snapshot", forbidden_snapshot):
             all_safe = self.run_json_cli(*common, "parallel", "preview")
         self.assertEqual("all-safe", all_safe["selection"])
-        self.assertEqual(1, calls)
 
         result, _, stderr = self.run_cli(*common, "parallel", "preview", "--item", "missing")
         self.assertEqual(11, result)
@@ -3941,26 +3946,10 @@ Not launchable:
     def test_installed_inspections_use_their_declared_read_capability(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))
-        original_snapshot = SQLiteWorkStore.snapshot
-
         for arguments in (
             ("overview", "--json"),
             ("actions", "--role", "observer", "--json"),
             ("parallel", "preview", "--json"),
-        ):
-            calls = 0
-
-            def counted(store: SQLiteWorkStore) -> stored_state.StoredWorkState:
-                nonlocal calls
-                calls += 1
-                return original_snapshot(store)
-
-            with self.subTest(command=arguments[0]), patch.object(SQLiteWorkStore, "snapshot", counted):
-                result, _stdout, stderr = self.run_cli(*common, *arguments)
-            self.assertEqual(0, result, stderr)
-            self.assertEqual(1, calls)
-
-        for arguments in (
             ("item", "status", "--item-id", "work-a", "--json"),
             ("item", "definition", "--item-id", "work-a", "--json"),
             ("item", "definition-history", "--item-id", "work-a", "--json"),

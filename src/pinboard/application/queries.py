@@ -14,6 +14,7 @@ from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import ActionCapabilityFactory, project_attempt_action_groups
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import AttemptId, CandidateId, ItemId, TaskId
+from pinboard.domain.ledger import LedgerSnapshot
 
 
 def select_attempt_authority_status(
@@ -265,6 +266,73 @@ def _project_selected_preparation_status(
     )
 
 
+def _proposal_maps(
+    proposals: tuple[stored_state.StoredProposal, ...],
+) -> tuple[
+    dict[ItemId, stored_state.StoredProposal],
+    dict[tuple[ItemId, ItemId], stored_state.StoredProposal],
+]:
+    by_item = {ItemId(proposal.proposal_id): proposal for proposal in proposals}
+    prerequisites = {
+        (proposal.relation.item, ItemId(proposal.proposal_id)): proposal
+        for proposal in proposals
+        if isinstance(proposal.relation, work_models.PrerequisiteProposalRelation)
+    }
+    return by_item, prerequisites
+
+
+def _dependency_reason(
+    proposals: dict[ItemId, stored_state.StoredProposal],
+    prerequisite_proposals: dict[tuple[ItemId, ItemId], stored_state.StoredProposal],
+    item_id: ItemId,
+    dependency_id: ItemId,
+) -> query_models.DependencyReason:
+    proposal = proposals.get(item_id)
+    if (
+        proposal is not None
+        and isinstance(proposal.relation, work_models.FollowUpProposalRelation)
+        and proposal.relation.item == dependency_id
+    ):
+        reason = f"Follow-up to {dependency_id}: {proposal.why_it_matters}"
+    else:
+        prerequisite = prerequisite_proposals.get((item_id, dependency_id))
+        reason = (
+            f"Inferred prerequisite {dependency_id}: {prerequisite.why_it_matters}"
+            if prerequisite is not None
+            else "Recorded dependency."
+        )
+    return query_models.DependencyReason(str(dependency_id), reason)
+
+
+def _review_flags(
+    proposals: dict[ItemId, stored_state.StoredProposal], item_id: ItemId
+) -> tuple[query_models.ReviewFlag, ...]:
+    proposal = proposals.get(item_id)
+    if proposal is None:
+        return ()
+    if isinstance(proposal.disposition, work_models.ReturnedProposalDisposition):
+        return (
+            query_models.ReviewFlag(
+                work_models.ProposalRelationKind.CLARIFICATION,
+                str(proposal.relation.item) if proposal.relation.item is not None else None,
+                proposal.disposition.reason,
+            ),
+        )
+    if proposal.disposition is not None or proposal.relation.kind not in {
+        work_models.ProposalRelationKind.DUPLICATE,
+        work_models.ProposalRelationKind.CONTRADICTION,
+        work_models.ProposalRelationKind.CLARIFICATION,
+    }:
+        return ()
+    return (
+        query_models.ReviewFlag(
+            proposal.relation.kind,
+            str(proposal.relation.item) if proposal.relation.item is not None else None,
+            proposal.why_it_matters,
+        ),
+    )
+
+
 def project_overview(state: stored_state.StoredWorkState, now: datetime) -> query_models.WorkOverview:
     definitions = {value.item_id: value.definition for value in state.lifecycle.definition_revisions}
     attempts = {
@@ -278,12 +346,7 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
     for link in sorted(state.lifecycle.dependencies, key=_dependency_key):
         dependency_groups[link.item_id].append(link)
     dependency_links = {item_id: tuple(links) for item_id, links in dependency_groups.items()}
-    proposals = {ItemId(proposal.proposal_id): proposal for proposal in state.proposals.proposals}
-    prerequisite_proposals = {
-        (proposal.relation.item, ItemId(proposal.proposal_id)): proposal
-        for proposal in state.proposals.proposals
-        if isinstance(proposal.relation, work_models.PrerequisiteProposalRelation)
-    }
+    proposals, prerequisite_proposals = _proposal_maps(state.proposals.proposals)
     preparation_anchors = {
         (anchor.item_id, anchor.generation): anchor for anchor in state.authority.preparation_generations
     }
@@ -294,51 +357,6 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
     live_items = _select_live_items(state)
     live_ids = frozenset(item.item_id for item, _live_state in live_items)
 
-    def dependency_reason(item_id: ItemId, link: stored_state.ItemDependency) -> query_models.DependencyReason:
-        proposal = proposals.get(item_id)
-        if (
-            proposal is not None
-            and isinstance(proposal.relation, work_models.FollowUpProposalRelation)
-            and proposal.relation.item == link.dependency_id
-        ):
-            reason = f"Follow-up to {link.dependency_id}: {proposal.why_it_matters}"
-        else:
-            prerequisite = prerequisite_proposals.get((item_id, link.dependency_id))
-            reason = (
-                f"Inferred prerequisite {link.dependency_id}: {prerequisite.why_it_matters}"
-                if prerequisite is not None
-                else "Recorded dependency."
-            )
-        return query_models.DependencyReason(str(link.dependency_id), reason)
-
-    def review_flags(item_id: ItemId) -> tuple[query_models.ReviewFlag, ...]:
-        proposal = proposals.get(item_id)
-        if proposal is None:
-            return ()
-        if isinstance(proposal.disposition, work_models.ReturnedProposalDisposition):
-            return (
-                query_models.ReviewFlag(
-                    work_models.ProposalRelationKind.CLARIFICATION,
-                    str(proposal.relation.item) if proposal.relation.item is not None else None,
-                    proposal.disposition.reason,
-                ),
-            )
-        if proposal.disposition is not None:
-            return ()
-        if proposal.relation.kind not in {
-            work_models.ProposalRelationKind.DUPLICATE,
-            work_models.ProposalRelationKind.CONTRADICTION,
-            work_models.ProposalRelationKind.CLARIFICATION,
-        }:
-            return ()
-        return (
-            query_models.ReviewFlag(
-                proposal.relation.kind,
-                str(proposal.relation.item) if proposal.relation.item is not None else None,
-                proposal.why_it_matters,
-            ),
-        )
-
     items = tuple(
         query_models.OverviewItem(
             str(item.item_id),
@@ -348,8 +366,11 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
             not any(link.dependency_id in live_ids for link in dependency_links[item.item_id]),
             item.timing.value if item.timing is not None else None,
             tuple(str(link.dependency_id) for link in dependency_links[item.item_id]),
-            tuple(dependency_reason(item.item_id, link) for link in dependency_links[item.item_id]),
-            review_flags(item.item_id),
+            tuple(
+                _dependency_reason(proposals, prerequisite_proposals, item.item_id, link.dependency_id)
+                for link in dependency_links[item.item_id]
+            ),
+            _review_flags(proposals, item.item_id),
             str(attempts[item.item_id]) if item.item_id in attempts else None,
             item.next_action,
             item.source,
@@ -376,6 +397,60 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
             str(attempt.attempt_id)
             for attempt in sorted(state.lifecycle.attempts, key=_attempt_key)
             if attempt.state == work_models.AttemptState.ACTIVE
+        ),
+        items,
+        immediate,
+    )
+
+
+def project_current_overview(facts: query_models.ProjectOverviewFacts, now: datetime) -> query_models.WorkOverview:
+    """Project overview output from current facts that exclude retained history."""
+
+    snapshot = facts.snapshot
+    definitions = {value.item: value.definition for value in snapshot.definitions}
+    live_ids = frozenset(item.item for item in snapshot.items)
+    proposals, prerequisite_proposals = _proposal_maps(facts.proposals)
+    preparations = {value.item_id: value for value in facts.preparations}
+
+    items = tuple(
+        query_models.OverviewItem(
+            str(item.item),
+            definitions[item.item].title,
+            item.state,
+            item.queue_position,
+            not any(dependency in live_ids for dependency in item.depends_on),
+            item.timing,
+            tuple(str(value) for value in item.depends_on),
+            tuple(_dependency_reason(proposals, prerequisite_proposals, item.item, value) for value in item.depends_on),
+            _review_flags(proposals, item.item),
+            None if item.attempt is None else str(item.attempt),
+            item.next_action,
+            item.source,
+            item.notes,
+            _project_selected_preparation_status(preparations.get(item.item), now),
+        )
+        for item in snapshot.items
+    )
+    immediate = tuple(
+        item.item_id
+        for item in items
+        if item.eligible
+        and (item.preparation is None or item.preparation.status != authority_models.PreparationLeaseStatus.ACTIVE)
+        and item.state
+        in {
+            work_models.WorkState.INTAKE,
+            work_models.WorkState.READY,
+            work_models.WorkState.DEFERRED,
+            work_models.WorkState.PAUSED,
+            work_models.WorkState.BLOCKED,
+        }
+    )
+    return query_models.WorkOverview(
+        "pinboard-overview/v3",
+        "sqlite-v5",
+        snapshot.revision,
+        tuple(
+            str(attempt.attempt) for attempt in snapshot.attempts if attempt.state == work_models.AttemptState.ACTIVE
         ),
         items,
         immediate,
@@ -634,6 +709,52 @@ def _project_parallel_preview_facts(
 def project_parallel_preview(state: stored_state.StoredWorkState, *, now: datetime) -> query_models.ParallelPreview:
     return _project_parallel_preview_facts(
         _complete_parallel_preview_facts(state),
+        query_models.ParallelSelection.ALL_SAFE,
+        now,
+    )
+
+
+def project_current_parallel_preview(snapshot: LedgerSnapshot, *, now: datetime) -> query_models.ParallelPreview:
+    """Project all-safe parallel work from current decision facts only."""
+
+    definitions = {value.item: value.definition for value in snapshot.definitions}
+    live_ids = frozenset(item.item for item in snapshot.items)
+    attempts = {value.attempt: value for value in snapshot.attempts}
+    attempt_authorities = {value.attempt: value for value in snapshot.command_attempt_authorities}
+    preparations = {value.item: value for value in snapshot.command_preparation_authorities}
+    items: list[query_models.ParallelPreviewItemFacts] = []
+    for item in snapshot.items:
+        command_preparation = preparations.get(item.item)
+        preparation = (
+            None
+            if command_preparation is None
+            else query_models.ParallelPreparationFacts(
+                authority_models.PreparationLeaseStatus.ACTIVE,
+                command_preparation.expires_at,
+            )
+        )
+        stored_attempt = None if item.attempt is None else attempts.get(item.attempt)
+        attempt = None
+        if stored_attempt is not None and stored_attempt.state != work_models.AttemptState.DONE:
+            command_authority = attempt_authorities.get(stored_attempt.attempt)
+            attempt = query_models.ParallelAttemptFacts(
+                stored_attempt.attempt,
+                stored_attempt.state,
+                None if command_authority is None else authority_models.AttemptLeaseStatus.ACTIVE,
+                None if command_authority is None else command_authority.expires_at,
+            )
+        items.append(
+            query_models.ParallelPreviewItemFacts(
+                item.item,
+                definitions[item.item].title,
+                item.state,
+                tuple(dependency for dependency in item.depends_on if dependency in live_ids),
+                preparation,
+                attempt,
+            )
+        )
+    return _project_parallel_preview_facts(
+        query_models.ParallelPreviewFacts(int(snapshot.revision), tuple(items)),
         query_models.ParallelSelection.ALL_SAFE,
         now,
     )

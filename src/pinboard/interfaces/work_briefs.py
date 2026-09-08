@@ -4,9 +4,9 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.application import stored_state
+from pinboard.application import query_models, stored_state
 from pinboard.application.artifact_publication import ArtifactReader, transition_work_brief_reference
-from pinboard.application.artifacts import WorkBriefIdentity
+from pinboard.application.artifacts import BriefArtifactRef, WorkBriefIdentity
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import AttemptId
@@ -338,6 +338,55 @@ def read_transition_work_brief_identity(
     return identity
 
 
+def read_selected_work_brief_identity(
+    reference: stored_state.ArtifactReference | BriefArtifactRef | None,
+    artifacts: ArtifactReader,
+) -> DecisionResult[WorkBriefIdentity | None]:
+    if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
+        return None
+    identity = decode_work_brief_identity(artifacts.read(reference))
+    if isinstance(identity, WorkBriefFailure):
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            f"The selected brief artifact is not a valid canonical typed work brief: {identity}",
+            None,
+        )
+    return identity
+
+
+def _render_attempt_brief_view(
+    attempt: stored_state.StoredAttempt,
+    reference: stored_state.ArtifactReference | BriefArtifactRef | None,
+    artifacts: ArtifactReader,
+) -> WorkBriefResult[bytes]:
+    if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
+        return _invalid(f"Live attempt '{attempt.attempt_id}' has no accepted brief reference.")
+    if not reference.selector.endswith(".json"):
+        return _invalid(f"Live attempt '{attempt.attempt_id}' accepted brief is not canonical v2 JSON.")
+    brief = decode_canonical_work_brief(artifacts.read(reference))
+    if isinstance(brief, WorkBriefFailure):
+        return brief
+    expected = (
+        str(attempt.attempt_id),
+        str(attempt.item_id),
+        attempt.branch,
+        attempt.base_revision,
+        attempt.accepted_scope_revision,
+        attempt.accepted_scope_digest,
+    )
+    observed = (
+        brief.attempt_id,
+        brief.item_id,
+        brief.branch,
+        brief.base_revision,
+        brief.accepted_scope.revision,
+        brief.accepted_scope.digest,
+    )
+    if observed != expected:
+        return _invalid(f"Live attempt '{attempt.attempt_id}' brief identity does not match SQLite.")
+    return render_work_brief_markdown(brief)
+
+
 def build_attempt_brief_views(
     state: stored_state.StoredWorkState, artifacts: ArtifactReader
 ) -> WorkBriefResult[dict[AttemptId, bytes]]:
@@ -347,30 +396,25 @@ def build_attempt_brief_views(
         if attempt.state == work_models.AttemptState.DONE:
             continue
         reference = references.get(attempt.brief_artifact_ref_id)
-        if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
-            return _invalid(f"Live attempt '{attempt.attempt_id}' has no accepted brief reference.")
-        if not reference.selector.endswith(".json"):
-            return _invalid(f"Live attempt '{attempt.attempt_id}' accepted brief is not canonical v2 JSON.")
-        brief = decode_canonical_work_brief(artifacts.read(reference))
-        if isinstance(brief, WorkBriefFailure):
-            return brief
-        expected = (
-            str(attempt.attempt_id),
-            str(attempt.item_id),
-            attempt.branch,
-            attempt.base_revision,
-            attempt.accepted_scope_revision,
-            attempt.accepted_scope_digest,
-        )
-        observed = (
-            brief.attempt_id,
-            brief.item_id,
-            brief.branch,
-            brief.base_revision,
-            brief.accepted_scope.revision,
-            brief.accepted_scope.digest,
-        )
-        if observed != expected:
-            return _invalid(f"Live attempt '{attempt.attempt_id}' brief identity does not match SQLite.")
-        result[attempt.attempt_id] = render_work_brief_markdown(brief)
+        rendered = _render_attempt_brief_view(attempt, reference, artifacts)
+        if isinstance(rendered, WorkBriefFailure):
+            return rendered
+        result[attempt.attempt_id] = rendered
+    return result
+
+
+def build_selected_attempt_brief_views(
+    attempts: tuple[query_models.AttemptProjectionFacts, ...], artifacts: ArtifactReader
+) -> WorkBriefResult[dict[AttemptId, bytes]]:
+    """Render only the accepted briefs required by selected attempt views."""
+
+    result: dict[AttemptId, bytes] = {}
+    for selected in attempts:
+        attempt = selected.attempt
+        if attempt.state == work_models.AttemptState.DONE:
+            continue
+        rendered = _render_attempt_brief_view(attempt, selected.brief_reference, artifacts)
+        if isinstance(rendered, WorkBriefFailure):
+            return rendered
+        result[attempt.attempt_id] = rendered
     return result

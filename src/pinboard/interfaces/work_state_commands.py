@@ -2,6 +2,7 @@
 
 import os
 import tomllib
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErr
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.application import ports
+from pinboard.domain.identifiers import AttemptId
 from pinboard.interfaces import cli_commands, work_views
 from pinboard.interfaces.cli_output import write_json
 from pinboard.interfaces.errors import CliResult, WorkBriefFailure
@@ -80,7 +83,7 @@ def show_roots(roots: cli_commands.ResolvedRoots, _command: cli_commands.RootCom
 def validate_state(
     roots: cli_commands.ResolvedRoots,
     durable: DurableRoots,
-    store: SQLiteWorkStore,
+    store: ports.ValidatedStateReader,
     command: cli_commands.ValidateCommand,
 ) -> int:
     operation_time = datetime.now(UTC)
@@ -89,20 +92,30 @@ def validate_state(
         validation_report = loaded_state
     else:
         current_state = loaded_state
-        brief_error: WorkBriefFailure | None = None
+        brief_diagnostic: Diagnostic | None = None
+        attempt_briefs: Mapping[AttemptId, bytes]
         try:
-            attempt_briefs = work_views.read_attempt_brief_views(durable, current_state)
-        except ArtifactError:
-            attempt_briefs = None
-        if isinstance(attempt_briefs, WorkBriefFailure):
-            brief_error = attempt_briefs
-            attempt_briefs = None
+            brief_result = work_views.read_attempt_brief_views(durable, current_state)
+        except ArtifactError as error:
+            attempt_briefs = {}
+            brief_diagnostic = Diagnostic(error.code.value, Severity.ERROR, roots.work, str(error))
+        else:
+            if isinstance(brief_result, WorkBriefFailure):
+                attempt_briefs = {}
+                brief_diagnostic = Diagnostic(
+                    brief_result.code.value,
+                    Severity.ERROR,
+                    roots.work,
+                    brief_result.message,
+                )
+            else:
+                attempt_briefs = brief_result
         validation_report = validate_loaded_work_state(roots.work, current_state, attempt_briefs, now=operation_time)
-        if brief_error is not None:
+        if brief_diagnostic is not None:
             validation_report = ValidationReport(
                 (
                     *validation_report.diagnostics,
-                    Diagnostic(brief_error.code.value, Severity.ERROR, roots.work, brief_error.message),
+                    brief_diagnostic,
                 )
             )
     if command.json:
@@ -134,7 +147,7 @@ def _read_user_config_and_recommend_body_after_prefix() -> str | None:
 def initialize_state(
     roots: cli_commands.ResolvedRoots,
     durable: DurableRoots,
-    store: SQLiteWorkStore,
+    store: ports.CompleteStateReader,
     command: cli_commands.InitializeCommand,
 ) -> CliResult[int]:
     operation_time = datetime.now(UTC)
@@ -178,7 +191,7 @@ def initialize_state(
 
 def rebuild_views(
     durable: DurableRoots,
-    store: SQLiteWorkStore,
+    store: ports.CompleteStateReader,
     _command: cli_commands.RebuildViewsCommand,
 ) -> int:
     operation_time = datetime.now(UTC)

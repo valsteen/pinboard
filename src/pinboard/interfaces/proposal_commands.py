@@ -12,10 +12,8 @@ from typing import Literal, assert_never
 
 import msgspec
 
-from pinboard.adapters.files import models as file_models
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import service
+from pinboard.application import ports, service
 from pinboard.domain import proposal_models as domain_proposal_models
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
@@ -53,7 +51,7 @@ def _convert_proposal_relation(value: proposal_models.ProposalRelation) -> work_
 
 def create_proposal(
     durable: DurableRoots,
-    store: SQLiteWorkStore,
+    store: ports.WorkStore,
     command: cli_commands.ProposalCommand,
 ) -> ProposalResult[int]:
     proposal_path = command.file
@@ -92,28 +90,17 @@ def create_proposal(
     )
     if isinstance(creation_result, DecisionFailure):
         return ProposalFailure(creation_result.code, creation_result.message, creation_result.details)
-    committed_state = store.snapshot()
-    changed_items = [ItemId(decoded_proposal.proposal_id)]
-    if isinstance(decoded_proposal.relation, proposal_models.PrerequisiteProposalRelation):
-        changed_items.append(ItemId(decoded_proposal.relation.item))
-    view_result = work_views.refresh(
-        durable,
-        store,
-        file_models.AffectedViews(queue=True, history=True, items=tuple(changed_items)),
-        datetime.now(UTC),
-    )
+    view_result = work_views.refresh_effect(durable, store, creation_result, datetime.now(UTC))
     if view_result.warning is not None:
         print(view_result.warning.message, file=sys.stderr)
-    intake_item = next(
-        value for value in committed_state.lifecycle.work_items if str(value.item_id) == decoded_proposal.proposal_id
-    )
-    assert intake_item.queue_position is not None
+    intake_status = store.read_item_status(ItemId(decoded_proposal.proposal_id))
+    assert intake_status is not None and intake_status.item.queue_position is not None
     created = ProposalCreatedView(
         "pinboard-proposal-created/v1",
         decoded_proposal.proposal_id,
-        intake_item.queue_position,
-        intake_item.state.value,
-        str(committed_state.lifecycle.project.revision),
+        intake_status.item.queue_position,
+        intake_status.item.state.value,
+        str(creation_result.project_revision),
     )
     if command.json:
         write_json(created)

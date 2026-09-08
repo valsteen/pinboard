@@ -170,20 +170,27 @@ class ParallelPreviewLifecycleSelection:
     items: tuple[ParallelPreviewLifecycleItem, ...]
 
 
-def _validate_parallel_preview_attempt(
-    state: work_models.WorkState,
-    attempt: ParallelPreviewLifecycleAttempt | None,
+def _validate_selected_open_attempt(
+    state: stored_state.StoredWorkItemState,
+    attempt_state: work_models.AttemptState | None,
 ) -> None:
     match state:
         case (
-            work_models.WorkState.ACTIVE
-            | work_models.WorkState.PAUSED
-            | work_models.WorkState.BLOCKED
-            | work_models.WorkState.REVIEW
+            stored_state.StoredWorkItemState.ACTIVE
+            | stored_state.StoredWorkItemState.PAUSED
+            | stored_state.StoredWorkItemState.BLOCKED
+            | stored_state.StoredWorkItemState.REVIEW
         ) as attempted_state:
-            valid = attempt is not None and attempt.state.value == attempted_state.value
-        case work_models.WorkState.INTAKE | work_models.WorkState.READY | work_models.WorkState.DEFERRED:
-            valid = attempt is None
+            valid = attempt_state is not None and attempt_state.value == attempted_state.value
+        case (
+            stored_state.StoredWorkItemState.INTAKE
+            | stored_state.StoredWorkItemState.READY
+            | stored_state.StoredWorkItemState.DEFERRED
+            | stored_state.StoredWorkItemState.DONE
+            | stored_state.StoredWorkItemState.SUPERSEDED
+            | stored_state.StoredWorkItemState.DROPPED
+        ):
+            valid = attempt_state is None
         case _ as unreachable:
             assert_never(unreachable)
     if not valid:
@@ -343,7 +350,9 @@ def read_item_status(connection: sqlite3.Connection, item_id: ItemId) -> query_m
         """,
         (item_id,),
     ).fetchone()
-    attempts = () if attempt_row is None else (decode_row(attempt_row, query_models.ItemStatusAttemptFacts),)
+    selected_attempt = None if attempt_row is None else decode_row(attempt_row, query_models.ItemStatusAttemptFacts)
+    _validate_selected_open_attempt(item.state, None if selected_attempt is None else selected_attempt.state)
+    attempts = () if selected_attempt is None else (selected_attempt,)
     return query_models.ItemStatusLifecycleFacts(
         project_revision,
         item,
@@ -400,7 +409,7 @@ def read_parallel_preview_lifecycle(
                     attempt = ParallelPreviewLifecycleAttempt(decoded_attempt.attempt_id, attempt_state)
                 case _:
                     raise StorageError(StorageErrorCode.INVALID_STATE, "The selected open attempt state is invalid.")
-        _validate_parallel_preview_attempt(state, attempt)
+        _validate_selected_open_attempt(item.state, None if attempt is None else attempt.state)
         selected.append(
             ParallelPreviewLifecycleItem(
                 item.item_id,

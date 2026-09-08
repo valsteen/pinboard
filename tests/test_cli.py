@@ -3595,6 +3595,84 @@ Not launchable:
         )
         self.assertEqual(stored_state.StoredWorkItemState.DEFERRED, work_c.state)
 
+    def test_selected_dependency_corruption_rejects_before_transition_writes(self) -> None:
+        state = complete_sqlite_state()
+        state = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=tuple(
+                    replace(item, state=stored_state.StoredWorkItemState.PAUSED)
+                    if item.item_id == ItemId("work-a")
+                    else item
+                    for item in state.lifecycle.work_items
+                ),
+                attempts=tuple(
+                    replace(attempt, state=work_models.AttemptState.PAUSED)
+                    if attempt.attempt_id == AttemptId("work-a-1")
+                    else attempt
+                    for attempt in state.lifecycle.attempts
+                ),
+            ),
+        )
+        state = with_definition_dependencies(state, ItemId("work-a"), ())
+        project, work, _store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        action = self.project_action(common, "resume:work-a")
+        payload = project / "resume.json"
+        payload.write_text("{}\n", encoding="utf-8")
+        database = work / "state.sqlite3"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(
+                "INSERT INTO item_dependencies (item_id, dependency_id, position) VALUES (?, ?, ?)",
+                ("work-a", "work-b", 0),
+            )
+            connection.commit()
+            before = connection.execute(
+                """
+                SELECT
+                    (SELECT revision FROM project_meta WHERE singleton = 1),
+                    (SELECT state FROM work_items WHERE item_id = 'work-a'),
+                    (SELECT state FROM attempts WHERE attempt_id = 'work-a-1'),
+                    (SELECT COUNT(*) FROM transition_history)
+                """
+            ).fetchone()
+        finally:
+            connection.close()
+
+        discovery, _discovery_stdout, discovery_stderr = self.run_cli(
+            *common,
+            "actions",
+            "--role",
+            "project",
+            "--action-id",
+            "resume:work-a",
+        )
+        result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
+
+        self.assertEqual(12, discovery)
+        self.assertIn("WORK_STATE_INVALID", discovery_stderr)
+        self.assertEqual(12, result)
+        self.assertEqual("", stderr)
+        rejection = self.json_object(json.loads(stdout))
+        self.assertEqual("WORK_STATE_INVALID", rejection["code"])
+        self.assertFalse(rejection["state_changed"])
+        connection = sqlite3.connect(database)
+        try:
+            after = connection.execute(
+                """
+                SELECT
+                    (SELECT revision FROM project_meta WHERE singleton = 1),
+                    (SELECT state FROM work_items WHERE item_id = 'work-a'),
+                    (SELECT state FROM attempts WHERE attempt_id = 'work-a-1'),
+                    (SELECT COUNT(*) FROM transition_history)
+                """
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(before, after)
+
     def test_proposal_persists_once_through_native_intake(self) -> None:
         project, work, store = self.initialized_state(complete_sqlite_state())
         proposal_path = project / "proposal.json"

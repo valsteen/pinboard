@@ -583,6 +583,15 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
             dependency_item_ids.add(item_id)
         if include_definition and item_id not in definitions:
             definitions[item_id] = _read_required_definition(connection, item_id)
+        if (
+            item_id in dependency_item_ids
+            and item_id in definitions
+            and tuple(dependencies[item_id]) != definitions[item_id].definition.dependencies
+        ):
+            raise StorageError(
+                StorageErrorCode.INVALID_STATE,
+                "Current definition dependencies do not match relational dependencies.",
+            )
         if context and live:
             contextual_item_ids.add(item_id)
         return item

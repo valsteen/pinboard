@@ -407,6 +407,43 @@ class BriefSourcesTest(unittest.TestCase):
                     self.assertEqual(15, result)
                     self.assertIn(BriefSourceErrorCode.PLAN_INVALID.value, stderr)
 
+    def test_cli_rejects_whole_file_flags_that_disagree_with_the_selector(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "source.md").write_text("# Source\n\n## Contract\n\nBody.\n", encoding="utf-8")
+            for name, selector, whole_file in (
+                ("heading-marked-whole", "source.md#Contract", True),
+                ("file-marked-section", "source.md", False),
+            ):
+                with self.subTest(name=name):
+                    manifest_path = project / f"{name}-manifest.json"
+                    manifest_path.write_bytes(
+                        msgspec.json.encode(
+                            self.manifest(BriefSourceRequest("source", selector, ("contract",))),
+                            order="sorted",
+                        )
+                    )
+                    planned_result, planned_stdout, planned_stderr = self.run_cli(
+                        "--project-root",
+                        str(project),
+                        "brief-sources",
+                        "--file",
+                        str(manifest_path),
+                        "--json",
+                    )
+                    self.assertEqual((0, ""), (planned_result, planned_stderr))
+                    plan = json.loads(planned_stdout)
+                    plan["sources"][0]["whole_file"] = whole_file
+                    plan_path = project / f"{name}-plan.json"
+                    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+
+                    result, _stdout, stderr = self.run_cli(
+                        "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "0"
+                    )
+
+                    self.assertEqual(15, result)
+                    self.assertIn(BriefSourceErrorCode.PLAN_INVALID.value, stderr)
+
     def test_cli_rejects_a_plan_whose_rendered_size_is_false(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)

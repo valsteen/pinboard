@@ -531,6 +531,8 @@ def read_item_definition_history(
         (*parameters, limit + 1),
     ).fetchall()
     definitions = tuple(decode_definition_revision(row) for row in rows)
+    if before_revision is None and not definitions:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "An existing work item must have definition history.")
     if any(
         newer.revision != older.revision + 1 or newer.before_digest != older.digest
         for newer, older in pairwise(definitions)

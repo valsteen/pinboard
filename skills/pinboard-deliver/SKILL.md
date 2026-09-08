@@ -61,7 +61,7 @@ If a discovered problem blocks the attempt:
 1. stop widening the implementation;
 2. preserve the current commit/worktree and verification;
 3. write `blocker.md` in the active attempt directory with the observation, affected criterion, completed work, and safest next action;
-4. return the blocker to the owning task with one concise purpose label and one native clickable link to that Markdown;
+4. return the blocker to the owning task with a concise purpose label and a native clickable link to that Markdown, and apply the main Pinboard skill's readable-artifact rule to every mentioned item, attempt, or related evidence whose Markdown is confirmed available;
 5. use `$pinboard-intake` to propose a prerequisite when explicitly requested;
 6. use the worker-visible `report-blocker:<attempt>` affordance to report that preserved evidence; it is advisory and has no mutation payload;
 7. leave shared lifecycle mutation to the owning task, which must select the exact project action `block:<attempt>` only for dependencies already accepted in the current definition or `pause:<attempt>` when no accepted dependency condition applies; a newly accepted dependency requires a complete item revision and revised-brief recovery, and `block-item:<item>` is only for unstarted intake work.
@@ -87,7 +87,7 @@ Before review:
 7. when acceptance claims lifecycle wiring, prove it through the production entry point rather than only through an internal primitive;
 8. write `result.md` at the exact attempt path `<work-root>/attempts/<attempt-id>/result.md`.
 
-When `result.md` is new or materially refreshed, return it to the owning task with one concise purpose label and one native clickable link. Do not repeat an unchanged result link in later status updates.
+When `result.md` is new or materially refreshed, return it to the owning task with one concise purpose label and one native clickable link. Keep that confirmed link on every later contextual mention of the result; avoid only a separate unchanged-status announcement.
 
 The result must record:
 
@@ -108,7 +108,7 @@ When the accepted checkpoint is one of several recorded for the item, report its
 
 ## Return the candidate for review
 
-`result.md` makes the candidate durably ready for review. It does not by itself notify another task. The worker return includes exactly one purpose-labelled native clickable link to the current result so the owning task can inspect and surface the implementation evidence; a corrected candidate links the refreshed result once.
+`result.md` makes the candidate durably ready for review. It does not by itself notify another task. The worker return includes a purpose-labelled native clickable link to the current result so the owning task can inspect and surface the implementation evidence; a corrected candidate proactively announces the refreshed result, and later mentions of the current result, review, item, or attempt keep every confirmed readable link under the main Pinboard rule.
 
 After the owning task submits the exact candidate, run `pinboard attempt inspect --attempt-id <attempt> --json` and follow its derived continuation. When it names review, run `pinboard review-job --attempt-id <attempt> --candidate-revision <candidate> --json` and launch its prompt unchanged as one fresh-context, candidate-read-only subagent. The job binds the current candidate, canonical accepted brief, outcome owner, and current nonempty `result.md` path and digest; the reviewer verifies those identities again before use. Rendering it is read-only and does not accept or complete the candidate.
 

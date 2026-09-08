@@ -199,6 +199,10 @@ def _item_key(value: stored_state.StoredWorkItem) -> tuple[int, str]:
     return value.queue_position if value.queue_position is not None else 0, str(value.item_id)
 
 
+def _decision_item_key(value: work_models.WorkItem) -> tuple[int, str]:
+    return value.queue_position if value.queue_position is not None else 0, str(value.item)
+
+
 def _select_live_items(
     state: stored_state.StoredWorkState,
 ) -> tuple[tuple[stored_state.StoredWorkItem, work_models.WorkState], ...]:
@@ -403,6 +407,33 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
     )
 
 
+def _project_overview_item(
+    item: work_models.WorkItem,
+    label: str,
+    live_dependencies: frozenset[ItemId],
+    proposals: dict[ItemId, stored_state.StoredProposal],
+    prerequisite_proposals: dict[tuple[ItemId, ItemId], stored_state.StoredProposal],
+    preparation: query_models.PreparationAuthorityStatus | None,
+    now: datetime,
+) -> query_models.OverviewItem:
+    return query_models.OverviewItem(
+        str(item.item),
+        label,
+        item.state,
+        item.queue_position,
+        not any(dependency in live_dependencies for dependency in item.depends_on),
+        item.timing,
+        tuple(str(value) for value in item.depends_on),
+        tuple(_dependency_reason(proposals, prerequisite_proposals, item.item, value) for value in item.depends_on),
+        _review_flags(proposals, item.item),
+        None if item.attempt is None else str(item.attempt),
+        item.next_action,
+        item.source,
+        item.notes,
+        _project_selected_preparation_status(preparation, now),
+    )
+
+
 def project_current_overview(facts: query_models.ProjectOverviewFacts, now: datetime) -> query_models.WorkOverview:
     """Project overview output from current facts that exclude retained history."""
 
@@ -413,23 +444,16 @@ def project_current_overview(facts: query_models.ProjectOverviewFacts, now: date
     preparations = {value.item_id: value for value in facts.preparations}
 
     items = tuple(
-        query_models.OverviewItem(
-            str(item.item),
+        _project_overview_item(
+            item,
             definitions[item.item].title,
-            item.state,
-            item.queue_position,
-            not any(dependency in live_ids for dependency in item.depends_on),
-            item.timing,
-            tuple(str(value) for value in item.depends_on),
-            tuple(_dependency_reason(proposals, prerequisite_proposals, item.item, value) for value in item.depends_on),
-            _review_flags(proposals, item.item),
-            None if item.attempt is None else str(item.attempt),
-            item.next_action,
-            item.source,
-            item.notes,
-            _project_selected_preparation_status(preparations.get(item.item), now),
+            live_ids,
+            proposals,
+            prerequisite_proposals,
+            preparations.get(item.item),
+            now,
         )
-        for item in snapshot.items
+        for item in sorted(snapshot.items, key=_decision_item_key)
     )
     immediate = tuple(
         item.item_id
@@ -454,6 +478,23 @@ def project_current_overview(facts: query_models.ProjectOverviewFacts, now: date
         ),
         items,
         immediate,
+    )
+
+
+def project_item_overview(facts: query_models.ItemOverviewFacts, now: datetime) -> query_models.OverviewItem:
+    """Project one live item from its exact view relationships."""
+
+    item = facts.item
+    proposals, prerequisite_proposals = _proposal_maps(facts.proposals)
+    live_dependencies = frozenset(dependency_id for dependency_id, is_live in facts.dependency_liveness if is_live)
+    return _project_overview_item(
+        item,
+        facts.definition.definition.title,
+        live_dependencies,
+        proposals,
+        prerequisite_proposals,
+        facts.preparation,
+        now,
     )
 
 

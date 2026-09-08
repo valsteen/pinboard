@@ -18,6 +18,7 @@ from pinboard.adapters.sqlite.database import initialize_database, open_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.application import query_models, stored_state
 from pinboard.application.artifacts import EvidenceArtifactRef
 from pinboard.application.decision_projection import project_decision_snapshot
 from pinboard.application.mutations import project_transition_mutation
@@ -25,16 +26,22 @@ from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import available_actions, decide
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, ItemId, ProposalId
-from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, mutation_allocation
+from tests.support import (
+    SQLITE_NOW,
+    complete_sqlite_state,
+    initialize_store,
+    mutation_allocation,
+    with_definition_dependencies,
+)
 
 
 class SQLiteEffectContractTest(unittest.TestCase):
-    def _store(self) -> tuple[Path, SQLiteWorkStore]:
+    def _store(self, state: stored_state.StoredWorkState | None = None) -> tuple[Path, SQLiteWorkStore]:
         project = Path(tempfile.mkdtemp()).resolve()
         roots = resolve_durable_roots(project)
         initialize_database(roots, SQLITE_NOW)
         store = SQLiteWorkStore(roots.database_path)
-        initialize_store(store, complete_sqlite_state())
+        initialize_store(store, state or complete_sqlite_state())
         return roots.database_path, store
 
     def test_checkpoint_artifact_identity_is_exact(self) -> None:
@@ -179,7 +186,13 @@ class SQLiteEffectContractTest(unittest.TestCase):
         with patch.object(sqlite_store, "open_database", traced_open):
             store.read_project_status()
             store.read_project_overview(SQLITE_NOW)
-            store.read_current_snapshot(SQLITE_NOW, ())
+            store.read_current_action_snapshot(SQLITE_NOW)
+            store.read_current_parallel_snapshot(SQLITE_NOW)
+            store.read_decision_facts(
+                query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), ()), SQLITE_NOW
+            )
+
+        self.assertFalse(any("from artifact_refs" in statement.lower() for statement in statements))
 
         connection = sqlite3.connect(path)
         try:
@@ -196,6 +209,89 @@ class SQLiteEffectContractTest(unittest.TestCase):
                     self.assertEqual((), retained_scans, plan)
         finally:
             connection.close()
+
+    def test_current_project_read_families_request_only_their_operation_facts(self) -> None:
+        _path, store = self._store()
+        statements: list[str] = []
+        original_open = sqlite_store.open_database
+
+        def traced_open(database_path: Path, mode: OpenMode) -> sqlite3.Connection:
+            connection = original_open(database_path, mode)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(sqlite_store, "open_database", traced_open):
+            store.read_current_parallel_snapshot(SQLITE_NOW)
+        self.assertFalse(any("from proposals" in value.lower() for value in statements))
+        self.assertFalse(any("from artifact_refs" in value.lower() for value in statements))
+
+        statements.clear()
+        with patch.object(sqlite_store, "open_database", traced_open):
+            store.read_project_overview(SQLITE_NOW)
+        self.assertFalse(any("from attempt_leases" in value.lower() for value in statements))
+        self.assertFalse(any("from artifact_refs" in value.lower() for value in statements))
+
+    def test_decision_artifacts_and_dependency_closure_are_explicit(self) -> None:
+        _path, store = self._store()
+        focused = store.read_decision_facts(
+            query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), ()), SQLITE_NOW
+        ).snapshot
+        artifact = store.read_decision_facts(
+            query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), (ArtifactRefId(1),)),
+            SQLITE_NOW,
+        ).snapshot
+
+        self.assertEqual((), focused.artifacts)
+        self.assertEqual((ArtifactRefId(1),), tuple(value.artifact_ref_id for value in artifact.artifacts))
+
+        state = complete_sqlite_state()
+        state = with_definition_dependencies(state, ItemId("work-c"), (ItemId("intake-work"),))
+        state = with_definition_dependencies(state, ItemId("work-b"), (ItemId("work-a"),))
+        _chain_path, store = self._store(state)
+
+        direct = store.read_decision_facts(
+            query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), ()), SQLITE_NOW
+        ).snapshot
+        closed = store.read_decision_facts(
+            query_models.DecisionScope((ItemId("work-a"),), (), (ItemId("work-c"),), (), (), (), ()),
+            SQLITE_NOW,
+        ).snapshot
+        terminal_closed = store.read_decision_facts(
+            query_models.DecisionScope((ItemId("work-a"),), (), (ItemId("work-b"),), (), (), (), ()),
+            SQLITE_NOW,
+        ).snapshot
+
+        self.assertEqual({ItemId("work-a"), ItemId("work-c")}, set(direct.items_by_id()))
+        self.assertEqual({ItemId("work-a")}, {value.item for value in direct.definitions})
+        self.assertEqual(
+            {ItemId("work-a"), ItemId("work-c"), ItemId("intake-work")},
+            set(closed.items_by_id()),
+        )
+        self.assertEqual(
+            {ItemId("work-a"), ItemId("work-c"), ItemId("intake-work")},
+            {value.item for value in closed.definitions},
+        )
+        self.assertIn(ItemId("work-b"), terminal_closed.history_items)
+        self.assertIn(ItemId("work-b"), {value.item for value in terminal_closed.definitions})
+
+    def test_generated_item_view_does_not_follow_transitive_dependencies(self) -> None:
+        state = complete_sqlite_state()
+        state = with_definition_dependencies(state, ItemId("work-c"), (ItemId("intake-work"),))
+        _path, store = self._store(state)
+        statements: list[str] = []
+        original_open = sqlite_store.open_database
+
+        def traced_open(database_path: Path, mode: OpenMode) -> sqlite3.Connection:
+            connection = original_open(database_path, mode)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(sqlite_store, "open_database", traced_open):
+            facts = store.read_generated_view_facts((ItemId("work-a"),), (), (), SQLITE_NOW)
+
+        self.assertEqual((ItemId("work-c"),), facts.items[0].dependencies)
+        self.assertIsNotNone(facts.items[0].overview)
+        self.assertFalse(any("'intake-work'" in statement for statement in statements), statements)
 
     def test_complete_state_rejects_missing_project_invalid_queue_and_reinitialization(self) -> None:
         path, store = self._store()

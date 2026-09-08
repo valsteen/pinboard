@@ -43,7 +43,18 @@ def _rediscover_dispatch_action(
     now: datetime,
 ) -> DispatchResult[decision_models.Action | None]:
     actions = discover_current_actions(
-        store.read_decision_facts(query_models.DecisionScope((), (supplied.capability.subject,), (), ()), now).snapshot,
+        store.read_decision_facts(
+            query_models.DecisionScope(
+                item_ids=(),
+                related_item_ids=(),
+                dependency_closure_roots=(),
+                live_dependent_roots=(),
+                attempt_ids=(supplied.capability.subject,),
+                proposal_ids=(),
+                artifact_ref_ids=(),
+            ),
+            now,
+        ).snapshot,
         decision_models.Role.PROJECT,
     )
     if isinstance(actions, DecisionFailure):

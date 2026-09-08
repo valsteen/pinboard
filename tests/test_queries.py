@@ -7,7 +7,7 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
-from pinboard.application.actions import discover_actions
+from pinboard.application.actions import discover_actions, discover_current_actions
 from pinboard.application.queries import (
     project_current_overview,
     project_item_status,
@@ -111,6 +111,45 @@ class SQLiteQueriesTest(unittest.TestCase):
 
         self.assertEqual(full, focused)
         self.assertEqual("Clarify the retained boundary.", focused.items[-1].review_flags[0].reason)
+
+    def test_focused_action_order_remains_identity_stable_while_overview_uses_queue_order(self) -> None:
+        state = complete_sqlite_state()
+        positions = {
+            ItemId("intake-work"): 3,
+            ItemId("work-a"): 2,
+            ItemId("work-c"): 1,
+            ItemId("zz-proposal-a"): 4,
+        }
+        reordered = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=tuple(
+                    replace(item, queue_position=positions.get(item.item_id))
+                    if item.queue_position is not None
+                    else item
+                    for item in state.lifecycle.work_items
+                ),
+            ),
+        )
+        store = self._store(reordered)
+
+        complete_actions = expect_success(discover_actions(reordered, decision_models.Role.PROJECT, now=SQLITE_NOW))
+        focused_actions = expect_success(
+            discover_current_actions(store.read_current_action_snapshot(SQLITE_NOW), decision_models.Role.PROJECT)
+        )
+        complete_overview = project_overview(reordered, SQLITE_NOW)
+        focused_overview = project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW)
+
+        self.assertEqual(
+            tuple(decision_models.action_id(value) for value in complete_actions),
+            tuple(decision_models.action_id(value) for value in focused_actions),
+        )
+        self.assertEqual(complete_overview, focused_overview)
+        self.assertEqual(
+            ("work-c", "work-a", "intake-work", "zz-proposal-a"),
+            tuple(value.item_id for value in focused_overview.items),
+        )
 
     def test_parallel_preview_reports_the_current_attempt_not_retained_terminal_history(self) -> None:
         state = complete_sqlite_state()

@@ -68,7 +68,7 @@ def with_current_alternatives(
     item_ids, attempt_ids, proposal_ids = action_subject_ids(supplied.action)
     current_actions = discover_current_actions(
         store.read_decision_facts(
-            query_models.DecisionScope(item_ids, attempt_ids, proposal_ids, ()), observed_at
+            query_models.DecisionScope(item_ids, (), (), (), attempt_ids, proposal_ids, ()), observed_at
         ).snapshot,
         supplied.role,
         lease_id=supplied.action.capability.lease_id,
@@ -400,7 +400,7 @@ def select_current_action(
         return authority_failure
     item_ids, attempt_ids, proposal_ids = action_subject_ids(supplied_action)
     current_snapshot = store.read_decision_facts(
-        query_models.DecisionScope(item_ids, attempt_ids, proposal_ids, ()), operation_time
+        query_models.DecisionScope(item_ids, (), (), (), attempt_ids, proposal_ids, ()), operation_time
     ).snapshot
     current_actions = discover_current_actions(
         current_snapshot,

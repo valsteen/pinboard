@@ -29,9 +29,12 @@ class ProjectOverviewFacts:
 
 @dataclass(frozen=True, slots=True)
 class DecisionScope:
-    """Persisted identities whose current relationships can affect one decision."""
+    """Exact persisted relationships whose current facts can affect one decision."""
 
     item_ids: tuple[ItemId, ...]
+    related_item_ids: tuple[ItemId, ...]
+    dependency_closure_roots: tuple[ItemId, ...]
+    live_dependent_roots: tuple[ItemId, ...]
     attempt_ids: tuple[AttemptId, ...]
     proposal_ids: tuple[ProposalId, ...]
     artifact_ref_ids: tuple[ArtifactRefId, ...]
@@ -57,6 +60,15 @@ class ItemProjectionFacts:
     dependencies: tuple[ItemId, ...]
     overview: OverviewItem | None
     definition: stored_state.ItemDefinitionRevision
+
+
+@dataclass(frozen=True, slots=True)
+class ItemOverviewFacts:
+    item: work_models.WorkItem
+    dependency_liveness: tuple[tuple[ItemId, bool], ...]
+    definition: work_models.DefinitionAnchor
+    proposals: tuple[stored_state.StoredProposal, ...]
+    preparation: PreparationAuthorityStatus | None
 
 
 @dataclass(frozen=True, slots=True)

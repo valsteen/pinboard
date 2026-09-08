@@ -96,7 +96,7 @@ def decide_and_commit_attempt_authority_change(
             assert_never(unreachable)
     with store.write() as transaction:
         decision_context = transaction.read_decision_facts(
-            query_models.DecisionScope((), (attempt_id,), (), ()), decided_at
+            query_models.DecisionScope((), (), (), (), (attempt_id,), (), ()), decided_at
         ).snapshot
         retained = transaction.read_attempt_authority_status(attempt_id)
         generation_before = transaction.read_attempt_generation(attempt_id)
@@ -200,7 +200,7 @@ def start_preparation(
 
     with store.write() as transaction:
         snapshot = transaction.read_decision_facts(
-            query_models.DecisionScope((item_id,), (), (), ()), acquired_at
+            query_models.DecisionScope((item_id,), (), (), (), (), (), ()), acquired_at
         ).snapshot
         retained = _project_retained_preparation_authority(
             snapshot, transaction.read_preparation_authority_status(item_id), item_id
@@ -286,7 +286,7 @@ def _commit_preparation_authority_change(
         case _ as unreachable:
             assert_never(unreachable)
     decision_context = transaction.read_decision_facts(
-        query_models.DecisionScope((item_id,), (), (), ()), decided_at
+        query_models.DecisionScope((item_id,), (), (), (), (), (), ()), decided_at
     ).snapshot
     retained = transaction.read_preparation_authority_status(item_id)
     generation_before = transaction.read_preparation_generation(item_id)
@@ -343,20 +343,23 @@ def create_proposal(
         allocation = transaction.read_mutation_allocation()
         live_item_count = transaction.read_live_item_count()
         relation_item = operation.intake.relation.item
-        scope_items = tuple(
-            dict.fromkeys(
-                (
-                    ItemId(operation.intake.proposal_id),
-                    *((relation_item,) if relation_item is not None else ()),
-                )
-            )
-        )
+        proposal_item = ItemId(operation.intake.proposal_id)
+        primary_items = (proposal_item,)
+        related_items: tuple[ItemId, ...] = ()
+        if relation_item is not None:
+            if isinstance(operation.intake.relation, work_models.PrerequisiteProposalRelation):
+                primary_items = (*primary_items, relation_item)
+            else:
+                related_items = (relation_item,)
         decision_context = transaction.read_decision_facts(
             query_models.DecisionScope(
-                scope_items,
-                (),
-                (operation.intake.proposal_id,),
-                (),
+                item_ids=primary_items,
+                related_item_ids=related_items,
+                dependency_closure_roots=(),
+                live_dependent_roots=(),
+                attempt_ids=(),
+                proposal_ids=(operation.intake.proposal_id,),
+                artifact_ref_ids=(),
             ),
             now,
         ).snapshot
@@ -449,6 +452,9 @@ def _resolve_actor_authority(
 
 def _transition_decision_scope(command: decision_models.TransitionCommand) -> query_models.DecisionScope:
     item_ids, attempt_ids, proposal_ids = action_subject_ids(command.action)
+    related_item_ids: tuple[ItemId, ...] = ()
+    dependency_closure_roots: tuple[ItemId, ...] = ()
+    live_dependent_roots: tuple[ItemId, ...] = ()
     artifact_ids: tuple[ArtifactRefId, ...] = ()
     match command:
         case decision_models.ActivateCommand(value=value):
@@ -457,19 +463,24 @@ def _transition_decision_scope(command: decision_models.TransitionCommand) -> qu
             if value.brief_artifact_ref_id is not None:
                 artifact_ids = (value.brief_artifact_ref_id,)
         case decision_models.BlockCommand(value=value) | decision_models.BlockItemCommand(value=value):
-            item_ids = (*item_ids, *value.depends_on)
+            related_item_ids = value.depends_on
         case decision_models.AcceptProposalCommand(value=value):
-            item_ids = (*item_ids, value.item, *value.depends_on)
+            item_ids = (*item_ids, value.item)
+            related_item_ids = value.depends_on
+            dependency_closure_roots = (value.item, *value.depends_on)
         case decision_models.MergeProposalCommand(value=value):
-            item_ids = (*item_ids, value.target)
+            related_item_ids = (value.target,)
         case decision_models.ReviseItemCommand(value=value):
-            item_ids = (*item_ids, value.item_id, *value.definition.dependencies)
+            item_ids = (*item_ids, value.item_id)
+            related_item_ids = value.definition.dependencies
+            dependency_closure_roots = value.definition.dependencies
+        case decision_models.CloseCommand():
+            live_dependent_roots = item_ids
         case (
             decision_models.AcceptCheckpointCommand()
             | decision_models.AcceptReviewAndContinueCommand()
             | decision_models.PauseCommand()
             | decision_models.CompleteCommand()
-            | decision_models.CloseCommand()
             | decision_models.SubmitReviewCommand()
             | decision_models.ReturnForCorrectionCommand()
             | decision_models.ReopenCommand()
@@ -482,10 +493,13 @@ def _transition_decision_scope(command: decision_models.TransitionCommand) -> qu
         case _ as unreachable:
             assert_never(unreachable)
     return query_models.DecisionScope(
-        tuple(dict.fromkeys(item_ids)),
-        tuple(dict.fromkeys(attempt_ids)),
-        tuple(dict.fromkeys(proposal_ids)),
-        artifact_ids,
+        item_ids=tuple(dict.fromkeys(item_ids)),
+        related_item_ids=tuple(dict.fromkeys(related_item_ids)),
+        dependency_closure_roots=tuple(dict.fromkeys(dependency_closure_roots)),
+        live_dependent_roots=tuple(dict.fromkeys(live_dependent_roots)),
+        attempt_ids=tuple(dict.fromkeys(attempt_ids)),
+        proposal_ids=tuple(dict.fromkeys(proposal_ids)),
+        artifact_ref_ids=artifact_ids,
     )
 
 

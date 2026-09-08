@@ -265,7 +265,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         common = ("--project-root", str(project), "--work-root", str(work))
 
         with (
-            patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+            patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
             self.record_store_reads() as attempt_reads,
         ):
             result, stdout, stderr = self.run_cli(*common, "attempt", "status", "--attempt-id", "work-a-1")
@@ -279,7 +279,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         self.assert_keyed_status_queries(work / "state.sqlite3", attempt_statements)
 
         with (
-            patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+            patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
             patch("pinboard.interfaces.preparation_authority.datetime") as clock,
             self.record_store_reads() as preparation_reads,
         ):
@@ -302,12 +302,129 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
         self.assert_keyed_status_queries(work / "state.sqlite3", preparation_statements)
 
+    def test_action_discovery_uses_no_state_without_a_selected_lease(self) -> None:
+        project, work, _store = self.initialized_state(self.state_with_unrelated_attempt_authority())
+        common = ("--project-root", str(project), "--work-root", str(work), "actions")
+
+        with (
+            patch.object(
+                SQLiteWorkStore,
+                "read_current_action_snapshot",
+                side_effect=AssertionError("current project read used"),
+            ),
+            self.record_store_reads() as observer_reads,
+        ):
+            result, stdout, stderr = self.run_cli(*common, "--role", "observer", "--json")
+        self.assertEqual(0, result, stderr)
+        self.assertEqual(["inspect:ledger"], [value["action_id"] for value in json.loads(stdout)["actions"]])
+        self.assertEqual(set(), observer_reads[0])
+
+        with (
+            patch.object(
+                SQLiteWorkStore,
+                "read_current_action_snapshot",
+                side_effect=AssertionError("current project read used"),
+            ),
+            self.record_store_reads() as unleased_reads,
+        ):
+            result, _stdout, stderr = self.run_cli(*common, "--role", "worker")
+        self.assertEqual(11, result)
+        self.assertIn("ATTEMPT_LEASE_REQUIRED", stderr)
+        self.assertEqual(set(), unleased_reads[0])
+
+    def test_leased_action_discovery_uses_only_lease_selected_subjects(self) -> None:
+        cases = (
+            (
+                "worker",
+                self.state_with_unrelated_attempt_authority(),
+                "attempt-lease-a",
+                "3",
+            ),
+            (
+                "preparer",
+                self.state_with_preparation(unrelated_count=64),
+                "preparation-lease",
+                "2",
+            ),
+        )
+        for role, state, lease_id, generation in cases:
+            with self.subTest(role=role):
+                project, work, _store = self.initialized_state(state)
+                common = ("--project-root", str(project), "--work-root", str(work), "actions")
+                with (
+                    patch.object(
+                        SQLiteWorkStore,
+                        "read_current_action_snapshot",
+                        side_effect=AssertionError("current project read used"),
+                    ),
+                    patch("pinboard.interfaces.work_inspection.datetime") as clock,
+                    self.record_store_reads() as selected_reads,
+                ):
+                    clock.now.return_value = SQLITE_NOW + timedelta(minutes=1)
+                    result, stdout, stderr = self.run_cli(
+                        *common,
+                        "--role",
+                        role,
+                        "--lease-id",
+                        lease_id,
+                        "--generation",
+                        generation,
+                        "--json",
+                    )
+                self.assertEqual(0, result, stderr)
+                self.assertTrue(json.loads(stdout)["actions"])
+                read_tables, statements = selected_reads
+                self.assertNotIn("transition_history", read_tables)
+                self.assertNotIn("artifact_refs", read_tables)
+                self.assertNotIn("work_item_state_counts", read_tables)
+                self.assert_keyed_status_queries(work / "state.sqlite3", statements)
+
+    def test_exact_action_discovery_reads_only_its_named_subject(self) -> None:
+        project, work, _store = self.initialized_state(self.state_with_unrelated_attempt_authority())
+        common = ("--project-root", str(project), "--work-root", str(work), "actions")
+        with (
+            patch.object(
+                SQLiteWorkStore,
+                "read_current_action_snapshot",
+                side_effect=AssertionError("current project read used"),
+            ),
+            patch.object(
+                SQLiteWorkStore,
+                "read_leased_action_snapshot",
+                side_effect=AssertionError("lease-wide read used"),
+            ),
+            patch("pinboard.interfaces.work_inspection.datetime") as clock,
+            self.record_store_reads() as selected_reads,
+        ):
+            clock.now.return_value = SQLITE_NOW + timedelta(minutes=1)
+            result, stdout, stderr = self.run_cli(
+                *common,
+                "--role",
+                "worker",
+                "--lease-id",
+                "attempt-lease-a",
+                "--generation",
+                "3",
+                "--action-id",
+                "continue:work-a-1",
+                "--json",
+            )
+
+        self.assertEqual(0, result, stderr)
+        self.assertEqual(["continue:work-a-1"], [value["action_id"] for value in json.loads(stdout)["actions"]])
+        read_tables, statements = selected_reads
+        self.assertNotIn("transition_history", read_tables)
+        self.assertNotIn("proposals", read_tables)
+        self.assertNotIn("artifact_refs", read_tables)
+        self.assertNotIn("work_item_state_counts", read_tables)
+        self.assert_keyed_status_queries(work / "state.sqlite3", statements)
+
     def test_installed_item_status_reads_only_selected_item_facts(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_preparation(unrelated_count=64))
         common = ("--project-root", str(project), "--work-root", str(work))
 
         with (
-            patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+            patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
             self.record_store_reads() as item_reads,
         ):
             result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", "work-c")
@@ -360,7 +477,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         common = ("--project-root", str(project), "--work-root", str(work))
 
         with (
-            patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+            patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
             patch("pinboard.interfaces.work_inspection.datetime") as clock,
             self.record_store_reads() as preview_reads,
         ):
@@ -427,7 +544,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
 
         with (
-            patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+            patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
             patch("pinboard.interfaces.work_inspection.datetime") as clock,
             self.record_store_reads() as attempt_reads,
         ):
@@ -485,7 +602,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
 
         with (
-            patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+            patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
             patch("pinboard.interfaces.work_inspection.datetime") as clock,
             self.record_store_reads() as review_reads,
         ):
@@ -546,7 +663,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         common = ("--project-root", str(project), "--work-root", str(work))
 
         with (
-            patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+            patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
             self.record_store_reads() as reads,
         ):
             result, stdout, stderr = self.run_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1")
@@ -795,7 +912,9 @@ class AuthorityStatusReadTest(unittest.TestCase):
         ):
             with (
                 self.subTest(command=arguments[1]),
-                patch.object(SQLiteWorkStore, "snapshot", side_effect=AssertionError("complete snapshot used")),
+                patch.object(
+                    SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")
+                ),
                 self.record_store_reads() as reads,
             ):
                 result, stdout, stderr = self.run_cli(*common, *arguments)

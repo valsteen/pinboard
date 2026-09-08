@@ -156,7 +156,7 @@ class DispatchTest(unittest.TestCase):
         def action() -> decision_models.DispatchAction:
             actions = expect_success(
                 discover_actions(
-                    store.snapshot(),
+                    store.validated_snapshot(),
                     decision_models.Role.PROJECT,
                     now=SQLITE_NOW,
                 )
@@ -417,7 +417,7 @@ class DispatchTest(unittest.TestCase):
         self.assertIs(store, recheck.call_args.args[0])
 
         self.assertIn(f"Checkpoint: {CHECKPOINT_ID}", prompt)
-        after_first = store.snapshot()
+        after_first = store.validated_snapshot()
         ready = tuple(
             reference
             for reference in after_first.artifact_references
@@ -437,7 +437,7 @@ class DispatchTest(unittest.TestCase):
             )
         )
         self.assertEqual(prompt, reused)
-        self.assertEqual(after_first, store.snapshot())
+        self.assertEqual(after_first, store.validated_snapshot())
 
         identical_retry = expect_dispatch_success(
             prepare_dispatch(
@@ -451,7 +451,7 @@ class DispatchTest(unittest.TestCase):
             )
         )
         self.assertEqual(prompt, identical_retry)
-        self.assertEqual(after_first, store.snapshot())
+        self.assertEqual(after_first, store.validated_snapshot())
 
         collision = prepare_dispatch(
             store,
@@ -467,9 +467,11 @@ class DispatchTest(unittest.TestCase):
         )
         expect_dispatch_failure(collision, DispatchErrorCode.DISPATCH_BRIEF_REVIEW_COLLISION)
         self.assertTrue(
-            any("rejected-later-review" in reference.key for reference in store.snapshot().artifact_references)
+            any(
+                "rejected-later-review" in reference.key for reference in store.validated_snapshot().artifact_references
+            )
         )
-        before_identical_retry = store.snapshot()
+        before_identical_retry = store.validated_snapshot()
         identical_retry = prepare_dispatch(
             store,
             ArtifactRepository(roots),
@@ -489,7 +491,7 @@ class DispatchTest(unittest.TestCase):
         assert repeated_collision.details is not None
         self.assertEqual("unchanged", repeated_collision.details.effect.value)
         self.assertEqual((), repeated_collision.details.changed_surfaces)
-        self.assertEqual(before_identical_retry, store.snapshot())
+        self.assertEqual(before_identical_retry, store.validated_snapshot())
 
     def test_installed_dispatch_reports_new_ready_and_collision_artifacts_after_database_failure(self) -> None:
         project, roots, store, value, action, environment = self.initialized()
@@ -656,7 +658,7 @@ class DispatchTest(unittest.TestCase):
                 supplied_review=SuppliedDispatchReview(ready_review(value), ReviewId("prepublication-race")),
             )
 
-        self.assertEqual(14, store.snapshot().lifecycle.project.revision)
+        self.assertEqual(14, store.validated_snapshot().lifecycle.project.revision)
         expect_dispatch_failure(result, DispatchErrorCode.DISPATCH_ACTION_UNAVAILABLE)
 
     def test_sqlite_dispatch_rejects_stale_action_and_cli_verifies_prompt(self) -> None:

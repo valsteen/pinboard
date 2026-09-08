@@ -34,10 +34,6 @@ class FileIOError(RuntimeError):
         super().__init__(f"{code.value}: {message}")
 
 
-class ViewProjectionError(RuntimeError):
-    """The supplied exact view facts do not contain a declared affected selector."""
-
-
 class RootErrorCode(Enum):
     PROJECT_GIT_EXCLUDE_UNAVAILABLE = "PROJECT_GIT_EXCLUDE_UNAVAILABLE"
     PROJECT_GIT_LAYOUT_UNSUPPORTED = "PROJECT_GIT_LAYOUT_UNSUPPORTED"

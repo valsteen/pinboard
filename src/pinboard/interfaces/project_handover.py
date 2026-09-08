@@ -6,7 +6,7 @@ from pathlib import PurePosixPath
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.application import handover, ports, stored_state
+from pinboard.application import handover, ports
 from pinboard.interfaces import cli_commands
 from pinboard.interfaces.cli_output import write_json
 
@@ -32,7 +32,7 @@ def _encode_artifact_content(reference_id: int, value: bytes) -> handover.Handov
 
 
 def _read_and_encode_artifacts(
-    state: stored_state.StoredWorkState,
+    state: handover.HandoverState,
     artifacts: ArtifactRepository,
 ) -> tuple[tuple[handover.HandoverArtifactReference, ...], tuple[handover.HandoverArtifactContent, ...]]:
     projected_references: list[handover.HandoverArtifactReference] = []
@@ -53,9 +53,9 @@ def _read_and_encode_artifacts(
 
 
 def export_project_handover(
-    durable: DurableRoots, store: ports.CompleteStateReader, _command: cli_commands.HandoverCommand
+    durable: DurableRoots, store: ports.HandoverReader, _command: cli_commands.HandoverCommand
 ) -> int:
-    captured_state = store.snapshot()
+    captured_state = handover.merge_handover_batches(store.read_handover_batches())
     artifact_repository = ArtifactRepository(durable)
     projected_references, encoded_contents = _read_and_encode_artifacts(captured_state, artifact_repository)
     portable_package = handover.project_handover_from_state(

@@ -19,8 +19,16 @@ from pinboard.application import actions as action_queries
 from pinboard.application import ports, queries, query_models
 from pinboard.domain import decision_models, work_models
 from pinboard.domain import errors as domain_errors
-from pinboard.domain.identifiers import AttemptId, TaskId
-from pinboard.interfaces import cli_commands, errors, transition_input, work_brief_models, work_inspection_models
+from pinboard.domain.identifiers import ActionId, AttemptId, LeaseId, TaskId
+from pinboard.domain.ledger import LedgerSnapshot
+from pinboard.interfaces import (
+    action_selection,
+    cli_commands,
+    errors,
+    transition_input,
+    work_brief_models,
+    work_inspection_models,
+)
 from pinboard.interfaces.cli_output import write_json
 from pinboard.interfaces.work_briefs import decode_canonical_work_brief
 
@@ -473,6 +481,50 @@ def show_item_definition_history(
     return 0
 
 
+def _read_action_snapshot(
+    store: ports.WorkStore,
+    role: decision_models.Role,
+    lease_id: LeaseId | None,
+    generation: int | None,
+    action_id: ActionId | None,
+    operation_time: datetime,
+) -> LedgerSnapshot | errors.CommandFailure:
+    if role == decision_models.Role.OBSERVER or (
+        role in {decision_models.Role.WORKER, decision_models.Role.PREPARER}
+        and (lease_id is None or generation is None)
+    ):
+        return LedgerSnapshot("", ())
+    if action_id is not None:
+        scope = action_selection.action_identity_scope(action_id)
+        if scope is None:
+            return errors.CommandFailure(
+                domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                f"Action '{action_id}' is not currently legal for this role and lease.",
+                None,
+            )
+        return store.read_decision_facts(scope, operation_time).snapshot
+    if role == decision_models.Role.PROJECT:
+        return store.read_current_action_snapshot(operation_time)
+    assert lease_id is not None and generation is not None
+    return store.read_leased_action_snapshot(role, lease_id, generation, operation_time)
+
+
+def _select_requested_actions(
+    available_actions: tuple[decision_models.Action, ...],
+    exact_action_id: ActionId | None,
+) -> tuple[decision_models.Action, ...] | errors.CommandFailure:
+    if exact_action_id is None:
+        return available_actions
+    selected = tuple(action for action in available_actions if decision_models.action_id(action) == exact_action_id)
+    if selected:
+        return selected
+    return errors.CommandFailure(
+        domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        f"Action '{exact_action_id}' is not currently legal for this role and lease.",
+        None,
+    )
+
+
 def show_actions(
     store: ports.WorkStore,
     command: cli_commands.ActionsCommand | cli_commands.LeasedActionsCommand,
@@ -486,7 +538,11 @@ def show_actions(
         case _ as unreachable:
             assert_never(unreachable)
     operation_time = datetime.now(UTC)
-    current_snapshot = store.read_current_action_snapshot(operation_time)
+    current_snapshot = _read_action_snapshot(
+        store, command.role, lease_id, generation, command.action_id, operation_time
+    )
+    if isinstance(current_snapshot, errors.CommandFailure):
+        return current_snapshot
     available_actions = action_queries.discover_current_actions(
         current_snapshot,
         command.role,
@@ -496,16 +552,10 @@ def show_actions(
     if isinstance(available_actions, domain_errors.DecisionFailure):
         return errors.CommandFailure(available_actions.code, available_actions.message, available_actions.details)
     exact_action_id = command.action_id
-    if exact_action_id is not None:
-        available_actions = tuple(
-            action for action in available_actions if decision_models.action_id(action) == exact_action_id
-        )
-        if not available_actions:
-            return errors.CommandFailure(
-                domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
-                f"Action '{exact_action_id}' is not currently legal for this role and lease.",
-                None,
-            )
+    selected_actions = _select_requested_actions(available_actions, exact_action_id)
+    if isinstance(selected_actions, errors.CommandFailure):
+        return selected_actions
+    available_actions = selected_actions
     if command.json:
         action_views: list[work_inspection_models.ActionView] = []
         for action in available_actions:

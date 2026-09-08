@@ -9,7 +9,7 @@ from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite.errors import StorageError
-from pinboard.application import ports, query_models
+from pinboard.application import ports
 from pinboard.application.actions import discover_current_actions
 from pinboard.application.artifacts import (
     CheckpointArtifacts,
@@ -33,7 +33,7 @@ from pinboard.domain.errors import (
     RetryDisposition,
 )
 from pinboard.domain.history import work_item_definition_digest
-from pinboard.domain.identifiers import ActionId, AttemptId, HostId, ItemId, ProposalId, TaskId
+from pinboard.domain.identifiers import ActionId, AttemptId, HostId, TaskId
 from pinboard.interfaces import (
     action_selection,
     cli_commands,
@@ -71,54 +71,6 @@ type _ProjectTransitionRequest = _EncodedProjectTransitionRequest | _ValidatedIt
 class _CheckpointArtifactPublication:
     artifacts: CheckpointArtifacts
     created_immutable_artifact: bool
-
-
-def _project_action_scope(action_id: ActionId) -> query_models.DecisionScope:
-    kind_value, subject = str(action_id).split(":", 1)
-    semantics = decision_models.action_semantics(decision_models.ActionKind(kind_value))
-    match semantics.subject_kind:
-        case decision_models.ActionSubjectKind.ITEM:
-            return query_models.DecisionScope(
-                item_ids=(ItemId(subject),),
-                related_item_ids=(),
-                dependency_closure_roots=(),
-                live_dependent_roots=(),
-                attempt_ids=(),
-                proposal_ids=(),
-                artifact_ref_ids=(),
-            )
-        case decision_models.ActionSubjectKind.ATTEMPT:
-            return query_models.DecisionScope(
-                item_ids=(),
-                related_item_ids=(),
-                dependency_closure_roots=(),
-                live_dependent_roots=(),
-                attempt_ids=(AttemptId(subject),),
-                proposal_ids=(),
-                artifact_ref_ids=(),
-            )
-        case decision_models.ActionSubjectKind.PROPOSAL:
-            return query_models.DecisionScope(
-                item_ids=(),
-                related_item_ids=(),
-                dependency_closure_roots=(),
-                live_dependent_roots=(),
-                attempt_ids=(),
-                proposal_ids=(ProposalId(subject),),
-                artifact_ref_ids=(),
-            )
-        case decision_models.ActionSubjectKind.LEDGER:
-            return query_models.DecisionScope(
-                item_ids=(),
-                related_item_ids=(),
-                dependency_closure_roots=(),
-                live_dependent_roots=(),
-                attempt_ids=(),
-                proposal_ids=(),
-                artifact_ref_ids=(),
-            )
-        case _ as unreachable:
-            assert_never(unreachable)
 
 
 def _committed_immutable_artifact_failure(error: ArtifactError | StorageError) -> CommittedEffectFailure:
@@ -496,8 +448,15 @@ def execute_project_transition(
     artifacts = ArtifactRepository(durable)
     requested_action_id = _requested_project_action_id(request)
     observed_at = datetime.now(UTC)
+    scope = action_selection.action_identity_scope(requested_action_id)
+    if scope is None:
+        return CommandFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            f"Action '{requested_action_id}' is not currently legal.",
+            None,
+        )
     current_actions = discover_current_actions(
-        store.read_decision_facts(_project_action_scope(requested_action_id), observed_at).snapshot,
+        store.read_decision_facts(scope, observed_at).snapshot,
         decision_models.Role.PROJECT,
     )
     if isinstance(current_actions, DecisionFailure):

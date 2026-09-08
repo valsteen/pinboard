@@ -255,6 +255,11 @@ class HowItWorksDocumentationTests(unittest.TestCase):
             destination = Path(directory)
             render.write_outputs(destination, outputs)
             self.assertEqual((), render.stale_outputs(destination, outputs))
+            mtimes = {path: (destination / path).stat().st_mtime_ns for path in outputs}
+
+            render.write_outputs(destination, outputs)
+
+            self.assertEqual(mtimes, {path: (destination / path).stat().st_mtime_ns for path in outputs})
 
             changed = destination / "HOW_IT_WORKS.md"
             changed.write_text("stale\n", encoding="utf-8")

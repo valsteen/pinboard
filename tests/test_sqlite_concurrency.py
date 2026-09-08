@@ -56,7 +56,7 @@ def _commit_same_pause(
     results: multiprocessing.queues.Queue[str],
 ) -> None:
     store = SQLiteWorkStore(Path(database_path))
-    before = store.snapshot()
+    before = store.validated_snapshot()
     snapshot = project_decision_snapshot(before, SQLITE_NOW)
     actor = decision_models.ActorAuthority(decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0)
     actions = expect_success(available_actions(snapshot, actor))
@@ -80,7 +80,7 @@ def _commit_same_rebind(
     results: multiprocessing.queues.Queue[str],
 ) -> None:
     store = SQLiteWorkStore(Path(database_path))
-    before = store.snapshot()
+    before = store.validated_snapshot()
     snapshot = project_decision_snapshot(before, SQLITE_NOW)
     actor = decision_models.ActorAuthority(decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0)
     actions = expect_success(available_actions(snapshot, actor))
@@ -111,7 +111,7 @@ def _commit_same_checkpoint(
 ) -> None:
     roots = resolve_durable_roots(Path(project_path))
     store = SQLiteWorkStore(Path(database_path))
-    before = store.snapshot()
+    before = store.validated_snapshot()
     snapshot = project_decision_snapshot(before, SQLITE_NOW)
     actor = decision_models.ActorAuthority(
         decision_models.Role.PROJECT,
@@ -158,7 +158,7 @@ def _commit_same_definition_revision(
     results: multiprocessing.queues.Queue[str],
 ) -> None:
     store = SQLiteWorkStore(Path(database_path))
-    before = store.snapshot()
+    before = store.validated_snapshot()
     snapshot = project_decision_snapshot(before, SQLITE_NOW)
     actor = decision_models.ActorAuthority(decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0)
     actions = expect_success(available_actions(snapshot, actor))
@@ -203,7 +203,7 @@ def _acquire_same_preparation(
     results: multiprocessing.queues.Queue[str],
 ) -> None:
     store = SQLiteWorkStore(Path(database_path))
-    snapshot = project_decision_snapshot(store.snapshot(), SQLITE_NOW)
+    snapshot = project_decision_snapshot(store.validated_snapshot(), SQLITE_NOW)
     item = snapshot.item(ItemId("work-c"))
     definition = snapshot.definition(ItemId("work-c"))
     assert item is not None
@@ -234,7 +234,7 @@ def _race_preparation_and_prerequisite_proposal(
 ) -> None:
     store = SQLiteWorkStore(Path(database_path))
     if operation_kind == "preparation":
-        snapshot = project_decision_snapshot(store.snapshot(), SQLITE_NOW)
+        snapshot = project_decision_snapshot(store.validated_snapshot(), SQLITE_NOW)
         item = snapshot.item(ItemId("work-c"))
         definition = snapshot.definition(ItemId("work-c"))
         assert item is not None
@@ -286,7 +286,7 @@ def _activate_same_prepared_item(
     results: multiprocessing.queues.Queue[str],
 ) -> None:
     store = SQLiteWorkStore(Path(database_path))
-    snapshot = project_decision_snapshot(store.snapshot(), SQLITE_NOW)
+    snapshot = project_decision_snapshot(store.validated_snapshot(), SQLITE_NOW)
     authority = snapshot.command_preparation_authorities[0]
     actor = decision_models.ActorAuthority(
         decision_models.Role.PREPARER,
@@ -298,7 +298,7 @@ def _activate_same_prepared_item(
     actions = expect_success(available_actions(snapshot, actor))
     action = next(value for value in actions if value.kind == decision_models.ActionKind.ACTIVATE)
     assert isinstance(action, decision_models.ActivateAction)
-    state_artifact_ref_id = store.snapshot().artifact_references[0].artifact_ref_id
+    state_artifact_ref_id = store.validated_snapshot().artifact_references[0].artifact_ref_id
     selected_command = decision_models.ActivateCommand(
         action,
         work_models.ActivateInput(
@@ -383,7 +383,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         observed = (results.get(), results.get())
         self.assertEqual(1, sum(value.startswith("committed:") for value in observed))
         self.assertIn("ACTION_NOT_AVAILABLE", observed)
-        after = SQLiteWorkStore(roots.database_path).snapshot()
+        after = SQLiteWorkStore(roots.database_path).validated_snapshot()
         self.assertEqual(authority_models.PreparationLeaseStatus.REVOKED, after.authority.preparation_leases[0].state)
         self.assertEqual(1, sum(value.attempt_id == AttemptId("work-c-1") for value in after.lifecycle.attempts))
 
@@ -393,7 +393,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         initialize_database(roots, SQLITE_NOW)
         store = SQLiteWorkStore(roots.database_path)
         initialize_store(store, complete_sqlite_state())
-        before = store.snapshot()
+        before = store.validated_snapshot()
 
         context = multiprocessing.get_context("spawn")
         barrier = context.Barrier(2)
@@ -413,7 +413,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
             self.assertEqual(0, worker.exitcode)
 
         self.assertCountEqual(("committed", "ACTION_NOT_AVAILABLE"), (results.get(), results.get()))
-        after = SQLiteWorkStore(roots.database_path).snapshot()
+        after = SQLiteWorkStore(roots.database_path).validated_snapshot()
         self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
         preparation_won = bool(after.authority.preparation_leases)
         proposal_won = any(
@@ -427,7 +427,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         initialize_database(roots, SQLITE_NOW)
         store = SQLiteWorkStore(roots.database_path)
         initialize_store(store, complete_sqlite_state())
-        before = store.snapshot()
+        before = store.validated_snapshot()
 
         context = multiprocessing.get_context("spawn")
         barrier = context.Barrier(2)
@@ -447,7 +447,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
             self.assertEqual(0, worker.exitcode)
 
         self.assertCountEqual(("committed", "ACTION_NOT_AVAILABLE"), (results.get(), results.get()))
-        after = SQLiteWorkStore(roots.database_path).snapshot()
+        after = SQLiteWorkStore(roots.database_path).validated_snapshot()
         self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
         self.assertEqual(1, len(after.authority.preparation_leases))
         self.assertEqual(1, after.authority.preparation_counters[0].generation_high_water)
@@ -475,7 +475,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
             self.assertEqual(0, worker.exitcode)
 
         self.assertCountEqual(("committed", "ACTION_NOT_AVAILABLE"), (results.get(), results.get()))
-        self.assertEqual(13, store.snapshot().lifecycle.project.revision)
+        self.assertEqual(13, store.validated_snapshot().lifecycle.project.revision)
 
     def test_concurrent_rebind_commits_lineage_and_fence_once(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
@@ -530,7 +530,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
             self.assertEqual(0, worker.exitcode)
 
         self.assertCountEqual(("committed", "ACTION_NOT_AVAILABLE"), (results.get(), results.get()))
-        rebound = SQLiteWorkStore(roots.database_path).snapshot()
+        rebound = SQLiteWorkStore(roots.database_path).validated_snapshot()
         self.assertEqual(13, rebound.lifecycle.project.revision)
         self.assertEqual(
             ("codex/corrected-work-a", "corrected-base", 99, 2, revised_digest),
@@ -552,7 +552,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         store = SQLiteWorkStore(roots.database_path)
         state = complete_sqlite_state()
         initialize_store(store, state)
-        snapshot = project_decision_snapshot(store.snapshot(), SQLITE_NOW)
+        snapshot = project_decision_snapshot(store.validated_snapshot(), SQLITE_NOW)
         authority = snapshot.command_attempt_authorities[0]
         actor = decision_models.ActorAuthority(
             decision_models.Role.WORKER,
@@ -573,10 +573,10 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         )
         submit_decision = expect_success(decide(snapshot, submit_command, SQLITE_NOW))
         assert isinstance(submit_decision, decision_models.TransitionDecision)
-        state = store.snapshot()
+        state = store.validated_snapshot()
         with store.write() as transaction:
             transaction.commit(project_transition_mutation(mutation_allocation(state), submit_decision))
-        state = store.snapshot()
+        state = store.validated_snapshot()
 
         context = multiprocessing.get_context("spawn")
         barrier = context.Barrier(2)
@@ -596,7 +596,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
             self.assertEqual(0, worker.exitcode)
 
         self.assertCountEqual(("committed", "ACTION_NOT_AVAILABLE"), (results.get(), results.get()))
-        reloaded = store.snapshot()
+        reloaded = store.validated_snapshot()
         self.assertEqual(state.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
         self.assertEqual(len(state.artifact_references) + 2, len(reloaded.artifact_references))
         self.assertEqual(len(state.transition_receipts) + 1, len(reloaded.transition_receipts))
@@ -631,7 +631,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
             self.assertEqual(0, worker.exitcode)
 
         self.assertCountEqual(("committed", "ACTION_NOT_AVAILABLE"), (results.get(), results.get()))
-        reloaded = store.snapshot()
+        reloaded = store.validated_snapshot()
         revisions = tuple(
             value for value in reloaded.lifecycle.definition_revisions if value.item_id == ItemId("work-a")
         )

@@ -48,7 +48,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
 
     def test_checkpoint_artifact_identity_is_exact(self) -> None:
         path, store = self._store()
-        state = store.snapshot()
+        state = store.validated_snapshot()
         existing = next(value for value in state.artifact_references if value.kind == work_models.ArtifactKind.EVIDENCE)
         published = EvidenceArtifactRef(
             existing.key,
@@ -83,7 +83,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
 
     def test_commit_does_not_assemble_complete_state_before_or_after_persistence(self) -> None:
         _path, store = self._store()
-        before = store.snapshot()
+        before = store.validated_snapshot()
         with store.write() as transaction:
             snapshot = project_decision_snapshot(before, SQLITE_NOW)
             actions = available_actions(
@@ -115,7 +115,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
 
     def test_mutation_allocations_read_only_their_indexed_scalar_and_selected_artifact_facts(self) -> None:
         _path, store = self._store()
-        state = store.snapshot()
+        state = store.validated_snapshot()
         existing = next(value for value in state.artifact_references if value.kind == work_models.ArtifactKind.EVIDENCE)
         published = EvidenceArtifactRef(
             existing.key,
@@ -390,7 +390,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
 
     def test_complete_state_rejects_missing_project_invalid_queue_and_reinitialization(self) -> None:
         path, store = self._store()
-        before = store.snapshot()
+        before = store.validated_snapshot()
 
         raw = sqlite3.connect(path)
         raw.row_factory = sqlite3.Row
@@ -419,11 +419,11 @@ class SQLiteEffectContractTest(unittest.TestCase):
         with self.assertRaises(StorageError) as occupied:
             initialize_store(store, before)
         self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, occupied.exception.code)
-        self.assertEqual(before, store.snapshot())
+        self.assertEqual(before, store.validated_snapshot())
 
     def test_queue_cas_failures_preserve_the_ledger(self) -> None:
         path, store = self._store()
-        before = store.snapshot()
+        before = store.validated_snapshot()
         for effect, argument in ((lifecycle.compact_queue, 1), (lifecycle.make_queue_space, 1)):
             connection = open_database(path, OpenMode.READ_WRITE)
             try:
@@ -441,11 +441,11 @@ class SQLiteEffectContractTest(unittest.TestCase):
             finally:
                 connection.close()
             self.assertIsInstance(result, DecisionFailure)
-            self.assertEqual(before, store.snapshot())
+            self.assertEqual(before, store.validated_snapshot())
 
     def test_proposal_decode_and_stale_disposition_contracts_are_explicit(self) -> None:
         path, store = self._store()
-        before = store.snapshot()
+        before = store.validated_snapshot()
         proposal_id = before.proposals.proposals[0].proposal_id
         for statement, parameters in (
             (
@@ -485,11 +485,11 @@ class SQLiteEffectContractTest(unittest.TestCase):
         finally:
             connection.close()
         self.assertIsInstance(stale, DecisionFailure)
-        self.assertEqual(before, store.snapshot())
+        self.assertEqual(before, store.validated_snapshot())
 
     def test_attempt_authority_validation_rejects_missing_and_mismatched_generations(self) -> None:
         _path, store = self._store()
-        before = store.snapshot()
+        before = store.validated_snapshot()
         without_counter = replace(
             before,
             authority=replace(before.authority, attempt_counters=()),
@@ -516,7 +516,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
 
     def test_expected_insert_key_conflicts_are_stale_but_other_constraints_are_exceptional(self) -> None:
         path, store = self._store()
-        before = store.snapshot()
+        before = store.validated_snapshot()
         attempt = before.lifecycle.attempts[0]
         duplicate_attempt = decision_models.ActivationChange(
             ItemId("work-c"),
@@ -617,7 +617,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
             self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, unrelated_counter_check.exception.code)
         finally:
             connection.close()
-        self.assertEqual(before, store.snapshot())
+        self.assertEqual(before, store.validated_snapshot())
 
 
 if __name__ == "__main__":

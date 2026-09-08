@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
@@ -6,15 +7,16 @@ from typing import Protocol
 
 from pinboard.application import query_models, stored_state
 from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
+from pinboard.application.handover import HandoverState
 from pinboard.application.mutation_models import (
     CheckpointMutationAllocation,
     CommittedEffect,
     MutationAllocation,
     StoredStateMutation,
 )
-from pinboard.domain import work_models
+from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionResult
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, ItemId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, ItemId, LeaseId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
@@ -90,6 +92,10 @@ class WorkStore(Protocol):
 
     def read_current_action_snapshot(self, now: datetime) -> LedgerSnapshot: ...
 
+    def read_leased_action_snapshot(
+        self, role: decision_models.Role, lease_id: LeaseId, generation: int, now: datetime
+    ) -> LedgerSnapshot: ...
+
     def read_current_parallel_snapshot(self, now: datetime) -> LedgerSnapshot: ...
 
     def read_project_overview(self, now: datetime) -> query_models.ProjectOverviewFacts: ...
@@ -103,10 +109,8 @@ class WorkStore(Protocol):
     ) -> query_models.GeneratedViewFacts: ...
 
 
-class CompleteStateReader(Protocol):
-    """Explicit capability for an intentionally project-wide state traversal."""
-
-    def snapshot(self) -> stored_state.StoredWorkState: ...
+class HandoverReader(Protocol):
+    def read_handover_batches(self) -> Iterable[HandoverState]: ...
 
 
 class ValidatedStateReader(Protocol):
@@ -149,3 +153,9 @@ class GeneratedViewReader(Protocol):
         history_ids: tuple[HistoryId, ...],
         now: datetime,
     ) -> query_models.GeneratedViewFacts: ...
+
+
+class GeneratedViewSetReader(Protocol):
+    """Project-wide generated-view facts without unrelated stored state."""
+
+    def read_all_generated_view_facts(self, now: datetime) -> query_models.GeneratedViewFacts: ...

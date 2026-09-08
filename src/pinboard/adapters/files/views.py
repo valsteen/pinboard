@@ -1,8 +1,8 @@
-"""Render and replace human-readable views from supplied authoritative state.
+"""Render and replace human-readable views from supplied authoritative facts.
 
-The caller supplies one SQLite snapshot and verified attempt-brief content.
-This adapter never reads views as authority; it only derives expected bytes and
-writes selected or complete generated projections.
+Ordinary and rebuild callers supply exact projection facts and verified brief
+content. Validation alone supplies complete state to derive every expected byte.
+This adapter never reads generated views as authority.
 """
 
 from collections.abc import Mapping
@@ -10,9 +10,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from pinboard.adapters.files.errors import FileIOError, ViewProjectionError
+from pinboard.adapters.files.errors import FileIOError
 from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory, remove_replaceable
-from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
+from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
 from pinboard.application import query_models, stored_state
 from pinboard.application.queries import project_overview
 from pinboard.domain.identifiers import AttemptId, ItemId
@@ -133,54 +133,6 @@ def _render_history(receipt: stored_state.StoredTransitionReceipt) -> bytes:
     ).encode()
 
 
-def _write_selected_views(
-    work_root: Path,
-    state: stored_state.StoredWorkState,
-    affected: AffectedViews,
-    attempt_briefs: Mapping[AttemptId, bytes],
-    now: datetime,
-) -> None:
-    view_root = ensure_child_directory(work_root, "views")
-    if affected.items:
-        view_inputs = _project_view_inputs(state, now)
-        item_root = ensure_child_directory(view_root, "items")
-        items = {item.item_id: item for item in state.lifecycle.work_items}
-        for item_id in affected.items:
-            try:
-                item = items[item_id]
-            except KeyError:
-                raise ViewProjectionError(f"Affected item {item_id} is missing from refresh state.") from None
-            atomic_replace(
-                item_root / f"{item_id}.md",
-                _render_item(
-                    item,
-                    view_inputs.dependencies[item_id],
-                    view_inputs.overview_items.get(str(item_id)),
-                    view_inputs.definitions[item_id],
-                ),
-            )
-    if affected.attempts:
-        attempt_root = ensure_child_directory(view_root, "attempts")
-        attempts = {attempt.attempt_id: attempt for attempt in state.lifecycle.attempts}
-        for attempt_id in affected.attempts:
-            try:
-                attempt = attempts[attempt_id]
-            except KeyError:
-                raise ViewProjectionError(f"Affected attempt {attempt_id} is missing from refresh state.") from None
-            atomic_replace(attempt_root / f"{attempt_id}.md", _render_attempt(attempt, attempt_briefs))
-    if affected.history_receipts:
-        history_root = ensure_child_directory(view_root, "history")
-        receipts = {receipt.history_id: receipt for receipt in state.transition_receipts}
-        for history_id in affected.history_receipts:
-            try:
-                receipt = receipts[history_id]
-            except KeyError:
-                raise ViewProjectionError(
-                    f"Affected history receipt {history_id} is missing from refresh state."
-                ) from None
-            atomic_replace(history_root / f"{history_id}.md", _render_history(receipt))
-
-
 def refresh_facts(
     facts: query_models.GeneratedViewFacts,
     work_root: Path,
@@ -189,33 +141,61 @@ def refresh_facts(
     """Write only selectors named by exact post-commit projection facts."""
 
     try:
-        view_root = ensure_child_directory(work_root, "views")
-        if facts.items:
-            item_root = ensure_child_directory(view_root, "items")
-            for selected in facts.items:
-                item = selected.item
-                atomic_replace(
-                    item_root / f"{item.item_id}.md",
-                    _render_item(item, selected.dependencies, selected.overview, selected.definition),
-                )
-        if facts.attempts:
-            attempt_root = ensure_child_directory(view_root, "attempts")
-            for selected in facts.attempts:
-                attempt = selected.attempt
-                atomic_replace(
-                    attempt_root / f"{attempt.attempt_id}.md",
-                    _render_attempt(attempt, attempt_briefs),
-                )
-        if facts.receipts:
-            history_root = ensure_child_directory(view_root, "history")
-            for receipt in facts.receipts:
-                atomic_replace(history_root / f"{receipt.history_id}.md", _render_history(receipt))
+        _write_facts(facts, work_root, attempt_briefs)
     except FileIOError as error:
         return ViewRefreshResult(
             facts.project_revision,
             ViewWarning(
                 f"The SQLite transition succeeded, but generated views need repair: {error}",
                 "Run 'pinboard views rebuild'.",
+            ),
+        )
+    return ViewRefreshResult(facts.project_revision, None)
+
+
+def _write_facts(
+    facts: query_models.GeneratedViewFacts,
+    work_root: Path,
+    attempt_briefs: Mapping[AttemptId, bytes],
+) -> None:
+    view_root = ensure_child_directory(work_root, "views")
+    if facts.items:
+        item_root = ensure_child_directory(view_root, "items")
+        for selected in facts.items:
+            item = selected.item
+            atomic_replace(
+                item_root / f"{item.item_id}.md",
+                _render_item(item, selected.dependencies, selected.overview, selected.definition),
+            )
+    if facts.attempts:
+        attempt_root = ensure_child_directory(view_root, "attempts")
+        for selected in facts.attempts:
+            attempt = selected.attempt
+            atomic_replace(attempt_root / f"{attempt.attempt_id}.md", _render_attempt(attempt, attempt_briefs))
+    if facts.receipts:
+        history_root = ensure_child_directory(view_root, "history")
+        for receipt in facts.receipts:
+            atomic_replace(history_root / f"{receipt.history_id}.md", _render_history(receipt))
+
+
+def rebuild_facts(
+    facts: query_models.GeneratedViewFacts,
+    work_root: Path,
+    attempt_briefs: Mapping[AttemptId, bytes],
+) -> ViewRefreshResult:
+    """Reconcile every declared view from project-wide projection facts."""
+
+    try:
+        view_root = ensure_child_directory(work_root, "views")
+        remove_replaceable(view_root / "queue.md")
+        remove_replaceable(view_root / "history.md")
+        _write_facts(facts, work_root, attempt_briefs)
+    except FileIOError as error:
+        return ViewRefreshResult(
+            facts.project_revision,
+            ViewWarning(
+                f"Generated views could not be rebuilt: {error}",
+                "Resolve the filesystem problem and run 'pinboard views rebuild' again.",
             ),
         )
     return ViewRefreshResult(facts.project_revision, None)
@@ -251,36 +231,3 @@ def derive_expected_view_bytes(
         (f"history/{receipt.history_id}.md", _render_history(receipt)) for receipt in state.transition_receipts
     )
     return expected_views
-
-
-def rebuild_state(
-    state: stored_state.StoredWorkState,
-    work_root: Path,
-    attempt_briefs: Mapping[AttemptId, bytes],
-    *,
-    now: datetime,
-) -> ViewRefreshResult:
-    try:
-        view_root = ensure_child_directory(work_root, "views")
-        remove_replaceable(view_root / "queue.md")
-        remove_replaceable(view_root / "history.md")
-        _write_selected_views(
-            work_root,
-            state,
-            AffectedViews(
-                items=tuple(item.item_id for item in state.lifecycle.work_items),
-                attempts=tuple(attempt.attempt_id for attempt in state.lifecycle.attempts),
-                history_receipts=tuple(receipt.history_id for receipt in state.transition_receipts),
-            ),
-            attempt_briefs,
-            now,
-        )
-    except (FileIOError, ViewProjectionError) as error:
-        return ViewRefreshResult(
-            state.lifecycle.project.revision,
-            ViewWarning(
-                f"Generated views could not be rebuilt: {error}",
-                "Resolve the filesystem problem and run 'pinboard views rebuild' again.",
-            ),
-        )
-    return ViewRefreshResult(state.lifecycle.project.revision, None)

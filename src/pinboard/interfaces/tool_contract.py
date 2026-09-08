@@ -37,6 +37,13 @@ type MutationClass = Literal[
     "may-publish-and-record-artifact",
     "repairs-derived-views",
 ]
+type DataScope = Literal[
+    "static",
+    "focused",
+    "current-project",
+    "focused-or-current-project",
+    "explicit-project-wide",
+]
 type ActionExecutionRoute = Literal[
     "transition",
     "dispatch",
@@ -50,6 +57,7 @@ class OperationIndexEntry(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     operation_id: str
     variant: str
     mutation_class: MutationClass
+    data_scope: DataScope
     detail_selector: str
 
 
@@ -93,6 +101,8 @@ class OperationContract(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     cli_usage: str
     purpose: str
     mutation_class: MutationClass
+    data_scope: DataScope
+    data_scope_detail: str
     permitted_roles: tuple[str, ...]
     required_authority: str
     subject_kind: str
@@ -220,6 +230,49 @@ def _mutation_class(command_type: type[cli_commands.CliCommand]) -> MutationClas
     ):
         return "read-only"
     raise ValueError(f"missing operation classification: {command_type.__name__}")
+
+
+def _data_scope(command_type: type[cli_commands.CliCommand]) -> DataScope:
+    if command_type in (cli_commands.InputContractCommand, cli_commands.ToolContractCommand):
+        return "static"
+    if command_type in (
+        cli_commands.ValidateCommand,
+        cli_commands.HandoverCommand,
+        cli_commands.InitializeCommand,
+        cli_commands.RebuildViewsCommand,
+    ):
+        return "explicit-project-wide"
+    if command_type in (cli_commands.StatusCommand, cli_commands.OverviewCommand):
+        return "current-project"
+    if command_type in (cli_commands.ActionsCommand, cli_commands.ParallelPreviewCommand):
+        return "focused-or-current-project"
+    if command_type in _closed_command_types(cli_commands.CliCommand):
+        return "focused"
+    raise ValueError(f"missing operation data-scope classification: {command_type.__name__}")
+
+
+def _data_scope_detail(command_type: type[cli_commands.CliCommand]) -> str:
+    scope = _data_scope(command_type)
+    match scope:
+        case "static":
+            return "Read installed static metadata without resolving project state."
+        case "focused":
+            return (
+                "Read or change only named inputs, selected subjects, and relationships or generated paths "
+                "whose result changes with those subjects."
+            )
+        case "current-project":
+            return "Read current live-project facts required by the advertised project-level result, excluding retained history."
+        case "focused-or-current-project":
+            return (
+                "Use focused reads when subjects are selected; otherwise read current live-project facts only when "
+                "the advertised result ranges over the live portfolio."
+            )
+        case "explicit-project-wide":
+            return (
+                "This explicit maintenance or export operation may read the complete declared project fact set; "
+                "it excludes relations outside that advertised result."
+            )
 
 
 def _purpose(operation_id: str, variant: str) -> str:  # noqa: C901, PLR0912 - exhaustive installed purpose owner
@@ -358,8 +411,10 @@ def _subject_and_precondition(  # noqa: C901, PLR0912 - exhaustive installed pre
         return "work-root", "source-checkout-resolvable"
     if command_type is cli_commands.RootCommand:
         return "repository-roots", "source-checkout-resolvable"
-    if command_type in (cli_commands.BriefSourcesPlanCommand, cli_commands.BriefSourcesEmitCommand):
+    if command_type is cli_commands.BriefSourcesPlanCommand:
         return "source-manifest", "selected-source-checkout-readable"
+    if command_type is cli_commands.BriefSourcesEmitCommand:
+        return "source-plan", "selected-source-checkout-readable"
     if command_type is cli_commands.BriefPublishCommand:
         return "brief-artifact", "canonical-brief-valid"
     return "ledger", "valid-ledger" if operation_id not in {
@@ -372,8 +427,10 @@ def _subject_and_precondition(  # noqa: C901, PLR0912 - exhaustive installed pre
 def _artifact_selector(command_type: type[cli_commands.CliCommand]) -> str | None:
     if command_type is cli_commands.ItemReviseCommand:
         return "pinboard-item-revision/v1 file"
-    if command_type in (cli_commands.BriefSourcesPlanCommand, cli_commands.BriefSourcesEmitCommand):
+    if command_type is cli_commands.BriefSourcesPlanCommand:
         return "pinboard-brief-sources/v1 file"
+    if command_type is cli_commands.BriefSourcesEmitCommand:
+        return "pinboard-brief-source-plan/v1 file"
     if command_type is cli_commands.BriefPublishCommand:
         return "pinboard-work-brief/v2 file"
     if command_type is cli_commands.ProposalCommand:
@@ -392,8 +449,10 @@ def _artifact_selector(command_type: type[cli_commands.CliCommand]) -> str | Non
 def _artifact_schema(command_type: type[cli_commands.CliCommand]) -> msgspec.Raw | None:
     if command_type is cli_commands.ItemReviseCommand:
         model = transition_models.ReviseItemInputPayload
-    elif command_type in (cli_commands.BriefSourcesPlanCommand, cli_commands.BriefSourcesEmitCommand):
+    elif command_type is cli_commands.BriefSourcesPlanCommand:
         model = brief_source_models.BriefSourceManifest
+    elif command_type is cli_commands.BriefSourcesEmitCommand:
+        model = brief_source_models.BriefSourcePlanView
     elif command_type is cli_commands.BriefPublishCommand:
         return None
     elif command_type is cli_commands.ProposalCommand:
@@ -488,6 +547,8 @@ def _operation_contract(variant: cli_parser.InstalledCommandVariant) -> Operatio
         variant.cli_usage,
         _purpose(variant.operation_id, variant.variant),
         mutation_class,
+        _data_scope(variant.command_type),
+        _data_scope_detail(variant.command_type),
         roles,
         authority,
         subject,
@@ -508,6 +569,7 @@ def _operation_index_entry(variant: cli_parser.InstalledCommandVariant) -> Opera
         variant.operation_id,
         variant.variant,
         _mutation_class(variant.command_type),
+        _data_scope(variant.command_type),
         f"--operation {variant.operation_id}{'' if variant.variant == 'default' else f':{variant.variant}'}",
     )
 

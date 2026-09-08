@@ -152,7 +152,7 @@ class SQLiteValidationTest(unittest.TestCase):
             size_bytes=published.size_bytes,
         )
         initialize_store(store, replace(state, artifact_references=(reference, *state.artifact_references[1:])))
-        before = store.snapshot()
+        before = store.validated_snapshot()
         staging = first.database_path.with_name(f".{first.database_path.name}.pinboard-stage")
         staging.hardlink_to(first.database_path)
         staging_journal = staging.with_name(f"{staging.name}-journal")
@@ -162,7 +162,7 @@ class SQLiteValidationTest(unittest.TestCase):
 
         self.assertTrue(resumed.resumed)
         self.assertEqual(first.database_path, resumed.database_path)
-        self.assertEqual(before, SQLiteWorkStore(resumed.database_path).snapshot())
+        self.assertEqual(before, SQLiteWorkStore(resumed.database_path).validated_snapshot())
         self.assertTrue(resumed.database_path.exists())
         self.assertFalse(staging.exists())
         self.assertFalse(staging_journal.exists())

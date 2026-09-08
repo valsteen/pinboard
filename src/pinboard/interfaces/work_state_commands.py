@@ -147,7 +147,7 @@ def _read_user_config_and_recommend_body_after_prefix() -> str | None:
 def initialize_state(
     roots: cli_commands.ResolvedRoots,
     durable: DurableRoots,
-    store: ports.CompleteStateReader,
+    store: ports.GeneratedViewSetReader,
     command: cli_commands.InitializeCommand,
 ) -> CliResult[int]:
     operation_time = datetime.now(UTC)
@@ -191,7 +191,7 @@ def initialize_state(
 
 def rebuild_views(
     durable: DurableRoots,
-    store: ports.CompleteStateReader,
+    store: ports.GeneratedViewSetReader,
     _command: cli_commands.RebuildViewsCommand,
 ) -> int:
     operation_time = datetime.now(UTC)

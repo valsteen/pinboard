@@ -18,8 +18,8 @@ from pinboard.adapters.sqlite.authority import read_authority, validate_attempt_
 from pinboard.adapters.sqlite.database import decode_row
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import read_lifecycle
-from pinboard.adapters.sqlite.proposals import read_proposals
-from pinboard.application import stored_state
+from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
+from pinboard.application import handover, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import (
@@ -243,6 +243,18 @@ def read_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
     _validate_current_state(state, StorageErrorCode.INVALID_STATE)
     _validate_item_state_counts(connection, state.lifecycle.work_items)
     return state
+
+
+def read_handover_state(connection: sqlite3.Connection) -> handover.HandoverState:
+    """Read every exported relation while excluding local-only authority history."""
+
+    project = _read_project(connection)
+    return handover.HandoverState(
+        read_lifecycle(connection, project),
+        read_pending_proposals(connection),
+        read_artifacts(connection),
+        _read_history(connection),
+    )
 
 
 def _json_text(value: work_models.CanonicalJson | None) -> str | None:

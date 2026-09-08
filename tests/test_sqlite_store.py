@@ -82,7 +82,7 @@ class SQLiteStoreTest(unittest.TestCase):
         with self.subTest(state_name=state_name), self.assertRaises(StorageError) as raised:
             initialize_store(store, state)
         self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, raised.exception.code, state_name)
-        self.assertEqual(0, store.snapshot().lifecycle.project.revision)
+        self.assertEqual(0, store.validated_snapshot().lifecycle.project.revision)
 
     def _assert_action_not_available[T](self, result: T | DecisionFailure) -> None:
         self.assertIsInstance(result, DecisionFailure)
@@ -156,12 +156,13 @@ class SQLiteStoreTest(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            authority_models.PreparationLeaseStatus.RELEASED, store.snapshot().authority.preparation_leases[0].state
+            authority_models.PreparationLeaseStatus.RELEASED,
+            store.validated_snapshot().authority.preparation_leases[0].state,
         )
 
     def test_schema_identity_initialization_and_reopen_contract(self) -> None:
         path, store = self._store()
-        self.assertEqual(complete_sqlite_state(), store.snapshot())
+        self.assertEqual(complete_sqlite_state(), store.validated_snapshot())
         connection = open_database(path, OpenMode.READ_ONLY)
         try:
             self.assertEqual(1, connection.execute("PRAGMA foreign_keys").fetchone()[0])
@@ -181,7 +182,7 @@ class SQLiteStoreTest(unittest.TestCase):
         finally:
             connection.close()
         with self.assertRaises(StorageError) as attempt_error:
-            store.snapshot()
+            store.validated_snapshot()
         self.assertEqual(StorageErrorCode.INVALID_STATE, attempt_error.exception.code)
 
         state = complete_sqlite_state()
@@ -216,7 +217,7 @@ class SQLiteStoreTest(unittest.TestCase):
         finally:
             connection.close()
         with self.assertRaises(StorageError) as preparation_error:
-            preparation_store.snapshot()
+            preparation_store.validated_snapshot()
         self.assertEqual(StorageErrorCode.INVALID_STATE, preparation_error.exception.code)
 
     def test_directory_sync_requires_the_platform_directory_flag(self) -> None:
@@ -520,7 +521,7 @@ class SQLiteStoreTest(unittest.TestCase):
             finally:
                 connection.close()
             with self.subTest(name=name), self.assertRaises(StorageError) as raised:
-                store.snapshot()
+                store.validated_snapshot()
             self.assertEqual(StorageErrorCode.INVALID_STATE, raised.exception.code)
 
     def test_durable_root_and_single_file_interruption_contract(self) -> None:
@@ -650,7 +651,7 @@ class SQLiteStoreTest(unittest.TestCase):
     def test_complete_stored_state_and_relational_contract_matrix(self) -> None:
         path, store = self._store()
         state = complete_sqlite_state()
-        self.assertEqual(state, store.snapshot())
+        self.assertEqual(state, store.validated_snapshot())
         connection = sqlite3.connect(path)
         try:
             table_count = connection.execute(
@@ -675,7 +676,7 @@ class SQLiteStoreTest(unittest.TestCase):
         )
         _path, collected_store = self._store(populated=False)
         initialize_store(collected_store, collected_anchors)
-        self.assertEqual(collected_anchors, collected_store.snapshot())
+        self.assertEqual(collected_anchors, collected_store.validated_snapshot())
 
     def test_schema_rejects_removed_and_incomplete_closed_variants(self) -> None:
         path, _store = self._store()
@@ -713,7 +714,7 @@ class SQLiteStoreTest(unittest.TestCase):
         )
         _accepted_path, accepted_store = self._store(populated=False)
         initialize_store(accepted_store, accepted_relational_state)
-        self.assertEqual(accepted_relational_state, accepted_store.snapshot())
+        self.assertEqual(accepted_relational_state, accepted_store.validated_snapshot())
 
         for item_state, attempt_state, candidate, accepted in (
             (stored_state.StoredWorkItemState.ACTIVE, work_models.AttemptState.ACTIVE, "candidate-a", False),
@@ -752,13 +753,13 @@ class SQLiteStoreTest(unittest.TestCase):
                 if accepted:
                     _candidate_path, candidate_store = self._store(populated=False)
                     initialize_store(candidate_store, candidate_state)
-                    self.assertEqual(candidate_state, candidate_store.snapshot())
+                    self.assertEqual(candidate_state, candidate_store.validated_snapshot())
                 else:
                     self._assert_state_rejected(f"{item_state.value}/{candidate}", candidate_state)
 
     def test_domain_decision_commit_staleness_and_failure_rollback(self) -> None:
         _path, store = self._store()
-        initial = store.snapshot()
+        initial = store.validated_snapshot()
         snapshot = project_decision_snapshot(initial, SQLITE_NOW)
         actor = decision_models.ActorAuthority(
             decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
@@ -775,9 +776,9 @@ class SQLiteStoreTest(unittest.TestCase):
         mutation = project_transition_mutation(mutation_allocation(initial), decision)
 
         with store.write() as transaction:
-            self.assertEqual(initial, store.snapshot())
+            self.assertEqual(initial, store.validated_snapshot())
             receipt = expect_success(transaction.commit(mutation))
-        committed = store.snapshot()
+        committed = store.validated_snapshot()
         self.assertEqual(decision_models.ActionKind.PAUSE.value, receipt.receipt.transition.outcome)
         self.assertEqual(13, committed.lifecycle.project.revision)
         self.assertEqual(stored_state.StoredWorkItemState.PAUSED, committed.lifecycle.work_items[1].state)
@@ -787,7 +788,7 @@ class SQLiteStoreTest(unittest.TestCase):
         with store.write() as transaction:
             stale = transaction.commit(mutation)
         self._assert_action_not_available(stale)
-        self.assertEqual(committed, store.snapshot())
+        self.assertEqual(committed, store.validated_snapshot())
 
         stale_subject_decision = replace(
             decision,
@@ -803,10 +804,10 @@ class SQLiteStoreTest(unittest.TestCase):
         with store.write() as transaction:
             stale_subject = transaction.commit(replace(mutation, decision=stale_subject_decision))
         self._assert_action_not_available(stale_subject)
-        self.assertEqual(committed, store.snapshot())
+        self.assertEqual(committed, store.validated_snapshot())
 
         failed_path, failed_store = self._store()
-        failed_initial = failed_store.snapshot()
+        failed_initial = failed_store.validated_snapshot()
         failed_snapshot = project_decision_snapshot(failed_initial, SQLITE_NOW)
         failed_action = next(
             value
@@ -846,11 +847,11 @@ class SQLiteStoreTest(unittest.TestCase):
             cleanup.commit()
         finally:
             cleanup.close()
-        self.assertEqual(failed_initial, failed_store.snapshot())
+        self.assertEqual(failed_initial, failed_store.validated_snapshot())
 
     def test_runtime_write_scope_propagates_programming_failure_and_closes(self) -> None:
         path, store = self._store()
-        before = store.snapshot()
+        before = store.validated_snapshot()
         snapshot = project_decision_snapshot(before, SQLITE_NOW)
         actor = decision_models.ActorAuthority(
             decision_models.Role.PROJECT,
@@ -881,11 +882,11 @@ class SQLiteStoreTest(unittest.TestCase):
         self.assertIs(application_error, propagated.exception)
         with self.assertRaises(sqlite3.ProgrammingError):
             runtime_connection.execute("SELECT 1")
-        self.assertEqual(before, store.snapshot())
+        self.assertEqual(before, store.validated_snapshot())
 
     def test_pause_updates_only_affected_relations_and_reloads(self) -> None:
         path, store = self._store()
-        before = store.snapshot()
+        before = store.validated_snapshot()
         snapshot = project_decision_snapshot(before, SQLITE_NOW)
         actor = decision_models.ActorAuthority(
             decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
@@ -912,7 +913,7 @@ class SQLiteStoreTest(unittest.TestCase):
             transaction.commit(project_transition_mutation(mutation_allocation(before), decision))
             transaction.connection.execute("DROP TRIGGER reject_unrelated_artifact_rewrite")
 
-        reopened = SQLiteWorkStore(path).snapshot()
+        reopened = SQLiteWorkStore(path).validated_snapshot()
         self.assertEqual(before.artifact_references, reopened.artifact_references)
         self.assertEqual(stored_state.StoredWorkItemState.PAUSED, reopened.lifecycle.work_items[1].state)
         self.assertEqual(work_models.AttemptState.PAUSED, reopened.lifecycle.attempts[0].state)
@@ -922,7 +923,7 @@ class SQLiteStoreTest(unittest.TestCase):
 
     def test_direct_completion_commits_one_domain_decision_atomically(self) -> None:
         _path, store = self._store()
-        before = store.snapshot()
+        before = store.validated_snapshot()
         snapshot = project_decision_snapshot(before, SQLITE_NOW)
         actor = decision_models.ActorAuthority(
             decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
@@ -942,7 +943,7 @@ class SQLiteStoreTest(unittest.TestCase):
                 transaction.commit(project_transition_mutation(mutation_allocation(before), decision))
             )
 
-        completed = store.snapshot()
+        completed = store.validated_snapshot()
         item = next(value for value in completed.lifecycle.work_items if value.item_id == ItemId("work-a"))
         attempt = completed.lifecycle.attempts[0]
         self.assertEqual(
@@ -961,7 +962,7 @@ class SQLiteStoreTest(unittest.TestCase):
 
     def test_review_submission_commits_exact_caller_supplied_candidate(self) -> None:
         _path, store = self._store()
-        before = store.snapshot()
+        before = store.validated_snapshot()
         snapshot = project_decision_snapshot(before, SQLITE_NOW)
         actor = decision_models.ActorAuthority(
             decision_models.Role.WORKER,
@@ -987,7 +988,7 @@ class SQLiteStoreTest(unittest.TestCase):
         with store.write() as transaction:
             transaction.commit(project_transition_mutation(mutation_allocation(before), decision))
 
-        committed = store.snapshot()
+        committed = store.validated_snapshot()
         attempt = committed.lifecycle.attempts[0]
         self.assertEqual((work_models.AttemptState.REVIEW, candidate), (attempt.state, attempt.candidate_revision))
         self.assertEqual(SQLITE_NOW + timedelta(seconds=1), attempt.candidate_recorded_at)
@@ -1009,7 +1010,7 @@ class SQLiteStoreTest(unittest.TestCase):
         )
         _path, store = self._store(populated=False)
         initialize_store(store, review_state)
-        snapshot = project_decision_snapshot(store.snapshot(), SQLITE_NOW)
+        snapshot = project_decision_snapshot(store.validated_snapshot(), SQLITE_NOW)
         actor = decision_models.ActorAuthority(
             decision_models.Role.PROJECT,
             decision_models.AuthorizationKind.PROJECT,
@@ -1030,7 +1031,7 @@ class SQLiteStoreTest(unittest.TestCase):
         with store.write() as transaction:
             transaction.commit(project_transition_mutation(mutation_allocation(review_state), decision))
 
-        returned = store.snapshot()
+        returned = store.validated_snapshot()
         returned_attempt = returned.lifecycle.attempts[0]
         self.assertEqual(
             (work_models.AttemptState.ACTIVE, None, None),

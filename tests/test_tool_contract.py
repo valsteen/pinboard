@@ -168,6 +168,43 @@ class ToolContractTest(unittest.TestCase):
         self.assertIn("resumed", initialized.success_postcondition)
         self.assertNotIn("committed revision", initialized.success_postcondition)
 
+    def test_brief_source_leaves_expose_distinct_manifest_and_plan_inputs(self) -> None:
+        source_plan = expect_command_success(tool_contract.describe_operation("brief-sources", "plan"))
+        source_emit = expect_command_success(tool_contract.describe_operation("brief-sources", "emit"))
+        self.assertIsInstance(source_plan, tool_contract.OperationContract)
+        self.assertIsInstance(source_emit, tool_contract.OperationContract)
+        assert isinstance(source_plan, tool_contract.OperationContract)
+        assert isinstance(source_emit, tool_contract.OperationContract)
+        self.assertEqual("source-manifest", source_plan.subject_kind)
+        self.assertEqual("pinboard-brief-sources/v1 file", source_plan.artifact_selector)
+        self.assertIn("--file FILE", source_plan.cli_usage)
+        self.assertEqual("source-plan", source_emit.subject_kind)
+        self.assertEqual("pinboard-brief-source-plan/v1 file", source_emit.artifact_selector)
+        self.assertIn("--plan PLAN", source_emit.cli_usage)
+        assert source_emit.artifact_schema is not None
+        self.assertIn("BriefSourcePlanView", json.loads(bytes(source_emit.artifact_schema))["$defs"])
+
+    def test_operation_contract_flags_every_project_wide_and_selection_dependent_scope(self) -> None:
+        index = tool_contract.installed_tool_contract()
+        scopes = {(entry.operation_id, entry.variant): entry.data_scope for entry in index.operations}
+        self.assertEqual(
+            {
+                ("validate", "default"),
+                ("handover", "default"),
+                ("init", "default"),
+                ("views/rebuild", "default"),
+            },
+            {identity for identity, scope in scopes.items() if scope == "explicit-project-wide"},
+        )
+        self.assertEqual("current-project", scopes[("status", "default")])
+        self.assertEqual("current-project", scopes[("overview", "default")])
+        self.assertEqual("focused-or-current-project", scopes[("actions", "unleased")])
+        self.assertEqual("focused-or-current-project", scopes[("parallel/preview", "default")])
+        handover = expect_command_success(tool_contract.describe_operation("handover", "default"))
+        self.assertIsInstance(handover, tool_contract.OperationContract)
+        assert isinstance(handover, tool_contract.OperationContract)
+        self.assertIn("complete declared project fact set", handover.data_scope_detail)
+
     def test_action_contract_names_the_execution_route_and_exact_authority(self) -> None:
         transition = tool_contract.describe_action(decision_models.ActionKind.SUBMIT_REVIEW)
         self.assertEqual("transition", transition.execution_route)

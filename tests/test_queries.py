@@ -47,7 +47,7 @@ class SQLiteQueriesTest(unittest.TestCase):
     def test_overview_and_parallel_preview_read_only_sqlite_state(self) -> None:
         store = self._store()
 
-        state = store.snapshot()
+        state = store.validated_snapshot()
         overview = project_overview(state, SQLITE_NOW)
         preview = project_parallel_preview(state, now=SQLITE_NOW)
         self.assertIsInstance(preview, query_models.ParallelPreview)
@@ -92,7 +92,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             )
 
             with self.subTest(relation=relation.kind.value):
-                item = project_overview(store.snapshot(), SQLITE_NOW).items[-1]
+                item = project_overview(store.validated_snapshot(), SQLITE_NOW).items[-1]
                 self.assertEqual((), item.depends_on)
                 self.assertTrue(item.eligible)
                 self.assertEqual(relation.kind, item.review_flags[0].kind)
@@ -107,7 +107,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         )
         store = self._store(replace(state, proposals=replace(state.proposals, proposals=(returned,))))
 
-        full = project_overview(store.snapshot(), SQLITE_NOW)
+        full = project_overview(store.validated_snapshot(), SQLITE_NOW)
         focused = project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW)
 
         self.assertEqual(full, focused)
@@ -240,7 +240,9 @@ class SQLiteQueriesTest(unittest.TestCase):
             ),
             done,
         )
-        self.assertNotIn("work-b", tuple(item.item_id for item in project_overview(store.snapshot(), SQLITE_NOW).items))
+        self.assertNotIn(
+            "work-b", tuple(item.item_id for item in project_overview(store.validated_snapshot(), SQLITE_NOW).items)
+        )
 
     def test_item_status_returns_terminal_siblings_with_non_null_attempt_arrays(self) -> None:
         state = complete_sqlite_state()
@@ -297,7 +299,7 @@ class SQLiteQueriesTest(unittest.TestCase):
     def test_action_and_query_failure_matrix_is_stable_and_read_only(self) -> None:
         state = complete_sqlite_state()
         store = self._store(state)
-        loaded = store.snapshot()
+        loaded = store.validated_snapshot()
         observer = expect_success(discover_actions(loaded, decision_models.Role.OBSERVER, now=SQLITE_NOW))
         project = expect_success(discover_actions(loaded, decision_models.Role.PROJECT, now=SQLITE_NOW))
         worker = expect_success(
@@ -318,7 +320,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertIsInstance(missing_worker, DecisionFailure)
         assert isinstance(missing_worker, DecisionFailure)
         self.assertEqual(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, missing_worker.code)
-        self.assertEqual(state, store.snapshot())
+        self.assertEqual(state, store.validated_snapshot())
 
         invalid_selection = select_parallel_preview(store, selected=("missing",), now=SQLITE_NOW)
         self.assertIsInstance(invalid_selection, query_models.ParallelSelectionInvalid)

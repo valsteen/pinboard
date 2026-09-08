@@ -12,6 +12,7 @@ from pinboard.domain.identifiers import (
     ArtifactRefId,
     AttemptId,
     CandidateId,
+    CheckpointId,
     ItemId,
     LeaseId,
     ProposalId,
@@ -329,6 +330,30 @@ class LifecycleDecisionTest(unittest.TestCase):
             )
         }
         self.assertNotIn(decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE, inconsistent_kinds)
+
+    def test_checkpoint_acceptance_rejects_a_candidate_other_than_the_protected_one(self) -> None:
+        review = item("target", work_models.WorkState.REVIEW, attempt="target-1")
+        attempt = AttemptRecord(
+            "target-1", "target", work_models.AttemptState.REVIEW, protected_candidate_revision="candidate-a"
+        )
+        authority = work_models.AttemptAuthority(AttemptId("target-1"), ItemId("target"), LeaseId("worker-lease"), 3)
+        snapshot = LedgerSnapshot(
+            "revision",
+            (review,),
+            attempts=(attempt,),
+            attempt_authorities=(authority,),
+        )
+
+        mismatch = decision_outcome(
+            snapshot,
+            decision_models.AcceptCheckpointCommand(
+                action(decision_models.AcceptCheckpointAction, AttemptId("target-1")),
+                work_models.AcceptCheckpointInput(CheckpointId("checkpoint-a"), CandidateId("candidate-b"), "accepted"),
+            ),
+            NOW,
+        )
+        self.assertIsInstance(mismatch, DecisionFailure)
+        self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, mismatch.code)
 
     def test_rebind_preserves_active_or_paused_attempt_and_fences_authority(self) -> None:
         authority = work_models.AttemptAuthority(AttemptId("target-1"), ItemId("target"), LeaseId("worker-lease"), 3)

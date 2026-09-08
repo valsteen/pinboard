@@ -472,7 +472,7 @@ class ServiceTest(unittest.TestCase):
                 self.assertEqual(expected_item, item.state)
                 self.assertEqual(expected_attempt, attempt.state)
 
-    def test_checkpoint_acceptance_preserves_supplied_candidate_and_reloads_from_fresh_store(self) -> None:
+    def test_checkpoint_acceptance_requires_protected_candidate_and_reloads_from_fresh_store(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         roots = resolve_durable_roots(project)
         initialize_database(roots, SQLITE_NOW)
@@ -492,13 +492,13 @@ class ServiceTest(unittest.TestCase):
         submitted_attempt = submitted_store.validated_snapshot().lifecycle.attempts[0]
         self.assertEqual("protected-candidate", submitted_attempt.candidate_revision)
         accept_action = self._project_action(submitted_store, decision_models.AcceptCheckpointAction)
-        accept = checkpoint_command(
+        mismatch = checkpoint_command(
             decision_models.AcceptCheckpointCommand(
                 accept_action,
                 work_models.AcceptCheckpointInput(
                     CheckpointId("checkpoint-a"),
                     CandidateId("supplied-different-candidate"),
-                    "Checkpoint evidence is accepted.",
+                    "This must not commit.",
                 ),
             )
         )
@@ -527,6 +527,29 @@ class ServiceTest(unittest.TestCase):
             ),
         )
         before_acceptance = submitted_store.validated_snapshot()
+
+        rejected = decide_and_commit_checkpoint_acceptance(
+            submitted_store,
+            mismatch,
+            SQLITE_NOW + timedelta(seconds=2),
+            checkpoint_artifacts,
+            actor_task_id=TaskId("project-task"),
+            actor_host_id=HostId("host-a"),
+        )
+
+        self.assertIsInstance(rejected, DecisionFailure)
+        self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected.code)
+        self.assertEqual(before_acceptance, submitted_store.validated_snapshot())
+        accept = checkpoint_command(
+            decision_models.AcceptCheckpointCommand(
+                accept_action,
+                work_models.AcceptCheckpointInput(
+                    CheckpointId("checkpoint-a"),
+                    CandidateId("protected-candidate"),
+                    "Checkpoint evidence is accepted.",
+                ),
+            )
+        )
 
         with (
             patch(
@@ -577,7 +600,7 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(result_reference.artifact_ref_id, attempt.result_artifact_ref_id)
         self.assertEqual(review_reference.artifact_ref_id, reloaded.transition_receipts[-1].artifact_ref_id)
         outcome = reloaded.transition_receipts[-1].outcome_payload
-        self.assertIn(b'"candidate":"supplied-different-candidate"', outcome)
+        self.assertIn(b'"candidate":"protected-candidate"', outcome)
         self.assertIn(b'"checkpoint":"checkpoint-a"', outcome)
 
     def test_review_acceptance_continues_the_attempt_and_reloads_every_fact(self) -> None:

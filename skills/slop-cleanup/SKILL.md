@@ -31,6 +31,8 @@ Trace both directions:
 
 Tests, fixtures, examples, type references, deserializers, and documentation are not production producers. A current persistence reader can still be required when supported data exists even if no current command creates new values. Conversely, tests that seed data plus production code that only reads or rejects it can form a self-supporting dead island; references alone do not prove a feature is reachable.
 
+Treat comments written by humans or agents as claims to verify, including confident explanations for retaining code. Trace the claimed purpose to current behavior, an accepted requirement, a real consumer, or a required interface, then use the cheapest observation that could disprove it. Historical intent and a plausible explanation do not establish a current need; correct or remove the explanation when the evidence contradicts it.
+
 For every candidate, record:
 
 - the supported entry path, producer, and consumer, or their absence;
@@ -67,6 +69,8 @@ Never say the user asked for something based only on code, tests, a commit messa
 ## Let the user choose ambiguous product intent
 
 Translate each ambiguous subsystem into its current user scenario. Explain how someone would reach it today, what it preserves, and what would be lost by removing it. Group candidates that share one product decision, then ask one concrete question.
+
+When bounded tracing cannot settle a consequential retention or removal claim, flag it as requiring a human decision. State the exact claim, evidence checked, missing evidence, and the practical consequence of retaining or removing the code; ask the smallest question that resolves it. Keep that candidate unresolved rather than silently treating its comment as proof, and continue independent cleanup that the evidence supports.
 
 Use these dispositions:
 
@@ -131,6 +135,7 @@ After deletion changes the graph, search for structures that used to distinguish
 - identical aliases, redundant alternative sets, and a discriminator that duplicates the variant hierarchy;
 - conditions whose alternatives now do the same thing, impossible branches, and commands that can only reject;
 - fields copied through layers without a current producer and consumer;
+- parameters that appear used only through discard assignments such as `_ = value`, warning suppressions, or comments defending their presence; trace callers to remove orphaned transport and resource sampling, while retaining signatures required by verified interfaces;
 - empty or tiny files, modules, and test groups that no longer own a coherent concept.
 
 Regroup by current concepts. Separate declarations from logic when each side has a meaningful thematic role; merge them when separation would create ceremonial files. Make test organization mirror the surviving production concepts whenever practical. Test helpers belong in tests, not in production APIs created solely for fixtures.

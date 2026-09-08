@@ -220,7 +220,7 @@ def _present_committed_transition(
         affected_attempt = committed_mutation.continuation_attempt_id
     continuation = None
     if affected_attempt is not None:
-        continuation = work_inspection.read_attempt_continuation(roots, store, affected_attempt, datetime.now(UTC))
+        continuation = work_inspection.read_attempt_continuation(roots, store, affected_attempt)
         if isinstance(continuation, CommandFailure):
             # The mutation already committed. An unavailable read projection is a warning, not rollback.
             print(f"Transition committed; continuation unavailable: {continuation}", file=sys.stderr)

@@ -62,7 +62,6 @@ def select_attempt_context(
 def project_attempt_continuation(
     context: query_models.AttemptContextFacts,
     owner_task_id: TaskId | None,
-    observed_at: datetime,
 ) -> DecisionResult[query_models.AttemptContinuation]:
     """Select a continuation from one exact named-attempt context.
 
@@ -70,7 +69,6 @@ def project_attempt_continuation(
     pause conditions and accepted scope still determine whether the task must ask.
     The caller resolves the owner from the verified accepted brief.
     """
-    _ = observed_at  # Preserve the installed operation's single observation-time boundary.
     match context:
         case query_models.TerminalAttemptContextFacts():
             return query_models.AttemptContinuation(

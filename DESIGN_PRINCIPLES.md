@@ -66,6 +66,8 @@ Prefer these properties:
 - module-level contract text states the allowed effects and the effects it deliberately does not own;
 - infrastructure and invariant failures are not silently normalized into ordinary outcomes.
 
+Every internal parameter must serve current behavior, validation, conversion, or a required interface. When a parameter has no such consumer, remove it and any transport-only arguments or resource sampling left in its caller chain. A no-op assignment or explanatory comment cannot justify keeping it.
+
 A helper that takes bread and cheese may return a sandwich. It must not also collect the mail, call another service, or decide whether the meal was authorized.
 
 ## Keep resource work proportional to the result

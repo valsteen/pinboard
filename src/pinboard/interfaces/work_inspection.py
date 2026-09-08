@@ -83,11 +83,10 @@ type _AttemptInspection = _TerminalAttemptInspection | _NonterminalAttemptInspec
 def _inspect_selected_attempt(
     roots: cli_commands.ResolvedRoots,
     context: query_models.AttemptContextFacts,
-    now: datetime,
 ) -> errors.CommandResult[_AttemptInspection]:
     match context:
         case query_models.TerminalAttemptContextFacts():
-            continuation = queries.project_attempt_continuation(context, None, now)
+            continuation = queries.project_attempt_continuation(context, None)
             if isinstance(continuation, domain_errors.DecisionFailure):
                 return errors.CommandFailure(continuation.code, continuation.message, continuation.details)
             return _TerminalAttemptInspection(context, continuation)
@@ -95,7 +94,7 @@ def _inspect_selected_attempt(
             brief = _read_attempt_brief(roots, context)
             if isinstance(brief, errors.CommandFailure):
                 return brief
-            continuation = queries.project_attempt_continuation(context, TaskId(brief.owner_task_id), now)
+            continuation = queries.project_attempt_continuation(context, TaskId(brief.owner_task_id))
             if isinstance(continuation, domain_errors.DecisionFailure):
                 return errors.CommandFailure(continuation.code, continuation.message, continuation.details)
             return _NonterminalAttemptInspection(context, brief, continuation)
@@ -107,29 +106,27 @@ def _inspect_attempt(
     roots: cli_commands.ResolvedRoots,
     reader: ports.AttemptContextReader,
     attempt_id: AttemptId,
-    now: datetime,
 ) -> errors.CommandResult[_AttemptInspection]:
     context = queries.select_attempt_context(reader, attempt_id)
     if isinstance(context, domain_errors.DecisionFailure):
         return errors.CommandFailure(context.code, context.message, context.details)
-    return _inspect_selected_attempt(roots, context, now)
+    return _inspect_selected_attempt(roots, context)
 
 
 def read_attempt_continuation(
     roots: cli_commands.ResolvedRoots,
     reader: ports.AttemptContextReader,
     attempt_id: AttemptId,
-    now: datetime,
 ) -> errors.CommandResult[query_models.AttemptContinuation]:
     """Resolve accepted owner evidence and derive continuation from one exact read."""
-    selected = _inspect_attempt(roots, reader, attempt_id, now)
+    selected = _inspect_attempt(roots, reader, attempt_id)
     return selected if isinstance(selected, errors.CommandFailure) else selected.continuation
 
 
 def show_attempt(
     roots: cli_commands.ResolvedRoots, store: ports.WorkStore, command: cli_commands.AttemptInspectCommand
 ) -> errors.CommandResult[int]:
-    selected = _inspect_attempt(roots, store, command.attempt_id, datetime.now(UTC))
+    selected = _inspect_attempt(roots, store, command.attempt_id)
     if isinstance(selected, errors.CommandFailure):
         return selected
     # The same strict record is useful in both interactive and machine inspection.
@@ -148,7 +145,7 @@ def show_review_job(
     context = queries.select_attempt_context(store, command.attempt_id)
     if isinstance(context, domain_errors.DecisionFailure):
         return unavailable
-    selected = _inspect_selected_attempt(roots, context, datetime.now(UTC))
+    selected = _inspect_selected_attempt(roots, context)
     if isinstance(selected, errors.CommandFailure):
         return selected
     if isinstance(selected, _TerminalAttemptInspection):

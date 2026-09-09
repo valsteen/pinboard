@@ -91,7 +91,7 @@ The three repository-care skills are optional and independently usable; none req
 
 For the most reliable workflow, keep each outcome with the task that owns it through its final repository decision. That task can delegate bounded research, implementation, and review to subagents whose results return automatically. Start another task for a genuinely independent outcome you intend to follow separately.
 
-Private working state stays in ignored local files:
+Private project data stays in ignored local files. The installed plugin cache contains packaged, immutable code and skill assets; routine Pinboard work never writes there.
 
 ```text
 .codex/pinboard/
@@ -157,6 +157,22 @@ For the primary Codex integration, add this repository as a marketplace, then in
 codex plugin marketplace add valsteen/pinboard
 codex plugin add pinboard@pinboard
 ```
+
+Pinboard's first default initialization first adds the exact local-only exclusion `/.codex/pinboard/` to `.git/info/exclude`, then creates `.codex/pinboard/`. Approve that exact `pinboard init` command once: it needs the narrow Git-metadata write for this setup only. It does not edit `.gitignore`, and it leaves sibling `.codex` content visible to Git. If a later initialization step fails, JSON reports exactly which surfaces that invocation already committed: the Git exclusion, and also the ledger when database publication finished before a generated-view failure. A repeat that publishes neither surface reports an unchanged result. Linked worktrees share the repository-local exclusion, so repeating initialization remains idempotent.
+
+For routine commands from a normal checkout at the default work root, use a named [Codex permission profile](https://learn.chatgpt.com/docs/permissions) that reopens only Pinboard's project-data directory inside the otherwise protected `.codex` tree:
+
+```toml
+default_permissions = "pinboard"
+
+[permissions.pinboard]
+extends = ":workspace"
+
+[permissions.pinboard.filesystem.":workspace_roots"]
+".codex/pinboard" = "write"
+```
+
+From a linked worktree, the shared default ledger is outside that checkout. Add a direct filesystem rule for only the exact resolved shared-repository directory reported by `pinboard root`, which already emits JSON—for example, `"/path/to/shared-repository/.codex/pinboard" = "write"` under `[permissions.pinboard.filesystem]`. Do not add the shared repository as a workspace root or grant its `.git`, sibling `.codex` paths, or the installed plugin cache. An explicit `--work-root` likewise needs a direct write rule for that exact selected directory. Remove legacy `sandbox_mode` and `sandbox_workspace_write` settings before relying on the profile because those settings override permission profiles. If a routine mutation lacks the rule, JSON output reports `SQLITE_READONLY`, the exact database and operation, recovery naming `.codex/pinboard` for a normal default checkout or the exact absolute effective work root for a linked worktree or explicit root, `do-not-retry`, and whether the ledger stayed unchanged or a separately published immutable artifact already committed.
 
 Start a Codex task in the repository and ask:
 

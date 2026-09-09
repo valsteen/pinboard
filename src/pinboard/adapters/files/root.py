@@ -1,5 +1,7 @@
+import fcntl
 import subprocess
 from pathlib import Path
+from typing import BinaryIO
 
 from pinboard.adapters.files.errors import RootError, RootErrorCode
 
@@ -49,52 +51,58 @@ def resolve_shared_repository_root(cwd: Path) -> Path:
     return _resolve_git_common_directory(cwd).parent
 
 
-def _exclude_contains_pinboard_line(path: Path) -> tuple[bool, bool]:
+def _exclude_contains_pinboard_line(stream: BinaryIO) -> tuple[bool, bool]:
     """Scan one Git exclude in bounded memory and report whether append needs a separator."""
 
-    try:
-        stream = path.open("rb")
-    except FileNotFoundError:
-        return False, False
-    with stream:
-        line_matches = True
-        line_length = 0
-        last_byte: int | None = None
-        while chunk := stream.read(_READ_CHUNK_BYTES):
-            for byte in chunk:
-                last_byte = byte
-                if byte in (10, 13):
-                    if line_matches and line_length == len(PINBOARD_GIT_EXCLUDE):
-                        return True, False
-                    line_matches = True
-                    line_length = 0
-                    continue
-                if line_length >= len(PINBOARD_GIT_EXCLUDE) or byte != PINBOARD_GIT_EXCLUDE[line_length]:
-                    line_matches = False
-                line_length += 1
-        if line_matches and line_length == len(PINBOARD_GIT_EXCLUDE):
-            return True, False
-        return False, last_byte is not None and last_byte not in (10, 13)
+    stream.seek(0)
+    line_matches = True
+    line_length = 0
+    last_byte: int | None = None
+    while chunk := stream.read(_READ_CHUNK_BYTES):
+        for byte in chunk:
+            last_byte = byte
+            if byte in (10, 13):
+                if line_matches and line_length == len(PINBOARD_GIT_EXCLUDE):
+                    return True, False
+                line_matches = True
+                line_length = 0
+                continue
+            if line_length >= len(PINBOARD_GIT_EXCLUDE) or byte != PINBOARD_GIT_EXCLUDE[line_length]:
+                line_matches = False
+            line_length += 1
+    if line_matches and line_length == len(PINBOARD_GIT_EXCLUDE):
+        return True, False
+    return False, last_byte is not None and last_byte not in (10, 13)
 
 
-def ensure_default_git_exclude(shared_repository_root: Path) -> None:
-    """Exclude only the default Pinboard root from one repository's local status."""
+def ensure_default_git_exclude(shared_repository_root: Path) -> Path | None:
+    """Exclude the default work root and return the path only when this call changed it."""
 
     try:
         common_directory = _resolve_git_common_directory(shared_repository_root)
     except RootError as error:
         if error.code == RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE:
-            return
+            return None
         raise
     exclude = common_directory / "info" / "exclude"
     try:
-        contains_line, needs_separator = _exclude_contains_pinboard_line(exclude)
-        if contains_line:
-            return
-        with exclude.open("ab") as stream:
+        try:
+            with exclude.open("rb") as stream:
+                contains_line, _ = _exclude_contains_pinboard_line(stream)
+        except FileNotFoundError:
+            pass
+        else:
+            if contains_line:
+                return None
+        with exclude.open("a+b") as stream:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            contains_line, needs_separator = _exclude_contains_pinboard_line(stream)
+            if contains_line:
+                return None
             stream.write((b"\n" if needs_separator else b"") + PINBOARD_GIT_EXCLUDE + b"\n")
     except OSError as error:
         raise RootError(
             RootErrorCode.PROJECT_GIT_EXCLUDE_UNAVAILABLE,
             f"Repository-local Git exclude could not be updated: {exclude}",
         ) from error
+    return exclude

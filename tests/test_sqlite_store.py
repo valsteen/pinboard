@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
+from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
 from pinboard.adapters.files.file_io import (
     atomic_replace,
     create_immutable,
@@ -317,9 +317,9 @@ class SQLiteStoreTest(unittest.TestCase):
 
         read_only = open_database(path, OpenMode.READ_ONLY)
         try:
-            with self.assertRaises(StorageError) as io_error, write_transaction(read_only):
+            with self.assertRaises(StorageError) as read_only_error, write_transaction(read_only):
                 read_only.execute("UPDATE project_meta SET revision = revision + 1")
-            self.assertEqual(StorageErrorCode.IO_ERROR, io_error.exception.code)
+            self.assertEqual(StorageErrorCode.READ_ONLY, read_only_error.exception.code)
         finally:
             read_only.close()
 
@@ -561,8 +561,9 @@ class SQLiteStoreTest(unittest.TestCase):
         self.assertEqual(external_parent / ".codex" / "work", explicit_legacy.work_root)
 
         immutable = external.artifacts_root / "evidence.md"
-        create_immutable(immutable, b"accepted evidence")
+        self.assertTrue(create_immutable(immutable, b"accepted evidence"))
         self.assertEqual(b"accepted evidence", immutable.read_bytes())
+        self.assertFalse(create_immutable(immutable, b"accepted evidence"))
         with self.assertRaises(FileIOError):
             create_immutable(immutable, b"replacement")
         replaceable = external.artifacts_root / "view.md"
@@ -647,6 +648,29 @@ class SQLiteStoreTest(unittest.TestCase):
         ):
             create_immutable(cleanup_tolerant, b"durable evidence")
         self.assertEqual(b"durable evidence", cleanup_tolerant.read_bytes())
+
+    def test_immutable_publication_reports_post_link_sync_failure_and_reuses_exact_bytes(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        roots = resolve_durable_roots(project)
+        initialize_database(roots, SQLITE_NOW)
+        publication = roots.artifacts_root / "post-link.md"
+        original_fsync = os.fsync
+
+        def fail_after_link(descriptor: int) -> None:
+            if publication.exists():
+                raise OSError("injected post-link directory sync failure")
+            original_fsync(descriptor)
+
+        with (
+            patch("pinboard.adapters.files.file_io.os.fsync", side_effect=fail_after_link),
+            self.assertRaises(ImmutableFilePublishedError) as failure,
+        ):
+            create_immutable(publication, b"published bytes")
+
+        self.assertEqual(publication, failure.exception.path)
+        self.assertEqual(FileIOErrorCode.DIRECTORY_SYNC_FAILED, failure.exception.code)
+        self.assertEqual(b"published bytes", publication.read_bytes())
+        self.assertFalse(create_immutable(publication, b"published bytes"))
 
     def test_complete_stored_state_and_relational_contract_matrix(self) -> None:
         path, store = self._store()

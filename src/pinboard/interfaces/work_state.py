@@ -19,7 +19,7 @@ from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import InitReceipt, OpenMode
 from pinboard.application import ports, stored_state
 from pinboard.domain.identifiers import AttemptId
-from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
+from pinboard.interfaces.errors import InitializationAfterCommittedEffectsError, WorkBriefFailure, WorkBriefResult
 from pinboard.interfaces.work_briefs import build_selected_attempt_brief_views
 from pinboard.interfaces.work_state_models import Diagnostic, Severity, ValidationReport
 
@@ -32,24 +32,38 @@ def initialize_work_state(
     store: ports.GeneratedViewSetReader,
     now: datetime | None = None,
 ) -> WorkBriefResult[InitReceipt]:
-    if default_work_root:
-        ensure_default_git_exclude(shared_repository_root)
-    database_already_exists = roots.database_path.exists()
-    operation_time = now or datetime.now(UTC)
-    if database_already_exists:
-        connection = open_database(roots.database_path, OpenMode.READ_WRITE)
-        connection.close()
-        reconcile_database_publication(roots.database_path)
-        ensure_directory_chain(roots)
-    else:
-        initialize_database(roots, operation_time)
-    projection_facts = store.read_all_generated_view_facts(operation_time)
-    rendered_attempt_briefs = build_selected_attempt_brief_views(projection_facts.attempts, ArtifactRepository(roots))
-    if isinstance(rendered_attempt_briefs, WorkBriefFailure):
-        return rendered_attempt_briefs
-    rebuild_result = rebuild_facts(projection_facts, roots.work_root, rendered_attempt_briefs)
-    if rebuild_result.warning is not None:
-        raise FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, rebuild_result.warning.message)
+    git_exclude_path = ensure_default_git_exclude(shared_repository_root) if default_work_root else None
+    database_path: Path | None = None
+    try:
+        database_already_exists = roots.database_path.exists()
+        operation_time = now or datetime.now(UTC)
+        if database_already_exists:
+            connection = open_database(roots.database_path, OpenMode.READ_WRITE)
+            connection.close()
+            reconcile_database_publication(roots.database_path)
+            ensure_directory_chain(roots)
+        else:
+            initialize_database(roots, operation_time)
+            database_path = roots.database_path
+        projection_facts = store.read_all_generated_view_facts(operation_time)
+        rendered_attempt_briefs = build_selected_attempt_brief_views(
+            projection_facts.attempts, ArtifactRepository(roots)
+        )
+        if isinstance(rendered_attempt_briefs, WorkBriefFailure):
+            if git_exclude_path is None and database_path is None:
+                return rendered_attempt_briefs
+            raise InitializationAfterCommittedEffectsError(
+                git_exclude_path,
+                database_path,
+                rendered_attempt_briefs,
+            )
+        rebuild_result = rebuild_facts(projection_facts, roots.work_root, rendered_attempt_briefs)
+        if rebuild_result.warning is not None:
+            raise FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, rebuild_result.warning.message)
+    except (StorageError, ArtifactError, FileIOError) as error:
+        if git_exclude_path is None and database_path is None:
+            raise
+        raise InitializationAfterCommittedEffectsError(git_exclude_path, database_path, error) from error
     return InitReceipt(
         roots.work_root,
         roots.database_path,

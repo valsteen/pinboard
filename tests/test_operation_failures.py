@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from dataclasses import replace
@@ -8,7 +9,7 @@ import msgspec
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import resolve_durable_roots
-from pinboard.adapters.sqlite.database import initialize_database
+from pinboard.adapters.sqlite.database import initialize_database, translate_database_error
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.application.artifact_publication import validate_transition_work_brief
@@ -60,6 +61,15 @@ class OperationFailureTest(unittest.TestCase):
         selected = next(value for value in actions if decision_models.action_id(value) == "continue:work-a-1")
         assert isinstance(selected, decision_models.ContinueAction)
         return selected
+
+    def test_sqlite_readonly_is_classified_separately_from_generic_storage_io(self) -> None:
+        error = sqlite3.OperationalError("attempt to write a readonly database")
+        error.sqlite_errorcode = sqlite3.SQLITE_READONLY
+        error.sqlite_errorname = "SQLITE_READONLY"
+
+        translated = translate_database_error(error)
+
+        self.assertEqual("SQLITE_READONLY", translated.code.value)
 
     def test_action_receipt_rejections_are_distinct_and_structured(self) -> None:
         malformed = action_selection.parse_action_receipt(self.project_transition("invalid"))

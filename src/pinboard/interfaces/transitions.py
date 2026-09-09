@@ -6,7 +6,7 @@ from typing import assert_never
 import msgspec
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
-from pinboard.adapters.files.errors import ArtifactError
+from pinboard.adapters.files.errors import ArtifactError, FileIOError
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.application import ports
@@ -25,11 +25,13 @@ from pinboard.application.service import (
 )
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
+    ArtifactAcceptanceAfterPublicationError,
     ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
     EffectDisposition,
     FailureDetails,
+    FailureFact,
     RetryDisposition,
 )
 from pinboard.domain.history import work_item_definition_digest
@@ -48,6 +50,7 @@ from pinboard.interfaces.errors import (
     CommandResult,
     CommittedEffectFailure,
     TransitionInputFailure,
+    storage_failure_details,
 )
 from pinboard.interfaces.transition_input import parse_item_revision_input, parse_transition_command
 from pinboard.interfaces.work_briefs import read_selected_work_brief_identity
@@ -70,15 +73,31 @@ type _ProjectTransitionRequest = _EncodedProjectTransitionRequest | _ValidatedIt
 @dataclass(frozen=True, slots=True)
 class _CheckpointArtifactPublication:
     artifacts: CheckpointArtifacts
-    created_immutable_artifact: bool
+    new_artifact_selectors: tuple[str, ...]
 
 
-def _committed_immutable_artifact_failure(error: ArtifactError | StorageError) -> CommittedEffectFailure:
+def _committed_immutable_artifact_failure(
+    error: ArtifactError | FileIOError | StorageError,
+    artifact_selectors: tuple[str, ...],
+    roots: cli_commands.ResolvedRoots,
+) -> CommittedEffectFailure:
+    artifact_observations = tuple(
+        FailureFact("published_artifact_selector", selector) for selector in artifact_selectors
+    )
     return CommittedEffectFailure(
         error.code.value,
         str(error),
-        FailureDetails(
-            observed=(),
+        storage_failure_details(
+            error,
+            "transition:project",
+            roots,
+            EffectDisposition.COMMITTED,
+            (ChangedSurface.IMMUTABLE_ARTIFACT,),
+            artifact_observations,
+        )
+        if isinstance(error, StorageError)
+        else FailureDetails(
+            observed=artifact_observations,
             mismatches=(),
             retry=RetryDisposition.DO_NOT_RETRY,
             effect=EffectDisposition.COMMITTED,
@@ -291,24 +310,35 @@ def publish_checkpoint_artifacts(
         ".md",
         review_bytes,
     )
-    created_immutable_artifact = False
+    new_artifact_selectors: list[str] = []
     try:
-        result_existed = artifacts.revision_exists(result_artifact)
-        result = artifacts.publish(result_artifact)
-        created_immutable_artifact = not result_existed
-        review_existed = artifacts.revision_exists(review_artifact)
-        review = artifacts.publish(review_artifact)
-        created_immutable_artifact = created_immutable_artifact or not review_existed
+        result_publication = artifacts.publish(result_artifact)
+        result = result_publication.reference
+        if result_publication.created:
+            new_artifact_selectors.append(result.selector)
+        review_publication = artifacts.publish(review_artifact)
+        review = review_publication.reference
+        if review_publication.created:
+            new_artifact_selectors.append(review.selector)
+    except ArtifactAcceptanceAfterPublicationError as error:
+        cause = error.cause
+        if not isinstance(cause, FileIOError):
+            raise
+        return _committed_immutable_artifact_failure(
+            cause,
+            (*new_artifact_selectors, error.selector),
+            roots,
+        )
     except ArtifactError as error:
-        if created_immutable_artifact:
-            return _committed_immutable_artifact_failure(error)
+        if new_artifact_selectors:
+            return _committed_immutable_artifact_failure(error, tuple(new_artifact_selectors), roots)
         raise
     return _CheckpointArtifactPublication(
         CheckpointArtifacts(
             ResultArtifactRef(result.key, result.revision, result.selector, result.content_sha256, result.size_bytes),
             EvidenceArtifactRef(review.key, review.revision, review.selector, review.content_sha256, review.size_bytes),
         ),
-        created_immutable_artifact,
+        tuple(new_artifact_selectors),
     )
 
 
@@ -339,10 +369,12 @@ def _execute_transition_command(
                     transition_brief_identity=transition_brief_identity,
                 )
             except StorageError as error:
-                if checkpoint_artifacts.created_immutable_artifact:
-                    return _committed_immutable_artifact_failure(error)
+                if checkpoint_artifacts.new_artifact_selectors:
+                    return _committed_immutable_artifact_failure(
+                        error, checkpoint_artifacts.new_artifact_selectors, roots
+                    )
                 raise
-            if isinstance(result, DecisionFailure) and checkpoint_artifacts.created_immutable_artifact:
+            if isinstance(result, DecisionFailure) and checkpoint_artifacts.new_artifact_selectors:
                 details = (
                     FailureDetails(
                         observed=(),

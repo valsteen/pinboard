@@ -44,8 +44,11 @@ from pinboard.interfaces.errors import (
     CommandFailure,
     CommittedEffectFailure,
     DispatchFailure,
+    InitializationAfterCommittedEffectsError,
     ProposalFailure,
     WorkBriefFailure,
+    initialization_failure_details,
+    storage_failure_details,
 )
 
 build_parser = cli_parser.build_parser
@@ -53,12 +56,14 @@ build_parser = cli_parser.build_parser
 
 def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family router
     invocation: cli_commands.CliInvocation,
+    roots: cli_commands.ResolvedRoots | None,
 ) -> CliResult[int]:
     if isinstance(invocation.command, cli_commands.InputContractCommand):
         return work_inspection.show_input_contract(invocation.command)
     if isinstance(invocation.command, cli_commands.ToolContractCommand):
         return tool_contract.show_tool_contract(invocation.command)
-    roots = work_state_commands.resolve_roots(invocation.roots)
+    if roots is None:
+        raise AssertionError("A rooted command requires resolved project roots.")
     if isinstance(invocation.command, cli_commands.RootCommand):
         return work_state_commands.show_roots(roots, invocation.command)
     if isinstance(invocation.command, cli_commands.BriefSourcesPlanCommand | cli_commands.BriefSourcesEmitCommand):
@@ -187,14 +192,17 @@ def _present_expected_result(result: CliResult[int], operation: str, *, json_req
     return exit_code
 
 
-def _run_invocation(
+def _run_invocation(  # noqa: PLR0912 - one outer exception-to-process-result boundary
     invocation: cli_commands.CliInvocation,
     operation: str,
     *,
     json_requested: bool,
 ) -> int:
+    roots: cli_commands.ResolvedRoots | None = None
     try:
-        return _present_expected_result(_dispatch(invocation), operation, json_requested=json_requested)
+        if not isinstance(invocation.command, cli_commands.InputContractCommand | cli_commands.ToolContractCommand):
+            roots = work_state_commands.resolve_roots(invocation.roots)
+        return _present_expected_result(_dispatch(invocation, roots), operation, json_requested=json_requested)
     except ArtifactAcceptanceAfterPublicationError as error:
         cause = error.cause
         code = (
@@ -202,18 +210,39 @@ def _run_invocation(
             if isinstance(cause, (StorageError, ArtifactError, FileIOError))
             else "ARTIFACT_ACCEPTANCE_FAILED"
         )
-        details = FailureDetails(
-            observed=(FailureFact("published_artifact_selector", error.selector),),
-            mismatches=(),
-            retry=RetryDisposition.DO_NOT_RETRY,
-            effect=EffectDisposition.COMMITTED,
-            changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
-            alternatives=(),
-        )
+        if isinstance(cause, StorageError):
+            details = storage_failure_details(
+                cause,
+                operation,
+                roots,
+                EffectDisposition.COMMITTED,
+                (ChangedSurface.IMMUTABLE_ARTIFACT,),
+                (FailureFact("published_artifact_selector", error.selector),),
+            )
+        else:
+            details = FailureDetails(
+                observed=(FailureFact("published_artifact_selector", error.selector),),
+                mismatches=(),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.COMMITTED,
+                changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+                alternatives=(),
+            )
         if json_requested:
             cli_output.write_operation_rejection(operation, code, str(cause), details, ())
         else:
             print(f"{cause}; immutable artifact published at '{error.selector}'", file=sys.stderr)
+        return 12
+    except InitializationAfterCommittedEffectsError as error:
+        details = initialization_failure_details(error, operation, roots)
+        cause = error.cause
+        if json_requested:
+            cli_output.write_operation_rejection(operation, cause.code.value, str(cause), details, ())
+        else:
+            print(
+                f"{cause}; initialization committed: {', '.join(value.value for value in details.changed_surfaces)}",
+                file=sys.stderr,
+            )
         return 12
     except (RootError, OSError) as error:
         if json_requested:
@@ -237,23 +266,22 @@ def _run_invocation(
         return 2
     except (StorageError, ArtifactError, FileIOError) as error:
         if json_requested:
-            retry = (
-                RetryDisposition.RETRY_SAME_INPUT
-                if isinstance(error, StorageError) and error.retryable
-                else RetryDisposition.DO_NOT_RETRY
-            )
+            if isinstance(error, StorageError):
+                details = storage_failure_details(error, operation, roots, EffectDisposition.UNCHANGED, (), ())
+            else:
+                details = FailureDetails(
+                    observed=(),
+                    mismatches=(),
+                    retry=RetryDisposition.DO_NOT_RETRY,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                )
             cli_output.write_operation_rejection(
                 operation,
                 error.code.value,
                 str(error),
-                FailureDetails(
-                    observed=(),
-                    mismatches=(),
-                    retry=retry,
-                    effect=EffectDisposition.UNCHANGED,
-                    changed_surfaces=(),
-                    alternatives=(),
-                ),
+                details,
                 (),
             )
         else:

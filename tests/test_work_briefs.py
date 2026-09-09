@@ -29,8 +29,11 @@ from pinboard.interfaces.cli import main
 from pinboard.interfaces.errors import WorkBriefErrorCode, WorkBriefFailure, WorkBriefResult
 from pinboard.interfaces.work_briefs import (
     canonical_checkpoint_bytes,
+    canonical_checkpoint_review_package_bytes,
     canonical_reviewed_authority_set_bytes,
     canonical_work_brief_bytes,
+    decode_canonical_checkpoint_review_package,
+    decode_checkpoint_review_package,
     decode_work_brief,
     decode_work_brief_review,
     read_selected_work_brief_identity,
@@ -302,6 +305,119 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         stale = validate_work_brief_review(replace(review, checkpoint_sha256="f" * 64), value)
         assert stale is not None
         self.assertEqual(WorkBriefErrorCode.REVIEW_STALE, stale.code)
+
+    def test_checkpoint_review_package_variants_are_strict_canonical_and_portable(self) -> None:
+        value = example_work_brief()
+        checkpoint = value.checkpoint
+        assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
+
+        def identity(
+            role: str,
+            kind: str,
+            key: str,
+        ) -> work_brief_models.PortableArtifactIdentity:
+            return msgspec.convert(
+                {
+                    "role": role,
+                    "kind": kind,
+                    "key": key,
+                    "revision": 1,
+                    "selector": f"artifacts/{kind}/{key}/1.json",
+                    "content_sha256": "c" * 64,
+                    "size_bytes": 123,
+                },
+                type=work_brief_models.PortableArtifactIdentity,
+            )
+
+        accepted_brief = identity("accepted-brief", "brief", "accepted-brief")
+        result = identity("result", "result", "result")
+        implementation_review = identity("implementation-review", "evidence", "implementation-review")
+        brief_review = identity("brief-review", "evidence", "brief-review")
+
+        def make_package(
+            selected_brief: work_brief_models.PortableArtifactIdentity,
+            selected_result: work_brief_models.PortableArtifactIdentity,
+            selected_implementation_review: work_brief_models.PortableArtifactIdentity,
+            review_basis: work_brief_models.ReviewBasis,
+        ) -> work_brief_models.CheckpointReviewPackage:
+            return work_brief_models.CheckpointReviewPackage(
+                "pinboard-checkpoint-review-package/v1",
+                value.attempt_id,
+                value.item_id,
+                "candidate-a",
+                "Accepted.",
+                value.accepted_scope,
+                work_brief_models.CheckpointIdentity(checkpoint.checkpoint_id, checkpoint_sha256),
+                selected_brief,
+                selected_result,
+                selected_implementation_review,
+                "ready",
+                review_basis,
+            )
+
+        local = make_package(accepted_brief, result, implementation_review, work_brief_models.LocalReviewBasis())
+        cross = make_package(
+            accepted_brief,
+            result,
+            implementation_review,
+            work_brief_models.CrossBoundaryReviewBasis(
+                brief_review,
+                checkpoint_sha256,
+                hashlib.sha256(canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)).hexdigest(),
+            ),
+        )
+
+        for candidate_package in (local, cross):
+            with self.subTest(boundary=candidate_package.review_basis):
+                encoded = canonical_checkpoint_review_package_bytes(candidate_package)
+                self.assertTrue(encoded.endswith(b"\n"))
+                self.assertEqual(
+                    candidate_package,
+                    expect_work_brief_success(decode_canonical_checkpoint_review_package(encoded)),
+                )
+                expect_work_brief_failure(
+                    decode_canonical_checkpoint_review_package(encoded[:-1]),
+                    WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
+                )
+
+        payload = msgspec.json.decode(canonical_checkpoint_review_package_bytes(cross))
+        if not isinstance(payload, dict):
+            self.fail("checkpoint review package JSON must be an object")
+        payload["unknown"] = True
+        expect_work_brief_failure(
+            decode_checkpoint_review_package(msgspec.json.encode(payload)),
+            WorkBriefErrorCode.PACKAGE_INVALID,
+        )
+        invalid_payloads = []
+        wrong_role = msgspec.json.decode(canonical_checkpoint_review_package_bytes(local))
+        duplicate = msgspec.json.decode(canonical_checkpoint_review_package_bytes(cross))
+        wrong_digest = msgspec.json.decode(canonical_checkpoint_review_package_bytes(cross))
+        if not isinstance(wrong_role, dict) or not isinstance(duplicate, dict) or not isinstance(wrong_digest, dict):
+            self.fail("checkpoint review package JSON must be an object")
+        accepted_brief_payload = wrong_role["accepted_brief"]
+        duplicate_basis = duplicate["review_basis"]
+        implementation_review_payload = duplicate["implementation_review"]
+        wrong_digest_basis = wrong_digest["review_basis"]
+        if (
+            not isinstance(accepted_brief_payload, dict)
+            or not isinstance(duplicate_basis, dict)
+            or not isinstance(implementation_review_payload, dict)
+            or not isinstance(wrong_digest_basis, dict)
+        ):
+            self.fail("checkpoint review package nested identities must be objects")
+        accepted_brief_payload["role"] = "result"
+        duplicate_review_payload = duplicate_basis["brief_review"]
+        if not isinstance(duplicate_review_payload, dict):
+            self.fail("cross-boundary brief-review identity must be an object")
+        duplicate_review_payload["key"] = implementation_review_payload["key"]
+        wrong_digest_basis["checkpoint_sha256"] = "d" * 64
+        invalid_payloads.extend((wrong_role, duplicate, wrong_digest))
+        for invalid_payload in invalid_payloads:
+            expect_work_brief_failure(
+                decode_checkpoint_review_package(msgspec.json.encode(invalid_payload)),
+                WorkBriefErrorCode.PACKAGE_INVALID,
+            )
 
     def test_markdown_is_a_complete_generated_projection(self) -> None:
         rendered = render_work_brief_markdown(example_work_brief()).decode()

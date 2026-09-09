@@ -66,12 +66,14 @@ class ProposalCreationMutation:
 
 @dataclass(frozen=True, slots=True)
 class CheckpointArtifactChanges:
-    """Exact identities assigned to one accepted checkpoint result and review."""
+    """Exact identities assigned to one accepted checkpoint artifact set."""
 
     result: ResultArtifactRef
     result_id: ArtifactRefId
     review: EvidenceArtifactRef
     review_id: ArtifactRefId
+    package: EvidenceArtifactRef
+    package_id: ArtifactRefId
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +86,7 @@ class TransitionMutation:
 
 @dataclass(frozen=True, slots=True)
 class CheckpointAcceptanceMutation:
-    """Persists checkpoint acceptance with its required result and review artifacts."""
+    """Persists checkpoint acceptance with its required result, review, and package artifacts."""
 
     decision: decision_models.CheckpointAcceptanceDecision
     receipt: MutationReceipt

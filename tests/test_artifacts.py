@@ -16,7 +16,7 @@ from pinboard.adapters.files.errors import (
     FileIOError,
     FileIOErrorCode,
 )
-from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.files.file_io import create_immutable, resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database, open_database
 from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError
 from pinboard.adapters.sqlite.models import OpenMode
@@ -159,6 +159,29 @@ class ArtifactPersistenceTest(unittest.TestCase):
 
         self.assertEqual(ArtifactErrorCode.STORAGE_IO_ERROR, failure.exception.code)
         self.assertEqual(b"{}\n", (roots.work_root / publication.reference.selector).read_bytes())
+
+    def test_post_publication_sync_failure_reports_the_created_artifact(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        roots = resolve_durable_roots(project)
+        artifact = NewArtifact(work_models.ArtifactKind.RESULT, "attempt-a", 1, ".md", b"result\n")
+
+        def fail_after_publication(path: Path, content: bytes) -> bool:
+            with patch(
+                "pinboard.adapters.files.file_io._sync_directory",
+                side_effect=FileIOError(FileIOErrorCode.DIRECTORY_SYNC_FAILED, "injected directory sync failure"),
+            ):
+                return create_immutable(path, content)
+
+        with (
+            patch("pinboard.adapters.files.artifacts.create_immutable", side_effect=fail_after_publication),
+            self.assertRaises(ArtifactAcceptanceAfterPublicationError) as publication_failure,
+        ):
+            ArtifactRepository(roots).publish(artifact)
+
+        path = roots.work_root / publication_failure.exception.selector
+        self.assertEqual("artifacts/results/attempt-a/1.md", publication_failure.exception.selector)
+        self.assertEqual(b"result\n", path.read_bytes())
+        self.assertFalse(create_immutable(path, b"result\n"))
 
     def test_reference_verification_rejects_escape_size_and_digest(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

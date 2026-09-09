@@ -8,7 +8,9 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,18 +19,20 @@ from unittest.mock import patch
 import msgspec
 from msgspec.structs import replace as replace_struct
 
+from pinboard.adapters.files import artifacts as artifact_files
 from pinboard.adapters.files import views as file_views
-from pinboard.adapters.files.artifacts import write_revision
-from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
+from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode, FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.database import initialize_database, translate_database_error
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
-from pinboard.application.artifacts import NewArtifact, WorkBriefIdentity
+from pinboard.application.artifacts import ArtifactPublication, NewArtifact, WorkBriefIdentity
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.ports import WorkStore
 from pinboard.domain import authority_models, decision_models, work_models
@@ -45,11 +49,17 @@ from pinboard.interfaces import (
 from pinboard.interfaces import transitions as transition_interface
 from pinboard.interfaces.cli import build_parser, main
 from pinboard.interfaces.errors import WorkBriefErrorCode, WorkBriefFailure
-from pinboard.interfaces.work_briefs import canonical_work_brief_bytes
+from pinboard.interfaces.work_briefs import (
+    canonical_checkpoint_bytes,
+    canonical_work_brief_bytes,
+    canonical_work_brief_review_bytes,
+    decode_canonical_checkpoint_review_package,
+)
 from tests.decision_support import discover_actions
 
 from .domain_support import expect_success
 from .support import (
+    SQLITE_DIGEST,
     SQLITE_NOW,
     JsonObject,
     JsonValue,
@@ -58,7 +68,7 @@ from .support import (
     test_definition,
     with_definition_dependencies,
 )
-from .work_brief_support import CHECKPOINT_ID, ready_review, work_a_brief, work_c_brief
+from .work_brief_support import CHECKPOINT_ID, example_work_brief, ready_review, work_a_brief, work_c_brief
 
 
 class CliTest(unittest.TestCase):
@@ -453,7 +463,9 @@ class CliTest(unittest.TestCase):
         return path
 
     def initialized_state(
-        self, state: stored_state.StoredWorkState | None = None
+        self,
+        state: stored_state.StoredWorkState | None = None,
+        accepted_brief: work_brief_models.WorkBrief | None = None,
     ) -> tuple[Path, Path, SQLiteWorkStore]:
         project = Path(tempfile.mkdtemp()).resolve()
         roots = resolve_durable_roots(project)
@@ -462,7 +474,7 @@ class CliTest(unittest.TestCase):
         if state is not None:
             reference = state.artifact_references[0]
             if reference.selector.endswith(".opaque"):
-                value = work_a_brief(project)
+                value = work_a_brief(project) if accepted_brief is None else accepted_brief
                 attempt = state.lifecycle.attempts[0]
                 value = replace_struct(
                     value,
@@ -2043,7 +2055,7 @@ class CliTest(unittest.TestCase):
                     self.assertIn("ACTION_NOT_AVAILABLE", stderr)
                     self.assertEqual(before, store.validated_snapshot())
 
-    def test_checkpoint_acceptance_archives_exact_attempt_receipts_in_one_transition(self) -> None:  # noqa: PLR0915 - one transaction scenario
+    def test_checkpoint_acceptance_archives_exact_attempt_receipts_in_one_transition(self) -> None:  # noqa: C901, PLR0915 - one transaction scenario
         state = complete_sqlite_state()
         now = datetime.now(UTC)
         state = replace(
@@ -2073,6 +2085,24 @@ class CliTest(unittest.TestCase):
         )
         project, work, store = self.initialized_state(state)
         common = ("--project-root", str(project), "--work-root", str(work))
+        accepted_brief = work_a_brief(project)
+        accepted_checkpoint = accepted_brief.checkpoint
+        assert isinstance(accepted_checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        accepted_checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(accepted_checkpoint)).hexdigest()
+        accepted_review_bytes = ready_review(accepted_brief)
+        accepted_review = write_revision(
+            resolve_durable_roots(project),
+            NewArtifact(
+                work_models.ArtifactKind.EVIDENCE,
+                f"work-a-1-brief-review-{accepted_checkpoint_sha256}",
+                1,
+                ".json",
+                accepted_review_bytes,
+            ),
+        )
+        accepted_reference = store.accept_artifact_reference(work, accepted_review, now)
+        if isinstance(accepted_reference, DecisionFailure):
+            self.fail(str(accepted_reference))
         attempt_root = work / "attempts" / "work-a-1"
         attempt_root.mkdir(parents=True)
         result_bytes = b"candidate result\n"
@@ -2081,7 +2111,12 @@ class CliTest(unittest.TestCase):
         (attempt_root / "review.md").write_bytes(review_bytes)
         payload = project / "accept-checkpoint.json"
         payload.write_text(
-            '{"checkpoint":"checkpoint-a","candidate":"candidate-a","evidence":"Accepted."}\n',
+            f'{{"checkpoint":"{CHECKPOINT_ID}","candidate":"candidate-a","evidence":"Accepted."}}\n',
+            encoding="utf-8",
+        )
+        wrong_checkpoint_payload = project / "accept-wrong-checkpoint.json"
+        wrong_checkpoint_payload.write_text(
+            '{"checkpoint":"checkpoint-a","candidate":"candidate-a","evidence":"Rejected."}\n',
             encoding="utf-8",
         )
         mismatch_payload = project / "accept-mismatched-checkpoint.json"
@@ -2123,6 +2158,28 @@ class CliTest(unittest.TestCase):
 
         self.assertNotEqual(0, stale_result)
         self.assertIn("ACTION_REVISION_STALE", stale_stderr)
+        self.assertEqual(before_mismatch, store.validated_snapshot())
+        self.assertEqual(artifacts_before_mismatch, artifact_inventory())
+
+        original_path_read_bytes = Path.read_bytes
+
+        def reject_checkpoint_evidence_read(path: Path) -> bytes:
+            if path.name in {"result.md", "review.md"}:
+                raise AssertionError("checkpoint evidence was read before the checkpoint identity matched")
+            return original_path_read_bytes(path)
+
+        with patch.object(Path, "read_bytes", reject_checkpoint_evidence_read):
+            wrong_checkpoint_result, wrong_checkpoint_stdout, wrong_checkpoint_stderr = self.run_transition(
+                common, action, wrong_checkpoint_payload, json_output=True
+            )
+
+        self.assertNotEqual(0, wrong_checkpoint_result)
+        self.assertEqual("", wrong_checkpoint_stderr)
+        wrong_checkpoint = self.json_object(json.loads(wrong_checkpoint_stdout))
+        self.assertEqual("TRANSITION_INPUT_INVALID", wrong_checkpoint["code"])
+        self.assertEqual("Checkpoint acceptance requires the accepted brief checkpoint.", wrong_checkpoint["message"])
+        self.assertFalse(wrong_checkpoint["state_changed"])
+        self.assertEqual([], wrong_checkpoint["changed_surfaces"])
         self.assertEqual(before_mismatch, store.validated_snapshot())
         self.assertEqual(artifacts_before_mismatch, artifact_inventory())
 
@@ -2237,6 +2294,134 @@ class CliTest(unittest.TestCase):
         self.assertEqual(before_missing, store.validated_snapshot())
         (attempt_root / "review.md").write_bytes(review_bytes)
 
+        original_publish = ArtifactRepository.publish
+        original_create_immutable = artifact_files.create_immutable
+        expected_publication_selectors = (
+            f"artifacts/results/work-a-1-{CHECKPOINT_ID}-result/1.md",
+            f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review/1.md",
+            f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review-package/1.json",
+        )
+
+        def sync_failure_at(failed_publication: int) -> Callable[[Path, bytes], bool]:
+            creation_count = 0
+
+            def fail_publication_sync(
+                path: Path,
+                content: bytes,
+            ) -> bool:
+                nonlocal creation_count
+                creation_count += 1
+                if creation_count == failed_publication:
+                    with patch(
+                        "pinboard.adapters.files.file_io._sync_directory",
+                        side_effect=FileIOError(
+                            FileIOErrorCode.DIRECTORY_SYNC_FAILED,
+                            "injected post-publication directory sync failure",
+                        ),
+                    ):
+                        return original_create_immutable(path, content)
+                return original_create_immutable(path, content)
+
+            return fail_publication_sync
+
+        for failed_publication in (2, 3):
+            with (
+                self.subTest(failed_publication=failed_publication),
+                patch(
+                    "pinboard.adapters.files.artifacts.create_immutable",
+                    side_effect=sync_failure_at(failed_publication),
+                ),
+            ):
+                sync_failure_result, sync_failure_stdout, sync_failure_stderr = self.run_transition(
+                    common, action, payload, json_output=True
+                )
+
+                self.assertEqual(12, sync_failure_result)
+                self.assertEqual("", sync_failure_stderr)
+                sync_failure = self.json_object(json.loads(sync_failure_stdout))
+                self.assertEqual("committed-effect", sync_failure["status"])
+                self.assertEqual("DIRECTORY_SYNC_FAILED", sync_failure["code"])
+                self.assertEqual("do-not-retry", sync_failure["retry"])
+                self.assertEqual(["immutable-artifact"], sync_failure["changed_surfaces"])
+                self.assertEqual(
+                    [
+                        {"field": "published_artifact_selector", "value": selector}
+                        for selector in expected_publication_selectors[:failed_publication]
+                    ],
+                    sync_failure["observed"],
+                )
+                self.assertEqual(before_missing, store.validated_snapshot())
+                for selector in expected_publication_selectors[:failed_publication]:
+                    self.assertTrue((work / selector).is_file(follow_symlinks=False))
+                    (work / selector).unlink()
+
+        def fail_package_publication(
+            selected_artifacts: ArtifactRepository,
+            artifact: NewArtifact,
+        ) -> ArtifactPublication:
+            if artifact.key.endswith("-review-package"):
+                raise ArtifactError(ArtifactErrorCode.STORAGE_IO_ERROR, "injected package publication failure")
+            return original_publish(selected_artifacts, artifact)
+
+        with patch.object(ArtifactRepository, "publish", fail_package_publication):
+            package_failure_result, package_failure_stdout, package_failure_stderr = self.run_transition(
+                common, action, payload, json_output=True
+            )
+
+        self.assertNotEqual(0, package_failure_result)
+        self.assertEqual("", package_failure_stderr)
+        package_failure = self.json_object(json.loads(package_failure_stdout))
+        self.assertEqual("committed-effect", package_failure["status"])
+        self.assertEqual("do-not-retry", package_failure["retry"])
+        self.assertEqual(
+            [
+                {
+                    "field": "published_artifact_selector",
+                    "value": f"artifacts/results/work-a-1-{CHECKPOINT_ID}-result/1.md",
+                },
+                {
+                    "field": "published_artifact_selector",
+                    "value": f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review/1.md",
+                },
+            ],
+            package_failure["observed"],
+        )
+        self.assertEqual(before_missing, store.validated_snapshot())
+
+        package_path = work / f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review-package/1.json"
+        original_create_immutable = artifact_files.create_immutable
+
+        def fail_new_publication_sync(path: Path, content: bytes) -> bool:
+            with patch(
+                "pinboard.adapters.files.file_io._sync_directory",
+                side_effect=FileIOError(
+                    FileIOErrorCode.DIRECTORY_SYNC_FAILED,
+                    "injected post-publication directory sync failure",
+                ),
+            ):
+                return original_create_immutable(path, content)
+
+        with patch("pinboard.adapters.files.artifacts.create_immutable", side_effect=fail_new_publication_sync):
+            sync_failure_result, sync_failure_stdout, sync_failure_stderr = self.run_transition(
+                common, action, payload, json_output=True
+            )
+
+        self.assertEqual(12, sync_failure_result)
+        self.assertEqual("", sync_failure_stderr)
+        sync_failure = self.json_object(json.loads(sync_failure_stdout))
+        self.assertEqual("committed-effect", sync_failure["status"])
+        self.assertEqual("DIRECTORY_SYNC_FAILED", sync_failure["code"])
+        self.assertEqual("do-not-retry", sync_failure["retry"])
+        self.assertEqual(["immutable-artifact"], sync_failure["changed_surfaces"])
+        self.assertEqual(
+            [{"field": "published_artifact_selector", "value": package_path.relative_to(work).as_posix()}],
+            sync_failure["observed"],
+        )
+        self.assertEqual(before_missing, store.validated_snapshot())
+        self.assertTrue(package_path.is_file(follow_symlinks=False))
+        self.assertFalse(artifact_files.create_immutable(package_path, package_path.read_bytes()))
+        package_path.unlink()
+
         readonly_failure = translate_database_error(sqlite3.OperationalError("attempt to write a readonly database"))
         readonly_failure = readonly_failure.with_database_path(work / "state.sqlite3")
         with patch(
@@ -2257,10 +2442,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual("do-not-retry", failure["retry"])
         observations = tuple(self.json_object(value) for value in self.json_list(failure["observed"]))
         self.assertEqual(
-            (
-                "artifacts/results/work-a-1-checkpoint-a-result/1.md",
-                "artifacts/evidence/work-a-1-checkpoint-a-review/1.md",
-            ),
+            (f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review-package/1.json",),
             tuple(
                 str(observation["value"])
                 for observation in observations
@@ -2277,8 +2459,40 @@ class CliTest(unittest.TestCase):
         self.assertEqual("SQLITE_READONLY", diagnostic_observations["sqlite_error_code"])
         self.assertIn(".codex/pinboard", str(diagnostic_observations["permission_recovery"]))
         self.assertEqual(before_missing, store.validated_snapshot())
-        self.assertEqual(result_bytes, (work / "artifacts/results/work-a-1-checkpoint-a-result/1.md").read_bytes())
-        self.assertEqual(review_bytes, (work / "artifacts/evidence/work-a-1-checkpoint-a-review/1.md").read_bytes())
+        self.assertEqual(
+            result_bytes,
+            (work / f"artifacts/results/work-a-1-{CHECKPOINT_ID}-result/1.md").read_bytes(),
+        )
+        self.assertEqual(
+            review_bytes,
+            (work / f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review/1.md").read_bytes(),
+        )
+        package = decode_canonical_checkpoint_review_package(package_path.read_bytes())
+        if isinstance(package, WorkBriefFailure):
+            self.fail(str(package))
+        self.assertEqual(CHECKPOINT_ID, package.checkpoint.id)
+        self.assertEqual("candidate-a", package.candidate)
+        self.assertEqual("accepted-brief", package.accepted_brief.role)
+        self.assertIsInstance(package.review_basis, work_brief_models.CrossBoundaryReviewBasis)
+        assert isinstance(package.review_basis, work_brief_models.CrossBoundaryReviewBasis)
+        self.assertEqual("brief-review", package.review_basis.brief_review.role)
+
+        conflicting_package_payload = project / "accept-conflicting-package.json"
+        conflicting_package_payload.write_text(
+            f'{{"checkpoint":"{CHECKPOINT_ID}","candidate":"candidate-a","evidence":"Different evidence."}}\n',
+            encoding="utf-8",
+        )
+        preserved_package_bytes = package_path.read_bytes()
+        package_collision_result, _package_collision_stdout, package_collision_stderr = self.run_transition(
+            common,
+            action,
+            conflicting_package_payload,
+            json_output=False,
+        )
+        self.assertNotEqual(0, package_collision_result)
+        self.assertIn("STORAGE_INVARIANT_VIOLATION", package_collision_stderr)
+        self.assertEqual(preserved_package_bytes, package_path.read_bytes())
+        self.assertEqual(before_missing, store.validated_snapshot())
 
         (attempt_root / "review.md").write_bytes(b"conflicting review\n")
         collision_result, _collision_stdout, collision_stderr = self.run_transition(
@@ -2288,7 +2502,10 @@ class CliTest(unittest.TestCase):
         self.assertNotEqual(0, collision_result)
         self.assertIn("STORAGE_INVARIANT_VIOLATION", collision_stderr)
         self.assertEqual(before_missing, store.validated_snapshot())
-        self.assertEqual(review_bytes, (work / "artifacts/evidence/work-a-1-checkpoint-a-review/1.md").read_bytes())
+        self.assertEqual(
+            review_bytes,
+            (work / f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review/1.md").read_bytes(),
+        )
         (attempt_root / "review.md").write_bytes(review_bytes)
 
         accepted_result, _accepted_stdout, accepted_stderr = self.run_transition(
@@ -2299,20 +2516,26 @@ class CliTest(unittest.TestCase):
         reloaded = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
         attempt = next(value for value in reloaded.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
         result_reference = next(
-            value for value in reloaded.artifact_references if value.key == "work-a-1-checkpoint-a-result"
+            value for value in reloaded.artifact_references if value.key == f"work-a-1-{CHECKPOINT_ID}-result"
         )
         review_reference = next(
-            value for value in reloaded.artifact_references if value.key == "work-a-1-checkpoint-a-review"
+            value for value in reloaded.artifact_references if value.key == f"work-a-1-{CHECKPOINT_ID}-review"
+        )
+        package_reference = next(
+            value for value in reloaded.artifact_references if value.key == f"work-a-1-{CHECKPOINT_ID}-review-package"
         )
         self.assertEqual(result_reference.artifact_ref_id, attempt.result_artifact_ref_id)
-        self.assertEqual(review_reference.artifact_ref_id, reloaded.transition_receipts[-1].artifact_ref_id)
+        self.assertEqual(package_reference.artifact_ref_id, reloaded.transition_receipts[-1].artifact_ref_id)
+        self.assertEqual("checkpoint-acceptance/v2", reloaded.transition_receipts[-1].outcome_schema)
         self.assertEqual(result_bytes, (work / result_reference.selector).read_bytes())
         self.assertEqual(review_bytes, (work / review_reference.selector).read_bytes())
+        self.assertEqual(package_path.read_bytes(), (work / package_reference.selector).read_bytes())
         self.assertEqual(before_missing.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
         self.assertEqual(len(before_missing.transition_receipts) + 1, len(reloaded.transition_receipts))
 
     def test_checkpoint_post_link_sync_failure_reports_all_published_artifacts(self) -> None:
         state = complete_sqlite_state()
+        now = datetime.now(UTC)
         state = replace(
             state,
             lifecycle=replace(
@@ -2328,7 +2551,7 @@ class CliTest(unittest.TestCase):
                         value,
                         state=work_models.AttemptState.REVIEW,
                         candidate_revision="candidate-a",
-                        candidate_recorded_at=datetime.now(UTC),
+                        candidate_recorded_at=now,
                     )
                     if value.attempt_id == AttemptId("work-a-1")
                     else value
@@ -2338,20 +2561,37 @@ class CliTest(unittest.TestCase):
         )
         project, work, store = self.initialized_state(state)
         common = ("--project-root", str(project), "--work-root", str(work))
+        accepted_brief = work_a_brief(project)
+        checkpoint = accepted_brief.checkpoint
+        assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
+        published_review = write_revision(
+            resolve_durable_roots(project),
+            NewArtifact(
+                work_models.ArtifactKind.EVIDENCE,
+                f"work-a-1-brief-review-{checkpoint_sha256}",
+                1,
+                ".json",
+                ready_review(accepted_brief),
+            ),
+        )
+        accepted_review = store.accept_artifact_reference(work, published_review, now)
+        if isinstance(accepted_review, DecisionFailure):
+            self.fail(str(accepted_review))
         attempt_root = work / "attempts" / "work-a-1"
         attempt_root.mkdir(parents=True)
         (attempt_root / "result.md").write_bytes(b"candidate result\n")
         (attempt_root / "review.md").write_bytes(b"independent review\n")
         payload = project / "accept-checkpoint.json"
         payload.write_text(
-            '{"checkpoint":"checkpoint-a","candidate":"candidate-a","evidence":"Accepted."}\n',
+            f'{{"checkpoint":"{CHECKPOINT_ID}","candidate":"candidate-a","evidence":"Accepted."}}\n',
             encoding="utf-8",
         )
         action = self.project_action(common, "accept-checkpoint:work-a-1")
         before = store.validated_snapshot()
         selectors = (
-            "artifacts/results/work-a-1-checkpoint-a-result/1.md",
-            "artifacts/evidence/work-a-1-checkpoint-a-review/1.md",
+            f"artifacts/results/work-a-1-{CHECKPOINT_ID}-result/1.md",
+            f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review/1.md",
         )
         review_publication = work / selectors[1]
         original_fsync = os.fsync
@@ -2385,6 +2625,320 @@ class CliTest(unittest.TestCase):
 
         retry_result, _retry_stdout, retry_stderr = self.run_transition(common, action, payload, json_output=True)
         self.assertEqual(0, retry_result, retry_stderr)
+
+    def test_concurrent_checkpoint_loser_does_not_claim_reused_publication(self) -> None:  # noqa: PLR0915 - one deterministic installed concurrency scenario
+        state = complete_sqlite_state()
+        now = datetime.now(UTC)
+        state = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=tuple(
+                    replace(value, state=stored_state.StoredWorkItemState.REVIEW)
+                    if value.item_id == ItemId("work-a")
+                    else value
+                    for value in state.lifecycle.work_items
+                ),
+                attempts=tuple(
+                    replace(
+                        value,
+                        state=work_models.AttemptState.REVIEW,
+                        candidate_revision="candidate-a",
+                        candidate_recorded_at=now,
+                    )
+                    if value.attempt_id == AttemptId("work-a-1")
+                    else value
+                    for value in state.lifecycle.attempts
+                ),
+            ),
+            artifact_references=(state.artifact_references[0],),
+            transition_receipts=(),
+        )
+        project, work, store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        accepted_brief = work_a_brief(project)
+        checkpoint = accepted_brief.checkpoint
+        assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
+        published_review = write_revision(
+            resolve_durable_roots(project),
+            NewArtifact(
+                work_models.ArtifactKind.EVIDENCE,
+                f"work-a-1-brief-review-{checkpoint_sha256}",
+                1,
+                ".json",
+                ready_review(accepted_brief),
+            ),
+        )
+        accepted_review = store.accept_artifact_reference(work, published_review, now)
+        if isinstance(accepted_review, DecisionFailure):
+            self.fail(str(accepted_review))
+        attempt_root = work / "attempts" / "work-a-1"
+        attempt_root.mkdir(parents=True)
+        (attempt_root / "result.md").write_bytes(b"candidate result\n")
+        (attempt_root / "review.md").write_bytes(b"independent review\n")
+        payload = project / "accept-checkpoint.json"
+        payload.write_text(
+            f'{{"checkpoint":"{CHECKPOINT_ID}","candidate":"candidate-a","evidence":"Accepted."}}\n',
+            encoding="utf-8",
+        )
+        action = self.project_action(common, "accept-checkpoint:work-a-1")
+        arguments = (
+            *common,
+            "transition",
+            "--action-id",
+            str(action["action_id"]),
+            "--expected-revision",
+            str(action["expected_revision"]),
+            "--authorization",
+            str(action["authorization"]),
+            "--task-id",
+            "project-task",
+            "--host-id",
+            "studio",
+            "--payload",
+            str(payload),
+            "--json",
+        )
+        before = store.validated_snapshot()
+        loser_reached_creation = threading.Event()
+        resume_loser = threading.Event()
+        loser_results: list[int] = []
+        loser_errors: list[BaseException] = []
+        absence_observations: list[bool] = []
+        original_create_immutable = artifact_files.create_immutable
+
+        def coordinate_result_creation(path: Path, content: bytes) -> bool:
+            if threading.current_thread() is loser and not loser_reached_creation.is_set():
+                absence_observations.append(not path.exists())
+                loser_reached_creation.set()
+                if not resume_loser.wait(timeout=5):
+                    raise AssertionError("Concurrent checkpoint loser did not resume.")
+            return original_create_immutable(path, content)
+
+        def run_loser() -> None:
+            try:
+                loser_results.append(main(arguments))
+            except BaseException as error:  # pragma: no cover - asserted by the coordinating thread
+                loser_errors.append(error)
+
+        loser = threading.Thread(target=run_loser)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            patch("pinboard.adapters.files.artifacts.create_immutable", side_effect=coordinate_result_creation),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            loser.start()
+            try:
+                self.assertTrue(loser_reached_creation.wait(timeout=5), "Loser did not reach immutable publication.")
+                winner_result = main(arguments)
+            finally:
+                resume_loser.set()
+            loser.join(timeout=5)
+
+        self.assertFalse(loser.is_alive())
+        self.assertEqual([], loser_errors)
+        self.assertEqual([True], absence_observations)
+        self.assertEqual(0, winner_result, stderr.getvalue())
+        self.assertEqual([11], loser_results)
+        decoder = json.JSONDecoder()
+        documents: list[JsonObject] = []
+        output = stdout.getvalue()
+        position = 0
+        while position < len(output):
+            position += len(output[position:]) - len(output[position:].lstrip())
+            if position == len(output):
+                break
+            decoded, position = decoder.raw_decode(output, position)
+            documents.append(self.json_object(decoded))
+        loser_failure = next(value for value in documents if value.get("schema") == "pinboard-rejected-operation/v1")
+        self.assertEqual("rejected", loser_failure["status"])
+        self.assertIn(loser_failure["code"], ("ACTION_NOT_AVAILABLE", "ACTION_REVISION_STALE"))
+        self.assertFalse(loser_failure["state_changed"])
+        self.assertEqual([], loser_failure["changed_surfaces"])
+        self.assertFalse(
+            any(
+                self.json_object(value).get("field") == "published_artifact_selector"
+                for value in self.json_list(loser_failure["observed"])
+            )
+        )
+        reloaded = store.validated_snapshot()
+        self.assertEqual(before.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
+        self.assertEqual(len(before.artifact_references) + 3, len(reloaded.artifact_references))
+        self.assertEqual(len(before.transition_receipts) + 1, len(reloaded.transition_receipts))
+
+    def test_local_checkpoint_acceptance_publishes_and_reloads_one_complete_package(self) -> None:
+        state = complete_sqlite_state()
+        now = datetime.now(UTC)
+        state = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=tuple(
+                    replace(value, state=stored_state.StoredWorkItemState.REVIEW)
+                    if value.item_id == ItemId("work-a")
+                    else value
+                    for value in state.lifecycle.work_items
+                ),
+                attempts=tuple(
+                    replace(
+                        value,
+                        state=work_models.AttemptState.REVIEW,
+                        candidate_revision="local-candidate",
+                        candidate_recorded_at=now,
+                    )
+                    if value.attempt_id == AttemptId("work-a-1")
+                    else value
+                    for value in state.lifecycle.attempts
+                ),
+            ),
+            artifact_references=(state.artifact_references[0],),
+            transition_receipts=(),
+        )
+        candidate = example_work_brief()
+        local_brief = replace_struct(
+            candidate,
+            attempt_id="work-a-1",
+            item_id="work-a",
+            branch="codex/work-a",
+            base_revision="base-revision",
+            accepted_scope=work_brief_models.AcceptedScope(1, SQLITE_DIGEST),
+            checkpoint=work_brief_models.LocalCheckpoint(
+                "local-checkpoint",
+                "Preserve local review evidence",
+                work_brief_models.NoArchitectureImpact("The existing checkpoint owner is unchanged."),
+                "The local acceptance package survives a fresh reload.",
+                (work_brief_models.AcceptanceCriterion(1, "The complete package is persisted."),),
+                (
+                    work_brief_models.VerificationRecord(
+                        work_brief_models.AcceptedScopeAuthorization("work-a", 1),
+                        "Run the installed acceptance path.",
+                    ),
+                ),
+                (),
+            ),
+        )
+        project, work, store = self.initialized_state(state, local_brief)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        attempt_root = work / "attempts" / "work-a-1"
+        attempt_root.mkdir(parents=True)
+        (attempt_root / "result.md").write_bytes(b"local result\n")
+        (attempt_root / "review.md").write_bytes(b"local review\n")
+        payload = project / "accept-local-checkpoint.json"
+        payload.write_text(
+            '{"checkpoint":"local-checkpoint","candidate":"local-candidate","evidence":"Accepted locally."}\n',
+            encoding="utf-8",
+        )
+        action = next(
+            self.json_object(value)
+            for value in self.json_list(self.run_json_cli(*common, "actions", "--role", "project")["actions"])
+            if self.json_object(value)["action_id"] == "accept-checkpoint:work-a-1"
+        )
+        before = store.validated_snapshot()
+
+        result, _stdout, stderr = self.run_transition(common, action, payload, json_output=False)
+
+        self.assertEqual(0, result, stderr)
+        reloaded = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+        package_reference = next(
+            value for value in reloaded.artifact_references if value.key == "work-a-1-local-checkpoint-review-package"
+        )
+        package = decode_canonical_checkpoint_review_package((work / package_reference.selector).read_bytes())
+        if isinstance(package, WorkBriefFailure):
+            self.fail(str(package))
+        self.assertIsInstance(package.review_basis, work_brief_models.LocalReviewBasis)
+        self.assertEqual(len(before.artifact_references) + 3, len(reloaded.artifact_references))
+        self.assertEqual(package_reference.artifact_ref_id, reloaded.transition_receipts[-1].artifact_ref_id)
+        self.assertEqual("checkpoint-acceptance/v2", reloaded.transition_receipts[-1].outcome_schema)
+
+    def test_cross_boundary_checkpoint_rejects_unready_review_before_evidence_reads(self) -> None:
+        for name in ("missing", "malformed", "stale", "wrong-owner"):
+            with self.subTest(name=name):
+                state = complete_sqlite_state()
+                state = replace(
+                    state,
+                    lifecycle=replace(
+                        state.lifecycle,
+                        work_items=tuple(
+                            replace(value, state=stored_state.StoredWorkItemState.REVIEW)
+                            if value.item_id == ItemId("work-a")
+                            else value
+                            for value in state.lifecycle.work_items
+                        ),
+                        attempts=tuple(
+                            replace(
+                                value,
+                                state=work_models.AttemptState.REVIEW,
+                                candidate_revision="candidate-a",
+                                candidate_recorded_at=SQLITE_NOW,
+                            )
+                            if value.attempt_id == AttemptId("work-a-1")
+                            else value
+                            for value in state.lifecycle.attempts
+                        ),
+                    ),
+                    artifact_references=(state.artifact_references[0],),
+                    transition_receipts=(),
+                )
+                project, work, store = self.initialized_state(state)
+                common = ("--project-root", str(project), "--work-root", str(work))
+                brief = work_a_brief(project)
+                checkpoint = brief.checkpoint
+                assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+                checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
+                if name != "missing":
+                    review = msgspec.json.decode(ready_review(brief), type=work_brief_models.WorkBriefReview)
+                    if name == "malformed":
+                        review_bytes = b"not-json\n"
+                    elif name == "stale":
+                        review_bytes = canonical_work_brief_review_bytes(
+                            replace_struct(review, checkpoint_sha256="f" * 64)
+                        )
+                    else:
+                        review_bytes = canonical_work_brief_review_bytes(
+                            replace_struct(review, reviewer_task_id=brief.owner_task_id)
+                        )
+                    published = write_revision(
+                        resolve_durable_roots(project),
+                        NewArtifact(
+                            work_models.ArtifactKind.EVIDENCE,
+                            f"work-a-1-brief-review-{checkpoint_sha256}",
+                            1,
+                            ".json",
+                            review_bytes,
+                        ),
+                    )
+                    accepted = store.accept_artifact_reference(work, published, SQLITE_NOW)
+                    if isinstance(accepted, DecisionFailure):
+                        self.fail(str(accepted))
+                payload = project / "accept-checkpoint.json"
+                payload.write_text(
+                    f'{{"checkpoint":"{CHECKPOINT_ID}","candidate":"candidate-a","evidence":"Accepted."}}\n',
+                    encoding="utf-8",
+                )
+                action = next(
+                    self.json_object(value)
+                    for value in self.json_list(self.run_json_cli(*common, "actions", "--role", "project")["actions"])
+                    if self.json_object(value)["action_id"] == "accept-checkpoint:work-a-1"
+                )
+                attempt_root = work / "attempts" / "work-a-1"
+                before = store.validated_snapshot()
+
+                result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
+
+                self.assertNotEqual(0, result)
+                self.assertEqual("", stderr)
+                failure = self.json_object(json.loads(stdout))
+                self.assertEqual("TRANSITION_INPUT_INVALID", failure["code"])
+                message = failure["message"]
+                self.assertIsInstance(message, str)
+                assert isinstance(message, str)
+                self.assertIn("ready brief review", message)
+                self.assertEqual(before, store.validated_snapshot())
+                self.assertFalse((attempt_root / "result.md").exists())
+                self.assertFalse((work / f"artifacts/results/work-a-1-{CHECKPOINT_ID}-result").exists())
 
     def test_current_read_surface_has_human_and_json_views(self) -> None:
         state = complete_sqlite_state()

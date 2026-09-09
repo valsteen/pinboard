@@ -377,7 +377,10 @@ def _present_committed_transition(
     if json:
         write_json(
             work_inspection_models.TransitionView(
-                decision_models.action_id(selected_action), committed_revision, continuation
+                decision_models.action_id(selected_action),
+                committed_revision,
+                int(committed_mutation.receipt.history_id),
+                continuation,
             )
         )
     else:

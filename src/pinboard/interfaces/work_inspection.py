@@ -237,10 +237,10 @@ def _select_prior_checkpoint_package(
     prompt = (
         f"Prior checkpoint package: history {int(receipt.history_id)}, {package_path}, "
         f"SHA-256 {package_reference.content_sha256}, accepted candidate {package.candidate}. "
-        "Verify those package bytes, resolve its accepted candidate in Git, and compare it with the current "
-        "candidate. Stop without a verdict if either identity cannot be resolved, no comparison range can be "
-        "established, or the histories diverge. Treat the package as historical assurance, never as authority "
-        "over the current brief or candidate."
+        "Verify those package bytes and stop without a verdict if they differ from that digest. Resolve its "
+        "accepted candidate in Git and compare it with the current candidate. Stop without a verdict if either "
+        "identity cannot be resolved, no comparison range can be established, or the histories diverge. Treat "
+        "the package as historical assurance, never as authority over the current brief or candidate."
     )
     return selection, prompt
 
@@ -278,11 +278,12 @@ def _select_review_round(
     prompt = (
         f"Correction receipt: history {int(correction_receipt.history_id)}, rejected candidate "
         f"{correction_outcome.candidate}, reason: {correction_outcome.evidence}. Current prior-review bytes: "
-        f"{rendered_review_path}, SHA-256 {review_digest}. Verify those bytes and identify the candidate reported "
-        "by that file. Compare the receipt candidate and the review-file candidate separately with the current "
-        "candidate. Stop without a verdict if the review omits its candidate or either comparison is unresolvable, "
-        "range-less, or divergent. The selected receipt and mutable review file are independent evidence inputs; "
-        "do not claim they form one immutable lineage. Resolve every prior finding."
+        f"{rendered_review_path}, SHA-256 {review_digest}. Verify those bytes and stop without a verdict if they "
+        "differ from that digest. Identify the candidate reported by that file. Compare the receipt candidate and "
+        "the review-file candidate separately with the current candidate. Stop without a verdict if the review "
+        "omits its candidate or either comparison is unresolvable, range-less, or divergent. The selected receipt "
+        "and mutable review file are independent evidence inputs; do not claim they form one immutable lineage. "
+        "Resolve every prior finding."
     )
     return round_view, prompt
 

@@ -4223,6 +4223,7 @@ Not launchable:
                 self.assertEqual(work_a_brief(project).owner_task_id, rendered.continuation.owner_task_id)
                 self.assertEqual(work_models.AttemptState.ACTIVE, rendered.continuation.state)
                 reloaded = store.validated_snapshot()
+                self.assertEqual(int(reloaded.transition_receipts[-1].history_id), rendered.history_id)
                 attempt = next(
                     value for value in reloaded.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1")
                 )

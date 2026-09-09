@@ -15,6 +15,7 @@ class AttemptView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 class TransitionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_id: str
     committed_revision: str
+    history_id: int
     continuation: query_models.AttemptContinuation | None
 
 

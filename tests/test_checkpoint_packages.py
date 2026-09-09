@@ -366,6 +366,45 @@ class CheckpointPackageTest(unittest.TestCase):
         self.assertEqual(11, result)
         self.assertEqual("", stdout)
 
+    def test_review_job_rejects_v1_receipt_with_checkpoint_shaped_payload_without_writes(self) -> None:
+        fixture, package_history_id, _correction_history_id = self.review_job_fixture()
+        connection = sqlite3.connect(fixture.work / "state.sqlite3")
+        try:
+            connection.execute(
+                "UPDATE transition_history SET outcome_schema = 'transition-receipt/v1' WHERE history_id = ?",
+                (package_history_id,),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        files_before = {
+            path.relative_to(fixture.work).as_posix(): path.read_bytes()
+            for path in fixture.work.rglob("*")
+            if path.is_file()
+        }
+
+        result, stdout, _stderr = self.run_cli(
+            *fixture.common,
+            "review-job",
+            "--attempt-id",
+            "work-a-1",
+            "--candidate-revision",
+            "candidate-b",
+            "--checkpoint-history-id",
+            str(package_history_id),
+        )
+
+        self.assertEqual(11, result)
+        self.assertEqual("", stdout)
+        self.assertEqual(
+            files_before,
+            {
+                path.relative_to(fixture.work).as_posix(): path.read_bytes()
+                for path in fixture.work.rglob("*")
+                if path.is_file()
+            },
+        )
+
     def test_review_job_rejects_missing_or_corrupt_selected_package_bytes(self) -> None:
         for failure in ("missing", "corrupt"):
             fixture, package_history_id, _correction_history_id = self.review_job_fixture()

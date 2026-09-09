@@ -927,6 +927,13 @@ def _return_for_correction(
             None,
         )
     authority = authorities[0]
+    attempt = snapshot.attempt(attempt_id)
+    if attempt is None or attempt.protected_candidate_revision is None:
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "Returning a review requires the exact protected candidate.",
+            None,
+        )
     authority_change = decision_models.AttemptAuthorityChange(
         authority,
         replace(authority, lease_id=None, generation=authority.generation + 1),
@@ -937,6 +944,7 @@ def _return_for_correction(
         decision_models.ReviewReturnChange(
             item.item,
             attempt_id,
+            attempt.protected_candidate_revision,
             authority_change,
         ),
         item=item.item,

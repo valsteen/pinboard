@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from dataclasses import dataclass, replace
@@ -15,12 +16,14 @@ from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files.artifacts import write_revision
 from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.sqlite import state as sqlite_state
+from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.handover import ProjectHandover
-from pinboard.domain import work_models
+from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.history import CheckpointAcceptanceOutcome
 from pinboard.domain.identifiers import AttemptId, ItemId
@@ -232,6 +235,284 @@ class CheckpointPackageTest(unittest.TestCase):
         if isinstance(package, WorkBriefFailure):
             self.fail(str(package))
         return package
+
+    def review_job_fixture(self) -> tuple[AcceptedPackageFixture, int, int]:
+        fixture = self.accepted_package_fixture()
+        package_receipt = next(
+            value
+            for value in fixture.store.validated_snapshot().transition_receipts
+            if value.outcome_schema == "checkpoint-acceptance/v2"
+        )
+        connection = sqlite3.connect(fixture.work / "state.sqlite3")
+        try:
+            revision = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()[0]
+            correction_history_id = connection.execute("SELECT max(history_id) + 1 FROM transition_history").fetchone()[
+                0
+            ]
+            connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = 'work-a'")
+            connection.execute(
+                """
+                UPDATE attempts
+                SET state = 'review', candidate_revision = 'candidate-b', candidate_recorded_at = ?
+                WHERE attempt_id = 'work-a-1'
+                """,
+                (SQLITE_NOW.isoformat(),),
+            )
+            connection.execute(
+                """
+                INSERT INTO transition_history(
+                    history_id, project_revision, action_id, action_kind, subject_id,
+                    artifact_ref_id, authorization_kind, actor_task_id, actor_host_id,
+                    input_schema, input_json, outcome_schema, outcome_json, committed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    correction_history_id,
+                    revision + 1,
+                    "return-for-correction:work-a-1",
+                    decision_models.ActionKind.RETURN_FOR_CORRECTION.value,
+                    "work-a-1",
+                    None,
+                    decision_models.AuthorizationKind.PROJECT.value,
+                    "review-owner",
+                    "local",
+                    "return-for-correction/v1",
+                    '{"reason":"Fix the affected sibling."}',
+                    "transition-receipt/v1",
+                    history.encode_transition_receipt_outcome(
+                        evidence="Fix the affected sibling.",
+                        outcome=decision_models.ActionKind.RETURN_FOR_CORRECTION.value,
+                        candidate="candidate-a",
+                    ).decode(),
+                    SQLITE_NOW.isoformat(),
+                ),
+            )
+            connection.execute(
+                "UPDATE project_meta SET revision = ?, updated_at = ? WHERE singleton = 1",
+                (revision + 1, SQLITE_NOW.isoformat()),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        (attempt_root / "result.md").write_text("candidate B result\n", encoding="utf-8")
+        (attempt_root / "review.md").write_text(
+            "Candidate: candidate-a\nFinding: affected sibling.\n", encoding="utf-8"
+        )
+        return fixture, int(package_receipt.history_id), correction_history_id
+
+    def test_review_job_v2_supports_independent_package_and_round_dimensions(self) -> None:
+        fixture, package_history_id, correction_history_id = self.review_job_fixture()
+        combinations = (
+            ((), "absent", "initial"),
+            (("--checkpoint-history-id", str(package_history_id)), "present", "initial"),
+            (("--correction-history-id", str(correction_history_id)), "absent", "correction"),
+            (
+                (
+                    "--checkpoint-history-id",
+                    str(package_history_id),
+                    "--correction-history-id",
+                    str(correction_history_id),
+                ),
+                "present",
+                "correction",
+            ),
+        )
+        database_before = (fixture.work / "state.sqlite3").read_bytes()
+        for arguments, package_kind, round_kind in combinations:
+            with self.subTest(package=package_kind, round=round_kind):
+                job = self.run_json_cli(
+                    *fixture.common,
+                    "review-job",
+                    "--attempt-id",
+                    "work-a-1",
+                    "--candidate-revision",
+                    "candidate-b",
+                    *arguments,
+                )
+                self.assertEqual("pinboard-review-job/v2", job["schema"])
+                self.assertEqual(package_kind, self.json_object(job["prior_checkpoint_package"])["kind"])
+                self.assertEqual(round_kind, self.json_object(job["review_round"])["kind"])
+        self.assertEqual(database_before, (fixture.work / "state.sqlite3").read_bytes())
+
+    def test_review_job_rejects_wrong_history_kinds_and_package_identity(self) -> None:
+        fixture, package_history_id, correction_history_id = self.review_job_fixture()
+        common = (
+            *fixture.common,
+            "review-job",
+            "--attempt-id",
+            "work-a-1",
+            "--candidate-revision",
+            "candidate-b",
+        )
+        for arguments in (
+            ("--checkpoint-history-id", str(correction_history_id)),
+            ("--correction-history-id", str(package_history_id)),
+            ("--checkpoint-history-id", "999999"),
+            ("--correction-history-id", "999999"),
+        ):
+            with self.subTest(arguments=arguments):
+                result, stdout, _stderr = self.run_cli(*common, *arguments)
+                self.assertEqual(11, result)
+                self.assertEqual("", stdout)
+
+        package = self.package(fixture)
+        self.replace_package(fixture, replace_struct(package, attempt_id="foreign-attempt"))
+        result, stdout, _stderr = self.run_cli(
+            *common,
+            "--checkpoint-history-id",
+            str(package_history_id),
+        )
+        self.assertEqual(11, result)
+        self.assertEqual("", stdout)
+
+    def test_review_job_rejects_missing_or_corrupt_selected_package_bytes(self) -> None:
+        for failure in ("missing", "corrupt"):
+            fixture, package_history_id, _correction_history_id = self.review_job_fixture()
+            package_path = fixture.work / fixture.package_reference.selector
+            if failure == "missing":
+                package_path.unlink()
+            else:
+                package_path.write_bytes(b"corrupt\n")
+            result, stdout, _stderr = self.run_cli(
+                *fixture.common,
+                "review-job",
+                "--attempt-id",
+                "work-a-1",
+                "--candidate-revision",
+                "candidate-b",
+                "--checkpoint-history-id",
+                str(package_history_id),
+            )
+            with self.subTest(failure=failure):
+                self.assertEqual(12, result)
+                self.assertEqual("", stdout)
+
+    def test_review_job_keeps_selected_return_and_current_review_independent(self) -> None:
+        fixture, package_history_id, older_correction_history_id = self.review_job_fixture()
+        review_path = fixture.work / "attempts" / "work-a-1" / "review.md"
+        review_path.write_text("Candidate: candidate-newer\nFinding: newer finding.\n", encoding="utf-8")
+        job = self.run_json_cli(
+            *fixture.common,
+            "review-job",
+            "--attempt-id",
+            "work-a-1",
+            "--candidate-revision",
+            "candidate-b",
+            "--checkpoint-history-id",
+            str(package_history_id),
+            "--correction-history-id",
+            str(older_correction_history_id),
+        )
+        round_view = self.json_object(job["review_round"])
+        self.assertEqual("candidate-a", round_view["candidate_revision"])
+        self.assertEqual(hashlib.sha256(review_path.read_bytes()).hexdigest(), round_view["review_sha256"])
+        self.assertIn("independent evidence inputs", str(job["prompt"]))
+        self.assertIn("Compare the receipt candidate and the review-file candidate separately", str(job["prompt"]))
+
+    def test_review_job_accepts_a_local_checkpoint_package(self) -> None:
+        fixture = self.accepted_package_fixture(local=True)
+        package_receipt = next(
+            value
+            for value in fixture.store.validated_snapshot().transition_receipts
+            if value.outcome_schema == "checkpoint-acceptance/v2"
+        )
+        connection = sqlite3.connect(fixture.work / "state.sqlite3")
+        try:
+            connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = 'work-a'")
+            connection.execute(
+                """
+                UPDATE attempts
+                SET state = 'review', candidate_revision = 'candidate-b', candidate_recorded_at = ?
+                WHERE attempt_id = 'work-a-1'
+                """,
+                (SQLITE_NOW.isoformat(),),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        job = self.run_json_cli(
+            *fixture.common,
+            "review-job",
+            "--attempt-id",
+            "work-a-1",
+            "--candidate-revision",
+            "candidate-b",
+            "--checkpoint-history-id",
+            str(int(package_receipt.history_id)),
+        )
+        self.assertEqual("present", self.json_object(job["prior_checkpoint_package"])["kind"])
+
+    def test_package_aware_review_job_uses_one_bounded_read_transaction(self) -> None:
+        fixture, package_history_id, correction_history_id = self.review_job_fixture()
+        connection = sqlite3.connect(fixture.work / "state.sqlite3")
+        try:
+            next_history = connection.execute("SELECT max(history_id) + 1 FROM transition_history").fetchone()[0]
+            next_revision = connection.execute("SELECT max(project_revision) + 1 FROM transition_history").fetchone()[0]
+            connection.executemany(
+                """
+                INSERT INTO transition_history(
+                    history_id, project_revision, action_id, action_kind, subject_id,
+                    artifact_ref_id, authorization_kind, actor_task_id, actor_host_id,
+                    input_schema, input_json, outcome_schema, outcome_json, committed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (
+                        next_history + index,
+                        next_revision + index,
+                        f"inspect:unrelated-{index}",
+                        decision_models.ActionKind.INSPECT.value,
+                        f"unrelated-{index}",
+                        None,
+                        decision_models.AuthorizationKind.PROJECT.value,
+                        "observer",
+                        "local",
+                        "inspect/v1",
+                        "{}",
+                        "transition-receipt/v1",
+                        '{"evidence":null,"outcome":"inspect"}',
+                        SQLITE_NOW.isoformat(),
+                    )
+                    for index in range(200)
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        original_read_operation = sqlite_store.read_operation
+        original_receipt_read = sqlite_state.read_history_receipt
+        with (
+            patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete state used")),
+            patch.object(
+                SQLiteWorkStore,
+                "read_handover_batches",
+                side_effect=AssertionError("handover used"),
+            ),
+            patch.object(sqlite_store, "read_operation", wraps=original_read_operation) as transactions,
+            patch.object(sqlite_state, "read_history_receipt", wraps=original_receipt_read) as receipt_reads,
+            patch("pinboard.adapters.files.root.subprocess.run", wraps=subprocess.run) as git_calls,
+        ):
+            job = self.run_json_cli(
+                *fixture.common,
+                "review-job",
+                "--attempt-id",
+                "work-a-1",
+                "--candidate-revision",
+                "candidate-b",
+                "--checkpoint-history-id",
+                str(package_history_id),
+                "--correction-history-id",
+                str(correction_history_id),
+            )
+        self.assertEqual("pinboard-review-job/v2", job["schema"])
+        self.assertEqual(1, transactions.call_count)
+        self.assertEqual(2, receipt_reads.call_count)
+        self.assertTrue(git_calls.call_args_list)
+        self.assertTrue(
+            all(call.args[0][1:3] == ["rev-parse", "--path-format=absolute"] for call in git_calls.call_args_list)
+        )
 
     def replace_artifact_bytes(
         self,

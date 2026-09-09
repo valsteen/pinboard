@@ -72,6 +72,13 @@ class WorkStore(Protocol):
 
     def read_attempt_context(self, attempt_id: AttemptId) -> query_models.AttemptContextFacts | None: ...
 
+    def read_review_job_context(
+        self,
+        attempt_id: AttemptId,
+        checkpoint_history_id: HistoryId | None,
+        correction_history_id: HistoryId | None,
+    ) -> query_models.ReviewJobContextFacts | None: ...
+
     def read_decision_facts(self, scope: query_models.DecisionScope, now: datetime) -> query_models.DecisionFacts: ...
 
     def read_attempt_authority_status(self, attempt_id: AttemptId) -> query_models.AttemptAuthorityStatus | None: ...
@@ -139,6 +146,15 @@ class ItemStatusReader(Protocol):
 
 class AttemptContextReader(Protocol):
     def read_attempt_context(self, attempt_id: AttemptId) -> query_models.AttemptContextFacts | None: ...
+
+
+class ReviewJobContextReader(Protocol):
+    def read_review_job_context(
+        self,
+        attempt_id: AttemptId,
+        checkpoint_history_id: HistoryId | None,
+        correction_history_id: HistoryId | None,
+    ) -> query_models.ReviewJobContextFacts | None: ...
 
 
 class ParallelPreviewReader(Protocol):

@@ -224,7 +224,10 @@ def _mutation_class(command_type: type[cli_commands.CliCommand]) -> MutationClas
         cli_commands.ProjectDispatchCommand,
         cli_commands.AttemptStatusCommand,
         cli_commands.AttemptInspectCommand,
-        cli_commands.ReviewJobCommand,
+        cli_commands.InitialReviewJobCommand,
+        cli_commands.PackageInitialReviewJobCommand,
+        cli_commands.CorrectionReviewJobCommand,
+        cli_commands.PackageCorrectionReviewJobCommand,
         cli_commands.PreparationStatusCommand,
         cli_commands.ParallelPreviewCommand,
     ):
@@ -381,7 +384,10 @@ def _subject_and_precondition(  # noqa: C901, PLR0912 - exhaustive installed pre
         cli_commands.AttemptRevokeCommand,
         cli_commands.AttemptStatusCommand,
         cli_commands.AttemptInspectCommand,
-        cli_commands.ReviewJobCommand,
+        cli_commands.InitialReviewJobCommand,
+        cli_commands.PackageInitialReviewJobCommand,
+        cli_commands.CorrectionReviewJobCommand,
+        cli_commands.PackageCorrectionReviewJobCommand,
     ):
         return "attempt", "attempt-exists"
     if command_type in (cli_commands.PreparationStartCommand, cli_commands.PreparationAcquireCommand):

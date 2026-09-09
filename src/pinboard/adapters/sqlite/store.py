@@ -1140,6 +1140,45 @@ class _SQLiteWorkTransaction:
         return self._select(CommittedEffect(mutation.receipt, item_ids, attempt_ids, continuation_attempt_id))
 
 
+def _read_attempt_context_facts(
+    connection: sqlite3.Connection,
+    attempt_id: AttemptId,
+) -> query_models.AttemptContextFacts | None:
+    selected = read_attempt_context(connection, attempt_id)
+    if selected is None:
+        return None
+    match selected:
+        case TerminalAttemptContextSelection():
+            return query_models.TerminalAttemptContextFacts(
+                selected.project_revision,
+                selected.attempt_id,
+                selected.item_id,
+            )
+        case NonterminalAttemptContextSelection():
+            reference = read_brief_artifact_reference(connection, selected.brief_artifact_ref_id)
+            if reference is None:
+                raise StorageError(
+                    StorageErrorCode.INVALID_STATE,
+                    "The selected nonterminal attempt has no accepted brief reference.",
+                )
+            return query_models.NonterminalAttemptContextFacts(
+                selected.project_revision,
+                selected.attempt_id,
+                selected.item_id,
+                selected.state,
+                selected.branch,
+                selected.base_revision,
+                selected.accepted_scope_revision,
+                selected.accepted_scope_digest,
+                selected.candidate_revision,
+                selected.brief_artifact_ref_id,
+                selected.item,
+                reference,
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 class SQLiteWorkStore:
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -1410,39 +1449,43 @@ class SQLiteWorkStore:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
-                selected = read_attempt_context(connection, attempt_id)
-                if selected is None:
+                return _read_attempt_context_facts(connection, attempt_id)
+        finally:
+            connection.close()
+
+    def read_review_job_context(
+        self,
+        attempt_id: AttemptId,
+        checkpoint_history_id: HistoryId | None,
+        correction_history_id: HistoryId | None,
+    ) -> query_models.ReviewJobContextFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                attempt = _read_attempt_context_facts(connection, attempt_id)
+                if attempt is None:
                     return None
-                match selected:
-                    case TerminalAttemptContextSelection():
-                        return query_models.TerminalAttemptContextFacts(
-                            selected.project_revision,
-                            selected.attempt_id,
-                            selected.item_id,
-                        )
-                    case NonterminalAttemptContextSelection():
-                        reference = read_brief_artifact_reference(connection, selected.brief_artifact_ref_id)
-                        if reference is None:
-                            raise StorageError(
-                                StorageErrorCode.INVALID_STATE,
-                                "The selected nonterminal attempt has no accepted brief reference.",
-                            )
-                        return query_models.NonterminalAttemptContextFacts(
-                            selected.project_revision,
-                            selected.attempt_id,
-                            selected.item_id,
-                            selected.state,
-                            selected.branch,
-                            selected.base_revision,
-                            selected.accepted_scope_revision,
-                            selected.accepted_scope_digest,
-                            selected.candidate_revision,
-                            selected.brief_artifact_ref_id,
-                            selected.item,
-                            reference,
-                        )
-                    case _ as unreachable:
-                        assert_never(unreachable)
+                checkpoint_receipt = (
+                    None
+                    if checkpoint_history_id is None
+                    else sqlite_state.read_history_receipt(connection, checkpoint_history_id)
+                )
+                checkpoint_package_reference = (
+                    None
+                    if checkpoint_receipt is None or checkpoint_receipt.artifact_ref_id is None
+                    else read_artifact_reference_by_id(connection, checkpoint_receipt.artifact_ref_id)
+                )
+                correction_receipt = (
+                    None
+                    if correction_history_id is None
+                    else sqlite_state.read_history_receipt(connection, correction_history_id)
+                )
+                return query_models.ReviewJobContextFacts(
+                    attempt,
+                    checkpoint_receipt,
+                    checkpoint_package_reference,
+                    correction_receipt,
+                )
         finally:
             connection.close()
 

@@ -122,3 +122,11 @@ Dispatch reselects the current action and accepted brief, verifies the stable ch
 ## Reuse during implementation review
 
 Use the compiled map again against the frozen candidate. Account for every criterion, contract and authorization basis, mandatory verification entry, coverage record, and lifecycle sibling. Every piece of blocking review feedback must cite one accepted owner or applicable reviewed repository rule. Classify anything else as a brief omission, authority contradiction, unresolved product decision, or new capability. Compare the architecture declaration with the final diff, requiring the named authority change in the same candidate when it is `update-required`. Re-run the material-limitation classification against the implementation so a newly exposed cutoff, fallback, security assumption, scale boundary, or foundational workaround cannot enter through generic authority; an unaccepted finding stops only its affected work and returns to the owning task for scope correction or a product decision.
+
+When an exact accepted checkpoint package is supplied, treat its evidence as historical claims rather than a blanket waiver. Give every family one complete disposition:
+
+- **Reused:** the owner, assumptions, neighboring contracts, and consumers remain unchanged, and the reviewer names that relationship basis.
+- **Revalidated:** the owner or behavior changed, so the relevant source and check were rerun against the current candidate.
+- **Stale:** a changed shared boundary, assumption, neighbor, or consumer invalidates the older observation even when the selected file hash is unchanged; reread the affected relationship before deciding its current disposition.
+
+For correction review, independently compare the caller-selected return receipt candidate and the candidate identified in current `review.md` with the current candidate. The receipt preserves the historical candidate and reason; the review file is mutable and is not linked to that receipt. Stop without a verdict if either required identity is absent, cannot be resolved, has no comparison range, or diverges. Resolve every prior finding and return one complete disposition rather than silently dropping findings or repeating the whole semantic audit without cause.

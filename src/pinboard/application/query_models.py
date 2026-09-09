@@ -196,6 +196,14 @@ class NonterminalAttemptContextFacts:
 type AttemptContextFacts = TerminalAttemptContextFacts | NonterminalAttemptContextFacts
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewJobContextFacts:
+    attempt: AttemptContextFacts
+    checkpoint_receipt: stored_state.StoredTransitionReceipt | None
+    checkpoint_package_reference: stored_state.ArtifactReference | None
+    correction_receipt: stored_state.StoredTransitionReceipt | None
+
+
 type ItemStatusSchema = Literal["pinboard-item-status/v1"]
 type ItemStatusAuthority = Literal["sqlite-v5"]
 

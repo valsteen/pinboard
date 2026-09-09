@@ -51,6 +51,7 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                 case (
                     decision_models.ReviewAcceptanceChange(candidate=accepted_candidate)
                     | decision_models.ReviewSubmissionChange(protected_candidate_after=accepted_candidate)
+                    | decision_models.ReviewReturnChange(candidate=accepted_candidate)
                 ):
                     candidate = str(accepted_candidate)
                 case (
@@ -68,7 +69,6 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                     | decision_models.RejectedProposalChange()
                     | decision_models.RebindAttemptChange()
                     | decision_models.ResumeAttemptChange()
-                    | decision_models.ReviewReturnChange()
                     | DefinitionRevisionDecision()
                 ):
                     pass

@@ -256,10 +256,40 @@ class AttemptInspectCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     json: bool = False
 
 
-class ReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class InitialReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: StableAttemptId
     candidate_revision: Annotated[str, msgspec.Meta(min_length=1)]
     json: bool = False
+
+
+class PackageInitialReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: StableAttemptId
+    candidate_revision: Annotated[str, msgspec.Meta(min_length=1)]
+    checkpoint_history_id: PositiveInt
+    json: bool = False
+
+
+class CorrectionReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: StableAttemptId
+    candidate_revision: Annotated[str, msgspec.Meta(min_length=1)]
+    correction_history_id: PositiveInt
+    json: bool = False
+
+
+class PackageCorrectionReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: StableAttemptId
+    candidate_revision: Annotated[str, msgspec.Meta(min_length=1)]
+    checkpoint_history_id: PositiveInt
+    correction_history_id: PositiveInt
+    json: bool = False
+
+
+type ReviewJobCommand = (
+    InitialReviewJobCommand
+    | PackageInitialReviewJobCommand
+    | CorrectionReviewJobCommand
+    | PackageCorrectionReviewJobCommand
+)
 
 
 type AttemptCommand = (

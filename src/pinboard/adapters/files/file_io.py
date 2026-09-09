@@ -4,7 +4,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
+from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,7 +135,7 @@ def _cleanup_staging(path: Path, parent: Path) -> None:
         _sync_directory(parent)
 
 
-def create_immutable(path: Path, content: bytes) -> None:
+def create_immutable(path: Path, content: bytes) -> bool:
     parent = _verified_directory(path.parent, label="Immutable-file parent")
     staging = parent / f".pinboard-stage-{secrets.token_hex(16)}"
     try:
@@ -143,8 +143,20 @@ def create_immutable(path: Path, content: bytes) -> None:
         try:
             os.link(staging, path, follow_symlinks=False)
         except FileExistsError as error:
+            try:
+                if path.is_file(follow_symlinks=False) and path.read_bytes() == content:
+                    return False
+            except OSError as verification_error:
+                raise FileIOError(
+                    FileIOErrorCode.FILE_PUBLISH_FAILED,
+                    f"Immutable file could not be verified: {path}",
+                ) from verification_error
             raise FileIOError(FileIOErrorCode.FILE_ALREADY_EXISTS, f"Immutable file already exists: {path}") from error
-        _sync_directory(parent)
+        try:
+            _sync_directory(parent)
+        except FileIOError as error:
+            raise ImmutableFilePublishedError(path, error) from error
+        return True
     except OSError as error:
         raise FileIOError(
             FileIOErrorCode.FILE_PUBLISH_FAILED, f"Immutable file could not be published: {path}"

@@ -3,7 +3,13 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 
-from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode, FileIOError
+from pinboard.adapters.files.errors import (
+    ArtifactError,
+    ArtifactErrorCode,
+    FileIOError,
+    FileIOErrorCode,
+    ImmutableFilePublishedError,
+)
 from pinboard.adapters.files.file_io import (
     DurableRoots,
     create_immutable,
@@ -11,8 +17,9 @@ from pinboard.adapters.files.file_io import (
     ensure_directory_chain,
 )
 from pinboard.application import stored_state
-from pinboard.application.artifacts import ArtifactRef, BriefArtifactRef, NewArtifact
+from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, BriefArtifactRef, NewArtifact
 from pinboard.domain import work_models
+from pinboard.domain.errors import ArtifactAcceptanceAfterPublicationError
 
 _DIRECTORIES: dict[work_models.ArtifactKind, str] = {
     work_models.ArtifactKind.REQUIREMENTS: "requirements",
@@ -101,7 +108,7 @@ def verify_reference(
     read_reference(work_root, reference)
 
 
-def write_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactRef:
+def _publish_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactPublication:
     selector = _build_selector(artifact.kind, artifact.key, artifact.revision, artifact.suffix)
     digest = sha256(artifact.content).hexdigest()
     reference = ArtifactRef(artifact.kind, artifact.key, artifact.revision, selector, digest, len(artifact.content))
@@ -111,23 +118,23 @@ def write_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactRef:
         ensure_child_directory(kind_root, artifact.key)
         path = roots.work_root / selector
         try:
-            path.lstat()
-        except FileNotFoundError:
-            try:
-                create_immutable(path, artifact.content)
-            except FileIOError:
-                try:
-                    verify_reference(roots.work_root, reference)
-                except ArtifactError as collision:
-                    raise ArtifactError(
-                        ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION,
-                        "Artifact revision could not be published immutably.",
-                    ) from collision
-        else:
-            verify_reference(roots.work_root, reference)
-        return reference
+            created = create_immutable(path, artifact.content)
+        except ImmutableFilePublishedError as error:
+            raise ArtifactAcceptanceAfterPublicationError(reference.selector, error) from error
+        except FileIOError as error:
+            if error.code == FileIOErrorCode.FILE_ALREADY_EXISTS:
+                raise ArtifactError(
+                    ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION,
+                    "Artifact revision could not be published immutably.",
+                ) from error
+            raise
+        return ArtifactPublication(reference, created)
     except FileIOError as error:
         raise ArtifactError(ArtifactErrorCode.STORAGE_IO_ERROR, str(error)) from error
+
+
+def write_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactRef:
+    return _publish_revision(roots, artifact).reference
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,19 +150,5 @@ class ArtifactRepository:
     def read(self, reference: stored_state.ArtifactReference | BriefArtifactRef) -> bytes:
         return read_reference(self.work_root, reference)
 
-    def revision_exists(self, artifact: NewArtifact) -> bool:
-        """Return whether this exact immutable artifact revision already has a filesystem entry."""
-        selector = _build_selector(artifact.kind, artifact.key, artifact.revision, artifact.suffix)
-        try:
-            (self.work_root / selector).lstat()
-        except FileNotFoundError:
-            return False
-        except OSError as error:
-            raise ArtifactError(
-                ArtifactErrorCode.STORAGE_IO_ERROR,
-                "Artifact revision presence could not be inspected.",
-            ) from error
-        return True
-
-    def publish(self, artifact: NewArtifact) -> ArtifactRef:
-        return write_revision(self.roots, artifact)
+    def publish(self, artifact: NewArtifact) -> ArtifactPublication:
+        return _publish_revision(self.roots, artifact)

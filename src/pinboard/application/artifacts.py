@@ -24,6 +24,12 @@ class ArtifactRef:
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactPublication:
+    reference: ArtifactRef
+    created: bool
+
+
+@dataclass(frozen=True, slots=True)
 class BriefArtifactRef:
     key: str
     revision: int

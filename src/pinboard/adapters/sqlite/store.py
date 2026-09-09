@@ -992,7 +992,7 @@ class _SQLiteWorkTransaction:
             connection.execute("BEGIN IMMEDIATE")
         except sqlite3.Error as error:
             connection.close()
-            raise translate_database_error(error) from error
+            raise translate_database_error(error).with_database_path(self._path) from error
         self._connection = connection
         return self
 
@@ -1008,14 +1008,14 @@ class _SQLiteWorkTransaction:
             if error is not None:
                 connection.rollback()
                 if isinstance(error, sqlite3.Error):
-                    raise translate_database_error(error) from error
+                    raise translate_database_error(error).with_database_path(self._path) from error
                 return False
             if not self._rejected:
                 try:
                     connection.commit()
                 except sqlite3.Error as commit_error:
                     connection.rollback()
-                    raise translate_database_error(commit_error) from commit_error
+                    raise translate_database_error(commit_error).with_database_path(self._path) from commit_error
             return False
         finally:
             connection.close()

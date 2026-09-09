@@ -1,11 +1,15 @@
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
+from threading import Barrier
+from typing import Never, override
 from unittest.mock import patch
 
-from pinboard.adapters.files.artifacts import verify_reference, write_revision
+from pinboard.adapters.files.artifacts import ArtifactRepository, verify_reference, write_revision
 from pinboard.adapters.files.errors import (
     ArtifactError,
     ArtifactErrorCode,
@@ -14,16 +18,85 @@ from pinboard.adapters.files.errors import (
 )
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database, open_database
+from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application.artifacts import NewArtifact
+from pinboard.application.artifact_publication import publish_accepted_artifact
+from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, NewArtifact
 from pinboard.domain import work_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
+from pinboard.domain.errors import ArtifactAcceptanceAfterPublicationError, DecisionFailure, DecisionFailureCode
 from tests.domain_support import expect_success
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 
 
+class _AlwaysReadOnlyArtifactStore(SQLiteWorkStore):
+    @override
+    def accept_artifact_reference(
+        self,
+        work_root: Path,
+        published: ArtifactRef,
+        accepted_at: datetime,
+    ) -> Never:
+        del work_root, published, accepted_at
+        raise SQLiteReadOnlyError(self._path)
+
+
+class _BarrierArtifactPublisher:
+    def __init__(self, repository: ArtifactRepository, barrier: Barrier) -> None:
+        self.repository = repository
+        self.barrier = barrier
+
+    @property
+    def work_root(self) -> Path:
+        return self.repository.work_root
+
+    def publish(self, artifact: NewArtifact) -> ArtifactPublication:
+        self.barrier.wait(timeout=5)
+        return self.repository.publish(artifact)
+
+
+def _publish_to_readonly_store(
+    store: _AlwaysReadOnlyArtifactStore,
+    publisher: _BarrierArtifactPublisher,
+    artifact: NewArtifact,
+) -> Exception:
+    try:
+        publish_accepted_artifact(store, publisher, artifact, SQLITE_NOW)
+    except Exception as error:
+        return error
+    raise AssertionError("Read-only artifact acceptance unexpectedly succeeded.")
+
+
 class ArtifactPersistenceTest(unittest.TestCase):
+    def test_concurrent_reuse_is_not_attributed_to_the_losing_publisher(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        roots = resolve_durable_roots(project)
+        initialize_database(roots, SQLITE_NOW)
+        repository = ArtifactRepository(roots)
+        store = _AlwaysReadOnlyArtifactStore(roots.database_path)
+        artifact = NewArtifact(work_models.ArtifactKind.EVIDENCE, "concurrent", 1, ".md", b"ready\n")
+        before = store.validated_snapshot()
+        barrier = Barrier(2)
+        publishers = (_BarrierArtifactPublisher(repository, barrier), _BarrierArtifactPublisher(repository, barrier))
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = tuple(
+                executor.submit(_publish_to_readonly_store, store, publisher, artifact) for publisher in publishers
+            )
+            failures = tuple(future.result() for future in futures)
+
+        self.assertEqual(1, sum(isinstance(error, ArtifactAcceptanceAfterPublicationError) for error in failures))
+        self.assertEqual(1, sum(isinstance(error, SQLiteReadOnlyError) for error in failures))
+        created_failure = next(
+            error for error in failures if isinstance(error, ArtifactAcceptanceAfterPublicationError)
+        )
+        reused_failure = next(error for error in failures if isinstance(error, SQLiteReadOnlyError))
+        self.assertEqual("artifacts/evidence/concurrent/1.md", created_failure.selector)
+        self.assertIsInstance(created_failure.cause, SQLiteReadOnlyError)
+        self.assertEqual(roots.database_path, reused_failure.database_path)
+        self.assertEqual(b"ready\n", (roots.work_root / created_failure.selector).read_bytes())
+        self.assertEqual(before, store.validated_snapshot())
+
     def test_accepting_transaction_verifies_bytes_and_fresh_reload_contains_reference(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         roots = resolve_durable_roots(project)
@@ -69,6 +142,23 @@ class ArtifactPersistenceTest(unittest.TestCase):
             write_revision(roots, NewArtifact(work_models.ArtifactKind.BRIEF, "attempt-a", 1, ".json", b"different\n"))
         self.assertEqual(ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION, collision.exception.code)
         self.assertEqual(b"{}\n", path.read_bytes())
+
+    def test_prelink_failure_does_not_claim_an_existing_artifact(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        roots = resolve_durable_roots(project)
+        artifact = NewArtifact(work_models.ArtifactKind.BRIEF, "attempt-a", 1, ".json", b"{}\n")
+        repository = ArtifactRepository(roots)
+        publication = repository.publish(artifact)
+        artifact_directory = (roots.work_root / publication.reference.selector).parent
+        artifact_directory.chmod(0o500)
+        try:
+            with self.assertRaises(ArtifactError) as failure:
+                repository.publish(artifact)
+        finally:
+            artifact_directory.chmod(0o700)
+
+        self.assertEqual(ArtifactErrorCode.STORAGE_IO_ERROR, failure.exception.code)
+        self.assertEqual(b"{}\n", (roots.work_root / publication.reference.selector).read_bytes())
 
     def test_reference_verification_rejects_escape_size_and_digest(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

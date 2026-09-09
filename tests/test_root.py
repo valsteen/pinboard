@@ -4,11 +4,18 @@ import json
 import subprocess
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import chdir
 from pathlib import Path
+from threading import Barrier
+from unittest.mock import patch
 
 from pinboard.adapters.files.errors import RootError
-from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
+from pinboard.adapters.files.root import (
+    ensure_default_git_exclude,
+    resolve_shared_repository_root,
+    resolve_source_checkout_root,
+)
 from pinboard.interfaces.cli import main
 
 
@@ -90,6 +97,58 @@ class RootResolutionTest(unittest.TestCase):
             resolve_source_checkout_root(directory)
         with self.assertRaisesRegex(RootError, "PROJECT_GIT_ROOT_UNAVAILABLE"):
             resolve_shared_repository_root(directory)
+
+    def test_returning_initialization_reads_an_existing_exclusion_without_write_access(self) -> None:
+        repository = Path(tempfile.mkdtemp()).resolve()
+        self.run_git(repository, "init", "-b", "main")
+        exclude = repository / ".git" / "info" / "exclude"
+        exclude.write_bytes(b"/.codex/pinboard/\n")
+        exclude.chmod(0o400)
+        try:
+            self.assertIsNone(ensure_default_git_exclude(repository))
+        finally:
+            exclude.chmod(0o600)
+
+    def test_concurrent_initialization_appends_the_shared_exclusion_once(self) -> None:
+        temporary = Path(tempfile.mkdtemp())
+        repository = (temporary / "repository").resolve()
+        linked = (temporary / "linked").resolve()
+        repository.mkdir()
+        self.run_git(repository, "init", "-b", "main")
+        (repository / "tracked.txt").write_text("initial\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(
+            repository,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "initial",
+        )
+        self.run_git(repository, "worktree", "add", "-b", "linked", str(linked))
+        exclude = repository / ".git" / "info" / "exclude"
+        original_open = Path.open
+        readers_ready = Barrier(2)
+
+        def synchronized_open(path: Path, mode: str = "r") -> io.BufferedIOBase:
+            stream = original_open(path, mode)
+            if not isinstance(stream, io.BufferedIOBase):
+                raise AssertionError("Expected the Git exclude to be opened in binary mode.")
+            if path == exclude and mode in {"rb", "a+b"}:
+                readers_ready.wait(timeout=5)
+            return stream
+
+        with (
+            patch.object(Path, "open", synchronized_open),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            results = tuple(executor.map(ensure_default_git_exclude, (repository, linked)))
+
+        self.assertEqual(1, results.count(exclude))
+        self.assertEqual(1, results.count(None))
+        self.assertEqual(1, exclude.read_text(encoding="utf-8").splitlines().count("/.codex/pinboard/"))
 
     def test_store_free_routes_do_not_validate_an_unused_external_work_root(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

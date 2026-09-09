@@ -71,6 +71,8 @@ Before creating a proposal, distinguish exact prior coverage from a merely relat
 
 ## Persist, then deliver
 
+Before a first default initialization or after `SQLITE_READONLY`, follow the shared runtime adapter's [Codex protected project writes](../pinboard/references/runtime-adapters.md#codex-protected-project-writes) rule. A normal checkout uses relative `.codex/pinboard`; a linked worktree or explicit root uses only the exact absolute effective work root reported by recovery. Do not substitute the whole shared repository or treat a denied proposal write as saved intake.
+
 1. Write the proposal to a temporary file outside canonical work state.
 2. Run `pinboard proposal --file <path> --task-id <current-task> --host-id <current-host> --json`.
 3. Treat the returned `pinboard-proposal-created/v1` record as proof that both the proposal facts and intake item persisted. Use its exact `proposal_id`, `position`, `state`, and `committed_revision`; do not scrape human output.

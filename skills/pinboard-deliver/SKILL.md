@@ -13,6 +13,8 @@ Direct human invocation to start a named Pinboard item is not an attempt-establi
 
 ## Establish the attempt
 
+Before a first default initialization or after `SQLITE_READONLY`, follow the shared runtime adapter's [Codex protected project writes](../pinboard/references/runtime-adapters.md#codex-protected-project-writes) rule. A normal checkout uses relative `.codex/pinboard`; a linked worktree or explicit root uses only the exact absolute effective work root reported by recovery. Do not substitute the whole shared repository. A denied attempt-authority write does not establish or renew a lease.
+
 1. Resolve the pinboard executable relative to the installed plugin as `../../scripts/pinboard`.
 2. Run `pinboard status --json` and require authority `sqlite-v5`. Stop if validation fails or another authority is reported; never infer current state from generated views or archived files. Acquire or validate the user-supplied attempt lease, then run `pinboard actions --role worker` with its lease identity and fencing generation.
 3. Require the user-supplied attempt to be present and active. `attempt inspect` obtains only that named attempt's current item, definition, dependency, and brief facts; it does not validate unrelated portfolio state. Other disjoint attempts may also be active; their presence alone is not a user-facing condition. Stop if the selected state is invalid, the supplied attempt is absent, its item and attempt records disagree, or another unexpired owner holds it. Follow the main skill's [contention-reporting rule](../pinboard/SKILL.md#match-detail-to-the-question) instead of guessing or silently revoking it.

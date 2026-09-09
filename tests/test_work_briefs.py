@@ -1,6 +1,8 @@
 import contextlib
 import hashlib
 import io
+import os
+import sqlite3
 import tempfile
 import unittest
 from dataclasses import replace as dataclass_replace
@@ -14,6 +16,7 @@ from msgspec.structs import replace
 from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.sqlite.database import translate_database_error
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.artifact_publication import validate_transition_work_brief
@@ -563,6 +566,72 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate))
         self.assertEqual(0, result, stderr)
         self.assertIn("BRIEF_PUBLISHED", stdout)
+
+    def test_post_link_sync_failure_reports_and_reuses_the_published_brief(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        work = project / ".codex" / "work"
+        common = ("--project-root", str(project), "--work-root", str(work))
+        self.assertEqual(0, self.run_cli(*common, "init")[0])
+        candidate = project / "brief.json"
+        candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
+        selector = f"artifacts/briefs/{example_work_brief().attempt_id}/1.json"
+        publication = work / selector
+        before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+        original_fsync = os.fsync
+
+        def fail_after_link(descriptor: int) -> None:
+            if publication.exists():
+                raise OSError("injected post-link directory sync failure")
+            original_fsync(descriptor)
+
+        with patch("pinboard.adapters.files.file_io.os.fsync", side_effect=fail_after_link):
+            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
+
+        self.assertEqual(12, result, stderr)
+        failure = msgspec.json.decode(stdout.encode())
+        self.assertEqual("committed-effect", failure["status"])
+        self.assertEqual("DIRECTORY_SYNC_FAILED", failure["code"])
+        self.assertEqual(["immutable-artifact"], failure["changed_surfaces"])
+        self.assertEqual("do-not-retry", failure["retry"])
+        self.assertEqual(
+            [selector],
+            [value["value"] for value in failure["observed"] if value["field"] == "published_artifact_selector"],
+        )
+        self.assertEqual(canonical_work_brief_bytes(example_work_brief()), publication.read_bytes())
+        self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
+
+        retry_result, retry_stdout, retry_stderr = self.run_cli(
+            *common, "brief", "publish", "--file", str(candidate), "--json"
+        )
+        self.assertEqual(0, retry_result, retry_stderr)
+        self.assertEqual(selector, msgspec.json.decode(retry_stdout.encode())["selector"])
+
+    def test_readonly_publication_failure_preserves_artifact_and_database_diagnostics(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        work = project / ".codex" / "work"
+        common = ("--project-root", str(project), "--work-root", str(work))
+        self.assertEqual(0, self.run_cli(*common, "init")[0])
+        candidate = project / "brief.json"
+        candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
+        readonly = translate_database_error(sqlite3.OperationalError("attempt to write a readonly database"))
+        readonly = readonly.with_database_path(work / "state.sqlite3")
+
+        with patch.object(SQLiteWorkStore, "accept_artifact_reference", side_effect=readonly):
+            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
+
+        self.assertEqual(12, result, stderr)
+        failure = msgspec.json.decode(stdout.encode())
+        self.assertEqual("committed-effect", failure["status"])
+        self.assertEqual("SQLITE_READONLY", failure["code"])
+        self.assertTrue(failure["state_changed"])
+        self.assertEqual(["immutable-artifact"], failure["changed_surfaces"])
+        self.assertEqual("do-not-retry", failure["retry"])
+        observations = {value["field"]: value["value"] for value in failure["observed"]}
+        self.assertEqual(str(work / "state.sqlite3"), observations["database_path"])
+        self.assertEqual("brief/publish", observations["operation"])
+        self.assertEqual("SQLITE_READONLY", observations["sqlite_error_code"])
+        self.assertIn(str(work), observations["permission_recovery"])
+        self.assertEqual((), SQLiteWorkStore(work / "state.sqlite3").validated_snapshot().artifact_references)
 
     def test_store_verification_failure_preserves_exact_publication_effect(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

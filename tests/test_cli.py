@@ -5,6 +5,7 @@ import json
 import os
 import runpy
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -23,8 +24,7 @@ from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite import store as sqlite_store
-from pinboard.adapters.sqlite.database import initialize_database
-from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.adapters.sqlite.database import initialize_database, translate_database_error
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
@@ -81,6 +81,9 @@ class CliTest(unittest.TestCase):
         if not isinstance(value, dict):
             self.fail("CLI JSON result must be an object")
         return value
+
+    def run_git(self, cwd: Path, *arguments: str) -> None:
+        subprocess.run(["git", *arguments], cwd=cwd, check=True, text=True, capture_output=True)
 
     def run_cli_parse_error(self, *arguments: str) -> str:
         stderr = io.StringIO()
@@ -1109,6 +1112,111 @@ class CliTest(unittest.TestCase):
             created["optional_next_skills"],
         )
 
+    def assert_readonly_attempt_renewal(
+        self,
+        common: tuple[str, ...],
+        work: Path,
+        store: SQLiteWorkStore,
+        permission_work_root: str,
+    ) -> None:
+        before = store.validated_snapshot()
+        original_open_database = sqlite_store.open_database
+
+        def open_query_only_database(path: Path, mode: OpenMode) -> sqlite3.Connection:
+            connection = original_open_database(path, mode)
+            if mode == OpenMode.READ_WRITE:
+                connection.execute("PRAGMA query_only = ON")
+            return connection
+
+        with (
+            patch.object(sqlite_store, "open_database", side_effect=open_query_only_database),
+            patch("pinboard.interfaces.attempt_authority.datetime") as clock,
+        ):
+            clock.now.return_value = SQLITE_NOW
+            result, stdout, stderr = self.run_cli(
+                *common,
+                "attempt",
+                "renew",
+                "--attempt-id",
+                "work-a-1",
+                "--lease-id",
+                "attempt-lease-a",
+                "--generation",
+                "3",
+                "--ttl-seconds",
+                "600",
+                "--json",
+            )
+
+        self.assertEqual(12, result)
+        self.assertEqual("", stderr)
+        failure = self.json_object(json.loads(stdout))
+        self.assertEqual("rejected", failure["status"])
+        self.assertEqual("SQLITE_READONLY", failure["code"])
+        self.assertFalse(failure["state_changed"])
+        self.assertEqual([], failure["changed_surfaces"])
+        self.assertEqual("do-not-retry", failure["retry"])
+        self.assertEqual(
+            {
+                "database_path": str(work / "state.sqlite3"),
+                "operation": "attempt/renew",
+                "sqlite_error_code": "SQLITE_READONLY",
+                "permission_recovery": (
+                    "For routine Pinboard commands, select a Codex permission profile extending ':workspace' whose "
+                    f"narrow filesystem write rule grants access to '{permission_work_root}', the effective work root "
+                    "for this command. A normal checkout uses the relative '.codex/pinboard' rule; a linked worktree "
+                    "uses only the resolved absolute shared-repository '.codex/pinboard' directory; an explicit "
+                    "'--work-root' uses that exact directory. Remove legacy 'sandbox_mode' and "
+                    "'sandbox_workspace_write' settings because they override permission profiles. For fresh default "
+                    "initialization, approve the exact 'pinboard init' command once so it can also update "
+                    "'.git/info/exclude'; do not grant persistent '.git' access."
+                ),
+            },
+            {
+                str(observation["field"]): observation["value"]
+                for value in self.json_list(failure["observed"])
+                if (observation := self.json_object(value))
+            },
+        )
+        self.assertEqual(before, store.validated_snapshot())
+
+    def test_readonly_mutation_at_default_root_reports_relative_permission_and_unchanged_ledger(self) -> None:
+        project, work, store = self.initialized_state(complete_sqlite_state())
+
+        self.assert_readonly_attempt_renewal(("--project-root", str(project)), work, store, ".codex/pinboard")
+
+    def test_readonly_mutation_at_explicit_work_root_reports_exact_permission_and_unchanged_ledger(self) -> None:
+        project, default_work, _store = self.initialized_state(complete_sqlite_state())
+        work = project / ".codex" / "custom-pinboard"
+        default_work.rename(work)
+
+        self.assert_readonly_attempt_renewal(
+            ("--project-root", str(project), "--work-root", str(work)),
+            work,
+            SQLiteWorkStore(work / "state.sqlite3"),
+            str(work),
+        )
+
+    def test_readonly_mutation_from_linked_worktree_reports_exact_shared_permission(self) -> None:
+        repository, work, store = self.initialized_state(complete_sqlite_state())
+        linked = repository.parent / f"{repository.name}-linked"
+        self.run_git(repository, "init", "-b", "main")
+        (repository / "tracked.txt").write_text("initial\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(
+            repository,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "initial",
+        )
+        self.run_git(repository, "worktree", "add", "-b", "linked", str(linked))
+
+        self.assert_readonly_attempt_renewal(("--project-root", str(linked)), work, store, str(work))
+
     def test_fresh_init_accepts_a_proposal_and_rejects_its_stale_receipt_without_changes(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         work = project / ".codex" / "pinboard"
@@ -1996,13 +2104,11 @@ class CliTest(unittest.TestCase):
         self.assertEqual(before_missing, store.validated_snapshot())
         (attempt_root / "review.md").write_bytes(review_bytes)
 
+        readonly_failure = translate_database_error(sqlite3.OperationalError("attempt to write a readonly database"))
+        readonly_failure = readonly_failure.with_database_path(work / "state.sqlite3")
         with patch(
             "pinboard.adapters.sqlite.state.append_history",
-            side_effect=StorageError(
-                StorageErrorCode.IO_ERROR,
-                "injected checkpoint write failure",
-                retryable=True,
-            ),
+            side_effect=readonly_failure,
         ):
             failed_result, failed_stdout, failed_stderr = self.run_transition(common, action, payload, json_output=True)
 
@@ -2012,10 +2118,31 @@ class CliTest(unittest.TestCase):
         self.assertEqual("pinboard-rejected-operation/v1", failure["schema"])
         self.assertEqual("committed-effect", failure["status"])
         self.assertEqual("transition:project", failure["operation"])
-        self.assertEqual("STORAGE_IO_ERROR", failure["code"])
+        self.assertEqual("SQLITE_READONLY", failure["code"])
         self.assertTrue(failure["state_changed"])
         self.assertEqual(["immutable-artifact"], failure["changed_surfaces"])
         self.assertEqual("do-not-retry", failure["retry"])
+        observations = tuple(self.json_object(value) for value in self.json_list(failure["observed"]))
+        self.assertEqual(
+            (
+                "artifacts/results/work-a-1-checkpoint-a-result/1.md",
+                "artifacts/evidence/work-a-1-checkpoint-a-review/1.md",
+            ),
+            tuple(
+                str(observation["value"])
+                for observation in observations
+                if observation["field"] == "published_artifact_selector"
+            ),
+        )
+        diagnostic_observations = {
+            str(observation["field"]): observation["value"]
+            for observation in observations
+            if observation["field"] != "published_artifact_selector"
+        }
+        self.assertEqual(str(work / "state.sqlite3"), diagnostic_observations["database_path"])
+        self.assertEqual("transition:project", diagnostic_observations["operation"])
+        self.assertEqual("SQLITE_READONLY", diagnostic_observations["sqlite_error_code"])
+        self.assertIn(".codex/pinboard", str(diagnostic_observations["permission_recovery"]))
         self.assertEqual(before_missing, store.validated_snapshot())
         self.assertEqual(result_bytes, (work / "artifacts/results/work-a-1-checkpoint-a-result/1.md").read_bytes())
         self.assertEqual(review_bytes, (work / "artifacts/evidence/work-a-1-checkpoint-a-review/1.md").read_bytes())
@@ -2050,6 +2177,81 @@ class CliTest(unittest.TestCase):
         self.assertEqual(review_bytes, (work / review_reference.selector).read_bytes())
         self.assertEqual(before_missing.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
         self.assertEqual(len(before_missing.transition_receipts) + 1, len(reloaded.transition_receipts))
+
+    def test_checkpoint_post_link_sync_failure_reports_all_published_artifacts(self) -> None:
+        state = complete_sqlite_state()
+        state = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=tuple(
+                    replace(value, state=stored_state.StoredWorkItemState.REVIEW)
+                    if value.item_id == ItemId("work-a")
+                    else value
+                    for value in state.lifecycle.work_items
+                ),
+                attempts=tuple(
+                    replace(
+                        value,
+                        state=work_models.AttemptState.REVIEW,
+                        candidate_revision="candidate-a",
+                        candidate_recorded_at=datetime.now(UTC),
+                    )
+                    if value.attempt_id == AttemptId("work-a-1")
+                    else value
+                    for value in state.lifecycle.attempts
+                ),
+            ),
+        )
+        project, work, store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        attempt_root = work / "attempts" / "work-a-1"
+        attempt_root.mkdir(parents=True)
+        (attempt_root / "result.md").write_bytes(b"candidate result\n")
+        (attempt_root / "review.md").write_bytes(b"independent review\n")
+        payload = project / "accept-checkpoint.json"
+        payload.write_text(
+            '{"checkpoint":"checkpoint-a","candidate":"candidate-a","evidence":"Accepted."}\n',
+            encoding="utf-8",
+        )
+        action = self.project_action(common, "accept-checkpoint:work-a-1")
+        before = store.validated_snapshot()
+        selectors = (
+            "artifacts/results/work-a-1-checkpoint-a-result/1.md",
+            "artifacts/evidence/work-a-1-checkpoint-a-review/1.md",
+        )
+        review_publication = work / selectors[1]
+        original_fsync = os.fsync
+
+        def fail_after_review_link(descriptor: int) -> None:
+            if review_publication.exists():
+                raise OSError("injected post-link directory sync failure")
+            original_fsync(descriptor)
+
+        with patch("pinboard.adapters.files.file_io.os.fsync", side_effect=fail_after_review_link):
+            result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
+
+        self.assertEqual(12, result, stderr)
+        failure = self.json_object(json.loads(stdout))
+        self.assertEqual("committed-effect", failure["status"])
+        self.assertEqual("DIRECTORY_SYNC_FAILED", failure["code"])
+        self.assertEqual("do-not-retry", failure["retry"])
+        self.assertEqual(["immutable-artifact"], failure["changed_surfaces"])
+        observations = tuple(self.json_object(value) for value in self.json_list(failure["observed"]))
+        self.assertEqual(
+            selectors,
+            tuple(
+                str(observation["value"])
+                for observation in observations
+                if observation["field"] == "published_artifact_selector"
+            ),
+        )
+        self.assertEqual(before, store.validated_snapshot())
+        self.assertEqual(b"candidate result\n", (work / selectors[0]).read_bytes())
+        self.assertEqual(b"independent review\n", review_publication.read_bytes())
+
+        retry_result, _retry_stdout, retry_stderr = self.run_transition(common, action, payload, json_output=True)
+        self.assertEqual(0, retry_result, retry_stderr)
 
     def test_current_read_surface_has_human_and_json_views(self) -> None:
         state = complete_sqlite_state()

@@ -73,9 +73,11 @@ def translate_database_error(error: sqlite3.Error, *, opening: bool = False) -> 
             "SQLite remained busy for the bounded wait; rediscover the action before retrying.",
             retryable=True,
         )
+    if "readonly" in message:
+        return StorageError(StorageErrorCode.READ_ONLY, "SQLite rejected a write to a read-only database.")
     if any(
         value in message
-        for value in ("readonly", "disk i/o", "database or disk is full", "permission", "unable to open database file")
+        for value in ("disk i/o", "database or disk is full", "permission", "unable to open database file")
     ):
         return StorageError(StorageErrorCode.IO_ERROR, "SQLite could not durably access the work database.")
     if opening or isinstance(error, sqlite3.DatabaseError):
@@ -343,15 +345,17 @@ def initialize_database(roots: DurableRoots, now: datetime) -> None:
             if connection is not None:
                 connection.close()
         _sync_database(staging)
-    except StorageError:
+    except StorageError as error:
         _cleanup_database_files(staging)
+        if error.code == StorageErrorCode.READ_ONLY:
+            raise error.with_database_path(path) from error
         raise
     except (OSError, UnicodeError) as error:
         _cleanup_database_files(staging)
         raise StorageError(StorageErrorCode.IO_ERROR, "The SQLite database could not be initialized.") from error
     except sqlite3.Error as error:
         _cleanup_database_files(staging)
-        raise translate_database_error(error) from error
+        raise translate_database_error(error).with_database_path(path) from error
     _publish_database(staging, path)
 
 
@@ -376,14 +380,16 @@ def _open_verified_database(
         if configure_writes:
             _configure_writes(connection)
         return connection
-    except StorageError:
+    except StorageError as error:
         if connection is not None:
             connection.close()
+        if error.code == StorageErrorCode.READ_ONLY:
+            raise error.with_database_path(path) from error
         raise
     except sqlite3.Error as error:
         if connection is not None:
             connection.close()
-        raise translate_database_error(error, opening=True) from error
+        raise translate_database_error(error, opening=True).with_database_path(path) from error
 
 
 def open_database(path: Path, mode: OpenMode) -> sqlite3.Connection:

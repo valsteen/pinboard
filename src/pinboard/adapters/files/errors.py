@@ -1,6 +1,7 @@
 """Filesystem-boundary failures for artifact and durable-path operations."""
 
 from enum import Enum
+from pathlib import Path
 
 
 class ArtifactErrorCode(Enum):
@@ -32,6 +33,16 @@ class FileIOError(RuntimeError):
     def __init__(self, code: FileIOErrorCode, message: str) -> None:
         self.code = code
         super().__init__(f"{code.value}: {message}")
+
+
+class ImmutableFilePublishedError(FileIOError):
+    """Directory synchronization failed after an immutable destination became visible."""
+
+    path: Path
+
+    def __init__(self, path: Path, cause: FileIOError) -> None:
+        self.path = path
+        super().__init__(cause.code, f"Immutable file was published before synchronization failed: {path}")
 
 
 class RootErrorCode(Enum):

@@ -21,6 +21,7 @@ class ChangedSurface(Enum):
     IMMUTABLE_ARTIFACT = "immutable-artifact"
     ACCEPTED_ARTIFACT_REFERENCE = "accepted-artifact-reference"
     LEDGER = "ledger"
+    REPOSITORY_GIT_EXCLUDE = "repository-git-exclude"
 
 
 class ArtifactAcceptanceAfterPublicationError(RuntimeError):

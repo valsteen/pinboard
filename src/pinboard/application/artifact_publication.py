@@ -4,7 +4,13 @@ from pathlib import Path
 from typing import Protocol
 
 from pinboard.application import query_models, stored_state
-from pinboard.application.artifacts import ArtifactRef, BriefArtifactRef, NewArtifact, WorkBriefIdentity
+from pinboard.application.artifacts import (
+    ArtifactPublication,
+    ArtifactRef,
+    BriefArtifactRef,
+    NewArtifact,
+    WorkBriefIdentity,
+)
 from pinboard.application.ports import WorkStore, WorkStoreError
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
@@ -25,9 +31,7 @@ class ArtifactPublisher(Protocol):
     @property
     def work_root(self) -> Path: ...
 
-    def publish(self, artifact: NewArtifact) -> ArtifactRef: ...
-
-    def revision_exists(self, artifact: NewArtifact) -> bool: ...
+    def publish(self, artifact: NewArtifact) -> ArtifactPublication: ...
 
 
 class ArtifactReader(Protocol):
@@ -71,9 +75,9 @@ def publish_accepted_artifact(
     an unchanged-result failure.
     """
 
-    artifact_existed = publisher.revision_exists(artifact)
-    published_reference = publisher.publish(artifact)
-    artifact_created = not artifact_existed
+    publication = publisher.publish(artifact)
+    published_reference = publication.reference
+    artifact_created = publication.created
     try:
         accepted = store.accept_artifact_reference(publisher.work_root, published_reference, accepted_at)
     except WorkStoreError as error:

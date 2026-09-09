@@ -26,6 +26,7 @@ from pinboard.interfaces import (
     cli_commands,
     errors,
     transition_input,
+    transition_models,
     work_brief_models,
     work_inspection_models,
     work_state,
@@ -168,9 +169,20 @@ def _decode_correction_outcome(
         or str(receipt.action_id) != f"return-for-correction:{attempt_id}"
         or str(receipt.subject_id) != attempt_id
         or receipt.artifact_ref_id is not None
+        or receipt.input_schema != "return-for-correction/v1"
         or receipt.outcome_schema != "transition-receipt/v1"
     ):
         return _review_job_failure("Selected correction history does not match this attempt's review return.")
+    try:
+        correction_input = msgspec.json.decode(
+            bytes(receipt.input_payload),
+            type=transition_models.ReasonInputPayload,
+            strict=True,
+        )
+    except msgspec.DecodeError as error:
+        return _review_job_failure(f"Selected correction history has an invalid input: {error}")
+    if msgspec.json.encode(correction_input, order="sorted") != bytes(receipt.input_payload):
+        return _review_job_failure("Selected correction history has a noncanonical input.")
     try:
         outcome = msgspec.json.decode(
             bytes(receipt.outcome_payload),
@@ -186,6 +198,7 @@ def _decode_correction_outcome(
         or outcome.evidence is None
         or outcome.candidate is None
         or outcome.checkpoint is not None
+        or correction_input.reason != outcome.evidence
     ):
         return _review_job_failure("Selected correction history does not preserve its candidate and reason.")
     return outcome

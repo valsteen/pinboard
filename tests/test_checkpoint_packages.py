@@ -79,6 +79,82 @@ class CheckpointPackageTest(unittest.TestCase):
             self.fail("Expected one exact project action")
         return self.json_object(values[0])
 
+    def transition_json(
+        self,
+        fixture: AcceptedPackageFixture,
+        action: JsonObject,
+        payload: Path,
+    ) -> JsonObject:
+        arguments = [
+            *fixture.common,
+            "transition",
+            "--action-id",
+            str(action["action_id"]),
+            "--expected-revision",
+            str(action["expected_revision"]),
+            "--authorization",
+            str(action["authorization"]),
+            "--payload",
+            str(payload),
+        ]
+        subject_revision = action.get("subject_revision")
+        if subject_revision:
+            arguments.extend(("--subject-revision", str(subject_revision)))
+        lease_id = action.get("lease_id")
+        if lease_id:
+            arguments.extend(("--lease-id", str(lease_id), "--generation", str(action["generation"])))
+        else:
+            arguments.extend(("--task-id", "review-owner", "--host-id", "local"))
+        result, stdout, stderr = self.run_cli(*arguments, "--json")
+        self.assertEqual(0, result, f"{stdout}\n{stderr}")
+        return self.json_object(json.loads(stdout))
+
+    def submit_review(self, fixture: AcceptedPackageFixture, candidate: str, worker: str) -> None:
+        lease = self.run_json_cli(
+            *fixture.common,
+            "attempt",
+            "acquire",
+            "--attempt-id",
+            "work-a-1",
+            "--task-id",
+            worker,
+            "--host-id",
+            "local",
+            "--ttl-seconds",
+            "300",
+        )
+        selected = self.run_json_cli(
+            *fixture.common,
+            "actions",
+            "--role",
+            "worker",
+            "--lease-id",
+            str(lease["lease_id"]),
+            "--generation",
+            str(lease["generation"]),
+            "--action-id",
+            "submit-review:work-a-1",
+        )
+        actions = selected["actions"]
+        if not isinstance(actions, list) or len(actions) != 1:
+            self.fail("Expected one exact worker action")
+        payload = fixture.project / f"submit-{candidate}.json"
+        payload.write_text(json.dumps({"candidate": candidate}), encoding="utf-8")
+        self.transition_json(fixture, self.json_object(actions[0]), payload)
+
+    def return_for_correction(self, fixture: AcceptedPackageFixture, reason: str, suffix: str) -> int:
+        payload = fixture.project / f"return-{suffix}.json"
+        payload.write_text(json.dumps({"reason": reason}), encoding="utf-8")
+        rendered = self.transition_json(
+            fixture,
+            self.project_action(fixture.common, "return-for-correction:work-a-1"),
+            payload,
+        )
+        history_id = rendered["history_id"]
+        if not isinstance(history_id, int):
+            self.fail("Transition must expose its committed history ID")
+        return history_id
+
     def accept_checkpoint(
         self,
         common: tuple[str, ...],
@@ -250,6 +326,8 @@ class CheckpointPackageTest(unittest.TestCase):
                 0
             ]
             connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = 'work-a'")
+            connection.execute("UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = 'paused'")
+            connection.execute("UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'review'")
             connection.execute(
                 """
                 UPDATE attempts
@@ -403,6 +481,150 @@ class CheckpointPackageTest(unittest.TestCase):
                 for path in fixture.work.rglob("*")
                 if path.is_file()
             },
+        )
+
+    def test_review_job_rejects_invalid_correction_input_contract_without_writes(self) -> None:
+        cases = (
+            ("wrong-schema", "inspect/v1", '{"reason":"Fix the affected sibling."}'),
+            ("malformed", "return-for-correction/v1", "[]"),
+            ("noncanonical", "return-for-correction/v1", '{"reason": "Fix the affected sibling."}'),
+            (
+                "unknown-field",
+                "return-for-correction/v1",
+                '{"reason":"Fix the affected sibling.","unexpected":true}',
+            ),
+            ("disagreement", "return-for-correction/v1", '{"reason":"A different reason."}'),
+        )
+        for label, input_schema, input_json in cases:
+            with self.subTest(label=label):
+                fixture, package_history_id, correction_history_id = self.review_job_fixture()
+                connection = sqlite3.connect(fixture.work / "state.sqlite3")
+                try:
+                    connection.execute(
+                        "UPDATE transition_history SET input_schema = ?, input_json = ? WHERE history_id = ?",
+                        (input_schema, input_json, correction_history_id),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                files_before = {
+                    path.relative_to(fixture.work).as_posix(): path.read_bytes()
+                    for path in fixture.work.rglob("*")
+                    if path.is_file()
+                }
+
+                result, stdout, _stderr = self.run_cli(
+                    *fixture.common,
+                    "review-job",
+                    "--attempt-id",
+                    "work-a-1",
+                    "--candidate-revision",
+                    "candidate-b",
+                    "--checkpoint-history-id",
+                    str(package_history_id),
+                    "--correction-history-id",
+                    str(correction_history_id),
+                )
+
+                self.assertEqual(11, result)
+                self.assertEqual("", stdout)
+                self.assertEqual(
+                    files_before,
+                    {
+                        path.relative_to(fixture.work).as_posix(): path.read_bytes()
+                        for path in fixture.work.rglob("*")
+                        if path.is_file()
+                    },
+                )
+
+    def test_review_job_selects_older_real_return_with_newer_review_and_third_candidate(self) -> None:
+        fixture = self.accepted_package_fixture()
+        package_receipt = next(
+            value
+            for value in fixture.store.validated_snapshot().transition_receipts
+            if value.outcome_schema == "checkpoint-acceptance/v2"
+        )
+
+        connection = sqlite3.connect(fixture.work / "state.sqlite3")
+        try:
+            connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = 'work-a'")
+            connection.execute("UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = 'paused'")
+            connection.execute("UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'review'")
+            connection.execute(
+                """
+                UPDATE attempts
+                SET state = 'review', candidate_revision = 'candidate-b', candidate_recorded_at = ?
+                WHERE attempt_id = 'work-a-1'
+                """,
+                (SQLITE_NOW.isoformat(),),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        older_history_id = self.return_for_correction(fixture, "Fix candidate B.", "b")
+        self.submit_review(fixture, "candidate-newer", "worker-newer")
+        newer_history_id = self.return_for_correction(fixture, "Fix the newer candidate.", "newer")
+        review_path = fixture.work / "attempts" / "work-a-1" / "review.md"
+        review_path.write_text("Candidate: candidate-newer\nFinding: newer finding.\n", encoding="utf-8")
+        self.submit_review(fixture, "candidate-c", "worker-c")
+        (fixture.work / "attempts" / "work-a-1" / "result.md").write_text("candidate C result\n", encoding="utf-8")
+        before_review = fixture.store.validated_snapshot()
+        selected_receipt = next(
+            value for value in before_review.transition_receipts if int(value.history_id) == older_history_id
+        )
+        self.assertEqual(
+            (
+                decision_models.ActionKind.RETURN_FOR_CORRECTION,
+                decision_models.AuthorizationKind.PROJECT,
+                "return-for-correction:work-a-1",
+                "work-a-1",
+                None,
+                "return-for-correction/v1",
+                "transition-receipt/v1",
+            ),
+            (
+                selected_receipt.action_kind,
+                selected_receipt.authorization,
+                str(selected_receipt.action_id),
+                str(selected_receipt.subject_id),
+                selected_receipt.artifact_ref_id,
+                selected_receipt.input_schema,
+                selected_receipt.outcome_schema,
+            ),
+        )
+        self.assertEqual(b'{"reason":"Fix candidate B."}', bytes(selected_receipt.input_payload))
+
+        review_arguments = (
+            *fixture.common,
+            "review-job",
+            "--attempt-id",
+            "work-a-1",
+            "--candidate-revision",
+            "candidate-c",
+            "--checkpoint-history-id",
+            str(int(package_receipt.history_id)),
+            "--correction-history-id",
+            str(older_history_id),
+        )
+        result, stdout, stderr = self.run_cli(*review_arguments, "--json")
+        self.assertEqual(0, result, f"{stdout}\n{stderr}")
+        job = self.json_object(json.loads(stdout))
+
+        self.assertLess(older_history_id, newer_history_id)
+        round_view = self.json_object(job["review_round"])
+        self.assertEqual(older_history_id, round_view["history_id"])
+        self.assertEqual("candidate-b", round_view["candidate_revision"])
+        self.assertEqual("Fix candidate B.", round_view["reason"])
+        self.assertEqual(hashlib.sha256(review_path.read_bytes()).hexdigest(), round_view["review_sha256"])
+        self.assertIn("candidate-c", str(job["prompt"]))
+        self.assertIn("candidate-newer", review_path.read_text(encoding="utf-8"))
+        reloaded = fixture.store.validated_snapshot()
+        receipts = {int(value.history_id): value for value in reloaded.transition_receipts}
+        self.assertEqual(b'{"reason":"Fix the newer candidate."}', bytes(receipts[newer_history_id].input_payload))
+        self.assertEqual("candidate-b", msgspec.json.decode(receipts[older_history_id].outcome_payload)["candidate"])
+        self.assertEqual(
+            "candidate-newer", msgspec.json.decode(receipts[newer_history_id].outcome_payload)["candidate"]
         )
 
     def test_review_job_rejects_missing_or_corrupt_selected_package_bytes(self) -> None:

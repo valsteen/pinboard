@@ -23,7 +23,7 @@ from pinboard.adapters.sqlite.models import InitReceipt, OpenMode
 from pinboard.application import handover, ports, stored_state
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId
-from pinboard.interfaces import work_brief_models
+from pinboard.interfaces import transition_models, work_brief_models
 from pinboard.interfaces.errors import (
     InitializationAfterCommittedEffectsError,
     WorkBriefErrorCode,
@@ -430,6 +430,60 @@ def _completion_outcome(
     return outcome
 
 
+def _completion_input(
+    receipt: stored_state.StoredTransitionReceipt,
+) -> WorkBriefResult[transition_models.CoveredCompleteInputPayload]:
+    if receipt.input_schema != "pinboard-covered-completion/v1":
+        return _package_provenance_failure(
+            f"Completion history {int(receipt.history_id)} does not preserve covered completion input."
+        )
+    try:
+        value = msgspec.json.decode(
+            bytes(receipt.input_payload),
+            type=transition_models.CoveredCompleteInputPayload,
+        )
+    except msgspec.DecodeError as error:
+        return _package_provenance_failure(
+            f"Completion history {int(receipt.history_id)} has invalid covered completion input: {error}"
+        )
+    if msgspec.json.encode(value, order="sorted") != bytes(receipt.input_payload):
+        return _package_provenance_failure(
+            f"Completion history {int(receipt.history_id)} has noncanonical covered completion input."
+        )
+    return value
+
+
+def _completion_input_matches_package(
+    value: transition_models.CoveredCompleteInputPayload,
+    package: work_brief_models.CompletionReviewPackage,
+) -> bool:
+    return (
+        value.candidate == package.candidate
+        and value.evidence == package.outcome_evidence
+        and value.reviewer_task_id == package.reviewer_task_id
+        and value.result_sha256 == package.terminal_result.content_sha256
+        and value.review_sha256 == package.final_review.content_sha256
+        and tuple(
+            (
+                row.history_id,
+                row.package_sha256,
+                row.disposition,
+                row.evidence,
+            )
+            for row in value.packages
+        )
+        == tuple(
+            (
+                row.history_id,
+                row.package.content_sha256,
+                row.disposition,
+                row.evidence,
+            )
+            for row in package.checkpoint_coverage
+        )
+    )
+
+
 def _completion_reference(
     identity: work_brief_models.CompletionPortableArtifactIdentity,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
@@ -467,6 +521,9 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
     for receipt in transition_receipts:
         if receipt.outcome_schema != "completion-acceptance/v2":
             continue
+        completion_input = _completion_input(receipt)
+        if isinstance(completion_input, WorkBriefFailure):
+            return completion_input
         outcome = _completion_outcome(receipt)
         if isinstance(outcome, WorkBriefFailure):
             return outcome
@@ -485,6 +542,8 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
         if (
             receipt.action_kind != decision_models.ActionKind.COMPLETE
             or receipt.authorization != decision_models.AuthorizationKind.PROJECT
+            or receipt.actor_task_id is None
+            or receipt.actor_host_id is None
             or str(receipt.action_id) != f"complete:{package.attempt_id}"
             or str(receipt.subject_id) != package.attempt_id
             or reference.kind != work_models.ArtifactKind.EVIDENCE
@@ -492,6 +551,8 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
             or reference.revision != 1
             or outcome.candidate != package.candidate
             or outcome.evidence != package.outcome_evidence
+            or not _completion_input_matches_package(completion_input, package)
+            or str(receipt.actor_task_id) == package.reviewer_task_id
         ):
             return _package_provenance_failure(
                 f"Completion history {int(receipt.history_id)} does not match its review package."
@@ -532,7 +593,6 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
             or brief.item_id != package.item_id
             or brief.accepted_scope != package.accepted_scope
             or brief.owner_task_id == package.reviewer_task_id
-            or (receipt.actor_task_id is not None and str(receipt.actor_task_id) == package.reviewer_task_id)
         ):
             return _package_provenance_failure("Completion package accepted brief is invalid or stale.")
         expected_checkpoints = checkpoints_by_attempt.get(package.attempt_id, [])

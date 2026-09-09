@@ -1,5 +1,7 @@
 from typing import assert_never
 
+import msgspec
+
 from pinboard.application import stored_state
 from pinboard.application.artifacts import CheckpointArtifacts, EvidenceArtifactRef, ResultArtifactRef
 from pinboard.application.mutation_models import (
@@ -187,6 +189,13 @@ def _transition_receipt[SubjectT: SubjectId](
         if preparation is not None:
             actor_task_id, actor_host_id = preparation.task_id, preparation.host_id
     revision = allocation.project_revision + 1
+    input_schema = "decision/v1"
+    input_payload = work_models.CanonicalJson(b"{}")
+    if action_kind == decision_models.ActionKind.RETURN_FOR_CORRECTION:
+        if transition.evidence is None:
+            raise AssertionError("Returning for correction requires a reason.")
+        input_schema = "return-for-correction/v1"
+        input_payload = work_models.CanonicalJson(msgspec.json.encode({"reason": transition.evidence}, order="sorted"))
     return MutationReceipt(
         transition,
         allocation.next_history_id,
@@ -197,8 +206,8 @@ def _transition_receipt[SubjectT: SubjectId](
         capability.authorization,
         actor_task_id,
         actor_host_id,
-        "decision/v1",
-        work_models.CanonicalJson(b"{}"),
+        input_schema,
+        input_payload,
     )
 
 

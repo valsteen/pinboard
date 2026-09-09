@@ -880,6 +880,13 @@ def _persist_checkpoint_acceptance(
         revision,
         now,
     )
+    accept_checkpoint_artifact(
+        connection,
+        artifacts.package,
+        artifacts.package_id,
+        revision,
+        now,
+    )
     if (
         failure := set_item_state(
             connection,

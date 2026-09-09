@@ -52,6 +52,13 @@ class TransitionReceiptOutcome(msgspec.Struct, frozen=True, forbid_unknown_field
     checkpoint: str | None = None
 
 
+class CheckpointAcceptanceOutcome(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    candidate: CanonicalLine
+    checkpoint: CanonicalLine
+    evidence: CanonicalLine
+    outcome: CanonicalLine
+
+
 @dataclass(frozen=True, slots=True)
 class HistoryOutcome:
     outcome_schema: str
@@ -67,6 +74,19 @@ def encode_transition_receipt_outcome(
 ) -> bytes:
     return msgspec.json.encode(
         TransitionReceiptOutcome(evidence, outcome, candidate, checkpoint),
+        order="sorted",
+    )
+
+
+def encode_checkpoint_acceptance_outcome(
+    *,
+    candidate: str,
+    checkpoint: str,
+    evidence: str,
+    outcome: str,
+) -> bytes:
+    return msgspec.json.encode(
+        CheckpointAcceptanceOutcome(candidate, checkpoint, evidence, outcome),
         order="sorted",
     )
 

@@ -12,6 +12,7 @@ type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A\S(?:[
 type KebabId = Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
 type Sha256 = Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
 type PositiveInt = Annotated[int, msgspec.Meta(ge=1)]
+type NonNegativeInt = Annotated[int, msgspec.Meta(ge=0)]
 type NonEmptyTexts = Annotated[tuple[NonEmptyText, ...], msgspec.Meta(min_length=1)]
 
 PROHIBITION: re.Pattern[str] = re.compile(
@@ -465,3 +466,82 @@ class WorkBriefReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
         coverage_keys = tuple((record.authority_id, record.family) for record in self.coverage)
         if len(set(coverage_keys)) != len(coverage_keys):
             raise ValueError("Brief review coverage must identify every authority family at most once.")
+
+
+class CheckpointIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    id: KebabId
+    sha256: Sha256
+
+
+class PortableArtifactIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    role: Literal["accepted-brief", "result", "implementation-review", "brief-review"]
+    kind: Literal["brief", "result", "evidence"]
+    key: NonEmptyLine
+    revision: PositiveInt
+    selector: NonEmptyLine
+    content_sha256: Sha256
+    size_bytes: NonNegativeInt
+
+
+class LocalReviewBasis(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="local",
+    tag_field="boundary",
+):
+    pass
+
+
+class CrossBoundaryReviewBasis(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="cross-boundary",
+    tag_field="boundary",
+):
+    brief_review: PortableArtifactIdentity
+    checkpoint_sha256: Sha256
+    reviewed_authority_set_sha256: Sha256
+
+
+type ReviewBasis = LocalReviewBasis | CrossBoundaryReviewBasis
+
+
+class CheckpointReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-checkpoint-review-package/v1"]
+    attempt_id: KebabId
+    item_id: KebabId
+    candidate: NonEmptyLine
+    acceptance_evidence: NonEmptyLine
+    accepted_scope: AcceptedScope
+    checkpoint: CheckpointIdentity
+    accepted_brief: PortableArtifactIdentity
+    result: PortableArtifactIdentity
+    implementation_review: PortableArtifactIdentity
+    verdict: Literal["ready"]
+    review_basis: ReviewBasis
+
+    def __post_init__(self) -> None:
+        identities = (self.accepted_brief, self.result, self.implementation_review)
+        expected = (
+            ("accepted-brief", "brief"),
+            ("result", "result"),
+            ("implementation-review", "evidence"),
+        )
+        if tuple((value.role, value.kind) for value in identities) != expected:
+            raise ValueError("Checkpoint package artifact roles and kinds do not match their bindings.")
+        match self.review_basis:
+            case LocalReviewBasis():
+                pass
+            case CrossBoundaryReviewBasis(brief_review=brief_review, checkpoint_sha256=checkpoint_sha256):
+                if (brief_review.role, brief_review.kind) != ("brief-review", "evidence"):
+                    raise ValueError("Cross-boundary checkpoint packages require one brief-review Evidence identity.")
+                if checkpoint_sha256 != self.checkpoint.sha256:
+                    raise ValueError("Cross-boundary review basis must bind the package checkpoint digest.")
+                identities = (*identities, brief_review)
+            case _ as unreachable:
+                assert_never(unreachable)
+        portable_keys = tuple((value.kind, value.key, value.revision) for value in identities)
+        if len(portable_keys) != len(set(portable_keys)):
+            raise ValueError("Checkpoint package portable artifact identities must be unique.")

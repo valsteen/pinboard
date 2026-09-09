@@ -1,7 +1,8 @@
+import hashlib
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import assert_never
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -9,9 +10,10 @@ from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, FileIOError
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite.errors import StorageError
-from pinboard.application import ports
+from pinboard.application import ports, query_models, stored_state
 from pinboard.application.actions import discover_current_actions
 from pinboard.application.artifacts import (
+    BriefArtifactRef,
     CheckpointArtifacts,
     EvidenceArtifactRef,
     NewArtifact,
@@ -41,6 +43,7 @@ from pinboard.interfaces import (
     action_selection,
     cli_commands,
     transition_models,
+    work_brief_models,
     work_inspection,
     work_inspection_models,
     work_views,
@@ -51,10 +54,19 @@ from pinboard.interfaces.errors import (
     CommandResult,
     CommittedEffectFailure,
     TransitionInputFailure,
+    WorkBriefFailure,
     storage_failure_details,
 )
 from pinboard.interfaces.transition_input import parse_item_revision_input, parse_transition_command
-from pinboard.interfaces.work_briefs import read_selected_work_brief_identity
+from pinboard.interfaces.work_briefs import (
+    canonical_checkpoint_bytes,
+    canonical_checkpoint_review_package_bytes,
+    canonical_reviewed_authority_set_bytes,
+    decode_canonical_work_brief,
+    decode_canonical_work_brief_review,
+    read_selected_work_brief_identity,
+    validate_work_brief_review,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +118,123 @@ def _committed_immutable_artifact_failure(
             alternatives=(),
         ),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _CheckpointBriefContext:
+    brief: work_brief_models.WorkBrief
+    reference: BriefArtifactRef
+    review_reference: EvidenceArtifactRef | None
+
+
+def _evidence_reference(reference: stored_state.ArtifactReference) -> EvidenceArtifactRef:
+    return EvidenceArtifactRef(
+        reference.key,
+        reference.revision,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+    )
+
+
+def _portable_identity(
+    role: Literal["accepted-brief", "result", "implementation-review", "brief-review"],
+    reference: BriefArtifactRef | ResultArtifactRef | EvidenceArtifactRef,
+) -> work_brief_models.PortableArtifactIdentity:
+    return msgspec.convert(
+        {
+            "role": role,
+            "kind": reference.kind.value,
+            "key": reference.key,
+            "revision": reference.revision,
+            "selector": reference.selector,
+            "content_sha256": reference.content_sha256,
+            "size_bytes": reference.size_bytes,
+        },
+        type=work_brief_models.PortableArtifactIdentity,
+        strict=True,
+    )
+
+
+def _read_checkpoint_brief_context(
+    store: ports.WorkStore,
+    command: decision_models.AcceptCheckpointCommand,
+    artifacts: ArtifactRepository,
+) -> CommandResult[_CheckpointBriefContext]:
+    context = store.read_attempt_context(command.action.capability.subject)
+    if not isinstance(context, query_models.NonterminalAttemptContextFacts):
+        return CommandFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "Checkpoint acceptance requires a current accepted brief.",
+            None,
+        )
+    brief = decode_canonical_work_brief(artifacts.read(context.brief_reference))
+    if isinstance(brief, WorkBriefFailure):
+        return CommandFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            f"The accepted brief is invalid: {brief}",
+            None,
+        )
+    expected_identity = (
+        str(context.attempt_id),
+        str(context.item_id),
+        context.branch,
+        context.base_revision,
+        context.accepted_scope_revision,
+        context.accepted_scope_digest,
+    )
+    observed_identity = (
+        brief.attempt_id,
+        brief.item_id,
+        brief.branch,
+        brief.base_revision,
+        brief.accepted_scope.revision,
+        brief.accepted_scope.digest,
+    )
+    if observed_identity != expected_identity:
+        return CommandFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "The accepted brief identity does not match the current attempt.",
+            None,
+        )
+    checkpoint = brief.checkpoint
+    if checkpoint.checkpoint_id != command.value.checkpoint:
+        return CommandFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "Checkpoint acceptance requires the accepted brief checkpoint.",
+            None,
+        )
+    match checkpoint:
+        case work_brief_models.LocalCheckpoint():
+            review_reference = None
+        case work_brief_models.CrossBoundaryCheckpoint():
+            checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
+            stored_review = store.read_artifact_reference(
+                work_models.ArtifactKind.EVIDENCE,
+                f"{brief.attempt_id}-brief-review-{checkpoint_sha256}",
+                1,
+            )
+            if stored_review is None:
+                return CommandFailure(
+                    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                    "Checkpoint acceptance requires the exact ready brief review.",
+                    None,
+                )
+            review = decode_canonical_work_brief_review(artifacts.read(stored_review))
+            if (
+                isinstance(review, WorkBriefFailure)
+                or (failure := validate_work_brief_review(review, brief)) is not None
+            ):
+                detail = review if isinstance(review, WorkBriefFailure) else failure
+                return CommandFailure(
+                    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                    f"The accepted ready brief review is invalid: {detail}",
+                    None,
+                )
+            review_reference = _evidence_reference(stored_review)
+        case _ as unreachable:
+            assert_never(unreachable)
+    return _CheckpointBriefContext(brief, context.brief_reference, review_reference)
 
 
 def close(
@@ -282,6 +411,7 @@ def publish_checkpoint_artifacts(
     roots: cli_commands.ResolvedRoots,
     command: decision_models.AcceptCheckpointCommand,
     artifacts: ArtifactRepository,
+    brief_context: _CheckpointBriefContext,
 ) -> CommandResult[_CheckpointArtifactPublication] | CommittedEffectFailure:
     action = command.action
     value = command.value
@@ -321,6 +451,71 @@ def publish_checkpoint_artifacts(
         review = review_publication.reference
         if review_publication.created:
             new_artifact_selectors.append(review.selector)
+        checkpoint = brief_context.brief.checkpoint
+        checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
+        accepted_brief_identity = _portable_identity("accepted-brief", brief_context.reference)
+        result_reference = ResultArtifactRef(
+            result.key, result.revision, result.selector, result.content_sha256, result.size_bytes
+        )
+        implementation_review_reference = EvidenceArtifactRef(
+            review.key, review.revision, review.selector, review.content_sha256, review.size_bytes
+        )
+        match checkpoint:
+            case work_brief_models.LocalCheckpoint():
+                review_basis = msgspec.convert(
+                    {"boundary": "local"},
+                    type=work_brief_models.ReviewBasis,
+                    strict=True,
+                )
+            case work_brief_models.CrossBoundaryCheckpoint():
+                ready_review = brief_context.review_reference
+                if ready_review is None:
+                    raise AssertionError("Cross-boundary checkpoint context requires a ready review.")
+                review_basis = msgspec.convert(
+                    {
+                        "boundary": "cross-boundary",
+                        "brief_review": msgspec.to_builtins(_portable_identity("brief-review", ready_review)),
+                        "checkpoint_sha256": checkpoint_sha256,
+                        "reviewed_authority_set_sha256": hashlib.sha256(
+                            canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)
+                        ).hexdigest(),
+                    },
+                    type=work_brief_models.ReviewBasis,
+                    strict=True,
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
+        package = msgspec.convert(
+            {
+                "schema": "pinboard-checkpoint-review-package/v1",
+                "attempt_id": brief_context.brief.attempt_id,
+                "item_id": brief_context.brief.item_id,
+                "candidate": str(value.candidate),
+                "acceptance_evidence": value.evidence,
+                "accepted_scope": msgspec.to_builtins(brief_context.brief.accepted_scope),
+                "checkpoint": {"id": checkpoint.checkpoint_id, "sha256": checkpoint_sha256},
+                "accepted_brief": msgspec.to_builtins(accepted_brief_identity),
+                "result": msgspec.to_builtins(_portable_identity("result", result_reference)),
+                "implementation_review": msgspec.to_builtins(
+                    _portable_identity("implementation-review", implementation_review_reference)
+                ),
+                "verdict": "ready",
+                "review_basis": msgspec.to_builtins(review_basis),
+            },
+            type=work_brief_models.CheckpointReviewPackage,
+            strict=True,
+        )
+        package_artifact = NewArtifact(
+            work_models.ArtifactKind.EVIDENCE,
+            f"{attempt_id}-{checkpoint_id}-review-package",
+            1,
+            ".json",
+            canonical_checkpoint_review_package_bytes(package),
+        )
+        package_publication = artifacts.publish(package_artifact)
+        published_package = package_publication.reference
+        if package_publication.created:
+            new_artifact_selectors.append(published_package.selector)
     except ArtifactAcceptanceAfterPublicationError as error:
         cause = error.cause
         if not isinstance(cause, FileIOError):
@@ -336,8 +531,15 @@ def publish_checkpoint_artifacts(
         raise
     return _CheckpointArtifactPublication(
         CheckpointArtifacts(
-            ResultArtifactRef(result.key, result.revision, result.selector, result.content_sha256, result.size_bytes),
-            EvidenceArtifactRef(review.key, review.revision, review.selector, review.content_sha256, review.size_bytes),
+            result_reference,
+            implementation_review_reference,
+            EvidenceArtifactRef(
+                published_package.key,
+                published_package.revision,
+                published_package.selector,
+                published_package.content_sha256,
+                published_package.size_bytes,
+            ),
         ),
         tuple(new_artifact_selectors),
     )
@@ -358,7 +560,10 @@ def _execute_transition_command(
         case decision_models.AcceptCheckpointCommand():
             if (candidate_failure := preflight_checkpoint_candidate(store, command, datetime.now(UTC))) is not None:
                 return CommandFailure(candidate_failure.code, candidate_failure.message, candidate_failure.details)
-            checkpoint_artifacts = publish_checkpoint_artifacts(roots, command, artifacts)
+            brief_context = _read_checkpoint_brief_context(store, command, artifacts)
+            if isinstance(brief_context, CommandFailure):
+                return brief_context
+            checkpoint_artifacts = publish_checkpoint_artifacts(roots, command, artifacts, brief_context)
             if isinstance(checkpoint_artifacts, (CommandFailure, CommittedEffectFailure)):
                 return checkpoint_artifacts
             try:
@@ -394,9 +599,15 @@ def _execute_transition_command(
                     result.code,
                     result.message,
                     FailureDetails(
-                        observed=details.observed,
+                        observed=(
+                            *tuple(
+                                FailureFact("published_artifact_selector", selector)
+                                for selector in checkpoint_artifacts.new_artifact_selectors
+                            ),
+                            *details.observed,
+                        ),
                         mismatches=details.mismatches,
-                        retry=details.retry,
+                        retry=RetryDisposition.DO_NOT_RETRY,
                         effect=EffectDisposition.COMMITTED,
                         changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
                         alternatives=(),

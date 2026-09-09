@@ -122,6 +122,34 @@ def decode_canonical_work_brief_review(data: bytes) -> WorkBriefResult[work_brie
     return review
 
 
+def decode_checkpoint_review_package(data: bytes) -> WorkBriefResult[work_brief_models.CheckpointReviewPackage]:
+    try:
+        return msgspec.json.decode(data, type=work_brief_models.CheckpointReviewPackage)
+    except msgspec.DecodeError as error:
+        return WorkBriefFailure(
+            WorkBriefErrorCode.PACKAGE_INVALID,
+            f"Cannot decode checkpoint review package: {error}",
+        )
+
+
+def canonical_checkpoint_review_package_bytes(package: work_brief_models.CheckpointReviewPackage) -> bytes:
+    return _canonical_bytes(package) + b"\n"
+
+
+def decode_canonical_checkpoint_review_package(
+    data: bytes,
+) -> WorkBriefResult[work_brief_models.CheckpointReviewPackage]:
+    package = decode_checkpoint_review_package(data)
+    if isinstance(package, WorkBriefFailure):
+        return package
+    if data != canonical_checkpoint_review_package_bytes(package):
+        return WorkBriefFailure(
+            WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
+            "Checkpoint review package bytes are not the canonical msgspec encoding.",
+        )
+    return package
+
+
 def validate_work_brief_review(
     review: work_brief_models.WorkBriefReview,
     brief: work_brief_models.WorkBrief,

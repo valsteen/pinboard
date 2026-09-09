@@ -16,7 +16,11 @@ from pinboard.application.mutation_models import (
 )
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
-from pinboard.domain.history import HistoryOutcome, encode_transition_receipt_outcome
+from pinboard.domain.history import (
+    HistoryOutcome,
+    encode_checkpoint_acceptance_outcome,
+    encode_transition_receipt_outcome,
+)
 from pinboard.domain.identifiers import (
     ArtifactRefId,
     HistorySubjectId,
@@ -28,13 +32,22 @@ from pinboard.domain.identifiers import (
 
 def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
     match mutation:
-        case TransitionMutation(decision=decision) | CheckpointAcceptanceMutation(decision=decision):
-            checkpoint = None
+        case CheckpointAcceptanceMutation(decision=decision):
+            evidence = decision.receipt.evidence
+            if evidence is None:
+                raise AssertionError("Checkpoint acceptance requires evidence.")
+            return HistoryOutcome(
+                "checkpoint-acceptance/v2",
+                encode_checkpoint_acceptance_outcome(
+                    candidate=str(decision.change.candidate),
+                    checkpoint=str(decision.change.checkpoint),
+                    evidence=evidence,
+                    outcome=decision.receipt.outcome,
+                ),
+            )
+        case TransitionMutation(decision=decision):
             candidate = None
             match decision.change:
-                case decision_models.CheckpointAcceptanceChange(checkpoint=value, candidate=accepted_candidate):
-                    checkpoint = str(value)
-                    candidate = str(accepted_candidate)
                 case (
                     decision_models.ReviewAcceptanceChange(candidate=accepted_candidate)
                     | decision_models.ReviewSubmissionChange(protected_candidate_after=accepted_candidate)
@@ -67,7 +80,6 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                     evidence=decision.receipt.evidence,
                     outcome=decision.receipt.outcome,
                     candidate=candidate,
-                    checkpoint=checkpoint,
                 ),
             )
         case ProposalCreationMutation() | AttemptAuthorityMutation() | PreparationAuthorityMutation():
@@ -146,7 +158,15 @@ def _checkpoint_artifact_ids(
 
     result_id = identify(artifacts.result)
     review_id = identify(artifacts.review)
-    return CheckpointArtifactChanges(artifacts.result, result_id, artifacts.review, review_id)
+    package_id = identify(artifacts.package)
+    return CheckpointArtifactChanges(
+        artifacts.result,
+        result_id,
+        artifacts.review,
+        review_id,
+        artifacts.package,
+        package_id,
+    )
 
 
 def _transition_receipt[SubjectT: SubjectId](
@@ -221,7 +241,7 @@ def project_checkpoint_acceptance_mutation(
             decision.action.capability,
             decision.action.kind,
             decision.receipt,
-            checkpoint_changes.review_id,
+            checkpoint_changes.package_id,
             actor_task_id,
             actor_host_id,
         ),

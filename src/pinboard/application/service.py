@@ -615,7 +615,7 @@ def decide_and_commit_checkpoint_acceptance(
             return decision_result
         accepted_decision = decision_result
         allocation = transaction.read_checkpoint_mutation_allocation(
-            (checkpoint_artifacts.result, checkpoint_artifacts.review)
+            (checkpoint_artifacts.result, checkpoint_artifacts.review, checkpoint_artifacts.package)
         )
         mutation = project_checkpoint_acceptance_mutation(
             allocation, accepted_decision, checkpoint_artifacts, actor_task_id, actor_host_id

@@ -513,6 +513,16 @@ class ServiceTest(unittest.TestCase):
             roots,
             NewArtifact(work_models.ArtifactKind.EVIDENCE, "work-a-1-checkpoint-a-review", 1, ".md", b"review\n"),
         )
+        package_artifact = write_revision(
+            roots,
+            NewArtifact(
+                work_models.ArtifactKind.EVIDENCE,
+                "work-a-1-checkpoint-a-review-package",
+                1,
+                ".json",
+                b"package\n",
+            ),
+        )
         checkpoint_artifacts = CheckpointArtifacts(
             ResultArtifactRef(
                 result_artifact.key,
@@ -527,6 +537,13 @@ class ServiceTest(unittest.TestCase):
                 review_artifact.selector,
                 review_artifact.content_sha256,
                 review_artifact.size_bytes,
+            ),
+            EvidenceArtifactRef(
+                package_artifact.key,
+                package_artifact.revision,
+                package_artifact.selector,
+                package_artifact.content_sha256,
+                package_artifact.size_bytes,
             ),
         )
         before_acceptance = submitted_store.validated_snapshot()
@@ -617,11 +634,22 @@ class ServiceTest(unittest.TestCase):
         review_reference = next(
             value for value in reloaded.artifact_references if value.key == "work-a-1-checkpoint-a-review"
         )
+        package_reference = next(
+            value for value in reloaded.artifact_references if value.key == "work-a-1-checkpoint-a-review-package"
+        )
         self.assertEqual(result_reference.artifact_ref_id, attempt.result_artifact_ref_id)
-        self.assertEqual(review_reference.artifact_ref_id, reloaded.transition_receipts[-1].artifact_ref_id)
+        self.assertIn(review_reference, reloaded.artifact_references)
+        self.assertEqual(package_reference.artifact_ref_id, reloaded.transition_receipts[-1].artifact_ref_id)
+        self.assertEqual("checkpoint-acceptance/v2", reloaded.transition_receipts[-1].outcome_schema)
         outcome = reloaded.transition_receipts[-1].outcome_payload
-        self.assertIn(b'"candidate":"protected-candidate"', outcome)
-        self.assertIn(b'"checkpoint":"checkpoint-a"', outcome)
+        self.assertEqual(
+            b'{"candidate":"protected-candidate","checkpoint":"checkpoint-a",'
+            b'"evidence":"Checkpoint evidence is accepted.","outcome":"accept-checkpoint"}',
+            outcome,
+        )
+        self.assertIn(
+            "transition-receipt/v1", tuple(value.outcome_schema for value in reloaded.transition_receipts[:-1])
+        )
 
     def test_review_acceptance_continues_the_attempt_and_reloads_every_fact(self) -> None:
         store, database_path = self._store_with_state(complete_sqlite_state())

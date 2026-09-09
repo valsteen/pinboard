@@ -12,6 +12,7 @@ from pinboard.adapters.files.file_io import (
     atomic_replace,
     create_immutable,
     ensure_child_directory,
+    ensure_directory_chain,
     resolve_durable_roots,
 )
 from pinboard.adapters.sqlite.database import (
@@ -671,6 +672,22 @@ class SQLiteStoreTest(unittest.TestCase):
         self.assertEqual(FileIOErrorCode.DIRECTORY_SYNC_FAILED, failure.exception.code)
         self.assertEqual(b"published bytes", publication.read_bytes())
         self.assertFalse(create_immutable(publication, b"published bytes"))
+
+    def test_immutable_publication_rejects_non_regular_destinations(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        roots = resolve_durable_roots(project)
+        ensure_directory_chain(roots)
+        immutable_directory = roots.artifacts_root / "immutable-directory"
+        immutable_directory.mkdir()
+        immutable_target = roots.artifacts_root / "immutable-target"
+        immutable_target.write_bytes(b"accepted evidence")
+        immutable_symlink = roots.artifacts_root / "immutable-symlink"
+        immutable_symlink.symlink_to(immutable_target)
+
+        for non_regular in (immutable_directory, immutable_symlink):
+            with self.subTest(non_regular=non_regular), self.assertRaises(FileIOError) as collision:
+                create_immutable(non_regular, b"accepted evidence")
+            self.assertEqual(FileIOErrorCode.FILE_ALREADY_EXISTS, collision.exception.code)
 
     def test_complete_stored_state_and_relational_contract_matrix(self) -> None:
         path, store = self._store()

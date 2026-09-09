@@ -13,9 +13,11 @@ from pinboard.domain.identifiers import (
     AttemptId,
     CandidateId,
     CheckpointId,
+    HistoryId,
     ItemId,
     LeaseId,
     ProposalId,
+    TaskId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from tests.domain_support import (
@@ -766,6 +768,37 @@ class LifecycleDecisionTest(unittest.TestCase):
             NOW,
         )
         self.assertEqual(("dropped", "no longer needed"), (closed.receipt.outcome, closed.receipt.evidence))
+
+    def test_completion_leaf_is_selected_by_authoritative_checkpoint_history(self) -> None:
+        active = item("target", work_models.WorkState.ACTIVE, attempt="target-1")
+        attempt = AttemptRecord("target-1", "target", work_models.AttemptState.ACTIVE)
+        complete = action(decision_models.CompleteAction, AttemptId("target-1"))
+        covered_value = work_models.CoveredCompleteInput(
+            CandidateId("candidate"),
+            "all evidence covered",
+            TaskId("reviewer"),
+            "a" * 64,
+            "b" * 64,
+            (
+                work_models.CoveredCompletionPackageInput(
+                    HistoryId(7), "c" * 64, work_models.CompletionPackageDisposition.REVALIDATED, "rechecked"
+                ),
+            ),
+        )
+
+        direct_with_history = decision_outcome(
+            LedgerSnapshot("revision", (active,), attempts=(attempt,), checkpoint_history_ids=(HistoryId(7),)),
+            decision_models.CompleteCommand(complete, work_models.EvidenceInput("done")),
+            NOW,
+        )
+        covered_without_history = decision_outcome(
+            LedgerSnapshot("revision", (active,), attempts=(attempt,)),
+            decision_models.CoveredCompleteCommand(complete, covered_value),
+            NOW,
+        )
+
+        self.assertIsInstance(direct_with_history, DecisionFailure)
+        self.assertIsInstance(covered_without_history, DecisionFailure)
 
     def test_changed_semantic_scope_blocks_the_next_attempt_boundary(self) -> None:
         current = definition_anchor("build-map", 2, DIGEST_B)

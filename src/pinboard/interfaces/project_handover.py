@@ -76,11 +76,21 @@ def export_project_handover(
     )
     if isinstance(checkpoint_packages, WorkBriefFailure):
         return checkpoint_packages
+    completion_packages = work_state.validate_completion_review_packages(
+        captured_state.lifecycle,
+        captured_state.artifact_references,
+        captured_state.transition_receipts,
+        verified_artifacts,
+        checkpoint_packages,
+    )
+    if isinstance(completion_packages, WorkBriefFailure):
+        return completion_packages
     portable_package = handover.project_handover_from_state(
         captured_state,
         projected_references,
         encoded_contents,
         checkpoint_packages,
+        completion_packages,
     )
     write_json(portable_package)
     return 0

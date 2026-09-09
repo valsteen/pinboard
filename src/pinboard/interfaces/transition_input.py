@@ -9,6 +9,7 @@ from pinboard.domain.identifiers import (
     AttemptId,
     CandidateId,
     CheckpointId,
+    HistoryId,
     ItemId,
     TaskId,
 )
@@ -30,7 +31,9 @@ def _input_model_or_none(kind: decision_models.ActionKind) -> transition_models.
             return transition_models.BlockInputPayload
         case decision_models.ActionKind.CLOSE:
             return transition_models.CloseInputPayload
-        case decision_models.ActionKind.COMPLETE | decision_models.ActionKind.REOPEN:
+        case decision_models.ActionKind.COMPLETE:
+            return transition_models.EvidenceInputPayload
+        case decision_models.ActionKind.REOPEN:
             return transition_models.EvidenceInputPayload
         case decision_models.ActionKind.DEFER:
             return transition_models.DeferInputPayload
@@ -196,17 +199,42 @@ def parse_transition_command(  # noqa: C901, PLR0912, PLR0915 - one visible exha
             if isinstance(payload := _decode(data, transition_models.CloseInputPayload), TransitionInputFailure):
                 return payload
             return decision_models.CloseCommand(action, work_models.CloseInput(payload.outcome, payload.reason))
-        case decision_models.CompleteAction() | decision_models.ReopenAction():
+        case decision_models.CompleteAction():
+            try:
+                fields = msgspec.json.decode(data, type=dict[str, msgspec.Raw])
+            except msgspec.DecodeError:
+                fields: dict[str, msgspec.Raw] = {}
+            if "schema" in fields:
+                if isinstance(
+                    payload := _decode(data, transition_models.CoveredCompleteInputPayload), TransitionInputFailure
+                ):
+                    return payload
+                return decision_models.CoveredCompleteCommand(
+                    action,
+                    work_models.CoveredCompleteInput(
+                        CandidateId(payload.candidate),
+                        payload.evidence,
+                        TaskId(payload.reviewer_task_id),
+                        payload.result_sha256,
+                        payload.review_sha256,
+                        tuple(
+                            work_models.CoveredCompletionPackageInput(
+                                HistoryId(row.history_id),
+                                row.package_sha256,
+                                work_models.CompletionPackageDisposition(row.disposition),
+                                row.evidence,
+                            )
+                            for row in payload.packages
+                        ),
+                    ),
+                )
             if isinstance(payload := _decode(data, transition_models.EvidenceInputPayload), TransitionInputFailure):
                 return payload
-            evidence_input = work_models.EvidenceInput(payload.evidence)
-            match action:
-                case decision_models.CompleteAction():
-                    return decision_models.CompleteCommand(action, evidence_input)
-                case decision_models.ReopenAction():
-                    return decision_models.ReopenCommand(action, evidence_input)
-                case _ as unreachable:
-                    assert_never(unreachable)
+            return decision_models.CompleteCommand(action, work_models.EvidenceInput(payload.evidence))
+        case decision_models.ReopenAction():
+            if isinstance(payload := _decode(data, transition_models.EvidenceInputPayload), TransitionInputFailure):
+                return payload
+            return decision_models.ReopenCommand(action, work_models.EvidenceInput(payload.evidence))
         case decision_models.DeferAction():
             if isinstance(payload := _decode(data, transition_models.DeferInputPayload), TransitionInputFailure):
                 return payload
@@ -290,6 +318,16 @@ def parse_transition_command(  # noqa: C901, PLR0912, PLR0915 - one visible exha
 
 
 def encoded_transition_input_schema(kind: decision_models.ActionKind) -> TransitionInputResult[bytes]:
+    if kind == decision_models.ActionKind.COMPLETE:
+        direct = msgspec.json.schema(transition_models.EvidenceInputPayload)
+        covered = msgspec.json.schema(transition_models.CoveredCompleteInputPayload)
+        return msgspec.json.encode(
+            {
+                "oneOf": [{"$ref": direct["$ref"]}, {"$ref": covered["$ref"]}],
+                "$defs": {**direct["$defs"], **covered["$defs"]},
+            },
+            order="sorted",
+        )
     model = _input_model(kind)
     if isinstance(model, TransitionInputFailure):
         return model

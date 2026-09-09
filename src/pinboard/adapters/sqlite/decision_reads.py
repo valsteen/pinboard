@@ -17,6 +17,7 @@ from pinboard.domain.identifiers import (
     ArtifactRefId,
     AttemptId,
     CandidateId,
+    HistoryId,
     HostId,
     ItemId,
     LeaseId,
@@ -76,6 +77,10 @@ class _DependencyRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class _ItemIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: ItemId
+
+
+class _HistoryIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: HistoryId
 
 
 class _ArtifactRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -685,6 +690,19 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         connection, contextual_item_ids, project.host_epoch, now
     )
 
+    checkpoint_history_ids = tuple(
+        decode_row(row, _HistoryIdRow).history_id
+        for attempt_id in scope.completion_history_attempt_ids
+        for row in connection.execute(
+            """
+            SELECT history_id FROM transition_history
+            WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+            ORDER BY history_id
+            """,
+            (attempt_id,),
+        ).fetchall()
+    )
+
     attempts_by_item = {
         attempt.item_id: attempt.attempt_id
         for attempt in attempts.values()
@@ -728,6 +746,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
             for value in definitions.values()
         ),
         host_epoch=project.host_epoch,
+        checkpoint_history_ids=checkpoint_history_ids,
     )
     return query_models.DecisionFacts(
         snapshot,

@@ -77,6 +77,43 @@ class TransitionInputTest(unittest.TestCase):
             command,
         )
 
+    def test_complete_decodes_exact_direct_and_covered_leaves(self) -> None:
+        complete = action(decision_models.CompleteAction, AttemptId("attempt-1"))
+        direct = expect_transition_command(parse_transition_command(complete, '{"evidence":"accepted"}'))
+        covered_payload = {
+            "schema": "pinboard-covered-completion/v1",
+            "candidate": "candidate-1",
+            "evidence": "all checkpoints remain covered",
+            "reviewer_task_id": "reviewer-task",
+            "result_sha256": "a" * 64,
+            "review_sha256": "b" * 64,
+            "packages": [
+                {
+                    "history_id": 7,
+                    "package_sha256": "c" * 64,
+                    "disposition": "revalidated",
+                    "evidence": "shared assumptions were rechecked",
+                }
+            ],
+        }
+        covered = expect_transition_command(parse_transition_command(complete, json.dumps(covered_payload)))
+
+        self.assertIsInstance(direct, decision_models.DirectCompleteCommand)
+        self.assertIsInstance(covered, decision_models.CoveredCompleteCommand)
+
+        invalid_payloads = (
+            covered_payload | {"unknown": True},
+            covered_payload | {"schema": "unknown"},
+            covered_payload | {"packages": list[JsonValue]()},
+            covered_payload | {"packages": [covered_payload["packages"][0], covered_payload["packages"][0]]},
+            {"candidate": "candidate-1", "evidence": "accepted"},
+            {"evidence": "accepted", "schema": "pinboard-covered-completion/v1"},
+        )
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                rejected = parse_transition_command(complete, json.dumps(payload))
+                self.assertIsInstance(rejected, TransitionInputFailure)
+
     def test_input_contract_describes_every_action_kind(self) -> None:
         self.assertEqual(
             tuple(kind.value for kind in decision_models.ActionKind),

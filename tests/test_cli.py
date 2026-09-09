@@ -302,7 +302,7 @@ class CliTest(unittest.TestCase):
             capability=replace(typed_action.capability, preparation_authority=wrong_authority),
         )
         decision_facts = store.read_decision_facts(
-            query_models.DecisionScope((ItemId("work-c"),), (), (), (), (), (), ()), observed_at
+            query_models.DecisionScope((ItemId("work-c"),), (), (), (), (), (), (), ()), observed_at
         )
         wrong_snapshot = replace(decision_facts.snapshot, command_preparation_authorities=(wrong_authority,))
         wrong_facts = replace(decision_facts, snapshot=wrong_snapshot)
@@ -4239,11 +4239,48 @@ Not launchable:
         project, work, store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))
         action = self.project_action(common, "complete:work-a-1")
+        covered_payload = project / "covered-complete.json"
+        covered_payload.write_text(
+            json.dumps(
+                {
+                    "schema": "pinboard-covered-completion/v1",
+                    "candidate": "candidate",
+                    "evidence": "unsupported without checkpoint history",
+                    "reviewer_task_id": "independent-reviewer",
+                    "result_sha256": "a" * 64,
+                    "review_sha256": "b" * 64,
+                    "packages": [
+                        {
+                            "history_id": 1,
+                            "package_sha256": "c" * 64,
+                            "disposition": "revalidated",
+                            "evidence": "rechecked",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        before_covered = store.validated_snapshot()
+        with patch(
+            "pinboard.interfaces.transitions.ArtifactRepository.publish",
+            side_effect=AssertionError("covered empty-history cross-use published evidence"),
+        ):
+            covered_result, _, _ = self.run_transition(common, action, covered_payload, json_output=False)
+        self.assertEqual(11, covered_result)
+        self.assertEqual(before_covered, store.validated_snapshot())
+
         payload = project / "complete.json"
         payload.write_text('{"evidence":"All accepted work is complete."}', encoding="utf-8")
-        with patch(
-            "pinboard.interfaces.work_views.build_selected_attempt_brief_views",
-            return_value=WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, "injected view failure"),
+        with (
+            patch(
+                "pinboard.interfaces.work_views.build_selected_attempt_brief_views",
+                return_value=WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, "injected view failure"),
+            ),
+            patch(
+                "pinboard.interfaces.transitions.ArtifactRepository.publish",
+                side_effect=AssertionError("direct completion published evidence"),
+            ),
         ):
             result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
         self.assertEqual(0, result, stderr)
@@ -4257,6 +4294,17 @@ Not launchable:
         self.assertIsNone(continuation.next_operation)
         self.assertEqual((), continuation.legal_actions)
         before = store.validated_snapshot()
+        completed_attempt = next(
+            value for value in before.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1")
+        )
+        prior_attempt = next(
+            value for value in before_covered.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1")
+        )
+        completion_receipt = before.transition_receipts[-1]
+        self.assertEqual(prior_attempt.result_artifact_ref_id, completed_attempt.result_artifact_ref_id)
+        self.assertEqual("decision/v1", completion_receipt.input_schema)
+        self.assertEqual("transition-receipt/v1", completion_receipt.outcome_schema)
+        self.assertIsNone(completion_receipt.artifact_ref_id)
         missing_message = "Review job requires the current review attempt and exact protected candidate."
         rejected, _, rejected_stderr = self.run_cli(
             *common,

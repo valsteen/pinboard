@@ -41,13 +41,13 @@ def action_identity_scope(action_id: ActionId) -> query_models.DecisionScope | N
         return None
     match semantics.subject_kind:
         case decision_models.ActionSubjectKind.ITEM:
-            return query_models.DecisionScope((ItemId(subject),), (), (), (), (), (), ())
+            return query_models.DecisionScope((ItemId(subject),), (), (), (), (), (), (), ())
         case decision_models.ActionSubjectKind.ATTEMPT:
-            return query_models.DecisionScope((), (), (), (), (AttemptId(subject),), (), ())
+            return query_models.DecisionScope((), (), (), (), (AttemptId(subject),), (), (), ())
         case decision_models.ActionSubjectKind.PROPOSAL:
-            return query_models.DecisionScope((), (), (), (), (), (ProposalId(subject),), ())
+            return query_models.DecisionScope((), (), (), (), (), (ProposalId(subject),), (), ())
         case decision_models.ActionSubjectKind.LEDGER:
-            return query_models.DecisionScope((), (), (), (), (), (), ())
+            return query_models.DecisionScope((), (), (), (), (), (), (), ())
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -93,7 +93,7 @@ def with_current_alternatives(
     item_ids, attempt_ids, proposal_ids = action_subject_ids(supplied.action)
     current_actions = discover_current_actions(
         store.read_decision_facts(
-            query_models.DecisionScope(item_ids, (), (), (), attempt_ids, proposal_ids, ()), observed_at
+            query_models.DecisionScope(item_ids, (), (), (), attempt_ids, proposal_ids, (), ()), observed_at
         ).snapshot,
         supplied.role,
         lease_id=supplied.action.capability.lease_id,
@@ -425,7 +425,7 @@ def select_current_action(
         return authority_failure
     item_ids, attempt_ids, proposal_ids = action_subject_ids(supplied_action)
     current_snapshot = store.read_decision_facts(
-        query_models.DecisionScope(item_ids, (), (), (), attempt_ids, proposal_ids, ()), operation_time
+        query_models.DecisionScope(item_ids, (), (), (), attempt_ids, proposal_ids, (), ()), operation_time
     ).snapshot
     current_actions = discover_current_actions(
         current_snapshot,

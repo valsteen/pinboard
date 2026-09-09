@@ -179,7 +179,7 @@ def change_attempt_authority(
 ) -> CommandResult[int]:
     requested_at = datetime.now(UTC)
     snapshot = store.read_decision_facts(
-        query_models.DecisionScope((), (), (), (), (command.attempt_id,), (), ()), requested_at
+        query_models.DecisionScope((), (), (), (), (command.attempt_id,), (), (), ()), requested_at
     ).snapshot
     attempt_record = _find_attempt_record(snapshot, command.attempt_id)
     if isinstance(attempt_record, CommandFailure):

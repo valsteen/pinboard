@@ -67,6 +67,13 @@ class CheckpointArtifacts:
 
 
 @dataclass(frozen=True, slots=True)
+class CompletionArtifacts:
+    result: ResultArtifactRef
+    review: EvidenceArtifactRef
+    package: EvidenceArtifactRef
+
+
+@dataclass(frozen=True, slots=True)
 class WorkBriefIdentity:
     attempt_id: str
     item_id: str

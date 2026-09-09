@@ -545,3 +545,83 @@ class CheckpointReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields
         portable_keys = tuple((value.kind, value.key, value.revision) for value in identities)
         if len(portable_keys) != len(set(portable_keys)):
             raise ValueError("Checkpoint package portable artifact identities must be unique.")
+
+
+class AcceptedBriefCompletionIdentity(
+    msgspec.Struct, tag="accepted-brief", tag_field="role", frozen=True, forbid_unknown_fields=True
+):
+    kind: Literal["brief"]
+    key: NonEmptyLine
+    revision: PositiveInt
+    selector: NonEmptyLine
+    content_sha256: Sha256
+    size_bytes: NonNegativeInt
+
+
+class TerminalResultCompletionIdentity(
+    msgspec.Struct, tag="terminal-result", tag_field="role", frozen=True, forbid_unknown_fields=True
+):
+    kind: Literal["result"]
+    key: NonEmptyLine
+    revision: PositiveInt
+    selector: NonEmptyLine
+    content_sha256: Sha256
+    size_bytes: NonNegativeInt
+
+
+class FinalReviewCompletionIdentity(
+    msgspec.Struct, tag="final-review", tag_field="role", frozen=True, forbid_unknown_fields=True
+):
+    kind: Literal["evidence"]
+    key: NonEmptyLine
+    revision: PositiveInt
+    selector: NonEmptyLine
+    content_sha256: Sha256
+    size_bytes: NonNegativeInt
+
+
+class CheckpointPackageCompletionIdentity(
+    msgspec.Struct, tag="checkpoint-review-package", tag_field="role", frozen=True, forbid_unknown_fields=True
+):
+    kind: Literal["evidence"]
+    key: NonEmptyLine
+    revision: PositiveInt
+    selector: NonEmptyLine
+    content_sha256: Sha256
+    size_bytes: NonNegativeInt
+
+
+type CompletionPortableArtifactIdentity = (
+    AcceptedBriefCompletionIdentity
+    | TerminalResultCompletionIdentity
+    | FinalReviewCompletionIdentity
+    | CheckpointPackageCompletionIdentity
+)
+
+
+class CompletionCheckpointCoverage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: PositiveInt
+    checkpoint: CheckpointIdentity
+    candidate: NonEmptyLine
+    package: CheckpointPackageCompletionIdentity
+    disposition: Literal["reused", "revalidated"]
+    evidence: NonEmptyLine
+
+
+class CompletionReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-completion-review-package/v1"]
+    attempt_id: KebabId
+    item_id: KebabId
+    candidate: NonEmptyLine
+    outcome_evidence: NonEmptyLine
+    reviewer_task_id: NonEmptyLine
+    accepted_scope: AcceptedScope
+    accepted_brief: AcceptedBriefCompletionIdentity
+    terminal_result: TerminalResultCompletionIdentity
+    final_review: FinalReviewCompletionIdentity
+    checkpoint_coverage: Annotated[tuple[CompletionCheckpointCoverage, ...], msgspec.Meta(min_length=1)]
+
+    def __post_init__(self) -> None:
+        history_ids = tuple(row.history_id for row in self.checkpoint_coverage)
+        if history_ids != tuple(sorted(set(history_ids))):
+            raise ValueError("checkpoint_coverage must be unique and strictly ascending by history_id")

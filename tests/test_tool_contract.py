@@ -119,6 +119,37 @@ class ToolContractTest(unittest.TestCase):
             proposal_schema["$defs"]["FollowUpProposalRelation"]["properties"]["item"]["type"],
         )
 
+    def test_complete_action_exposes_exact_direct_and_covered_input_leaves(self) -> None:
+        action = tool_contract.describe_action(decision_models.ActionKind.COMPLETE)
+        assert action.input_schema is not None
+        schema = json.loads(bytes(action.input_schema))
+
+        self.assertEqual(
+            [
+                {"$ref": "#/$defs/EvidenceInputPayload"},
+                {"$ref": "#/$defs/CoveredCompleteInputPayload"},
+            ],
+            schema["oneOf"],
+        )
+        covered = schema["$defs"]["CoveredCompleteInputPayload"]
+        self.assertFalse(covered["additionalProperties"])
+        self.assertEqual(
+            [
+                "schema",
+                "candidate",
+                "evidence",
+                "reviewer_task_id",
+                "result_sha256",
+                "review_sha256",
+                "packages",
+            ],
+            covered["required"],
+        )
+        self.assertEqual(1, covered["properties"]["packages"]["minItems"])
+        row = schema["$defs"]["CoveredCompletionPackageInputPayload"]
+        self.assertFalse(row["additionalProperties"])
+        self.assertEqual(["history_id", "package_sha256", "disposition", "evidence"], row["required"])
+
     def test_acquisition_and_initialization_contracts_name_actual_authority_and_receipts(self) -> None:
         preparation_start = expect_command_success(tool_contract.describe_operation("preparation/start", "default"))
         self.assertIsInstance(preparation_start, tool_contract.OperationContract)

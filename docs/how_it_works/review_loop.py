@@ -19,6 +19,7 @@ SOURCE_SYMBOL_NAMES: dict[str, str] = {
     "ReviewJobView": work_inspection_models.ReviewJobView.__name__,
     "PriorCheckpointPackage": work_inspection_models.PriorCheckpointPackage.__name__,
     "CorrectionReviewRound": work_inspection_models.CorrectionReviewRound.__name__,
+    "CompletionReviewPackage": work_brief_models.CompletionReviewPackage.__name__,
 }
 
 
@@ -37,8 +38,8 @@ DIAGRAM = Diagram(
         "On the left, an ordinary coding harness repeatedly interprets a prose request, repository code, and review "
         "feedback. On the right, Pinboard binds the accepted structured brief, exact candidate, and caller-selected "
         "historical evidence into a read-only review job for an independent reviewer. Correction review can reuse "
-        "unaffected assurance while reopening changed relationships without claiming that model judgment is "
-        "infallible or that convergence is guaranteed."
+        "unaffected assurance while reopening changed relationships. When accepted checkpoint history exists, "
+        "covered completion preserves every checkpoint disposition with the terminal result and final review."
     ),
     width=1400,
     height=800,
@@ -158,7 +159,7 @@ DIAGRAM = Diagram(
             "Independent reviewer",
             "Reuse, rerun, or reopen",
             ("compare historical candidates", "resolve every prior finding"),
-            ("relationship-aware evidence",),
+            ("completion package when covered",),
             1050,
             510,
             300,

@@ -15,6 +15,7 @@ from pinboard.application.actions import discover_current_actions
 from pinboard.application.artifacts import (
     BriefArtifactRef,
     CheckpointArtifacts,
+    CompletionArtifacts,
     EvidenceArtifactRef,
     NewArtifact,
     ResultArtifactRef,
@@ -23,8 +24,10 @@ from pinboard.application.artifacts import (
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.service import (
     decide_and_commit_checkpoint_acceptance,
+    decide_and_commit_covered_completion,
     decide_and_commit_transition,
     preflight_checkpoint_candidate,
+    preflight_covered_completion,
 )
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
@@ -38,7 +41,7 @@ from pinboard.domain.errors import (
     RetryDisposition,
 )
 from pinboard.domain.history import work_item_definition_digest
-from pinboard.domain.identifiers import ActionId, AttemptId, HostId, TaskId
+from pinboard.domain.identifiers import ActionId, ArtifactRefId, AttemptId, HostId, TaskId
 from pinboard.interfaces import (
     action_selection,
     cli_commands,
@@ -46,6 +49,7 @@ from pinboard.interfaces import (
     work_brief_models,
     work_inspection,
     work_inspection_models,
+    work_state,
     work_views,
 )
 from pinboard.interfaces.cli_output import write_json
@@ -61,6 +65,7 @@ from pinboard.interfaces.transition_input import parse_item_revision_input, pars
 from pinboard.interfaces.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_checkpoint_review_package_bytes,
+    canonical_completion_review_package_bytes,
     canonical_reviewed_authority_set_bytes,
     decode_canonical_work_brief,
     decode_canonical_work_brief_review,
@@ -87,6 +92,19 @@ type _ProjectTransitionRequest = _EncodedProjectTransitionRequest | _ValidatedIt
 class _CheckpointArtifactPublication:
     artifacts: CheckpointArtifacts
     new_artifact_selectors: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _CompletionArtifactPublication:
+    artifacts: CompletionArtifacts
+    new_artifact_selectors: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _CompletionContext:
+    brief: work_brief_models.WorkBrief
+    reference: BriefArtifactRef
+    checkpoint_coverage: tuple[work_brief_models.CompletionCheckpointCoverage, ...]
 
 
 def _committed_immutable_artifact_failure(
@@ -154,6 +172,136 @@ def _portable_identity(
         type=work_brief_models.PortableArtifactIdentity,
         strict=True,
     )
+
+
+def _accepted_brief_completion_identity(
+    reference: BriefArtifactRef,
+) -> work_brief_models.AcceptedBriefCompletionIdentity:
+    return work_brief_models.AcceptedBriefCompletionIdentity(
+        "brief", reference.key, reference.revision, reference.selector, reference.content_sha256, reference.size_bytes
+    )
+
+
+def _terminal_result_completion_identity(
+    reference: ResultArtifactRef,
+) -> work_brief_models.TerminalResultCompletionIdentity:
+    return work_brief_models.TerminalResultCompletionIdentity(
+        "result", reference.key, reference.revision, reference.selector, reference.content_sha256, reference.size_bytes
+    )
+
+
+def _final_review_completion_identity(
+    reference: EvidenceArtifactRef,
+) -> work_brief_models.FinalReviewCompletionIdentity:
+    return work_brief_models.FinalReviewCompletionIdentity(
+        "evidence",
+        reference.key,
+        reference.revision,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+    )
+
+
+def _checkpoint_package_completion_identity(
+    reference: stored_state.ArtifactReference,
+) -> work_brief_models.CheckpointPackageCompletionIdentity:
+    return work_brief_models.CheckpointPackageCompletionIdentity(
+        "evidence",
+        reference.key,
+        reference.revision,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+    )
+
+
+def _completion_failure(message: str) -> CommandFailure:
+    return CommandFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, message, None)
+
+
+def _read_completion_context(  # noqa: C901 - one exact completion-closure validation boundary
+    store: ports.WorkStore,
+    command: decision_models.CoveredCompleteCommand,
+    artifacts: ArtifactRepository,
+) -> CommandResult[_CompletionContext]:
+    selected = store.read_completion_context(command.action.capability.subject)
+    if selected is None or not isinstance(selected.attempt, query_models.NonterminalAttemptContextFacts):
+        return _completion_failure("Covered completion requires one current nonterminal attempt.")
+    attempt = selected.attempt
+    brief = decode_canonical_work_brief(artifacts.read(attempt.brief_reference))
+    if isinstance(brief, WorkBriefFailure):
+        return _completion_failure(f"The accepted brief is invalid: {brief}")
+    expected_identity = (
+        str(attempt.attempt_id),
+        str(attempt.item_id),
+        attempt.branch,
+        attempt.base_revision,
+        attempt.accepted_scope_revision,
+        attempt.accepted_scope_digest,
+    )
+    observed_identity = (
+        brief.attempt_id,
+        brief.item_id,
+        brief.branch,
+        brief.base_revision,
+        brief.accepted_scope.revision,
+        brief.accepted_scope.digest,
+    )
+    if observed_identity != expected_identity:
+        return _completion_failure("The accepted brief identity does not match the current attempt.")
+    if str(command.value.reviewer_task_id) == brief.owner_task_id:
+        return _completion_failure("The completion reviewer must be independent from the attempt owner.")
+    if len(selected.checkpoints) != len(command.value.packages):
+        return _completion_failure("Covered completion must name the complete authoritative checkpoint set.")
+
+    coverage: list[work_brief_models.CompletionCheckpointCoverage] = []
+    for facts, supplied in zip(selected.checkpoints, command.value.packages, strict=True):
+        reference = facts.package_reference
+        if (
+            int(facts.receipt.history_id) != int(supplied.history_id)
+            or reference is None
+            or reference.content_sha256 != supplied.package_sha256
+        ):
+            return _completion_failure("Covered completion checkpoint identities do not match current history.")
+        package_bytes = artifacts.read(reference)
+        package = work_state.validate_selected_checkpoint_review_package(
+            facts.receipt,
+            reference,
+            package_bytes,
+            attempt_id=str(attempt.attempt_id),
+            item_id=str(attempt.item_id),
+        )
+        if isinstance(package, WorkBriefFailure):
+            return _completion_failure(package.message)
+        identities = [package.accepted_brief, package.result, package.implementation_review]
+        if isinstance(package.review_basis, work_brief_models.CrossBoundaryReviewBasis):
+            identities.append(package.review_basis.brief_review)
+        closure_references: list[stored_state.ArtifactReference] = []
+        closure_bytes: dict[ArtifactRefId, bytes] = {}
+        for identity in identities:
+            accepted = store.read_artifact_reference(
+                work_models.ArtifactKind(identity.kind), identity.key, identity.revision
+            )
+            if accepted is None:
+                return _completion_failure("A covered checkpoint artifact identity is no longer accepted.")
+            closure_references.append(accepted)
+            closure_bytes[accepted.artifact_ref_id] = artifacts.read(accepted)
+        if (
+            failure := work_state.validate_checkpoint_package_closure(package, tuple(closure_references), closure_bytes)
+        ) is not None:
+            return _completion_failure(failure.message)
+        coverage.append(
+            work_brief_models.CompletionCheckpointCoverage(
+                int(facts.receipt.history_id),
+                package.checkpoint,
+                package.candidate,
+                _checkpoint_package_completion_identity(reference),
+                "reused" if supplied.disposition == work_models.CompletionPackageDisposition.REUSED else "revalidated",
+                supplied.evidence,
+            )
+        )
+    return _CompletionContext(brief, attempt.brief_reference, tuple(coverage))
 
 
 def _read_checkpoint_brief_context(
@@ -548,7 +696,95 @@ def publish_checkpoint_artifacts(
     )
 
 
-def _execute_transition_command(
+def publish_completion_artifacts(
+    roots: cli_commands.ResolvedRoots,
+    command: decision_models.CoveredCompleteCommand,
+    artifacts: ArtifactRepository,
+    context: _CompletionContext,
+) -> CommandResult[_CompletionArtifactPublication] | CommittedEffectFailure:
+    attempt_id = str(command.action.capability.subject)
+    attempt_root = roots.work / "attempts" / attempt_id
+    try:
+        result_bytes = (attempt_root / "result.md").read_bytes()
+        review_bytes = (attempt_root / "review.md").read_bytes()
+    except OSError as error:
+        return _completion_failure(f"Cannot read current completion result.md and review.md: {error}")
+    if hashlib.sha256(result_bytes).hexdigest() != command.value.result_sha256:
+        return _completion_failure("Current result.md does not match result_sha256.")
+    if hashlib.sha256(review_bytes).hexdigest() != command.value.review_sha256:
+        return _completion_failure("Current review.md does not match review_sha256.")
+
+    new_artifact_selectors: list[str] = []
+    try:
+        result_publication = artifacts.publish(
+            NewArtifact(work_models.ArtifactKind.RESULT, f"{attempt_id}-terminal-result", 1, ".md", result_bytes)
+        )
+        result = result_publication.reference
+        if result_publication.created:
+            new_artifact_selectors.append(result.selector)
+        review_publication = artifacts.publish(
+            NewArtifact(work_models.ArtifactKind.EVIDENCE, f"{attempt_id}-terminal-review", 1, ".md", review_bytes)
+        )
+        review = review_publication.reference
+        if review_publication.created:
+            new_artifact_selectors.append(review.selector)
+        result_reference = ResultArtifactRef(
+            result.key, result.revision, result.selector, result.content_sha256, result.size_bytes
+        )
+        review_reference = EvidenceArtifactRef(
+            review.key, review.revision, review.selector, review.content_sha256, review.size_bytes
+        )
+        package = work_brief_models.CompletionReviewPackage(
+            "pinboard-completion-review-package/v1",
+            context.brief.attempt_id,
+            context.brief.item_id,
+            str(command.value.candidate),
+            command.value.evidence,
+            str(command.value.reviewer_task_id),
+            context.brief.accepted_scope,
+            _accepted_brief_completion_identity(context.reference),
+            _terminal_result_completion_identity(result_reference),
+            _final_review_completion_identity(review_reference),
+            context.checkpoint_coverage,
+        )
+        package_publication = artifacts.publish(
+            NewArtifact(
+                work_models.ArtifactKind.EVIDENCE,
+                f"{attempt_id}-completion-review-package",
+                1,
+                ".json",
+                canonical_completion_review_package_bytes(package),
+            )
+        )
+        published_package = package_publication.reference
+        if package_publication.created:
+            new_artifact_selectors.append(published_package.selector)
+    except ArtifactAcceptanceAfterPublicationError as error:
+        cause = error.cause
+        if not isinstance(cause, FileIOError):
+            raise
+        return _committed_immutable_artifact_failure(cause, (*new_artifact_selectors, error.selector), roots)
+    except ArtifactError as error:
+        if new_artifact_selectors:
+            return _committed_immutable_artifact_failure(error, tuple(new_artifact_selectors), roots)
+        raise
+    return _CompletionArtifactPublication(
+        CompletionArtifacts(
+            result_reference,
+            review_reference,
+            EvidenceArtifactRef(
+                published_package.key,
+                published_package.revision,
+                published_package.selector,
+                published_package.content_sha256,
+                published_package.size_bytes,
+            ),
+        ),
+        tuple(new_artifact_selectors),
+    )
+
+
+def _execute_transition_command(  # noqa: C901, PLR0912 - one exhaustive command-to-effect boundary
     roots: cli_commands.ResolvedRoots,
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
@@ -560,6 +796,58 @@ def _execute_transition_command(
     if isinstance(transition_brief_identity, CommandFailure):
         return transition_brief_identity
     match command:
+        case decision_models.CoveredCompleteCommand():
+            if actor_task_id is None or actor_host_id is None:
+                return _completion_failure("Covered completion requires project task and host attribution.")
+            if command.value.reviewer_task_id == actor_task_id:
+                return _completion_failure("The completion reviewer must differ from the invoking task.")
+            if (
+                completion_failure := preflight_covered_completion(
+                    store,
+                    command,
+                    datetime.now(UTC),
+                    actor_task_id=actor_task_id,
+                    actor_host_id=actor_host_id,
+                )
+            ) is not None:
+                return CommandFailure(completion_failure.code, completion_failure.message, completion_failure.details)
+            completion_context = _read_completion_context(store, command, artifacts)
+            if isinstance(completion_context, CommandFailure):
+                return completion_context
+            completion_artifacts = publish_completion_artifacts(roots, command, artifacts, completion_context)
+            if isinstance(completion_artifacts, (CommandFailure, CommittedEffectFailure)):
+                return completion_artifacts
+            try:
+                result = decide_and_commit_covered_completion(
+                    store,
+                    command,
+                    datetime.now(UTC),
+                    completion_artifacts.artifacts,
+                    actor_task_id=actor_task_id,
+                    actor_host_id=actor_host_id,
+                )
+            except StorageError as error:
+                if completion_artifacts.new_artifact_selectors:
+                    return _committed_immutable_artifact_failure(
+                        error, completion_artifacts.new_artifact_selectors, roots
+                    )
+                raise
+            if isinstance(result, DecisionFailure) and completion_artifacts.new_artifact_selectors:
+                result = DecisionFailure(
+                    result.code,
+                    result.message,
+                    FailureDetails(
+                        observed=tuple(
+                            FailureFact("published_artifact_selector", selector)
+                            for selector in completion_artifacts.new_artifact_selectors
+                        ),
+                        mismatches=(),
+                        retry=RetryDisposition.DO_NOT_RETRY,
+                        effect=EffectDisposition.COMMITTED,
+                        changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+                        alternatives=(),
+                    ),
+                )
         case decision_models.AcceptCheckpointCommand():
             if (candidate_failure := preflight_checkpoint_candidate(store, command, datetime.now(UTC))) is not None:
                 return CommandFailure(candidate_failure.code, candidate_failure.message, candidate_failure.details)

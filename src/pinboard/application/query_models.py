@@ -38,6 +38,7 @@ class DecisionScope:
     attempt_ids: tuple[AttemptId, ...]
     proposal_ids: tuple[ProposalId, ...]
     artifact_ref_ids: tuple[ArtifactRefId, ...]
+    completion_history_attempt_ids: tuple[AttemptId, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +203,18 @@ class ReviewJobContextFacts:
     checkpoint_receipt: stored_state.StoredTransitionReceipt | None
     checkpoint_package_reference: stored_state.ArtifactReference | None
     correction_receipt: stored_state.StoredTransitionReceipt | None
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionCheckpointFacts:
+    receipt: stored_state.StoredTransitionReceipt
+    package_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionContextFacts:
+    attempt: AttemptContextFacts
+    checkpoints: tuple[CompletionCheckpointFacts, ...]
 
 
 type ItemStatusSchema = Literal["pinboard-item-status/v1"]

@@ -583,6 +583,15 @@ class CompleteCommand:
     value: work_models.EvidenceInput
 
 
+DirectCompleteCommand = CompleteCommand
+
+
+@dataclass(frozen=True, slots=True)
+class CoveredCompleteCommand:
+    action: CompleteAction
+    value: work_models.CoveredCompleteInput
+
+
 @dataclass(frozen=True, slots=True)
 class CloseCommand:
     action: CloseAction
@@ -688,6 +697,7 @@ type TransitionCommand = (
     | ReturnProposalCommand
     | ReviseItemCommand
     | RejectProposalCommand
+    | CoveredCompleteCommand
 )
 type NonCheckpointTransitionCommand = (
     AcceptReviewAndContinueCommand
@@ -845,6 +855,15 @@ class CompletionChange:
 
 
 @dataclass(frozen=True, slots=True)
+class CoveredCompletionChange:
+    item: ItemId
+    attempt: AttemptId
+    candidate: CandidateId
+    evidence: str
+    authority_change: AttemptAuthorityChange | None
+
+
+@dataclass(frozen=True, slots=True)
 class ItemClosureChange:
     item: ItemId
     item_before: work_models.WorkState
@@ -967,4 +986,11 @@ class CheckpointAcceptanceDecision:
     receipt: TransitionReceipt
 
 
-type Decision = TransitionDecision | CheckpointAcceptanceDecision
+@dataclass(frozen=True, slots=True)
+class CompletionAcceptanceDecision:
+    action: CompleteAction
+    change: CoveredCompletionChange
+    receipt: TransitionReceipt
+
+
+type Decision = TransitionDecision | CheckpointAcceptanceDecision | CompletionAcceptanceDecision

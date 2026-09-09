@@ -76,6 +76,7 @@ from pinboard.application.mutation_models import (
     CheckpointAcceptanceMutation,
     CheckpointMutationAllocation,
     CommittedEffect,
+    CompletionAcceptanceMutation,
     MutationAllocation,
     PreparationAuthorityMutation,
     ProposalCreationMutation,
@@ -350,6 +351,8 @@ def _mutation_subjects(
                     assert_never(unreachable)
         case CheckpointAcceptanceMutation(decision=decision):
             return (decision.change.item,), (decision.change.attempt,)
+        case CompletionAcceptanceMutation(decision=decision):
+            return (decision.change.item,), (decision.change.attempt,)
         case ProposalCreationMutation() | AttemptAuthorityMutation() | PreparationAuthorityMutation():
             return (), ()
         case _ as unreachable:
@@ -423,12 +426,17 @@ def _committed_effect_ids(
             affected_items.append(decision.proposed_replacement.item)
         case AttemptAuthorityMutation():
             pass
-        case TransitionMutation(decision=decision) | CheckpointAcceptanceMutation(decision=decision):
+        case (
+            TransitionMutation(decision=decision)
+            | CheckpointAcceptanceMutation(decision=decision)
+            | CompletionAcceptanceMutation(decision=decision)
+        ):
             match decision.change:
                 case decision_models.ActivationChange(attempt=attempt):
                     attempt_ids = (*attempt_ids, attempt)
                 case (
                     decision_models.CompletionChange(item=item)
+                    | decision_models.CoveredCompletionChange(item=item)
                     | decision_models.AttemptClosureChange(item=item)
                     | decision_models.ItemClosureChange(item=item)
                     | decision_models.MergedProposalChange(proposal=item)
@@ -915,6 +923,53 @@ def _persist_checkpoint_acceptance(
     return None
 
 
+def _persist_completion_acceptance(
+    connection: sqlite3.Connection,
+    facts: _PersistenceFacts,
+    mutation: CompletionAcceptanceMutation,
+) -> DecisionFailure | None:
+    change = mutation.decision.change
+    artifacts = mutation.completion_artifacts
+    revision = mutation.receipt.project_revision
+    now = mutation.decision.receipt.decided_at
+    for artifact, artifact_id in (
+        (artifacts.result, artifacts.result_id),
+        (artifacts.review, artifacts.review_id),
+        (artifacts.package, artifacts.package_id),
+    ):
+        accept_checkpoint_artifact(connection, artifact, artifact_id, revision, now)
+    if (
+        failure := set_item_state(
+            connection,
+            facts.item(change.item),
+            work_models.WorkState.REVIEW,
+            stored_state.StoredWorkItemState.DONE,
+            revision,
+            now,
+            change.evidence,
+        )
+    ) is not None:
+        return failure
+    if (
+        failure := set_attempt_state(
+            connection,
+            facts.attempt(change.attempt),
+            work_models.AttemptState.REVIEW,
+            work_models.AttemptState.DONE,
+            revision,
+            now,
+            result_artifact_ref_id=artifacts.result_id,
+        )
+    ) is not None:
+        return failure
+    if (
+        change.authority_change is not None
+        and (failure := fence_attempt_authority(connection, change.authority_change, now)) is not None
+    ):
+        return failure
+    return None
+
+
 def _persist_state_change(
     connection: sqlite3.Connection,
     facts: _PersistenceFacts,
@@ -925,6 +980,8 @@ def _persist_state_change(
             return _persist_transition(connection, facts, mutation)
         case CheckpointAcceptanceMutation():
             return _persist_checkpoint_acceptance(connection, facts, mutation)
+        case CompletionAcceptanceMutation():
+            return _persist_completion_acceptance(connection, facts, mutation)
         case ProposalCreationMutation():
             return create_proposal(connection, mutation)
         case AttemptAuthorityMutation(decision=decision):
@@ -1306,7 +1363,7 @@ class SQLiteWorkStore:
                                 (lease_id, generation),
                             ).fetchall()
                         )
-                        scope = query_models.DecisionScope((), (), (), (), attempt_ids, (), ())
+                        scope = query_models.DecisionScope((), (), (), (), attempt_ids, (), (), ())
                     case decision_models.Role.PREPARER:
                         item_ids = tuple(
                             decode_row(row, _ItemIdRow).item_id
@@ -1323,7 +1380,7 @@ class SQLiteWorkStore:
                                 (lease_id, generation),
                             ).fetchall()
                         )
-                        scope = query_models.DecisionScope(item_ids, (), (), (), (), (), ())
+                        scope = query_models.DecisionScope(item_ids, (), (), (), (), (), (), ())
                     case decision_models.Role.PROJECT | decision_models.Role.OBSERVER:
                         raise StorageError(
                             StorageErrorCode.INVARIANT_VIOLATION,
@@ -1486,6 +1543,37 @@ class SQLiteWorkStore:
                     checkpoint_package_reference,
                     correction_receipt,
                 )
+        finally:
+            connection.close()
+
+    def read_completion_context(self, attempt_id: AttemptId) -> query_models.CompletionContextFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                attempt = _read_attempt_context_facts(connection, attempt_id)
+                if attempt is None:
+                    return None
+                rows = connection.execute(
+                    """
+                    SELECT history_id FROM transition_history
+                    WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+                    ORDER BY history_id
+                    """,
+                    (attempt_id,),
+                ).fetchall()
+                checkpoints: list[query_models.CompletionCheckpointFacts] = []
+                for row in rows:
+                    history_id = decode_row(row, _HistoryIdRow).history_id
+                    receipt = sqlite_state.read_history_receipt(connection, history_id)
+                    if receipt is None:
+                        raise StorageError(StorageErrorCode.INVALID_STATE, "Completion history disappeared.")
+                    reference = (
+                        None
+                        if receipt.artifact_ref_id is None
+                        else read_artifact_reference_by_id(connection, receipt.artifact_ref_id)
+                    )
+                    checkpoints.append(query_models.CompletionCheckpointFacts(receipt, reference))
+                return query_models.CompletionContextFacts(attempt, tuple(checkpoints))
         finally:
             connection.close()
 

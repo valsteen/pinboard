@@ -52,6 +52,7 @@ def _rediscover_dispatch_action(
                 attempt_ids=(supplied.capability.subject,),
                 proposal_ids=(),
                 artifact_ref_ids=(),
+                completion_history_attempt_ids=(),
             ),
             now,
         ).snapshot,

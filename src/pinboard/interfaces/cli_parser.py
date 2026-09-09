@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import assert_never
+from typing import Annotated, assert_never
 
 import msgspec
 
@@ -24,6 +24,7 @@ class _CompoundCommand(Enum):
     ACTIONS = "actions"
     BRIEF_SOURCES = "brief-sources"
     DISPATCH = "dispatch"
+    REVIEW_JOB = "review-job"
     TRANSITION = "transition"
 
 
@@ -75,6 +76,14 @@ class _ActionsArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     def __post_init__(self) -> None:
         if (self.lease_id is None) != (self.generation is None):
             raise ValueError("--lease-id and --generation must be supplied together")
+
+
+class _ReviewJobArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: cli_commands.StableAttemptId
+    candidate_revision: Annotated[str, msgspec.Meta(min_length=1)]
+    checkpoint_history_id: cli_commands.PositiveInt | None
+    correction_history_id: cli_commands.PositiveInt | None
+    json: bool
 
 
 class _TransitionArguments(msgspec.Struct, frozen=True):
@@ -238,6 +247,33 @@ def _decode_dispatch[RawT](values: dict[str, RawT]) -> cli_commands.DispatchComm
     )
 
 
+def _decode_review_job[RawT](values: dict[str, RawT]) -> cli_commands.ReviewJobCommand:
+    arguments = msgspec.convert(values, type=_ReviewJobArguments, strict=True)
+    common = (arguments.attempt_id, arguments.candidate_revision)
+    if arguments.checkpoint_history_id is None and arguments.correction_history_id is None:
+        return cli_commands.InitialReviewJobCommand(*common, json=arguments.json)
+    if arguments.checkpoint_history_id is not None and arguments.correction_history_id is None:
+        return cli_commands.PackageInitialReviewJobCommand(
+            *common,
+            checkpoint_history_id=arguments.checkpoint_history_id,
+            json=arguments.json,
+        )
+    if arguments.checkpoint_history_id is None and arguments.correction_history_id is not None:
+        return cli_commands.CorrectionReviewJobCommand(
+            *common,
+            correction_history_id=arguments.correction_history_id,
+            json=arguments.json,
+        )
+    assert arguments.checkpoint_history_id is not None
+    assert arguments.correction_history_id is not None
+    return cli_commands.PackageCorrectionReviewJobCommand(
+        *common,
+        checkpoint_history_id=arguments.checkpoint_history_id,
+        correction_history_id=arguments.correction_history_id,
+        json=arguments.json,
+    )
+
+
 def _decode_selected_command[RawT](
     command_selection: type[cli_commands.CliCommand] | _CompoundCommand,
     values: dict[str, RawT],
@@ -251,6 +287,8 @@ def _decode_selected_command[RawT](
             return _decode_brief_sources(values)
         case _CompoundCommand.DISPATCH:
             return _decode_dispatch(values)
+        case _CompoundCommand.REVIEW_JOB:
+            return _decode_review_job(values)
         case _CompoundCommand.TRANSITION:
             return _decode_transition(values)
         case _ as unreachable:
@@ -279,6 +317,13 @@ def _select_command(
                 variants = (
                     ("without-review", cli_commands.ProjectDispatchCommand),
                     ("with-review", cli_commands.ProjectReviewedDispatchCommand),
+                )
+            case _CompoundCommand.REVIEW_JOB:
+                variants = (
+                    ("initial", cli_commands.InitialReviewJobCommand),
+                    ("package-initial", cli_commands.PackageInitialReviewJobCommand),
+                    ("correction", cli_commands.CorrectionReviewJobCommand),
+                    ("package-correction", cli_commands.PackageCorrectionReviewJobCommand),
                 )
             case _CompoundCommand.TRANSITION:
                 variants = (
@@ -545,8 +590,10 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - complete top-l
     review_job = commands.add_parser("review-job", help="Render a read-only job for the exact review candidate.")
     review_job.add_argument("--attempt-id", required=True)
     review_job.add_argument("--candidate-revision", required=True)
+    review_job.add_argument("--checkpoint-history-id", type=int)
+    review_job.add_argument("--correction-history-id", type=int)
     review_job.add_argument("--json", action="store_true")
-    _select_command(review_job, cli_commands.ReviewJobCommand)
+    _select_command(review_job, _CompoundCommand.REVIEW_JOB)
     dispatch.add_argument("--action-id", required=True, help="Exact dispatch action returned by project actions.")
     dispatch.add_argument("--expected-revision", required=True, help="Ledger revision from the dispatch action.")
     dispatch.add_argument("--task-id", required=True)

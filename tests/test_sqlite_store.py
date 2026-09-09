@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+import msgspec
+
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
 from pinboard.adapters.files.file_io import (
     atomic_replace,
@@ -30,7 +32,7 @@ from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.application.mutations import project_transition_mutation
-from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.decisions import available_actions as available_actions_outcome
 from pinboard.domain.decisions import decide as decision_outcome
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
@@ -1084,6 +1086,14 @@ class SQLiteStoreTest(unittest.TestCase):
         )
         self.assertEqual(4, returned.authority.attempt_counters[0].generation_high_water)
         self.assertEqual("revoked", returned.authority.attempt_leases[0].state.value)
+        self.assertEqual("transition-receipt/v1", returned.transition_receipts[-1].outcome_schema)
+        outcome = msgspec.json.decode(
+            returned.transition_receipts[-1].outcome_payload,
+            type=history.TransitionReceiptOutcome,
+            strict=True,
+        )
+        self.assertEqual("candidate-a", outcome.candidate)
+        self.assertEqual("Address the review feedback.", outcome.evidence)
 
 
 if __name__ == "__main__":

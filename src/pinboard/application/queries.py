@@ -13,7 +13,7 @@ from pinboard.application import ports, query_models, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import ActionCapabilityFactory, project_attempt_action_groups
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import AttemptId, CandidateId, ItemId, TaskId
+from pinboard.domain.identifiers import AttemptId, CandidateId, HistoryId, ItemId, TaskId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
@@ -50,6 +50,22 @@ def select_attempt_context(
     attempt_id: AttemptId,
 ) -> DecisionResult[query_models.AttemptContextFacts]:
     selected = reader.read_attempt_context(attempt_id)
+    if selected is None:
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            f"Attempt '{attempt_id}' does not exist.",
+            None,
+        )
+    return selected
+
+
+def select_review_job_context(
+    reader: ports.ReviewJobContextReader,
+    attempt_id: AttemptId,
+    checkpoint_history_id: HistoryId | None,
+    correction_history_id: HistoryId | None,
+) -> DecisionResult[query_models.ReviewJobContextFacts]:
+    selected = reader.read_review_job_context(attempt_id, checkpoint_history_id, correction_history_id)
     if selected is None:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,

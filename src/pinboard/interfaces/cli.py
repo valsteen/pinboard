@@ -109,7 +109,12 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
             return attempt_authority.show_attempt_authority_status(store, command)
         case cli_commands.AttemptInspectCommand() as command:
             return work_inspection.show_attempt(roots, store, command)
-        case cli_commands.ReviewJobCommand() as command:
+        case (
+            cli_commands.InitialReviewJobCommand()
+            | cli_commands.PackageInitialReviewJobCommand()
+            | cli_commands.CorrectionReviewJobCommand()
+            | cli_commands.PackageCorrectionReviewJobCommand()
+        ) as command:
             return work_inspection.show_review_job(roots, store, command)
         case (
             cli_commands.AttemptAcquireCommand()

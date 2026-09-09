@@ -261,6 +261,35 @@ def _validate_checkpoint_receipt(
     return None
 
 
+def validate_selected_checkpoint_review_package(
+    receipt: stored_state.StoredTransitionReceipt,
+    package_reference: stored_state.ArtifactReference,
+    package_bytes: bytes,
+    *,
+    attempt_id: str,
+    item_id: str,
+) -> WorkBriefResult[work_brief_models.CheckpointReviewPackage]:
+    """Validate one caller-selected package without scanning retained state."""
+
+    package = decode_canonical_checkpoint_review_package(package_bytes)
+    if isinstance(package, WorkBriefFailure):
+        return package
+    if (
+        receipt.artifact_ref_id != package_reference.artifact_ref_id
+        or package_reference.kind != work_models.ArtifactKind.EVIDENCE
+        or package_reference.key != f"{package.attempt_id}-{package.checkpoint.id}-review-package"
+        or package_reference.revision != 1
+        or package.attempt_id != attempt_id
+        or package.item_id != item_id
+    ):
+        return _package_provenance_failure(
+            f"Checkpoint acceptance history {int(receipt.history_id)} does not resolve the selected attempt package."
+        )
+    if (failure := _validate_checkpoint_receipt(receipt, package)) is not None:
+        return failure
+    return package
+
+
 def _validate_one_checkpoint_package(
     receipt: stored_state.StoredTransitionReceipt,
     package_reference: stored_state.ArtifactReference,

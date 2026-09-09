@@ -17,6 +17,8 @@ SOURCE_SYMBOL_NAMES: dict[str, str] = {
     "WorkBrief": work_brief_models.WorkBrief.__name__,
     "WorkBriefReview": work_brief_models.WorkBriefReview.__name__,
     "ReviewJobView": work_inspection_models.ReviewJobView.__name__,
+    "PriorCheckpointPackage": work_inspection_models.PriorCheckpointPackage.__name__,
+    "CorrectionReviewRound": work_inspection_models.CorrectionReviewRound.__name__,
 }
 
 
@@ -33,9 +35,10 @@ DIAGRAM = Diagram(
     title="One accepted target anchors an ordinary implementation and review loop",
     description=(
         "On the left, an ordinary coding harness repeatedly interprets a prose request, repository code, and review "
-        "feedback. On the right, Pinboard binds the accepted structured brief, exact candidate, and evidence into a "
-        "read-only review job for an independent reviewer, so corrections remain tied to that target without claiming "
-        "that model judgment is infallible or that convergence is guaranteed."
+        "feedback. On the right, Pinboard binds the accepted structured brief, exact candidate, and caller-selected "
+        "historical evidence into a read-only review job for an independent reviewer. Correction review can reuse "
+        "unaffected assurance while reopening changed relationships without claiming that model judgment is "
+        "infallible or that convergence is guaranteed."
     ),
     width=1400,
     height=800,
@@ -142,9 +145,9 @@ DIAGRAM = Diagram(
         Box(
             "candidate",
             "Read-only review job",
-            "Candidate + evidence",
-            ("exact revision under review", "brief + result digests"),
-            ("outcome owner retained",),
+            "Current + prior evidence",
+            ("exact revision + result digest", "selected package + correction"),
+            ("pinboard-review-job/v2",),
             1050,
             290,
             300,
@@ -153,9 +156,9 @@ DIAGRAM = Diagram(
         Box(
             "reviewer",
             "Independent reviewer",
-            "Compare target and result",
-            ("same brief + exact candidate", "findings trace to accepted owners"),
-            ("review identity",),
+            "Reuse, rerun, or reopen",
+            ("compare historical candidates", "resolve every prior finding"),
+            ("relationship-aware evidence",),
             1050,
             510,
             300,
@@ -172,7 +175,7 @@ DIAGRAM = Diagram(
             True,
         ),
         Note(
-            "ANCHORS KEEP CORRECTION AIMED AT THE ACCEPTED TARGET",
+            "UNCHANGED RELATIONSHIPS MAY REUSE EVIDENCE; CHANGED ASSUMPTIONS REOPEN IT",
             1050,
             745,
             12,

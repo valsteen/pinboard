@@ -822,6 +822,7 @@ class ReviewSubmissionChange:
 class ReviewReturnChange:
     item: ItemId
     attempt: AttemptId
+    candidate: CandidateId
     authority_change: AttemptAuthorityChange
 
 

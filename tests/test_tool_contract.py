@@ -184,6 +184,26 @@ class ToolContractTest(unittest.TestCase):
         assert source_emit.artifact_schema is not None
         self.assertIn("BriefSourcePlanView", json.loads(bytes(source_emit.artifact_schema))["$defs"])
 
+    def test_review_job_exposes_four_exact_package_by_round_variants(self) -> None:
+        contract = tool_contract.installed_tool_contract()
+        review_variants = {
+            operation.variant: operation for operation in contract.operations if operation.operation_id == "review-job"
+        }
+        self.assertEqual(
+            {"initial", "package-initial", "correction", "package-correction"},
+            set(review_variants),
+        )
+        details = {
+            variant: expect_command_success(tool_contract.describe_operation("review-job", variant))
+            for variant in review_variants
+        }
+        self.assertNotIn(b"checkpoint_history_id", bytes(details["initial"].input_schema or b""))
+        self.assertIn(b"checkpoint_history_id", bytes(details["package-initial"].input_schema or b""))
+        self.assertIn(b"correction_history_id", bytes(details["correction"].input_schema or b""))
+        combined = bytes(details["package-correction"].input_schema or b"")
+        self.assertIn(b"checkpoint_history_id", combined)
+        self.assertIn(b"correction_history_id", combined)
+
     def test_operation_contract_flags_every_project_wide_and_selection_dependent_scope(self) -> None:
         index = tool_contract.installed_tool_contract()
         scopes = {(entry.operation_id, entry.variant): entry.data_scope for entry in index.operations}

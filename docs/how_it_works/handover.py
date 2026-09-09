@@ -24,7 +24,8 @@ DIAGRAM = Diagram(
     title="One project-facts package crosses a read-only boundary",
     description=(
         "The handover command captures one SQLite revision, projects the supported project facts, verifies every "
-        "referenced accepted artifact, and emits one revision-stamped portable JSON package. Live preparation and "
+        "referenced accepted artifact, validates checkpoint-package provenance, and emits one revision-stamped "
+        "portable JSON package with typed reusable checkpoint evidence. Live preparation and "
         "attempt authority stay local. A human or another tool decides how to use the package; export changes no "
         "Pinboard state and writes to no receiving system."
     ),
@@ -72,7 +73,7 @@ DIAGRAM = Diagram(
             "materialize",
             "Read-only command",
             "Build exported package",
-            ("project facts from revision", "verify + encode artifacts"),
+            ("project facts from revision", "verify artifacts + packages"),
             ("pinboard handover --json",),
             420,
             170,
@@ -83,8 +84,8 @@ DIAGRAM = Diagram(
             "package",
             "Portable output",
             "One JSON package",
-            ("revision-stamped", "tool-neutral"),
-            ("pinboard-project-handover/v2",),
+            ("revision-stamped", "typed checkpoint evidence"),
+            ("pinboard-project-handover/v3",),
             740,
             170,
             230,

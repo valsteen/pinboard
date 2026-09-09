@@ -210,8 +210,70 @@ class HandoverArtifactContent(msgspec.Struct, frozen=True, forbid_unknown_fields
     content: str
 
 
+class HandoverAcceptedScope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    revision: int
+    digest: str
+
+
+class HandoverCheckpointIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    id: str
+    sha256: str
+
+
+class HandoverPortableArtifactIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    role: Literal["accepted-brief", "result", "implementation-review", "brief-review"]
+    kind: Literal["brief", "result", "evidence"]
+    key: str
+    revision: int
+    selector: str
+    content_sha256: str
+    size_bytes: int
+
+
+class HandoverLocalReviewBasis(
+    msgspec.Struct,
+    tag="local",
+    tag_field="boundary",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    pass
+
+
+class HandoverCrossBoundaryReviewBasis(
+    msgspec.Struct,
+    tag="cross-boundary",
+    tag_field="boundary",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    brief_review: HandoverPortableArtifactIdentity
+    checkpoint_sha256: str
+    reviewed_authority_set_sha256: str
+
+
+type HandoverReviewBasis = HandoverLocalReviewBasis | HandoverCrossBoundaryReviewBasis
+
+
+class HandoverCheckpointPackage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: int
+    package_artifact_ref_id: int
+    schema: Literal["pinboard-checkpoint-review-package/v1"]
+    attempt_id: str
+    item_id: str
+    candidate: str
+    acceptance_evidence: str
+    accepted_scope: HandoverAcceptedScope
+    checkpoint: HandoverCheckpointIdentity
+    accepted_brief: HandoverPortableArtifactIdentity
+    result: HandoverPortableArtifactIdentity
+    implementation_review: HandoverPortableArtifactIdentity
+    verdict: Literal["ready"]
+    review_basis: HandoverReviewBasis
+
+
 class ProjectHandover(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-project-handover/v2"]
+    schema: Literal["pinboard-project-handover/v3"]
     authority: Literal["sqlite-v5"]
     revision: int
     project: HandoverProject
@@ -225,6 +287,7 @@ class ProjectHandover(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_artifact_links: tuple[HandoverItemArtifactLink, ...]
     artifact_references: tuple[HandoverArtifactReference, ...]
     artifact_contents: tuple[HandoverArtifactContent, ...]
+    checkpoint_packages: tuple[HandoverCheckpointPackage, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,6 +431,7 @@ def project_handover_from_state(
     state: HandoverState,
     artifact_references: tuple[HandoverArtifactReference, ...],
     artifact_contents: tuple[HandoverArtifactContent, ...],
+    checkpoint_packages: tuple[HandoverCheckpointPackage, ...],
 ) -> ProjectHandover:
     """Project one already-loaded export selection without outer effects."""
 
@@ -386,7 +450,7 @@ def project_handover_from_state(
         proposal_id: tuple(assumptions) for proposal_id, assumptions in proposal_freshness_groups.items()
     }
     return ProjectHandover(
-        "pinboard-project-handover/v2",
+        "pinboard-project-handover/v3",
         "sqlite-v5",
         state.lifecycle.project.revision,
         HandoverProject(
@@ -491,4 +555,5 @@ def project_handover_from_state(
         _project_item_artifact_links(state),
         artifact_references,
         artifact_contents,
+        checkpoint_packages,
     )

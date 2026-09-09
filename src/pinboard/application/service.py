@@ -4,7 +4,7 @@ from typing import assert_never, overload
 from pinboard.application import query_models
 from pinboard.application.actions import action_subject_ids
 from pinboard.application.artifact_publication import validate_transition_work_brief
-from pinboard.application.artifacts import CheckpointArtifacts, WorkBriefIdentity
+from pinboard.application.artifacts import CheckpointArtifacts, CompletionArtifacts, WorkBriefIdentity
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     CommittedEffect,
@@ -15,6 +15,7 @@ from pinboard.application.mutation_models import (
 )
 from pinboard.application.mutations import (
     project_checkpoint_acceptance_mutation,
+    project_completion_acceptance_mutation,
     project_transition_mutation,
 )
 from pinboard.application.ports import WorkStore, WorkTransaction
@@ -96,7 +97,7 @@ def decide_and_commit_attempt_authority_change(
             assert_never(unreachable)
     with store.write() as transaction:
         decision_context = transaction.read_decision_facts(
-            query_models.DecisionScope((), (), (), (), (attempt_id,), (), ()), decided_at
+            query_models.DecisionScope((), (), (), (), (attempt_id,), (), (), ()), decided_at
         ).snapshot
         retained = transaction.read_attempt_authority_status(attempt_id)
         generation_before = transaction.read_attempt_generation(attempt_id)
@@ -200,7 +201,7 @@ def start_preparation(
 
     with store.write() as transaction:
         snapshot = transaction.read_decision_facts(
-            query_models.DecisionScope((item_id,), (), (), (), (), (), ()), acquired_at
+            query_models.DecisionScope((item_id,), (), (), (), (), (), (), ()), acquired_at
         ).snapshot
         retained = _project_retained_preparation_authority(
             snapshot, transaction.read_preparation_authority_status(item_id), item_id
@@ -286,7 +287,7 @@ def _commit_preparation_authority_change(
         case _ as unreachable:
             assert_never(unreachable)
     decision_context = transaction.read_decision_facts(
-        query_models.DecisionScope((item_id,), (), (), (), (), (), ()), decided_at
+        query_models.DecisionScope((item_id,), (), (), (), (), (), (), ()), decided_at
     ).snapshot
     retained = transaction.read_preparation_authority_status(item_id)
     generation_before = transaction.read_preparation_generation(item_id)
@@ -360,6 +361,7 @@ def create_proposal(
                 attempt_ids=(),
                 proposal_ids=(operation.intake.proposal_id,),
                 artifact_ref_ids=(),
+                completion_history_attempt_ids=(),
             ),
             now,
         ).snapshot
@@ -456,6 +458,7 @@ def _transition_decision_scope(command: decision_models.TransitionCommand) -> qu
     dependency_closure_roots: tuple[ItemId, ...] = ()
     live_dependent_roots: tuple[ItemId, ...] = ()
     artifact_ids: tuple[ArtifactRefId, ...] = ()
+    completion_history_attempt_ids: tuple[AttemptId, ...] = ()
     match command:
         case decision_models.ActivateCommand(value=value):
             artifact_ids = (value.brief_artifact_ref_id,)
@@ -476,11 +479,12 @@ def _transition_decision_scope(command: decision_models.TransitionCommand) -> qu
             dependency_closure_roots = value.definition.dependencies
         case decision_models.CloseCommand():
             live_dependent_roots = item_ids
+        case decision_models.CompleteCommand() | decision_models.CoveredCompleteCommand():
+            completion_history_attempt_ids = attempt_ids
         case (
             decision_models.AcceptCheckpointCommand()
             | decision_models.AcceptReviewAndContinueCommand()
             | decision_models.PauseCommand()
-            | decision_models.CompleteCommand()
             | decision_models.SubmitReviewCommand()
             | decision_models.ReturnForCorrectionCommand()
             | decision_models.ReopenCommand()
@@ -500,6 +504,7 @@ def _transition_decision_scope(command: decision_models.TransitionCommand) -> qu
         attempt_ids=tuple(dict.fromkeys(attempt_ids)),
         proposal_ids=tuple(dict.fromkeys(proposal_ids)),
         artifact_ref_ids=artifact_ids,
+        completion_history_attempt_ids=completion_history_attempt_ids,
     )
 
 
@@ -523,6 +528,17 @@ def _validate_supplied_transition_and_decide(
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
 ) -> DecisionResult[decision_models.TransitionDecision]: ...
+
+
+@overload
+def _validate_supplied_transition_and_decide(
+    facts: query_models.DecisionFacts,
+    command: decision_models.CoveredCompleteCommand,
+    now: datetime,
+    transition_brief_identity: WorkBriefIdentity | None,
+    actor_task_id: TaskId | None,
+    actor_host_id: HostId | None,
+) -> DecisionResult[decision_models.CompletionAcceptanceDecision]: ...
 
 
 def _validate_supplied_transition_and_decide(
@@ -594,6 +610,23 @@ def preflight_checkpoint_candidate(
     return validate_checkpoint_candidate(facts.snapshot, command)
 
 
+def preflight_covered_completion(
+    store: WorkStore,
+    command: decision_models.CoveredCompleteCommand,
+    now: datetime,
+    *,
+    actor_task_id: TaskId,
+    actor_host_id: HostId,
+) -> DecisionFailure | None:
+    """Reject stale authority, wrong lifecycle, candidate, or checkpoint coverage before publication."""
+
+    facts = store.read_decision_facts(_transition_decision_scope(command), now)
+    result = _validate_supplied_transition_and_decide(facts, command, now, None, actor_task_id, actor_host_id)
+    if isinstance(result, DecisionFailure):
+        return result
+    return None
+
+
 def decide_and_commit_checkpoint_acceptance(
     store: WorkStore,
     command: decision_models.AcceptCheckpointCommand,
@@ -619,5 +652,37 @@ def decide_and_commit_checkpoint_acceptance(
         )
         mutation = project_checkpoint_acceptance_mutation(
             allocation, accepted_decision, checkpoint_artifacts, actor_task_id, actor_host_id
+        )
+        return transaction.commit(mutation)
+
+
+def decide_and_commit_covered_completion(
+    store: WorkStore,
+    command: decision_models.CoveredCompleteCommand,
+    now: datetime,
+    completion_artifacts: CompletionArtifacts,
+    *,
+    actor_task_id: TaskId,
+    actor_host_id: HostId,
+) -> DecisionResult[CommittedEffect]:
+    """Revalidate the authoritative checkpoint set and atomically accept terminal evidence."""
+
+    with store.write() as transaction:
+        facts = transaction.read_decision_facts(_transition_decision_scope(command), now)
+        decision_result = _validate_supplied_transition_and_decide(
+            facts, command, now, None, actor_task_id, actor_host_id
+        )
+        if isinstance(decision_result, DecisionFailure):
+            return decision_result
+        allocation = transaction.read_checkpoint_mutation_allocation(
+            (completion_artifacts.result, completion_artifacts.review, completion_artifacts.package)
+        )
+        mutation = project_completion_acceptance_mutation(
+            allocation,
+            decision_result,
+            command.value,
+            completion_artifacts,
+            actor_task_id,
+            actor_host_id,
         )
         return transaction.commit(mutation)

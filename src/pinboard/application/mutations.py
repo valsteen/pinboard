@@ -3,12 +3,18 @@ from typing import assert_never
 import msgspec
 
 from pinboard.application import stored_state
-from pinboard.application.artifacts import CheckpointArtifacts, EvidenceArtifactRef, ResultArtifactRef
+from pinboard.application.artifacts import (
+    CheckpointArtifacts,
+    CompletionArtifacts,
+    EvidenceArtifactRef,
+    ResultArtifactRef,
+)
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     CheckpointAcceptanceMutation,
     CheckpointArtifactChanges,
     CheckpointMutationAllocation,
+    CompletionAcceptanceMutation,
     MutationAllocation,
     MutationReceipt,
     PreparationAuthorityMutation,
@@ -21,6 +27,7 @@ from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.history import (
     HistoryOutcome,
     encode_checkpoint_acceptance_outcome,
+    encode_completion_acceptance_outcome,
     encode_transition_receipt_outcome,
 )
 from pinboard.domain.identifiers import (
@@ -34,6 +41,13 @@ from pinboard.domain.identifiers import (
 
 def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
     match mutation:
+        case CompletionAcceptanceMutation(decision=decision):
+            return HistoryOutcome(
+                "completion-acceptance/v2",
+                encode_completion_acceptance_outcome(
+                    candidate=str(decision.change.candidate), evidence=decision.change.evidence
+                ),
+            )
         case CheckpointAcceptanceMutation(decision=decision):
             evidence = decision.receipt.evidence
             if evidence is None:
@@ -179,6 +193,8 @@ def _transition_receipt[SubjectT: SubjectId](
     artifact_ref_id: ArtifactRefId | None,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
+    input_schema: str,
+    input_payload: work_models.CanonicalJson,
 ) -> MutationReceipt:
     if capability.authorization == decision_models.AuthorizationKind.ATTEMPT and capability.lease_id is not None:
         authority = capability.command_authority
@@ -189,13 +205,6 @@ def _transition_receipt[SubjectT: SubjectId](
         if preparation is not None:
             actor_task_id, actor_host_id = preparation.task_id, preparation.host_id
     revision = allocation.project_revision + 1
-    input_schema = "decision/v1"
-    input_payload = work_models.CanonicalJson(b"{}")
-    if action_kind == decision_models.ActionKind.RETURN_FOR_CORRECTION:
-        if transition.evidence is None:
-            raise AssertionError("Returning for correction requires a reason.")
-        input_schema = "return-for-correction/v1"
-        input_payload = work_models.CanonicalJson(msgspec.json.encode({"reason": transition.evidence}, order="sorted"))
     return MutationReceipt(
         transition,
         allocation.next_history_id,
@@ -219,6 +228,15 @@ def project_transition_mutation(
 ) -> TransitionMutation:
     """Project one accepted non-checkpoint decision into its exact mutation."""
 
+    input_schema = "decision/v1"
+    input_payload = work_models.CanonicalJson(b"{}")
+    if decision.action.kind == decision_models.ActionKind.RETURN_FOR_CORRECTION:
+        if decision.receipt.evidence is None:
+            raise AssertionError("Returning for correction requires a reason.")
+        input_schema = "return-for-correction/v1"
+        input_payload = work_models.CanonicalJson(
+            msgspec.json.encode({"reason": decision.receipt.evidence}, order="sorted")
+        )
     return TransitionMutation(
         decision,
         _transition_receipt(
@@ -229,6 +247,8 @@ def project_transition_mutation(
             None,
             actor_task_id,
             actor_host_id,
+            input_schema,
+            input_payload,
         ),
     )
 
@@ -253,6 +273,59 @@ def project_checkpoint_acceptance_mutation(
             checkpoint_changes.package_id,
             actor_task_id,
             actor_host_id,
+            "decision/v1",
+            work_models.CanonicalJson(b"{}"),
         ),
         checkpoint_changes,
+    )
+
+
+def project_completion_acceptance_mutation(
+    allocation: CheckpointMutationAllocation,
+    decision: decision_models.CompletionAcceptanceDecision,
+    value: work_models.CoveredCompleteInput,
+    artifacts: CompletionArtifacts,
+    actor_task_id: TaskId | None,
+    actor_host_id: HostId | None,
+) -> CompletionAcceptanceMutation:
+    changes = _checkpoint_artifact_ids(
+        allocation,
+        CheckpointArtifacts(artifacts.result, artifacts.review, artifacts.package),
+    )
+    input_payload = work_models.CanonicalJson(
+        msgspec.json.encode(
+            {
+                "schema": "pinboard-covered-completion/v1",
+                "candidate": str(value.candidate),
+                "evidence": value.evidence,
+                "reviewer_task_id": str(value.reviewer_task_id),
+                "result_sha256": value.result_sha256,
+                "review_sha256": value.review_sha256,
+                "packages": [
+                    {
+                        "history_id": int(row.history_id),
+                        "package_sha256": row.package_sha256,
+                        "disposition": row.disposition.value,
+                        "evidence": row.evidence,
+                    }
+                    for row in value.packages
+                ],
+            },
+            order="sorted",
+        )
+    )
+    return CompletionAcceptanceMutation(
+        decision,
+        _transition_receipt(
+            allocation,
+            decision.action.capability,
+            decision.action.kind,
+            decision.receipt,
+            changes.package_id,
+            actor_task_id,
+            actor_host_id,
+            "pinboard-covered-completion/v1",
+            input_payload,
+        ),
+        changes,
     )

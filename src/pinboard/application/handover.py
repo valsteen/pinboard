@@ -272,8 +272,85 @@ class HandoverCheckpointPackage(msgspec.Struct, frozen=True, forbid_unknown_fiel
     review_basis: HandoverReviewBasis
 
 
+class HandoverAcceptedBriefCompletionIdentity(
+    msgspec.Struct, tag="accepted-brief", tag_field="role", frozen=True, forbid_unknown_fields=True
+):
+    kind: Literal["brief"]
+    key: str
+    revision: int
+    selector: str
+    content_sha256: str
+    size_bytes: int
+
+
+class HandoverTerminalResultCompletionIdentity(
+    msgspec.Struct, tag="terminal-result", tag_field="role", frozen=True, forbid_unknown_fields=True
+):
+    kind: Literal["result"]
+    key: str
+    revision: int
+    selector: str
+    content_sha256: str
+    size_bytes: int
+
+
+class HandoverFinalReviewCompletionIdentity(
+    msgspec.Struct, tag="final-review", tag_field="role", frozen=True, forbid_unknown_fields=True
+):
+    kind: Literal["evidence"]
+    key: str
+    revision: int
+    selector: str
+    content_sha256: str
+    size_bytes: int
+
+
+class HandoverCheckpointPackageCompletionIdentity(
+    msgspec.Struct, tag="checkpoint-review-package", tag_field="role", frozen=True, forbid_unknown_fields=True
+):
+    kind: Literal["evidence"]
+    key: str
+    revision: int
+    selector: str
+    content_sha256: str
+    size_bytes: int
+
+
+type HandoverCompletionPortableArtifactIdentity = (
+    HandoverAcceptedBriefCompletionIdentity
+    | HandoverTerminalResultCompletionIdentity
+    | HandoverFinalReviewCompletionIdentity
+    | HandoverCheckpointPackageCompletionIdentity
+)
+
+
+class HandoverCompletionCheckpointCoverage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: int
+    checkpoint: HandoverCheckpointIdentity
+    candidate: str
+    package: HandoverCheckpointPackageCompletionIdentity
+    disposition: Literal["reused", "revalidated"]
+    evidence: str
+
+
+class HandoverCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: int
+    package_artifact_ref_id: int
+    schema: Literal["pinboard-completion-review-package/v1"]
+    attempt_id: str
+    item_id: str
+    candidate: str
+    outcome_evidence: str
+    reviewer_task_id: str
+    accepted_scope: HandoverAcceptedScope
+    accepted_brief: HandoverAcceptedBriefCompletionIdentity
+    terminal_result: HandoverTerminalResultCompletionIdentity
+    final_review: HandoverFinalReviewCompletionIdentity
+    checkpoint_coverage: tuple[HandoverCompletionCheckpointCoverage, ...]
+
+
 class ProjectHandover(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-project-handover/v3"]
+    schema: Literal["pinboard-project-handover/v4"]
     authority: Literal["sqlite-v5"]
     revision: int
     project: HandoverProject
@@ -288,6 +365,7 @@ class ProjectHandover(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     artifact_references: tuple[HandoverArtifactReference, ...]
     artifact_contents: tuple[HandoverArtifactContent, ...]
     checkpoint_packages: tuple[HandoverCheckpointPackage, ...]
+    completion_packages: tuple[HandoverCompletionReviewPackage, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -432,6 +510,7 @@ def project_handover_from_state(
     artifact_references: tuple[HandoverArtifactReference, ...],
     artifact_contents: tuple[HandoverArtifactContent, ...],
     checkpoint_packages: tuple[HandoverCheckpointPackage, ...],
+    completion_packages: tuple[HandoverCompletionReviewPackage, ...],
 ) -> ProjectHandover:
     """Project one already-loaded export selection without outer effects."""
 
@@ -450,7 +529,7 @@ def project_handover_from_state(
         proposal_id: tuple(assumptions) for proposal_id, assumptions in proposal_freshness_groups.items()
     }
     return ProjectHandover(
-        "pinboard-project-handover/v3",
+        "pinboard-project-handover/v4",
         "sqlite-v5",
         state.lifecycle.project.revision,
         HandoverProject(
@@ -556,4 +635,5 @@ def project_handover_from_state(
         artifact_references,
         artifact_contents,
         checkpoint_packages,
+        completion_packages,
     )

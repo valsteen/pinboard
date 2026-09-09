@@ -191,7 +191,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
             store.read_current_action_snapshot(SQLITE_NOW)
             store.read_current_parallel_snapshot(SQLITE_NOW)
             store.read_decision_facts(
-                query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), ()), SQLITE_NOW
+                query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), (), ()), SQLITE_NOW
             )
 
         self.assertFalse(any("from artifact_refs" in statement.lower() for statement in statements))
@@ -236,10 +236,10 @@ class SQLiteEffectContractTest(unittest.TestCase):
     def test_decision_artifacts_and_dependency_closure_are_explicit(self) -> None:
         _path, store = self._store()
         focused = store.read_decision_facts(
-            query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), ()), SQLITE_NOW
+            query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), (), ()), SQLITE_NOW
         ).snapshot
         artifact = store.read_decision_facts(
-            query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), (ArtifactRefId(1),)),
+            query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), (ArtifactRefId(1),), ()),
             SQLITE_NOW,
         ).snapshot
 
@@ -252,14 +252,14 @@ class SQLiteEffectContractTest(unittest.TestCase):
         _chain_path, store = self._store(state)
 
         direct = store.read_decision_facts(
-            query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), ()), SQLITE_NOW
+            query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), (), ()), SQLITE_NOW
         ).snapshot
         closed = store.read_decision_facts(
-            query_models.DecisionScope((ItemId("work-a"),), (), (ItemId("work-c"),), (), (), (), ()),
+            query_models.DecisionScope((ItemId("work-a"),), (), (ItemId("work-c"),), (), (), (), (), ()),
             SQLITE_NOW,
         ).snapshot
         terminal_closed = store.read_decision_facts(
-            query_models.DecisionScope((ItemId("work-a"),), (), (ItemId("work-b"),), (), (), (), ()),
+            query_models.DecisionScope((ItemId("work-a"),), (), (ItemId("work-b"),), (), (), (), (), ()),
             SQLITE_NOW,
         ).snapshot
 

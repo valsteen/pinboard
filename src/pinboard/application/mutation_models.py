@@ -77,6 +77,13 @@ class CheckpointArtifactChanges:
 
 
 @dataclass(frozen=True, slots=True)
+class CompletionAcceptanceMutation:
+    decision: decision_models.CompletionAcceptanceDecision
+    receipt: MutationReceipt
+    completion_artifacts: CheckpointArtifactChanges
+
+
+@dataclass(frozen=True, slots=True)
 class TransitionMutation:
     """Persists one accepted closed lifecycle decision as an exact relational delta."""
 
@@ -115,4 +122,5 @@ type StoredStateMutation = (
     | ProposalCreationMutation
     | AttemptAuthorityMutation
     | PreparationAuthorityMutation
+    | CompletionAcceptanceMutation
 )

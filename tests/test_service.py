@@ -66,7 +66,10 @@ from tests.support import (
 def non_checkpoint_command(
     result: DecisionFailure | decision_models.TransitionCommand,
 ) -> decision_models.NonCheckpointTransitionCommand:
-    if isinstance(result, (DecisionFailure, decision_models.AcceptCheckpointCommand)):
+    if isinstance(
+        result,
+        (DecisionFailure, decision_models.AcceptCheckpointCommand, decision_models.CoveredCompleteCommand),
+    ):
         raise AssertionError(f"Expected a non-checkpoint command, received {result!r}")
     return result
 

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import AttemptId, ItemId, LeaseId, ProposalId
+from pinboard.domain.identifiers import AttemptId, HistoryId, ItemId, LeaseId, ProposalId
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +19,7 @@ class LedgerSnapshot:
     history_items: tuple[ItemId, ...] = ()
     definitions: tuple[work_models.DefinitionAnchor, ...] = ()
     host_epoch: int = 0
+    checkpoint_history_ids: tuple[HistoryId, ...] = ()
 
     def items_by_id(self) -> dict[ItemId, work_models.WorkItem]:
         return {item.item: item for item in self.items}

@@ -55,6 +55,31 @@ class EvidenceInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     evidence: NonEmptyLine
 
 
+class CoveredCompletionPackageInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: PositiveInt
+    package_sha256: Sha256
+    disposition: Literal["reused", "revalidated"]
+    evidence: NonEmptyLine
+
+
+class CoveredCompleteInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-covered-completion/v1"]
+    candidate: NonEmptyLine
+    evidence: NonEmptyLine
+    reviewer_task_id: NonEmptyLine
+    result_sha256: Sha256
+    review_sha256: Sha256
+    packages: Annotated[tuple[CoveredCompletionPackageInputPayload, ...], msgspec.Meta(min_length=1)]
+
+    def __post_init__(self) -> None:
+        history_ids = tuple(row.history_id for row in self.packages)
+        if history_ids != tuple(sorted(set(history_ids))):
+            raise ValueError("packages must be unique and strictly ascending by history_id")
+
+
+type CompletionInputPayload = EvidenceInputPayload | CoveredCompleteInputPayload
+
+
 class AcceptCheckpointInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     checkpoint: Identity
     candidate: NonEmptyLine
@@ -118,6 +143,7 @@ type InputPayload = (
     | AcceptProposalInputPayload
     | MergeProposalInputPayload
     | ReviseItemInputPayload
+    | CoveredCompleteInputPayload
 )
 type InputModel = type[InputPayload]
 

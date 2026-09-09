@@ -8,6 +8,7 @@ from pinboard.domain.identifiers import (
     AttemptId,
     CandidateId,
     CheckpointId,
+    HistoryId,
     HostId,
     ItemId,
     LeaseId,
@@ -211,6 +212,29 @@ class BlockInput:
 @dataclass(frozen=True, slots=True)
 class EvidenceInput:
     evidence: str
+
+
+class CompletionPackageDisposition(Enum):
+    REUSED = "reused"
+    REVALIDATED = "revalidated"
+
+
+@dataclass(frozen=True, slots=True)
+class CoveredCompletionPackageInput:
+    history_id: HistoryId
+    package_sha256: str
+    disposition: CompletionPackageDisposition
+    evidence: str
+
+
+@dataclass(frozen=True, slots=True)
+class CoveredCompleteInput:
+    candidate: CandidateId
+    evidence: str
+    reviewer_task_id: TaskId
+    result_sha256: str
+    review_sha256: str
+    packages: tuple[CoveredCompletionPackageInput, ...]
 
 
 @dataclass(frozen=True, slots=True)

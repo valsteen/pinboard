@@ -147,7 +147,7 @@ Project actions are direct atomic ledger changes. The task applying the change s
 
 ### Carry the project into another tool
 
-Local continuity and external handover are different jobs. `pinboard handover --json` captures one ledger revision through a batch-capable exported-facts boundary, excluding local authority history, counters, and disposed proposals. It verifies every exported accepted artifact against its recorded identity and bytes, validates v2-linked checkpoint packages against their historical receipts and immutable evidence, and emits one revision-stamped portable JSON package only after the current fully materialized package is ready. The v3 package retains generic artifact records and also exposes validated checkpoint packages as typed reusable evidence.
+Local continuity and external handover are different jobs. `pinboard handover --json` captures one ledger revision through a batch-capable exported-facts boundary, excluding local authority history, counters, and disposed proposals. It verifies every exported accepted artifact against its recorded identity and bytes, validates v2-linked checkpoint and covered-completion packages against their historical receipts and immutable evidence, and emits one revision-stamped portable JSON package only after the current fully materialized package is ready. The v4 package retains generic artifact records and also exposes validated checkpoint and completion packages as typed reusable evidence.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works/handover-dark.svg">

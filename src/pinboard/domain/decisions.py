@@ -480,6 +480,21 @@ def _accepted_checkpoint_decision(
     )
 
 
+def _accepted_completion_decision(
+    action: decision_models.CompleteAction,
+    now: datetime,
+    change: decision_models.CoveredCompletionChange,
+    *,
+    item: ItemId,
+    evidence: str,
+) -> decision_models.CompletionAcceptanceDecision:
+    return decision_models.CompletionAcceptanceDecision(
+        action,
+        change,
+        _build_transition_receipt(action, item, action.kind.value, evidence, now),
+    )
+
+
 def _activate(
     snapshot: LedgerSnapshot, command: decision_models.ActivateCommand, now: datetime
 ) -> DecisionResult[decision_models.TransitionDecision]:
@@ -623,10 +638,11 @@ def _fence_retained_attempt_authority(
 
 
 def _complete(
-    snapshot: LedgerSnapshot, command: decision_models.CompleteCommand, now: datetime
-) -> DecisionResult[decision_models.TransitionDecision]:
+    snapshot: LedgerSnapshot,
+    command: decision_models.CompleteCommand | decision_models.CoveredCompleteCommand,
+    now: datetime,
+) -> DecisionResult[decision_models.TransitionDecision | decision_models.CompletionAcceptanceDecision]:
     action = command.action
-    value = command.value
     attempt_id = action.capability.subject
     item = _require_attempt_item(snapshot, attempt_id)
     if isinstance(item, DecisionFailure):
@@ -645,19 +661,58 @@ def _complete(
         return DecisionFailure(
             DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.item}'.", None
         )
-    before = (
-        work_models.AttemptState.REVIEW
-        if item.state == work_models.WorkState.REVIEW
-        else work_models.AttemptState.ACTIVE
-    )
     authority_change = _fence_retained_attempt_authority(snapshot, attempt_id)
-    return _accepted_transition_decision(
-        action,
-        now,
-        decision_models.CompletionChange(item.item, item.state, attempt_id, before, value.evidence, authority_change),
-        item=item.item,
-        evidence=value.evidence,
-    )
+    match command:
+        case decision_models.CompleteCommand():
+            value = command.value
+            if snapshot.checkpoint_history_ids:
+                return DecisionFailure(
+                    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                    "Checkpoint history requires covered completion evidence.",
+                    None,
+                )
+            before = (
+                work_models.AttemptState.REVIEW
+                if item.state == work_models.WorkState.REVIEW
+                else work_models.AttemptState.ACTIVE
+            )
+            change = decision_models.CompletionChange(
+                item.item, item.state, attempt_id, before, value.evidence, authority_change
+            )
+            return _accepted_transition_decision(
+                action,
+                now,
+                change,
+                item=item.item,
+                evidence=value.evidence,
+            )
+        case decision_models.CoveredCompleteCommand():
+            value = command.value
+            attempt = snapshot.attempt(attempt_id)
+            if (
+                not snapshot.checkpoint_history_ids
+                or tuple(row.history_id for row in value.packages) != snapshot.checkpoint_history_ids
+                or item.state != work_models.WorkState.REVIEW
+                or attempt is None
+                or attempt.protected_candidate_revision != value.candidate
+            ):
+                return DecisionFailure(
+                    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                    "Covered completion requires the protected candidate and complete authoritative checkpoint history.",
+                    None,
+                )
+            covered_change = decision_models.CoveredCompletionChange(
+                item.item, attempt_id, value.candidate, value.evidence, authority_change
+            )
+            return _accepted_completion_decision(
+                action,
+                now,
+                covered_change,
+                item=item.item,
+                evidence=value.evidence,
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _close(
@@ -1339,7 +1394,7 @@ def decide(  # noqa: C901, PLR0912
             return _activate(snapshot, command, now)
         case decision_models.PauseCommand() | decision_models.BlockCommand():
             return _pause_or_block(snapshot, command, now)
-        case decision_models.CompleteCommand():
+        case decision_models.CompleteCommand() | decision_models.CoveredCompleteCommand():
             return _complete(snapshot, command, now)
         case decision_models.CloseCommand():
             return _close(snapshot, command, now)

@@ -59,6 +59,12 @@ class CheckpointAcceptanceOutcome(msgspec.Struct, frozen=True, forbid_unknown_fi
     outcome: CanonicalLine
 
 
+class CompletionAcceptanceOutcome(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    candidate: CanonicalLine
+    evidence: CanonicalLine
+    outcome: Literal["complete"]
+
+
 @dataclass(frozen=True, slots=True)
 class HistoryOutcome:
     outcome_schema: str
@@ -89,6 +95,10 @@ def encode_checkpoint_acceptance_outcome(
         CheckpointAcceptanceOutcome(candidate, checkpoint, evidence, outcome),
         order="sorted",
     )
+
+
+def encode_completion_acceptance_outcome(*, candidate: str, evidence: str) -> bytes:
+    return msgspec.json.encode(CompletionAcceptanceOutcome(candidate, evidence, "complete"), order="sorted")
 
 
 def _work_item_definition_payload(

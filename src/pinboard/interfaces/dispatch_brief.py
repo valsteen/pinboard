@@ -116,6 +116,7 @@ def _review_failure(error: WorkBriefFailure) -> DispatchFailure:
             | WorkBriefErrorCode.REVIEW_NOT_CANONICAL
             | WorkBriefErrorCode.PACKAGE_INVALID
             | WorkBriefErrorCode.PACKAGE_NOT_CANONICAL
+            | WorkBriefErrorCode.PACKAGE_PROVENANCE_INVALID
         ):
             code = DispatchErrorCode.DISPATCH_BRIEF_REVIEW_INVALID
         case WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT:

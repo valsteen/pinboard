@@ -345,7 +345,8 @@ class HandoverTest(unittest.TestCase):
         result, stdout, stderr, statements = self.run_handover_with_trace(common)
         self.assertEqual(0, result, stderr)
         handover = self.decode_handover(stdout)
-        self.assertEqual("pinboard-project-handover/v2", handover.schema)
+        self.assertEqual("pinboard-project-handover/v3", handover.schema)
+        self.assertEqual((), handover.checkpoint_packages)
         self.assertEqual("sqlite-v5", handover.authority)
         self.assertEqual(state_before.lifecycle.project.revision, handover.revision)
         with patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")):

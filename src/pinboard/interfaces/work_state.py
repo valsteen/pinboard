@@ -246,7 +246,8 @@ def _validate_checkpoint_receipt(
     if isinstance(outcome, WorkBriefFailure):
         return outcome
     if (
-        receipt.action_kind != decision_models.ActionKind.ACCEPT_CHECKPOINT
+        receipt.outcome_schema != "checkpoint-acceptance/v2"
+        or receipt.action_kind != decision_models.ActionKind.ACCEPT_CHECKPOINT
         or receipt.authorization != decision_models.AuthorizationKind.PROJECT
         or str(receipt.action_id) != f"accept-checkpoint:{package.attempt_id}"
         or str(receipt.subject_id) != package.attempt_id

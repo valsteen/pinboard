@@ -1105,6 +1105,134 @@ class CheckpointPackageTest(unittest.TestCase):
             int(checkpoint_receipt.history_id), portable.completion_packages[0].checkpoint_coverage[0].history_id
         )
 
+        completion_receipt = completed.transition_receipts[-1]
+        original_input = bytes(completion_receipt.input_payload).decode()
+        original_value = self.json_object(json.loads(original_input))
+
+        def changed_input(field: str, value: JsonValue) -> str:
+            changed = dict(original_value)
+            changed[field] = value
+            return json.dumps(changed, sort_keys=True, separators=(",", ":"))
+
+        packages = original_value["packages"]
+        assert isinstance(packages, list)
+        package_row = self.json_object(packages[0])
+
+        def changed_package_row(field: str, value: JsonValue) -> str:
+            changed = dict(package_row)
+            changed[field] = value
+            return changed_input("packages", [changed])
+
+        actor_task_id = str(completion_receipt.actor_task_id)
+        actor_host_id = str(completion_receipt.actor_host_id)
+        top_level_changes: tuple[tuple[str, JsonValue], ...] = (
+            ("schema", "pinboard-unknown/v1"),
+            ("candidate", "different-candidate"),
+            ("evidence", "different evidence"),
+            ("reviewer_task_id", "different-reviewer"),
+            ("result_sha256", "0" * 64),
+            ("review_sha256", "0" * 64),
+        )
+        package_changes: tuple[tuple[str, JsonValue], ...] = (
+            ("history_id", int(checkpoint_receipt.history_id) + 1),
+            ("package_sha256", "0" * 64),
+            ("disposition", "reused"),
+            ("evidence", "different package evidence"),
+        )
+        receipt_corruptions: tuple[tuple[str, str, str, str | None, str | None], ...] = (
+            ("legacy-input", "decision/v1", "{}", actor_task_id, actor_host_id),
+            *(
+                (
+                    f"wrong-{field}",
+                    "pinboard-covered-completion/v1",
+                    changed_input(field, value),
+                    actor_task_id,
+                    actor_host_id,
+                )
+                for field, value in top_level_changes
+            ),
+            *(
+                (
+                    f"wrong-package-{field}",
+                    "pinboard-covered-completion/v1",
+                    changed_package_row(field, value),
+                    actor_task_id,
+                    actor_host_id,
+                )
+                for field, value in package_changes
+            ),
+            (
+                "noncanonical-input",
+                "pinboard-covered-completion/v1",
+                f"{original_input} ",
+                actor_task_id,
+                actor_host_id,
+            ),
+            (
+                "stored-reviewer-invoker-collision",
+                "pinboard-covered-completion/v1",
+                original_input,
+                "terminal-reviewer",
+                actor_host_id,
+            ),
+            (
+                "missing-actor-task",
+                "pinboard-covered-completion/v1",
+                original_input,
+                None,
+                actor_host_id,
+            ),
+            (
+                "missing-actor-host",
+                "pinboard-covered-completion/v1",
+                original_input,
+                actor_task_id,
+                None,
+            ),
+        )
+        for label, input_schema, input_json, stored_task_id, stored_host_id in receipt_corruptions:
+            with self.subTest(completion_receipt=label):
+                connection = sqlite3.connect(fixture.work / "state.sqlite3")
+                try:
+                    connection.execute(
+                        """
+                        UPDATE transition_history
+                        SET input_schema = ?, input_json = ?, actor_task_id = ?, actor_host_id = ?
+                        WHERE history_id = ?
+                        """,
+                        (
+                            input_schema,
+                            input_json,
+                            stored_task_id,
+                            stored_host_id,
+                            int(completion_receipt.history_id),
+                        ),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                validation_code, handover_code = self.package_failure_codes(fixture)
+                self.assertEqual(validation_code, handover_code)
+        connection = sqlite3.connect(fixture.work / "state.sqlite3")
+        try:
+            connection.execute(
+                """
+                UPDATE transition_history
+                SET input_schema = ?, input_json = ?, actor_task_id = ?, actor_host_id = ?
+                WHERE history_id = ?
+                """,
+                (
+                    completion_receipt.input_schema,
+                    original_input,
+                    actor_task_id,
+                    actor_host_id,
+                    int(completion_receipt.history_id),
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
     def test_validation_uses_only_its_snapshot_across_a_disjoint_commit(self) -> None:
         fixture = self.accepted_package_fixture()
         original_snapshot = SQLiteWorkStore.validated_snapshot

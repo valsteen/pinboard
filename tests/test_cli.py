@@ -1335,6 +1335,58 @@ class CliTest(unittest.TestCase):
             tuple(value.replacement_item_id for value in relations),
         )
 
+    def test_successive_planned_replacement_proposals_advance_for_a_terminal_affected_item(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        common = ("--project-root", str(project), "--work-root", str(work))
+        proposal: JsonObject = {
+            "schema": "pinboard-proposal/v1",
+            "proposal_id": "terminal-replacement-one",
+            "created_at": SQLITE_NOW.isoformat(),
+            "source_task_id": "discoverer",
+            "user_label": "Terminal replacement one",
+            "trigger": "A terminal item has an explicit replacement history.",
+            "evidence": ["source:accepted-plan"],
+            "why_it_matters": "A later explicit relation must advance the retained history.",
+            "relation": {
+                "kind": "planned-replacement",
+                "item": "work-b",
+                "replacement_cost": "The retained Work B result would be replaced again.",
+            },
+            "effect": "Record another explicit replacement for terminal Work B.",
+            "unlock": "The retained relation history remains versioned.",
+            "urgency_evidence": "The installed boundary accepts historical related items.",
+            "freshness_assumptions": ["Work B remains retained as terminal history."],
+        }
+        for proposal_id, label in (
+            ("terminal-replacement-one", "Terminal replacement one"),
+            ("terminal-replacement-two", "Terminal replacement two"),
+        ):
+            proposal["proposal_id"] = proposal_id
+            proposal["user_label"] = label
+            path = project / f"{proposal_id}.json"
+            path.write_text(json.dumps(proposal), encoding="utf-8")
+            result, _stdout, stderr = self.run_cli(
+                *common,
+                "proposal",
+                "--file",
+                str(path),
+                "--task-id",
+                "discoverer",
+                "--host-id",
+                "studio",
+            )
+            self.assertEqual(0, result, stderr)
+
+        reopened = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+        relations = tuple(
+            value for value in reopened.replacements.planned_replacements if value.affected_item_id == ItemId("work-b")
+        )
+        self.assertEqual((1, 2), tuple(value.relation_revision for value in relations))
+        self.assertEqual(
+            (ItemId("terminal-replacement-one"), ItemId("terminal-replacement-two")),
+            tuple(value.replacement_item_id for value in relations),
+        )
+
     def test_fresh_init_has_one_structured_json_receipt(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         work = project / ".codex" / "work"

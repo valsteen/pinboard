@@ -95,9 +95,6 @@ CREATE TABLE planned_replacements (
     CHECK (affected_item_id <> replacement_item_id)
 ) STRICT;
 
-CREATE INDEX planned_replacements_by_replacement
-ON planned_replacements(replacement_item_id, affected_item_id, relation_revision);
-
 CREATE TABLE replacement_dispositions (
     affected_item_id TEXT NOT NULL,
     relation_revision INTEGER NOT NULL,

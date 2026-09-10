@@ -1279,7 +1279,10 @@ def _read_attempt_context_facts(
                     "The selected nonterminal attempt has no accepted brief reference.",
                 )
             replacements, dispositions = read_current_replacements(connection, (selected.item_id,))
-            replacement = replacements[0] if replacements else None
+            replacement = next(
+                (value for value in replacements if value.status == work_models.PlannedReplacementStatus.CURRENT),
+                None,
+            )
             return query_models.NonterminalAttemptContextFacts(
                 selected.project_revision,
                 selected.attempt_id,

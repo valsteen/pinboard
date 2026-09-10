@@ -1,10 +1,12 @@
 """Retrospective agent-legibility baseline; intentionally excluded from the installed package."""
 
+import re
 from typing import Annotated, Literal
 
 import msgspec
 
 type NonEmptyString = Annotated[str, msgspec.Meta(min_length=1)]
+type CommitIdentity = Annotated[str, msgspec.Meta(pattern="^[0-9a-f]{40}$")]
 type PositiveInt = Annotated[int, msgspec.Meta(ge=1)]
 type NonNegativeInt = Annotated[int, msgspec.Meta(ge=0)]
 type OptionalNonNegativeInt = NonNegativeInt | None
@@ -30,7 +32,7 @@ class OwnerLocalization(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
 
 
 class MaintenanceCase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    base_identity: NonEmptyString
+    base_identity: CommitIdentity
     branch: NonEmptyString
     candidate_identity: NonEmptyString
     candidate_kind: CandidateKind
@@ -47,6 +49,11 @@ class MaintenanceCase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     token_count: OptionalNonNegativeInt
     verification: NonEmptyStrings
     wrong_paths_explored: tuple[NonEmptyString, ...]
+
+    def __post_init__(self) -> None:
+        pattern = "^[0-9a-f]{40}$" if self.candidate_kind == "commit" else "^working-tree-sha256:[0-9a-f]{64}$"
+        if re.fullmatch(pattern, self.candidate_identity) is None:
+            raise ValueError(f"candidate identity does not match {self.candidate_kind}")
 
 
 class Bottlenecks(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -83,7 +90,7 @@ class AgentReadinessBaseline(msgspec.Struct, frozen=True, forbid_unknown_fields=
         )
         if tuple(case.case_id for case in self.cases) != expected_case_ids:
             raise ValueError("the three representative cases must appear once in canonical order")
-        referenced_evidence: set[str] = set()
+        evidence_assignments = dict.fromkeys(evidence_by_id, 0)
         for case in self.cases:
             case_evidence_ids = (case.primary_evidence_id, *case.context_evidence_ids)
             if len(set(case_evidence_ids)) != len(case_evidence_ids):
@@ -94,9 +101,10 @@ class AgentReadinessBaseline(msgspec.Struct, frozen=True, forbid_unknown_fields=
                 raise ValueError(f"unknown evidence authority: {error.args[0]}") from error
             if selected_bytes != case.selected_source_bytes:
                 raise ValueError("case selected source bytes must equal its exact evidence selections")
-            referenced_evidence.update(case_evidence_ids)
-        if referenced_evidence != set(evidence_by_id):
-            raise ValueError("every selected evidence authority must belong to one representative case")
+            for evidence_id in case_evidence_ids:
+                evidence_assignments[evidence_id] += 1
+        if any(count != 1 for count in evidence_assignments.values()):
+            raise ValueError("every selected evidence authority must belong to exactly one representative case")
         if self.methodology.evidence_selected_bytes != sum(source.selected_bytes for source in self.evidence_sources):
             raise ValueError("methodology evidence bytes must equal the selected evidence total")
 
@@ -134,12 +142,15 @@ def render_baseline(baseline: AgentReadinessBaseline) -> str:
     for case in baseline.cases:
         elapsed = "not preserved" if case.elapsed_seconds is None else f"{case.elapsed_seconds:,} seconds"
         tokens = "not preserved" if case.token_count is None else f"{case.token_count:,}"
+        context_evidence = ", ".join(case.context_evidence_ids) if case.context_evidence_ids else "none"
         lines.extend(
             [
                 f"### {case.title}",
                 "",
                 f"- Case: `{case.case_id}`",
                 f"- Candidate: `{case.candidate_identity}` ({case.candidate_kind}) over `{case.base_identity}` on `{case.branch}`",
+                f"- Primary evidence: `{case.primary_evidence_id}`",
+                f"- Context evidence: `{context_evidence}`",
                 f"- Selected source bytes: {case.selected_source_bytes:,}",
                 f"- Meaningful edit sites: {case.meaningful_edit_site_count}",
                 f"- Correction rounds: {case.correction_rounds}",

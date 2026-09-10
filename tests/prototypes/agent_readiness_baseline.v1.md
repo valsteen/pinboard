@@ -23,20 +23,25 @@ Interpretation: Use the separate observations to choose and later compare gradua
 ### Large cross-boundary delivery
 
 - Case: `large-cross-boundary-delivery`
-- Candidate: `4ad54ddc4d97bcf01ea10e229893de7cabb1e80a` (commit) over `8d56c961b994eb6e5e3a23d2980a068b3524e808` on `codex/make-large-refactor-incremental`
+- Candidate: `4ad54ddc4d97bcf01ea10e229893de7cabb1e80a` (commit) over `dc5bc7a815459ba7a38f408ceec4cb8933a44395` on `codex/make-large-refactor-incremental`
+- Primary evidence: `large-refactor-result`
+- Context evidence: `storytelling-fixed-point`
 - Selected source bytes: 34,852
 - Meaningful edit sites: 44
-- Correction rounds: 4
+- Correction rounds: 1
 - Elapsed cost: not preserved
 - Token cost: not preserved
 
 Correct-owner localization:
 
-- covered-completion input decoding and canonicalization
-- shared semantic validation used by validate and handover
-- installed persisted completion journey
+- completion input and decision family
+- focused SQLite reads and atomic mutation
+- immutable artifact and history projection
+- semantic validation and handover consumers
+- installed completion lifecycle evidence
+- architecture, guidance, and generated visitor-guide projections
 
-The final correction changed two existing owners and their installed lifecycle evidence; the cumulative accepted final-gate candidate still spans 44 tracked files across the complete completion flow.
+The pinned range starts at Candidate D and follows the complete final-gate flow through the retained-envelope correction. Its owners span the complete decision, persistence, artifact, validation, installed-evidence, and narrative path.
 
 Meaningful edit-site groups:
 
@@ -66,31 +71,38 @@ Verification breadth:
 
 - Case: `persistence-fixed-point-cleanup`
 - Candidate: `working-tree-sha256:d7105e63b870990f7994a716b1c9428ad16fe572557013a526ebb389f6c5d669` (working-tree-sha256) over `c92ee09348448beec3407078b81813fe28315988` on `codex/release-candidate`
+- Primary evidence: `persistence-fixed-point`
+- Context evidence: `none`
 - Selected source bytes: 10,678
-- Meaningful edit sites: 4
-- Correction rounds: 0
+- Meaningful edit sites: 40
+- Correction rounds: 2
 - Elapsed cost: not preserved
 - Token cost: not preserved
 
 Correct-owner localization:
 
-- application errors
-- persistence tests
-- shared test support
-- ARCHITECTURE.md
+- domain lifecycle and work models
+- application stored-state read and focused mutation projection
+- SQLite decision reads and guarded writes
+- interface command, input, and presentation shapes
+- service, CLI, persistence, and concurrency evidence
+- architecture ownership map
 
-A recursive producer-and-consumer pass reduced the cleanup itself to four files while preserving the focused mutation union, SQLite writer, and stored-state read owner.
+The complete pinned range spans 40 files across the stored-state read, focused mutation, SQLite, interface, test, and architecture owners. Its final four-file cleanup is retained only as within-range fixed-point evidence.
 
 Meaningful edit-site groups:
 
-- application mutation error vocabulary
-- persistence behavior tests
-- shared test-support wording
+- domain lifecycle and work models
+- application stored-state read, mutation records, conversion, and ports
+- SQLite schema, decision reads, guarded relational writes, and transaction handling
+- interface commands, strict inputs, actions, views, and errors
+- service, CLI, persistence, concurrency, transfer, artifact, and validation tests
 - architecture ownership map
 
 Wrong paths explored:
 
-- None directly recorded in the selected result evidence.
+- The first persistence candidate lacked direct cross-family stale and late-rollback evidence.
+- The first correction still lacked standalone-artifact zero-history proof until the second review correction.
 
 Verification breadth:
 
@@ -107,6 +119,8 @@ Verification breadth:
 
 - Case: `local-dto-simplification`
 - Candidate: `9313f2bf20872b337a8a420c1fd23ed447debe99` (commit) over `747856dcc135b5e46cbc7236bbe03b8ed6696bdb` on `codex/remove-internal-dto-revalidation`
+- Primary evidence: `dto-revalidation-result`
+- Context evidence: `prefix-guidance-result`
 - Selected source bytes: 17,805
 - Meaningful edit sites: 8
 - Correction rounds: 0
@@ -153,11 +167,11 @@ Verification breadth:
 
 ### Navigation
 
-The large delivery reports a final source closure of 79 authorities, 70 batches, and 1,388,069 selected implementation-source bytes. The DTO simplification reports 84 startup authorities and 982,214 startup selected bytes. The persistence selector preserves a broad recursive inventory but no comparable byte total, so none is estimated.
+The retrospective evidence selection reads 34,852 bytes for the large final-gate range, 10,678 for the persistence range, and 17,805 for the DTO range. These exact source-plan bytes measure baseline evidence loading; historical task source-read totals are not compared because the selected results do not preserve one consistent task window.
 
 ### Locality
 
-The selected large case spans 44 tracked files, while the persistence fixed-point increment names four changed files and the DTO simplification names eight. The smaller increments localized their decisions without implying that file count alone establishes correctness.
+The exact large final-gate range spans 44 tracked files, the complete persistence range spans 40, and the DTO simplification range spans eight. The persistence result separately identifies its final four-file cleanup, but that narrower increment is not substituted for the pinned range count.
 
 ### Verification
 
@@ -165,7 +179,7 @@ All three cases required more than a focused unit check: each retained formattin
 
 ### Correction
 
-Only the large cross-boundary case records correction rounds: three Candidate A-to-D corrections plus the final covered-completion correction. The persistence and DTO results reached the selected candidate without a recorded implementation correction round.
+The exact large final-gate range contains one correction after candidate 8d56c, the complete persistence range contains two documented review-correction rounds before the fixed-point candidate, and the DTO range contains none.
 
 ## Gradual improvements
 

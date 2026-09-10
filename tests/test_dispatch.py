@@ -507,8 +507,8 @@ class DispatchTest(unittest.TestCase):
                 "dispatch",
                 "--action-id",
                 str(decision_models.action_id(selected)),
-                "--expected-revision",
-                selected.capability.expected_revision,
+                "--subject-revision",
+                selected.capability.subject_revision,
                 "--task-id",
                 "project-task",
                 "--host-id",
@@ -563,7 +563,7 @@ class DispatchTest(unittest.TestCase):
         ):
             self.run_cli(*arguments(action(), "assertion-must-propagate"))
 
-    def test_dispatch_rechecks_authority_after_an_unrelated_revision(self) -> None:
+    def test_dispatch_recheck_ignores_an_unrelated_revision(self) -> None:
         project, roots, store, value, action, environment = self.initialized()
         selected_action = action()
         render_prompt = _render_dispatch_prompt
@@ -616,12 +616,12 @@ class DispatchTest(unittest.TestCase):
                 supplied_review=SuppliedDispatchReview(ready_review(value), ReviewId("raced-review")),
             )
 
-        expect_dispatch_failure(result, DispatchErrorCode.DISPATCH_ACTION_UNAVAILABLE)
+        self.assertIsInstance(result, str)
 
-    def test_dispatch_rejects_an_unrelated_revision_before_review_publication(self) -> None:
+    def test_dispatch_ignores_an_unrelated_revision_before_review_publication(self) -> None:
         project, roots, store, value, action, environment = self.initialized()
         selected_action = action()
-        self.assertEqual("12", selected_action.capability.expected_revision)
+        self.assertTrue(selected_action.capability.subject_revision)
         accept_reference = store.accept_artifact_reference
 
         def accept_after_unrelated_revision(
@@ -659,25 +659,20 @@ class DispatchTest(unittest.TestCase):
             )
 
         self.assertEqual(14, store.validated_snapshot().lifecycle.project.revision)
-        expect_dispatch_failure(result, DispatchErrorCode.DISPATCH_ACTION_UNAVAILABLE)
+        self.assertIsInstance(result, str)
 
     def test_sqlite_dispatch_rejects_stale_action_and_cli_verifies_prompt(self) -> None:
         project, roots, store, value, action, environment = self.initialized()
         selected = action()
-        expect_success(
-            store.accept_artifact_reference(
-                roots.work_root,
-                write_revision(
-                    roots, NewArtifact(work_models.ArtifactKind.EVIDENCE, "revision-bump", 1, ".json", b"{}\n")
-                ),
-                datetime.now(UTC),
-            )
+        stale_selected = dataclass_replace(
+            selected,
+            capability=dataclass_replace(selected.capability, subject_revision="stale"),
         )
         stale = prepare_dispatch(
             store,
             ArtifactRepository(roots),
             project,
-            selected,
+            stale_selected,
             CHECKPOINT_ID,
             environment,
             supplied_review=SuppliedDispatchReview(ready_review(value), ReviewId("review-id")),
@@ -696,8 +691,8 @@ class DispatchTest(unittest.TestCase):
             "dispatch",
             "--action-id",
             str(decision_models.action_id(selected)),
-            "--expected-revision",
-            selected.capability.expected_revision,
+            "--subject-revision",
+            selected.capability.subject_revision,
             "--task-id",
             "project-task",
             "--host-id",
@@ -716,11 +711,7 @@ class DispatchTest(unittest.TestCase):
         prompt_path = project / "prompt.txt"
         prompt_path.write_text(prompt, encoding="utf-8")
 
-        refreshed = action()
         verify_arguments = list(arguments)
-        verify_arguments[verify_arguments.index(selected.capability.expected_revision)] = (
-            refreshed.capability.expected_revision
-        )
         verify_arguments.extend(("--prompt", str(prompt_path)))
         result, stdout, stderr = self.run_cli(*verify_arguments)
         self.assertEqual(0, result, stderr)
@@ -766,8 +757,8 @@ class DispatchTest(unittest.TestCase):
                 "dispatch",
                 "--action-id",
                 str(decision_models.action_id(selected)),
-                "--expected-revision",
-                selected.capability.expected_revision,
+                "--subject-revision",
+                selected.capability.subject_revision,
                 "--task-id",
                 "project-task",
                 "--host-id",
@@ -831,8 +822,8 @@ class DispatchTest(unittest.TestCase):
             "dispatch",
             "--action-id",
             str(decision_models.action_id(selected)),
-            "--expected-revision",
-            selected.capability.expected_revision,
+            "--subject-revision",
+            selected.capability.subject_revision,
             "--task-id",
             "project-task",
             "--host-id",

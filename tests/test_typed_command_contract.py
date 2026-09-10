@@ -30,7 +30,6 @@ def _worker_actor() -> decision_models.ActorAuthority:
         3,
         LeaseId("attempt-lease-a"),
         (AttemptId("work-a-1"),),
-        False,
     )
 
 
@@ -115,7 +114,6 @@ class TypedTransitionContractTest(unittest.TestCase):
             decision_models.MutationActionCapability(
                 ItemId("ready-item"),
                 "activate",
-                "project-revision",
                 "1",
                 authorization=decision_models.AuthorizationKind.PREPARATION,
                 lease_id=preparation.lease_id,

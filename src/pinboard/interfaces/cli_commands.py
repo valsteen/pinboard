@@ -156,31 +156,28 @@ class ProposalCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class ProjectTransitionCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_id: StableActionId
-    expected_revision: str
+    subject_revision: str
     payload: Path
     task_id: StableTaskId
     host_id: StableHostId
-    subject_revision: str | None = None
     json: bool = False
 
 
 class AttemptTransitionCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_id: StableActionId
-    expected_revision: str
+    subject_revision: str
     generation: int
     payload: Path
     lease_id: StableLeaseId
-    subject_revision: str | None = None
     json: bool = False
 
 
 class PreparationTransitionCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_id: StableActionId
-    expected_revision: str
+    subject_revision: str
     generation: int
     payload: Path
     lease_id: StableLeaseId
-    subject_revision: str | None = None
     json: bool = False
 
 
@@ -189,7 +186,7 @@ type TransitionCommand = ProjectTransitionCommand | AttemptTransitionCommand | P
 
 class ProjectDispatchCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_id: StableActionId
-    expected_revision: str
+    subject_revision: str
     task_id: StableTaskId
     host_id: StableHostId
     checkpoint: str
@@ -200,7 +197,7 @@ class ProjectDispatchCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=
 
 class ProjectReviewedDispatchCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_id: StableActionId
-    expected_revision: str
+    subject_revision: str
     task_id: StableTaskId
     host_id: StableHostId
     checkpoint: str

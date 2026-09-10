@@ -94,7 +94,7 @@ class OperationFailureTest(unittest.TestCase):
         store, _roots = self.initialized(None)
         stale_action = replace(
             worker_action,
-            capability=replace(worker_action.capability, expected_revision="11"),
+            capability=replace(worker_action.capability, subject_revision="11"),
         )
         with patch("pinboard.interfaces.action_selection.datetime") as clock:
             clock.now.return_value = SQLITE_NOW
@@ -107,7 +107,7 @@ class OperationFailureTest(unittest.TestCase):
         self.assertEqual(CommandErrorCode.ACTION_REVISION_STALE, stale.code)
         assert stale.details is not None
         self.assertEqual(
-            (worker_action.capability.expected_revision, "11"),
+            (worker_action.capability.subject_revision, "11"),
             (stale.details.mismatches[0].expected, stale.details.mismatches[0].observed),
         )
         continuation = next(value for value in stale.details.alternatives if value.action_id == "continue:work-a-1")
@@ -115,7 +115,7 @@ class OperationFailureTest(unittest.TestCase):
             (
                 "continue:work-a-1",
                 "worker",
-                worker_action.capability.expected_revision,
+                worker_action.capability.subject_revision,
                 "attempt",
                 "attempt-lease-a",
                 3,
@@ -123,7 +123,7 @@ class OperationFailureTest(unittest.TestCase):
             (
                 continuation.action_id,
                 continuation.role,
-                continuation.expected_revision,
+                continuation.subject_revision,
                 continuation.authorization,
                 continuation.lease_id,
                 continuation.generation,
@@ -206,7 +206,12 @@ class OperationFailureTest(unittest.TestCase):
         self.assertEqual("active-attempt", unavailable.details.mismatches[0].expected)
         self.assertEqual("paused", unavailable.details.mismatches[0].observed)
         self.assertTrue(unavailable.details.alternatives)
-        self.assertTrue(all(value.expected_revision == "12" for value in unavailable.details.alternatives))
+        self.assertTrue(
+            all(
+                value.subject_revision == project_pause.capability.subject_revision
+                for value in unavailable.details.alternatives
+            )
+        )
 
     def test_transition_brief_reports_every_identity_mismatch(self) -> None:
         state = complete_sqlite_state()
@@ -255,27 +260,32 @@ class OperationFailureTest(unittest.TestCase):
         )
         drifted = replace(
             state,
-            lifecycle=replace(state.lifecycle, project=replace(state.lifecycle.project, revision=14)),
+            lifecycle=replace(
+                state.lifecycle,
+                project=replace(state.lifecycle.project, revision=13),
+                attempts=tuple(
+                    replace(value, subject_revision=2) if value.attempt_id == AttemptId("work-a-1") else value
+                    for value in state.lifecycle.attempts
+                ),
+            ),
         )
         _store, roots = self.initialized(drifted)
         store = SQLiteWorkStore(roots.work / "state.sqlite3")
 
-        failure = recheck_dispatch_authority(store, supplied, 13, SQLITE_NOW)
+        publication_surfaces = (
+            ChangedSurface.IMMUTABLE_ARTIFACT,
+            ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE,
+            ChangedSurface.LEDGER,
+        )
+        failure = recheck_dispatch_authority(store, supplied, publication_surfaces, SQLITE_NOW)
 
         self.assertIsInstance(failure, DispatchFailure)
         assert isinstance(failure, DispatchFailure)
         assert failure.details is not None
         self.assertEqual(EffectDisposition.COMMITTED, failure.details.effect)
         self.assertEqual(RetryDisposition.DO_NOT_RETRY, failure.details.retry)
-        self.assertEqual(13, failure.details.observed[0].value)
-        self.assertEqual(
-            (
-                ChangedSurface.IMMUTABLE_ARTIFACT,
-                ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE,
-                ChangedSurface.LEDGER,
-            ),
-            failure.details.changed_surfaces,
-        )
+        self.assertEqual((), failure.details.observed)
+        self.assertEqual(publication_surfaces, failure.details.changed_surfaces)
 
     def test_dispatch_review_collision_reports_preserved_evidence_surfaces(self) -> None:
         store, roots = self.initialized(None)

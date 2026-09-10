@@ -58,11 +58,13 @@ class _DependencyRow:
 class _AttemptItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: ItemId
     state: stored_state.StoredWorkItemState
+    subject_revision: int
 
 
 class _AttemptContextRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: AttemptId
     item_id: ItemId
+    subject_revision: int
     state: work_models.AttemptState
     branch: str
     base_revision: str
@@ -135,6 +137,7 @@ class TerminalAttemptContextSelection:
 class NonterminalAttemptContextSelection:
     project_revision: int
     attempt_id: AttemptId
+    subject_revision: str
     item_id: ItemId
     state: query_models.NonterminalAttemptState
     branch: str
@@ -436,7 +439,7 @@ def read_attempt_context(
     project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
     attempt_row = connection.execute(
         """
-        SELECT attempt_id, item_id, state, branch, base_revision, brief_artifact_ref_id,
+        SELECT attempt_id, item_id, subject_revision, state, branch, base_revision, brief_artifact_ref_id,
                candidate_revision, accepted_scope_revision, accepted_scope_digest
         FROM attempts
         WHERE attempt_id = ?
@@ -460,7 +463,7 @@ def read_attempt_context(
             raise StorageError(StorageErrorCode.INVALID_STATE, "The selected attempt state is unsupported.")
 
     item_row = connection.execute(
-        "SELECT item_id, state FROM work_items WHERE item_id = ?",
+        "SELECT item_id, state, subject_revision FROM work_items WHERE item_id = ?",
         (attempt.item_id,),
     ).fetchone()
     if item_row is None:
@@ -491,6 +494,7 @@ def read_attempt_context(
     return NonterminalAttemptContextSelection(
         project_revision,
         attempt.attempt_id,
+        str(attempt.subject_revision),
         attempt.item_id,
         attempt_state,
         attempt.branch,
@@ -501,6 +505,7 @@ def read_attempt_context(
         attempt.brief_artifact_ref_id,
         query_models.AttemptContextItemFacts(
             item.item_id,
+            str(item.subject_revision),
             item_state,
             definition.revision,
             definition.digest,

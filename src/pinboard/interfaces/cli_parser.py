@@ -88,9 +88,8 @@ class _ReviewJobArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 
 class _TransitionArguments(msgspec.Struct, frozen=True):
     action_id: cli_commands.StableActionId
-    expected_revision: str
+    subject_revision: str
     payload: Path
-    subject_revision: str | None
     json: bool
 
 
@@ -140,7 +139,7 @@ type _ExactTransitionArguments = (
 
 class _DispatchArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_id: cli_commands.StableActionId
-    expected_revision: str
+    subject_revision: str
     task_id: cli_commands.StableTaskId
     host_id: cli_commands.StableHostId
     checkpoint: str
@@ -188,31 +187,28 @@ def _decode_transition[RawT](values: dict[str, RawT]) -> cli_commands.Transition
         case _ProjectTransitionArguments():
             return cli_commands.ProjectTransitionCommand(
                 action_id=arguments.action_id,
-                expected_revision=arguments.expected_revision,
+                subject_revision=arguments.subject_revision,
                 payload=arguments.payload,
                 task_id=arguments.task_id,
                 host_id=arguments.host_id,
-                subject_revision=arguments.subject_revision,
                 json=arguments.json,
             )
         case _AttemptTransitionArguments():
             return cli_commands.AttemptTransitionCommand(
                 action_id=arguments.action_id,
-                expected_revision=arguments.expected_revision,
+                subject_revision=arguments.subject_revision,
                 generation=arguments.generation,
                 payload=arguments.payload,
                 lease_id=arguments.lease_id,
-                subject_revision=arguments.subject_revision,
                 json=arguments.json,
             )
         case _PreparationTransitionArguments():
             return cli_commands.PreparationTransitionCommand(
                 action_id=arguments.action_id,
-                expected_revision=arguments.expected_revision,
+                subject_revision=arguments.subject_revision,
                 generation=arguments.generation,
                 payload=arguments.payload,
                 lease_id=arguments.lease_id,
-                subject_revision=arguments.subject_revision,
                 json=arguments.json,
             )
         case _ as unreachable:
@@ -224,7 +220,7 @@ def _decode_dispatch[RawT](values: dict[str, RawT]) -> cli_commands.DispatchComm
     if arguments.brief_review is None:
         return cli_commands.ProjectDispatchCommand(
             action_id=arguments.action_id,
-            expected_revision=arguments.expected_revision,
+            subject_revision=arguments.subject_revision,
             task_id=arguments.task_id,
             host_id=arguments.host_id,
             checkpoint=arguments.checkpoint,
@@ -235,7 +231,7 @@ def _decode_dispatch[RawT](values: dict[str, RawT]) -> cli_commands.DispatchComm
     assert arguments.review_id is not None
     return cli_commands.ProjectReviewedDispatchCommand(
         action_id=arguments.action_id,
-        expected_revision=arguments.expected_revision,
+        subject_revision=arguments.subject_revision,
         task_id=arguments.task_id,
         host_id=arguments.host_id,
         checkpoint=arguments.checkpoint,
@@ -572,9 +568,8 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - complete top-l
         "transition", help="Apply one selected lifecycle-changing action returned by the actions command."
     )
     transition.add_argument("--action-id", required=True)
-    transition.add_argument("--expected-revision", required=True)
     transition.add_argument("--generation", type=int)
-    transition.add_argument("--subject-revision")
+    transition.add_argument("--subject-revision", required=True)
     transition.add_argument("--lease-id")
     transition.add_argument("--task-id")
     transition.add_argument("--host-id")
@@ -595,7 +590,7 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - complete top-l
     review_job.add_argument("--json", action="store_true")
     _select_command(review_job, _CompoundCommand.REVIEW_JOB)
     dispatch.add_argument("--action-id", required=True, help="Exact dispatch action returned by project actions.")
-    dispatch.add_argument("--expected-revision", required=True, help="Ledger revision from the dispatch action.")
+    dispatch.add_argument("--subject-revision", required=True, help="Attempt revision from the dispatch action.")
     dispatch.add_argument("--task-id", required=True)
     dispatch.add_argument("--host-id", required=True)
     dispatch.add_argument("--checkpoint", required=True, help="Stable checkpoint ID in the canonical work brief.")

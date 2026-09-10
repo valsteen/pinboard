@@ -839,7 +839,6 @@ class SQLiteStoreTest(unittest.TestCase):
                 decision.action,
                 capability=replace_dataclass(
                     decision.action.capability,
-                    expected_revision="",
                     subject_revision="stale-subject",
                 ),
             ),
@@ -1013,7 +1012,6 @@ class SQLiteStoreTest(unittest.TestCase):
             3,
             LeaseId("attempt-lease-a"),
             (AttemptId("work-a-1"),),
-            False,
         )
         action = next(
             value

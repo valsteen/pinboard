@@ -100,7 +100,6 @@ class ActionView(msgspec.Struct, frozen=True, omit_defaults=True):
     kind: str
     subject: str
     label: str
-    expected_revision: str
     subject_revision: str | None
     authorization: str
     lease_id: str | None

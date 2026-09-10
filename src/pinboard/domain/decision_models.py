@@ -331,8 +331,6 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
 class ActionCapability[SubjectT: SubjectId]:
     subject: SubjectT
     label: str
-    expected_revision: str
-    subject_revision: str | None = None
     authorization: AuthorizationKind | None = AuthorizationKind.PROJECT
     lease_id: LeaseId | None = None
     command_authority: work_models.CommandAttemptAuthority | None = None
@@ -343,8 +341,7 @@ class ActionCapability[SubjectT: SubjectId]:
 class MutationActionCapability[SubjectT: SubjectId]:
     subject: SubjectT
     label: str
-    expected_revision: str
-    subject_revision: str | None = None
+    subject_revision: str
     authorization: AuthorizationKind = AuthorizationKind.PROJECT
     lease_id: LeaseId | None = None
     command_authority: work_models.CommandAttemptAuthority | None = None
@@ -401,7 +398,7 @@ class CloseAction:
 
 @dataclass(frozen=True, slots=True)
 class ContinueAction:
-    capability: ActionCapability[AttemptId] | MutationActionCapability[AttemptId]
+    capability: MutationActionCapability[AttemptId]
     kind: ActionKind = field(init=False, default=ActionKind.CONTINUE)
 
 
@@ -413,7 +410,7 @@ class DeferAction:
 
 @dataclass(frozen=True, slots=True)
 class DispatchAction:
-    capability: ActionCapability[AttemptId] | MutationActionCapability[AttemptId]
+    capability: MutationActionCapability[AttemptId]
     kind: ActionKind = field(init=False, default=ActionKind.DISPATCH)
 
 
@@ -461,7 +458,7 @@ class RebindAttemptAction:
 
 @dataclass(frozen=True, slots=True)
 class ReportBlockerAction:
-    capability: ActionCapability[AttemptId] | MutationActionCapability[AttemptId]
+    capability: MutationActionCapability[AttemptId]
     kind: ActionKind = field(init=False, default=ActionKind.REPORT_BLOCKER)
 
 
@@ -729,7 +726,6 @@ class ActorAuthority:
     generation: int
     lease_id: LeaseId | None = None
     attempts: tuple[AttemptId, ...] = ()
-    revision_scoped: bool = True
     preparations: tuple[ItemId, ...] = ()
 
 
@@ -740,7 +736,6 @@ class ObserverActorAuthority:
     generation: int = 0
     lease_id: None = None
     attempts: tuple[AttemptId, ...] = ()
-    revision_scoped: bool = True
     preparations: tuple[ItemId, ...] = ()
 
 

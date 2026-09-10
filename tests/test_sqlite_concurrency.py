@@ -577,7 +577,6 @@ class SQLiteConcurrencyTest(unittest.TestCase):
             authority.generation,
             authority.lease_id,
             (authority.attempt,),
-            False,
         )
         submit_action = next(
             value

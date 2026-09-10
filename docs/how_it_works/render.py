@@ -115,7 +115,7 @@ A work item is the durable project decision. An attempt is one execution of that
 
 **Pause records a deliberate interruption; it does not invent a blocker.** Suppose an urgent prerequisite must take priority while the current attempt is still technically runnable. Without pause, that attempt remains active and eligible for continuation or redispatch even though the human intends it to stop. Pause instead keeps the same attempt, retained lease, accepted brief, and evidence while removing runnable actions. Pause does not fence that lease. Rebind serves a different purpose: an active or paused attempt can accept a matching brief for the item's current definition while correcting its branch and base revision in the same transition. It preserves the lifecycle state and evidence and fences the prior worker generation. A paused stale attempt can therefore rebind even while a live dependency keeps resume unavailable.
 
-**Related facts are not extra states.** Proposal intake stores the original facts and creates same-identity `intake` work. Accept applies selected details to that item; merge supersedes it in favor of another; return keeps it in intake with a clarification reason; reject drops it. Accepted scope is the exact authorized revision an attempt uses. Mutation ownership records who may act now. A review candidate names the exact result under review, and evidence supports its acceptance.
+**Related facts are not extra states.** Proposal intake stores the original facts and creates same-identity `intake` work. Accept applies selected details to that item; merge supersedes it in favor of another; return keeps it in intake with a clarification reason; reject drops it. Accepted scope is the exact authorized revision an attempt uses. Mutation ownership records who may act now. A mutable action receipt carries the selected item, attempt, or proposal revision; leased actions also carry the exact lease and generation. Unrelated commits leave that receipt usable, while a change to its subject or current legality makes it stale. A review candidate names the exact result under review, and evidence supports its acceptance.
 
 ### What every transition preserves
 
@@ -165,7 +165,7 @@ Explicit JSON failures use `pinboard-rejected-operation/v1`. An unchanged reject
 Project actions are direct atomic ledger changes. The task applying the change supplies task and host audit attribution, not authenticated credentials, and SQLite protects the authoritative transition. Rebinding is one such action: it changes the accepted scope identity, stored Git lineage, and accepted brief atomically, never the source checkout itself.
 
 1. **Prepare exact input.** `close` builds its terminal payload, item revision validates a complete proposed definition, and `transition` reads the selected action receipt and its matching payload.
-2. **Reread, select, and commit.** The application opens one write transaction, reads the selected action context and the exact direct, reverse, or cycle-closure relationships named by that action, reselects the exact legal action, decides it, and commits the change with the invoking task and host identity. A stale or illegal action returns without changing the ledger; JSON output may carry fresh same-subject alternatives from another exact read.
+2. **Reread, select, and commit.** The application opens one write transaction, reads the selected action context and the exact direct, reverse, or cycle-closure relationships named by that action, and reselects the exact legal action by its subject revision and any leased authority. A changed subject or dependency-dependent legality rejects the action, while an unrelated commit does not. Acceptance commits the change with the invoking task and host identity and allocates that change's new project revision. A stale or illegal action returns without changing the ledger; JSON output may carry fresh same-subject alternatives from another exact read.
 3. **Refresh replaceable views.** A successful commit refreshes only the affected projections. A warning leaves the authoritative transition stored for `pinboard views rebuild`. Presentation identifies that transition's exact revision.
 
 ### Carry the project into another tool
@@ -205,7 +205,7 @@ Once submission protects a candidate, `review-job` is a separate read-only proje
 
 Project actions carry invoking task and host audit attribution and commit directly under SQLite's write transaction. They do not authenticate those strings or establish a persistent project owner.
 
-Project state holds the current revision. Committed history records each accepted input, outcome, and actor.
+Project state holds the current revision. That revision identifies committed state and history; it is not transported or compared as action authority. Committed history records each accepted input, outcome, and actor.
 
 ### Where responsibilities live
 

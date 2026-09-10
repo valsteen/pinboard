@@ -455,7 +455,6 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     capability = decision_models.MutationActionCapability(
                         ItemId("work-c"),
                         "label",
-                        "expected",
                         subject_revision="1",
                         preparation_authority=preparation,
                     )
@@ -472,7 +471,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 else:
                     value = work_a_brief(project)
                     capability = decision_models.MutationActionCapability(
-                        ItemId("work-a"), "label", "expected", subject_revision="1"
+                        ItemId("work-a"), "label", subject_revision="1"
                     )
                     command = decision_models.ResumeCommand(
                         decision_models.ResumeAction(capability), work_models.ResumeInput(ArtifactRefId(1))

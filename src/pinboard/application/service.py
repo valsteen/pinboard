@@ -426,7 +426,6 @@ def _resolve_actor_authority(
                 authority.generation,
                 capability.lease_id,
                 (authority.attempt,),
-                False,
             )
         case decision_models.AuthorizationKind.PREPARATION:
             authority = capability.preparation_authority

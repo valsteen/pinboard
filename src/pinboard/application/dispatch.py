@@ -1,4 +1,4 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 
 from pinboard.application import query_models, stored_state
@@ -34,7 +34,7 @@ class SelectedDispatch:
 @dataclass(frozen=True, slots=True)
 class AcceptedDispatchReview:
     reference: stored_state.ArtifactReference
-    own_publication_revision: int | None
+    changed_surfaces: tuple[ChangedSurface, ...]
 
 
 def _rediscover_dispatch_action(
@@ -80,17 +80,17 @@ def _current_dispatch_action(
             None,
         )
     if current != supplied:
-        if current.capability.expected_revision != supplied.capability.expected_revision:
+        if current.capability.subject_revision != supplied.capability.subject_revision:
             return DispatchFailure(
                 DispatchRejectionCode.STALE_ACTION,
-                "The work ledger changed after this dispatch action was selected.",
+                "The attempt changed after this dispatch action was selected.",
                 FailureDetails(
                     observed=(),
                     mismatches=(
                         FailureMismatch(
-                            "expected_revision",
-                            current.capability.expected_revision,
-                            supplied.capability.expected_revision,
+                            "subject_revision",
+                            current.capability.subject_revision,
+                            supplied.capability.subject_revision,
                         ),
                     ),
                     retry=RetryDisposition.REFRESH_ACTION,
@@ -164,7 +164,7 @@ def publish_dispatch_review(
     existing = _find_ready_review_reference(store, attempt_id, checkpoint_sha256)
     if existing is not None:
         if artifacts.read(existing) == candidate:
-            return AcceptedDispatchReview(existing, None)
+            return AcceptedDispatchReview(existing, ())
         rejected_acceptance = publish_accepted_artifact(
             store,
             artifacts,
@@ -214,13 +214,23 @@ def publish_dispatch_review(
             accepted_publication.details,
         )
     accepted = accepted_publication.reference
-    return AcceptedDispatchReview(accepted, accepted.accepted_revision)
+    return AcceptedDispatchReview(
+        accepted,
+        (
+            *((ChangedSurface.IMMUTABLE_ARTIFACT,) if accepted_publication.artifact_created else ()),
+            *(
+                (ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE, ChangedSurface.LEDGER)
+                if accepted_publication.ledger_changed
+                else ()
+            ),
+        ),
+    )
 
 
 def recheck_dispatch_authority(
     store: WorkStore,
     supplied: decision_models.DispatchAction,
-    own_review_publication_revision: int | None,
+    review_publication_surfaces: tuple[ChangedSurface, ...],
     now: datetime,
 ) -> DispatchFailure | None:
     capability = supplied.capability
@@ -228,50 +238,23 @@ def recheck_dispatch_authority(
     if isinstance(rediscovered, DispatchFailure):
         return rediscovered
     current = rediscovered if isinstance(rediscovered, decision_models.DispatchAction) else None
-    current_matches = current == supplied
-    if current is not None and own_review_publication_revision is not None:
-        current_matches = (
-            capability.expected_revision == str(own_review_publication_revision - 1)
-            and current.capability.expected_revision == str(own_review_publication_revision)
-            and replace(
-                current,
-                capability=replace(current.capability, expected_revision=capability.expected_revision),
-            )
-            == supplied
-        )
-    if current_matches:
+    if current == supplied:
         return None
     return DispatchFailure(
         DispatchRejectionCode.ACTION_UNAVAILABLE,
         "Dispatch authority changed during prompt preparation.",
         FailureDetails(
-            observed=(FailureFact("accepted_review_publication_revision", own_review_publication_revision),),
+            observed=(),
             mismatches=(
                 FailureMismatch(
-                    "expected_revision",
-                    None if current is None else current.capability.expected_revision,
-                    capability.expected_revision,
+                    "subject_revision",
+                    None if current is None else current.capability.subject_revision,
+                    capability.subject_revision,
                 ),
             ),
-            retry=(
-                RetryDisposition.DO_NOT_RETRY
-                if own_review_publication_revision is not None
-                else RetryDisposition.REFRESH_ACTION
-            ),
-            effect=(
-                EffectDisposition.COMMITTED
-                if own_review_publication_revision is not None
-                else EffectDisposition.UNCHANGED
-            ),
-            changed_surfaces=(
-                (
-                    ChangedSurface.IMMUTABLE_ARTIFACT,
-                    ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE,
-                    ChangedSurface.LEDGER,
-                )
-                if own_review_publication_revision is not None
-                else ()
-            ),
+            retry=(RetryDisposition.DO_NOT_RETRY if review_publication_surfaces else RetryDisposition.REFRESH_ACTION),
+            effect=(EffectDisposition.COMMITTED if review_publication_surfaces else EffectDisposition.UNCHANGED),
+            changed_surfaces=review_publication_surfaces,
             alternatives=(),
         ),
     )

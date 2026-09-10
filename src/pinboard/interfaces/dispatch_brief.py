@@ -404,7 +404,7 @@ def prepare_dispatch(
     if isinstance(review_choice, DispatchFailure):
         return review_choice
     accepted_review_bytes: bytes | None = None
-    own_review_publication_revision: int | None = None
+    review_publication_surfaces = ()
     match review_choice:
         case None:
             pass
@@ -430,7 +430,7 @@ def prepare_dispatch(
             if isinstance(accepted_review, ApplicationDispatchFailure):
                 return _dispatch_failure(accepted_review)
             accepted_review_reference = accepted_review.reference
-            own_review_publication_revision = accepted_review.own_publication_revision
+            review_publication_surfaces = accepted_review.changed_surfaces
             accepted_review_bytes = artifacts.read(accepted_review_reference)
         case _ as unreachable:
             assert_never(unreachable)
@@ -448,7 +448,7 @@ def prepare_dispatch(
         failure := recheck_dispatch_authority(
             store,
             action,
-            own_review_publication_revision,
+            review_publication_surfaces,
             datetime.now(UTC),
         )
     ) is not None:

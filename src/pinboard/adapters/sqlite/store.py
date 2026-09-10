@@ -1221,6 +1221,7 @@ def _read_attempt_context_facts(
             return query_models.NonterminalAttemptContextFacts(
                 selected.project_revision,
                 selected.attempt_id,
+                selected.subject_revision,
                 selected.item_id,
                 selected.state,
                 selected.branch,

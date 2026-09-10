@@ -53,8 +53,7 @@ class FailureMismatch:
 class FailureAction:
     action_id: str
     role: str
-    expected_revision: str
-    subject_revision: str | None
+    subject_revision: str
     authorization: str | None
     lease_id: str | None
     generation: int | None

@@ -686,6 +686,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
     dependencies: dict[ItemId, list[ItemId]] = defaultdict(list)
     definitions: dict[ItemId, stored_state.ItemDefinitionRevision] = {}
     contextual_item_ids: set[ItemId] = set()
+    selected_replacement_item_ids: set[ItemId] = set()
     dependency_item_ids: set[ItemId] = set()
 
     def read_item(
@@ -719,8 +720,10 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
                 StorageErrorCode.INVALID_STATE,
                 "Current definition dependencies do not match relational dependencies.",
             )
-        if context and live:
-            contextual_item_ids.add(item_id)
+        if context:
+            selected_replacement_item_ids.add(item_id)
+            if live:
+                contextual_item_ids.add(item_id)
         return item
 
     for item_id in dict.fromkeys(primary_item_ids):
@@ -829,7 +832,9 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         )
         for proposal in proposals.values()
     )
-    planned_replacements, replacement_dispositions = read_current_replacements(connection, contextual_item_ids)
+    planned_replacements, replacement_dispositions = read_current_replacements(
+        connection, selected_replacement_item_ids
+    )
     snapshot = LedgerSnapshot(
         revision=str(project.revision),
         items=tuple(

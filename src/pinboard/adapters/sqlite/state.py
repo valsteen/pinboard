@@ -241,6 +241,8 @@ def _validate_replacements(
         replacement = indexed_replacements.get(key)
         if replacement is None:
             raise StorageError(error_code, "A temporary-retention disposition names an unknown replacement revision.")
+        if replacement.status != work_models.PlannedReplacementStatus.CURRENT:
+            raise StorageError(error_code, "A temporary-retention disposition names a withdrawn replacement revision.")
         if disposition.accepted_cost != replacement.replacement_cost:
             raise StorageError(error_code, "A temporary-retention disposition must accept the exact replacement cost.")
         if key in disposition_keys:

@@ -472,6 +472,20 @@ class HandoverTest(unittest.TestCase):
         with self.assertRaises(StorageError):
             store.read_handover_batches()
 
+    def test_complete_validation_and_handover_reject_a_disposition_on_a_withdrawn_relation(self) -> None:
+        _project, work, store, _references = self.initialized_project()
+        connection = sqlite3.connect(work / "state.sqlite3")
+        try:
+            connection.execute("UPDATE planned_replacements SET status = 'withdrawn' WHERE affected_item_id = 'work-c'")
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(StorageError):
+            store.validated_snapshot()
+        with self.assertRaises(StorageError):
+            store.read_handover_batches()
+
     def test_installed_handover_keeps_one_revision_during_a_concurrent_commit(self) -> None:
         project, work, store, _references = self.initialized_project()
         database = work / "state.sqlite3"

@@ -34,7 +34,15 @@ class AgentReadinessBaselineTest(unittest.TestCase):
         )
         self.assertEqual((44, 40, 8), tuple(case.meaningful_edit_site_count for case in baseline.cases))
         self.assertEqual((1, 2, 0), tuple(case.correction_rounds for case in baseline.cases))
-        self.assertEqual(63_335, sum(source.selected_bytes for source in baseline.evidence_sources))
+        self.assertEqual(
+            "400be989ec480fd83a11ec87a1faa12ced62c8a3b1a78db452b728af12d233e2",
+            baseline.methodology.evidence_plan_digest,
+        )
+        self.assertEqual(68_248, sum(source.selected_bytes for source in baseline.evidence_sources))
+        self.assertEqual(
+            ("persistence-import-correction", "persistence-evidence-correction"),
+            baseline.cases[1].context_evidence_ids,
+        )
         for case in baseline.cases:
             self.assertTrue(case.owner_localization.correct_owners)
             self.assertGreater(case.selected_source_bytes, 0)
@@ -83,10 +91,10 @@ class AgentReadinessBaselineTest(unittest.TestCase):
     def test_evidence_cannot_be_assigned_to_multiple_cases(self) -> None:
         source = CORPUS_PATH.read_bytes()
         duplicate_evidence = source.replace(
-            b'"context_evidence_ids":[]',
-            b'"context_evidence_ids":["large-refactor-result"]',
+            b'"context_evidence_ids":["persistence-import-correction","persistence-evidence-correction"]',
+            b'"context_evidence_ids":["persistence-import-correction","persistence-evidence-correction","large-refactor-result"]',
             1,
-        ).replace(b'"selected_source_bytes":10678', b'"selected_source_bytes":41416', 1)
+        ).replace(b'"selected_source_bytes":15591', b'"selected_source_bytes":46329', 1)
         with self.assertRaises(msgspec.ValidationError):
             decode_baseline(duplicate_evidence)
 

@@ -1,8 +1,8 @@
 # Agent readiness and change-locality baseline
 
-This retrospective prototype compares three revision-pinned maintenance cases using five exact result selectors. It preserves reported observations and does not rerun the work or infer unavailable costs.
+This retrospective prototype compares three revision-pinned maintenance cases using seven exact result selectors. It preserves reported observations and does not rerun the work or infer unavailable costs.
 
-Evidence plan: `cda9df9323997b2bfcfb6821b5a8030b2bf3e1f3a22b39ce72a13780880d4eb2`; 63,335 exact selected bytes.
+Evidence plan: `400be989ec480fd83a11ec87a1faa12ced62c8a3b1a78db452b728af12d233e2`; 68,248 exact selected bytes.
 
 Cost policy: Elapsed and token totals remain null unless the exact result preserves an end-to-end value; individual test durations are not substituted for task cost.
 
@@ -14,6 +14,8 @@ Interpretation: Use the separate observations to choose and later compare gradua
 | --- | --- | ---: | --- |
 | `large-refactor-result` | `.codex/pinboard/attempts/make-large-refactor-delivery-incremental-and-evidence-reusable-1/result.md` | 30,738 | `f5fd823163f1d45826c0a4546c7737e784f04d9cebdce1eb7bc8cb1463c99343` |
 | `storytelling-fixed-point` | `.codex/pinboard/attempts/proofread-entire-repository-storytelling-1/result.md#Final integrated result: whole-repository storytelling pass` | 4,114 | `f0a23284e57a1e161563fd68961b3264fdf9a00c0a75f5d58a67b10e43cbd184` |
+| `persistence-import-correction` | `.codex/pinboard/attempts/consolidate-post-cutover-sqlite-persistence-1/result.md#Corrected review candidate: convert-remaining-persistence-families` | 2,620 | `2bf0e9e80570988743c2a9ccc79929b5c7e4046f508d2b4c35be15a820f08f07` |
+| `persistence-evidence-correction` | `.codex/pinboard/attempts/consolidate-post-cutover-sqlite-persistence-1/result.md#Evidence-corrected review candidate: convert-remaining-persistence-families` | 2,293 | `beb1e09ad4c69331ec76a7ee5f266e6860e316f9c1a34d01dd73b0977778a17f` |
 | `persistence-fixed-point` | `.codex/pinboard/attempts/consolidate-post-cutover-sqlite-persistence-1/result.md#Review candidate: collapse-post-persistence-residue-to-fixed-point` | 10,678 | `95edb10f36906fc5aaa5e3ad9c3b1d0a7f7d61d2029a314c8ff6613a35d9604f` |
 | `dto-revalidation-result` | `.codex/pinboard/attempts/remove-internal-dto-revalidation-1/result.md` | 12,334 | `bc9967767d015b52b0585675a4f3681c51bc932cb50844c4f21510b01403848d` |
 | `prefix-guidance-result` | `.codex/pinboard/attempts/recommend-body-after-prefix-on-first-run-1/result.md` | 5,471 | `7599cfe0bbdaa3efac9d689fa7544621efd90dd46e8c0cd1a8baaf8876b16a5b` |
@@ -72,8 +74,8 @@ Verification breadth:
 - Case: `persistence-fixed-point-cleanup`
 - Candidate: `working-tree-sha256:d7105e63b870990f7994a716b1c9428ad16fe572557013a526ebb389f6c5d669` (working-tree-sha256) over `c92ee09348448beec3407078b81813fe28315988` on `codex/release-candidate`
 - Primary evidence: `persistence-fixed-point`
-- Context evidence: `none`
-- Selected source bytes: 10,678
+- Context evidence: `persistence-import-correction, persistence-evidence-correction`
+- Selected source bytes: 15,591
 - Meaningful edit sites: 40
 - Correction rounds: 2
 - Elapsed cost: not preserved
@@ -167,7 +169,7 @@ Verification breadth:
 
 ### Navigation
 
-The retrospective evidence selection reads 34,852 bytes for the large final-gate range, 10,678 for the persistence range, and 17,805 for the DTO range. These exact source-plan bytes measure baseline evidence loading; historical task source-read totals are not compared because the selected results do not preserve one consistent task window.
+The retrospective evidence selection reads 34,852 bytes for the large final-gate range, 15,591 for the persistence range, and 17,805 for the DTO range. These exact source-plan bytes measure baseline evidence loading; historical task source-read totals are not compared because the selected results do not preserve one consistent task window.
 
 ### Locality
 

@@ -160,6 +160,16 @@ Test an invariant at the cheapest owner whose failure can disprove it. Do not mi
 
 Apply this rule to signatures as well as implementations. Removing a defensive branch is incomplete while an optional parameter, broad input union, general authorization value, or fabricated test helper still admits the invalid combination. Preserve product distinctions with separate closed variants when their required data differs; do not recover the same distinction later with nullable fields or repeated validation.
 
+## Expose predicate-shaped types before extending them
+
+A **predicate-shaped type** appears when one semantic fact is represented only by a boolean wall over fields of one broader record. **Validation accretion** appears when successive forgotten-field fixes add one more condition to that wall. These are judgment smells, not mechanically complete classifications. Generic code that losslessly persists, transports, exports, or presents the complete record remains ordinary record handling until it assigns semantic meaning to selected fields.
+
+When an implementer or reviewer is about to add one more condition to an existing multi-field semantic predicate, stop before silently extending it. Name the exact semantic type that the predicate claims to prove, identify its owning boundary, and estimate the smallest conversion plus its footprint. Perform a bounded local conversion autonomously when it is proportionate. Ask for human judgment before the refactor materially crosses owners, dependency direction, persistence or wire contracts, public behavior, or the repository's existing broad-change thresholds. Present the current effect, the proposed refactor, the estimated footprint and risk, and the smaller fallback; do not ask for abstract permission.
+
+When an exact conversion is chosen, convert once at the owning semantic boundary. Give every current source field one visible disposition: validate it, carry it into the semantic value, or explicitly mark it irrelevant to that fact. Pass exact closed variants downstream so Pyrefly can check complete construction and exhaustive handling. Preserve runtime checks where facts remain owned by stored or external data, relationships among independent values, current state, concurrency, or production wiring.
+
+Use tooling only for the guarantee it can truthfully provide. Pyrefly checks the exact types expressed after the boundary is chosen. Ruff or a small opt-in local check may surface a suspicious shape or verify a chosen converter, but it does not discover every semantic consumer. Runtime tests prove observable boundary and integration behavior. Semantic review recognizes likely predicate-shaped sites, judges the proposed boundary and footprint, and challenges omissions; none of these layers makes deliberate or accidental workarounds impossible.
+
 ## Prefer closed, direct Python
 
 For a closed family, use concrete records or flat unions, exhaustive `match` statements, and direct function calls. The source should reveal which variant calls which effect.

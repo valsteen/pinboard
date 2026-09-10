@@ -512,6 +512,8 @@ def read_attempt_context(
             tuple(
                 value.dependency_id for value in dependencies if stored_state.live_work_state(value.state) is not None
             ),
+            None,
+            True,
         ),
     )
 

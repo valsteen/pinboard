@@ -36,7 +36,9 @@ def action_subject_ids(
             | decision_models.DeferAction(capability=capability)
             | decision_models.MarkReadyAction(capability=capability)
             | decision_models.ReopenAction(capability=capability)
+            | decision_models.RecordReplacementAction(capability=capability)
             | decision_models.ResumeAction(capability=capability)
+            | decision_models.RetainTemporarilyAction(capability=capability)
             | decision_models.ReviseItemAction(capability=capability)
         ):
             return (capability.subject,), (), ()

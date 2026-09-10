@@ -923,6 +923,8 @@ def _execute_transition_command(  # noqa: C901, PLR0912 - one exhaustive command
             | decision_models.MergeProposalCommand()
             | decision_models.ReturnProposalCommand()
             | decision_models.RejectProposalCommand()
+            | decision_models.RecordReplacementCommand()
+            | decision_models.RetainTemporarilyCommand()
             | decision_models.ReviseItemCommand()
         ):
             result = decide_and_commit_transition(

@@ -12,7 +12,7 @@ Use [the coding-agent runtime adapters](runtime-adapters.md) for native task, su
 
 ## Build the preview
 
-1. Require authority `sqlite-v5`.
+1. Require authority `sqlite-v6`.
 2. Run `pinboard parallel preview --json`. This all-safe discovery form is intentionally project-wide because its question spans every current item.
 3. Present the result in two compact groups:
    - **Ready together:** the unambiguous all-safe set.

@@ -20,7 +20,7 @@ class ContentEncoding(Enum):
 
 class HandoverProject(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     application: Literal["pinboard"]
-    schema_version: Literal[5]
+    schema_version: Literal[6]
     created_at: str
     updated_at: str
 
@@ -156,6 +156,18 @@ class ClarificationProposalRelation(
     proposal_id: str
 
 
+class PlannedReplacementProposalRelation(
+    msgspec.Struct,
+    tag="planned-replacement",
+    tag_field="kind",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    proposal_id: str
+    affected_item_id: str
+    replacement_cost: str
+
+
 type HandoverProposalRelation = (
     IndependentProposalRelation
     | PrerequisiteProposalRelation
@@ -163,7 +175,29 @@ type HandoverProposalRelation = (
     | DuplicateProposalRelation
     | ContradictionProposalRelation
     | ClarificationProposalRelation
+    | PlannedReplacementProposalRelation
 )
+
+
+class HandoverPlannedReplacement(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    affected_item_id: str
+    relation_revision: int
+    replacement_item_id: str
+    replacement_cost: str
+    status: work_models.PlannedReplacementStatus
+    recorded_by: str
+    recorded_at: str
+    accepted_project_revision: int
+
+
+class HandoverReplacementDisposition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    affected_item_id: str
+    relation_revision: int
+    rationale: str
+    accepted_cost: str
+    recorded_by: str
+    recorded_at: str
+    accepted_project_revision: int
 
 
 class HandoverTransition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -350,8 +384,8 @@ class HandoverCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_unknow
 
 
 class ProjectHandover(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-project-handover/v4"]
-    authority: Literal["sqlite-v5"]
+    schema: Literal["pinboard-project-handover/v5"]
+    authority: Literal["sqlite-v6"]
     revision: int
     project: HandoverProject
     work_items: tuple[HandoverWorkItem, ...]
@@ -360,6 +394,8 @@ class ProjectHandover(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempts: tuple[HandoverAttempt, ...]
     proposals: tuple[HandoverProposal, ...]
     proposal_relations: tuple[HandoverProposalRelation, ...]
+    planned_replacements: tuple[HandoverPlannedReplacement, ...]
+    replacement_dispositions: tuple[HandoverReplacementDisposition, ...]
     transitions: tuple[HandoverTransition, ...]
     item_artifact_links: tuple[HandoverItemArtifactLink, ...]
     artifact_references: tuple[HandoverArtifactReference, ...]
@@ -374,6 +410,7 @@ class HandoverState:
 
     lifecycle: stored_state.LifecycleRecords
     proposals: stored_state.ProposalRecords
+    replacements: stored_state.ReplacementRecords
     artifact_references: tuple[stored_state.ArtifactReference, ...]
     transition_receipts: tuple[stored_state.StoredTransitionReceipt, ...]
 
@@ -388,6 +425,7 @@ def merge_handover_batches(batches: Iterable[HandoverState]) -> HandoverState:
         raise ValueError("Handover requires one project batch.") from None
     lifecycle = first.lifecycle
     proposals = first.proposals
+    replacements = first.replacements
     artifact_references = list(first.artifact_references)
     transition_receipts = list(first.transition_receipts)
     work_items = list(lifecycle.work_items)
@@ -397,6 +435,8 @@ def merge_handover_batches(batches: Iterable[HandoverState]) -> HandoverState:
     proposal_values = list(proposals.proposals)
     evidence = list(proposals.evidence)
     freshness = list(proposals.freshness)
+    planned_replacements = list(replacements.planned_replacements)
+    replacement_dispositions = list(replacements.dispositions)
     for batch in iterator:
         if batch.lifecycle.project != lifecycle.project:
             raise ValueError("Handover batches do not share one project revision.")
@@ -407,6 +447,8 @@ def merge_handover_batches(batches: Iterable[HandoverState]) -> HandoverState:
         proposal_values.extend(batch.proposals.proposals)
         evidence.extend(batch.proposals.evidence)
         freshness.extend(batch.proposals.freshness)
+        planned_replacements.extend(batch.replacements.planned_replacements)
+        replacement_dispositions.extend(batch.replacements.dispositions)
         artifact_references.extend(batch.artifact_references)
         transition_receipts.extend(batch.transition_receipts)
     return HandoverState(
@@ -418,6 +460,7 @@ def merge_handover_batches(batches: Iterable[HandoverState]) -> HandoverState:
             tuple(definition_revisions),
         ),
         stored_state.ProposalRecords(tuple(proposal_values), tuple(evidence), tuple(freshness)),
+        stored_state.ReplacementRecords(tuple(planned_replacements), tuple(replacement_dispositions)),
         tuple(artifact_references),
         tuple(transition_receipts),
     )
@@ -474,6 +517,8 @@ def _project_proposal_relation(value: stored_state.StoredProposal) -> HandoverPr
             return ContradictionProposalRelation(proposal_id, str(item))
         case work_models.ClarificationProposalRelation():
             return ClarificationProposalRelation(proposal_id)
+        case work_models.PlannedReplacementProposalRelation(item=item, replacement_cost=cost):
+            return PlannedReplacementProposalRelation(proposal_id, str(item), cost)
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -529,8 +574,8 @@ def project_handover_from_state(
         proposal_id: tuple(assumptions) for proposal_id, assumptions in proposal_freshness_groups.items()
     }
     return ProjectHandover(
-        "pinboard-project-handover/v4",
-        "sqlite-v5",
+        "pinboard-project-handover/v5",
+        "sqlite-v6",
         state.lifecycle.project.revision,
         HandoverProject(
             state.lifecycle.project.application,
@@ -612,6 +657,31 @@ def project_handover_from_state(
             for value in pending_proposals
         ),
         tuple(_project_proposal_relation(value) for value in pending_proposals),
+        tuple(
+            HandoverPlannedReplacement(
+                str(value.affected_item_id),
+                value.relation_revision,
+                str(value.replacement_item_id),
+                value.replacement_cost,
+                value.status,
+                str(value.recorded_by),
+                value.recorded_at.isoformat(),
+                value.accepted_project_revision,
+            )
+            for value in state.replacements.planned_replacements
+        ),
+        tuple(
+            HandoverReplacementDisposition(
+                str(value.affected_item_id),
+                value.relation_revision,
+                value.rationale,
+                value.accepted_cost,
+                str(value.recorded_by),
+                value.recorded_at.isoformat(),
+                value.accepted_project_revision,
+            )
+            for value in state.replacements.dispositions
+        ),
         tuple(
             HandoverTransition(
                 int(value.history_id),

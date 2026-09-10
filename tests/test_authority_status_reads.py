@@ -567,6 +567,8 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 "attempts",
                 "item_dependencies",
                 "project_meta",
+                "planned_replacements",
+                "replacement_dispositions",
                 "work_item_definition_revisions",
                 "work_items",
             },

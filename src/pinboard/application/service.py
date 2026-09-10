@@ -451,7 +451,9 @@ def _resolve_actor_authority(
             assert_never(unreachable)
 
 
-def _transition_decision_scope(command: decision_models.TransitionCommand) -> query_models.DecisionScope:
+def _transition_decision_scope(  # noqa: C901, PLR0912 - one exhaustive command-to-read-scope boundary
+    command: decision_models.TransitionCommand,
+) -> query_models.DecisionScope:
     item_ids, attempt_ids, proposal_ids = action_subject_ids(command.action)
     related_item_ids: tuple[ItemId, ...] = ()
     dependency_closure_roots: tuple[ItemId, ...] = ()
@@ -476,6 +478,10 @@ def _transition_decision_scope(command: decision_models.TransitionCommand) -> qu
             item_ids = (*item_ids, value.item_id)
             related_item_ids = value.definition.dependencies
             dependency_closure_roots = value.definition.dependencies
+        case decision_models.RecordReplacementCommand(value=value):
+            related_item_ids = (value.replacement_item,)
+        case decision_models.RetainTemporarilyCommand():
+            pass
         case decision_models.CloseCommand():
             live_dependent_roots = item_ids
         case decision_models.CompleteCommand() | decision_models.CoveredCompleteCommand():

@@ -97,6 +97,7 @@ class _ProposalRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     why_it_matters: str
     relation_kind: work_models.ProposalRelationKind
     relation_item_id: ItemId | None
+    relation_replacement_cost: str | None
     effect: str
     unlock: str
     urgency_evidence: str
@@ -132,6 +133,25 @@ class _PreparationLeaseRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     acquired_at: datetime
     expires_at: datetime
     status: authority_models.PreparationLeaseStatus
+
+
+class _PlannedReplacementRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    affected_item_id: ItemId
+    relation_revision: int
+    replacement_item_id: ItemId
+    replacement_cost: str
+    status: work_models.PlannedReplacementStatus
+    recorded_by: TaskId
+    recorded_at: datetime
+
+
+class _ReplacementDispositionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    affected_item_id: ItemId
+    relation_revision: int
+    rationale: str
+    accepted_cost: str
+    recorded_by: TaskId
+    recorded_at: datetime
 
 
 def _attempt_row_key(value: _AttemptRow) -> str:
@@ -236,6 +256,92 @@ def _project_preparation_authority(
     )
 
 
+def read_current_replacements(
+    connection: sqlite3.Connection, item_ids: Iterable[ItemId]
+) -> tuple[tuple[work_models.PlannedReplacement, ...], tuple[work_models.ReplacementDisposition, ...]]:
+    selected_ids = tuple(dict.fromkeys(item_ids))
+    if not selected_ids:
+        return (), ()
+    placeholders = ", ".join("?" for _ in selected_ids)
+    rows = tuple(
+        decode_row(row, _PlannedReplacementRow)
+        for row in connection.execute(
+            f"""
+            SELECT relation.affected_item_id, relation.relation_revision,
+                   relation.replacement_item_id, relation.replacement_cost,
+                   relation.status, relation.recorded_by, relation.recorded_at
+            FROM planned_replacements AS relation
+            WHERE relation.affected_item_id IN ({placeholders})
+              AND relation.relation_revision = (
+                  SELECT MAX(candidate.relation_revision)
+                  FROM planned_replacements AS candidate
+                  WHERE candidate.affected_item_id = relation.affected_item_id
+              )
+            ORDER BY relation.affected_item_id
+            """,
+            selected_ids,
+        ).fetchall()
+    )
+    dispositions_by_key = {
+        (value.affected_item_id, value.relation_revision): value
+        for value in (
+            decode_row(row, _ReplacementDispositionRow)
+            for row in connection.execute(
+                f"""
+                SELECT disposition.affected_item_id, disposition.relation_revision,
+                       disposition.rationale, disposition.accepted_cost,
+                       disposition.recorded_by, disposition.recorded_at
+                FROM replacement_dispositions AS disposition
+                JOIN planned_replacements AS relation
+                  ON relation.affected_item_id = disposition.affected_item_id
+                 AND relation.relation_revision = disposition.relation_revision
+                WHERE disposition.affected_item_id IN ({placeholders})
+                  AND relation.relation_revision = (
+                      SELECT MAX(candidate.relation_revision)
+                      FROM planned_replacements AS candidate
+                      WHERE candidate.affected_item_id = relation.affected_item_id
+                  )
+                ORDER BY disposition.affected_item_id, disposition.relation_revision
+                """,
+                selected_ids,
+            ).fetchall()
+        )
+    }
+    replacements = tuple(
+        work_models.PlannedReplacement(
+            value.affected_item_id,
+            value.relation_revision,
+            value.replacement_item_id,
+            value.replacement_cost,
+            value.status,
+            value.recorded_by,
+            value.recorded_at,
+        )
+        for value in rows
+    )
+    dispositions: list[work_models.ReplacementDisposition] = []
+    for relation in rows:
+        value = dispositions_by_key.get((relation.affected_item_id, relation.relation_revision))
+        if value is None:
+            continue
+        if value.accepted_cost != relation.replacement_cost:
+            raise StorageError(
+                StorageErrorCode.INVALID_STATE,
+                "A selected temporary-retention disposition does not accept its exact replacement cost.",
+            )
+        dispositions.append(
+            work_models.ReplacementDisposition(
+                value.affected_item_id,
+                value.relation_revision,
+                value.rationale,
+                value.accepted_cost,
+                value.recorded_by,
+                value.recorded_at,
+            )
+        )
+    return replacements, tuple(dispositions)
+
+
 def _read_attempt_authorities(
     connection: sqlite3.Connection,
     attempt_ids: Iterable[AttemptId],
@@ -318,7 +424,7 @@ def _proposal_record(
         proposal.user_label,
         proposal.trigger,
         proposal.why_it_matters,
-        decode_proposal_relation(proposal.relation_kind, proposal.relation_item_id),
+        decode_proposal_relation(proposal.relation_kind, proposal.relation_item_id, proposal.relation_replacement_cost),
         proposal.effect,
         proposal.unlock,
         proposal.urgency_evidence,
@@ -441,12 +547,16 @@ def read_current_snapshot(
             connection, (item.item_id for item in item_rows), project.host_epoch, now
         )
 
+    planned_replacements, replacement_dispositions = read_current_replacements(
+        connection, (item.item_id for item in item_rows)
+    )
     history_items = tuple(
         dict.fromkeys(
             item_id
             for item_id in (
                 *(row.dependency_id for row in dependency_rows),
                 *(proposal.relation_item_id for proposal in proposal_rows if proposal.relation_item_id is not None),
+                *(relation.replacement_item for relation in planned_replacements),
             )
             if item_id not in live_item_ids
         )
@@ -488,6 +598,8 @@ def read_current_snapshot(
             for value in definitions
         ),
         host_epoch=project.host_epoch,
+        planned_replacements=planned_replacements,
+        replacement_dispositions=replacement_dispositions,
     )
 
 
@@ -537,7 +649,8 @@ def _read_selected_proposal(connection: sqlite3.Connection, proposal_id: Proposa
     row = connection.execute(
         """
         SELECT proposal_id, created_at, source_task_id, user_label, trigger, why_it_matters,
-               relation_kind, relation_item_id, effect, unlock, urgency_evidence, subject_revision
+               relation_kind, relation_item_id, relation_replacement_cost,
+               effect, unlock, urgency_evidence, subject_revision
         FROM proposals WHERE proposal_id = ? AND disposition IS NULL
         """,
         (proposal_id,),
@@ -716,6 +829,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         )
         for proposal in proposals.values()
     )
+    planned_replacements, replacement_dispositions = read_current_replacements(connection, contextual_item_ids)
     snapshot = LedgerSnapshot(
         revision=str(project.revision),
         items=tuple(
@@ -747,6 +861,8 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         ),
         host_epoch=project.host_epoch,
         checkpoint_history_ids=checkpoint_history_ids,
+        planned_replacements=planned_replacements,
+        replacement_dispositions=replacement_dispositions,
     )
     return query_models.DecisionFacts(
         snapshot,

@@ -986,6 +986,43 @@ class ServiceTest(unittest.TestCase):
         )
         self.assertEqual(before.authority, after.authority)
 
+    def test_proposal_intake_persists_known_planned_replacement_atomically(self) -> None:
+        state = complete_sqlite_state()
+        state = replace(state, proposals=replace(state.proposals, proposals=(), evidence=(), freshness=()))
+        store, database_path = self._store_with_state(state)
+        before = store.validated_snapshot()
+        intake = ProposalIntake(
+            ProposalId("replacement-work"),
+            SQLITE_NOW,
+            TaskId("discovering-task"),
+            "Replacement work",
+            "A safer implementation should replace Work C.",
+            "The known relationship must be recorded with intake.",
+            "Create the replacement item and stop obsolete work on Work C.",
+            "The replacement can be evaluated without losing the relationship.",
+            work_models.PlannedReplacementProposalRelation(
+                ItemId("work-c"), "Discard any Work C implementation already in progress."
+            ),
+            "The replacement decision is current.",
+            ("source:accepted-design",),
+            ("Work C remains live.",),
+        )
+
+        result = self._create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW + timedelta(seconds=1))
+
+        self.assertNotIsInstance(result, DecisionFailure)
+        reopened = SQLiteWorkStore(database_path).validated_snapshot()
+        self.assertEqual(1, len(reopened.replacements.planned_replacements))
+        relation = reopened.replacements.planned_replacements[0]
+        self.assertEqual(ItemId("work-c"), relation.affected_item_id)
+        self.assertEqual(ItemId("replacement-work"), relation.replacement_item_id)
+        self.assertEqual(1, relation.relation_revision)
+        self.assertEqual(work_models.PlannedReplacementStatus.CURRENT, relation.status)
+        affected_before = next(value for value in before.lifecycle.work_items if value.item_id == ItemId("work-c"))
+        affected_after = next(value for value in reopened.lifecycle.work_items if value.item_id == ItemId("work-c"))
+        self.assertEqual(affected_before.state, affected_after.state)
+        self.assertGreater(affected_after.subject_revision, affected_before.subject_revision)
+
     def test_proposal_position_outside_the_live_queue_is_rejected_atomically(self) -> None:
         store = self._store()
         intake = ProposalIntake(

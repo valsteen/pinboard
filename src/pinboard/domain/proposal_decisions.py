@@ -11,6 +11,10 @@ from pinboard.domain.proposal_models import (
 )
 
 
+def _planned_replacement_revision(relation: work_models.PlannedReplacement) -> int:
+    return relation.relation_revision
+
+
 def decide_proposal_creation(
     snapshot: LedgerSnapshot,
     operation: CreateProposalOperation,
@@ -54,6 +58,7 @@ def decide_proposal_creation(
     if isinstance(digest, DecisionFailure):
         return digest
     prerequisite_change: PrerequisiteDependencyChange | None = None
+    planned_replacement: work_models.PlannedReplacement | None = None
     if isinstance(intake.relation, work_models.PrerequisiteProposalRelation):
         if any(authority.item == intake.relation.item for authority in snapshot.command_preparation_authorities):
             return DecisionFailure(
@@ -89,10 +94,32 @@ def decide_proposal_creation(
                 changed_digest,
                 changed_definition,
             )
+    elif isinstance(intake.relation, work_models.PlannedReplacementProposalRelation):
+        if not intake.relation.replacement_cost.strip():
+            return DecisionFailure(
+                DecisionFailureCode.PROPOSAL_INVALID,
+                "A planned replacement proposal requires a concrete nonempty replacement cost.",
+                None,
+            )
+        matching_relations: tuple[work_models.PlannedReplacement, ...] = tuple(
+            relation for relation in snapshot.planned_replacements if relation.affected_item == intake.relation.item
+        )
+        latest = max(matching_relations, key=_planned_replacement_revision, default=None)
+        revision = 1 if latest is None else latest.relation_revision + 1
+        planned_replacement = work_models.PlannedReplacement(
+            intake.relation.item,
+            revision,
+            item_id,
+            intake.relation.replacement_cost,
+            work_models.PlannedReplacementStatus.CURRENT,
+            intake.source_task_id,
+            operation.intake.created_at,
+        )
     return ProposalCreationDecision(
         intake,
         IntakeWorkItem(item_id, position, dependencies, digest, definition),
         prerequisite_change,
+        planned_replacement,
         intake.evidence,
         intake.freshness_assumptions,
     )

@@ -52,5 +52,6 @@ class ProposalCreationDecision:
     proposal: ProposalIntake
     intake_item: IntakeWorkItem
     prerequisite_change: PrerequisiteDependencyChange | None
+    planned_replacement: work_models.PlannedReplacement | None
     evidence: tuple[str, ...]
     freshness: tuple[str, ...]

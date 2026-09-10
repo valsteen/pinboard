@@ -9,6 +9,8 @@ TABLE_GROUPS: dict[str, str] = {
     "attempts": "current work",
     "work_item_definition_revisions": "definitions and relationships",
     "item_dependencies": "scope and relationships",
+    "planned_replacements": "scope and relationships",
+    "replacement_dispositions": "scope and relationships",
     "proposals": "discovery",
     "proposal_evidence": "discovery",
     "proposal_freshness": "discovery",
@@ -36,6 +38,8 @@ RELATION_ROLES: dict[tuple[str, str], str] = {
     ("preparation_leases", "preparation_lease_generations"): "preparation identity is fenced by generation",
     ("preparation_leases", "work_item_definition_revisions"): "preparation pins one accepted definition",
     ("item_dependencies", "work_items"): "items form a dependency graph",
+    ("planned_replacements", "work_items"): "a replacement explicitly links two exact items",
+    ("replacement_dispositions", "planned_replacements"): "temporary retention pins one relation revision",
     ("work_item_definition_revisions", "work_items"): "definition history belongs to an item",
     ("proposal_evidence", "proposals"): "discovery retains its evidence",
     ("proposal_freshness", "proposals"): "discovery retains assumptions",
@@ -82,7 +86,7 @@ DIAGRAM = Diagram(
     slug="database",
     title="Six kinds of memory in one relational ledger",
     description=(
-        "Seventeen SQLite tables preserve work identity, bounded status counts, definitions, proposals, artifacts, mutation ownership, and history. "
+        "Nineteen SQLite tables preserve work identity, bounded status counts, definitions, explicit replacement decisions, proposals, artifacts, mutation ownership, and history. "
         "Relationship families are grouped for readability while the source seed accounts for every foreign key."
     ),
     width=1200,
@@ -142,7 +146,17 @@ DIAGRAM = Diagram(
             90,
         ),
         Box("attempts", "", "Attempts", ("one execution",), ("attempts",), 640, 110, 140, 90),
-        Box("definitions", "", "Accepted versions", ("current definition",), ("plus its history",), 830, 110, 175, 90),
+        Box(
+            "definitions",
+            "",
+            "Accepted versions",
+            ("definition + relation",),
+            ("versioned retention",),
+            830,
+            110,
+            175,
+            90,
+        ),
         Box("dependencies", "", "Dependencies", ("item → prerequisite",), ("item_dependencies",), 1020, 110, 160, 90),
         Box(
             "artifact-refs",

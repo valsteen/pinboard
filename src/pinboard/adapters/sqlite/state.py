@@ -82,6 +82,32 @@ class _StateCountRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_count: int
 
 
+def _read_replacements(connection: sqlite3.Connection) -> stored_state.ReplacementRecords:
+    planned = tuple(
+        decode_row(row, stored_state.StoredPlannedReplacement)
+        for row in connection.execute(
+            """
+            SELECT affected_item_id, relation_revision, replacement_item_id, replacement_cost,
+                   status, recorded_by, recorded_at, accepted_project_revision
+            FROM planned_replacements
+            ORDER BY affected_item_id, relation_revision
+            """
+        ).fetchall()
+    )
+    dispositions = tuple(
+        decode_row(row, stored_state.StoredReplacementDisposition)
+        for row in connection.execute(
+            """
+            SELECT affected_item_id, relation_revision, rationale, accepted_cost,
+                   recorded_by, recorded_at, accepted_project_revision
+            FROM replacement_dispositions
+            ORDER BY affected_item_id, relation_revision
+            """
+        ).fetchall()
+    )
+    return stored_state.ReplacementRecords(planned, dispositions)
+
+
 def _read_project(connection: sqlite3.Connection) -> stored_state.ProjectRecord:
     rows = tuple(
         connection.execute(
@@ -189,12 +215,46 @@ def _validate_dependencies(
                 pending.extend(dependency_groups[dependency])
 
 
+def _replacement_revision(value: stored_state.StoredPlannedReplacement) -> int:
+    return value.relation_revision
+
+
+def _validate_replacements(
+    records: stored_state.ReplacementRecords,
+    item_ids: set[ItemId],
+    error_code: StorageErrorCode,
+) -> None:
+    replacements_by_item: dict[ItemId, list[stored_state.StoredPlannedReplacement]] = {}
+    for replacement in records.planned_replacements:
+        if replacement.affected_item_id not in item_ids or replacement.replacement_item_id not in item_ids:
+            raise StorageError(error_code, "A planned replacement names an unknown work item.")
+        replacements_by_item.setdefault(replacement.affected_item_id, []).append(replacement)
+    indexed_replacements: dict[tuple[ItemId, int], stored_state.StoredPlannedReplacement] = {}
+    for affected_item, replacements in replacements_by_item.items():
+        ordered = sorted(replacements, key=_replacement_revision)
+        if [value.relation_revision for value in ordered] != list(range(1, len(ordered) + 1)):
+            raise StorageError(error_code, "Planned replacement revisions must be contiguous from revision 1.")
+        indexed_replacements.update(((affected_item, value.relation_revision), value) for value in ordered)
+    disposition_keys: set[tuple[ItemId, int]] = set()
+    for disposition in records.dispositions:
+        key = (disposition.affected_item_id, disposition.relation_revision)
+        replacement = indexed_replacements.get(key)
+        if replacement is None:
+            raise StorageError(error_code, "A temporary-retention disposition names an unknown replacement revision.")
+        if disposition.accepted_cost != replacement.replacement_cost:
+            raise StorageError(error_code, "A temporary-retention disposition must accept the exact replacement cost.")
+        if key in disposition_keys:
+            raise StorageError(error_code, "A replacement revision has duplicate temporary-retention dispositions.")
+        disposition_keys.add(key)
+
+
 def _validate_current_state(state: stored_state.StoredWorkState, error_code: StorageErrorCode) -> None:
     validate_attempt_authority(state, error_code)
     positions = sorted(value.queue_position for value in state.lifecycle.work_items if value.queue_position is not None)
     if positions != list(range(1, len(positions) + 1)):
         raise StorageError(error_code, "Live work-item queue positions must be contiguous and one-based.")
     item_ids = {value.item_id for value in state.lifecycle.work_items}
+    _validate_replacements(state.replacements, item_ids, error_code)
     current_definitions = _current_definitions(state, item_ids, error_code)
     item_states = {value.item_id: value.state for value in state.lifecycle.work_items}
     for lease in state.authority.preparation_leases:
@@ -236,6 +296,7 @@ def read_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
     state = stored_state.StoredWorkState(
         read_lifecycle(connection, project),
         read_proposals(connection),
+        _read_replacements(connection),
         read_artifacts(connection),
         read_authority(connection),
         _read_history(connection),
@@ -249,9 +310,17 @@ def read_handover_state(connection: sqlite3.Connection) -> handover.HandoverStat
     """Read every exported relation while excluding local-only authority history."""
 
     project = _read_project(connection)
+    lifecycle = read_lifecycle(connection, project)
+    replacements = _read_replacements(connection)
+    _validate_replacements(
+        replacements,
+        {value.item_id for value in lifecycle.work_items},
+        StorageErrorCode.INVALID_STATE,
+    )
     return handover.HandoverState(
-        read_lifecycle(connection, project),
+        lifecycle,
         read_pending_proposals(connection),
+        replacements,
         read_artifacts(connection),
         _read_history(connection),
     )

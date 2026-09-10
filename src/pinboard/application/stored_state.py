@@ -82,7 +82,7 @@ def stored_close_outcome(value: work_models.CloseOutcome) -> StoredWorkItemState
 @dataclass(frozen=True, slots=True)
 class ProjectRecord:
     application: Literal["pinboard"]
-    schema_version: Literal[5]
+    schema_version: Literal[6]
     revision: int
     host_epoch: int
     created_at: datetime
@@ -189,6 +189,35 @@ class ProposalFreshness:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredPlannedReplacement:
+    affected_item_id: ItemId
+    relation_revision: int
+    replacement_item_id: ItemId
+    replacement_cost: str
+    status: work_models.PlannedReplacementStatus
+    recorded_by: TaskId
+    recorded_at: datetime
+    accepted_project_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class StoredReplacementDisposition:
+    affected_item_id: ItemId
+    relation_revision: int
+    rationale: str
+    accepted_cost: str
+    recorded_by: TaskId
+    recorded_at: datetime
+    accepted_project_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReplacementRecords:
+    planned_replacements: tuple[StoredPlannedReplacement, ...]
+    dispositions: tuple[StoredReplacementDisposition, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AttemptLeaseCounter:
     attempt_id: AttemptId
     generation_high_water: int
@@ -286,6 +315,7 @@ class AuthorityRecords:
 class StoredWorkState:
     lifecycle: LifecycleRecords
     proposals: ProposalRecords
+    replacements: ReplacementRecords
     artifact_references: tuple[ArtifactReference, ...]
     authority: AuthorityRecords
     transition_receipts: tuple[StoredTransitionReceipt, ...]

@@ -240,6 +240,25 @@ class PreparationAuthorityTest(unittest.TestCase):
                 "Item 'work-c' has live dependencies.",
             ),
             (
+                "planned replacement after selection",
+                replace(
+                    snapshot,
+                    planned_replacements=(
+                        work_models.PlannedReplacement(
+                            ItemId("work-c"),
+                            1,
+                            ItemId("work-a"),
+                            "Starting Work C would duplicate replacement work.",
+                            work_models.PlannedReplacementStatus.CURRENT,
+                            TaskId("project-task"),
+                            SQLITE_NOW,
+                        ),
+                    ),
+                ),
+                acquisition,
+                "Item 'work-c' has an unresolved planned replacement.",
+            ),
+            (
                 "missing definition",
                 replace(
                     snapshot,
@@ -389,6 +408,32 @@ class PreparationAuthorityTest(unittest.TestCase):
         assert not isinstance(actions, DecisionFailure)
         self.assertEqual(["activate:work-c"], [str(decision_models.action_id(value)) for value in actions])
         self.assertEqual(decision_models.AuthorizationKind.PREPARATION, actions[0].capability.authorization)
+
+        replacement_arrived = replace(
+            prepared,
+            planned_replacements=(
+                work_models.PlannedReplacement(
+                    ItemId("work-c"),
+                    1,
+                    ItemId("work-a"),
+                    "Activation would start work that Work A replaces.",
+                    work_models.PlannedReplacementStatus.CURRENT,
+                    TaskId("project-task"),
+                    SQLITE_NOW,
+                ),
+            ),
+        )
+        guarded = __import__("pinboard.domain.decisions", fromlist=["available_actions"]).available_actions(
+            replacement_arrived, actor
+        )
+        self.assertEqual(
+            DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                "The supplied preparation lease is not current for a ready item.",
+                None,
+            ),
+            guarded,
+        )
 
     def test_preparation_persists_reloads_and_changes_visibility_exactly_at_expiry(self) -> None:
         store, database_path = self._store()

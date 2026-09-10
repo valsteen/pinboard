@@ -377,7 +377,7 @@ class SQLiteStoreTest(unittest.TestCase):
             connection.execute(
                 "CREATE TABLE project_meta (singleton INTEGER, application TEXT, schema_version INTEGER)"
             )
-            connection.execute("INSERT INTO project_meta VALUES (1, 'pinboard', 5)")
+            connection.execute("INSERT INTO project_meta VALUES (1, 'pinboard', 6)")
             connection.commit()
         finally:
             connection.close()
@@ -389,7 +389,7 @@ class SQLiteStoreTest(unittest.TestCase):
         invalid_types_connection = sqlite3.connect(invalid_types)
         try:
             invalid_types_connection.execute("CREATE TABLE project_meta (application, schema_version)")
-            invalid_types_connection.execute("INSERT INTO project_meta VALUES (7, 'sqlite-v5')")
+            invalid_types_connection.execute("INSERT INTO project_meta VALUES (7, 'sqlite-v6')")
             invalid_types_connection.commit()
         finally:
             invalid_types_connection.close()
@@ -702,7 +702,7 @@ class SQLiteStoreTest(unittest.TestCase):
             ).fetchone()[0]
         finally:
             connection.close()
-        self.assertEqual(17, table_count)
+        self.assertEqual(19, table_count)
         review_items = list(state.lifecycle.work_items)
         review_items[1] = replace(review_items[1], state=stored_state.StoredWorkItemState.REVIEW)
         review_attempt = replace(state.lifecycle.attempts[0], state=work_models.AttemptState.REVIEW)
@@ -890,6 +890,78 @@ class SQLiteStoreTest(unittest.TestCase):
         finally:
             cleanup.close()
         self.assertEqual(failed_initial, failed_store.validated_snapshot())
+
+    def test_replacement_and_exact_retention_persist_without_lifecycle_changes(self) -> None:
+        _path, store = self._store()
+        initial = store.validated_snapshot()
+        snapshot = project_decision_snapshot(initial, SQLITE_NOW)
+        actor = decision_models.ActorAuthority(
+            decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
+        )
+        action = next(
+            value
+            for value in available_actions(snapshot, actor)
+            if value.kind == decision_models.ActionKind.RECORD_REPLACEMENT
+            and value.capability.subject == ItemId("work-c")
+        )
+        assert isinstance(action, decision_models.RecordReplacementAction)
+        decision = decide(
+            snapshot,
+            decision_models.RecordReplacementCommand(
+                action,
+                work_models.RecordPlannedReplacementInput(
+                    ItemId("work-c"),
+                    0,
+                    ItemId("work-b"),
+                    "Discard the current partial implementation.",
+                    work_models.PlannedReplacementStatus.CURRENT,
+                    TaskId("coordinator"),
+                ),
+            ),
+            SQLITE_NOW,
+        )
+        with store.write() as transaction:
+            expect_success(transaction.commit(project_transition_mutation(mutation_allocation(initial), decision)))
+
+        recorded = store.validated_snapshot()
+        self.assertEqual(initial.lifecycle.work_items[3].state, recorded.lifecycle.work_items[3].state)
+        self.assertEqual(initial.lifecycle.attempts, recorded.lifecycle.attempts)
+        self.assertEqual(1, len(recorded.replacements.planned_replacements))
+        self.assertEqual(13, recorded.lifecycle.work_items[3].subject_revision)
+        self.assertEqual("pinboard-planned-replacement/v1", recorded.transition_receipts[-1].input_schema)
+
+        selected = store.read_current_action_snapshot(SQLITE_NOW)
+        relation = selected.current_replacement(ItemId("work-c"))
+        self.assertIsNotNone(relation)
+        assert relation is not None
+        retain_action = next(
+            value
+            for value in available_actions(selected, actor)
+            if value.kind == decision_models.ActionKind.RETAIN_TEMPORARILY
+            and value.capability.subject == ItemId("work-c")
+        )
+        assert isinstance(retain_action, decision_models.RetainTemporarilyAction)
+        retention = decide(
+            selected,
+            decision_models.RetainTemporarilyCommand(
+                retain_action,
+                work_models.RetainTemporarilyInput(
+                    ItemId("work-c"),
+                    relation.relation_revision,
+                    "Finish the current review before switching.",
+                    relation.replacement_cost,
+                    TaskId("coordinator"),
+                ),
+            ),
+            SQLITE_NOW,
+        )
+        with store.write() as transaction:
+            expect_success(transaction.commit(project_transition_mutation(mutation_allocation(recorded), retention)))
+        retained = store.validated_snapshot()
+        self.assertEqual(initial.lifecycle.work_items[3].state, retained.lifecycle.work_items[3].state)
+        self.assertEqual(initial.lifecycle.attempts, retained.lifecycle.attempts)
+        self.assertEqual(1, len(retained.replacements.dispositions))
+        self.assertEqual("pinboard-replacement-disposition/v1", retained.transition_receipts[-1].input_schema)
 
     def test_runtime_write_scope_propagates_programming_failure_and_closes(self) -> None:
         path, store = self._store()

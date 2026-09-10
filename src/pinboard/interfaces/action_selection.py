@@ -242,6 +242,8 @@ def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
             action = decision_models.RejectProposalAction(capability(ProposalId(subject)))
         case decision_models.ActionKind.REOPEN:
             action = decision_models.ReopenAction(capability(ItemId(subject)))
+        case decision_models.ActionKind.RECORD_REPLACEMENT:
+            action = decision_models.RecordReplacementAction(capability(ItemId(subject)))
         case decision_models.ActionKind.REBIND_ATTEMPT:
             action = decision_models.RebindAttemptAction(capability(AttemptId(subject)))
         case decision_models.ActionKind.REPORT_BLOCKER:
@@ -252,6 +254,8 @@ def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
             action = decision_models.ReturnForCorrectionAction(capability(AttemptId(subject)))
         case decision_models.ActionKind.RETURN_PROPOSAL:
             action = decision_models.ReturnProposalAction(capability(ProposalId(subject)))
+        case decision_models.ActionKind.RETAIN_TEMPORARILY:
+            action = decision_models.RetainTemporarilyAction(capability(ItemId(subject)))
         case decision_models.ActionKind.REVISE_ITEM:
             action = decision_models.ReviseItemAction(capability(ItemId(subject)))
         case decision_models.ActionKind.SUBMIT_REVIEW:

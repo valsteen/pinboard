@@ -69,6 +69,33 @@ class ProposalRelationKind(Enum):
     DUPLICATE = "duplicate"
     CONTRADICTION = "contradiction"
     CLARIFICATION = "clarification"
+    PLANNED_REPLACEMENT = "planned-replacement"
+
+
+class PlannedReplacementStatus(Enum):
+    CURRENT = "current"
+    WITHDRAWN = "withdrawn"
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedReplacement:
+    affected_item: ItemId
+    relation_revision: int
+    replacement_item: ItemId
+    replacement_cost: str
+    status: PlannedReplacementStatus
+    recorded_by: TaskId
+    recorded_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ReplacementDisposition:
+    affected_item: ItemId
+    relation_revision: int
+    rationale: str
+    accepted_cost: str
+    recorded_by: TaskId
+    recorded_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +134,13 @@ class ClarificationProposalRelation:
     kind: ProposalRelationKind = field(init=False, default=ProposalRelationKind.CLARIFICATION)
 
 
+@dataclass(frozen=True, slots=True)
+class PlannedReplacementProposalRelation:
+    item: ItemId
+    replacement_cost: str
+    kind: ProposalRelationKind = field(init=False, default=ProposalRelationKind.PLANNED_REPLACEMENT)
+
+
 type ProposalRelation = (
     IndependentProposalRelation
     | PrerequisiteProposalRelation
@@ -114,6 +148,7 @@ type ProposalRelation = (
     | DuplicateProposalRelation
     | ContradictionProposalRelation
     | ClarificationProposalRelation
+    | PlannedReplacementProposalRelation
 )
 
 
@@ -248,6 +283,25 @@ class AcceptCheckpointInput:
 class AcceptReviewAndContinueInput:
     candidate: CandidateId
     evidence: str
+
+
+@dataclass(frozen=True, slots=True)
+class RecordPlannedReplacementInput:
+    affected_item: ItemId
+    expected_relation_revision: int
+    replacement_item: ItemId
+    replacement_cost: str
+    status: PlannedReplacementStatus
+    recorded_by: TaskId
+
+
+@dataclass(frozen=True, slots=True)
+class RetainTemporarilyInput:
+    affected_item: ItemId
+    relation_revision: int
+    rationale: str
+    accepted_cost: str
+    recorded_by: TaskId
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,6 +452,8 @@ class ProjectAttemptActionContext:
     current_definition_digest: str | None
     live_dependencies: tuple[ItemId, ...]
     revision_available: bool
+    current_replacement_revision: int | None
+    replacement_resolved: bool
 
 
 @dataclass(frozen=True, slots=True)

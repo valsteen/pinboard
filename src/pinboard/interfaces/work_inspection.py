@@ -513,7 +513,7 @@ def compose_status(
         active_attempts=tuple(str(value) for value in facts.active_attempts),
         counts=counts,
         intake_item_count=counts.get(work_models.WorkState.INTAKE.value, 0),
-        authority="sqlite-v5",
+        authority="sqlite-v6",
     )
 
 
@@ -553,10 +553,21 @@ def show_overview(store: ports.WorkStore, command: cli_commands.OverviewCommand)
             )
         )
         next_action = item.next_action or "none"
+        replacement = (
+            " replacement=none"
+            if item.planned_replacement is None
+            else (
+                f" replacement={item.planned_replacement.replacement_item_id}"
+                f" replacement_revision={item.planned_replacement.relation_revision}"
+                f" replacement_cost={item.planned_replacement.replacement_cost!r}"
+                f" temporarily_retained={str(item.planned_replacement.temporarily_retained).lower()}"
+            )
+        )
         print(
             f"{position}\t{item.item_id}\t{item.state.value}\teligible={str(item.eligible).lower()}"
-            f"\tnext={next_action}{attempt}{preparation}\t{item.label}"
+            f"\tnext={next_action}{attempt}{preparation}{replacement}\t{item.label}"
         )
+        print(f"  effect={item.effect} unlock={item.unlock}")
     print(
         f"intake_items={sum(1 for item in overview_projection.items if item.state == work_models.WorkState.INTAKE)} "
         f"immediate_options={len(overview_projection.immediate_options)}"

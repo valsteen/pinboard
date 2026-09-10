@@ -36,10 +36,10 @@ DIAGRAM = Diagram(
     title="One accepted target anchors an ordinary implementation and review loop",
     description=(
         "On the left, an ordinary coding harness repeatedly interprets a prose request, repository code, and review "
-        "feedback. On the right, Pinboard binds the accepted structured brief, exact candidate, and caller-selected "
-        "historical evidence into a read-only review job for an independent reviewer. Correction review can reuse "
-        "unaffected assurance while reopening changed relationships. When accepted checkpoint history exists, "
-        "covered completion preserves every checkpoint disposition with the terminal result and final review."
+        "feedback. On the right, Pinboard preserves accepted semantics and stable authorities, derives concrete impact "
+        "from the candidate, and binds that candidate plus caller-selected historical evidence into a read-only review "
+        "job. The independent reviewer reuses unchanged evidence, revalidates changed or unclassified relationships, "
+        "and widens on concrete escalation conditions. Covered completion preserves accepted checkpoint dispositions."
     ),
     width=1400,
     height=800,
@@ -125,7 +125,7 @@ DIAGRAM = Diagram(
             "brief",
             "Accepted target",
             "Structured work brief",
-            ("intent · scope · non-goals", "criteria · provenance · checks"),
+            ("intent · scope · non-goals", "stable owners · uncertainty"),
             ("pinboard-work-brief/v2",),
             820,
             90,
@@ -135,8 +135,8 @@ DIAGRAM = Diagram(
         Box(
             "implementer",
             "Implementer",
-            "Build against the brief",
-            ("reread the accepted target", "change the ordinary repository"),
+            "Derive changed surface",
+            ("reread the accepted target", "read outward when exposed"),
             ("attempt identity",),
             750,
             290,
@@ -157,8 +157,8 @@ DIAGRAM = Diagram(
         Box(
             "reviewer",
             "Independent reviewer",
-            "Reuse, rerun, or reopen",
-            ("compare historical candidates", "resolve every prior finding"),
+            "Classify, reuse, or widen",
+            ("changed + unclassified surfaces", "reuse unchanged · widen on trigger"),
             ("completion package when covered",),
             1050,
             510,
@@ -176,7 +176,7 @@ DIAGRAM = Diagram(
             True,
         ),
         Note(
-            "UNCHANGED RELATIONSHIPS MAY REUSE EVIDENCE; CHANGED ASSUMPTIONS REOPEN IT",
+            "CHANGED OR UNCERTAIN RELATIONSHIPS DRIVE THE ASSURANCE SURFACE",
             1050,
             745,
             12,

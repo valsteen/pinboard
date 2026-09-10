@@ -418,8 +418,6 @@ def _project_role_actions(
         for action in group.attempt_actions
     ]
     for item in snapshot.items:
-        if any(authority.item == item.item for authority in snapshot.command_preparation_authorities):
-            continue
         group = attempt_groups.get(item.item)
         if group is not None:
             result.extend(group.item_actions)
@@ -443,6 +441,8 @@ def _project_role_actions(
                     )
                 )
             )
+        if any(authority.item == item.item for authority in snapshot.command_preparation_authorities):
+            continue
         result.append(
             decision_models.ReviseItemAction(
                 factory.make(

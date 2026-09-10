@@ -348,7 +348,10 @@ def create_proposal(
         primary_items = (proposal_item,)
         related_items: tuple[ItemId, ...] = ()
         if relation_item is not None:
-            if isinstance(operation.intake.relation, work_models.PrerequisiteProposalRelation):
+            if isinstance(
+                operation.intake.relation,
+                work_models.PrerequisiteProposalRelation | work_models.PlannedReplacementProposalRelation,
+            ):
                 primary_items = (*primary_items, relation_item)
             else:
                 related_items = (relation_item,)

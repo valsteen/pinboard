@@ -35,6 +35,10 @@ def _input_model_or_none(kind: decision_models.ActionKind) -> transition_models.
             return transition_models.EvidenceInputPayload
         case decision_models.ActionKind.REOPEN:
             return transition_models.EvidenceInputPayload
+        case decision_models.ActionKind.RECORD_REPLACEMENT:
+            return transition_models.RecordPlannedReplacementInputPayload
+        case decision_models.ActionKind.RETAIN_TEMPORARILY:
+            return transition_models.RetainTemporarilyInputPayload
         case decision_models.ActionKind.DEFER:
             return transition_models.DeferInputPayload
         case (
@@ -235,6 +239,39 @@ def parse_transition_command(  # noqa: C901, PLR0912, PLR0915 - one visible exha
             if isinstance(payload := _decode(data, transition_models.EvidenceInputPayload), TransitionInputFailure):
                 return payload
             return decision_models.ReopenCommand(action, work_models.EvidenceInput(payload.evidence))
+        case decision_models.RecordReplacementAction():
+            if isinstance(
+                payload := _decode(data, transition_models.RecordPlannedReplacementInputPayload),
+                TransitionInputFailure,
+            ):
+                return payload
+            return decision_models.RecordReplacementCommand(
+                action,
+                work_models.RecordPlannedReplacementInput(
+                    ItemId(payload.affected_item),
+                    payload.expected_relation_revision,
+                    ItemId(payload.replacement_item),
+                    payload.replacement_cost,
+                    payload.status,
+                    TaskId(payload.recorded_by),
+                ),
+            )
+        case decision_models.RetainTemporarilyAction():
+            if isinstance(
+                payload := _decode(data, transition_models.RetainTemporarilyInputPayload),
+                TransitionInputFailure,
+            ):
+                return payload
+            return decision_models.RetainTemporarilyCommand(
+                action,
+                work_models.RetainTemporarilyInput(
+                    ItemId(payload.affected_item),
+                    payload.relation_revision,
+                    payload.rationale,
+                    payload.accepted_cost,
+                    TaskId(payload.recorded_by),
+                ),
+            )
         case decision_models.DeferAction():
             if isinstance(payload := _decode(data, transition_models.DeferInputPayload), TransitionInputFailure):
                 return payload

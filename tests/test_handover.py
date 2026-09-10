@@ -16,6 +16,7 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.database import initialize_database
+from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
@@ -221,6 +222,25 @@ class HandoverTest(unittest.TestCase):
             input_payload=work_models.CanonicalJson(b'{"request":{"mode":"complete"}}'),
             outcome_payload=work_models.CanonicalJson(b'{"accepted":true,"checks":["targeted","fresh-store"]}'),
         )
+        replacement = stored_state.StoredPlannedReplacement(
+            ItemId("work-c"),
+            1,
+            ItemId("terminal-done"),
+            "Discard any Work C implementation after switching.",
+            work_models.PlannedReplacementStatus.CURRENT,
+            TaskId("coordinator"),
+            SQLITE_NOW,
+            12,
+        )
+        disposition = stored_state.StoredReplacementDisposition(
+            ItemId("work-c"),
+            1,
+            "Finish the accepted preparation before switching.",
+            replacement.replacement_cost,
+            TaskId("coordinator"),
+            SQLITE_NOW,
+            12,
+        )
         return replace(
             state,
             lifecycle=replace(
@@ -246,6 +266,7 @@ class HandoverTest(unittest.TestCase):
                 ),
             ),
             proposals=stored_state.ProposalRecords(tuple(proposals), tuple(evidence), tuple(freshness)),
+            replacements=stored_state.ReplacementRecords((replacement,), (disposition,)),
             artifact_references=artifacts,
             transition_receipts=(receipt,),
         )
@@ -331,7 +352,7 @@ class HandoverTest(unittest.TestCase):
             result, stdout, stderr = self.run_cli(*common)
         return result, stdout, stderr, statements
 
-    def test_installed_handover_exports_one_strict_complete_read_only_snapshot(self) -> None:
+    def test_installed_handover_exports_one_strict_complete_read_only_snapshot(self) -> None:  # noqa: PLR0915 - one complete installed handover journey
         project, work, store, references = self.initialized_project()
         common = ("--project-root", str(project), "--work-root", str(work), "handover", "--json")
         database_before = (work / "state.sqlite3").read_bytes()
@@ -345,10 +366,10 @@ class HandoverTest(unittest.TestCase):
         result, stdout, stderr, statements = self.run_handover_with_trace(common)
         self.assertEqual(0, result, stderr)
         handover = self.decode_handover(stdout)
-        self.assertEqual("pinboard-project-handover/v4", handover.schema)
+        self.assertEqual("pinboard-project-handover/v5", handover.schema)
         self.assertEqual((), handover.completion_packages)
         self.assertEqual((), handover.checkpoint_packages)
-        self.assertEqual("sqlite-v5", handover.authority)
+        self.assertEqual("sqlite-v6", handover.authority)
         self.assertEqual(state_before.lifecycle.project.revision, handover.revision)
         with patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")):
             self.assertEqual(stdout, self.run_cli(*common)[1])
@@ -380,6 +401,13 @@ class HandoverTest(unittest.TestCase):
         self.assertNotIn("proposal-decided", {value.proposal_id for value in handover.proposals})
         self.assert_handover_read_scope(statements)
         self.assertEqual("candidate-123", handover.attempts[0].candidate_revision)
+        self.assertEqual(1, len(handover.planned_replacements))
+        self.assertEqual("terminal-done", handover.planned_replacements[0].replacement_item_id)
+        self.assertEqual(1, len(handover.replacement_dispositions))
+        self.assertEqual(
+            handover.planned_replacements[0].replacement_cost,
+            handover.replacement_dispositions[0].accepted_cost,
+        )
         self.assertEqual(
             [(1, "brief"), (3, "result"), (4, "evidence")],
             [(value.artifact_ref_id, value.role.value) for value in handover.item_artifact_links],
@@ -427,6 +455,22 @@ class HandoverTest(unittest.TestCase):
         decoded["unexpected"] = True
         with self.assertRaises(msgspec.DecodeError):
             msgspec.json.decode(msgspec.json.encode(decoded), type=ProjectHandover, strict=True)
+
+    def test_selected_overview_and_handover_reject_a_disposition_with_the_wrong_cost(self) -> None:
+        _project, work, store, _references = self.initialized_project()
+        connection = sqlite3.connect(work / "state.sqlite3")
+        try:
+            connection.execute(
+                "UPDATE replacement_dispositions SET accepted_cost = 'different cost' WHERE affected_item_id = 'work-c'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(StorageError):
+            store.read_project_overview(SQLITE_NOW)
+        with self.assertRaises(StorageError):
+            store.read_handover_batches()
 
     def test_installed_handover_keeps_one_revision_during_a_concurrent_commit(self) -> None:
         project, work, store, _references = self.initialized_project()
@@ -494,6 +538,7 @@ class HandoverTest(unittest.TestCase):
                 definition_revisions=(),
             ),
             replace(state.proposals, evidence=(), freshness=()),
+            replace(state.replacements, planned_replacements=(), dispositions=()),
             (),
             (),
         )
@@ -504,6 +549,7 @@ class HandoverTest(unittest.TestCase):
                 dependencies=(),
             ),
             replace(state.proposals, proposals=()),
+            state.replacements,
             state.artifact_references,
             state.transition_receipts,
         )

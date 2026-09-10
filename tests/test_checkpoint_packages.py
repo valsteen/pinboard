@@ -912,7 +912,7 @@ class CheckpointPackageTest(unittest.TestCase):
         result, stdout, stderr = self.run_cli(*fixture.common, "handover", "--json")
         self.assertEqual(0, result, stderr)
         handover = msgspec.json.decode(stdout, type=ProjectHandover, strict=True)
-        self.assertEqual("pinboard-project-handover/v4", handover.schema)
+        self.assertEqual("pinboard-project-handover/v5", handover.schema)
         self.assertEqual((), handover.completion_packages)
         self.assertEqual(1, len(handover.checkpoint_packages))
         exported = handover.checkpoint_packages[0]

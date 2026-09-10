@@ -70,6 +70,8 @@ class ItemOverviewFacts:
     definition: work_models.DefinitionAnchor
     proposals: tuple[stored_state.StoredProposal, ...]
     preparation: PreparationAuthorityStatus | None
+    replacement: work_models.PlannedReplacement | None
+    replacement_disposition: work_models.ReplacementDisposition | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +164,8 @@ class AttemptContextItemFacts:
     current_definition_revision: int
     current_definition_digest: str
     live_dependencies: tuple[ItemId, ...]
+    current_replacement_revision: int | None
+    replacement_resolved: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,7 +224,7 @@ class CompletionContextFacts:
 
 
 type ItemStatusSchema = Literal["pinboard-item-status/v1"]
-type ItemStatusAuthority = Literal["sqlite-v5"]
+type ItemStatusAuthority = Literal["sqlite-v6"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,9 +358,19 @@ class ReviewFlag:
 
 
 @dataclass(frozen=True, slots=True)
+class PlannedReplacementWarning:
+    relation_revision: int
+    replacement_item_id: str
+    replacement_cost: str
+    temporarily_retained: bool
+
+
+@dataclass(frozen=True, slots=True)
 class OverviewItem:
     item_id: str
     label: str
+    effect: str
+    unlock: str
     state: work_models.WorkState
     position: int | None
     eligible: bool
@@ -368,6 +382,7 @@ class OverviewItem:
     next_action: str | None
     source: str | None
     notes: str | None
+    planned_replacement: PlannedReplacementWarning | None
     preparation: PreparationStatusView | None = None
 
 
@@ -432,7 +447,7 @@ class WorkItemDefinitionView(msgspec.Struct, frozen=True, forbid_unknown_fields=
 
 class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition/v1"]
-    authority: Literal["sqlite-v5"]
+    authority: Literal["sqlite-v6"]
     project_revision: int
     item_id: str
     item_subject_revision: int
@@ -455,7 +470,7 @@ class ItemDefinitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_field
 
 class ItemDefinitionHistory(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition-history/v1"]
-    authority: Literal["sqlite-v5"]
+    authority: Literal["sqlite-v6"]
     project_revision: int
     item_id: str
     revisions: tuple[ItemDefinitionHistoryRow, ...]

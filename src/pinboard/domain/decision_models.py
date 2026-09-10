@@ -96,11 +96,13 @@ class ActionKind(Enum):
     PAUSE = "pause"
     REJECT_PROPOSAL = "reject-proposal"
     REOPEN = "reopen"
+    RECORD_REPLACEMENT = "record-replacement"
     REBIND_ATTEMPT = "rebind-attempt"
     REPORT_BLOCKER = "report-blocker"
     RESUME = "resume"
     RETURN_FOR_CORRECTION = "return-for-correction"
     RETURN_PROPOSAL = "return-proposal"
+    RETAIN_TEMPORARILY = "retain-temporarily"
     REVISE_ITEM = "revise-item"
     SUBMIT_REVIEW = "submit-review"
 
@@ -269,6 +271,15 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionLifecyclePrecondition.DEFERRED_ITEM,
                 "Return deferred work to intake.",
             )
+        case ActionKind.RECORD_REPLACEMENT:
+            return ActionSemantics(
+                "Record or withdraw one explicit planned replacement.",
+                LifecycleEffect.NO_LIFECYCLE_CHANGE,
+                (Role.PROJECT,),
+                ActionSubjectKind.ITEM,
+                ActionLifecyclePrecondition.NONTERMINAL_ITEM,
+                "Advance the exact replacement relation without changing work or attempt lifecycle state.",
+            )
         case ActionKind.REBIND_ATTEMPT:
             return ActionSemantics(
                 "Accept current scope and correct an active or paused attempt's Git lineage without restarting it.",
@@ -304,6 +315,15 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.PROPOSAL,
                 ActionLifecyclePrecondition.INTAKE_PROPOSAL,
                 "Record returned disposition, retain its same-identity intake item, and expose the reason as clarification.",
+            )
+        case ActionKind.RETAIN_TEMPORARILY:
+            return ActionSemantics(
+                "Accept the cost of temporarily continuing work under its current planned replacement.",
+                LifecycleEffect.NO_LIFECYCLE_CHANGE,
+                (Role.PROJECT,),
+                ActionSubjectKind.ITEM,
+                ActionLifecyclePrecondition.NONTERMINAL_ITEM,
+                "Record the human rationale and accepted cost for the exact current relation revision.",
             )
         case ActionKind.REVISE_ITEM:
             return ActionSemantics(
@@ -451,6 +471,12 @@ class ReopenAction:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordReplacementAction:
+    capability: MutationActionCapability[ItemId]
+    kind: ActionKind = field(init=False, default=ActionKind.RECORD_REPLACEMENT)
+
+
+@dataclass(frozen=True, slots=True)
 class RebindAttemptAction:
     capability: MutationActionCapability[AttemptId]
     kind: ActionKind = field(init=False, default=ActionKind.REBIND_ATTEMPT)
@@ -478,6 +504,12 @@ class ReturnForCorrectionAction:
 class ReturnProposalAction:
     capability: MutationActionCapability[ProposalId]
     kind: ActionKind = field(init=False, default=ActionKind.RETURN_PROPOSAL)
+
+
+@dataclass(frozen=True, slots=True)
+class RetainTemporarilyAction:
+    capability: MutationActionCapability[ItemId]
+    kind: ActionKind = field(init=False, default=ActionKind.RETAIN_TEMPORARILY)
 
 
 @dataclass(frozen=True, slots=True)
@@ -509,9 +541,11 @@ type LifecycleAction = (
     | RejectProposalAction
     | RebindAttemptAction
     | ReopenAction
+    | RecordReplacementAction
     | ResumeAction
     | ReturnForCorrectionAction
     | ReturnProposalAction
+    | RetainTemporarilyAction
     | ReviseItemAction
     | SubmitReviewAction
 )
@@ -531,9 +565,11 @@ type NonCheckpointTransitionAction = (
     | RejectProposalAction
     | RebindAttemptAction
     | ReopenAction
+    | RecordReplacementAction
     | ResumeAction
     | ReturnForCorrectionAction
     | ReturnProposalAction
+    | RetainTemporarilyAction
     | ReviseItemAction
     | SubmitReviewAction
 )
@@ -626,6 +662,12 @@ class ReopenCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordReplacementCommand:
+    action: RecordReplacementAction
+    value: work_models.RecordPlannedReplacementInput
+
+
+@dataclass(frozen=True, slots=True)
 class MarkReadyCommand:
     action: MarkReadyAction
     value: work_models.ReasonInput
@@ -662,6 +704,12 @@ class ReturnProposalCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class RetainTemporarilyCommand:
+    action: RetainTemporarilyAction
+    value: work_models.RetainTemporarilyInput
+
+
+@dataclass(frozen=True, slots=True)
 class ReviseItemCommand:
     action: ReviseItemAction
     value: work_models.ReviseItemDefinitionInput
@@ -686,12 +734,14 @@ type TransitionCommand = (
     | SubmitReviewCommand
     | ReturnForCorrectionCommand
     | ReopenCommand
+    | RecordReplacementCommand
     | MarkReadyCommand
     | BlockItemCommand
     | DeferCommand
     | AcceptProposalCommand
     | MergeProposalCommand
     | ReturnProposalCommand
+    | RetainTemporarilyCommand
     | ReviseItemCommand
     | RejectProposalCommand
     | CoveredCompleteCommand
@@ -708,12 +758,14 @@ type NonCheckpointTransitionCommand = (
     | SubmitReviewCommand
     | ReturnForCorrectionCommand
     | ReopenCommand
+    | RecordReplacementCommand
     | MarkReadyCommand
     | BlockItemCommand
     | DeferCommand
     | AcceptProposalCommand
     | MergeProposalCommand
     | ReturnProposalCommand
+    | RetainTemporarilyCommand
     | ReviseItemCommand
     | RejectProposalCommand
 )
@@ -922,6 +974,16 @@ class RejectedProposalChange:
 
 
 @dataclass(frozen=True, slots=True)
+class PlannedReplacementChange:
+    relation: work_models.PlannedReplacement
+
+
+@dataclass(frozen=True, slots=True)
+class ReplacementDispositionChange:
+    disposition: work_models.ReplacementDisposition
+
+
+@dataclass(frozen=True, slots=True)
 class AttemptAuthorityChange:
     before: work_models.AttemptAuthority
     after: work_models.AttemptAuthority
@@ -963,6 +1025,8 @@ type NonCheckpointDecisionChange = (
     | MergedProposalChange
     | ReturnedProposalChange
     | RejectedProposalChange
+    | PlannedReplacementChange
+    | ReplacementDispositionChange
     | DefinitionRevisionDecision
 )
 

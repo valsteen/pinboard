@@ -27,7 +27,7 @@ An explicitly requested notification remains subordinate to this continuation. S
 
 1. Resolve this plugin's executable relative to this file as `../../scripts/pinboard`.
 2. Run `pinboard status --json` from the repository checkout.
-3. Require authority `sqlite-v5`. Intake is a direct trusted-local project action; its task and host values are audit attribution, not credentials, and it does not require a lease.
+3. Require authority `sqlite-v6`. Intake is a direct trusted-local project action; its task and host values are audit attribution, not credentials, and it does not require a lease.
 4. If the workflow or executable is unavailable, stop. Do not infer shared state from titles, recency, nearby tasks, branches, or old audit files.
 5. Determine the current source task identity from trusted task context. If the environment does not expose it, ask the human for the exact task ID rather than inventing one.
 

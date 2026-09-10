@@ -45,6 +45,8 @@ def _convert_proposal_relation(value: proposal_models.ProposalRelation) -> work_
             return work_models.ContradictionProposalRelation(ItemId(item))
         case proposal_models.ClarificationProposalRelation():
             return work_models.ClarificationProposalRelation()
+        case proposal_models.PlannedReplacementProposalRelation(item=item, replacement_cost=cost):
+            return work_models.PlannedReplacementProposalRelation(ItemId(item), cost)
         case _ as unreachable:
             assert_never(unreachable)
 

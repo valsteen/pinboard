@@ -23,6 +23,7 @@ from pinboard.domain.identifiers import (
     AttemptId,
     ItemId,
     LeaseId,
+    TaskId,
 )
 from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
@@ -53,7 +54,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertIsInstance(preview, query_models.ParallelPreview)
         assert isinstance(preview, query_models.ParallelPreview)
 
-        self.assertEqual("sqlite-v5", overview.authority)
+        self.assertEqual("sqlite-v6", overview.authority)
         self.assertEqual("12", overview.revision)
         self.assertEqual(("work-a-1",), overview.active_attempts)
         self.assertEqual(
@@ -112,6 +113,38 @@ class SQLiteQueriesTest(unittest.TestCase):
 
         self.assertEqual(full, focused)
         self.assertEqual("Clarify the retained boundary.", focused.items[-1].review_flags[0].reason)
+
+    def test_overview_supplies_definition_context_and_explicit_replacement_warning_in_one_read(self) -> None:
+        state = complete_sqlite_state()
+        relation = stored_state.StoredPlannedReplacement(
+            ItemId("work-c"),
+            1,
+            ItemId("work-a"),
+            "Starting Work C now would duplicate the replacement implementation and review.",
+            work_models.PlannedReplacementStatus.CURRENT,
+            TaskId("coordinator"),
+            SQLITE_NOW,
+            12,
+        )
+        state = replace(state, replacements=stored_state.ReplacementRecords((relation,), ()))
+        store = self._store(state)
+
+        full = project_overview(store.validated_snapshot(), SQLITE_NOW)
+        focused = project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW)
+
+        self.assertEqual(full, focused)
+        item = next(value for value in focused.items if value.item_id == "work-c")
+        definition = next(
+            value.definition for value in state.lifecycle.definition_revisions if value.item_id == ItemId("work-c")
+        )
+        self.assertEqual(
+            (definition.title, definition.effect, definition.unlock), (item.label, item.effect, item.unlock)
+        )
+        self.assertIsNotNone(item.planned_replacement)
+        assert item.planned_replacement is not None
+        self.assertEqual("work-a", item.planned_replacement.replacement_item_id)
+        self.assertFalse(item.planned_replacement.temporarily_retained)
+        self.assertNotIn("work-c", focused.immediate_options)
 
     def test_focused_action_order_remains_identity_stable_while_overview_uses_queue_order(self) -> None:
         state = complete_sqlite_state()
@@ -205,7 +238,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertEqual(
             query_models.ItemStatus(
                 "pinboard-item-status/v1",
-                "sqlite-v5",
+                "sqlite-v6",
                 "12",
                 "work-a",
                 "Work work-a",
@@ -224,7 +257,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertEqual(
             query_models.ItemStatus(
                 "pinboard-item-status/v1",
-                "sqlite-v5",
+                "sqlite-v6",
                 "12",
                 "work-b",
                 "Work work-b",

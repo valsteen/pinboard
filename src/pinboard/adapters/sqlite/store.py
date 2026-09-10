@@ -9,7 +9,7 @@ reads artifact bytes directly, or invokes callbacks.
 """
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from types import TracebackType
@@ -44,7 +44,11 @@ from pinboard.adapters.sqlite.database import (
     translate_database_error,
     verify_database_integrity,
 )
-from pinboard.adapters.sqlite.decision_reads import read_current_snapshot, read_selected_decision_facts
+from pinboard.adapters.sqlite.decision_reads import (
+    read_current_replacements,
+    read_current_snapshot,
+    read_selected_decision_facts,
+)
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     NonterminalAttemptContextSelection,
@@ -67,7 +71,13 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_item_definition_history as select_item_definition_history,
 )
 from pinboard.adapters.sqlite.models import OpenMode
-from pinboard.adapters.sqlite.proposals import accept_proposal, create_proposal, read_proposal, set_proposal_disposition
+from pinboard.adapters.sqlite.proposals import (
+    accept_proposal,
+    create_proposal,
+    insert_planned_replacement,
+    read_proposal,
+    set_proposal_disposition,
+)
 from pinboard.application import queries, query_models, stored_state
 from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
 from pinboard.application.handover import HandoverState
@@ -191,6 +201,7 @@ def _read_generated_view_facts(
         live_state = stored_state.live_work_state(item.state)
         projected: query_models.OverviewItem | None = None
         if live_state is not None:
+            replacements, dispositions = read_current_replacements(connection, (item_id,))
             attempt_row = connection.execute(
                 "SELECT attempt_id FROM attempts WHERE item_id = ? AND state != 'done'",
                 (item_id,),
@@ -225,6 +236,8 @@ def _read_generated_view_facts(
                     ),
                     selected_proposals,
                     read_preparation_authority_status(connection, item_id),
+                    replacements[0] if replacements else None,
+                    dispositions[0] if dispositions else None,
                 ),
                 now,
             )
@@ -327,6 +340,10 @@ def _mutation_subjects(
                     | DefinitionRevisionDecision(item=item)
                 ):
                     return (item,), ()
+                case decision_models.PlannedReplacementChange(relation=relation):
+                    return (relation.affected_item,), ()
+                case decision_models.ReplacementDispositionChange(disposition=disposition):
+                    return (disposition.affected_item,), ()
                 case (
                     decision_models.AttemptStateChange(item=item, attempt=attempt)
                     | decision_models.BlockAttemptChange(item=item, attempt=attempt)
@@ -404,7 +421,7 @@ def _read_persistence_facts(connection: sqlite3.Connection, mutation: StoredStat
     return _PersistenceFacts(items, attempts, definitions)
 
 
-def _committed_effect_ids(
+def _committed_effect_ids(  # noqa: PLR0912 - exhaustively projects every closed mutation effect
     connection: sqlite3.Connection, mutation: StoredStateMutation
 ) -> tuple[tuple[ItemId, ...], tuple[AttemptId, ...]]:
     item_ids, attempt_ids = _mutation_subjects(mutation)
@@ -413,6 +430,8 @@ def _committed_effect_ids(
     match mutation:
         case ProposalCreationMutation(decision=decision):
             affected_items.append(decision.intake_item.item_id)
+            if decision.planned_replacement is not None:
+                affected_items.append(decision.planned_replacement.affected_item)
             if decision.prerequisite_change is not None:
                 affected_items.append(decision.prerequisite_change.item_id)
             affected_items.extend(
@@ -469,6 +488,8 @@ def _committed_effect_ids(
                     | decision_models.ReturnedProposalChange()
                     | DefinitionRevisionDecision()
                     | decision_models.CheckpointAcceptanceChange()
+                    | decision_models.PlannedReplacementChange()
+                    | decision_models.ReplacementDispositionChange()
                 ):
                     pass
                 case _ as unreachable:
@@ -529,6 +550,21 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
     change = mutation.decision.change
     revision = mutation.receipt.project_revision
     now = mutation.decision.receipt.decided_at
+
+    def advance_item_revision(item: ItemId) -> DecisionFailure | None:
+        current = facts.item(item)
+        return require_one_changed_row(
+            connection.execute(
+                """
+                UPDATE work_items
+                SET subject_revision = ?, updated_at = ?
+                WHERE item_id = ? AND subject_revision = ?
+                """,
+                (revision, now.isoformat(), item, current.subject_revision),
+            ),
+            "The replacement subject changed before targeted persistence.",
+        )
+
     match change:
         case decision_models.ItemStateChange(item=item, before=before, after=after):
             if (
@@ -860,6 +896,30 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 )
             ) is not None:
                 return failure
+        case decision_models.PlannedReplacementChange(relation=relation):
+            if (failure := advance_item_revision(relation.affected_item)) is not None:
+                return failure
+            insert_planned_replacement(connection, relation, relation.recorded_at, revision)
+        case decision_models.ReplacementDispositionChange(disposition=disposition):
+            if (failure := advance_item_revision(disposition.affected_item)) is not None:
+                return failure
+            connection.execute(
+                """
+                INSERT INTO replacement_dispositions (
+                    affected_item_id, relation_revision, rationale, accepted_cost,
+                    recorded_by, recorded_at, accepted_project_revision
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    disposition.affected_item,
+                    disposition.relation_revision,
+                    disposition.rationale,
+                    disposition.accepted_cost,
+                    disposition.recorded_by,
+                    disposition.recorded_at.isoformat(),
+                    revision,
+                ),
+            )
         case _ as unreachable:
             assert_never(unreachable)
     return None
@@ -1218,6 +1278,8 @@ def _read_attempt_context_facts(
                     StorageErrorCode.INVALID_STATE,
                     "The selected nonterminal attempt has no accepted brief reference.",
                 )
+            replacements, dispositions = read_current_replacements(connection, (selected.item_id,))
+            replacement = replacements[0] if replacements else None
             return query_models.NonterminalAttemptContextFacts(
                 selected.project_revision,
                 selected.attempt_id,
@@ -1230,7 +1292,11 @@ def _read_attempt_context_facts(
                 selected.accepted_scope_digest,
                 selected.candidate_revision,
                 selected.brief_artifact_ref_id,
-                selected.item,
+                replace(
+                    selected.item,
+                    current_replacement_revision=None if replacement is None else replacement.relation_revision,
+                    replacement_resolved=replacement is None or bool(dispositions),
+                ),
                 reference,
             )
         case _ as unreachable:

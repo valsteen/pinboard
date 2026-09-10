@@ -123,6 +123,8 @@ def project_attempt_continuation(
                     item.current_definition_digest,
                     item.live_dependencies,
                     True,
+                    item.current_replacement_revision,
+                    item.replacement_resolved,
                 ),
                 ActionCapabilityFactory(
                     decision_models.ActorAuthority(
@@ -375,11 +377,21 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
     }
     live_items = _select_live_items(state)
     live_ids = frozenset(item.item_id for item, _live_state in live_items)
+    current_replacements: dict[ItemId, stored_state.StoredPlannedReplacement] = {}
+    for relation in state.replacements.planned_replacements:
+        current = current_replacements.get(relation.affected_item_id)
+        if current is None or current.relation_revision < relation.relation_revision:
+            current_replacements[relation.affected_item_id] = relation
+    dispositions = {
+        (value.affected_item_id, value.relation_revision): value for value in state.replacements.dispositions
+    }
 
     items = tuple(
         query_models.OverviewItem(
             str(item.item_id),
             definitions[item.item_id].title,
+            definitions[item.item_id].effect,
+            definitions[item.item_id].unlock,
             live_state,
             item.queue_position,
             not any(link.dependency_id in live_ids for link in dependency_links[item.item_id]),
@@ -394,6 +406,15 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
             item.next_action,
             item.source,
             item.notes,
+            None
+            if (relation := current_replacements.get(item.item_id)) is None
+            or relation.status != work_models.PlannedReplacementStatus.CURRENT
+            else query_models.PlannedReplacementWarning(
+                relation.relation_revision,
+                str(relation.replacement_item_id),
+                relation.replacement_cost,
+                (relation.affected_item_id, relation.relation_revision) in dispositions,
+            ),
             _project_preparation_status(preparations.get(item.item_id), now),
         )
         for item, live_state in live_items
@@ -402,6 +423,7 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
         item.item_id
         for item in items
         if item.eligible
+        and (item.planned_replacement is None or item.planned_replacement.temporarily_retained)
         and (item.preparation is None or item.preparation.status != authority_models.PreparationLeaseStatus.ACTIVE)
         and (
             item.state in {work_models.WorkState.INTAKE, work_models.WorkState.READY, work_models.WorkState.DEFERRED}
@@ -409,8 +431,8 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
         )
     )
     return query_models.WorkOverview(
-        "pinboard-overview/v3",
-        "sqlite-v5",
+        "pinboard-overview/v4",
+        "sqlite-v6",
         str(state.lifecycle.project.revision),
         tuple(
             str(attempt.attempt_id)
@@ -424,16 +446,20 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
 
 def _project_overview_item(
     item: work_models.WorkItem,
-    label: str,
+    definition: work_models.WorkItemDefinition,
     live_dependencies: frozenset[ItemId],
     proposals: dict[ItemId, stored_state.StoredProposal],
     prerequisite_proposals: dict[tuple[ItemId, ItemId], stored_state.StoredProposal],
     preparation: query_models.PreparationAuthorityStatus | None,
+    replacement: work_models.PlannedReplacement | None,
+    replacement_disposition: work_models.ReplacementDisposition | None,
     now: datetime,
 ) -> query_models.OverviewItem:
     return query_models.OverviewItem(
         str(item.item),
-        label,
+        definition.title,
+        definition.effect,
+        definition.unlock,
         item.state,
         item.queue_position,
         not any(dependency in live_dependencies for dependency in item.depends_on),
@@ -445,6 +471,14 @@ def _project_overview_item(
         item.next_action,
         item.source,
         item.notes,
+        None
+        if replacement is None or replacement.status != work_models.PlannedReplacementStatus.CURRENT
+        else query_models.PlannedReplacementWarning(
+            replacement.relation_revision,
+            str(replacement.replacement_item),
+            replacement.replacement_cost,
+            replacement_disposition is not None,
+        ),
         _project_selected_preparation_status(preparation, now),
     )
 
@@ -461,11 +495,15 @@ def project_current_overview(facts: query_models.ProjectOverviewFacts, now: date
     items = tuple(
         _project_overview_item(
             item,
-            definitions[item.item].title,
+            definitions[item.item],
             live_ids,
             proposals,
             prerequisite_proposals,
             preparations.get(item.item),
+            snapshot.current_replacement(item.item),
+            None
+            if (replacement := snapshot.current_replacement(item.item)) is None
+            else snapshot.replacement_disposition(item.item, replacement.relation_revision),
             now,
         )
         for item in sorted(snapshot.items, key=_decision_item_key)
@@ -474,6 +512,7 @@ def project_current_overview(facts: query_models.ProjectOverviewFacts, now: date
         item.item_id
         for item in items
         if item.eligible
+        and (item.planned_replacement is None or item.planned_replacement.temporarily_retained)
         and (item.preparation is None or item.preparation.status != authority_models.PreparationLeaseStatus.ACTIVE)
         and item.state
         in {
@@ -485,8 +524,8 @@ def project_current_overview(facts: query_models.ProjectOverviewFacts, now: date
         }
     )
     return query_models.WorkOverview(
-        "pinboard-overview/v3",
-        "sqlite-v5",
+        "pinboard-overview/v4",
+        "sqlite-v6",
         snapshot.revision,
         tuple(
             str(attempt.attempt) for attempt in snapshot.attempts if attempt.state == work_models.AttemptState.ACTIVE
@@ -504,11 +543,13 @@ def project_item_overview(facts: query_models.ItemOverviewFacts, now: datetime) 
     live_dependencies = frozenset(dependency_id for dependency_id, is_live in facts.dependency_liveness if is_live)
     return _project_overview_item(
         item,
-        facts.definition.definition.title,
+        facts.definition.definition,
         live_dependencies,
         proposals,
         prerequisite_proposals,
         facts.preparation,
+        facts.replacement,
+        facts.replacement_disposition,
         now,
     )
 
@@ -532,7 +573,7 @@ def project_item_status(
     )
     return query_models.ItemStatus(
         "pinboard-item-status/v1",
-        "sqlite-v5",
+        "sqlite-v6",
         str(facts.project_revision),
         str(item.item_id),
         facts.definition_title,
@@ -578,7 +619,7 @@ def select_item_definition(
         )
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
-        "sqlite-v5",
+        "sqlite-v6",
         selected.project_revision,
         item_id,
         selected.item_subject_revision,
@@ -615,7 +656,7 @@ def select_item_definition_history(
     )
     return query_models.ItemDefinitionHistory(
         "pinboard-item-definition-history/v1",
-        "sqlite-v5",
+        "sqlite-v6",
         selected.project_revision,
         item_id,
         rows,

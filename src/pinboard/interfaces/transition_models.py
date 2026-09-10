@@ -91,6 +91,29 @@ class AcceptReviewAndContinueInputPayload(msgspec.Struct, frozen=True, forbid_un
     evidence: NonEmptyLine
 
 
+class RecordPlannedReplacementInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-planned-replacement/v1"]
+    affected_item: Identity
+    expected_relation_revision: Annotated[int, msgspec.Meta(ge=0)]
+    replacement_item: Identity
+    replacement_cost: NonEmptyLine
+    status: work_models.PlannedReplacementStatus
+    recorded_by: NonEmptyLine
+
+    def __post_init__(self) -> None:
+        if self.affected_item == self.replacement_item:
+            raise ValueError("replacement_item must differ from affected_item")
+
+
+class RetainTemporarilyInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-replacement-disposition/v1"]
+    affected_item: Identity
+    relation_revision: PositiveInt
+    rationale: NonEmptyLine
+    accepted_cost: NonEmptyLine
+    recorded_by: NonEmptyLine
+
+
 class CloseInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     outcome: work_models.CloseOutcome
     reason: NonEmptyLine
@@ -138,6 +161,8 @@ type InputPayload = (
     | EvidenceInputPayload
     | AcceptCheckpointInputPayload
     | AcceptReviewAndContinueInputPayload
+    | RecordPlannedReplacementInputPayload
+    | RetainTemporarilyInputPayload
     | CloseInputPayload
     | DeferInputPayload
     | AcceptProposalInputPayload

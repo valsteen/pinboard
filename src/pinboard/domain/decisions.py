@@ -17,6 +17,10 @@ from pinboard.domain.identifiers import AttemptId, ItemId, LedgerId, ProposalId,
 from pinboard.domain.ledger import LedgerSnapshot
 
 
+def _planned_replacement_revision(relation: work_models.PlannedReplacement) -> int:
+    return relation.relation_revision
+
+
 @dataclass(frozen=True, slots=True)
 class ActionCapabilityFactory:
     actor: decision_models.ActorAuthority
@@ -64,6 +68,10 @@ def _definition_stale(snapshot: LedgerSnapshot, item: work_models.WorkItem) -> b
         return False
     current_identity = definition.revision, definition.digest
     return (attempt.accepted_scope_revision, attempt.accepted_scope_digest) != current_identity
+
+
+def _replacement_resolved(snapshot: LedgerSnapshot, item: ItemId) -> bool:
+    return snapshot.unresolved_replacement(item) is None
 
 
 def _context_definition_stale(context: work_models.ProjectAttemptActionContext) -> bool:
@@ -125,7 +133,7 @@ def _worker_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory) 
                 factory.make(attempt, f"Prepare blocker report for {item.item}", revision, command_authority)
             )
         )
-        if not _definition_stale(snapshot, item):
+        if not _definition_stale(snapshot, item) and _replacement_resolved(snapshot, item.item):
             result.extend(
                 (
                     decision_models.ContinueAction(
@@ -148,7 +156,13 @@ def _preparer_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory
             (value for value in snapshot.command_preparation_authorities if value.item == item_id),
             None,
         )
-        if item is None or authority is None or command is None or item.state != work_models.WorkState.READY:
+        if (
+            item is None
+            or authority is None
+            or command is None
+            or item.state != work_models.WorkState.READY
+            or not _replacement_resolved(snapshot, item.item)
+        ):
             continue
         subject_revision = _subject_revision(snapshot, item.item)
         result.append(
@@ -170,7 +184,7 @@ class ProjectAttemptActionGroups:
     item_actions: tuple[decision_models.Action, ...]
 
 
-def project_attempt_action_groups(
+def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt action projection
     context: work_models.ProjectAttemptActionContext,
     factory: ActionCapabilityFactory,
 ) -> ProjectAttemptActionGroups:
@@ -179,7 +193,7 @@ def project_attempt_action_groups(
     attempt_actions: list[decision_models.Action] = []
     stale = _context_definition_stale(context)
     if context.item_state == work_models.WorkState.ACTIVE:
-        if not stale:
+        if not stale and context.replacement_resolved:
             attempt_actions.extend(
                 (
                     decision_models.ContinueAction(
@@ -215,7 +229,11 @@ def project_attempt_action_groups(
                 ),
             )
         )
-    if context.item_state in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW} and not stale:
+    if (
+        context.item_state in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}
+        and not stale
+        and context.replacement_resolved
+    ):
         attempt_actions.append(
             decision_models.CompleteAction(
                 factory.make(context.attempt, f"Accept and complete {context.item}", context.attempt_subject_revision)
@@ -227,7 +245,7 @@ def project_attempt_action_groups(
                 factory.make(context.attempt, f"Return {context.item} for correction", context.attempt_subject_revision)
             )
         )
-        if not stale:
+        if not stale and context.replacement_resolved:
             attempt_actions.append(
                 decision_models.AcceptCheckpointAction(
                     factory.make(
@@ -246,7 +264,25 @@ def project_attempt_action_groups(
                     )
                 )
 
-    item_actions: list[decision_models.Action] = []
+    item_actions: list[decision_models.Action] = [
+        decision_models.RecordReplacementAction(
+            factory.make(
+                context.item,
+                f"Record or withdraw a planned replacement for {context.item}",
+                context.item_subject_revision,
+            )
+        )
+    ]
+    if context.current_replacement_revision is not None and not context.replacement_resolved:
+        item_actions.append(
+            decision_models.RetainTemporarilyAction(
+                factory.make(
+                    context.item,
+                    f"Accept the temporary replacement cost for {context.item}",
+                    context.item_subject_revision,
+                )
+            )
+        )
     if context.revision_available:
         item_actions.append(
             decision_models.ReviseItemAction(
@@ -268,7 +304,7 @@ def project_attempt_action_groups(
                 )
             )
         )
-        if not context.live_dependencies:
+        if not context.live_dependencies and context.replacement_resolved:
             item_actions.append(
                 decision_models.ResumeAction(
                     factory.make(context.item, f"Return {context.item} to active", context.item_subject_revision)
@@ -276,7 +312,7 @@ def project_attempt_action_groups(
             )
         item_actions.append(close)
     elif context.item_state == work_models.WorkState.BLOCKED:
-        if not context.live_dependencies:
+        if not context.live_dependencies and context.replacement_resolved:
             item_actions.append(
                 decision_models.ResumeAction(
                     factory.make(context.item, f"Return {context.item} to active", context.item_subject_revision)
@@ -296,6 +332,7 @@ def _project_attempt_context(
         return None
     live_items = snapshot.items_by_id()
     definition = snapshot.definition(item.item)
+    replacement = snapshot.current_replacement(item.item)
     return work_models.ProjectAttemptActionContext(
         item.item,
         _subject_revision(snapshot, item.item),
@@ -307,6 +344,8 @@ def _project_attempt_context(
         None if definition is None else definition.digest,
         tuple(dependency for dependency in item.depends_on if dependency in live_items),
         revision_available,
+        None if replacement is None else replacement.relation_revision,
+        _replacement_resolved(snapshot, item.item),
     )
 
 
@@ -336,7 +375,11 @@ def _item_actions(
             close,
         ]
     dependencies_live = any(dependency in snapshot.items_by_id() for dependency in item.depends_on)
-    if item.state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED} and not dependencies_live:
+    if (
+        item.state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED}
+        and not dependencies_live
+        and _replacement_resolved(snapshot, item.item)
+    ):
         result: list[decision_models.Action] = [
             decision_models.ResumeAction(factory.make(item.item, f"Return {item.item} to ready", subject_revision))
         ]
@@ -381,6 +424,25 @@ def _project_role_actions(
         if group is not None:
             result.extend(group.item_actions)
             continue
+        result.append(
+            decision_models.RecordReplacementAction(
+                factory.make(
+                    item.item,
+                    f"Record or withdraw a planned replacement for {item.item}",
+                    _subject_revision(snapshot, item.item),
+                )
+            )
+        )
+        if snapshot.unresolved_replacement(item.item) is not None:
+            result.append(
+                decision_models.RetainTemporarilyAction(
+                    factory.make(
+                        item.item,
+                        f"Accept the temporary replacement cost for {item.item}",
+                        _subject_revision(snapshot, item.item),
+                    )
+                )
+            )
         result.append(
             decision_models.ReviseItemAction(
                 factory.make(
@@ -854,6 +916,12 @@ def _resume(
     if any(dependency in snapshot.items_by_id() for dependency in item.depends_on):
         return DecisionFailure(
             DecisionFailureCode.DEPENDENCY_NOT_SATISFIED, f"Item '{item.item}' still has a live dependency.", None
+        )
+    if not _replacement_resolved(snapshot, item.item):
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            f"Item '{item.item}' has an unresolved planned replacement.",
+            None,
         )
     revised_brief: decision_models.RevisedAttemptBrief | None = None
     if value.brief_artifact_ref_id is not None:
@@ -1426,6 +1494,115 @@ def _revise_item(
     )
 
 
+def _record_replacement(
+    snapshot: LedgerSnapshot,
+    command: decision_models.RecordReplacementCommand,
+    now: datetime,
+) -> DecisionResult[decision_models.TransitionDecision]:
+    action = command.action
+    value = command.value
+    item = _require_item(snapshot, action.capability.subject)
+    if isinstance(item, DecisionFailure):
+        return item
+    if value.affected_item != item.item:
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "The replacement payload does not match the selected affected item.",
+            None,
+        )
+    known_items = {*snapshot.items_by_id(), *snapshot.history_items}
+    if value.replacement_item not in known_items:
+        return DecisionFailure(
+            DecisionFailureCode.ITEM_NOT_FOUND,
+            f"Replacement item '{value.replacement_item}' does not exist.",
+            None,
+        )
+    if value.replacement_item == item.item or not value.replacement_cost.strip():
+        return DecisionFailure(
+            DecisionFailureCode.REPLACEMENT_INVALID,
+            "A replacement must name another item and a concrete nonempty replacement cost.",
+            None,
+        )
+    matching_relations: tuple[work_models.PlannedReplacement, ...] = tuple(
+        relation for relation in snapshot.planned_replacements if relation.affected_item == item.item
+    )
+    latest = max(matching_relations, key=_planned_replacement_revision, default=None)
+    observed_revision = 0 if latest is None else latest.relation_revision
+    if value.expected_relation_revision != observed_revision:
+        return DecisionFailure(
+            DecisionFailureCode.REPLACEMENT_STALE,
+            "The expected planned-replacement revision is stale.",
+            None,
+        )
+    if (
+        latest is not None
+        and latest.status == work_models.PlannedReplacementStatus.CURRENT
+        and value.status == work_models.PlannedReplacementStatus.CURRENT
+        and (latest.replacement_item, latest.replacement_cost) == (value.replacement_item, value.replacement_cost)
+    ):
+        return DecisionFailure(
+            DecisionFailureCode.REPLACEMENT_INVALID,
+            "The same planned replacement is already current.",
+            None,
+        )
+    relation = work_models.PlannedReplacement(
+        item.item,
+        observed_revision + 1,
+        value.replacement_item,
+        value.replacement_cost,
+        value.status,
+        value.recorded_by,
+        now,
+    )
+    return _accepted_transition_decision(
+        action,
+        now,
+        decision_models.PlannedReplacementChange(relation),
+        item=item.item,
+        evidence=value.replacement_cost,
+    )
+
+
+def _retain_temporarily(
+    snapshot: LedgerSnapshot,
+    command: decision_models.RetainTemporarilyCommand,
+    now: datetime,
+) -> DecisionResult[decision_models.TransitionDecision]:
+    action = command.action
+    value = command.value
+    item = _require_item(snapshot, action.capability.subject)
+    if isinstance(item, DecisionFailure):
+        return item
+    relation = snapshot.current_replacement(item.item)
+    if value.affected_item != item.item or relation is None or value.relation_revision != relation.relation_revision:
+        return DecisionFailure(
+            DecisionFailureCode.REPLACEMENT_STALE,
+            "Temporary retention requires the exact current planned-replacement revision.",
+            None,
+        )
+    if not value.rationale.strip() or value.accepted_cost != relation.replacement_cost:
+        return DecisionFailure(
+            DecisionFailureCode.REPLACEMENT_INVALID,
+            "Temporary retention requires a nonempty rationale and the exact current replacement cost.",
+            None,
+        )
+    disposition = work_models.ReplacementDisposition(
+        item.item,
+        relation.relation_revision,
+        value.rationale,
+        value.accepted_cost,
+        value.recorded_by,
+        now,
+    )
+    return _accepted_transition_decision(
+        action,
+        now,
+        decision_models.ReplacementDispositionChange(disposition),
+        item=item.item,
+        evidence=value.rationale,
+    )
+
+
 @overload
 def decide(
     snapshot: LedgerSnapshot,
@@ -1490,5 +1667,9 @@ def decide(  # noqa: C901, PLR0912
             return _dispose_proposal(snapshot, command, now)
         case decision_models.ReviseItemCommand():
             return _revise_item(snapshot, command, now)
+        case decision_models.RecordReplacementCommand():
+            return _record_replacement(snapshot, command, now)
+        case decision_models.RetainTemporarilyCommand():
+            return _retain_temporarily(snapshot, command, now)
         case _ as unreachable:
             assert_never(unreachable)

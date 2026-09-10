@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +28,7 @@ from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import ArtifactRefId, ItemId, ProposalId, TaskId
 from pinboard.interfaces.cli import main
 from pinboard.interfaces.cli_output import RejectedOperationView
+from tests.decision_support import project_decision_snapshot
 
 from .support import SQLITE_NOW, complete_sqlite_state, initialize_store, test_definition
 
@@ -455,6 +457,90 @@ class HandoverTest(unittest.TestCase):
         decoded["unexpected"] = True
         with self.assertRaises(msgspec.DecodeError):
             msgspec.json.decode(msgspec.json.encode(decoded), type=ProjectHandover, strict=True)
+
+    def test_installed_proposal_preserves_accepted_replacement_time_through_reload_and_handover(self) -> None:
+        project, work, _store, _references = self.initialized_project()
+        common = ("--project-root", str(project), "--work-root", str(work))
+        creation_time = SQLITE_NOW + timedelta(seconds=1)
+        commit_time = creation_time + timedelta(minutes=5)
+        render_time = commit_time + timedelta(microseconds=1)
+        replacement_cost = "Work C implementation and review would be discarded."
+        proposal_path = project / "provenance-replacement.json"
+        proposal_path.write_bytes(
+            msgspec.json.encode(
+                {
+                    "schema": "pinboard-proposal/v1",
+                    "proposal_id": "provenance-replacement",
+                    "created_at": creation_time.isoformat(),
+                    "source_task_id": "discoverer",
+                    "user_label": "Provenance replacement",
+                    "trigger": "A replacement was accepted before its transaction committed.",
+                    "evidence": ["source:accepted-plan"],
+                    "why_it_matters": "Relation provenance must survive every stored projection.",
+                    "relation": {
+                        "kind": "planned-replacement",
+                        "item": "work-c",
+                        "replacement_cost": replacement_cost,
+                    },
+                    "effect": "Record the accepted replacement relation unchanged.",
+                    "unlock": "Fresh reloads and handover preserve the accepted provenance.",
+                    "urgency_evidence": "Creation and commit times are independently meaningful.",
+                    "freshness_assumptions": ["Work C remains live."],
+                }
+            )
+        )
+        with patch("pinboard.interfaces.proposal_commands.datetime") as proposal_clock:
+            proposal_clock.fromisoformat.side_effect = datetime.fromisoformat
+            proposal_clock.now.side_effect = (commit_time, render_time)
+            result, _stdout, stderr = self.run_cli(
+                *common,
+                "proposal",
+                "--file",
+                str(proposal_path),
+                "--task-id",
+                "discoverer",
+                "--host-id",
+                "studio",
+                "--json",
+            )
+        self.assertEqual(0, result, stderr)
+
+        accepted_relation = work_models.PlannedReplacement(
+            ItemId("work-c"),
+            2,
+            ItemId("provenance-replacement"),
+            replacement_cost,
+            work_models.PlannedReplacementStatus.CURRENT,
+            TaskId("discoverer"),
+            creation_time,
+        )
+        reloaded = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+        reloaded_relation = next(
+            value
+            for value in project_decision_snapshot(reloaded, commit_time).planned_replacements
+            if value.replacement_item == ItemId("provenance-replacement")
+        )
+        self.assertEqual(accepted_relation, reloaded_relation)
+
+        result, stdout, stderr = self.run_cli(*common, "handover", "--json")
+        self.assertEqual(0, result, stderr)
+        exported_relation = next(
+            value
+            for value in self.decode_handover(stdout).planned_replacements
+            if value.replacement_item_id == "provenance-replacement"
+        )
+        self.assertEqual(
+            accepted_relation,
+            work_models.PlannedReplacement(
+                ItemId(exported_relation.affected_item_id),
+                exported_relation.relation_revision,
+                ItemId(exported_relation.replacement_item_id),
+                exported_relation.replacement_cost,
+                exported_relation.status,
+                TaskId(exported_relation.recorded_by),
+                datetime.fromisoformat(exported_relation.recorded_at),
+            ),
+        )
 
     def test_selected_overview_and_handover_reject_a_disposition_with_the_wrong_cost(self) -> None:
         _project, work, store, _references = self.initialized_project()

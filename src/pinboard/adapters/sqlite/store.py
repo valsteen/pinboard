@@ -899,7 +899,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
         case decision_models.PlannedReplacementChange(relation=relation):
             if (failure := advance_item_revision(relation.affected_item)) is not None:
                 return failure
-            insert_planned_replacement(connection, relation, relation.recorded_at, revision)
+            insert_planned_replacement(connection, relation, revision)
         case decision_models.ReplacementDispositionChange(disposition=disposition):
             if (failure := advance_item_revision(disposition.affected_item)) is not None:
                 return failure

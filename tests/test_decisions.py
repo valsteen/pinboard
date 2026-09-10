@@ -46,6 +46,28 @@ DIGEST_B = "b" * 64
 def available_actions(
     snapshot: LedgerSnapshot, actor: decision_models.ActorAuthority
 ) -> tuple[decision_models.Action, ...]:
+    known_subjects = {value.subject for value in snapshot.subject_revisions}
+    snapshot = replace_dataclass(
+        snapshot,
+        subject_revisions=(
+            *snapshot.subject_revisions,
+            *(
+                work_models.SubjectRevision(value.item, "1")
+                for value in snapshot.items
+                if value.item not in known_subjects
+            ),
+            *(
+                work_models.SubjectRevision(value.attempt, "1")
+                for value in snapshot.attempts
+                if value.attempt not in known_subjects
+            ),
+            *(
+                work_models.SubjectRevision(value.proposal, value.revision)
+                for value in snapshot.proposals
+                if value.proposal not in known_subjects
+            ),
+        ),
+    )
     return expect_success(available_actions_outcome(snapshot, actor))
 
 
@@ -101,7 +123,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             decision_models.AuthorizationKind.PROJECT,
             0,
         )
-        factory = ActionCapabilityFactory("revision", actor)
+        factory = ActionCapabilityFactory(actor)
         current_definition = definition_anchor("target", 1, DIGEST_A)
         dependency = item("dependency", work_models.WorkState.READY)
         cases = (
@@ -210,6 +232,11 @@ class LifecycleDecisionTest(unittest.TestCase):
                     (target, dependency) if live_dependencies else (target,),
                     attempts=(attempt,),
                     definitions=(current_definition,),
+                    subject_revisions=(
+                        work_models.SubjectRevision(ItemId("target"), "1"),
+                        work_models.SubjectRevision(AttemptId("target-1"), "1"),
+                        *((work_models.SubjectRevision(ItemId("dependency"), "1"),) if live_dependencies else ()),
+                    ),
                 )
                 global_actions = available_actions(snapshot, actor)
                 selected_global = tuple(
@@ -220,8 +247,10 @@ class LifecycleDecisionTest(unittest.TestCase):
                 groups = project_attempt_action_groups(
                     work_models.ProjectAttemptActionContext(
                         ItemId("target"),
+                        "1",
                         item_state,
                         AttemptId("target-1"),
+                        "1",
                         attempt,
                         1,
                         DIGEST_A,
@@ -586,7 +615,6 @@ class LifecycleDecisionTest(unittest.TestCase):
                 4,
                 LeaseId("worker-lease"),
                 (AttemptId("target-1"),),
-                False,
             ),
         )
         selected = {

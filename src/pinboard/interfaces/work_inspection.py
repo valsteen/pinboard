@@ -433,13 +433,15 @@ def project_action(
         if isinstance(contract, errors.TransitionInputFailure):
             return contract
         input_contract = contract
+    subject_revision = (
+        capability.subject_revision if isinstance(capability, decision_models.MutationActionCapability) else None
+    )
     return work_inspection_models.ActionView(
         action_id=decision_models.action_id(action),
         kind=action.kind.value,
         subject=capability.subject,
         label=capability.label,
-        expected_revision=capability.expected_revision,
-        subject_revision=capability.subject_revision,
+        subject_revision=subject_revision,
         authorization="observer" if capability.authorization is None else capability.authorization.value,
         lease_id=capability.lease_id,
         generation=(

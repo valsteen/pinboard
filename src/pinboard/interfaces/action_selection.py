@@ -60,7 +60,7 @@ def _failure_alternatives(
     alternatives: list[FailureAction] = []
     for action in actions:
         capability = action.capability
-        if capability.subject != subject:
+        if not isinstance(capability, decision_models.MutationActionCapability) or capability.subject != subject:
             continue
         generation = (
             capability.command_authority.generation
@@ -73,7 +73,6 @@ def _failure_alternatives(
             FailureAction(
                 decision_models.action_id(action),
                 supplied.role.value,
-                capability.expected_revision,
                 capability.subject_revision,
                 None if capability.authorization is None else capability.authorization.value,
                 None if capability.lease_id is None else str(capability.lease_id),
@@ -186,11 +185,13 @@ def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
             authorization = decision_models.AuthorizationKind.PREPARATION
             role = decision_models.Role.PREPARER
             generation = command.generation
-        case cli_commands.ProjectDispatchCommand() | cli_commands.ProjectReviewedDispatchCommand():
+        case (
+            cli_commands.ProjectDispatchCommand(subject_revision=subject_revision)
+            | cli_commands.ProjectReviewedDispatchCommand(subject_revision=subject_revision)
+        ):
             authorization = decision_models.AuthorizationKind.PROJECT
             role = decision_models.Role.PROJECT
             lease_id = None
-            subject_revision = None
             generation = 0
         case _ as unreachable:
             assert_never(unreachable)
@@ -201,7 +202,6 @@ def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
         return decision_models.MutationActionCapability(
             subject=subject_id,
             label=str(selected_action_id),
-            expected_revision=command.expected_revision,
             subject_revision=subject_revision,
             authorization=authorization,
             lease_id=lease_id,
@@ -420,6 +420,12 @@ def select_current_action(
 ) -> CommandResult[decision_models.Action]:
     supplied_action = supplied.action
     supplied_capability = supplied_action.capability
+    if not isinstance(supplied_capability, decision_models.MutationActionCapability):
+        return CommandFailure(
+            CommandErrorCode.ACTION_LIFECYCLE_UNAVAILABLE,
+            f"Action '{decision_models.action_id(supplied_action)}' is not a mutation action.",
+            None,
+        )
     operation_time = datetime.now(UTC)
     if (authority_failure := _authority_failure(store, supplied, operation_time)) is not None:
         return authority_failure
@@ -466,17 +472,23 @@ def select_current_action(
             ),
         )
     current_capability = current_action.capability
-    if current_capability.expected_revision != supplied_capability.expected_revision:
+    if not isinstance(current_capability, decision_models.MutationActionCapability):
+        return CommandFailure(
+            CommandErrorCode.ACTION_LIFECYCLE_UNAVAILABLE,
+            f"Action '{decision_models.action_id(supplied_action)}' is no longer a mutation action.",
+            None,
+        )
+    if current_capability.subject_revision != supplied_capability.subject_revision:
         return CommandFailure(
             CommandErrorCode.ACTION_REVISION_STALE,
-            "The work ledger changed after this action was selected.",
+            "The action subject changed after this action was selected.",
             FailureDetails(
                 observed=(),
                 mismatches=(
                     FailureMismatch(
-                        "expected_revision",
-                        current_capability.expected_revision,
-                        supplied_capability.expected_revision,
+                        "subject_revision",
+                        current_capability.subject_revision,
+                        supplied_capability.subject_revision,
                     ),
                 ),
                 retry=RetryDisposition.REFRESH_ACTION,
@@ -486,12 +498,10 @@ def select_current_action(
             ),
         )
     supplied_authority = (
-        supplied_capability.subject_revision,
         supplied_capability.authorization,
         supplied_capability.lease_id,
     )
     current_authority = (
-        current_capability.subject_revision,
         current_capability.authorization,
         current_capability.lease_id,
     )
@@ -499,11 +509,6 @@ def select_current_action(
         mismatches = tuple(
             mismatch
             for mismatch in (
-                FailureMismatch(
-                    "subject_revision",
-                    current_capability.subject_revision,
-                    supplied_capability.subject_revision,
-                ),
                 FailureMismatch(
                     "authorization",
                     None if current_capability.authorization is None else current_capability.authorization.value,

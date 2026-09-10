@@ -84,7 +84,6 @@ def discover_current_actions(
                 selected_generation,
                 lease_id,
                 attempts,
-                False,
             )
         case decision_models.Role.PREPARER:
             preparations = tuple(

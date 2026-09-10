@@ -35,7 +35,6 @@ def action[SubjectT: SubjectId, ActionT](
         decision_models.MutationActionCapability(
             subject=subject,
             label="test action",
-            expected_revision="rev",
             subject_revision="1",
         )
     )

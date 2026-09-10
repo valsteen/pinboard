@@ -125,14 +125,11 @@ class CliTest(unittest.TestCase):
             "transition",
             "--action-id",
             str(action["action_id"]),
-            "--expected-revision",
-            str(action["expected_revision"]),
+            "--subject-revision",
+            str(action["subject_revision"]),
             "--authorization",
             str(action["authorization"]),
         ]
-        subject_revision = action.get("subject_revision")
-        if subject_revision:
-            arguments.extend(("--subject-revision", str(subject_revision)))
         lease_id = action.get("lease_id")
         if lease_id:
             arguments.extend(("--lease-id", str(lease_id), "--generation", str(action["generation"])))
@@ -1229,7 +1226,7 @@ class CliTest(unittest.TestCase):
 
         self.assert_readonly_attempt_renewal(("--project-root", str(linked)), work, store, str(work))
 
-    def test_fresh_init_accepts_a_proposal_and_rejects_its_stale_receipt_without_changes(self) -> None:
+    def test_fresh_init_accepts_a_proposal_after_an_unrelated_proposal(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         work = project / ".codex" / "pinboard"
         common = ("--project-root", str(project), "--work-root", str(work))
@@ -1287,32 +1284,10 @@ class CliTest(unittest.TestCase):
             json.dumps({"item": "fresh-proposal", "state": "ready", "next_action": "activate"}),
             encoding="utf-8",
         )
-        store = SQLiteWorkStore(work / "state.sqlite3")
-        before_stale = store.validated_snapshot()
-        rejected, rejected_stdout, rejected_stderr = self.run_transition(
-            common, stale_action, payload, json_output=True
-        )
-        self.assertEqual(11, rejected)
-        self.assertEqual("", rejected_stderr)
-        rejection = self.json_object(json.loads(rejected_stdout))
-        self.assertEqual("ACTION_REVISION_STALE", rejection["code"])
-        self.assertFalse(rejection["state_changed"])
-        alternatives = self.json_list(rejection["next_actions"])
-        fresh_accept = next(
-            self.json_object(value)
-            for value in alternatives
-            if self.json_object(value).get("action_id") == "accept-proposal:fresh-proposal"
-        )
-        self.assertEqual("action", fresh_accept["kind"])
-        self.assertEqual("project", fresh_accept["role"])
-        self.assertEqual(before_stale.lifecycle.project.revision, int(str(fresh_accept["expected_revision"])))
-        self.assertIsNone(fresh_accept["generation"])
-        self.assertEqual(before_stale, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
-
-        current_action = self.project_action(common, "accept-proposal:fresh-proposal")
-        accepted, stdout, stderr = self.run_transition(common, current_action, payload, json_output=False)
+        accepted, stdout, stderr = self.run_transition(common, stale_action, payload, json_output=True)
         self.assertEqual(0, accepted, stderr)
-        self.assertIn("OK TRANSITION_APPLIED accept-proposal:fresh-proposal", stdout)
+        transition = self.json_object(json.loads(stdout))
+        self.assertEqual("accept-proposal:fresh-proposal", transition["action_id"])
         reloaded = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
         accepted_item = next(
             value for value in reloaded.lifecycle.work_items if value.item_id == ItemId("fresh-proposal")
@@ -2150,7 +2125,7 @@ class CliTest(unittest.TestCase):
         status_before_mismatch = self.run_json_cli(*common, "item", "status", "--item-id", "work-a")
         handover_before_mismatch = self.run_json_cli(*common, "handover")
         stale_action = action.copy()
-        stale_action["expected_revision"] = "stale"
+        stale_action["subject_revision"] = "stale"
 
         stale_result, _stale_stdout, stale_stderr = self.run_transition(
             common, stale_action, mismatch_payload, json_output=False
@@ -2688,8 +2663,8 @@ class CliTest(unittest.TestCase):
             "transition",
             "--action-id",
             str(action["action_id"]),
-            "--expected-revision",
-            str(action["expected_revision"]),
+            "--subject-revision",
+            str(action["subject_revision"]),
             "--authorization",
             str(action["authorization"]),
             "--task-id",
@@ -3726,8 +3701,8 @@ Not launchable:
             "dispatch",
             "--action-id",
             str(dispatch_action["action_id"]),
-            "--expected-revision",
-            str(dispatch_action["expected_revision"]),
+            "--subject-revision",
+            str(dispatch_action["subject_revision"]),
             "--task-id",
             "replacement-worker",
             "--host-id",
@@ -3786,8 +3761,8 @@ Not launchable:
             "dispatch",
             "--action-id",
             str(current_dispatch["action_id"]),
-            "--expected-revision",
-            str(current_dispatch["expected_revision"]),
+            "--subject-revision",
+            str(current_dispatch["subject_revision"]),
             "--task-id",
             "replacement-worker",
             "--host-id",
@@ -4151,7 +4126,7 @@ Not launchable:
                 "transition",
                 "--action-id",
                 "pause:work-a-1",
-                "--expected-revision",
+                "--subject-revision",
                 "stale",
                 "--generation",
                 "3",
@@ -4464,7 +4439,7 @@ Not launchable:
             ),
         )
 
-    def test_locked_rejection_returns_fresh_same_subject_alternatives(self) -> None:
+    def test_locked_transition_ignores_a_disjoint_subject_change(self) -> None:
         project, work, store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))
         action = self.project_action(common, "pause:work-a-1")
@@ -4519,15 +4494,10 @@ Not launchable:
         ):
             result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
 
-        self.assertEqual(11, result)
-        self.assertEqual("", stderr)
-        rejection = self.json_object(json.loads(stdout))
-        self.assertEqual("ACTION_NOT_AVAILABLE", rejection["code"])
-        self.assertFalse(rejection["state_changed"])
-        alternatives = tuple(self.json_object(value) for value in self.json_list(rejection["next_actions"]))
-        fresh_pause = next(value for value in alternatives if value.get("action_id") == "pause:work-a-1")
-        self.assertEqual("13", fresh_pause["expected_revision"])
-        self.assertIsNone(fresh_pause["generation"])
+        self.assertEqual(0, result, stderr)
+        transition = self.json_object(json.loads(stdout))
+        self.assertEqual("pause:work-a-1", transition["action_id"])
+        self.assertEqual("14", transition["committed_revision"])
         work_c = next(
             value for value in store.validated_snapshot().lifecycle.work_items if value.item_id == ItemId("work-c")
         )
@@ -5098,8 +5068,8 @@ Not launchable:
                 "dispatch",
                 "--action-id",
                 str(dispatch_action["action_id"]),
-                "--expected-revision",
-                str(dispatch_action["expected_revision"]),
+                "--subject-revision",
+                str(dispatch_action["subject_revision"]),
                 "--task-id",
                 "project-task",
                 "--host-id",
@@ -5247,7 +5217,7 @@ Not launchable:
                     "transition",
                     "--action-id",
                     "pause:attempt-a",
-                    "--expected-revision",
+                    "--subject-revision",
                     "1",
                     "--task-id",
                     "task-a",
@@ -5265,7 +5235,7 @@ Not launchable:
                     "dispatch",
                     "--action-id",
                     "dispatch:attempt-a",
-                    "--expected-revision",
+                    "--subject-revision",
                     "1",
                     "--generation",
                     "1",
@@ -5283,7 +5253,7 @@ Not launchable:
                     "dispatch",
                     "--action-id",
                     "dispatch:attempt-a",
-                    "--expected-revision",
+                    "--subject-revision",
                     "1",
                     "--generation",
                     "1",
@@ -5301,7 +5271,7 @@ Not launchable:
                     "dispatch",
                     "--action-id",
                     "dispatch:attempt-a",
-                    "--expected-revision",
+                    "--subject-revision",
                     "1",
                     "--generation",
                     "1",
@@ -5352,7 +5322,7 @@ Not launchable:
             "transition",
             "--action-id",
             "pause:attempt-a",
-            "--expected-revision",
+            "--subject-revision",
             "1",
             "--generation",
             "1",
@@ -5386,7 +5356,7 @@ Not launchable:
                     "transition",
                     "--action-id",
                     "bad/id",
-                    "--expected-revision",
+                    "--subject-revision",
                     "1",
                     "--authorization",
                     "project",
@@ -5404,7 +5374,7 @@ Not launchable:
                     "dispatch",
                     "--action-id",
                     "bad/id",
-                    "--expected-revision",
+                    "--subject-revision",
                     "1",
                     "--task-id",
                     "task-a",

@@ -389,8 +389,10 @@ class AttemptRecord:
 @dataclass(frozen=True, slots=True)
 class ProjectAttemptActionContext:
     item: ItemId
+    item_subject_revision: str
     item_state: WorkState
     attempt: AttemptId
+    attempt_subject_revision: str
     attempt_record: AttemptRecord | None
     current_definition_revision: int | None
     current_definition_digest: str | None

@@ -114,8 +114,10 @@ def project_attempt_continuation(
             groups = project_attempt_action_groups(
                 work_models.ProjectAttemptActionContext(
                     item.item_id,
+                    item.subject_revision,
                     work_models.WorkState(item.state.value),
                     context.attempt_id,
+                    context.subject_revision,
                     attempt_record,
                     item.current_definition_revision,
                     item.current_definition_digest,
@@ -123,7 +125,6 @@ def project_attempt_continuation(
                     True,
                 ),
                 ActionCapabilityFactory(
-                    str(context.project_revision),
                     decision_models.ActorAuthority(
                         decision_models.Role.PROJECT,
                         decision_models.AuthorizationKind.PROJECT,

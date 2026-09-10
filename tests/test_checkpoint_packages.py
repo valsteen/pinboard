@@ -138,16 +138,13 @@ class CheckpointPackageTest(unittest.TestCase):
             "transition",
             "--action-id",
             str(action["action_id"]),
-            "--expected-revision",
-            str(action["expected_revision"]),
+            "--subject-revision",
+            str(action["subject_revision"]),
             "--authorization",
             str(action["authorization"]),
             "--payload",
             str(payload),
         ]
-        subject_revision = action.get("subject_revision")
-        if subject_revision:
-            arguments.extend(("--subject-revision", str(subject_revision)))
         lease_id = action.get("lease_id")
         if lease_id:
             arguments.extend(("--lease-id", str(lease_id), "--generation", str(action["generation"])))
@@ -170,8 +167,8 @@ class CheckpointPackageTest(unittest.TestCase):
             "transition",
             "--action-id",
             str(action["action_id"]),
-            "--expected-revision",
-            str(action["expected_revision"]),
+            "--subject-revision",
+            str(action["subject_revision"]),
             "--authorization",
             str(action["authorization"]),
             "--payload",
@@ -239,8 +236,8 @@ class CheckpointPackageTest(unittest.TestCase):
             "transition",
             "--action-id",
             str(action["action_id"]),
-            "--expected-revision",
-            str(action["expected_revision"]),
+            "--subject-revision",
+            str(action["subject_revision"]),
             "--authorization",
             str(action["authorization"]),
             "--task-id",
@@ -250,9 +247,6 @@ class CheckpointPackageTest(unittest.TestCase):
             "--payload",
             str(payload),
         ]
-        subject_revision = action.get("subject_revision")
-        if subject_revision:
-            arguments.extend(("--subject-revision", str(subject_revision)))
         result, _stdout, stderr = self.run_cli(*arguments)
         self.assertEqual(0, result, stderr)
 

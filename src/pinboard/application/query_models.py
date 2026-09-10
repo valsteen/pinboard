@@ -157,6 +157,7 @@ type NonterminalItemState = Literal[
 @dataclass(frozen=True, slots=True)
 class AttemptContextItemFacts:
     item_id: ItemId
+    subject_revision: str
     state: NonterminalItemState
     current_definition_revision: int
     current_definition_digest: str
@@ -182,6 +183,7 @@ type NonterminalAttemptState = Literal[
 class NonterminalAttemptContextFacts:
     project_revision: int
     attempt_id: AttemptId
+    subject_revision: str
     item_id: ItemId
     state: NonterminalAttemptState
     branch: str

@@ -158,7 +158,6 @@ class ServiceTest(unittest.TestCase):
             authority.generation,
             authority.lease_id,
             (authority.attempt,),
-            False,
         )
         result = available_actions(snapshot, actor)
         self.assertIsInstance(result, tuple)

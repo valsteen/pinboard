@@ -232,6 +232,10 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             attempts=(attempt,),
             attempt_authorities=(authority,),
             definitions=(work_models.DefinitionAnchor(item.item, 2, revised_digest, revised),),
+            subject_revisions=(
+                work_models.SubjectRevision(item.item, "2"),
+                work_models.SubjectRevision(attempt_id, "1"),
+            ),
         )
         project = expect_success(
             available_actions(

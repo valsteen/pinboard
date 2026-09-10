@@ -367,7 +367,6 @@ def accept_proposal(
 def insert_planned_replacement(
     connection: sqlite3.Connection,
     relation: work_models.PlannedReplacement,
-    recorded_at: datetime,
     accepted_project_revision: int,
 ) -> None:
     connection.execute(
@@ -384,7 +383,7 @@ def insert_planned_replacement(
             relation.replacement_cost,
             relation.status.value,
             relation.recorded_by,
-            recorded_at.isoformat(),
+            relation.recorded_at.isoformat(),
             accepted_project_revision,
         ),
     )
@@ -514,7 +513,7 @@ def create_proposal(
             )
         ) is not None:
             return failure
-        insert_planned_replacement(connection, relation, now, revision)
+        insert_planned_replacement(connection, relation, revision)
     if prerequisite is None:
         return None
     assert prerequisite_subject_revision is not None

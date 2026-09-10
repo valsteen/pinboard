@@ -40,8 +40,16 @@ class AgentReadinessBaselineTest(unittest.TestCase):
         )
         self.assertEqual(68_248, sum(source.selected_bytes for source in baseline.evidence_sources))
         self.assertEqual(
+            (30_738, 15_591, 12_334),
+            tuple(case.selected_source_bytes for case in baseline.cases),
+        )
+        self.assertEqual(
             ("persistence-import-correction", "persistence-evidence-correction"),
             baseline.cases[1].context_evidence_ids,
+        )
+        self.assertEqual(
+            ("storytelling-fixed-point", "prefix-guidance-result"),
+            baseline.corpus_context_evidence_ids,
         )
         for case in baseline.cases:
             self.assertTrue(case.owner_localization.correct_owners)
@@ -97,6 +105,24 @@ class AgentReadinessBaselineTest(unittest.TestCase):
         ).replace(b'"selected_source_bytes":15591', b'"selected_source_bytes":46329', 1)
         with self.assertRaises(msgspec.ValidationError):
             decode_baseline(duplicate_evidence)
+
+    def test_evidence_must_identify_the_case_it_measures(self) -> None:
+        source = CORPUS_PATH.read_bytes()
+        unrelated_evidence = source.replace(
+            b'"case_id":"large-cross-boundary-delivery","purpose":"case-measurement","selected_bytes":30738',
+            b'"case_id":"local-dto-simplification","purpose":"case-measurement","selected_bytes":30738',
+            1,
+        )
+        with self.assertRaises(msgspec.ValidationError):
+            decode_baseline(unrelated_evidence)
+
+        attributed_context = source.replace(
+            b'"case_id":null,"purpose":"corpus-context","selected_bytes":4114',
+            b'"case_id":"large-cross-boundary-delivery","purpose":"case-measurement","selected_bytes":4114',
+            1,
+        )
+        with self.assertRaises(msgspec.ValidationError):
+            decode_baseline(attributed_context)
 
     def test_projection_is_deterministic_and_matches_the_committed_report(self) -> None:
         source = CORPUS_PATH.read_bytes()

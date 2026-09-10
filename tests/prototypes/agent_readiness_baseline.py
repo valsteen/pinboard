@@ -17,13 +17,20 @@ type CaseId = Literal[
     "local-dto-simplification",
 ]
 type CandidateKind = Literal["commit", "working-tree-sha256"]
+type EvidencePurpose = Literal["case-measurement", "corpus-context"]
 
 
 class EvidenceSource(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     authority_id: NonEmptyString
+    case_id: CaseId | None
+    purpose: EvidencePurpose
     selected_bytes: PositiveInt
     selector: NonEmptyString
     sha256: Annotated[str, msgspec.Meta(pattern="^[0-9a-f]{64}$")]
+
+    def __post_init__(self) -> None:
+        if (self.purpose == "case-measurement") != (self.case_id is not None):
+            raise ValueError("case measurement evidence must name exactly one representative case")
 
 
 class OwnerLocalization(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -75,6 +82,7 @@ class Methodology(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 class AgentReadinessBaseline(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     bottlenecks: Bottlenecks
     cases: Annotated[tuple[MaintenanceCase, ...], msgspec.Meta(min_length=3, max_length=3)]
+    corpus_context_evidence_ids: NonEmptyStrings
     evidence_sources: Annotated[tuple[EvidenceSource, ...], msgspec.Meta(min_length=1)]
     methodology: Methodology
     schema: Literal["pinboard-agent-readiness-baseline/v1"]
@@ -90,21 +98,30 @@ class AgentReadinessBaseline(msgspec.Struct, frozen=True, forbid_unknown_fields=
         )
         if tuple(case.case_id for case in self.cases) != expected_case_ids:
             raise ValueError("the three representative cases must appear once in canonical order")
-        evidence_assignments = dict.fromkeys(evidence_by_id, 0)
+        evidence_assignments: list[str] = []
         for case in self.cases:
             case_evidence_ids = (case.primary_evidence_id, *case.context_evidence_ids)
             if len(set(case_evidence_ids)) != len(case_evidence_ids):
                 raise ValueError("a case cannot reference the same evidence twice")
             try:
-                selected_bytes = sum(evidence_by_id[evidence_id].selected_bytes for evidence_id in case_evidence_ids)
+                case_sources = tuple(evidence_by_id[evidence_id] for evidence_id in case_evidence_ids)
             except KeyError as error:
                 raise ValueError(f"unknown evidence authority: {error.args[0]}") from error
+            if any(source.case_id != case.case_id for source in case_sources):
+                raise ValueError("case evidence must explicitly identify the case it measures")
+            selected_bytes = sum(source.selected_bytes for source in case_sources)
             if selected_bytes != case.selected_source_bytes:
                 raise ValueError("case selected source bytes must equal its exact evidence selections")
-            for evidence_id in case_evidence_ids:
-                evidence_assignments[evidence_id] += 1
-        if any(count != 1 for count in evidence_assignments.values()):
-            raise ValueError("every selected evidence authority must belong to exactly one representative case")
+            evidence_assignments.extend(case_evidence_ids)
+        try:
+            context_sources = tuple(evidence_by_id[evidence_id] for evidence_id in self.corpus_context_evidence_ids)
+        except KeyError as error:
+            raise ValueError(f"unknown evidence authority: {error.args[0]}") from error
+        if any(source.purpose != "corpus-context" for source in context_sources):
+            raise ValueError("corpus context evidence cannot be attributed to a representative case")
+        evidence_assignments.extend(self.corpus_context_evidence_ids)
+        if sorted(evidence_assignments) != sorted(evidence_by_id):
+            raise ValueError("every selected evidence authority must have exactly one measurement purpose")
         if self.methodology.evidence_selected_bytes != sum(source.selected_bytes for source in self.evidence_sources):
             raise ValueError("methodology evidence bytes must equal the selected evidence total")
 
@@ -131,14 +148,26 @@ def render_baseline(baseline: AgentReadinessBaseline) -> str:
         "",
         "## Evidence sources",
         "",
-        "| Authority | Exact selector | Selected bytes | SHA-256 |",
-        "| --- | --- | ---: | --- |",
+        "| Authority | Purpose | Case | Exact selector | Selected bytes | SHA-256 |",
+        "| --- | --- | --- | --- | ---: | --- |",
     ]
     lines.extend(
-        f"| `{source.authority_id}` | `{source.selector}` | {source.selected_bytes:,} | `{source.sha256}` |"
+        f"| `{source.authority_id}` | {source.purpose} | "
+        f"{f'`{source.case_id}`' if source.case_id is not None else 'not attributed'} | "
+        f"`{source.selector}` | {source.selected_bytes:,} | `{source.sha256}` |"
         for source in baseline.evidence_sources
     )
-    lines.extend(["", "## Representative cases", ""])
+    lines.extend(
+        [
+            "",
+            "Corpus-wide context sources (not attributed to or counted for a candidate range): "
+            + ", ".join(f"`{evidence_id}`" for evidence_id in baseline.corpus_context_evidence_ids)
+            + ".",
+            "",
+            "## Representative cases",
+            "",
+        ]
+    )
     for case in baseline.cases:
         elapsed = "not preserved" if case.elapsed_seconds is None else f"{case.elapsed_seconds:,} seconds"
         tokens = "not preserved" if case.token_count is None else f"{case.token_count:,}"

@@ -10,15 +10,17 @@ Interpretation: Use the separate observations to choose and later compare gradua
 
 ## Evidence sources
 
-| Authority | Exact selector | Selected bytes | SHA-256 |
-| --- | --- | ---: | --- |
-| `large-refactor-result` | `.codex/pinboard/attempts/make-large-refactor-delivery-incremental-and-evidence-reusable-1/result.md` | 30,738 | `f5fd823163f1d45826c0a4546c7737e784f04d9cebdce1eb7bc8cb1463c99343` |
-| `storytelling-fixed-point` | `.codex/pinboard/attempts/proofread-entire-repository-storytelling-1/result.md#Final integrated result: whole-repository storytelling pass` | 4,114 | `f0a23284e57a1e161563fd68961b3264fdf9a00c0a75f5d58a67b10e43cbd184` |
-| `persistence-import-correction` | `.codex/pinboard/attempts/consolidate-post-cutover-sqlite-persistence-1/result.md#Corrected review candidate: convert-remaining-persistence-families` | 2,620 | `2bf0e9e80570988743c2a9ccc79929b5c7e4046f508d2b4c35be15a820f08f07` |
-| `persistence-evidence-correction` | `.codex/pinboard/attempts/consolidate-post-cutover-sqlite-persistence-1/result.md#Evidence-corrected review candidate: convert-remaining-persistence-families` | 2,293 | `beb1e09ad4c69331ec76a7ee5f266e6860e316f9c1a34d01dd73b0977778a17f` |
-| `persistence-fixed-point` | `.codex/pinboard/attempts/consolidate-post-cutover-sqlite-persistence-1/result.md#Review candidate: collapse-post-persistence-residue-to-fixed-point` | 10,678 | `95edb10f36906fc5aaa5e3ad9c3b1d0a7f7d61d2029a314c8ff6613a35d9604f` |
-| `dto-revalidation-result` | `.codex/pinboard/attempts/remove-internal-dto-revalidation-1/result.md` | 12,334 | `bc9967767d015b52b0585675a4f3681c51bc932cb50844c4f21510b01403848d` |
-| `prefix-guidance-result` | `.codex/pinboard/attempts/recommend-body-after-prefix-on-first-run-1/result.md` | 5,471 | `7599cfe0bbdaa3efac9d689fa7544621efd90dd46e8c0cd1a8baaf8876b16a5b` |
+| Authority | Purpose | Case | Exact selector | Selected bytes | SHA-256 |
+| --- | --- | --- | --- | ---: | --- |
+| `large-refactor-result` | case-measurement | `large-cross-boundary-delivery` | `.codex/pinboard/attempts/make-large-refactor-delivery-incremental-and-evidence-reusable-1/result.md` | 30,738 | `f5fd823163f1d45826c0a4546c7737e784f04d9cebdce1eb7bc8cb1463c99343` |
+| `storytelling-fixed-point` | corpus-context | not attributed | `.codex/pinboard/attempts/proofread-entire-repository-storytelling-1/result.md#Final integrated result: whole-repository storytelling pass` | 4,114 | `f0a23284e57a1e161563fd68961b3264fdf9a00c0a75f5d58a67b10e43cbd184` |
+| `persistence-import-correction` | case-measurement | `persistence-fixed-point-cleanup` | `.codex/pinboard/attempts/consolidate-post-cutover-sqlite-persistence-1/result.md#Corrected review candidate: convert-remaining-persistence-families` | 2,620 | `2bf0e9e80570988743c2a9ccc79929b5c7e4046f508d2b4c35be15a820f08f07` |
+| `persistence-evidence-correction` | case-measurement | `persistence-fixed-point-cleanup` | `.codex/pinboard/attempts/consolidate-post-cutover-sqlite-persistence-1/result.md#Evidence-corrected review candidate: convert-remaining-persistence-families` | 2,293 | `beb1e09ad4c69331ec76a7ee5f266e6860e316f9c1a34d01dd73b0977778a17f` |
+| `persistence-fixed-point` | case-measurement | `persistence-fixed-point-cleanup` | `.codex/pinboard/attempts/consolidate-post-cutover-sqlite-persistence-1/result.md#Review candidate: collapse-post-persistence-residue-to-fixed-point` | 10,678 | `95edb10f36906fc5aaa5e3ad9c3b1d0a7f7d61d2029a314c8ff6613a35d9604f` |
+| `dto-revalidation-result` | case-measurement | `local-dto-simplification` | `.codex/pinboard/attempts/remove-internal-dto-revalidation-1/result.md` | 12,334 | `bc9967767d015b52b0585675a4f3681c51bc932cb50844c4f21510b01403848d` |
+| `prefix-guidance-result` | corpus-context | not attributed | `.codex/pinboard/attempts/recommend-body-after-prefix-on-first-run-1/result.md` | 5,471 | `7599cfe0bbdaa3efac9d689fa7544621efd90dd46e8c0cd1a8baaf8876b16a5b` |
+
+Corpus-wide context sources (not attributed to or counted for a candidate range): `storytelling-fixed-point`, `prefix-guidance-result`.
 
 ## Representative cases
 
@@ -27,8 +29,8 @@ Interpretation: Use the separate observations to choose and later compare gradua
 - Case: `large-cross-boundary-delivery`
 - Candidate: `4ad54ddc4d97bcf01ea10e229893de7cabb1e80a` (commit) over `dc5bc7a815459ba7a38f408ceec4cb8933a44395` on `codex/make-large-refactor-incremental`
 - Primary evidence: `large-refactor-result`
-- Context evidence: `storytelling-fixed-point`
-- Selected source bytes: 34,852
+- Context evidence: `none`
+- Selected source bytes: 30,738
 - Meaningful edit sites: 44
 - Correction rounds: 1
 - Elapsed cost: not preserved
@@ -122,8 +124,8 @@ Verification breadth:
 - Case: `local-dto-simplification`
 - Candidate: `9313f2bf20872b337a8a420c1fd23ed447debe99` (commit) over `747856dcc135b5e46cbc7236bbe03b8ed6696bdb` on `codex/remove-internal-dto-revalidation`
 - Primary evidence: `dto-revalidation-result`
-- Context evidence: `prefix-guidance-result`
-- Selected source bytes: 17,805
+- Context evidence: `none`
+- Selected source bytes: 12,334
 - Meaningful edit sites: 8
 - Correction rounds: 0
 - Elapsed cost: not preserved
@@ -169,7 +171,7 @@ Verification breadth:
 
 ### Navigation
 
-The retrospective evidence selection reads 34,852 bytes for the large final-gate range, 15,591 for the persistence range, and 17,805 for the DTO range. These exact source-plan bytes measure baseline evidence loading; historical task source-read totals are not compared because the selected results do not preserve one consistent task window.
+The revision-pinned evidence selection reads 30,738 bytes for the large final-gate range, 15,591 for the persistence range, and 12,334 for the DTO range. Two additional selectors totaling 9,585 bytes preserve corpus-wide context but are not attributed to or counted for any candidate range. These exact source-plan bytes measure baseline evidence loading; historical task source-read totals are not compared because the selected results do not preserve one consistent task window.
 
 ### Locality
 

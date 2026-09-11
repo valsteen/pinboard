@@ -13,11 +13,11 @@ from itertools import pairwise
 
 import msgspec
 
+from pinboard.adapters.sqlite._generated.replacement_validation import validate_replacements
 from pinboard.adapters.sqlite.artifacts import read_artifacts
 from pinboard.adapters.sqlite.authority import read_authority, validate_attempt_authority
 from pinboard.adapters.sqlite.database import decode_row
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.adapters.sqlite.generated_replacement_validation import validate_replacements
 from pinboard.adapters.sqlite.lifecycle import read_lifecycle
 from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
 from pinboard.application import handover, stored_state

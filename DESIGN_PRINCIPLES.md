@@ -170,6 +170,14 @@ When an exact conversion is chosen, convert once at the owning semantic boundary
 
 Use tooling only for the guarantee it can truthfully provide. Pyrefly checks the exact types expressed after the boundary is chosen. Ruff or a small opt-in local check may surface a suspicious shape or verify a chosen converter, but it does not discover every semantic consumer. Runtime tests prove observable boundary and integration behavior. Semantic review recognizes likely predicate-shaped sites, judges the proposed boundary and footprint, and challenges omissions; none of these layers makes deliberate or accidental workarounds impossible.
 
+## Compile repetitive boundaries only when ownership stays visible
+
+When a repeated projection or relational invariant family has one natural typed source, a compact typed declaration may own field dispositions, closed operations, invariant roles, diagnostic text, and their order. Derive the complete source shape recursively from that natural root instead of maintaining a class or consumer allowlist. Compile the declaration into checked-in, explicit layer-local Python so Ruff, Pyrefly, ordinary tests, and reviewers still see concrete constructors, loops, branches, and dependency edges. Production must depend only on the generated layer owner, never on development-time code generation.
+
+Keep canonical and derived material unmistakable. Place the declaration and compiler together under `codegen/<family>/`; place output in the owning production layer's private `_generated/` directory; give it the standard generated-file header, directory-scoped agent guidance, and a `linguist-generated` marker. Agents change the declaration or compiler and regenerate. They inspect output only when diagnosing the generator. The freshness check can prove that checked-in bytes match the declaration and compiler, but it cannot observe file reads or prove every semantic consumer in the program.
+
+Use this only for a bounded family whose completeness can be derived mechanically and whose generated code remains simpler to verify than the repetition it replaces. Stop if enforcement requires a site list, comment exception, fallback operation, callback, registry, suppression analyzer, control-flow graph, call graph, or interprocedural semantic analysis. An independent consumer that answers a different product question remains explicit rather than being folded merely to strengthen a tooling claim.
+
 ## Prefer closed, direct Python
 
 For a closed family, use concrete records or flat unions, exhaustive `match` statements, and direct function calls. The source should reveal which variant calls which effect.

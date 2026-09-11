@@ -3,14 +3,16 @@ import unittest
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from codegen.replacement_records import (
+from codegen.replacements.compiler import (
     APPLICATION_OUTPUT,
+    GENERATED_HEADER,
+    VALIDATION_OUTPUT,
     DeclarationError,
     _write_or_check,
     render_application,
     render_validation,
 )
-from codegen.replacement_spec import REPLACEMENTS, ExactCost
+from codegen.replacements.declaration import REPLACEMENTS, ExactCost
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
@@ -55,6 +57,24 @@ class RootWithChangedTupleMember:
 
 
 class DeclarativeReplacementTest(unittest.TestCase):
+    def test_generated_ownership_convention_is_mechanically_visible(self) -> None:
+        root = Path(__file__).parents[1]
+        outputs = (APPLICATION_OUTPUT, VALIDATION_OUTPUT)
+        self.assertEqual(
+            (
+                Path("src/pinboard/application/_generated/replacement_projection.py"),
+                Path("src/pinboard/adapters/sqlite/_generated/replacement_validation.py"),
+            ),
+            outputs,
+        )
+        for output in outputs:
+            with self.subTest(output=output):
+                self.assertEqual(GENERATED_HEADER, (root / output).read_text(encoding="utf-8").splitlines()[0])
+                self.assertTrue((root / output.parent / "AGENTS.md").is_file())
+        attributes = (root / ".gitattributes").read_text(encoding="utf-8").splitlines()
+        self.assertIn("src/pinboard/application/_generated/*.py linguist-generated", attributes)
+        self.assertIn("src/pinboard/adapters/sqlite/_generated/*.py linguist-generated", attributes)
+
     def test_current_declaration_covers_source_shape_and_generated_output_is_current(self) -> None:
         self.assertEqual(
             APPLICATION_OUTPUT.read_text(encoding="utf-8"),

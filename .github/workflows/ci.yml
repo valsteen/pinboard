@@ -52,7 +52,7 @@ jobs:
       - name: Check generated visitor guide
         run: uv run --locked python -m docs.how_it_works.render --check
       - name: Check generated replacement code
-        run: uv run --locked python -m codegen.replacement_records --check
+        run: uv run --locked python -m codegen.replacements.compiler --check
       - name: Check formatting
         run: uv run --locked ruff format --check .
       - name: Lint

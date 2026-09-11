@@ -1,4 +1,4 @@
-"""Declarative projection and invariant ownership for replacement records."""
+"""Canonical projection and invariant declaration for replacement records."""
 
 from dataclasses import dataclass
 

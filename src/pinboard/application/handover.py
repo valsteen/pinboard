@@ -9,7 +9,7 @@ from typing import Literal, assert_never
 import msgspec
 
 from pinboard.application import query_models, stored_state
-from pinboard.application.generated_replacements import (
+from pinboard.application._generated.replacement_projection import (
     HandoverPlannedReplacement,
     HandoverReplacementDisposition,
     project_replacements,

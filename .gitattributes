@@ -1,0 +1,2 @@
+src/pinboard/application/_generated/*.py linguist-generated
+src/pinboard/adapters/sqlite/_generated/*.py linguist-generated

@@ -1,9 +1,14 @@
+import contextlib
+import io
+import sys
 import tempfile
 import unittest
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
+from codegen.replacements import compiler as replacement_compiler
 from codegen.replacements.compiler import (
     APPLICATION_OUTPUT,
     GENERATED_HEADER,
@@ -12,7 +17,6 @@ from codegen.replacements.compiler import (
     _validate_private_row_imports,
     _validated_invariant_operation,
     _validated_projection_operation,
-    _write_or_check,
     render_application,
     render_validation,
 )
@@ -382,12 +386,59 @@ class DeclarativeReplacementTest(unittest.TestCase):
                 1,
             )
 
-    def test_stale_generated_bytes_fail_the_check(self) -> None:
-        path = Path(tempfile.mkdtemp()) / "generated.py"
-        path.write_text("stale\n", encoding="utf-8")
+    def test_structural_failure_names_authoritative_inputs_and_next_check(self) -> None:
+        first, second = REPLACEMENTS.collections
+        family = replace(REPLACEMENTS, collections=(replace(first, fields=first.fields[:-1]), second))
+        stderr = io.StringIO()
 
-        self.assertFalse(_write_or_check(path, "current\n", True))
-        self.assertEqual("stale\n", path.read_text(encoding="utf-8"))
+        with (
+            patch.object(replacement_compiler, "REPLACEMENTS", family),
+            patch.object(sys, "argv", ["compiler", "--check"]),
+            contextlib.redirect_stderr(stderr),
+        ):
+            self.assertEqual(1, replacement_compiler.main())
+
+        diagnostic = stderr.getvalue()
+        self.assertIn("ReplacementRecords.planned_replacements", diagnostic)
+        self.assertIn("codegen/replacements/declaration.py", diagnostic)
+        self.assertIn("codegen/replacements/compiler.py", diagnostic)
+        self.assertIn("src/pinboard/application/stored_state.py", diagnostic)
+        self.assertIn("uv run --locked python -m codegen.replacements.compiler --check", diagnostic)
+
+    def test_generated_mismatch_distinguishes_source_identity_drift_from_stale_bytes(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        application = root / "replacement_projection.py"
+        validation = root / "replacement_validation.py"
+        expected_fingerprint = "# Source shape: sha256:expected"
+        expected = f"{GENERATED_HEADER}\n{expected_fingerprint}\nexpected\n"
+        cases = (
+            ("source identity drift", "# Source shape: sha256:observed\nstale\n", "confirm intent"),
+            ("stale bytes", f"{expected_fingerprint}\nstale\n", "regenerate"),
+        )
+        for name, observed_suffix, expected_guidance in cases:
+            with self.subTest(name=name):
+                observed = f"{GENERATED_HEADER}\n{observed_suffix}"
+                application.write_text(observed, encoding="utf-8")
+                validation.write_text(observed, encoding="utf-8")
+                stderr = io.StringIO()
+                with (
+                    patch.object(replacement_compiler, "APPLICATION_OUTPUT", application),
+                    patch.object(replacement_compiler, "VALIDATION_OUTPUT", validation),
+                    patch.object(replacement_compiler, "_validate_private_row_imports"),
+                    patch.object(replacement_compiler, "render_application", return_value=expected),
+                    patch.object(replacement_compiler, "render_validation", return_value=expected),
+                    patch.object(sys, "argv", ["compiler", "--check"]),
+                    contextlib.redirect_stderr(stderr),
+                ):
+                    self.assertEqual(1, replacement_compiler.main())
+
+                diagnostic = stderr.getvalue().lower()
+                self.assertIn(str(application).lower(), diagnostic)
+                self.assertIn(str(validation).lower(), diagnostic)
+                self.assertIn(expected_guidance, diagnostic)
+                self.assertIn("uv run --locked python -m codegen.replacements.compiler --check", diagnostic)
+                self.assertEqual(observed, application.read_text(encoding="utf-8"))
+                self.assertEqual(observed, validation.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

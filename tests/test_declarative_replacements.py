@@ -1,4 +1,3 @@
-import json
 import tempfile
 import unittest
 from dataclasses import dataclass, replace
@@ -10,13 +9,17 @@ from codegen.replacements.compiler import (
     VALIDATION_OUTPUT,
     DeclarationError,
     _validate_private_row_imports,
+    _validated_invariant_operation,
+    _validated_projection_operation,
     _write_or_check,
     render_application,
     render_validation,
 )
 from codegen.replacements.declaration import (
     REPLACEMENTS,
+    Copy,
     ExactCost,
+    KnownItems,
 )
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
@@ -272,52 +275,58 @@ class DeclarativeReplacementTest(unittest.TestCase):
         self.assertIn("    plans: ProjectedPlans", generated)
         self.assertIn("        plans=tuple(", generated)
 
-    def test_direct_import_of_private_generated_row_is_rejected(self) -> None:
+    def test_private_generated_row_access_is_rejected(self) -> None:
         source_root = Path(tempfile.mkdtemp()) / "src"
-        source_root.mkdir()
-        (source_root / "escape.py").write_text(
-            "from pinboard.application._generated.replacement_projection import _HandoverPlannedReplacement\n",
-            encoding="utf-8",
-        )
+        application = source_root / "pinboard" / "application"
+        application.mkdir(parents=True)
+        cases = {
+            "absolute.py": (
+                "from pinboard.application._generated.replacement_projection import _HandoverPlannedReplacement\n"
+            ),
+            "qualified.py": (
+                "import pinboard.application._generated.replacement_projection as projection\n"
+                "row = projection._HandoverPlannedReplacement\n"
+            ),
+            "qualified_unaliased.py": (
+                "import pinboard.application._generated.replacement_projection\n"
+                "row = pinboard.application._generated.replacement_projection._HandoverPlannedReplacement\n"
+            ),
+            "relative.py": ("from ._generated.replacement_projection import _HandoverPlannedReplacement\n"),
+            "relative_module.py": (
+                "from ._generated import replacement_projection as projection\n"
+                "row = projection._HandoverPlannedReplacement\n"
+            ),
+        }
+        for filename, source in cases.items():
+            with self.subTest(filename=filename):
+                path = application / filename
+                path.write_text(source, encoding="utf-8")
+                with self.assertRaisesRegex(
+                    DeclarationError,
+                    f"private generated row symbol.*_HandoverPlannedReplacement.*{filename}",
+                ):
+                    _validate_private_row_imports(REPLACEMENTS, source_root)
+                path.unlink()
+
+    def test_unknown_projection_and_invariant_operations_are_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            DeclarationError,
+            "unsupported projection operation.*ReplacementRecords.planned_replacements.affected_item_id",
+        ):
+            _validated_projection_operation(
+                KnownItems((), "unused diagnostic"),
+                "ReplacementRecords.planned_replacements.affected_item_id",
+            )
 
         with self.assertRaisesRegex(
             DeclarationError,
-            "private generated row symbol.*_HandoverPlannedReplacement.*escape.py",
+            "unsupported invariant operation.*ReplacementRecords.planned_replacements.*role 1",
         ):
-            _validate_private_row_imports(REPLACEMENTS, source_root)
-
-    def test_unknown_projection_and_invariant_operations_are_rejected(self) -> None:
-        first, second = REPLACEMENTS.collections
-        unsupported_operation = json.loads('{"operation":"unsupported"}')
-        unsupported_projection = replace(
-            first.fields[0],
-            operation=unsupported_operation,
-        )
-        projection_family = replace(
-            REPLACEMENTS,
-            collections=(
-                replace(first, fields=(unsupported_projection, *first.fields[1:])),
-                second,
-            ),
-        )
-        with self.assertRaises(AssertionError):
-            render_application(projection_family)
-
-        invariant_family = replace(
-            REPLACEMENTS,
-            collections=(
-                replace(
-                    first,
-                    invariants=(
-                        unsupported_operation,
-                        *first.invariants[1:],
-                    ),
-                ),
-                second,
-            ),
-        )
-        with self.assertRaises(AssertionError):
-            render_validation(invariant_family)
+            _validated_invariant_operation(
+                Copy(),
+                "ReplacementRecords.planned_replacements",
+                1,
+            )
 
     def test_stale_generated_bytes_fail_the_check(self) -> None:
         path = Path(tempfile.mkdtemp()) / "generated.py"

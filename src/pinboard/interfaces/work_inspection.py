@@ -411,12 +411,12 @@ def describe_input_contract(
     kind: decision_models.ActionKind,
 ) -> errors.TransitionInputResult[work_inspection_models.InputContractView]:
     semantics = decision_models.action_semantics(kind)
-    if semantics.lifecycle_effect == decision_models.LifecycleEffect.NO_LIFECYCLE_CHANGE:
+    encoded_schema = transition_input.encoded_transition_input_schema(kind)
+    if isinstance(encoded_schema, errors.TransitionInputFailure):
+        if encoded_schema.code != domain_errors.DecisionFailureCode.ACTION_NOT_MUTATING:
+            return encoded_schema
         payload_schema = None
     else:
-        encoded_schema = transition_input.encoded_transition_input_schema(kind)
-        if isinstance(encoded_schema, errors.TransitionInputFailure):
-            return encoded_schema
         payload_schema = msgspec.Raw(encoded_schema)
     return work_inspection_models.InputContractView(kind.value, _project_action_semantics(semantics), payload_schema)
 
@@ -513,7 +513,7 @@ def compose_status(
         active_attempts=tuple(str(value) for value in facts.active_attempts),
         counts=counts,
         intake_item_count=counts.get(work_models.WorkState.INTAKE.value, 0),
-        authority="sqlite-v5",
+        authority="sqlite-v6",
     )
 
 
@@ -553,10 +553,21 @@ def show_overview(store: ports.WorkStore, command: cli_commands.OverviewCommand)
             )
         )
         next_action = item.next_action or "none"
+        replacement = (
+            " replacement=none"
+            if item.planned_replacement is None
+            else (
+                f" replacement={item.planned_replacement.replacement_item_id}"
+                f" replacement_revision={item.planned_replacement.relation_revision}"
+                f" replacement_cost={item.planned_replacement.replacement_cost!r}"
+                f" temporarily_retained={str(item.planned_replacement.temporarily_retained).lower()}"
+            )
+        )
         print(
             f"{position}\t{item.item_id}\t{item.state.value}\teligible={str(item.eligible).lower()}"
-            f"\tnext={next_action}{attempt}{preparation}\t{item.label}"
+            f"\tnext={next_action}{attempt}{preparation}{replacement}\t{item.label}"
         )
+        print(f"  effect={item.effect} unlock={item.unlock}")
     print(
         f"intake_items={sum(1 for item in overview_projection.items if item.state == work_models.WorkState.INTAKE)} "
         f"immediate_options={len(overview_projection.immediate_options)}"

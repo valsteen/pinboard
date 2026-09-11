@@ -657,6 +657,7 @@ class CliTest(unittest.TestCase):
     def test_current_command_surface_lists_every_command(self) -> None:
         parser = build_parser()
         help_text = parser.format_help()
+        self.assertNotIn("lifecycle-changing", help_text)
         for retained in (
             "root",
             "validate",
@@ -1070,10 +1071,10 @@ class CliTest(unittest.TestCase):
         self.assertFalse((work / "authority.json").exists())
         self.assertFalse((work / "queue.md").exists())
         self.assertTrue(self.run_json_cli(*common, "validate")["valid"])
-        self.assertEqual("sqlite-v5", self.run_json_cli(*common, "status")["authority"])
+        self.assertEqual("sqlite-v6", self.run_json_cli(*common, "status")["authority"])
         overview = self.run_json_cli(*common, "overview")
-        self.assertEqual("sqlite-v5", overview["authority"])
-        self.assertEqual("pinboard-overview/v3", overview["schema"])
+        self.assertEqual("sqlite-v6", overview["authority"])
+        self.assertEqual("pinboard-overview/v4", overview["schema"])
         actions = self.run_json_cli(*common, "actions", "--role", "observer")["actions"]
         self.assertIsInstance(actions, list)
         assert isinstance(actions, list)
@@ -1100,6 +1101,351 @@ class CliTest(unittest.TestCase):
         )
         self.assertEqual(11, exact_result)
         self.assertIn("ACTION_NOT_AVAILABLE", exact_stderr)
+
+    def test_overview_presents_definition_context_and_replacement_warning_in_json_and_text(self) -> None:
+        state = complete_sqlite_state()
+        relation = stored_state.StoredPlannedReplacement(
+            ItemId("work-c"),
+            1,
+            ItemId("work-a"),
+            "Starting Work C would duplicate implementation and review that Work A replaces.",
+            work_models.PlannedReplacementStatus.CURRENT,
+            TaskId("project-task"),
+            SQLITE_NOW,
+            12,
+        )
+        project, work, _store = self.initialized_state(
+            replace(state, replacements=stored_state.ReplacementRecords((relation,), ()))
+        )
+        common = ("--project-root", str(project), "--work-root", str(work))
+        definition = next(
+            value.definition for value in state.lifecycle.definition_revisions if value.item_id == ItemId("work-c")
+        )
+
+        overview = self.run_json_cli(*common, "overview")
+        items = self.json_list(overview["items"])
+        selected = next(self.json_object(value) for value in items if self.json_object(value)["item_id"] == "work-c")
+        self.assertEqual(definition.title, selected["label"])
+        self.assertEqual(definition.effect, selected["effect"])
+        self.assertEqual(definition.unlock, selected["unlock"])
+        self.assertEqual(
+            {
+                "relation_revision": 1,
+                "replacement_item_id": "work-a",
+                "replacement_cost": relation.replacement_cost,
+                "temporarily_retained": False,
+            },
+            selected["planned_replacement"],
+        )
+        self.assertNotIn("work-c", self.json_list(overview["immediate_options"]))
+
+        result, stdout, stderr = self.run_cli(*common, "overview")
+        self.assertEqual(0, result, stderr)
+        self.assertIn("replacement=work-a replacement_revision=1", stdout)
+        self.assertIn(f"replacement_cost={relation.replacement_cost!r} temporarily_retained=false", stdout)
+        self.assertIn(f"effect={definition.effect} unlock={definition.unlock}", stdout)
+
+    def test_prepared_item_can_record_and_resolve_a_planned_replacement_before_activation(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        common = ("--project-root", str(project), "--work-root", str(work))
+        definition = self.run_json_cli(*common, "item", "definition", "--item-id", "work-c")
+        prepared = self.run_json_cli(
+            *common,
+            "preparation",
+            "acquire",
+            "--item-id",
+            "work-c",
+            "--expected-project-revision",
+            str(definition["project_revision"]),
+            "--expected-item-subject-revision",
+            str(definition["item_subject_revision"]),
+            "--expected-definition-revision",
+            str(definition["definition_revision"]),
+            "--expected-definition-digest",
+            str(definition["definition_digest"]),
+            "--task-id",
+            "preparer-task",
+            "--host-id",
+            "studio",
+            "--ttl-seconds",
+            "60",
+        )
+        fenced_revision, _stdout, fenced_revision_stderr = self.run_cli(
+            *common,
+            "actions",
+            "--role",
+            "project",
+            "--action-id",
+            "revise-item:work-c",
+        )
+        self.assertEqual(11, fenced_revision)
+        self.assertIn("ACTION_NOT_AVAILABLE", fenced_revision_stderr)
+        cost = "Work C implementation and review would be replaced by Work A."
+        relation_payload = project / "prepared-replacement.json"
+        relation_payload.write_text(
+            json.dumps(
+                {
+                    "schema": "pinboard-planned-replacement/v1",
+                    "affected_item": "work-c",
+                    "expected_relation_revision": 0,
+                    "replacement_item": "work-a",
+                    "replacement_cost": cost,
+                    "status": "current",
+                    "recorded_by": "project-task",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        record = self.project_action(common, "record-replacement:work-c")
+        self.assertEqual(0, self.run_transition(common, record, relation_payload, json_output=True)[0])
+        unavailable, _stdout, unavailable_stderr = self.run_cli(
+            *common,
+            "actions",
+            "--role",
+            "preparer",
+            "--lease-id",
+            str(prepared["lease_id"]),
+            "--generation",
+            str(prepared["generation"]),
+            "--action-id",
+            "activate:work-c",
+        )
+        self.assertEqual(11, unavailable)
+        self.assertIn("ACTION_NOT_AVAILABLE", unavailable_stderr)
+
+        disposition_payload = project / "prepared-retention.json"
+        disposition_payload.write_text(
+            json.dumps(
+                {
+                    "schema": "pinboard-replacement-disposition/v1",
+                    "affected_item": "work-c",
+                    "relation_revision": 1,
+                    "rationale": "A short-lived supported commitment still requires Work C.",
+                    "accepted_cost": cost,
+                    "recorded_by": "project-task",
+                }
+            ),
+            encoding="utf-8",
+        )
+        retain = self.project_action(common, "retain-temporarily:work-c")
+        self.assertEqual(0, self.run_transition(common, retain, disposition_payload, json_output=True)[0])
+        activation = self.run_json_cli(
+            *common,
+            "actions",
+            "--role",
+            "preparer",
+            "--lease-id",
+            str(prepared["lease_id"]),
+            "--generation",
+            str(prepared["generation"]),
+            "--action-id",
+            "activate:work-c",
+        )
+        self.assertEqual("activate:work-c", self.json_object(self.json_list(activation["actions"])[0])["action_id"])
+
+    def test_blocked_unstarted_resume_selected_before_replacement_rejects_without_lifecycle_change(self) -> None:
+        state = complete_sqlite_state()
+        state = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=tuple(
+                    replace(value, state=stored_state.StoredWorkItemState.BLOCKED)
+                    if value.item_id == ItemId("work-c")
+                    else value
+                    for value in state.lifecycle.work_items
+                ),
+            ),
+        )
+        project, work, store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        stale_resume = self.project_action(common, "resume:work-c")
+        lifecycle_before = tuple(
+            (value.item_id, value.state) for value in store.validated_snapshot().lifecycle.work_items
+        )
+        replacement_payload = project / "replacement-before-resume.json"
+        replacement_payload.write_text(
+            json.dumps(
+                {
+                    "schema": "pinboard-planned-replacement/v1",
+                    "affected_item": "work-c",
+                    "expected_relation_revision": 0,
+                    "replacement_item": "work-a",
+                    "replacement_cost": "Resuming Work C would spend effort that Work A replaces.",
+                    "status": "current",
+                    "recorded_by": "project-task",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            0,
+            self.run_transition(
+                common,
+                self.project_action(common, "record-replacement:work-c"),
+                replacement_payload,
+                json_output=True,
+            )[0],
+        )
+        after_relation = store.validated_snapshot()
+        resume_payload = project / "stale-resume.json"
+        resume_payload.write_text("{}\n", encoding="utf-8")
+
+        result, stdout, stderr = self.run_transition(common, stale_resume, resume_payload, json_output=True)
+
+        self.assertEqual(11, result, stderr)
+        self.assertEqual("ACTION_LIFECYCLE_UNAVAILABLE", self.json_object(json.loads(stdout))["code"])
+        after_rejection = store.validated_snapshot()
+        self.assertEqual(after_relation, after_rejection)
+        self.assertEqual(
+            lifecycle_before,
+            tuple((value.item_id, value.state) for value in after_rejection.lifecycle.work_items),
+        )
+
+    def test_attempt_inspection_matches_project_actions_after_replacement_withdrawal(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        common = ("--project-root", str(project), "--work-root", str(work))
+        cost = "Work A implementation and review would be replaced by Work C."
+        payload = project / "active-replacement.json"
+        replacement: JsonObject = {
+            "schema": "pinboard-planned-replacement/v1",
+            "affected_item": "work-a",
+            "expected_relation_revision": 0,
+            "replacement_item": "work-c",
+            "replacement_cost": cost,
+            "status": "current",
+            "recorded_by": "project-task",
+        }
+        payload.write_text(json.dumps(replacement), encoding="utf-8")
+        self.assertEqual(
+            0,
+            self.run_transition(
+                common, self.project_action(common, "record-replacement:work-a"), payload, json_output=True
+            )[0],
+        )
+
+        replacement["expected_relation_revision"] = 1
+        replacement["status"] = "withdrawn"
+        payload.write_text(json.dumps(replacement), encoding="utf-8")
+        self.assertEqual(
+            0,
+            self.run_transition(
+                common, self.project_action(common, "record-replacement:work-a"), payload, json_output=True
+            )[0],
+        )
+
+        project_actions = self.json_list(self.run_json_cli(*common, "actions", "--role", "project")["actions"])
+        expected = tuple(
+            str(action["action_id"])
+            for value in project_actions
+            if (action := self.json_object(value))["subject"] in {"work-a", "work-a-1"}
+        )
+        continuation = self.json_object(
+            self.run_json_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1")["continuation"]
+        )
+        self.assertEqual(expected, tuple(str(value) for value in self.json_list(continuation["legal_actions"])))
+
+    def test_successive_planned_replacement_proposals_advance_relation_revision(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        common = ("--project-root", str(project), "--work-root", str(work))
+        proposal: JsonObject = {
+            "schema": "pinboard-proposal/v1",
+            "proposal_id": "replacement-one",
+            "created_at": SQLITE_NOW.isoformat(),
+            "source_task_id": "discoverer",
+            "user_label": "Replacement one",
+            "trigger": "A first explicit replacement is planned.",
+            "evidence": ["source:accepted-plan"],
+            "why_it_matters": "Work C should stop until the replacement is resolved.",
+            "relation": {
+                "kind": "planned-replacement",
+                "item": "work-c",
+                "replacement_cost": "Work C implementation and review would be discarded.",
+            },
+            "effect": "Record the first replacement and affected-work relation.",
+            "unlock": "The project can decide whether Work C remains worthwhile.",
+            "urgency_evidence": "The accepted plan names this relation.",
+            "freshness_assumptions": ["Work C remains live."],
+        }
+        for proposal_id, label in (("replacement-one", "Replacement one"), ("replacement-two", "Replacement two")):
+            proposal["proposal_id"] = proposal_id
+            proposal["user_label"] = label
+            path = project / f"{proposal_id}.json"
+            path.write_text(json.dumps(proposal), encoding="utf-8")
+            result, _stdout, stderr = self.run_cli(
+                *common,
+                "proposal",
+                "--file",
+                str(path),
+                "--task-id",
+                "discoverer",
+                "--host-id",
+                "studio",
+            )
+            self.assertEqual(0, result, stderr)
+
+        reopened = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+        relations = tuple(
+            value for value in reopened.replacements.planned_replacements if value.affected_item_id == ItemId("work-c")
+        )
+        self.assertEqual((1, 2), tuple(value.relation_revision for value in relations))
+        self.assertEqual(
+            (ItemId("replacement-one"), ItemId("replacement-two")),
+            tuple(value.replacement_item_id for value in relations),
+        )
+
+    def test_successive_planned_replacement_proposals_advance_for_a_terminal_affected_item(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        common = ("--project-root", str(project), "--work-root", str(work))
+        proposal: JsonObject = {
+            "schema": "pinboard-proposal/v1",
+            "proposal_id": "terminal-replacement-one",
+            "created_at": SQLITE_NOW.isoformat(),
+            "source_task_id": "discoverer",
+            "user_label": "Terminal replacement one",
+            "trigger": "A terminal item has an explicit replacement history.",
+            "evidence": ["source:accepted-plan"],
+            "why_it_matters": "A later explicit relation must advance the retained history.",
+            "relation": {
+                "kind": "planned-replacement",
+                "item": "work-b",
+                "replacement_cost": "The retained Work B result would be replaced again.",
+            },
+            "effect": "Record another explicit replacement for terminal Work B.",
+            "unlock": "The retained relation history remains versioned.",
+            "urgency_evidence": "The installed boundary accepts historical related items.",
+            "freshness_assumptions": ["Work B remains retained as terminal history."],
+        }
+        for proposal_id, label in (
+            ("terminal-replacement-one", "Terminal replacement one"),
+            ("terminal-replacement-two", "Terminal replacement two"),
+        ):
+            proposal["proposal_id"] = proposal_id
+            proposal["user_label"] = label
+            path = project / f"{proposal_id}.json"
+            path.write_text(json.dumps(proposal), encoding="utf-8")
+            result, _stdout, stderr = self.run_cli(
+                *common,
+                "proposal",
+                "--file",
+                str(path),
+                "--task-id",
+                "discoverer",
+                "--host-id",
+                "studio",
+            )
+            self.assertEqual(0, result, stderr)
+
+        reopened = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+        relations = tuple(
+            value for value in reopened.replacements.planned_replacements if value.affected_item_id == ItemId("work-b")
+        )
+        self.assertEqual((1, 2), tuple(value.relation_revision for value in relations))
+        self.assertEqual(
+            (ItemId("terminal-replacement-one"), ItemId("terminal-replacement-two")),
+            tuple(value.replacement_item_id for value in relations),
+        )
 
     def test_fresh_init_has_one_structured_json_receipt(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
@@ -2744,6 +3090,127 @@ class CliTest(unittest.TestCase):
         self.assertEqual(len(before.artifact_references) + 3, len(reloaded.artifact_references))
         self.assertEqual(len(before.transition_receipts) + 1, len(reloaded.transition_receipts))
 
+    def test_replacement_recorded_after_checkpoint_publication_blocks_locked_acceptance(self) -> None:
+        state = complete_sqlite_state()
+        now = datetime.now(UTC)
+        state = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=tuple(
+                    replace(value, state=stored_state.StoredWorkItemState.REVIEW)
+                    if value.item_id == ItemId("work-a")
+                    else value
+                    for value in state.lifecycle.work_items
+                ),
+                attempts=tuple(
+                    replace(
+                        value,
+                        state=work_models.AttemptState.REVIEW,
+                        candidate_revision="candidate-a",
+                        candidate_recorded_at=now,
+                    )
+                    if value.attempt_id == AttemptId("work-a-1")
+                    else value
+                    for value in state.lifecycle.attempts
+                ),
+            ),
+            artifact_references=(state.artifact_references[0],),
+            transition_receipts=(),
+        )
+        project, work, store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        accepted_brief = work_a_brief(project)
+        checkpoint = accepted_brief.checkpoint
+        assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
+        published_review = write_revision(
+            resolve_durable_roots(project),
+            NewArtifact(
+                work_models.ArtifactKind.EVIDENCE,
+                f"work-a-1-brief-review-{checkpoint_sha256}",
+                1,
+                ".json",
+                ready_review(accepted_brief),
+            ),
+        )
+        accepted_review = store.accept_artifact_reference(work, published_review, now)
+        if isinstance(accepted_review, DecisionFailure):
+            self.fail(str(accepted_review))
+        attempt_root = work / "attempts" / "work-a-1"
+        attempt_root.mkdir(parents=True)
+        (attempt_root / "result.md").write_bytes(b"candidate result\n")
+        (attempt_root / "review.md").write_bytes(b"independent review\n")
+        checkpoint_payload = project / "accept-checkpoint.json"
+        checkpoint_payload.write_text(
+            f'{{"checkpoint":"{CHECKPOINT_ID}","candidate":"candidate-a","evidence":"Accepted."}}\n',
+            encoding="utf-8",
+        )
+        replacement_payload = project / "record-replacement.json"
+        replacement_payload.write_text(
+            json.dumps(
+                {
+                    "schema": "pinboard-planned-replacement/v1",
+                    "affected_item": "work-a",
+                    "expected_relation_revision": 0,
+                    "replacement_item": "work-c",
+                    "replacement_cost": "Checkpoint acceptance would preserve work that work-c replaces.",
+                    "status": "current",
+                    "recorded_by": "project-task",
+                }
+            ),
+            encoding="utf-8",
+        )
+        checkpoint_action = self.project_action(common, "accept-checkpoint:work-a-1")
+        replacement_action = self.project_action(common, "record-replacement:work-a")
+        original_publish = ArtifactRepository.publish
+        relation_state: list[stored_state.StoredWorkState] = []
+
+        def publish_then_record_relation(
+            selected_artifacts: ArtifactRepository,
+            artifact: NewArtifact,
+        ) -> ArtifactPublication:
+            publication = original_publish(selected_artifacts, artifact)
+            if artifact.key.endswith("-review-package") and not relation_state:
+                result, _stdout, stderr = self.run_transition(
+                    common, replacement_action, replacement_payload, json_output=True
+                )
+                self.assertEqual(0, result, stderr)
+                relation_state.append(store.validated_snapshot())
+            return publication
+
+        with patch.object(ArtifactRepository, "publish", publish_then_record_relation):
+            result, stdout, stderr = self.run_transition(
+                common, checkpoint_action, checkpoint_payload, json_output=True
+            )
+
+        self.assertEqual(11, result)
+        self.assertEqual("", stderr)
+        failure = self.json_object(json.loads(stdout))
+        self.assertEqual("committed-effect", failure["status"])
+        self.assertIn(failure["code"], ("ACTION_NOT_AVAILABLE", "ACTION_REVISION_STALE"))
+        self.assertTrue(failure["state_changed"])
+        self.assertEqual(["immutable-artifact"], failure["changed_surfaces"])
+        self.assertEqual("do-not-retry", failure["retry"])
+        self.assertEqual(
+            (
+                f"artifacts/results/work-a-1-{CHECKPOINT_ID}-result/1.md",
+                f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review/1.md",
+                f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review-package/1.json",
+            ),
+            tuple(
+                str(self.json_object(value)["value"])
+                for value in self.json_list(failure["observed"])
+                if self.json_object(value)["field"] == "published_artifact_selector"
+            ),
+        )
+        self.assertEqual(1, len(relation_state))
+        self.assertEqual(relation_state[0], store.validated_snapshot())
+        item_view = (work / "views/items/work-a.md").read_text(encoding="utf-8")
+        self.assertIn("- Planned replacement: work-c", item_view)
+        self.assertIn("- Replacement revision: 1", item_view)
+        self.assertIn("- Temporarily retained: no", item_view)
+
     def test_local_checkpoint_acceptance_publishes_and_reloads_one_complete_package(self) -> None:
         state = complete_sqlite_state()
         now = datetime.now(UTC)
@@ -2931,7 +3398,7 @@ class CliTest(unittest.TestCase):
         common = ("--project-root", str(project), "--work-root", str(work))
 
         status = self.run_json_cli(*common, "status")
-        self.assertEqual("sqlite-v5", status["authority"])
+        self.assertEqual("sqlite-v6", status["authority"])
         self.assertEqual(2, status["intake_item_count"])
         status_result, status_stdout, status_stderr = self.run_cli(*common, "status")
         self.assertEqual(0, status_result, status_stderr)
@@ -3157,6 +3624,19 @@ Not launchable:
         self.assertEqual({"project", "attempt"}, {action["authorization"] for action in continue_actions})
         for action in continue_actions:
             self.assertEqual(continue_contract["semantics"], action["semantics"])
+
+    def test_non_lifecycle_replacement_transitions_expose_strict_input_contracts(self) -> None:
+        expected = {
+            "record-replacement": "RecordPlannedReplacementInputPayload",
+            "retain-temporarily": "RetainTemporarilyInputPayload",
+        }
+        for kind, model_name in expected.items():
+            with self.subTest(kind=kind):
+                contract = self.run_json_cli("input-contract", kind)
+                schema = self.json_object(contract["payload_schema"])
+                self.assertEqual(f"#/$defs/{model_name}", schema["$ref"])
+                model = self.json_object(self.json_object(schema["$defs"])[model_name])
+                self.assertFalse(model["additionalProperties"])
 
     def test_resume_and_reopen_command_semantics_match_contextual_action_results(self) -> None:
         state = complete_sqlite_state()
@@ -5150,7 +5630,7 @@ Not launchable:
         self.assertEqual(
             {
                 "schema": "pinboard-item-status/v1",
-                "authority": "sqlite-v5",
+                "authority": "sqlite-v6",
                 "revision": "12",
                 "item_id": "work-b",
                 "label": "Work work-b",
@@ -5169,7 +5649,7 @@ Not launchable:
         self.assertEqual(
             {
                 "schema": "pinboard-item-status/v1",
-                "authority": "sqlite-v5",
+                "authority": "sqlite-v6",
                 "revision": "12",
                 "item_id": "work-a",
                 "label": "Work work-a",
@@ -5187,7 +5667,7 @@ Not launchable:
         )
         result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", "work-b")
         self.assertEqual(0, result, stderr)
-        self.assertIn("OK ITEM_STATUS item=work-b state=done revision=12 authority=sqlite-v5", stdout)
+        self.assertIn("OK ITEM_STATUS item=work-b state=done revision=12 authority=sqlite-v6", stdout)
         self.assertIn("queue_position=none", stdout)
         self.assertIn("outcome_evidence=accepted completion", stdout)
         self.assertIn("source=none notes=none", stdout)

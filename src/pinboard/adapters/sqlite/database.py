@@ -29,8 +29,8 @@ from pinboard.application import stored_state
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 
 APPLICATION = "pinboard"
-SCHEMA_VERSION = 5
-SCHEMA_ID = "sqlite-v5"
+SCHEMA_VERSION = 6
+SCHEMA_ID = "sqlite-v6"
 BUSY_TIMEOUT_MS = 2_000
 
 

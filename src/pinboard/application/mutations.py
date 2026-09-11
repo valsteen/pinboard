@@ -85,6 +85,8 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                     | decision_models.RejectedProposalChange()
                     | decision_models.RebindAttemptChange()
                     | decision_models.ResumeAttemptChange()
+                    | decision_models.PlannedReplacementChange()
+                    | decision_models.ReplacementDispositionChange()
                     | DefinitionRevisionDecision()
                 ):
                     pass
@@ -236,6 +238,39 @@ def project_transition_mutation(
         input_schema = "return-for-correction/v1"
         input_payload = work_models.CanonicalJson(
             msgspec.json.encode({"reason": decision.receipt.evidence}, order="sorted")
+        )
+    elif isinstance(decision.change, decision_models.PlannedReplacementChange):
+        relation = decision.change.relation
+        input_schema = "pinboard-planned-replacement/v1"
+        input_payload = work_models.CanonicalJson(
+            msgspec.json.encode(
+                {
+                    "affected_item": str(relation.affected_item),
+                    "expected_relation_revision": relation.relation_revision - 1,
+                    "recorded_by": str(relation.recorded_by),
+                    "replacement_cost": relation.replacement_cost,
+                    "replacement_item": str(relation.replacement_item),
+                    "schema": input_schema,
+                    "status": relation.status.value,
+                },
+                order="sorted",
+            )
+        )
+    elif isinstance(decision.change, decision_models.ReplacementDispositionChange):
+        disposition = decision.change.disposition
+        input_schema = "pinboard-replacement-disposition/v1"
+        input_payload = work_models.CanonicalJson(
+            msgspec.json.encode(
+                {
+                    "accepted_cost": disposition.accepted_cost,
+                    "affected_item": str(disposition.affected_item),
+                    "rationale": disposition.rationale,
+                    "recorded_by": str(disposition.recorded_by),
+                    "relation_revision": disposition.relation_revision,
+                    "schema": input_schema,
+                },
+                order="sorted",
+            )
         )
     return TransitionMutation(
         decision,

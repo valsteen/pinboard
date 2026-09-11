@@ -1,10 +1,10 @@
--- SQLite authority schema version 5.
+-- SQLite authority schema version 6.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE project_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     application TEXT NOT NULL CHECK (application = 'pinboard'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 5),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 6),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
     created_at TEXT NOT NULL,
@@ -82,6 +82,32 @@ CREATE TABLE item_dependencies (
 CREATE INDEX item_dependencies_by_dependency
 ON item_dependencies(dependency_id, item_id);
 
+CREATE TABLE planned_replacements (
+    affected_item_id TEXT NOT NULL REFERENCES work_items(item_id),
+    relation_revision INTEGER NOT NULL CHECK (relation_revision >= 1),
+    replacement_item_id TEXT NOT NULL REFERENCES work_items(item_id),
+    replacement_cost TEXT NOT NULL CHECK (length(replacement_cost) >= 1),
+    status TEXT NOT NULL CHECK (status IN ('current', 'withdrawn')),
+    recorded_by TEXT NOT NULL CHECK (length(recorded_by) >= 1),
+    recorded_at TEXT NOT NULL,
+    accepted_project_revision INTEGER NOT NULL CHECK (accepted_project_revision >= 1),
+    PRIMARY KEY (affected_item_id, relation_revision),
+    CHECK (affected_item_id <> replacement_item_id)
+) STRICT;
+
+CREATE TABLE replacement_dispositions (
+    affected_item_id TEXT NOT NULL,
+    relation_revision INTEGER NOT NULL,
+    rationale TEXT NOT NULL CHECK (length(rationale) >= 1),
+    accepted_cost TEXT NOT NULL CHECK (length(accepted_cost) >= 1),
+    recorded_by TEXT NOT NULL CHECK (length(recorded_by) >= 1),
+    recorded_at TEXT NOT NULL,
+    accepted_project_revision INTEGER NOT NULL CHECK (accepted_project_revision >= 1),
+    PRIMARY KEY (affected_item_id, relation_revision),
+    FOREIGN KEY (affected_item_id, relation_revision)
+        REFERENCES planned_replacements(affected_item_id, relation_revision)
+) STRICT;
+
 CREATE TABLE attempts (
     attempt_id TEXT PRIMARY KEY,
     item_id TEXT NOT NULL REFERENCES work_items(item_id),
@@ -127,9 +153,11 @@ CREATE TABLE proposals (
     trigger TEXT NOT NULL,
     why_it_matters TEXT NOT NULL,
     relation_kind TEXT NOT NULL CHECK (relation_kind IN (
-        'independent', 'prerequisite', 'follow-up', 'duplicate', 'contradiction', 'clarification'
+        'independent', 'prerequisite', 'follow-up', 'duplicate', 'contradiction', 'clarification',
+        'planned-replacement'
     )),
     relation_item_id TEXT REFERENCES work_items(item_id),
+    relation_replacement_cost TEXT,
     effect TEXT NOT NULL,
     unlock TEXT NOT NULL,
     urgency_evidence TEXT NOT NULL,
@@ -145,8 +173,12 @@ CREATE TABLE proposals (
         OR (disposition IN ('returned', 'rejected') AND disposition_target_item_id IS NULL AND disposition_reason IS NOT NULL)
     ),
     CHECK (
-        (relation_kind IN ('independent', 'clarification') AND relation_item_id IS NULL)
-        OR (relation_kind IN ('prerequisite', 'follow-up', 'duplicate', 'contradiction') AND relation_item_id IS NOT NULL)
+        (relation_kind IN ('independent', 'clarification')
+            AND relation_item_id IS NULL AND relation_replacement_cost IS NULL)
+        OR (relation_kind IN ('prerequisite', 'follow-up', 'duplicate', 'contradiction')
+            AND relation_item_id IS NOT NULL AND relation_replacement_cost IS NULL)
+        OR (relation_kind = 'planned-replacement' AND relation_item_id IS NOT NULL
+            AND length(relation_replacement_cost) >= 1)
     )
 ) STRICT;
 

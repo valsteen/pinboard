@@ -259,6 +259,29 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
         ),
         definitions=definitions,
         host_epoch=state.lifecycle.project.host_epoch,
+        planned_replacements=tuple(
+            work_models.PlannedReplacement(
+                value.affected_item_id,
+                value.relation_revision,
+                value.replacement_item_id,
+                value.replacement_cost,
+                value.status,
+                value.recorded_by,
+                value.recorded_at,
+            )
+            for value in state.replacements.planned_replacements
+        ),
+        replacement_dispositions=tuple(
+            work_models.ReplacementDisposition(
+                value.affected_item_id,
+                value.relation_revision,
+                value.rationale,
+                value.accepted_cost,
+                value.recorded_by,
+                value.recorded_at,
+            )
+            for value in state.replacements.dispositions
+        ),
     )
 
 

@@ -270,7 +270,7 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
         SQLITE_NOW,
     )
     lifecycle = stored_state.LifecycleRecords(
-        stored_state.ProjectRecord("pinboard", 5, 12, 2, SQLITE_NOW, SQLITE_NOW),
+        stored_state.ProjectRecord("pinboard", 6, 12, 2, SQLITE_NOW, SQLITE_NOW),
         (
             _stored_item(intake_item, stored_state.StoredWorkItemState.INTAKE, sparse=True, queue_position=1),
             _stored_item(item_a, stored_state.StoredWorkItemState.ACTIVE, queue_position=2),
@@ -377,6 +377,7 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
     return stored_state.StoredWorkState(
         lifecycle,
         proposals,
+        stored_state.ReplacementRecords((), ()),
         (brief, requirements, evidence),
         authority,
         transition_receipts,

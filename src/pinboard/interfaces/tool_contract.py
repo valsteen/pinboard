@@ -583,6 +583,11 @@ def _operation_index_entry(variant: cli_parser.InstalledCommandVariant) -> Opera
 def _action_mutation_class(kind: decision_models.ActionKind) -> MutationClass:
     if kind == decision_models.ActionKind.DISPATCH:
         return "may-publish-and-record-artifact"
+    if kind in {
+        decision_models.ActionKind.RECORD_REPLACEMENT,
+        decision_models.ActionKind.RETAIN_TEMPORARILY,
+    }:
+        return "mutates-ledger"
     if decision_models.action_semantics(kind).lifecycle_effect == decision_models.LifecycleEffect.CHANGES_LIFECYCLE:
         return "mutates-ledger"
     return "read-only"
@@ -605,10 +610,12 @@ def _action_execution_route(kind: decision_models.ActionKind) -> ActionExecution
             | decision_models.ActionKind.PAUSE
             | decision_models.ActionKind.REJECT_PROPOSAL
             | decision_models.ActionKind.REOPEN
+            | decision_models.ActionKind.RECORD_REPLACEMENT
             | decision_models.ActionKind.REBIND_ATTEMPT
             | decision_models.ActionKind.RESUME
             | decision_models.ActionKind.RETURN_FOR_CORRECTION
             | decision_models.ActionKind.RETURN_PROPOSAL
+            | decision_models.ActionKind.RETAIN_TEMPORARILY
             | decision_models.ActionKind.REVISE_ITEM
             | decision_models.ActionKind.SUBMIT_REVIEW
         ):
@@ -640,7 +647,7 @@ def _action_authority(roles: tuple[decision_models.Role, ...]) -> str:
 def describe_action(kind: decision_models.ActionKind) -> ActionContract:
     semantics = decision_models.action_semantics(kind)
     input_schema: msgspec.Raw | None = None
-    if semantics.lifecycle_effect == decision_models.LifecycleEffect.CHANGES_LIFECYCLE:
+    if _action_execution_route(kind) == "transition":
         encoded = transition_input.encoded_transition_input_schema(kind)
         if not isinstance(encoded, bytes):
             raise ValueError(str(encoded))

@@ -213,6 +213,12 @@ class LifecycleDecisionTest(unittest.TestCase):
         )
         for name, item_state, attempt_state, accepted_digest, live_dependencies, expected in cases:
             with self.subTest(name=name):
+                revision_index = expected.index("revise-item:target")
+                expected = (
+                    *expected[:revision_index],
+                    "record-replacement:target",
+                    *expected[revision_index:],
+                )
                 target = replace_dataclass(
                     item("target", item_state, attempt="target-1"),
                     depends_on=live_dependencies,
@@ -255,6 +261,8 @@ class LifecycleDecisionTest(unittest.TestCase):
                         1,
                         DIGEST_A,
                         live_dependencies,
+                        True,
+                        None,
                         True,
                     ),
                     factory,

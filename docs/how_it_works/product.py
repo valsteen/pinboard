@@ -40,10 +40,12 @@ ACTION_GROUPS: dict[decision_models.ActionKind, str] = {
     decision_models.ActionKind.REBIND_ATTEMPT: "lifecycle",
     decision_models.ActionKind.REOPEN: "lifecycle",
     decision_models.ActionKind.REPORT_BLOCKER: "advisory",
+    decision_models.ActionKind.RECORD_REPLACEMENT: "relation",
     decision_models.ActionKind.REVISE_ITEM: "definition",
     decision_models.ActionKind.RESUME: "lifecycle",
     decision_models.ActionKind.RETURN_FOR_CORRECTION: "review",
     decision_models.ActionKind.RETURN_PROPOSAL: "proposal",
+    decision_models.ActionKind.RETAIN_TEMPORARILY: "relation",
     decision_models.ActionKind.SUBMIT_REVIEW: "review",
 }
 

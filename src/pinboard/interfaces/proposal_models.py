@@ -48,6 +48,13 @@ class ClarificationProposalRelation(
     item: None
 
 
+class PlannedReplacementProposalRelation(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="planned-replacement", tag_field="kind"
+):
+    item: ProposalIdentity
+    replacement_cost: ProposalText
+
+
 type ProposalRelation = (
     IndependentProposalRelation
     | PrerequisiteProposalRelation
@@ -55,6 +62,7 @@ type ProposalRelation = (
     | DuplicateProposalRelation
     | ContradictionProposalRelation
     | ClarificationProposalRelation
+    | PlannedReplacementProposalRelation
 )
 
 

@@ -37,6 +37,7 @@ class _StoredProposalRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     why_it_matters: str
     relation_kind: work_models.ProposalRelationKind
     relation_item_id: ItemId | None
+    relation_replacement_cost: str | None
     effect: str
     unlock: str
     urgency_evidence: str
@@ -55,7 +56,7 @@ class _StoredProposalRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True
             self.user_label,
             self.trigger,
             self.why_it_matters,
-            decode_proposal_relation(self.relation_kind, self.relation_item_id),
+            decode_proposal_relation(self.relation_kind, self.relation_item_id, self.relation_replacement_cost),
             self.effect,
             self.unlock,
             self.urgency_evidence,
@@ -87,7 +88,10 @@ def _reject_relation_item(kind: work_models.ProposalRelationKind, value: ItemId 
 def decode_proposal_relation(
     kind: work_models.ProposalRelationKind,
     value: ItemId | None,
+    replacement_cost: str | None,
 ) -> work_models.ProposalRelation:
+    if kind != work_models.ProposalRelationKind.PLANNED_REPLACEMENT and replacement_cost is not None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, f"{kind.value} proposal has replacement cost.")
     match kind:
         case work_models.ProposalRelationKind.INDEPENDENT:
             _reject_relation_item(kind, value)
@@ -103,6 +107,10 @@ def decode_proposal_relation(
         case work_models.ProposalRelationKind.CLARIFICATION:
             _reject_relation_item(kind, value)
             return work_models.ClarificationProposalRelation()
+        case work_models.ProposalRelationKind.PLANNED_REPLACEMENT:
+            if replacement_cost is None:
+                raise StorageError(StorageErrorCode.INVALID_STATE, "Planned replacement proposal has no cost.")
+            return work_models.PlannedReplacementProposalRelation(_require_relation_item(kind, value), replacement_cost)
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -196,19 +204,29 @@ def _encode_proposal_disposition_columns(
             assert_never(unreachable)
 
 
-def read_proposals(connection: sqlite3.Connection) -> stored_state.ProposalRecords:
-    proposals = tuple(
+def _read_proposal_records(
+    connection: sqlite3.Connection,
+    *,
+    pending_only: bool,
+) -> tuple[stored_state.StoredProposal, ...]:
+    condition = "WHERE disposition IS NULL" if pending_only else ""
+    return tuple(
         decode_row(row, _StoredProposalRow).proposal()
         for row in connection.execute(
-            """
+            f"""
             SELECT proposal_id, created_at, recorded_at, source_task_id, user_label, trigger, why_it_matters,
-                   relation_kind, relation_item_id, effect, unlock, urgency_evidence, disposition,
+                   relation_kind, relation_item_id, relation_replacement_cost, effect, unlock, urgency_evidence, disposition,
                    disposition_target_item_id, disposition_reason, subject_revision, disposition_recorded_at
             FROM proposals
+            {condition}
             ORDER BY proposal_id
             """
         ).fetchall()
     )
+
+
+def read_proposals(connection: sqlite3.Connection) -> stored_state.ProposalRecords:
+    proposals = _read_proposal_records(connection, pending_only=False)
     evidence = tuple(
         decode_row(row, stored_state.ProposalEvidence)
         for row in connection.execute(
@@ -227,19 +245,7 @@ def read_proposals(connection: sqlite3.Connection) -> stored_state.ProposalRecor
 def read_pending_proposals(connection: sqlite3.Connection) -> stored_state.ProposalRecords:
     """Read only proposals and child records included in project handover."""
 
-    proposals = tuple(
-        decode_row(row, _StoredProposalRow).proposal()
-        for row in connection.execute(
-            """
-            SELECT proposal_id, created_at, recorded_at, source_task_id, user_label, trigger, why_it_matters,
-                   relation_kind, relation_item_id, effect, unlock, urgency_evidence, disposition,
-                   disposition_target_item_id, disposition_reason, subject_revision, disposition_recorded_at
-            FROM proposals
-            WHERE disposition IS NULL
-            ORDER BY proposal_id
-            """
-        ).fetchall()
-    )
+    proposals = _read_proposal_records(connection, pending_only=True)
     evidence = tuple(
         decode_row(row, stored_state.ProposalEvidence)
         for proposal in proposals
@@ -263,7 +269,7 @@ def read_proposal(connection: sqlite3.Connection, proposal_id: ProposalId) -> st
     row = connection.execute(
         """
         SELECT proposal_id, created_at, recorded_at, source_task_id, user_label, trigger,
-               why_it_matters, relation_kind, relation_item_id, effect, unlock, urgency_evidence,
+               why_it_matters, relation_kind, relation_item_id, relation_replacement_cost, effect, unlock, urgency_evidence,
                disposition, disposition_target_item_id, disposition_reason, subject_revision,
                disposition_recorded_at
         FROM proposals WHERE proposal_id = ?
@@ -358,6 +364,31 @@ def accept_proposal(
     )
 
 
+def insert_planned_replacement(
+    connection: sqlite3.Connection,
+    relation: work_models.PlannedReplacement,
+    accepted_project_revision: int,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO planned_replacements (
+            affected_item_id, relation_revision, replacement_item_id, replacement_cost,
+            status, recorded_by, recorded_at, accepted_project_revision
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            relation.affected_item,
+            relation.relation_revision,
+            relation.replacement_item,
+            relation.replacement_cost,
+            relation.status.value,
+            relation.recorded_by,
+            relation.recorded_at.isoformat(),
+            accepted_project_revision,
+        ),
+    )
+
+
 def create_proposal(
     connection: sqlite3.Connection,
     mutation: ProposalCreationMutation,
@@ -369,6 +400,7 @@ def create_proposal(
     now = mutation.receipt.transition.decided_at
     prerequisite = decision.prerequisite_change
     prerequisite_subject_revision: int | None = None
+    replacement_subject_revision: int | None = None
     if prerequisite is not None:
         target = connection.execute(
             "SELECT subject_revision FROM work_items WHERE item_id = ?",
@@ -381,6 +413,18 @@ def create_proposal(
                 None,
             )
         prerequisite_subject_revision = decode_row(target, _SubjectRevisionRow).subject_revision
+    if decision.planned_replacement is not None:
+        target = connection.execute(
+            "SELECT subject_revision FROM work_items WHERE item_id = ?",
+            (decision.planned_replacement.affected_item,),
+        ).fetchone()
+        if target is None:
+            return DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                "The planned-replacement target changed before persistence.",
+                None,
+            )
+        replacement_subject_revision = decode_row(target, _SubjectRevisionRow).subject_revision
     if (failure := make_queue_space(connection, intake_item.position)) is not None:
         return failure
     relation = intake.relation
@@ -388,9 +432,9 @@ def create_proposal(
         """
         INSERT INTO proposals (
             proposal_id, created_at, recorded_at, source_task_id, user_label, trigger, why_it_matters,
-            relation_kind, relation_item_id, effect, unlock, urgency_evidence, disposition,
+            relation_kind, relation_item_id, relation_replacement_cost, effect, unlock, urgency_evidence, disposition,
             disposition_target_item_id, disposition_reason, disposition_recorded_at, subject_revision
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
         """,
         (
             intake.proposal_id,
@@ -402,6 +446,7 @@ def create_proposal(
             intake.why_it_matters,
             relation.kind.value,
             relation.item,
+            relation.replacement_cost if isinstance(relation, work_models.PlannedReplacementProposalRelation) else None,
             intake.effect,
             intake.unlock,
             intake.urgency_evidence,
@@ -451,6 +496,24 @@ def create_proposal(
         ),
     )
     replace_dependencies(connection, intake_item.item_id, intake_item.dependencies)
+    if decision.planned_replacement is not None:
+        relation = decision.planned_replacement
+        assert replacement_subject_revision is not None
+        if (
+            failure := require_one_changed_row(
+                connection.execute(
+                    """
+                    UPDATE work_items
+                    SET subject_revision = ?, updated_at = ?
+                    WHERE item_id = ? AND subject_revision = ?
+                    """,
+                    (revision, now.isoformat(), relation.affected_item, replacement_subject_revision),
+                ),
+                "The planned-replacement target changed before persistence.",
+            )
+        ) is not None:
+            return failure
+        insert_planned_replacement(connection, relation, revision)
     if prerequisite is None:
         return None
     assert prerequisite_subject_revision is not None

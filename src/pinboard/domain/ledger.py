@@ -4,6 +4,10 @@ from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, HistoryId, ItemId, LeaseId, ProposalId
 
 
+def _planned_replacement_revision(relation: work_models.PlannedReplacement) -> int:
+    return relation.relation_revision
+
+
 @dataclass(frozen=True, slots=True)
 class LedgerSnapshot:
     revision: str
@@ -20,6 +24,8 @@ class LedgerSnapshot:
     definitions: tuple[work_models.DefinitionAnchor, ...] = ()
     host_epoch: int = 0
     checkpoint_history_ids: tuple[HistoryId, ...] = ()
+    planned_replacements: tuple[work_models.PlannedReplacement, ...] = ()
+    replacement_dispositions: tuple[work_models.ReplacementDisposition, ...] = ()
 
     def items_by_id(self) -> dict[ItemId, work_models.WorkItem]:
         return {item.item: item for item in self.items}
@@ -70,3 +76,33 @@ class LedgerSnapshot:
             ),
             None,
         )
+
+    def current_replacement(self, item_id: ItemId) -> work_models.PlannedReplacement | None:
+        matching_relations: tuple[work_models.PlannedReplacement, ...] = tuple(
+            relation for relation in self.planned_replacements if relation.affected_item == item_id
+        )
+        latest = max(matching_relations, key=_planned_replacement_revision, default=None)
+        if latest is None or latest.status != work_models.PlannedReplacementStatus.CURRENT:
+            return None
+        return latest
+
+    def replacement_disposition(
+        self, item_id: ItemId, relation_revision: int
+    ) -> work_models.ReplacementDisposition | None:
+        return next(
+            (
+                disposition
+                for disposition in self.replacement_dispositions
+                if disposition.affected_item == item_id and disposition.relation_revision == relation_revision
+            ),
+            None,
+        )
+
+    def unresolved_replacement(self, item_id: ItemId) -> work_models.PlannedReplacement | None:
+        relation = self.current_replacement(item_id)
+        if relation is None:
+            return None
+        disposition = self.replacement_disposition(item_id, relation.relation_revision)
+        if disposition is not None and disposition.accepted_cost == relation.replacement_cost:
+            return None
+        return relation

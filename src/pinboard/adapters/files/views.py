@@ -25,7 +25,7 @@ def _dependency_key(value: stored_state.ItemDependency) -> tuple[str, int]:
 
 
 def _render_header(kind: str) -> str:
-    return f"---\nkind: {kind}\nauthority: sqlite-v5\n---\n\n> {NOTICE}\n\n"
+    return f"---\nkind: {kind}\nauthority: sqlite-v6\n---\n\n> {NOTICE}\n\n"
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +69,7 @@ def _render_item(
         else ()
     )
     accepted = definition.definition
+    replacement = None if overview_item is None else overview_item.planned_replacement
     return (
         _render_header("work-item-view")
         + f"# {accepted.title}\n\n"
@@ -83,6 +84,10 @@ def _render_item(
         + f"- Dependencies: {', '.join(dependencies) if dependencies else 'none'}\n"
         + f"- Dependency reasons: {'; '.join(dependency_reasons) if dependency_reasons else 'none'}\n"
         + f"- Review flags: {'; '.join(review_flags) if review_flags else 'none'}\n"
+        + f"- Planned replacement: {replacement.replacement_item_id if replacement is not None else 'none'}\n"
+        + f"- Replacement revision: {replacement.relation_revision if replacement is not None else 'none'}\n"
+        + f"- Replacement cost: {replacement.replacement_cost if replacement is not None else 'none'}\n"
+        + f"- Temporarily retained: {'yes' if replacement is not None and replacement.temporarily_retained else 'no'}\n"
         + f"- Outcome evidence: {item.outcome_evidence or 'none'}\n"
         + "\n## Accepted definition\n\n"
         + f"- Revision: {definition.revision}\n"

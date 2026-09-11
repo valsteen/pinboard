@@ -10,6 +10,7 @@ from pinboard.adapters.sqlite.lifecycle import _definition_revision_values
 from pinboard.adapters.sqlite.proposals import _encode_proposal_disposition_columns
 from pinboard.adapters.sqlite.state import _validate_current_state, append_history
 from pinboard.application import stored_state
+from pinboard.domain import work_models
 
 
 def _insert_artifacts(
@@ -116,10 +117,10 @@ def _insert_proposals(connection: sqlite3.Connection, records: stored_state.Prop
         """
         INSERT INTO proposals (
             proposal_id, created_at, recorded_at, source_task_id, user_label,
-            trigger, why_it_matters, relation_kind, relation_item_id, effect, unlock,
+            trigger, why_it_matters, relation_kind, relation_item_id, relation_replacement_cost, effect, unlock,
             urgency_evidence, disposition, disposition_target_item_id, disposition_reason,
             disposition_recorded_at, subject_revision
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         tuple(
             (
@@ -132,6 +133,9 @@ def _insert_proposals(connection: sqlite3.Connection, records: stored_state.Prop
                 value.why_it_matters,
                 value.relation.kind.value,
                 value.relation.item,
+                value.relation.replacement_cost
+                if isinstance(value.relation, work_models.PlannedReplacementProposalRelation)
+                else None,
                 value.effect,
                 value.unlock,
                 value.urgency_evidence,
@@ -234,6 +238,8 @@ def insert_initial_state(connection: sqlite3.Connection, state: stored_state.Sto
             "proposals",
             "proposal_evidence",
             "proposal_freshness",
+            "planned_replacements",
+            "replacement_dispositions",
             "attempt_lease_counters",
             "attempt_lease_generations",
             "attempt_leases",
@@ -263,6 +269,47 @@ def insert_initial_state(connection: sqlite3.Connection, state: stored_state.Sto
             ),
         )
     _insert_proposals(connection, state.proposals)
+    connection.executemany(
+        """
+        INSERT INTO planned_replacements (
+            affected_item_id, relation_revision, replacement_item_id, replacement_cost,
+            status, recorded_by, recorded_at, accepted_project_revision
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        tuple(
+            (
+                value.affected_item_id,
+                value.relation_revision,
+                value.replacement_item_id,
+                value.replacement_cost,
+                value.status.value,
+                value.recorded_by,
+                value.recorded_at.isoformat(),
+                value.accepted_project_revision,
+            )
+            for value in state.replacements.planned_replacements
+        ),
+    )
+    connection.executemany(
+        """
+        INSERT INTO replacement_dispositions (
+            affected_item_id, relation_revision, rationale, accepted_cost,
+            recorded_by, recorded_at, accepted_project_revision
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        tuple(
+            (
+                value.affected_item_id,
+                value.relation_revision,
+                value.rationale,
+                value.accepted_cost,
+                value.recorded_by,
+                value.recorded_at.isoformat(),
+                value.accepted_project_revision,
+            )
+            for value in state.replacements.dispositions
+        ),
+    )
     _insert_authority(connection, state.authority)
     append_history(connection, state.transition_receipts)
     connection.execute(

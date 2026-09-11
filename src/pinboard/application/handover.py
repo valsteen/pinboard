@@ -9,6 +9,11 @@ from typing import Literal, assert_never
 import msgspec
 
 from pinboard.application import query_models, stored_state
+from pinboard.application.generated_replacements import (
+    HandoverPlannedReplacement,
+    HandoverReplacementDisposition,
+    project_replacements,
+)
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.identifiers import ProposalId
 
@@ -177,27 +182,6 @@ type HandoverProposalRelation = (
     | ClarificationProposalRelation
     | PlannedReplacementProposalRelation
 )
-
-
-class HandoverPlannedReplacement(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    affected_item_id: str
-    relation_revision: int
-    replacement_item_id: str
-    replacement_cost: str
-    status: work_models.PlannedReplacementStatus
-    recorded_by: str
-    recorded_at: str
-    accepted_project_revision: int
-
-
-class HandoverReplacementDisposition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    affected_item_id: str
-    relation_revision: int
-    rationale: str
-    accepted_cost: str
-    recorded_by: str
-    recorded_at: str
-    accepted_project_revision: int
 
 
 class HandoverTransition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -573,6 +557,7 @@ def project_handover_from_state(
     proposal_freshness = {
         proposal_id: tuple(assumptions) for proposal_id, assumptions in proposal_freshness_groups.items()
     }
+    replacements = project_replacements(state.replacements)
     return ProjectHandover(
         "pinboard-project-handover/v5",
         "sqlite-v6",
@@ -657,31 +642,8 @@ def project_handover_from_state(
             for value in pending_proposals
         ),
         tuple(_project_proposal_relation(value) for value in pending_proposals),
-        tuple(
-            HandoverPlannedReplacement(
-                str(value.affected_item_id),
-                value.relation_revision,
-                str(value.replacement_item_id),
-                value.replacement_cost,
-                value.status,
-                str(value.recorded_by),
-                value.recorded_at.isoformat(),
-                value.accepted_project_revision,
-            )
-            for value in state.replacements.planned_replacements
-        ),
-        tuple(
-            HandoverReplacementDisposition(
-                str(value.affected_item_id),
-                value.relation_revision,
-                value.rationale,
-                value.accepted_cost,
-                str(value.recorded_by),
-                value.recorded_at.isoformat(),
-                value.accepted_project_revision,
-            )
-            for value in state.replacements.dispositions
-        ),
+        replacements.planned_replacements,
+        replacements.replacement_dispositions,
         tuple(
             HandoverTransition(
                 int(value.history_id),

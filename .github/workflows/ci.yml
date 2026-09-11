@@ -51,6 +51,8 @@ jobs:
         run: uv sync --locked
       - name: Check generated visitor guide
         run: uv run --locked python -m docs.how_it_works.render --check
+      - name: Check generated replacement code
+        run: uv run --locked python -m codegen.replacement_records --check
       - name: Check formatting
         run: uv run --locked ruff format --check .
       - name: Lint

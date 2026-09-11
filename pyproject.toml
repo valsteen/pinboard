@@ -27,7 +27,7 @@ source-exclude = [".DS_Store"]
 [tool.ruff]
 target-version = "py314"
 line-length = 120
-src = ["src", "tests", "docs/how_it_works"]
+src = ["src", "tests", "docs/how_it_works", "codegen"]
 
 [tool.ruff.lint]
 extend-select = ["ICN003", "RUF100"]
@@ -61,7 +61,7 @@ known-first-party = ["pinboard", "tests"]
 
 [tool.pyrefly]
 python-version = "3.14"
-project-includes = ["src", "tests", "docs/how_it_works"]
+project-includes = ["src", "tests", "docs/how_it_works", "codegen"]
 search-path = ["."]
 preset = "strict"
 min-severity = "warn"

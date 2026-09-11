@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.decisions import available_actions, decide
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import AttemptId, ItemId, LeaseId, TaskId
 from pinboard.domain.ledger import LedgerSnapshot
 from tests.domain_support import action, expect_success
@@ -231,6 +232,23 @@ class PlannedReplacementTests(unittest.TestCase):
         retained = expect_success(decide(self.snapshot(relation_value=current), retain, NOW))
         self.assertIsInstance(retained.change, decision_models.ReplacementDispositionChange)
         self.assertEqual(1, retained.change.disposition.relation_revision)
+
+    def test_resume_decision_rejects_a_replacement_recorded_after_selection(self) -> None:
+        resume = decision_models.ResumeCommand(
+            action(decision_models.ResumeAction, ItemId("old-work")),
+            work_models.ResumeInput(None),
+        )
+
+        rejected = decide(
+            self.snapshot(work_models.WorkState.BLOCKED, relation_value=relation()),
+            resume,
+            NOW,
+        )
+
+        self.assertIsInstance(rejected, DecisionFailure)
+        assert isinstance(rejected, DecisionFailure)
+        self.assertEqual(DecisionFailureCode.ACTION_NOT_AVAILABLE, rejected.code)
+        self.assertEqual("Item 'old-work' has an unresolved planned replacement.", rejected.message)
 
     def test_title_similarity_never_creates_a_relation(self) -> None:
         snapshot = LedgerSnapshot(

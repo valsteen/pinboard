@@ -1,73 +1,43 @@
 # Pinboard
 
+## Keep your coding agent building the product you meant
+
+<img align="right" width="430" src="assets/pinboard-investigation-office.png" alt="A 1970s office worker explaining a wall-sized investigation board covered with a map, notes, portraits, diagrams, colored markers, and connecting thread">
+
+Long-running agent work can drift into a coherent, well-tested product that no one actually decided to build. Pinboard is a repository-local record of what you proposed, accepted, built, and reviewed, shared across tasks and interruptions.
+
+Your coding agent still does the work. Pinboard keeps that work tied to the decision.
+
+<br clear="right">
+
 [![CI](https://github.com/valsteen/pinboard/actions/workflows/ci.yml/badge.svg)](https://github.com/valsteen/pinboard/actions/workflows/ci.yml)
 [![Python 3.14](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![uv](https://img.shields.io/badge/managed%20with-uv-DE5FE9?logo=uv)](https://docs.astral.sh/uv/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Keep your coding agent building the product you meant
+## Nobody asked for all this
 
-<img align="right" width="430" src="assets/pinboard-investigation-board.png" alt="Fantasy adventurer explaining an investigation board covered with maps, clues, portraits, and red thread">
+Each addition can make sense on its own. The agent proposes an improvement, review makes it look settled, and you keep moving. Soon every part has a reason, but the whole has no decision behind it.
 
-Pinboard is a repository-local work ledger for long-running coding-agent projects, built first for solo developers whose requirements arrive while they build. It preserves the difference between what you requested, what an agent proposed, what you accepted, what was implemented, and what was reviewed. Defects against accepted behavior and accepted guarantees remain rigorous; a materially broader assurance guarantee without product evidence becomes a concrete decision for you instead of quietly expanding implementation or review. Codex is the primary, stress-tested integration; Claude Code support is experimental.
+## The code passed review. Nobody checked the request.
 
-<br clear="right">
+A change can be clean, tested, and carefully reviewed while building something no one asked for. Pinboard gives the reviewer the accepted request alongside the exact change, so review asks both: does it work, and is it what we decided to build?
 
-## The first pass is easy. Drift starts on the second.
+We added this after Pinboard's own implementation and review loops kept improving work that had never been accepted.
 
-A clear prompt can produce an impressive first version. The trouble often starts a few iterations later: implementation uncovers adjacent ideas, review suggests extra hardening, another task resumes with partial context, and useful discoveries begin to look like requirements simply because they are now written down.
+## What changes when you use Pinboard
 
-Human requests, agent suggestions, technical hypotheses, and accepted product decisions gradually blend together. The code can remain tested and technically plausible while the product grows away from what you meant to build. AI does not create this problem, but it can turn a familiar slow accumulation of product and code slop into a large diff within hours.
-
-## Coding agents already run the development loop
-
-A coding agent can plan, delegate, implement, test, review, use isolated worktrees, and carry a task over time. Pinboard does not replace that harness or make the model more capable. It gives those activities one repository-local ledger of proposals, accepted work, attempts, and evidence shared across tasks and interruptions.
-
-With Pinboard, a discovery can remain a proposal instead of quietly joining the feature. An implementation attempt stays tied to an exact accepted definition and brief. Current ownership is explicit, stale actions are rejected, and review examines one exact candidate with its evidence. The coding agent performs the work; Pinboard keeps planning, implementation, and review about the same product decision.
-
-Pinboard uses one engine and one SQLite ledger from both integrations. Codex remains primary and stress-tested. Claude Code can load the same repository-local plugin experimentally; authenticated skill selection and model invocation remain experimental. Pinboard does not decide the product, choose priorities, or create coding-agent tasks.
-
-## The format is strict. The meaning is still yours.
-
-A Pinboard brief has named places for the outcome, accepted scope, provenance, non-goals, acceptance criteria, reviewed sources, verification, and remaining work. Code enforces the shape, cross-references, identity, and exact artifact bytes. It cannot know whether a sentence filed under `non_goals` truly belongs there or route that sentence to the right file.
-
-The model interprets the words, the human accepts the product decision, and an independent reviewer challenges the result. The structure keeps those distinctions stable. Preparation freezes the accepted outcome, assurance model, constraints, stable authorities, and explicit uncertainty. Delivery then derives the concrete impact from the candidate, and review reuses unchanged evidence while rechecking changed or unclassified relationships. Defects against accepted behavior and accepted hardening remain blocking without another scope prompt. A materially broader concurrency, durability, security, adversarial, platform, or compatibility guarantee needs concrete product evidence or a new human decision; broad correctness language, an exploratory failure, or newly written guidance cannot authorize it. This lets the coding agent reason from new prose to the project surfaces that appear to be affected—for example, from a visitor-facing decision to a workflow guide and a durable design principle—without Pinboard encoding an impact graph or requiring every file to be revisited. Human acceptance and review decide whether that connection is real. That is information architecture refined through experience, not semantic enforcement.
+- **An idea can stay an idea.** A useful discovery is preserved without quietly joining the current feature.
+- **“Yes” has an exact meaning.** Work starts from what you accepted, not from whichever suggestion appeared most recently.
+- **An interruption does not rewrite the task.** Another session can recover the decision, current work, and evidence without reconstructing them from chat.
 
 ## Pinboard makes the first delivery slower
 
-Pinboard usually makes managed work take longer than sending the same request directly to a coding agent. It spends additional turns preserving discoveries, agreeing on exact scope and stable authorities, acquiring work, rereading the brief before implementation, deriving the candidate's changed surface, recording evidence, and reviewing one exact candidate against that brief. That overhead is real, but routine assurance follows the changed or uncertain semantic surface instead of repository size.
+Pinboard adds work before implementation: preserving discoveries, agreeing on scope, and carrying evidence into review. For a small or disposable task, using the coding agent directly is often the better choice.
 
-Pinboard is not designed to win the first-prompt race. It is designed for the fifth, fifteenth, and fiftieth change, when losing or confusing a decision can lead to long sessions reconstructing intent, separating accepted requirements from agent suggestions, removing incidental features, and rebuilding trust in the code. Use the coding agent directly when that risk costs less than the process.
+Pinboard is meant for work that outlives the current conversation: another revision, interruption, reviewer, or task.
 
-## A campaign that keeps discoveries out of the feature
-
-Imagine you are building *Ashfall Keep*, a small action RPG. While one coding-agent task works on the dragon boss's second phase, two useful but distracting discoveries arrive: save games capture temporary animation state, and controller mappings identify abilities by inventory position.
-
-<img width="20" height="20" src="assets/quest-scroll.png" alt="Sealed quest scroll"> **Capture an idea without expanding the feature.** `$pinboard-intake` records the save-game concern with its trigger, evidence, and likely consequence. It enters intake without becoming ready or interrupting the dragon attempt.
-
-> **Saved for later — the animation-state concern is now in `save-game-animation-state` (`intake`); dragon work continues.**
-
-<img align="right" width="390" src="assets/party-crossroads.png" alt="Fantasy adventurer comparing routes toward a riverside village, a dragon keep, and a crystal cave while a scout investigates">
-
-<img width="20" height="20" src="assets/quick-quest-log.png" alt="Open quest ledger and compass"> **Decide from one current project view.** `$pinboard` shows the dragon phase as active, controller mapping as ready, and the save-game concern as intake. Any task can accept, defer, connect, or close work through atomic ledger changes without reconstructing the plan.
-
-<img width="20" height="20" src="assets/safe-camp.png" alt="Campfire and bedroll checkpoint"> **Resume the decision, not the conversation.** If stable ability IDs become a real prerequisite, the dragon attempt records where it stopped and what must change. The same attempt later resumes from its accepted brief and evidence.
-
-<img width="20" height="20" src="assets/ready-to-build.png" alt="Crossed sword and blacksmith hammer"> **Review what was approved, not merely what now exists.** `$pinboard-deliver` is the implementer route for an already prepared active attempt: it follows the exact definition and brief, records the candidate and evidence, and returns them for review by a separate reviewer in the current coding agent. If later accepted direction changes the target, the complete definition and brief change too, and the resulting exact candidate receives a new review before wrap-up.
-
-The code, branch, and conversation remain ordinary coding-agent work. Pinboard keeps their product decisions connected. [How Pinboard works](HOW_IT_WORKS.md) starts with this workflow, then follows it into the detailed lifecycle, persistence model, and package boundaries.
-
-## Pinboard became its own use case
-
-Pinboard is used to build Pinboard. Its product decisions, parallel work, exact briefs, implementation evidence, and reviews move through the same workflow it ships.
-
-Pinboard did not begin as a complete human-authored product specification. The problem and final product judgment were human; Codex proposed much of the solution between them. Keeping those roles distinct made it possible to examine what emerged, accept or reject its shape, and then refine its identity, principles, code, and explanation through the same workflow. Writing [How Pinboard works](HOW_IT_WORKS.md) was part of discovering what had actually been built, not documentation added after the fact.
-
-Its bundled Slop Cleanup skill has also been applied to this repository: tracing residue from revised features, removing test-only production paths, and repeating the scan until it found no new candidates. Repository Readiness's developer-navigation and storytelling lenses were developed here, stress-tested against earlier revisions by fresh Codex reviewers, and then used to reconcile names, code, and documentation.
-
-That makes this codebase one concrete case study, not proof that Pinboard eliminates every mistake or makes every repository clean.
-
-> Eventually, the conspiracy board needed its own conspiracy board.
+[How Pinboard works](HOW_IT_WORKS.md) follows the complete workflow and the decisions behind it.
 
 ## What it covers
 
@@ -78,7 +48,7 @@ That makes this codebase one concrete case study, not proof that Pinboard elimin
 - **Execution:** start preparation atomically from the current accepted definition, freeze the accepted outcome and stable authorities in an exact brief, then let the worker derive concrete impact from the candidate under independent renewable ownership.
 - **Interruption and recovery:** block, deliberately pause otherwise runnable work, rebind current accepted scope with a corrected Git baseline, resume, or recover without rebuilding context from chat history or silently changing the checkout.
 - **Parallel work:** preview independent items and recheck the group as each attempt starts, without creating tasks on the user's behalf.
-- **Review:** derive the next operation from current ledger state; optionally bind one explicitly selected, separately validated checkpoint package; bind correction rounds to an exact return receipt plus the current prior review; then use a separate reviewer in the current coding-agent runtime—Codex primary, Claude Code experimental—to examine changed and unclassified surfaces, reuse unchanged evidence, and widen for architecture, persistence, wire, lifecycle, dynamic consumers, or a demonstrated blind spot.
+- **Review:** derive the next operation from current ledger state; optionally bind one explicitly selected, separately validated checkpoint package; bind correction rounds to an exact return receipt plus the current prior review; then use a separate reviewer in the current coding-agent runtime—Codex as the primary, stress-tested integration; Claude Code experimentally—to examine changed and unclassified surfaces, reuse unchanged evidence, and widen for architecture, persistence, wire, lifecycle, dynamic consumers, or a demonstrated blind spot.
 - **Wrap-up:** reconcile later accepted direction and repository changes, report exact current work item and attempt states, then execute only the repository disposition, verified disposable-worktree and branch cleanup, and terminal transition the human explicitly authorizes—including as one ordered instruction.
 - **Handover:** export one revision-stamped JSON package of supported project facts—admitted work, pending proposals, relationships, decisions, and verified review evidence—without choosing a team-tool vendor. Live lease authority remains local.
 - **Repository readiness:** use `$repository-readiness` to map the real authority, consumers, projections, and validation behind a representative change before improving an unfamiliar repository; select whole-repository coverage explicitly.

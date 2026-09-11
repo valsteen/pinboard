@@ -51,7 +51,7 @@ DIAGRAM = Diagram(
             "ledger",
             "One stored revision",
             "SQLite ledger",
-            ("work · proposals · decisions", "relationships · history"),
+            ("work · proposals · history", "replacements · dispositions"),
             ("StoredWorkState",),
             50,
             120,

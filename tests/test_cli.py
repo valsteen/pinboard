@@ -657,6 +657,7 @@ class CliTest(unittest.TestCase):
     def test_current_command_surface_lists_every_command(self) -> None:
         parser = build_parser()
         help_text = parser.format_help()
+        self.assertNotIn("lifecycle-changing", help_text)
         for retained in (
             "root",
             "validate",
@@ -1242,6 +1243,65 @@ class CliTest(unittest.TestCase):
             "activate:work-c",
         )
         self.assertEqual("activate:work-c", self.json_object(self.json_list(activation["actions"])[0])["action_id"])
+
+    def test_blocked_unstarted_resume_selected_before_replacement_rejects_without_lifecycle_change(self) -> None:
+        state = complete_sqlite_state()
+        state = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=tuple(
+                    replace(value, state=stored_state.StoredWorkItemState.BLOCKED)
+                    if value.item_id == ItemId("work-c")
+                    else value
+                    for value in state.lifecycle.work_items
+                ),
+            ),
+        )
+        project, work, store = self.initialized_state(state)
+        common = ("--project-root", str(project), "--work-root", str(work))
+        stale_resume = self.project_action(common, "resume:work-c")
+        lifecycle_before = tuple(
+            (value.item_id, value.state) for value in store.validated_snapshot().lifecycle.work_items
+        )
+        replacement_payload = project / "replacement-before-resume.json"
+        replacement_payload.write_text(
+            json.dumps(
+                {
+                    "schema": "pinboard-planned-replacement/v1",
+                    "affected_item": "work-c",
+                    "expected_relation_revision": 0,
+                    "replacement_item": "work-a",
+                    "replacement_cost": "Resuming Work C would spend effort that Work A replaces.",
+                    "status": "current",
+                    "recorded_by": "project-task",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            0,
+            self.run_transition(
+                common,
+                self.project_action(common, "record-replacement:work-c"),
+                replacement_payload,
+                json_output=True,
+            )[0],
+        )
+        after_relation = store.validated_snapshot()
+        resume_payload = project / "stale-resume.json"
+        resume_payload.write_text("{}\n", encoding="utf-8")
+
+        result, stdout, stderr = self.run_transition(common, stale_resume, resume_payload, json_output=True)
+
+        self.assertEqual(11, result, stderr)
+        self.assertEqual("ACTION_LIFECYCLE_UNAVAILABLE", self.json_object(json.loads(stdout))["code"])
+        after_rejection = store.validated_snapshot()
+        self.assertEqual(after_relation, after_rejection)
+        self.assertEqual(
+            lifecycle_before,
+            tuple((value.item_id, value.state) for value in after_rejection.lifecycle.work_items),
+        )
 
     def test_attempt_inspection_matches_project_actions_after_replacement_withdrawal(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())
@@ -3564,6 +3624,19 @@ Not launchable:
         self.assertEqual({"project", "attempt"}, {action["authorization"] for action in continue_actions})
         for action in continue_actions:
             self.assertEqual(continue_contract["semantics"], action["semantics"])
+
+    def test_non_lifecycle_replacement_transitions_expose_strict_input_contracts(self) -> None:
+        expected = {
+            "record-replacement": "RecordPlannedReplacementInputPayload",
+            "retain-temporarily": "RetainTemporarilyInputPayload",
+        }
+        for kind, model_name in expected.items():
+            with self.subTest(kind=kind):
+                contract = self.run_json_cli("input-contract", kind)
+                schema = self.json_object(contract["payload_schema"])
+                self.assertEqual(f"#/$defs/{model_name}", schema["$ref"])
+                model = self.json_object(self.json_object(schema["$defs"])[model_name])
+                self.assertFalse(model["additionalProperties"])
 
     def test_resume_and_reopen_command_semantics_match_contextual_action_results(self) -> None:
         state = complete_sqlite_state()

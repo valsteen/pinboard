@@ -411,12 +411,12 @@ def describe_input_contract(
     kind: decision_models.ActionKind,
 ) -> errors.TransitionInputResult[work_inspection_models.InputContractView]:
     semantics = decision_models.action_semantics(kind)
-    if semantics.lifecycle_effect == decision_models.LifecycleEffect.NO_LIFECYCLE_CHANGE:
+    encoded_schema = transition_input.encoded_transition_input_schema(kind)
+    if isinstance(encoded_schema, errors.TransitionInputFailure):
+        if encoded_schema.code != domain_errors.DecisionFailureCode.ACTION_NOT_MUTATING:
+            return encoded_schema
         payload_schema = None
     else:
-        encoded_schema = transition_input.encoded_transition_input_schema(kind)
-        if isinstance(encoded_schema, errors.TransitionInputFailure):
-            return encoded_schema
         payload_schema = msgspec.Raw(encoded_schema)
     return work_inspection_models.InputContractView(kind.value, _project_action_semantics(semantics), payload_schema)
 

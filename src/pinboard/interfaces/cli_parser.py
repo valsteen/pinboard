@@ -564,9 +564,7 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - complete top-l
     proposal.add_argument("--host-id", required=True)
     proposal.add_argument("--json", action="store_true")
     _select_command(proposal, cli_commands.ProposalCommand)
-    transition = commands.add_parser(
-        "transition", help="Apply one selected lifecycle-changing action returned by the actions command."
-    )
+    transition = commands.add_parser("transition", help="Apply one selected action returned by the actions command.")
     transition.add_argument("--action-id", required=True)
     transition.add_argument("--generation", type=int)
     transition.add_argument("--subject-revision", required=True)

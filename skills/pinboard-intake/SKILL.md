@@ -55,15 +55,16 @@ Create a bounded JSON proposal containing:
 - concrete `trigger`;
 - bounded `evidence` selectors;
 - `why_it_matters`;
-- `relation.kind`: `independent`, `prerequisite`, `follow-up`, `duplicate`, `contradiction`, or `clarification`;
-- `relation.item`: the related item identity for `prerequisite`, `follow-up`, `duplicate`, and `contradiction`; `null` for `independent` and `clarification`;
+- `relation.kind`: `independent`, `prerequisite`, `follow-up`, `duplicate`, `contradiction`, `clarification`, or `planned-replacement`;
+- `relation.item`: the related item identity for `prerequisite`, `follow-up`, `duplicate`, `contradiction`, and `planned-replacement`; for `planned-replacement`, this is the affected work that the new proposal would replace; use `null` for `independent` and `clarification`;
+- `relation.replacement_cost`: for `planned-replacement`, the concrete practical cost of continuing the affected work before switching to the proposed replacement;
 - current product or repository `effect`;
 - exact `unlock`;
 - observed `urgency_evidence`, never an invented priority;
 - freshness-sensitive assumptions in `freshness_assumptions`;
 - optional one-based `position`; omit it to place the intake item at the back of live work.
 
-Use `follow-up` when the new intake item depends on the related item. Use `prerequisite` when the live related item depends on the new intake item; persistence advances that target item's immutable definition history as well as its relational dependency projection. Use `duplicate`, `contradiction`, or `clarification` to expose a review flag rather than inventing a dependency. Encode `relation.item` as JSON `null` for `independent` and `clarification`; the other relations require a string identity. Every new proposal also creates definition revision 1 from its immutable facts, so do not add parallel semantic prose after intake.
+Use `follow-up` when the new intake item depends on the related item. Use `prerequisite` when the live related item depends on the new intake item; persistence advances that target item's immutable definition history as well as its relational dependency projection. Use `planned-replacement` when the proposed intake item would replace its affected `relation.item`; proposal admission records the intake item and explicit replacement relation together or accepts neither. Use `duplicate`, `contradiction`, or `clarification` to expose a review flag rather than inventing a dependency. Encode `relation.item` as JSON `null` for `independent` and `clarification`; the other relations require a string identity. Every new proposal also creates definition revision 1 from its immutable facts, so do not add parallel semantic prose after intake.
 
 Do not create work merely because a question was asked. Require an explicit request to preserve or submit the concern.
 

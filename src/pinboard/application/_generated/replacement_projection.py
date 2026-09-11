@@ -8,7 +8,7 @@ from pinboard.application import stored_state
 from pinboard.domain import work_models
 
 
-class HandoverPlannedReplacement(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class _HandoverPlannedReplacement(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     affected_item_id: str
     relation_revision: int
     replacement_item_id: str
@@ -19,7 +19,7 @@ class HandoverPlannedReplacement(msgspec.Struct, frozen=True, forbid_unknown_fie
     accepted_project_revision: int
 
 
-class HandoverReplacementDisposition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class _HandoverReplacementDisposition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     affected_item_id: str
     relation_revision: int
     rationale: str
@@ -29,8 +29,8 @@ class HandoverReplacementDisposition(msgspec.Struct, frozen=True, forbid_unknown
     accepted_project_revision: int
 
 
-type ProjectedPlannedReplacements = tuple[HandoverPlannedReplacement, ...]
-type ProjectedReplacementDispositions = tuple[HandoverReplacementDisposition, ...]
+type ProjectedPlannedReplacements = tuple[_HandoverPlannedReplacement, ...]
+type ProjectedReplacementDispositions = tuple[_HandoverReplacementDisposition, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,8 +41,8 @@ class ProjectedReplacements:
 
 def project_replacements(records: stored_state.ReplacementRecords) -> ProjectedReplacements:
     return ProjectedReplacements(
-        tuple(
-            HandoverPlannedReplacement(
+        planned_replacements=tuple(
+            _HandoverPlannedReplacement(
                 str(value.affected_item_id),
                 value.relation_revision,
                 str(value.replacement_item_id),
@@ -54,8 +54,8 @@ def project_replacements(records: stored_state.ReplacementRecords) -> ProjectedR
             )
             for value in records.planned_replacements
         ),
-        tuple(
-            HandoverReplacementDisposition(
+        replacement_dispositions=tuple(
+            _HandoverReplacementDisposition(
                 str(value.affected_item_id),
                 value.relation_revision,
                 value.rationale,

@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from dataclasses import dataclass, replace
@@ -8,11 +9,15 @@ from codegen.replacements.compiler import (
     GENERATED_HEADER,
     VALIDATION_OUTPUT,
     DeclarationError,
+    _validate_private_row_imports,
     _write_or_check,
     render_application,
     render_validation,
 )
-from codegen.replacements.declaration import REPLACEMENTS, ExactCost
+from codegen.replacements.declaration import (
+    REPLACEMENTS,
+    ExactCost,
+)
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
@@ -253,6 +258,66 @@ class DeclarativeReplacementTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(DeclarationError, "invariant-role disposition missing"):
             render_application(missing_invariant)
+
+    def test_collection_target_controls_generated_alias_and_result_field(self) -> None:
+        first, second = REPLACEMENTS.collections
+        renamed = replace(
+            REPLACEMENTS,
+            collections=(replace(first, target="plans"), second),
+        )
+
+        generated = render_application(renamed)
+
+        self.assertIn("type ProjectedPlans = tuple[", generated)
+        self.assertIn("    plans: ProjectedPlans", generated)
+        self.assertIn("        plans=tuple(", generated)
+
+    def test_direct_import_of_private_generated_row_is_rejected(self) -> None:
+        source_root = Path(tempfile.mkdtemp()) / "src"
+        source_root.mkdir()
+        (source_root / "escape.py").write_text(
+            "from pinboard.application._generated.replacement_projection import _HandoverPlannedReplacement\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            DeclarationError,
+            "private generated row symbol.*_HandoverPlannedReplacement.*escape.py",
+        ):
+            _validate_private_row_imports(REPLACEMENTS, source_root)
+
+    def test_unknown_projection_and_invariant_operations_are_rejected(self) -> None:
+        first, second = REPLACEMENTS.collections
+        unsupported_operation = json.loads('{"operation":"unsupported"}')
+        unsupported_projection = replace(
+            first.fields[0],
+            operation=unsupported_operation,
+        )
+        projection_family = replace(
+            REPLACEMENTS,
+            collections=(
+                replace(first, fields=(unsupported_projection, *first.fields[1:])),
+                second,
+            ),
+        )
+        with self.assertRaises(AssertionError):
+            render_application(projection_family)
+
+        invariant_family = replace(
+            REPLACEMENTS,
+            collections=(
+                replace(
+                    first,
+                    invariants=(
+                        unsupported_operation,
+                        *first.invariants[1:],
+                    ),
+                ),
+                second,
+            ),
+        )
+        with self.assertRaises(AssertionError):
+            render_validation(invariant_family)
 
     def test_stale_generated_bytes_fail_the_check(self) -> None:
         path = Path(tempfile.mkdtemp()) / "generated.py"

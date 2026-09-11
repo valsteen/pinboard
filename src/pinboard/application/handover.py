@@ -10,8 +10,8 @@ import msgspec
 
 from pinboard.application import query_models, stored_state
 from pinboard.application._generated.replacement_projection import (
-    HandoverPlannedReplacement,
-    HandoverReplacementDisposition,
+    ProjectedPlannedReplacements,
+    ProjectedReplacementDispositions,
     project_replacements,
 )
 from pinboard.domain import decision_models, work_models
@@ -378,8 +378,8 @@ class ProjectHandover(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempts: tuple[HandoverAttempt, ...]
     proposals: tuple[HandoverProposal, ...]
     proposal_relations: tuple[HandoverProposalRelation, ...]
-    planned_replacements: tuple[HandoverPlannedReplacement, ...]
-    replacement_dispositions: tuple[HandoverReplacementDisposition, ...]
+    planned_replacements: ProjectedPlannedReplacements
+    replacement_dispositions: ProjectedReplacementDispositions
     transitions: tuple[HandoverTransition, ...]
     item_artifact_links: tuple[HandoverItemArtifactLink, ...]
     artifact_references: tuple[HandoverArtifactReference, ...]

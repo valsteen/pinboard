@@ -94,7 +94,7 @@ REPLACEMENTS = ReplacementFamily(
         Collection(
             "planned_replacements",
             "planned_replacements",
-            "HandoverPlannedReplacement",
+            "_HandoverPlannedReplacement",
             (
                 ProjectedField("affected_item_id", "affected_item_id", Text()),
                 ProjectedField("relation_revision", "relation_revision", Copy()),
@@ -120,7 +120,7 @@ REPLACEMENTS = ReplacementFamily(
         Collection(
             "dispositions",
             "replacement_dispositions",
-            "HandoverReplacementDisposition",
+            "_HandoverReplacementDisposition",
             (
                 ProjectedField("affected_item_id", "affected_item_id", Text()),
                 ProjectedField("relation_revision", "relation_revision", Copy()),

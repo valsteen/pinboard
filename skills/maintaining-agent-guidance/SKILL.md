@@ -91,6 +91,8 @@ When repeated agent failures come from discovering or recovering a mechanical op
 4. Preserve product vocabulary and useful distinctions; do not hide a product decision behind workflow terminology.
 5. Prefer no durable artifact when the evidence does not justify recurring guidance.
 
+When guidance repeatedly fails under an observed decision pressure, make the correction a falsifiable loop. Name the one future decision or output that must change, place that proposition at the smallest established owner, and replay a representative scenario that preserves the motivating pressure. Stop when the replay produces the intended decision without a new contradiction. If it does not, widen only to the earliest effective owner the replay demonstrates; widen to an executable interface specifically when the failure is discovering or recovering a mechanical operation.
+
 ## Validate proportionately
 
 Where relevant, check syntax, metadata, links, triggering language, contradictions, thin routes, and the resulting diff. Re-read the motivating problem against the revised ownership: could a fresh contributor or agent find the authority and make the intended decision?

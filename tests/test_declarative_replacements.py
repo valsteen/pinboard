@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 
 from codegen.replacements.compiler import (
@@ -61,6 +62,42 @@ class RootWithExtraLeaf:
 @dataclass(frozen=True, slots=True)
 class RootWithChangedTupleMember:
     planned_replacements: tuple[str, ...]
+    dispositions: tuple[stored_state.StoredReplacementDisposition, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SameShapedPlannedReplacement:
+    affected_item_id: ItemId
+    relation_revision: int
+    replacement_item_id: ItemId
+    replacement_cost: str
+    status: work_models.PlannedReplacementStatus
+    recorded_by: TaskId
+    recorded_at: datetime
+    accepted_project_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class RootWithSameShapedTupleMember:
+    planned_replacements: tuple[SameShapedPlannedReplacement, ...]
+    dispositions: tuple[stored_state.StoredReplacementDisposition, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NominallyRetypedPlannedReplacement:
+    affected_item_id: ItemId
+    relation_revision: int
+    replacement_item_id: ItemId
+    replacement_cost: str
+    status: work_models.PlannedReplacementStatus
+    recorded_by: ItemId
+    recorded_at: datetime
+    accepted_project_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class RootWithNominallyRetypedLeaf:
+    planned_replacements: tuple[NominallyRetypedPlannedReplacement, ...]
     dispositions: tuple[stored_state.StoredReplacementDisposition, ...]
 
 
@@ -245,6 +282,23 @@ class DeclarativeReplacementTest(unittest.TestCase):
             "planned_replacements must be a tuple of dataclasses",
         ):
             render_application(family)
+
+    def test_same_shaped_tuple_member_changes_generated_source_identity(self) -> None:
+        family = replace(REPLACEMENTS, source=RootWithSameShapedTupleMember)
+
+        self.assertNotEqual(render_application(REPLACEMENTS), render_application(family))
+        validation = render_validation(family)
+        self.assertNotEqual(render_validation(REPLACEMENTS), validation)
+        self.assertIn(
+            f"{SameShapedPlannedReplacement.__module__}.{SameShapedPlannedReplacement.__qualname__}",
+            validation,
+        )
+
+    def test_output_equivalent_nominal_leaf_retype_changes_generated_fingerprint(self) -> None:
+        family = replace(REPLACEMENTS, source=RootWithNominallyRetypedLeaf)
+
+        self.assertNotEqual(render_application(REPLACEMENTS), render_application(family))
+        self.assertNotEqual(render_validation(REPLACEMENTS), render_validation(family))
 
     def test_missing_field_and_invariant_dispositions_are_rejected(self) -> None:
         first, second = REPLACEMENTS.collections

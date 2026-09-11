@@ -23,8 +23,6 @@ Each addition can make sense on its own. The agent proposes an improvement, revi
 
 A change can be clean, tested, and carefully reviewed while building something no one asked for. Pinboard gives the reviewer the accepted request alongside the exact change, so review asks both: does it work, and is it what we decided to build?
 
-We added this after Pinboard's own implementation and review loops kept improving work that had never been accepted.
-
 ## What changes when you use Pinboard
 
 - **An idea can stay an idea.** A useful discovery is preserved without quietly joining the current feature.
@@ -36,6 +34,8 @@ We added this after Pinboard's own implementation and review loops kept improvin
 Pinboard adds work before implementation: preserving discoveries, agreeing on scope, and carrying evidence into review. For a small or disposable task, using the coding agent directly is often the better choice.
 
 Pinboard is meant for work that outlives the current conversation: another revision, interruption, reviewer, or task.
+
+Pinboard's request check came from its own review loop improving work that had never been accepted.
 
 [How Pinboard works](HOW_IT_WORKS.md) follows the complete workflow and the decisions behind it.
 

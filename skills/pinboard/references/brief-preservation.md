@@ -2,7 +2,7 @@
 
 Use [the coding-agent runtime adapters](runtime-adapters.md) for fresh reviewer launch and waiting. The preparation and review contract below is shared across integrations.
 
-Use this procedure only for a typed `cross-boundary` checkpoint. It projects named architecture, plans, and accepted evidence into a reviewable execution contract before implementation. A checkpoint is `local` only when ownership and dependency direction, stored and wire identities, and independently owned consumers remain unchanged, and one production entry point can observe the complete changed path. If any condition is false, use `cross-boundary`. A local checkpoint does not add contracts, reviewed-authority coverage, lifecycle declarations, or an independent brief review.
+Use this procedure only for a typed `cross-boundary` checkpoint. It projects named architecture, plans, and accepted evidence into a reviewable execution contract before implementation. A checkpoint is `local` only when ownership and dependency direction, stored and wire identities, and independently owned consumers remain unchanged, and one production entry point can observe the complete changed path. A README edit and its referenced image may stay local when they retain one owner and change none of those facts or product behavior. If any condition is false, use `cross-boundary`. A local checkpoint does not add contracts, reviewed-authority coverage, lifecycle declarations, or an independent brief review.
 
 For broad autonomous work, require the Pinboard workflow's short human-facing scope confirmation before preparation begins. Compile the canonical brief to preserve that stated outcome, principal read and touch surfaces, approximate magnitude, and surprising exclusions; never use the private brief to introduce a consequential narrowing or widening that the human did not see. The confirmation is declarative and does not repeat an authorization question already answered.
 
@@ -31,7 +31,7 @@ Encode and measure the selected authority set in a temporary strict `pinboard-br
 }
 ```
 
-Use one selector with several families instead of repeating or nesting the same selection. Run `pinboard brief-sources --file <manifest> --json` before reading any selected body. Correct overlap errors, inspect selected byte counts, spans, digests, and batches, and preserve that exact output as the strict `pinboard-brief-source-plan/v1` input. Emit each batch once in ascending order with `pinboard brief-sources --plan <plan> --emit-batch <index>`; emission reads the plan and only the source files represented in that batch.
+Use one selector with several families instead of repeating or nesting the same selection. Run `pinboard brief-sources --file <manifest> --output-plan <plan> --json` before reading any selected body. Correct any planning errors, require the compact receipt, and preserve the destination as the strict `pinboard-brief-source-plan/v1` input. Emit each batch once in ascending order with `pinboard brief-sources --plan <plan> --emit-batch <index>`; emission reads the plan and only the source files represented in that batch. Use complete stdout planning only when the plan itself is the requested inspection result.
 
 Preserve each selector and selected digest as its read receipt. Across corrections, reuse exact unchanged receipts and reread only changed owners plus neighboring records whose meaning depends on them. If output truncates, continue from the first unread boundary without replaying returned content.
 

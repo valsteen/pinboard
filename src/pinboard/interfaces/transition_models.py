@@ -27,11 +27,7 @@ class RebindAttemptInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fiel
     brief_artifact_ref_id: Annotated[int, msgspec.Meta(ge=1)]
 
 
-class StoredActivateInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    attempt: Identity
-    branch: NonEmptyLine
-    base_revision: NonEmptyLine
-    owner: NonEmptyLine
+class ActivateInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     brief_artifact_ref_id: Annotated[int, msgspec.Meta(ge=1)]
 
 
@@ -154,7 +150,7 @@ class ReviseItemInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=
 type InputPayload = (
     ResumeInputPayload
     | RebindAttemptInputPayload
-    | StoredActivateInputPayload
+    | ActivateInputPayload
     | SubmitReviewInputPayload
     | ReasonInputPayload
     | BlockInputPayload

@@ -125,6 +125,12 @@ class BriefSourcesPlanCommand(msgspec.Struct, frozen=True, forbid_unknown_fields
     max_batch_bytes: PositiveInt = 24_000
 
 
+class BriefSourcesPlanToFileCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    file: Path
+    output_plan: Path
+    max_batch_bytes: PositiveInt = 24_000
+
+
 class BriefSourcesEmitCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     plan: Path
     emit_batch: int
@@ -395,6 +401,7 @@ type CliCommand = (
     | InputContractCommand
     | ToolContractCommand
     | BriefSourcesPlanCommand
+    | BriefSourcesPlanToFileCommand
     | BriefSourcesEmitCommand
     | BriefPublishCommand
     | HandoverCommand

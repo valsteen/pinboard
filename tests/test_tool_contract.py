@@ -201,14 +201,20 @@ class ToolContractTest(unittest.TestCase):
 
     def test_brief_source_leaves_expose_distinct_manifest_and_plan_inputs(self) -> None:
         source_plan = expect_command_success(tool_contract.describe_operation("brief-sources", "plan"))
+        source_plan_output = expect_command_success(tool_contract.describe_operation("brief-sources", "plan-to-file"))
         source_emit = expect_command_success(tool_contract.describe_operation("brief-sources", "emit"))
         self.assertIsInstance(source_plan, tool_contract.OperationContract)
+        self.assertIsInstance(source_plan_output, tool_contract.OperationContract)
         self.assertIsInstance(source_emit, tool_contract.OperationContract)
         assert isinstance(source_plan, tool_contract.OperationContract)
+        assert isinstance(source_plan_output, tool_contract.OperationContract)
         assert isinstance(source_emit, tool_contract.OperationContract)
         self.assertEqual("source-manifest", source_plan.subject_kind)
         self.assertEqual("pinboard-brief-sources/v1 file", source_plan.artifact_selector)
         self.assertIn("--file FILE", source_plan.cli_usage)
+        self.assertEqual("source-manifest-and-output", source_plan_output.subject_kind)
+        self.assertEqual("publishes-selected-output", source_plan_output.mutation_class)
+        self.assertIn("--output-plan OUTPUT_PLAN", source_plan_output.cli_usage)
         self.assertEqual("source-plan", source_emit.subject_kind)
         self.assertEqual("pinboard-brief-source-plan/v1 file", source_emit.artifact_selector)
         self.assertIn("--plan PLAN", source_emit.cli_usage)
@@ -314,6 +320,7 @@ class ToolContractTest(unittest.TestCase):
         expected = {
             "transition": {"attempt", "preparation", "project"},
             "dispatch": {"with-review", "without-review"},
+            "brief-sources": {"plan", "plan-to-file", "emit"},
         }
         for operation, variants in expected.items():
             with self.subTest(operation=operation):

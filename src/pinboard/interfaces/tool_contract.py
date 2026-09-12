@@ -35,6 +35,7 @@ type MutationClass = Literal[
     "mutates-ledger",
     "publishes-and-records-artifact",
     "may-publish-and-record-artifact",
+    "publishes-selected-output",
     "repairs-derived-views",
 ]
 type DataScope = Literal[
@@ -204,6 +205,8 @@ def _mutation_class(command_type: type[cli_commands.CliCommand]) -> MutationClas
         return "publishes-and-records-artifact"
     if command_type is cli_commands.ProjectReviewedDispatchCommand:
         return "may-publish-and-record-artifact"
+    if command_type is cli_commands.BriefSourcesPlanToFileCommand:
+        return "publishes-selected-output"
     if command_type is cli_commands.RebuildViewsCommand:
         return "repairs-derived-views"
     if command_type in (
@@ -367,6 +370,8 @@ def _roles_and_authority(
         return ("project",), "direct-project-operation-with-task-host-attribution"
     if command_type is cli_commands.BriefPublishCommand:
         return ("local-caller",), "validated-brief-identity"
+    if command_type is cli_commands.BriefSourcesPlanToFileCommand:
+        return ("local-caller",), "selected-output-path"
     if command_type is cli_commands.InitializeCommand:
         return ("local-caller",), "filesystem-access"
     return ("observer",), "none"
@@ -419,6 +424,8 @@ def _subject_and_precondition(  # noqa: C901, PLR0912 - exhaustive installed pre
         return "repository-roots", "source-checkout-resolvable"
     if command_type is cli_commands.BriefSourcesPlanCommand:
         return "source-manifest", "selected-source-checkout-readable"
+    if command_type is cli_commands.BriefSourcesPlanToFileCommand:
+        return "source-manifest-and-output", "selected-source-checkout-readable-and-output-parent-existing"
     if command_type is cli_commands.BriefSourcesEmitCommand:
         return "source-plan", "selected-source-checkout-readable"
     if command_type is cli_commands.BriefPublishCommand:
@@ -435,6 +442,8 @@ def _artifact_selector(command_type: type[cli_commands.CliCommand]) -> str | Non
         return "pinboard-item-revision/v1 file"
     if command_type is cli_commands.BriefSourcesPlanCommand:
         return "pinboard-brief-sources/v1 file"
+    if command_type is cli_commands.BriefSourcesPlanToFileCommand:
+        return "pinboard-brief-sources/v1 file and selected pinboard-brief-source-plan/v1 destination"
     if command_type is cli_commands.BriefSourcesEmitCommand:
         return "pinboard-brief-source-plan/v1 file"
     if command_type is cli_commands.BriefPublishCommand:
@@ -455,7 +464,7 @@ def _artifact_selector(command_type: type[cli_commands.CliCommand]) -> str | Non
 def _artifact_schema(command_type: type[cli_commands.CliCommand]) -> msgspec.Raw | None:
     if command_type is cli_commands.ItemReviseCommand:
         model = transition_models.ReviseItemInputPayload
-    elif command_type is cli_commands.BriefSourcesPlanCommand:
+    elif command_type in (cli_commands.BriefSourcesPlanCommand, cli_commands.BriefSourcesPlanToFileCommand):
         model = brief_source_models.BriefSourceManifest
     elif command_type is cli_commands.BriefSourcesEmitCommand:
         model = brief_source_models.BriefSourcePlanView
@@ -499,6 +508,10 @@ def _success_postcondition(
         cli_commands.AttemptRevokeCommand,
     ):
         return "Commit the authority change and return attempt_id, lease_id, generation, holder, timing, and status."
+    if command_type is cli_commands.BriefSourcesPlanToFileCommand:
+        return (
+            "Create exact canonical plan bytes or reuse identical bytes, then return a compact selected-output receipt."
+        )
     match mutation_class:
         case "read-only":
             return "Return current output without changing authoritative or replaceable state."
@@ -508,6 +521,8 @@ def _success_postcondition(
             return "Publish canonical immutable bytes and accept their exact artifact reference."
         case "may-publish-and-record-artifact":
             return "Return the verified launch; publish only explicitly supplied independent review evidence."
+        case "publishes-selected-output":
+            return "Publish only the exact caller-selected output and return its receipt."
         case "repairs-derived-views":
             return "Make replaceable views match the current authoritative state."
 
@@ -519,6 +534,8 @@ def _retry_semantics(operation_id: str, mutation_class: MutationClass) -> str:
         return "safe-to-repeat"
     if mutation_class == "publishes-and-records-artifact":
         return "repeat-only-with-the-same-canonical-artifact"
+    if mutation_class == "publishes-selected-output":
+        return "repeat-only-with-the-same-canonical-bytes-and-destination"
     return "inspect-current-state-before-retry"
 
 

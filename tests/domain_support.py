@@ -13,7 +13,9 @@ from pinboard.domain.identifiers import (
     SubjectId,
     TaskId,
 )
+from pinboard.interfaces import transition_models
 from pinboard.interfaces.errors import TransitionInputFailure
+from pinboard.interfaces.transition_input import ParsedTransitionInput
 
 
 def replace(instance: Any, **changes: Any) -> Any:  # noqa: ANN401
@@ -41,10 +43,12 @@ def action[SubjectT: SubjectId, ActionT](
 
 
 def expect_transition_command(
-    value: decision_models.TransitionCommand | TransitionInputFailure,
+    value: ParsedTransitionInput | TransitionInputFailure,
 ) -> decision_models.TransitionCommand:
     if isinstance(value, TransitionInputFailure):
         raise AssertionError(f"Expected a transition command, received {value.code.value}: {value.message}")
+    if isinstance(value, transition_models.ActivateInputPayload):
+        raise AssertionError("Expected a domain command, received an unresolved activation request.")
     return value
 
 

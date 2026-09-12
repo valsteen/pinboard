@@ -26,7 +26,7 @@ def _input_model_or_none(kind: decision_models.ActionKind) -> transition_models.
         case decision_models.ActionKind.ACCEPT_PROPOSAL:
             return transition_models.AcceptProposalInputPayload
         case decision_models.ActionKind.ACTIVATE:
-            return transition_models.StoredActivateInputPayload
+            return transition_models.ActivateInputPayload
         case decision_models.ActionKind.BLOCK | decision_models.ActionKind.BLOCK_ITEM:
             return transition_models.BlockInputPayload
         case decision_models.ActionKind.CLOSE:
@@ -134,10 +134,13 @@ def parse_item_revision_input(data: bytes | str) -> TransitionInputResult[work_m
     return _revise_item_input(payload)
 
 
-def parse_transition_command(  # noqa: C901, PLR0912, PLR0915 - one visible exhaustive action-to-command boundary
+type ParsedTransitionInput = decision_models.TransitionCommand | transition_models.ActivateInputPayload
+
+
+def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaustive action-to-input boundary
     action: decision_models.Action,
     data: bytes | str,
-) -> TransitionInputResult[decision_models.TransitionCommand]:
+) -> TransitionInputResult[ParsedTransitionInput]:
     match action:
         case decision_models.AcceptCheckpointAction():
             if isinstance(
@@ -174,20 +177,9 @@ def parse_transition_command(  # noqa: C901, PLR0912, PLR0915 - one visible exha
                 ),
             )
         case decision_models.ActivateAction():
-            if isinstance(
-                payload := _decode(data, transition_models.StoredActivateInputPayload), TransitionInputFailure
-            ):
+            if isinstance(payload := _decode(data, transition_models.ActivateInputPayload), TransitionInputFailure):
                 return payload
-            return decision_models.ActivateCommand(
-                action,
-                work_models.ActivateInput(
-                    AttemptId(payload.attempt),
-                    payload.branch,
-                    payload.base_revision,
-                    payload.owner,
-                    ArtifactRefId(payload.brief_artifact_ref_id),
-                ),
-            )
+            return payload
         case decision_models.BlockAttemptAction() | decision_models.BlockItemAction():
             if isinstance(payload := _decode(data, transition_models.BlockInputPayload), TransitionInputFailure):
                 return payload

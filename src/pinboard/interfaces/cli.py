@@ -11,7 +11,7 @@ import sys
 from collections.abc import Sequence
 from typing import assert_never
 
-from pinboard.adapters.files.errors import ArtifactError, FileIOError, RootError
+from pinboard.adapters.files.errors import ArtifactError, FileIOError, ImmutableFilePublishedError, RootError
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.domain.errors import (
     ArtifactAcceptanceAfterPublicationError,
@@ -66,7 +66,12 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
         raise AssertionError("A rooted command requires resolved project roots.")
     if isinstance(invocation.command, cli_commands.RootCommand):
         return work_state_commands.show_roots(roots, invocation.command)
-    if isinstance(invocation.command, cli_commands.BriefSourcesPlanCommand | cli_commands.BriefSourcesEmitCommand):
+    if isinstance(
+        invocation.command,
+        cli_commands.BriefSourcesPlanCommand
+        | cli_commands.BriefSourcesPlanToFileCommand
+        | cli_commands.BriefSourcesEmitCommand,
+    ):
         return brief_source_commands.plan_or_emit_brief_sources(roots, invocation.command)
     durable = work_state_commands.resolve_durable_layout(roots)
     store = work_state_commands.compose_store(durable)
@@ -197,7 +202,7 @@ def _present_expected_result(result: CliResult[int], operation: str, *, json_req
     return exit_code
 
 
-def _run_invocation(  # noqa: PLR0912 - one outer exception-to-process-result boundary
+def _run_invocation(  # noqa: C901, PLR0912 - one outer exception-to-process-result boundary
     invocation: cli_commands.CliInvocation,
     operation: str,
     *,
@@ -248,6 +253,20 @@ def _run_invocation(  # noqa: PLR0912 - one outer exception-to-process-result bo
                 f"{cause}; initialization committed: {', '.join(value.value for value in details.changed_surfaces)}",
                 file=sys.stderr,
             )
+        return 12
+    except ImmutableFilePublishedError as error:
+        details = FailureDetails(
+            observed=(FailureFact("selected_output_path", str(error.path)),),
+            mismatches=(),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.COMMITTED,
+            changed_surfaces=(ChangedSurface.SELECTED_OUTPUT,),
+            alternatives=(),
+        )
+        if json_requested:
+            cli_output.write_operation_rejection(operation, error.code.value, str(error), details, ())
+        else:
+            print(f"{error}; selected output published at '{error.path}'", file=sys.stderr)
         return 12
     except (RootError, OSError) as error:
         if json_requested:

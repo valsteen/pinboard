@@ -103,11 +103,16 @@ def authority_status_fields(status: AuthorityStatus) -> dict[str, str | int]:
     )
 
 
+def render_json[T](value: T) -> bytes:
+    """Render one canonical, human-readable JSON value."""
+    encoded = msgspec.json.encode(value, order="sorted")
+    return msgspec.json.format(encoded, indent=2) + b"\n"
+
+
 def write_json[T](value: T) -> None:
     """Write one canonical, human-readable JSON value and nothing else."""
 
-    encoded = msgspec.json.encode(value, order="sorted")
-    sys.stdout.write(msgspec.json.format(encoded, indent=2).decode() + "\n")
+    sys.stdout.write(render_json(value).decode())
 
 
 def write_rejected_operation(operation: str, failure: CliFailure) -> None:

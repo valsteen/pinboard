@@ -1,15 +1,17 @@
-"""Plan or emit deterministic reviewed-authority source batches.
+"""Plan, persist, or emit deterministic reviewed-authority source batches.
 
-This command owner reads the selected manifest and writes only its requested
-stdout representation. Source selection remains in ``brief_sources``; this
-module owns the exact presentation conversion and command branching.
+This command owner reads the selected manifest and writes its requested stdout
+representation or exact immutable plan destination. Source selection remains
+in ``brief_sources``; this module owns the exact presentation conversion and
+command branching.
 """
 
+import hashlib
 import sys
 from typing import assert_never
 
-from pinboard.interfaces import brief_source_models, brief_sources, cli_commands
-from pinboard.interfaces.cli_output import write_json
+from pinboard.adapters.files.file_io import create_immutable
+from pinboard.interfaces import brief_source_models, brief_sources, cli_commands, cli_output
 from pinboard.interfaces.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
 
 
@@ -63,12 +65,37 @@ def _project_brief_source_plan(plan: brief_source_models.BriefSourcePlan) -> bri
     )
 
 
+def _plan_output_receipt(
+    destination: str,
+    created: bool,
+    plan_bytes: bytes,
+    source_plan: brief_source_models.BriefSourcePlan,
+) -> brief_source_models.BriefSourcePlanOutputReceipt:
+    return brief_source_models.BriefSourcePlanOutputReceipt(
+        "pinboard-brief-source-plan-output/v1",
+        destination,
+        created,
+        hashlib.sha256(plan_bytes).hexdigest(),
+        len(plan_bytes),
+        len(source_plan.sources),
+        len(source_plan.batches),
+        sum(source.selected_byte_count for source in source_plan.sources),
+    )
+
+
 def plan_or_emit_brief_sources(
     roots: cli_commands.ResolvedRoots,
-    command: cli_commands.BriefSourcesPlanCommand | cli_commands.BriefSourcesEmitCommand,
+    command: (
+        cli_commands.BriefSourcesPlanCommand
+        | cli_commands.BriefSourcesPlanToFileCommand
+        | cli_commands.BriefSourcesEmitCommand
+    ),
 ) -> BriefSourceResult[int]:
     match command:
-        case cli_commands.BriefSourcesPlanCommand(file=manifest_path, max_batch_bytes=max_batch_bytes):
+        case (
+            cli_commands.BriefSourcesPlanCommand(file=manifest_path, max_batch_bytes=max_batch_bytes)
+            | cli_commands.BriefSourcesPlanToFileCommand(file=manifest_path, max_batch_bytes=max_batch_bytes)
+        ):
             try:
                 manifest_bytes = manifest_path.read_bytes()
             except OSError as error:
@@ -86,7 +113,13 @@ def plan_or_emit_brief_sources(
             )
             if isinstance(source_plan, BriefSourceFailure):
                 return source_plan
-            write_json(_project_brief_source_plan(source_plan))
+            plan_bytes = cli_output.render_json(_project_brief_source_plan(source_plan))
+            if isinstance(command, cli_commands.BriefSourcesPlanCommand):
+                sys.stdout.write(plan_bytes.decode())
+            else:
+                destination = command.output_plan.absolute()
+                created = create_immutable(destination, plan_bytes)
+                cli_output.write_json(_plan_output_receipt(str(destination), created, plan_bytes, source_plan))
         case cli_commands.BriefSourcesEmitCommand(plan=plan_path, emit_batch=batch_index):
             try:
                 plan_bytes = plan_path.read_bytes()

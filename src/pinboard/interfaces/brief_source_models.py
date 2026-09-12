@@ -214,3 +214,14 @@ class BriefSourcePlanView(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
         batch_segments = tuple(segment for batch in self.batches for segment in batch.segments)
         if source_segments != batch_segments:
             raise ValueError("source batches must contain every planned segment exactly once in source order")
+
+
+class BriefSourcePlanOutputReceipt(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-brief-source-plan-output/v1"]
+    destination: str
+    created: bool
+    plan_sha256: BriefSourceSha256
+    plan_byte_count: PositiveInt
+    source_count: PositiveInt
+    batch_count: PositiveInt
+    selected_source_byte_count: NonNegativeInt

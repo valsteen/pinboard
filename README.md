@@ -9,6 +9,7 @@ Long-running agent work can drift into a coherent, well-tested product that no o
 Your coding agent still does the work. Pinboard keeps that work tied to the decision.
 
 <br clear="right">
+<br>
 
 [![CI](https://github.com/valsteen/pinboard/actions/workflows/ci.yml/badge.svg)](https://github.com/valsteen/pinboard/actions/workflows/ci.yml)
 [![Python 3.14](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)

@@ -16,34 +16,18 @@ Your coding agent still does the work. Pinboard adds guardrails that let the flo
 [![uv](https://img.shields.io/badge/managed%20with-uv-DE5FE9?logo=uv)](https://docs.astral.sh/uv/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## When the work outlives the conversation
+## What Pinboard does
 
-That freedom becomes harder to steer when the work outlives the conversation. Ideas disappear before they become work. Accepted decisions stay in the plan after they become obsolete. Architectural assumptions survive after the project invalidates them. Changes accumulate until no one can trace why they belong.
+You decide what belongs in the product. You accept or reject proposed work, settle choices that change scope or behavior, and choose what happens to a reviewed change in the repository.
 
-The drift is co-authored. Sometimes your former self made the forgotten choice. Sometimes the agent filled a gap, and plausible language made the guess look intentional. As notes, code, and reviews reinforce one another, both of you can mistake momentum for direction.
+Pinboard keeps those decisions attached to the work. It:
 
-## What changes when you use Pinboard
+- preserves ideas without quietly starting them;
+- turns accepted direction into a stable brief;
+- carries that direction through implementation and a separate review of both the request and the change; and
+- restores the decision, current work, and evidence after an interruption.
 
-- **An idea can stay an idea.** A useful discovery is preserved without quietly joining the current feature.
-- **“Yes” has an exact meaning.** Work starts from what you accepted, not from whichever suggestion appeared most recently.
-- **An interruption does not rewrite the task.** Another session can recover the decision, current work, and evidence without reconstructing them from chat.
-- **Review checks the direction as well as the implementation.** The reviewer sees the accepted request beside the exact change, so a clean, tested change can still be rejected when it builds the wrong thing.
-
-## Pinboard makes the first delivery slower
-
-Pinboard adds work before implementation: preserving discoveries, agreeing on scope, and carrying evidence into review. For a small or disposable task, using the coding agent directly is often the better choice.
-
-Its return appears when work outlives the current conversation: another revision, interruption, reviewer, or task can continue from the decisions behind the work instead of reconstructing them.
-
-[How Pinboard works](HOW_IT_WORKS.md) follows the complete workflow and the decisions behind it.
-
-## What you decide
-
-You still decide what belongs in the product. You accept or reject proposed work, settle choices that change scope or behavior, and choose what happens to a reviewed change in the repository.
-
-## What Pinboard coordinates
-
-Pinboard keeps those decisions attached to the work. It preserves discoveries without starting them, turns accepted outcomes into stable briefs, carries the same target through implementation and separate review, and restores the relevant context after an interruption. The coding agent operates that workflow and brings material choices back to you in ordinary language.
+The coding agent operates that workflow and brings material choices back to you in ordinary language.
 
 ## Skills
 
@@ -65,6 +49,16 @@ Pinboard may activate a specialized skill automatically when the work calls for 
 - **Maintaining Agent Guidance** — `$maintaining-agent-guidance` or `/pinboard:maintaining-agent-guidance` — Put durable instructions at the owner that can keep them true.
 
 These skills specialize part of the work. They are not alternate ways to start or manage Pinboard.
+
+## When Pinboard is worth it
+
+Pinboard is most useful when a decision must survive more than the current conversation. That may mean another revision, interruption, reviewer, or task. When work lives that long, ideas can disappear before they become work, accepted decisions can remain after becoming obsolete, architectural assumptions can outlive the evidence that invalidated them, and changes can accumulate until no one can trace why they belong.
+
+The drift is co-authored. Sometimes your former self made the forgotten choice. Sometimes the agent filled a gap, and plausible language made the guess look intentional. As notes, code, and reviews reinforce one another, both of you can mistake momentum for direction.
+
+**The tradeoff:** Pinboard makes the first delivery slower because discoveries, scope, and evidence are recorded before and during implementation. That cost pays back across another revision, interruption, reviewer, or task. For small or disposable work, using the coding agent directly is often the better choice.
+
+[How Pinboard works](HOW_IT_WORKS.md) follows the complete workflow and the decisions behind it.
 
 ## Install from GitHub
 

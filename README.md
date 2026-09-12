@@ -4,9 +4,9 @@
 
 <img align="right" width="430" src="assets/pinboard-investigation-office.png" alt="A 1970s office worker explaining a wall-sized investigation board covered with a map, notes, portraits, diagrams, colored markers, and connecting thread">
 
-Long-running agent work can drift into a coherent, well-tested product that no one actually decided to build. Pinboard is a repository-local record of what you proposed, accepted, built, and reviewed, shared across tasks and interruptions.
+Working with a coding agent can stay fluid: follow an idea, ask for the change, and keep moving. You do not need to maintain a parallel version of the project in a ticket system. Pinboard keeps that rhythm while recording ideas, decisions, work, and reviews beside the repository.
 
-Your coding agent still does the work. Pinboard keeps that work tied to the decision.
+Your coding agent still does the work. Pinboard adds guardrails that let the flow continue without losing the decisions behind it.
 
 <br clear="right">
 <br>
@@ -16,27 +16,24 @@ Your coding agent still does the work. Pinboard keeps that work tied to the deci
 [![uv](https://img.shields.io/badge/managed%20with-uv-DE5FE9?logo=uv)](https://docs.astral.sh/uv/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Nobody asked for all this
+## When the work outlives the conversation
 
-Each addition can make sense on its own. The agent proposes an improvement, review makes it look settled, and you keep moving. Soon every part has a reason, but the whole has no decision behind it.
+That freedom becomes harder to steer when the work outlives the conversation. Ideas disappear before they become work. Accepted decisions stay in the plan after they become obsolete. Architectural assumptions survive after the project invalidates them. Changes accumulate until no one can trace why they belong.
 
-## The code passed review. Nobody checked the request.
-
-A change can be clean, tested, and carefully reviewed while building something no one asked for. Pinboard gives the reviewer the accepted request alongside the exact change, so review asks both: does it work, and is it what we decided to build?
+The drift is co-authored. Sometimes your former self made the forgotten choice. Sometimes the agent filled a gap, and plausible language made the guess look intentional. As notes, code, and reviews reinforce one another, both of you can mistake momentum for direction.
 
 ## What changes when you use Pinboard
 
 - **An idea can stay an idea.** A useful discovery is preserved without quietly joining the current feature.
 - **“Yes” has an exact meaning.** Work starts from what you accepted, not from whichever suggestion appeared most recently.
 - **An interruption does not rewrite the task.** Another session can recover the decision, current work, and evidence without reconstructing them from chat.
+- **Review checks the direction as well as the implementation.** The reviewer sees the accepted request beside the exact change, so a clean, tested change can still be rejected when it builds the wrong thing.
 
 ## Pinboard makes the first delivery slower
 
 Pinboard adds work before implementation: preserving discoveries, agreeing on scope, and carrying evidence into review. For a small or disposable task, using the coding agent directly is often the better choice.
 
-Pinboard is meant for work that outlives the current conversation: another revision, interruption, reviewer, or task.
-
-Pinboard's request check came from its own review loop improving work that had never been accepted.
+Its return appears when work outlives the current conversation: another revision, interruption, reviewer, or task can continue from the decisions behind the work instead of reconstructing them.
 
 [How Pinboard works](HOW_IT_WORKS.md) follows the complete workflow and the decisions behind it.
 
@@ -60,15 +57,22 @@ You can ask naturally:
 
 > Start the accepted API cleanup.
 
-For substantial documents, Pinboard automatically brings in its bundled Technical Writing guidance. Repository Readiness, Slop Cleanup, and Maintaining Agent Guidance are optional repository-care skills; they are useful on their own and are not alternate ways to start Pinboard.
+Pinboard may activate a specialized skill automatically when the work calls for it. You can also invoke one directly:
+
+- **Technical Writing** — `$technical-writing` or `/pinboard:technical-writing` — Shape substantial technical documents and human-facing project artifacts.
+- **Repository Readiness** — `$repository-readiness` or `/pinboard:repository-readiness` — Map an unfamiliar repository before making reliable changes.
+- **Slop Cleanup** — `$slop-cleanup` or `/pinboard:slop-cleanup` — Remove abandoned code and the residue it leaves behind.
+- **Maintaining Agent Guidance** — `$maintaining-agent-guidance` or `/pinboard:maintaining-agent-guidance` — Put durable instructions at the owner that can keep them true.
+
+These skills specialize part of the work. They are not alternate ways to start or manage Pinboard.
 
 ## Install from GitHub
 
-The plugin currently supports macOS and Linux. It uses [uv](https://docs.astral.sh/uv/) to provide its Python 3.14 runtime and installed command.
+Pinboard supports macOS and Linux. Codex is the primary, stress-tested integration.
 
 ### Codex
 
-Codex is the primary, stress-tested integration. Add this repository as a marketplace, then install Pinboard:
+Add this repository as a marketplace, then install Pinboard:
 
 ```sh
 codex plugin marketplace add valsteen/pinboard
@@ -106,11 +110,11 @@ The [installation guide](INSTALL.md) covers first setup, Codex permissions, link
 
 ## Local data
 
-By default, project decisions and evidence stay in ignored repository-local files; an explicit work root can place them elsewhere on your machine. The installed plugin cache contains packaged code and skills, not your project data.
+By default, Pinboard keeps project decisions and evidence in ignored files inside the repository. You can choose another location on your machine. The installed plugin contains Pinboard's code and skills, not your project data.
 
 ## Learn more
 
-- [How Pinboard works](HOW_IT_WORKS.md) explains the complete workflow and deeper command behavior.
-- [Install Pinboard](INSTALL.md) covers advanced setup and troubleshooting.
+- [How Pinboard works](HOW_IT_WORKS.md) follows the workflow from an idea to an accepted, reviewed change.
+- [Install Pinboard](INSTALL.md) covers advanced setup, permissions, linked worktrees, Claude Code support, and troubleshooting.
 - [Contributing](CONTRIBUTING.md) covers the development environment, checks, tests, and packaging.
 - [Architecture](ARCHITECTURE.md) describes system ownership, boundaries, limitations, and failure semantics.

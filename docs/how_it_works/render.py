@@ -35,200 +35,90 @@ def _guide() -> str:
 
 # How Pinboard works
 
-Pinboard adds one repository-local ledger of proposals, accepted work, attempts, and evidence to long-running coding-agent work. It preserves what the human requested, what an agent proposed, what the project accepted, which execution is acting on it, and what evidence a reviewer can trust later. Codex is the primary, stress-tested integration; Claude Code support is experimental.
+Pinboard keeps long-running coding-agent work attached to the decisions that shaped it. It adds a repository-local record of proposed ideas, accepted work, implementation attempts, and review evidence without asking you to maintain a parallel ticket system.
 
-For one short, isolated change, a coding agent already supplies the planning, implementation, testing, and review loop. Pinboard adds deliberate steps when the project must remain coherent across discoveries, parallel tasks, interruptions, and later iterations.
+For a short disposable change, working directly with a coding agent is often enough. Pinboard becomes useful when work crosses conversations, interruptions, reviewers, or parallel tasks and the latest chat is no longer a reliable account of why the code looks the way it does.
 
-## Contents
+## One accepted direction anchors the loop
 
-- [Workflow at a glance](#workflow-at-a-glance)
-- [Why Pinboard changes the coding-agent loop](#why-pinboard-changes-the-coding-agent-loop)
-  - [Coding agents already iterate](#coding-agents-already-iterate)
-  - [Strict shape, semantic judgment](#strict-shape-semantic-judgment)
-- [The product model](#the-product-model)
-  - [Work items and attempts](#work-items-and-attempts)
-  - [What every transition preserves](#what-every-transition-preserves)
-- [Command stories](#command-stories)
-  - [Read, validate, initialize, and repair](#read-validate-initialize-and-repair)
-  - [Discover and recover an exact operation](#discover-and-recover-an-exact-operation)
-  - [Follow one change](#follow-one-change)
-  - [Apply one project change](#apply-one-project-change)
-  - [Carry the project into another tool](#carry-the-project-into-another-tool)
-- [Under the surface](#under-the-surface)
-  - [The durable memory underneath](#the-durable-memory-underneath)
-  - [Where responsibilities live](#where-responsibilities-live)
-
-## Workflow at a glance
-
-The practical path is short enough to tell without the data model:
-
-1. **Preserve a discovery.** Intake records its trigger, evidence, hypothesis, and likely effect without changing current priority or adding it to the active feature.
-2. **Accept exact work.** A project task decides which proposal belongs in the product, records the complete current definition, and keeps unaccepted ideas visibly separate.
-3. **Prepare the brief.** One ordinary preparation start atomically selects the current ready definition and creates or transfers its renewable claim. Preparation freezes the accepted outcome, assurance model, constraints, stable authorities, and explicit uncertainty in one canonical brief, then reviews the smallest evidence set that can challenge the planned change. The item does not become active yet.
-4. **Implement that brief.** Activation binds the accepted brief to one attempt. The worker claims the attempt, rereads the brief, derives concrete impact from the candidate, and reads outward only when a changed relationship or explicit uncertainty exposes another owner.
-5. **Reconcile late direction.** Before candidate presentation or acceptance, the owning task accounts for user direction and repository changes since the accepted brief. A changed product target replaces the complete definition and brief, invalidates stale candidate or review identity, and requires another exact candidate and review.
-6. **Submit one candidate.** The worker records the exact candidate and its evidence. Submission protects that identity instead of asking review to infer what changed from the latest files.
-7. **Review and close the same decision.** Current ledger state derives the next operation. For review, a read-only job binds the exact candidate, accepted brief owner, and current result evidence for a separate reviewer in the current coding-agent runtime. That reviewer examines changed and unclassified surfaces, reuses unchanged evidence, and widens when architecture, persistence, wire, lifecycle, dynamic consumers, or a demonstrated blind spot require it. The owning task processes the verdict, then executes only the repository disposition, verified disposable-worktree and local and remote branch cleanup, and terminal transition the human explicitly authorizes. One instruction may authorize that complete ordered sequence; a failed or uncertain step stops later destructive and terminal effects. Every workflow-ending reply reads exact item status, then translates only useful task state, caveats, and the next action into ordinary prose. Raw item and attempt fields remain available when explicitly requested or needed for exact troubleshooting, while accepted implementation, repository integration, cleanup, and terminal `done` stay distinct.
-8. **Recover without retelling.** Pause and block preserve the attempt and its evidence. Rebind atomically accepts the item's current definition with a matching brief and corrected branch and base revision for an active or paused attempt, preserves its lifecycle state and evidence, and fences its previous worker. Resume keeps the accepted Git lineage and remains unavailable while dependencies are live.
-
-This normally takes more turns than asking a coding agent to implement and review a prompt directly. The extra work is the mechanism: discoveries remain proposals, preparation freezes accepted meaning and stable authorities, implementation derives the candidate's changed surface, and review receives the exact brief and candidate. Routine assurance follows changed or uncertain meaning rather than repository size. Explicitly selected whole-repository and engineering-health passes remain stronger opt-in work. Pinboard trades first-delivery speed for a durable boundary between the product you accepted and the plausible additions an agent could otherwise accumulate.
-
-Conditional follow-up requests stay narrow. “If this proves to be a production defect, follow it up” first requires evidence for that condition. A false or unproved condition writes nothing, exact existing coverage is reused, and a proved new concern creates at most one follow-up or independent intake item. It does not authorize making that item a prerequisite, starting it, implementing it, or notifying another task.
-
-## Why Pinboard changes the coding-agent loop
-
-### Coding agents already iterate
-
-A coding harness turns prose into code through interpretation. An implementer reads the request and repository, produces a change, and a reviewer interprets the request and result again. Review findings become new prose for another implementation pass. The coding agent already supplies this productive back-and-forth.
-
-When the only shared target is the evolving conversation and latest diff, each pass can give new weight to an implementation detail or useful reviewer suggestion. That does not make every untracked loop drift. The risk grows when work crosses more turns, tasks, interruptions, and adjacent discoveries.
+A coding agent already works through interpretation: it reads a request, changes the repository, reviews the result, and turns findings into another pass. As the loop grows, a plausible implementation detail or reviewer suggestion can quietly become the new target.
 
 {_picture("review-loop", "An ordinary coding-agent implementation and review loop beside the same loop anchored by one accepted Pinboard brief, exact candidate, and evidence")}
 
-Pinboard gives both sides a stable reference. Preparation preserves the accepted outcome, constraints, stable authorities, and explicit uncertainty without trying to predict every implementation file. The implementer rereads that brief, derives concrete impact from the candidate, and submits one exact result with evidence. A read-only review job records that candidate, the canonical brief path and digest, and the current `result.md` path and digest for a separate reviewer to verify before use. The reviewer reuses unchanged owner relationships, revalidates changed relationships and documentation, classifies unreviewed changes, and widens only when a concrete escalation condition requires it. Correction returns to the same attempt, with blocking findings tied to accepted scope, criteria, or reviewed project authority. If later accepted direction changes the target, the old candidate and review no longer qualify for wrap-up: the complete definition and brief are replaced before another exact candidate and review. The loop still depends on LLM and human judgment and can still be wrong; its corrections remain aimed at an explicit accepted target instead of whatever prose happens to be most recent.
+Pinboard anchors that loop to one accepted direction. The implementer and a separate reviewer work from the same brief and the same candidate. Review can still find that the brief, implementation, or evidence is wrong, but the correction stays attached to an explicit decision instead of whichever message happens to be most recent.
 
-### Strict shape, semantic judgment
+The human still decides what belongs in the product, which tradeoffs are acceptable, and what should happen to reviewed repository changes. Pinboard preserves those decisions and returns material choices in ordinary language.
 
-**The brief is an information architecture, not a bag of prose.** Artifact identity and accepted-scope identity anchor the whole job. The work definition separates outcome, scope, non-goals, compatibility, provenance, testing, bootstrap, and remaining work. Its checkpoint then names the reviewable boundary and expands it into criteria, architecture impact, reviewed authorities, contracts, coverage, lifecycle distinctions, verification, and explicit deferrals. Those relationships tell an implementer what to build and give an independent reviewer the same map for challenging it.
+## The brief makes the agreement inspectable
+
+Before implementation, Pinboard turns accepted direction into a structured brief. It separates the desired outcome from scope, exclusions, compatibility constraints, evidence, verification, and work deliberately left for later. Larger changes also name the project authorities and relationships the implementation and review must preserve.
 
 {_picture("brief", "The canonical work brief organized into artifact identity, accepted scope, whole-work definition, and a checkpoint containing criteria, architecture impact, reviewed authorities, contracts, coverage, lifecycle distinctions, verification, and deferrals")}
 
-**Code checks the envelope; humans and models interpret the meaning.** The canonical work brief is strict JSON and the sole semantic brief. Static contract discovery provides generated schemas, complete local and cross-boundary starters, and exact templates for every applicable structural-union choice. The caller selects those structures and fills their unresolved semantic values. Pinboard rejects unknown fields and cross-checks identities, references, coverage, and canonical bytes. It cannot choose the structures or values or prove that prose under `scope` is truly in scope or that a `non_goals` entry expresses the human's intent. The model interprets those meanings, the human accepts the product decision, and independent review challenges the compiled result. The schema makes distinct reasoning jobs difficult to omit and stable across stages without pretending to replace judgment.
+The structure prevents important kinds of information from disappearing into a paragraph. It does not decide what the project should want or prove that every claim is true. People and coding agents still interpret the evidence; Pinboard checks that they are discussing the same accepted scope and that required distinctions have not been omitted.
 
-**Assurance follows product evidence.** Defects against accepted behavior and guarantees supported by the brief or repository policy remain blocking without another scope prompt. A materially broader concurrency, durability, security, adversarial, platform, or compatibility guarantee needs accepted product evidence or one concrete human decision before it enters implementation or blocks review. Broad correctness language, an exploratory failing test, public narrative, or newly written guidance cannot authorize that expansion by itself.
+Assurance follows that accepted product evidence. A defect against promised behavior remains blocking. A broader security, compatibility, durability, or platform guarantee does not become mandatory merely because an agent can imagine it.
 
-**Project impact remains a judgment too.** Pinboard has no rule saying that a visitor-facing decision must also change a workflow guide or a durable design principle. Structured scope, provenance, reviewed authorities, and coverage help the coding agent reason toward affected surfaces without a hard-coded file map or an exhaustive reread. Preparation names stable semantic authorities and uncertainty; delivery derives the concrete changed surface; separate review checks changed and unclassified relationships. The model can still miss or invent a connection, so architecture, persistence, wire, lifecycle, dynamic-consumer, and demonstrated-blind-spot conditions widen the evidence deliberately. Human acceptance and review decide whether the connection is real. This is information architecture refined through experience, not a semantic consistency engine.
+## Work survives its current execution
 
-**Local means the whole changed path is locally observable.** A lightweight local checkpoint is appropriate only when ownership and dependency direction, stored and wire identities, and independently owned consumers remain unchanged, and one production entry point can exercise the complete path. Otherwise the checkpoint uses the cross-boundary contract and review shape.
-
-The rest of this guide moves from the product concepts a visitor encounters to representative command stories, then to the storage and package structure underneath.
-
-## The product model
-
-### Work items and attempts
-
-A work item is the durable project decision. An attempt is one execution of that work. They move together while remaining separate: an item can survive interruption, correction, or a replacement worker without losing its identity or accepted scope.
+A **work item** is the durable project decision. An **attempt** is one execution of that work. Keeping them separate allows the decision to survive a pause, correction, replacement worker, or later revision without treating every execution detail as part of the product request.
 
 {_picture("product", "A work item lifecycle above the legal branches of an active attempt, with related facts shown separately")}
 
-**The main lifecycle stays familiar.** Intake becomes ready, active work enters review, and accepted work reaches a terminal outcome. Deferred, paused, and blocked work are optional branches. Review can request correction, pause at an accepted checkpoint, or accept the candidate and continue. Checkpoint acceptance therefore reports `paused`, accepted continuation reports `active`, and candidate submission reports `review`; none is terminal `done`. The owning task reconciles later direction, presents the accepted candidate for a repository decision, safely removes an explicitly authorized disposable worktree and its local and still-present remote branches, and records terminal completion only after the human authorizes that transition. Completion can also be accepted directly from active work after the same reconciliation and confirmation.
+Ideas can be preserved before they are accepted or scheduled. Accepted work can wait for dependencies, move through implementation and review, pause at a useful checkpoint, return for correction, continue, or finish. A proposed replacement remains a related decision rather than becoming a hidden state: Pinboard keeps obsolete work from advancing until the human chooses whether to replace it or retain it temporarily.
 
-**Recovery preserves the right identity.** Resume makes a retained attempt active, while an item without one becomes ready. Reopen returns deferred work to intake with new evidence. Continue is advisory: it confirms that active work proceeds without changing lifecycle state or accepting mutation input. Attempt inspection derives its owner, legal actions, and next operation from current authoritative state rather than persisting another workflow status. The action record's stable `effect` field describes that lifecycle effect; it does not claim that a wider command such as dispatch performs no artifact I/O. Dispatch can publish or reuse review evidence while leaving lifecycle unchanged.
+Across those paths, four guarantees stay constant:
 
-**Pause records a deliberate interruption; it does not invent a blocker.** Suppose an urgent prerequisite must take priority while the current attempt is still technically runnable. Without pause, that attempt remains active and eligible for continuation or redispatch even though the human intends it to stop. Pause instead keeps the same attempt, retained lease, accepted brief, and evidence while removing runnable actions. Pause does not fence that lease. Rebind serves a different purpose: an active or paused attempt can accept a matching brief for the item's current definition while correcting its branch and base revision in the same transition. It preserves the lifecycle state and evidence and fences the prior worker generation. A paused stale attempt can therefore rebind even while a live dependency keeps resume unavailable.
+- **Intent survives conversations.** Later work can continue from accepted scope and evidence instead of reconstructing intent from chat history.
+- **Only the current worker may act.** Replaced or expired execution authority cannot apply an earlier decision after ownership changes.
+- **Review concerns one candidate.** Findings and acceptance stay bound to the exact result that was examined.
+- **Authoritative changes are atomic.** A rejected or failed transition leaves the previous ledger intact; repairable views cannot silently rewrite accepted state.
 
-**Related facts are not extra states.** Proposal intake stores the original facts and creates same-identity `intake` work. Accept applies selected details to that item; merge supersedes it in favor of another; return keeps it in intake with a clarification reason; reject drops it. A planned replacement explicitly names the affected item, replacement item, relation revision, and practical switching cost. Until a human records temporary retention for that exact revision or revises or withdraws the relation, Pinboard withholds actions that would start, continue, submit, or accept obsolete work while preserving correction and stopping routes. Accepted scope is the exact authorized revision an attempt uses. Mutation ownership records who may act now. A mutable action receipt carries the selected item, attempt, or proposal revision; leased actions also carry the exact lease and generation. Unrelated commits leave that receipt usable, while a change to its subject or current legality makes it stale. A review candidate names the exact result under review, and evidence supports its acceptance.
+## One change moves from decision to evidence
 
-### What every transition preserves
-
-The lifecycle is accompanied by four guarantees:
-
-- **Work survives conversations.** A later task can continue from accepted scope and evidence instead of reconstructing intent from chat history.
-- **Mutation ownership is current.** An expired or replaced worker cannot apply an action it discovered earlier.
-- **Review is about one candidate.** Correction, checkpoint acceptance, continuation, and terminal completion preserve different outcomes without changing which work they belong to.
-- **Each authoritative change is atomic.** An accepted change updates its related facts and history together; a rejected or failed change leaves the previous ledger intact. When immutable evidence was published before a later failure, that separate committed surface is reported explicitly instead of being mislabeled as unchanged.
-
-These guarantees explain why seemingly similar words remain distinct.
-
-## Command stories
-
-The command stories move from observation and repair to an ordinary mutation and portable export.
-
-### Read, validate, initialize, and repair
-
-- **Inspect exact facts or a declared wider scope.** The command line decodes one exact leaf and first selects the source checkout, shared repository, and intended work directory without touching storage. State-independent commands stop there. A database-backed command resolves the durable layout and database location once, constructs one store, and passes required capabilities through its workflow. Named item, attempt, authority, action-ID, leased-action, and selected-parallel operations request only their selected facts and named relationships; observer action discovery and unleased worker/preparer rejection read no project state. Transitive definitions are reserved for cycle-sensitive changes, and closing uses the direct reverse-dependency index. Status reads active attempt identities and a fixed set of transactionally maintained state counts. Overview, project-role action discovery without an exact identity, and empty-selection all-safe preview intentionally range over the current live portfolio, but exclude retained definition history, terminal attempt bodies, artifacts, and transition receipts. Initialization, validation, view rebuild, and handover are the only explicit project-wide families. Validation reads every authoritative relation; initialization and rebuild read every declared view projection; handover reads only exported relations and accepted artifacts. Inspection neither refreshes generated files nor changes authority. `input-contract` is deliberately different: it describes static action semantics and payload shape without opening project state.
-
-- **Validate before repairing.** Routine database open checks fixed-size metadata and exact schema identity without scanning stored rows. Selected operations validate only the facts they consume. `validate` owns complete SQLite integrity and foreign-key checks, every accepted artifact, and every declared generated view. Authoritative defects are errors; stale generated views are warnings. `views rebuild` separately reads every declared projection and its current presentation facts, excludes unrelated authority history, counters, proposal children, and artifacts, removes legacy aggregate queue and history files, and reconciles every per-item, per-attempt, and per-receipt projection without replacing equal bytes.
-
-- **Initialize through a verified publication.** Fresh default initialization first idempotently adds `/.codex/pinboard/` to the shared repository's `.git/info/exclude`, then initializes the work root and SQLite. It receives one narrow approval for those two surfaces, never edits `.gitignore`, and never hides sibling `.codex` content. If a later initialization step fails, JSON reports every surface newly committed by that invocation: the exact `repository-git-exclude` path and entry, plus `ledger` and its database path when publication finished before a generated-view failure. A repeat that publishes neither surface is unchanged. A new ledger is built and verified in a staging file before atomic publication. A returning ledger is schema-checked before Pinboard reconciles only its own same-file publication residue and ensures its directories. Both routes use explicit roots and one operation time, then verify accepted brief content, rebuild generated views, and present the receipt. A failed rebuild leaves the authoritative database available for retry. Routine commands from a normal checkout need only a custom Codex permission profile that extends `:workspace` and reopens relative `.codex/pinboard`. A linked worktree instead grants only the exact resolved absolute shared-repository `.codex/pinboard` directory; an explicit `--work-root` grants only that exact selected directory. None grants the rest of the shared repository, `.git`, sibling `.codex`, or the installed plugin cache. After a successful first initialization, the interface points once to the optional `$repository-readiness`, `$slop-cleanup`, and `$maintaining-agent-guidance` skills without running them or creating work. The default Codex runtime may separately recommend one absent Codex long-task default; the explicit Claude runtime suppresses only that line. Neither path writes configuration or claims to override trusted project settings. Resumed and failed initialization stay quiet, while unreadable or malformed user config suppresses only the setting recommendation.
-
-- **Plan reviewed sources without opening the ledger.** The plan leaf reads one strict manifest, selects whole files or unique Markdown headings from the chosen source checkout one at a time, rejects overlaps and oversized lines, and returns a strict reusable document containing only ordered segment metadata. The emit leaf accepts that plan, then rereads and verifies only the source files represented in the requested bounded batch before presenting its selected bytes. Malformed manifests or plans, invalid selectors, changed or unreadable selected sources, and missing batches travel as an explicit typed source failure to the command boundary; infrastructure and programming failures are not folded into that advertised rejection. It never edits the project.
-
-### Discover and recover an exact operation
-
-`tool-contract` reads no project state. Its compact index is derived from every installed parser leaf, the exact command union, every lifecycle action, and both brief boundaries. Every operation is classified as static, focused, current-project, selection-dependent, or explicit project-wide work. Selecting a bare operation family returns exact selectors when it has several variants; selecting one leaf exposes that data scope and its consequence alongside exact CLI usage including global-root placement. Selecting one action adds the route that actually executes it, separating lifecycle transitions from dispatch, installed reads, runtime continuation, and blocker evidence. Both expose purpose, effect class, exact acquisition or retained authority, subject, lifecycle precondition, strict input or artifact shape, actual success receipt, and retry rule. Selecting one brief boundary returns only its complete unresolved starter, every applicable structural choice as an exact replacement template, canonical byte rule, relational constraints, and fact-validation boundary without the much larger validation schema. The caller chooses one returned structure at every applicable path before filling identity, scope, authority, and verification nulls from accepted and reviewed facts.
-
-Explicit JSON failures use `pinboard-rejected-operation/v1`. An unchanged rejection reports its stable code, observations, mismatches, retry disposition, and any fresh same-subject action receipts after the locked check. A committed-effect result instead names every immutable artifact, accepted reference, or ledger surface already changed before the operation stopped. A SQLite write denied by the Codex project-data boundary reports `SQLITE_READONLY`, the exact database path and operation, and `do-not-retry`. Its narrow recovery selects relative `.codex/pinboard` only for a normal default checkout, otherwise the exact absolute linked or explicit work root; it distinguishes an unchanged ledger from immutable artifacts already published before acceptance failed. The caller repairs permission and inspects current state rather than replaying a possibly committed mutation. This makes command mechanics discoverable and recoverable without making product meaning, source authority, independent review, or unavailable runtime capabilities mechanical.
-
-### Follow one change
-
-**Start from current accepted state.** Ordinary preparation begins with an item, task, host, and lifetime. The interface samples the operation time and the application opens one write transaction. Inside that transaction it reads the current ready definition and chooses either initial acquisition or transfer of an inactive retained claim. Exact acquire and transfer commands remain available for recovery and diagnosis.
-
-**Decide and commit against locked state.** From exact locked decision facts, a pure domain decision returns an accepted authority change or an expected rejection. The application projects acceptance into one targeted mutation; SQLite reads and writes only its guarded relationships, allocates one revision and receipt, validates exact changed facts, and returns the committed receipt plus affected identities. Rejection and stale guards are expected failures, infrastructure or programming failures remain exceptions, and every unsuccessful transaction rolls back without assembling complete state.
+The ordinary journey has three parts: select the current accepted work, decide against current facts, then commit and present the result.
 
 {_picture("journey", "An ordinary preparation start selecting the current definition and claim operation against locked state, then committing, refreshing, and presenting it")}
 
-**Refresh and present afterward.** A failed replaceable-view refresh can warn without undoing the authoritative commit. The committed effect names the exact item, attempt, and new receipt projections to refresh; only those SQLite facts, selected accepted brief bytes, and filesystem paths are read. Equal bytes leave the existing file metadata untouched. Transition JSON preserves the committed revision and derives continuation from the effect's exact attempt identity when available. If continuation is unavailable, the transition remains committed and attempt inspection can be retried without replaying the mutation.
+Preparation preserves the accepted meaning and the sources most likely to challenge it. Implementation reads that brief, follows the concrete impact through the repository, and records one candidate with its evidence. A separate reviewer checks the request as well as the change, widens the investigation when a changed relationship exposes another owner, and returns findings to the same attempt.
 
-**Close repository work and report exact state.** Repository integration, cleanup, and terminal lifecycle are separate effects owned by the outer coding-agent workflow. A single user instruction may authorize their complete ordered sequence, but check success alone authorizes none of them. Before cleanup, the owning task resolves the exact isolated worktree and branches, proves that no active task or attempt occupies the worktree, that no needed uncommitted or unintegrated work remains, and that deletion is explicitly authorized. It then removes the worktree, local branch, and any still-present remote branch before selecting a fresh legal terminal action. Failure or uncertainty stops later effects and leaves the item nonterminal. At every workflow-ending reply, a fresh exact item-status read remains the truth source, while the human-facing reply names the current task, material state, caveat, or next action only when useful. Raw item and attempt fields are reserved for explicit machine-readable requests or exact troubleshooting; terminal-attempt details come from the transition continuation or exact inspection when they materially help the reader.
+If accepted direction changes late, Pinboard does not reinterpret the old candidate as satisfying the new request. The complete definition and brief are replaced before another candidate and review. If work pauses or a worker disappears, the same attempt can resume from its accepted Git lineage and recorded evidence without retelling the project history.
 
-### Apply one project change
+The extra steps make a first delivery slower. Their return appears when the work needs another revision, conversation, reviewer, or task: the decision, implementation, and evidence remain connected.
 
-Project actions are direct atomic ledger changes. The task applying the change supplies task and host audit attribution, not authenticated credentials, and SQLite protects the authoritative transition. Rebinding is one such action: it changes the accepted scope identity, stored Git lineage, and accepted brief atomically, never the source checkout itself.
+## The repository keeps the memory
 
-1. **Prepare exact input.** `close` builds its terminal payload, item revision validates a complete proposed definition, and `transition` reads the selected action receipt and its matching payload.
-2. **Reread, select, and commit.** The application opens one write transaction, reads the selected action context and the exact direct, reverse, or cycle-closure relationships named by that action, and reselects the exact legal action by its subject revision and any leased authority. A changed subject or dependency-dependent legality rejects the action, while an unrelated commit does not. Acceptance commits the change with the invoking task and host identity and allocates that change's new project revision. A stale or illegal action returns without changing the ledger; JSON output may carry fresh same-subject alternatives from another exact read.
-3. **Refresh replaceable views.** A successful commit refreshes only the affected projections. A warning leaves the authoritative transition stored for `pinboard views rebuild`. Presentation identifies that transition's exact revision.
-
-### Carry the project into another tool
-
-Local continuity and external handover are different jobs. `pinboard handover --json` captures one ledger revision through a batch-capable exported-facts boundary, excluding local authority history, counters, and disposed proposals. It verifies every exported accepted artifact against its recorded identity and bytes, validates v2-linked checkpoint and covered-completion packages against their historical receipts and immutable evidence, and emits one revision-stamped portable JSON package only after the current fully materialized package is ready. The v5 package carries versioned planned replacements and exact-revision temporary-retention dispositions, retains generic artifact records, and exposes validated checkpoint and completion packages as typed reusable evidence.
-
-{_picture("handover", "Exported Pinboard project facts and verified artifacts becoming one portable JSON package while live authority stays local")}
-
-The package carries admitted work, accepted definitions, attempts, pending proposals, relationships, decisions, and accepted evidence without choosing how another system represents them. Live preparation claims, attempt leases, and their generations remain in Pinboard and are not exported. Handover changes no Pinboard state and does not choose or write to the receiving tool; a human or another tool owns that mapping.
-
-## Under the surface
-
-The final views explain what Pinboard retains and where the code assigns responsibility for changing it.
-
-### The durable memory underneath
-
-The relational ledger groups sixteen tables into six kinds of memory: current work, accepted scope and dependencies, discoveries, immutable knowledge, changing mutation ownership, and the history that connects them.
+Pinboard stores project coordination data beside the repository. The relational ledger groups current work, accepted scope and dependencies, discoveries, immutable knowledge, current execution authority, and history.
 
 {_picture("database", "Six groups of SQLite tables showing current work, scope, discovery, durable knowledge, mutation ownership, and history")}
 
-**Relational facts retain their history.** A work item survives attempts, and accepted versions preserve current scope and its revisions. Proposal evidence records why intake work was raised; freshness assumptions record which facts need another check. The original proposal remains attached to the work while disposition records its later accept, merge, return, or reject decision.
+SQLite is the authority. Accepted briefs, results, and reviews are immutable artifacts referenced by that ledger. Human-readable Markdown views are replaceable projections for inspection; if refreshing one fails, the accepted transaction remains authoritative and the view can be rebuilt.
 
-The installed plugin cache supplies immutable executable and skill assets. Pinboard never stores project data there: SQLite, accepted artifacts, and generated views belong below the repository's selected `.codex/pinboard/` work root.
+This local record supports recovery and review, but it is not a defense against a hostile user with the same filesystem access. Pinboard is designed for one trusted local developer authority and for failures such as stale actions, invalid input, interrupted publication, and ordinary concurrency.
 
-**Immutable project artifacts enter through three paths:**
+## Handover carries facts, not control
 
-1. **Brief publication** strictly decodes and cross-validates the selected candidate, returning malformed input as a typed work-brief failure before it canonicalizes and publishes valid bytes, accepts the stable reference in SQLite, and rebuilds generated views. Activation, resume, or rebind then reads and verifies that accepted brief through the artifact capability before using its typed identity.
-2. **Dispatch preparation** validates the environment, optional prompt or review files, exact current action, verified accepted brief bytes, and reviewed sources before choosing the local, existing-review, or new-review path. It may publish or reuse independent ready-review evidence by exact identity, renders the prompt with a presentation-only path derived after verification, rechecks authority, and only then emits it. Dispatch prepares a prompt; it does not create a task. Declared permissions remain brief declarations, not grants enforced by Pinboard.
-3. **Checkpoint acceptance** publishes the exact result and independent review, then atomically records the attempt result, accepted review evidence, lifecycle change, and receipt. Publication alone changes no lifecycle state; rejection or rollback preserves the previous relationships and reports a committed immutable-artifact effect when that invocation created the evidence before stopping.
+When work must move to another tool, Pinboard can assemble the admitted work, accepted definitions, attempts, proposals, relationships, decisions, and verified evidence into one portable package.
 
-Once submission protects a candidate, `review-job` is a separate read-only projection. Its v2 command independently selects an initial or correction round and an absent or exact prior checkpoint package. The outcome owner runs full validation as a separate stop-on-failure preflight before a package-aware job. One focused SQLite transaction resolves only the named attempt, supplied history keys, linked package artifact, and accepted brief; no retained-history scan or complete-state assembly occurs. The projection binds current result bytes and, for correction, the selected return receipt's candidate and reason separately from current prior-review bytes. Its prompt requires the fresh reviewer to compare every historical candidate with the current candidate, classify changed and unreviewed surfaces, justify reused evidence from unchanged relationships, rerun changed owners and documentation, reopen stale neighbors, widen for architecture, persistence, wire, lifecycle, dynamic consumers, or demonstrated blind spots, and resolve all prior findings. The Codex runtime—not Pinboard—creates that reviewer. If the runtime cannot create a subagent, the candidate stays in review with its evidence intact; another user-owned task is not used as a substitute.
+{_picture("handover", "Exported Pinboard project facts and verified artifacts becoming one portable JSON package while live authority stays local")}
 
-**Mutation ownership has two leased scopes:**
+The package captures one coherent project revision. It does not export live worker authority, mutate Pinboard, choose how the receiving tool represents the facts, or write into that tool. A human or the receiving system owns that mapping.
 
-- A preparation claim keeps an item ready while one task compiles and reviews its definition-bound brief; ordinary start creates the first claim or transfers an inactive one under the same lock that selects the current definition, and activation consumes the claim when it creates the attempt.
-- An attempt lease identifies the task, host, and lease that own one implementation attempt. Generations fence older preparation and attempt owners after transfer or revocation, while unrelated item-scoped leases remain independent.
+## Responsibility stays visible
 
-Project actions carry invoking task and host audit attribution and commit directly under SQLite's write transaction. They do not authenticate those strings or establish a persistent project owner.
-
-Project state holds the current revision. That revision identifies committed state and history; it is not transported or compared as action authority. Committed history records each accepted input, outcome, and actor.
-
-### Where responsibilities live
-
-The package is split into four layers because each removes a different kind of ambiguity. The split keeps workflow policy out of storage and keeps external representations out of decisions.
+Pinboard keeps product decisions, operation sequencing, persistence, and external presentation in four package layers.
 
 {_picture("layers", "Four package layers showing interfaces, application, domain, and adapters, connected by package dependencies")}
 
-Every arrow in this view means “may depend on.”
+Every arrow means “may depend on.” Interfaces make outside input exact and present results. Application code coordinates complete operations through explicit capabilities. The domain decides legality without reading files or issuing SQL. Adapters store and recover accepted facts without deciding workflow policy.
 
-- **Interfaces** absorb command lines, JSON, project files, and human-readable output. A small exhaustive entry point routes exact commands and turns typed advertised failures into stable exit statuses; thematic interface modules own composition that needs concrete adapters and expose their expected exits in result types. Decoder mechanisms, accepted-artifact I/O, SQLite failures, and programming-contract violations remain exceptional at their named boundaries.
-- **Application code** requests exact selected or current-project facts for ordinary work. Validation alone receives complete-state capability; rebuild and initialization receive complete projection facts, while handover receives exported-fact batches. It projects an accepted decision into one targeted storage mutation. Configured locations and concrete stores stay explicit at the outer composition boundary rather than being rediscovered by use cases.
-- **The domain** decides legality as pure data.
-- **Adapters** make accepted facts durable and recoverable.
+That separation is why a storage failure cannot redefine a product decision, a renderer cannot become the source of truth, and an interface cannot silently invent lifecycle policy.
 
-These transformations prevent one layer from silently interpreting facts owned by another.
-
-For installation and the product story, return to the [README](README.md). For contributor-facing ownership, storage boundaries, and representative command flows, continue to the [architecture map](ARCHITECTURE.md). The [design principles](DESIGN_PRINCIPLES.md) explain the method used to keep those boundaries explicit.
+For installation and the product overview, return to the [README](README.md). Maintainers can continue with the exact [architecture map](ARCHITECTURE.md) and the [design principles](DESIGN_PRINCIPLES.md).
 
 ---
 
-<sub>This guide and its SVG diagrams are generated from the executable seeds in <code>docs/how_it_works/</code>. The repository check proves that committed output is fresh and that the specific source relationships encoded by those seeds still hold.</sub>
+<sub>This guide and its seven SVG diagrams are generated from the executable seeds in <code>docs/how_it_works/</code>. Edit the seeds and regenerate the outputs; do not edit this file directly.</sub>
 """
 
 

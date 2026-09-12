@@ -1,7 +1,7 @@
 {
   "name": "pinboard",
-  "version": "0.1.0+codex.20260911061914",
-  "description": "Coordinate repository work with canonical execution briefs and validated state transitions.",
+  "version": "0.1.0+codex.20260912014647",
+  "description": "Coordinate repository work with canonical briefs, validated transitions, and decision-ready project writing.",
   "author": {
     "name": "Vincent Alsteen",
     "url": "https://github.com/valsteen"
@@ -12,13 +12,14 @@
   "keywords": [
     "codex",
     "project-coordination",
-    "coordination"
+    "coordination",
+    "technical-writing"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Pinboard",
     "shortDescription": "Coordinate one validated repository work ledger.",
-    "longDescription": "Keep repository work aligned with accepted decisions, assess unfamiliar change paths, remove unsupported residue, and place durable agent guidance at the right owner.",
+    "longDescription": "Keep repository work aligned with accepted decisions, shape substantial project documents, improve human-facing delivery artifacts, assess unfamiliar change paths, remove unsupported residue, and place durable agent guidance at the right owner.",
     "developerName": "Vincent Alsteen",
     "category": "Productivity",
     "websiteURL": "https://github.com/valsteen/pinboard",
@@ -29,6 +30,7 @@
     "defaultPrompt": [
       "Show the legal next project actions.",
       "Preserve this proposed work for later selection.",
+      "Shape this technical proposal incrementally, preserving evidence and unresolved decisions.",
       "Assess whether this unfamiliar repository can be changed reliably.",
       "Trace and plan a recursive cleanup of dead, test-only, and abandoned feature residue.",
       "Find the smallest durable owner for this project's AI-facing guidance."

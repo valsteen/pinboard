@@ -17,6 +17,8 @@ When the same request says `start`, `begin`, `work on`, `implement`, `fix now`, 
 
 Follow the main Pinboard skill's user-facing detail threshold during that continuation. Preserve every higher-level required first-use skill disclosure, keep each one concise and outcome-oriented, and add no separate Pinboard explanation of companion-skill selection or internal routing.
 
+Intake remains a thin caller of the main Pinboard interaction owner. Do not duplicate its collaboration rules or select `$technical-writing` merely because the proposal has a human-readable label or generated summary. When the same user request materially creates or revises a document, let the main Pinboard route make that separate selection.
+
 Immediate-start language authorizes continuing now; it does not prove that the human agreed with an unspoken magnitude interpretation. When the work is broad, route through Pinboard's one-sentence scope confirmation before preparation: state the outcome, principal read and touch surfaces, approximate magnitude, and any surprising exclusion, then continue without asking redundant permission. Ask only if that sentence exposes a real unresolved choice.
 
 Ask one quick confirmation only when the human phrasing leaves a material choice between queueing for later and beginning now. An explicit immediate-work verb is sufficient and needs no confirmation. Intake remains standalone when the request only asks to add, queue, preserve, or save work for later.

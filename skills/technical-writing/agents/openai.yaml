@@ -1,0 +1,4 @@
+interface:
+  display_name: "Technical Writing"
+  short_description: "Shape decision-ready technical documents"
+  default_prompt: "Use $technical-writing to shape this technical document in collaborative mode when material choices remain, or edit it quietly when the accepted facts are sufficient."

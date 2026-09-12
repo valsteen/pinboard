@@ -38,6 +38,7 @@ EXPECTED_SKILLS: Final = frozenset(
         "pinboard-intake",
         "repository-readiness",
         "slop-cleanup",
+        "technical-writing",
     }
 )
 EXPECTED_SKILL_DISPLAY_NAMES: Final = {
@@ -47,6 +48,7 @@ EXPECTED_SKILL_DISPLAY_NAMES: Final = {
     "pinboard-intake": "Pinboard: Intake",
     "repository-readiness": "Repository Readiness",
     "slop-cleanup": "Slop Cleanup",
+    "technical-writing": "Technical Writing",
 }
 EXPECTED_ENTRY_POINTS: Final = {
     "pinboard": "pinboard.interfaces.cli:main",
@@ -316,7 +318,7 @@ def main() -> None:
     if {path.parent.name for path in skill_paths} != EXPECTED_SKILLS:
         raise ValueError(
             "public skills must be exactly maintaining-agent-guidance, pinboard, pinboard-deliver, pinboard-intake, "
-            "repository-readiness, and slop-cleanup"
+            "repository-readiness, slop-cleanup, and technical-writing"
         )
     for path in skill_paths:
         validate_skill(path)

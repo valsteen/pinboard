@@ -33,6 +33,10 @@ Keep these states distinct whenever they matter:
 
 Preserve exact identifiers, formulas, conditions, exceptions, ownership boundaries, dependencies, estimates, and evidence limits. Do not invent provenance or upgrade confidence to make the prose conclude neatly.
 
+Keep supplied terminology and framing unless the user requests broader synthesis or verification. When provenance changes interpretation, retain the supplied source name and its canonical title, author, and link where available.
+
+Keep estimates with their assumptions. Do not invent timelines, effort, or implementation difficulty.
+
 If a named source is unavailable, state the gap. Do not reconstruct it from a filename, nearby material, or what would make the narrative work.
 
 ## Collaborate in decision-sized increments

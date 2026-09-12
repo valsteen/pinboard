@@ -34,7 +34,7 @@ from pinboard.domain.identifiers import (
     TaskId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
-from pinboard.interfaces.transition_input import parse_transition_command
+from pinboard.interfaces.transition_input import parse_transition_input
 from tests.decision_support import project_decision_snapshot
 from tests.domain_support import expect_success, expect_transition_command
 from tests.support import (
@@ -612,7 +612,7 @@ class MutationPersistenceTest(unittest.TestCase):
                 action = next(value for value in available_actions(snapshot, actor) if isinstance(value, action_type))
                 decision = decide(
                     snapshot,
-                    expect_transition_command(parse_transition_command(action, payload)),
+                    expect_transition_command(parse_transition_input(action, payload)),
                     SQLITE_NOW + timedelta(seconds=1),
                 )
                 with store.write() as transaction:
@@ -756,7 +756,7 @@ class MutationPersistenceTest(unittest.TestCase):
                 action = next(value for value in available_actions(snapshot, actor) if isinstance(value, action_type))
                 decision = decide(
                     snapshot,
-                    expect_transition_command(parse_transition_command(action, payload)),
+                    expect_transition_command(parse_transition_input(action, payload)),
                     SQLITE_NOW + timedelta(seconds=1),
                 )
                 mutation = project_transition_mutation(

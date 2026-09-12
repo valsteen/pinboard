@@ -47,6 +47,31 @@ def resolve_source_checkout_root(cwd: Path) -> Path:
     )
 
 
+def _git_text(cwd: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", *arguments],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    value = result.stdout.strip()
+    if result.returncode != 0 or not value:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            result.stderr.strip() or f"Cannot observe Git checkout at '{cwd}'.",
+        )
+    return value
+
+
+def observe_checkout_identity(cwd: Path) -> tuple[str, str]:
+    """Return the exact current branch and HEAD revision for one selected checkout."""
+
+    branch = _git_text(cwd, "symbolic-ref", "--quiet", "--short", "HEAD")
+    revision = _git_text(cwd, "rev-parse", "--verify", "HEAD")
+    return branch, revision
+
+
 def resolve_shared_repository_root(cwd: Path) -> Path:
     return _resolve_git_common_directory(cwd).parent
 

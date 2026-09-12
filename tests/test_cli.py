@@ -22,7 +22,14 @@ from msgspec.structs import replace as replace_struct
 from pinboard.adapters.files import artifacts as artifact_files
 from pinboard.adapters.files import views as file_views
 from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
-from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode, FileIOError, FileIOErrorCode
+from pinboard.adapters.files.errors import (
+    ArtifactError,
+    ArtifactErrorCode,
+    FileIOError,
+    FileIOErrorCode,
+    RootError,
+    RootErrorCode,
+)
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult
 from pinboard.adapters.sqlite import state as sqlite_state
@@ -194,15 +201,7 @@ class CliTest(unittest.TestCase):
         before_rejection = store.validated_snapshot()
         wrong_reference_payload = project / "activate-wrong-reference.json"
         wrong_reference_payload.write_text(
-            json.dumps(
-                {
-                    "attempt": "work-c-1",
-                    "branch": "codex/work-c",
-                    "base_revision": "candidate-base",
-                    "owner": "worker-task",
-                    "brief_artifact_ref_id": 999999,
-                }
-            ),
+            json.dumps({"brief_artifact_ref_id": 999999}),
             encoding="utf-8",
         )
         rejected, rejected_stdout, rejected_stderr = self.run_transition(
@@ -258,22 +257,6 @@ class CliTest(unittest.TestCase):
         store: SQLiteWorkStore,
         valid_payload: Path,
     ) -> JsonObject:
-        payload_values = self.json_object(json.loads(valid_payload.read_text(encoding="utf-8")))
-        for field, mismatch in (
-            ("attempt", "different-1"),
-            ("branch", "codex/different"),
-            ("base_revision", "different-base"),
-        ):
-            mismatched_payload = project / f"activate-wrong-{field}.json"
-            mismatched_payload.write_text(json.dumps({**payload_values, field: mismatch}), encoding="utf-8")
-            before = store.validated_snapshot()
-            rejected, _stdout, rejected_stderr = self.run_transition(
-                common, action, mismatched_payload, json_output=False
-            )
-            self.assertEqual(11, rejected)
-            self.assertIn("TRANSITION_INPUT_INVALID", rejected_stderr)
-            self.assertEqual(before, store.validated_snapshot())
-
         retained_preparation = store.validated_snapshot().authority.preparation_leases[0]
         observed_at = retained_preparation.expires_at - timedelta(microseconds=1)
         available = expect_success(
@@ -307,13 +290,17 @@ class CliTest(unittest.TestCase):
         with (
             patch("pinboard.interfaces.action_selection.select_current_action", return_value=wrong_action),
             patch("pinboard.adapters.sqlite.store.read_selected_decision_facts", return_value=wrong_facts),
+            patch(
+                "pinboard.interfaces.transitions.observe_checkout_identity",
+                return_value=("codex/work-c", "candidate-base"),
+            ),
         ):
             rejected, _stdout, rejected_stderr = self.run_transition(common, action, valid_payload, json_output=False)
         self.assertEqual(11, rejected)
         self.assertIn("exact live preparation authority and definition pin", rejected_stderr)
         self.assertEqual(before, store.validated_snapshot())
 
-        candidate = work_c_brief()
+        candidate = replace_struct(work_c_brief(), owner_task_id="preparer-task")
         checkpoint = candidate.checkpoint
         assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint | work_brief_models.LocalCheckpoint)
         verification = checkpoint.verification[0]
@@ -339,6 +326,18 @@ class CliTest(unittest.TestCase):
                 ),
             ),
             (
+                "owner",
+                replace_struct(candidate, attempt_id="work-c-wrong-owner", owner_task_id="different-task"),
+            ),
+            (
+                "branch",
+                replace_struct(candidate, attempt_id="work-c-wrong-branch", branch="codex/different"),
+            ),
+            (
+                "base",
+                replace_struct(candidate, attempt_id="work-c-wrong-base", base_revision="different-base"),
+            ),
+            (
                 "definition",
                 replace_struct(
                     candidate,
@@ -354,13 +353,7 @@ class CliTest(unittest.TestCase):
             publication = self.run_json_cli(*common, "brief", "publish", "--file", str(brief_path))
             payload = project / f"activate-wrong-{name}.json"
             payload.write_text(
-                json.dumps(
-                    {
-                        **payload_values,
-                        "attempt": mismatched_brief.attempt_id,
-                        "brief_artifact_ref_id": publication["artifact_ref_id"],
-                    }
-                ),
+                json.dumps({"brief_artifact_ref_id": publication["artifact_ref_id"]}),
                 encoding="utf-8",
             )
             current_action = self.json_object(
@@ -380,7 +373,13 @@ class CliTest(unittest.TestCase):
                 )[0]
             )
             before = store.validated_snapshot()
-            rejected, _stdout, rejected_stderr = self.run_transition(common, current_action, payload, json_output=False)
+            with patch(
+                "pinboard.interfaces.transitions.observe_checkout_identity",
+                return_value=("codex/work-c", "candidate-base"),
+            ):
+                rejected, _stdout, rejected_stderr = self.run_transition(
+                    common, current_action, payload, json_output=False
+                )
             self.assertEqual(11, rejected)
             self.assertIn("TRANSITION_INPUT_INVALID", rejected_stderr)
             self.assertEqual(before, store.validated_snapshot())
@@ -1966,6 +1965,10 @@ class CliTest(unittest.TestCase):
             ),
             patch("pinboard.interfaces.action_selection.datetime") as selection_clock,
             patch("pinboard.interfaces.transitions.datetime") as transition_clock,
+            patch(
+                "pinboard.interfaces.transitions.observe_checkout_identity",
+                return_value=("codex/work-c", "candidate-base"),
+            ),
         ):
             selection_clock.now.return_value = committed_at
             transition_clock.now.return_value = committed_at
@@ -2005,23 +2008,12 @@ class CliTest(unittest.TestCase):
         store = SQLiteWorkStore(database)
         initialize_store(store, state)
         common = ("--project-root", str(project), "--work-root", str(work))
-        candidate = work_c_brief()
+        candidate = replace_struct(work_c_brief(), owner_task_id="preparer-task")
         brief_path = project / "work-c-brief.json"
         brief_path.write_bytes(canonical_work_brief_bytes(candidate))
         publication = self.run_json_cli(*common, "brief", "publish", "--file", str(brief_path))
         payload = project / "activate.json"
-        payload.write_text(
-            json.dumps(
-                {
-                    "attempt": "work-c-1",
-                    "branch": "codex/work-c",
-                    "base_revision": "candidate-base",
-                    "owner": "worker-task",
-                    "brief_artifact_ref_id": publication["artifact_ref_id"],
-                }
-            ),
-            encoding="utf-8",
-        )
+        payload.write_text(json.dumps({"brief_artifact_ref_id": publication["artifact_ref_id"]}), encoding="utf-8")
 
         definition = self.run_json_cli(*common, "item", "definition", "--item-id", "work-c")
         prepared = self.run_json_cli(
@@ -2064,6 +2056,270 @@ class CliTest(unittest.TestCase):
         )
         activation = self.assert_prepared_activation_rejections(common, activation, prepared, project, store, payload)
         self.assert_activation_survives_view_failure_and_rejects_duplicate(common, activation, prepared, payload, store)
+
+    def test_activation_preflight_rejects_unreadable_or_changed_reviewed_authority_before_commit(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        self.run_git(project, "init", "-b", "codex/work-c")
+        candidate = work_a_brief(project)
+        self.run_git(project, "add", "architecture.md")
+        self.run_git(
+            project,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "initial",
+        )
+        base_revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=project, check=True, text=True, capture_output=True
+        ).stdout.strip()
+        checkpoint = candidate.checkpoint
+        assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        checkpoint = replace_struct(
+            checkpoint,
+            contracts=tuple(
+                replace_struct(
+                    contract,
+                    authorization_basis=work_brief_models.AcceptedScopeAuthorization("work-c", 1),
+                )
+                for contract in checkpoint.contracts
+            ),
+            verification=tuple(
+                replace_struct(
+                    record,
+                    authorization_basis=work_brief_models.AcceptedScopeAuthorization("work-c", 1),
+                )
+                for record in checkpoint.verification
+            ),
+        )
+        candidate = replace_struct(
+            candidate,
+            attempt_id="work-c-1",
+            item_id="work-c",
+            branch="codex/work-c",
+            base_revision=base_revision,
+            owner_task_id="preparer-task",
+            accepted_scope=work_brief_models.AcceptedScope(1, test_definition(ItemId("work-c"))[1]),
+            checkpoint=checkpoint,
+        )
+        common = ("--project-root", str(project), "--work-root", str(work))
+        brief_path = project / "work-c-cross-brief.json"
+        brief_path.write_bytes(canonical_work_brief_bytes(candidate))
+        publication = self.run_json_cli(*common, "brief", "publish", "--file", str(brief_path))
+        prepared = self.run_json_cli(
+            *common,
+            "preparation",
+            "start",
+            "--item-id",
+            "work-c",
+            "--task-id",
+            "preparer-task",
+            "--host-id",
+            "studio",
+            "--ttl-seconds",
+            "60",
+        )
+        activation = self.json_object(
+            self.json_list(
+                self.run_json_cli(
+                    *common,
+                    "actions",
+                    "--role",
+                    "preparer",
+                    "--lease-id",
+                    str(prepared["lease_id"]),
+                    "--generation",
+                    str(prepared["generation"]),
+                    "--action-id",
+                    "activate:work-c",
+                )["actions"]
+            )[0]
+        )
+        payload = project / "activate-cross.json"
+        payload.write_text(json.dumps({"brief_artifact_ref_id": publication["artifact_ref_id"]}), encoding="utf-8")
+        authority = project / "architecture.md"
+        original_authority = authority.read_bytes()
+
+        for name in ("unreadable-checkout", "missing-authority", "stale-authority"):
+            with self.subTest(name=name):
+                authority.write_bytes(original_authority)
+                checkout_patch = contextlib.nullcontext()
+                if name == "unreadable-checkout":
+                    checkout_patch = patch(
+                        "pinboard.interfaces.transitions.observe_checkout_identity",
+                        side_effect=RootError(
+                            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                            "checkout unavailable",
+                        ),
+                    )
+                elif name == "missing-authority":
+                    authority.unlink()
+                else:
+                    authority.write_text("# Architecture\n\n## Contract\n\nChanged.\n", encoding="utf-8")
+                before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+                with checkout_patch:
+                    rejected, rejected_stdout, rejected_stderr = self.run_transition(
+                        common, activation, payload, json_output=True
+                    )
+                self.assertNotEqual(0, rejected, rejected_stderr)
+                rejection = self.json_object(json.loads(rejected_stdout))
+                expected_code = (
+                    "PROJECT_GIT_CHECKOUT_UNAVAILABLE" if name == "unreadable-checkout" else "TRANSITION_INPUT_INVALID"
+                )
+                self.assertEqual(expected_code, rejection["code"])
+                reloaded = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+                self.assertEqual(before, reloaded)
+                self.assertFalse(
+                    any(value.attempt_id == AttemptId("work-c-1") for value in reloaded.lifecycle.attempts)
+                )
+                self.assertEqual(
+                    "active", self.run_json_cli(*common, "preparation", "status", "--item-id", "work-c")["status"]
+                )
+
+    def test_local_editorial_start_reaches_dispatch_without_brief_review(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        self.run_git(project, "init", "-b", "codex/readme-artwork")
+        (project / "README.md").write_text("# Product\n\n![Preview](docs/preview.png)\n", encoding="utf-8")
+        (project / "docs").mkdir()
+        (project / "docs" / "preview.png").write_bytes(b"representative image")
+        self.run_git(project, "add", "README.md", "docs/preview.png")
+        self.run_git(
+            project,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "initial",
+        )
+        base_revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=project, check=True, text=True, capture_output=True
+        ).stdout.strip()
+        candidate = work_c_brief()
+        local = candidate.checkpoint
+        assert isinstance(local, work_brief_models.LocalCheckpoint)
+        local = replace_struct(
+            local,
+            title="Refresh README artwork",
+            architecture_impact=work_brief_models.NoArchitectureImpact(
+                "README wording and its referenced image retain one owner and do not change behavior."
+            ),
+            outcome_description="The README and referenced image are ready for one behavior-preserving edit.",
+        )
+        candidate = replace_struct(
+            candidate,
+            branch="codex/readme-artwork",
+            base_revision=base_revision,
+            owner_task_id="owner-task",
+            title="Refresh README and referenced image",
+            scope=("Edit README.md and docs/preview.png without changing ownership or behavior.",),
+            checkpoint=local,
+        )
+        common = ("--project-root", str(project), "--work-root", str(work))
+        brief_path = project / "local-editorial-brief.json"
+        brief_path.write_bytes(canonical_work_brief_bytes(candidate))
+        publication = self.run_json_cli(*common, "brief", "publish", "--file", str(brief_path))
+        prepared = self.run_json_cli(
+            *common,
+            "preparation",
+            "start",
+            "--item-id",
+            "work-c",
+            "--task-id",
+            "owner-task",
+            "--host-id",
+            "studio",
+            "--ttl-seconds",
+            "60",
+        )
+        activation = self.json_object(
+            self.json_list(
+                self.run_json_cli(
+                    *common,
+                    "actions",
+                    "--role",
+                    "preparer",
+                    "--lease-id",
+                    str(prepared["lease_id"]),
+                    "--generation",
+                    str(prepared["generation"]),
+                    "--action-id",
+                    "activate:work-c",
+                )["actions"]
+            )[0]
+        )
+        activation_payload = project / "activate-local.json"
+        activation_payload.write_text(
+            json.dumps({"brief_artifact_ref_id": publication["artifact_ref_id"]}), encoding="utf-8"
+        )
+
+        result, _stdout, stderr = self.run_transition(common, activation, activation_payload, json_output=True)
+
+        self.assertEqual(0, result, stderr)
+        reloaded = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+        attempt = next(value for value in reloaded.lifecycle.attempts if value.attempt_id == AttemptId("work-c-1"))
+        self.assertEqual("codex/readme-artwork", attempt.branch)
+        self.assertEqual(base_revision, attempt.base_revision)
+        self.assertEqual("owner-task", attempt.provenance)
+        self.run_json_cli(
+            *common,
+            "attempt",
+            "acquire",
+            "--attempt-id",
+            "work-c-1",
+            "--task-id",
+            "implementation-worker",
+            "--host-id",
+            "studio",
+            "--ttl-seconds",
+            "60",
+        )
+        dispatch = self.project_action(common, "dispatch:work-c-1")
+        environment = project / "dispatch-environment.json"
+        environment.write_bytes(
+            msgspec.json.encode(
+                {
+                    "schema": "pinboard-dispatch/v1",
+                    "checkout": str(project),
+                    "branch": candidate.branch,
+                    "starting_revision": candidate.base_revision,
+                    "permissions": ["repository-read", "repository-write"],
+                }
+            )
+        )
+        before_dispatch = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+
+        dispatch_result, _prompt, dispatch_stderr = self.run_cli(
+            *common,
+            "dispatch",
+            "--action-id",
+            str(dispatch["action_id"]),
+            "--subject-revision",
+            str(dispatch["subject_revision"]),
+            "--task-id",
+            "owner-task",
+            "--host-id",
+            "studio",
+            "--checkpoint",
+            local.checkpoint_id,
+            "--environment",
+            str(environment),
+        )
+
+        self.assertEqual(0, dispatch_result, dispatch_stderr)
+        after_dispatch = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+        self.assertEqual(before_dispatch, after_dispatch)
+        self.assertFalse(
+            any(
+                reference.kind == work_models.ArtifactKind.EVIDENCE
+                and reference.key.startswith("work-c-1-brief-review-")
+                for reference in after_dispatch.artifact_references
+            )
+        )
+        self.assertEqual([], list((work / "artifacts" / "evidence").glob("work-c-1-brief-review-*")))
 
     def test_installed_authority_callers_sample_operation_refresh_and_preparation_render_separately(self) -> None:
         operation_time = SQLITE_NOW + timedelta(seconds=1)

@@ -9,6 +9,7 @@ import msgspec
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, FileIOError
 from pinboard.adapters.files.file_io import DurableRoots
+from pinboard.adapters.files.root import observe_checkout_identity
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.application import ports, query_models, stored_state
 from pinboard.application.actions import discover_current_actions
@@ -38,6 +39,7 @@ from pinboard.domain.errors import (
     EffectDisposition,
     FailureDetails,
     FailureFact,
+    FailureMismatch,
     RetryDisposition,
 )
 from pinboard.domain.history import work_item_definition_digest
@@ -61,7 +63,11 @@ from pinboard.interfaces.errors import (
     WorkBriefFailure,
     storage_failure_details,
 )
-from pinboard.interfaces.transition_input import parse_item_revision_input, parse_transition_command
+from pinboard.interfaces.transition_input import (
+    ParsedTransitionInput,
+    parse_item_revision_input,
+    parse_transition_input,
+)
 from pinboard.interfaces.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_checkpoint_review_package_bytes,
@@ -70,6 +76,7 @@ from pinboard.interfaces.work_briefs import (
     decode_canonical_work_brief,
     decode_canonical_work_brief_review,
     read_selected_work_brief_identity,
+    validate_reviewed_authority_digests,
     validate_work_brief_review,
 )
 
@@ -472,10 +479,13 @@ def transition(
     selected_action = action_selection.select_current_action(store, supplied_action_receipt)
     if isinstance(selected_action, CommandFailure):
         return selected_action
-    decoded_command = parse_transition_command(selected_action, encoded_payload)
-    if isinstance(decoded_command, TransitionInputFailure):
-        return CommandFailure(decoded_command.code, decoded_command.message, decoded_command.details)
     artifacts = ArtifactRepository(durable)
+    decoded_input = parse_transition_input(selected_action, encoded_payload)
+    if isinstance(decoded_input, TransitionInputFailure):
+        return CommandFailure(decoded_input.code, decoded_input.message, decoded_input.details)
+    decoded_command = _resolve_transition_input(roots, store, artifacts, selected_action, decoded_input)
+    if isinstance(decoded_command, CommandFailure):
+        return decoded_command
     match cli_command:
         case cli_commands.ProjectTransitionCommand(task_id=actor_task_id, host_id=actor_host_id):
             pass
@@ -490,6 +500,93 @@ def transition(
     if isinstance(commit_result, CommandFailure):
         return action_selection.with_current_alternatives(store, supplied_action_receipt, commit_result)
     return _present_committed_transition(roots, durable, store, selected_action, commit_result, json=cli_command.json)
+
+
+def _activation_input_failure(message: str, mismatches: tuple[FailureMismatch, ...] = ()) -> CommandFailure:
+    return CommandFailure(
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+        message,
+        FailureDetails(
+            observed=(),
+            mismatches=mismatches,
+            retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def _resolve_transition_input(
+    roots: cli_commands.ResolvedRoots,
+    store: ports.WorkStore,
+    artifacts: ArtifactRepository,
+    action: decision_models.Action,
+    decoded_input: ParsedTransitionInput,
+) -> CommandResult[decision_models.TransitionCommand]:
+    if not isinstance(decoded_input, transition_models.ActivateInputPayload):
+        return decoded_input
+    if not isinstance(action, decision_models.ActivateAction):
+        raise AssertionError("Activate input requires an activate action.")
+    brief_artifact_ref_id = ArtifactRefId(decoded_input.brief_artifact_ref_id)
+    reference = store.read_artifact_reference_by_id(brief_artifact_ref_id)
+    if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
+        return _activation_input_failure("Activation requires one existing brief artifact reference.")
+    brief = decode_canonical_work_brief(artifacts.read(reference))
+    if isinstance(brief, WorkBriefFailure):
+        return _activation_input_failure(f"The selected brief artifact is invalid: {brief.message}")
+    preparation = action.capability.preparation_authority
+    if preparation is None:
+        return _activation_input_failure("Activation requires exact live preparation authority.")
+    identity_mismatches = tuple(
+        mismatch
+        for mismatch in (
+            FailureMismatch("item_id", str(action.capability.subject), brief.item_id),
+            FailureMismatch("owner_task_id", str(preparation.task_id), brief.owner_task_id),
+        )
+        if mismatch.expected != mismatch.observed
+    )
+    if identity_mismatches:
+        return _activation_input_failure(
+            "The selected brief item and owner must match the activate action and preparer.", identity_mismatches
+        )
+    branch, revision = observe_checkout_identity(roots.source_checkout)
+    checkout_mismatches = tuple(
+        mismatch
+        for mismatch in (
+            FailureMismatch("branch", brief.branch, branch),
+            FailureMismatch("base_revision", brief.base_revision, revision),
+        )
+        if mismatch.expected != mismatch.observed
+    )
+    if checkout_mismatches:
+        return _activation_input_failure(
+            "The selected source checkout does not match the accepted brief branch and base revision.",
+            checkout_mismatches,
+        )
+    if isinstance(brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint):
+        authority_failure = validate_reviewed_authority_digests(
+            roots.source_checkout, brief.checkpoint.reviewed_authorities
+        )
+        match authority_failure:
+            case None:
+                pass
+            case work_brief_models.ReviewedAuthoritySelectionFailure(authority_id=authority_id, reason=reason):
+                return _activation_input_failure(f"Cannot read reviewed authority '{authority_id}': {reason}")
+            case work_brief_models.ReviewedAuthorityDigestMismatch(authority_id=authority_id):
+                return _activation_input_failure(f"Reviewed authority '{authority_id}' changed after review.")
+            case _ as unreachable:
+                assert_never(unreachable)
+    return decision_models.ActivateCommand(
+        action,
+        work_models.ActivateInput(
+            AttemptId(brief.attempt_id),
+            brief.branch,
+            brief.base_revision,
+            brief.owner_task_id,
+            brief_artifact_ref_id,
+        ),
+    )
 
 
 def _present_committed_transition(
@@ -958,10 +1055,16 @@ def _decode_selected_project_transition(
 ) -> CommandResult[decision_models.TransitionCommand]:
     match request:
         case _EncodedProjectTransitionRequest(encoded_payload=encoded_payload):
-            command = parse_transition_command(action, encoded_payload)
-            if isinstance(command, TransitionInputFailure):
-                return CommandFailure(command.code, command.message, command.details)
-            return command
+            decoded_input = parse_transition_input(action, encoded_payload)
+            if isinstance(decoded_input, TransitionInputFailure):
+                return CommandFailure(decoded_input.code, decoded_input.message, decoded_input.details)
+            if isinstance(decoded_input, transition_models.ActivateInputPayload):
+                return CommandFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    "Activation requires preparation authority.",
+                    None,
+                )
+            return decoded_input
         case _ValidatedItemRevisionRequest(validated_revision=validated_revision):
             if not isinstance(action, decision_models.ReviseItemAction):
                 return CommandFailure(

@@ -13,6 +13,7 @@ from unittest.mock import patch
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
     ensure_default_git_exclude,
+    observe_checkout_identity,
     resolve_shared_repository_root,
     resolve_source_checkout_root,
 )
@@ -60,6 +61,9 @@ class RootResolutionTest(unittest.TestCase):
         self.assertEqual(linked.resolve(), resolve_source_checkout_root(linked))
         self.assertEqual(repository.resolve(), resolve_shared_repository_root(repository))
         self.assertEqual(repository.resolve(), resolve_shared_repository_root(linked))
+        repository_revision = self.run_git(repository, "rev-parse", "HEAD").strip()
+        self.assertEqual(("main", repository_revision), observe_checkout_identity(repository))
+        self.assertEqual(("linked", repository_revision), observe_checkout_identity(linked))
 
         with chdir(linked):
             result, stdout, stderr = self.run_cli("root")
@@ -97,6 +101,8 @@ class RootResolutionTest(unittest.TestCase):
             resolve_source_checkout_root(directory)
         with self.assertRaisesRegex(RootError, "PROJECT_GIT_ROOT_UNAVAILABLE"):
             resolve_shared_repository_root(directory)
+        with self.assertRaisesRegex(RootError, "PROJECT_GIT_CHECKOUT_UNAVAILABLE"):
+            observe_checkout_identity(directory)
 
     def test_returning_initialization_reads_an_existing_exclusion_without_write_access(self) -> None:
         repository = Path(tempfile.mkdtemp()).resolve()

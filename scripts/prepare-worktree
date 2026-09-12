@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+for prerequisite in uv npm; do
+    if ! command -v "$prerequisite" >/dev/null 2>&1; then
+        printf 'prepare-worktree: missing prerequisite: %s\n' "$prerequisite" >&2
+        exit 127
+    fi
+done
+
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$project_root"
+
+uv sync --locked
+npm ci --prefer-offline --no-audit --no-fund

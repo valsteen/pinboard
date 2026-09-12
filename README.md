@@ -213,16 +213,16 @@ For a quick current picture, ask:
 
 The repository currently pins Python 3.14.7 and uv 0.12.10. msgspec provides immutable records and strict JSON decoding at repository boundaries. uv manages Python installation, the project environment, Python dependencies, the checked-in Python lockfile, and Python command execution. The installed plugin launcher runs the package from its already prepared cached environment; a source checkout falls back to its locked development environment. Users should not need to select a uv cache directory or tolerate dependency-update warnings during ordinary installed use.
 
-jscpd is the sole non-Python development tool. It requires Node.js 18 or newer and npm, but no global package installation. Install the pinned native binary into this repository's ignored `node_modules/` directory:
+jscpd is the sole non-Python development tool. It requires Node.js 18 or newer and npm, but no global package installation. After cloning the repository or creating a new implementation worktree, prepare both locked development environments with one command:
 
 ```sh
-npm ci --prefer-offline --no-audit --no-fund
+scripts/prepare-worktree
 ```
 
-The checked-in `package-lock.json` makes that installation repeatable. The install prefers npm's local cache and skips registry audit and funding requests that are unrelated to this development-only binary. `npm run duplication` performs an aggressive local scan at four lines and 40 tokens; its matches are prompts for judgment, not failures to eliminate mechanically. CI uses calmer eight-line and 60-token limits, rejects every clone that is new relative to `origin/main`, and enforces a 0.3% ceiling; the current accepted scan reports 0.2%. Lower the ceiling when later cleanup reduces that result rather than raising it to accommodate new duplication.
+The command runs `uv sync --locked` and `npm ci --prefer-offline --no-audit --no-fund` from the selected checkout. Each checkout keeps its own ignored `.venv/` and `node_modules/` directories while uv and npm may reuse their package caches. The checked-in locks make setup repeatable. The npm install prefers its local cache and skips registry audit and funding requests that are unrelated to this development-only binary. `npm run duplication` performs an aggressive local scan at four lines and 40 tokens; its matches are prompts for judgment, not failures to eliminate mechanically. CI uses calmer eight-line and 60-token limits, rejects every clone that is new relative to `origin/main`, and enforces a 0.3% ceiling; the current accepted scan reports 0.2%. Lower the ceiling when later cleanup reduces that result rather than raising it to accommodate new duplication.
 
 ```sh
-uv sync --locked
+scripts/prepare-worktree
 uv run --locked python -m docs.how_it_works.render --check
 uv run --locked ruff format --check .
 uv run --locked ruff check .

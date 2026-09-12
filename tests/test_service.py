@@ -48,7 +48,7 @@ from pinboard.domain.proposal_models import (
     CreateProposalOperation,
     ProposalIntake,
 )
-from pinboard.interfaces.transition_input import parse_transition_command
+from pinboard.interfaces.transition_input import parse_transition_input
 from tests.decision_support import (
     project_decision_snapshot,
     project_inactive_attempt_authority,
@@ -427,7 +427,7 @@ class ServiceTest(unittest.TestCase):
                 store, database_path = self._store_with_state(state)
                 command = non_checkpoint_command(
                     expect_transition_command(
-                        parse_transition_command(
+                        parse_transition_input(
                             self._project_action(store, action_type, "intake-work"),
                             payload,
                         )
@@ -459,9 +459,7 @@ class ServiceTest(unittest.TestCase):
             with self.subTest(action_type=action_type.__name__):
                 store, database_path = self._store_with_state(complete_sqlite_state())
                 command = non_checkpoint_command(
-                    expect_transition_command(
-                        parse_transition_command(self._project_action(store, action_type), payload)
-                    )
+                    expect_transition_command(parse_transition_input(self._project_action(store, action_type), payload))
                 )
 
                 result = self._commit_transition(store, command, SQLITE_NOW + timedelta(seconds=1))

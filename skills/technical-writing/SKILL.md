@@ -81,6 +81,8 @@ When one argument becomes too large, divide it into smaller reviewable questions
 
 After the content is settled, reread every changed passage in document context. Fix structure before polishing sentences.
 
+When the user requests a style pass over an existing document, examine the entire document, including unchanged passages, rather than limiting the pass to recent edits or obvious problems.
+
 Look especially for:
 
 - claims buried behind their supporting inventory;

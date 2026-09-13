@@ -4,6 +4,7 @@ __pycache__/
 .DS_Store
 .idea/
 .pytest_cache/
+.pinboard-runtime/
 .ruff_cache/
 .venv/
 .vscode/

@@ -27,7 +27,7 @@ An explicitly requested notification remains subordinate to this continuation. S
 
 ## Preconditions
 
-1. Resolve this plugin's executable relative to this file as `../../scripts/pinboard`.
+1. Resolve this plugin's executable relative to this file as `../../scripts/pinboard`. A prepared source checkout uses its development `.venv`; an installed plugin uses only its marker-backed `.pinboard-runtime`. Ordinary launch never invokes uv or consults the managed project's Python environment. If the launcher returns `pinboard-launcher-result/v1`, require `pinboard_started=false`, preserve any upstream diagnostics, and follow only its exact same-launcher `--prepare-runtime` action and retry disposition. Preparation may require one narrow write to the launcher root; never substitute an ad hoc uv command, ambient cache workaround, installed-cache locator, or managed-project `.venv`.
 2. Run `pinboard status --json` from the repository checkout.
 3. Require authority `sqlite-v6`. Intake is a direct trusted-local project action; its task and host values are audit attribution, not credentials, and it does not require a lease.
 4. If the workflow or executable is unavailable, stop. Do not infer shared state from titles, recency, nearby tasks, branches, or old audit files.

@@ -89,17 +89,94 @@ class PluginPackagingTests(unittest.TestCase):
             (destination / link.name).symlink_to(executable.name)
             self.assertNotEqual(content_changed, tree_fingerprint(destination))
 
+    def prepare_copied_launcher(
+        self, sandbox: Path, plugin_root: Path, project: Path
+    ) -> tuple[Path, dict[str, str], tuple[tuple[str, str, int, str, str], ...]]:
+        environment = {**os.environ, "PINBOARD_RUNTIME": "claude"}
+        launcher = plugin_root / "scripts" / "pinboard"
+        metadata_validation = subprocess.run(
+            [sys.executable, str(plugin_root / "scripts" / "validate-metadata.py")],
+            cwd=sandbox,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("Codex and Claude plugins", metadata_validation.stdout)
+
+        missing_runtime = subprocess.run(
+            [str(launcher), "--project-root", str(project), "status", "--json"],
+            cwd=sandbox,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(78, missing_runtime.returncode)
+        self.assertEqual("", missing_runtime.stderr)
+        missing_payload = json.loads(missing_runtime.stdout)
+        self.assertEqual("pinboard-launcher-result/v1", missing_payload["schema"])
+        self.assertEqual("runtime-preparation-required", missing_payload["status"])
+        self.assertEqual("run-preparation", missing_payload["retry_disposition"])
+        self.assertEqual("unchanged", missing_payload["effect_disposition"])
+        self.assertEqual(["--prepare-runtime"], missing_payload["next_action"]["arguments"])
+        self.assertEqual("scripts/pinboard --prepare-runtime", missing_payload["next_action"]["display_command"])
+
+        prepared = subprocess.run(
+            [str(launcher), *missing_payload["next_action"]["arguments"]],
+            cwd=sandbox,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, prepared.returncode, prepared.stderr)
+        self.assertEqual("", prepared.stderr)
+        prepared_payload = json.loads(prepared.stdout)
+        self.assertEqual("runtime-ready", prepared_payload["status"])
+        self.assertEqual([".pinboard-runtime"], prepared_payload["changed_surfaces"])
+        self.assertTrue((plugin_root / ".pinboard-runtime" / ".pinboard-ready").is_file())
+
+        unusable_cache = sandbox / "unusable-cache"
+        unusable_cache.write_text("not a directory", encoding="utf-8")
+        environment = {**environment, "PATH": "/usr/bin:/bin", "UV_CACHE_DIR": str(unusable_cache)}
+        version = subprocess.run(
+            [str(launcher), "--version"],
+            cwd=sandbox,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, version.returncode, version.stderr)
+        self.assertEqual("0.1.0\n", version.stdout)
+        self.assertEqual("", version.stderr)
+        return launcher, environment, tree_fingerprint(plugin_root)
+
     def test_copied_plugin_launcher_runs_complete_no_model_workflow_without_mutating_plugin_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             sandbox = Path(directory)
             plugin_root = sandbox / "copied-plugin"
             plugin_root.mkdir()
             copied_repository_payload(ROOT, plugin_root)
-            before = tree_fingerprint(plugin_root)
 
             project = sandbox / "project"
             project.mkdir()
             subprocess.run(["git", "init", "-b", "main"], cwd=project, check=True, capture_output=True, text=True)
+            decoy_executable = project / ".venv" / "bin" / "pinboard"
+            decoy_executable.parent.mkdir(parents=True)
+            decoy_executable.write_text(
+                '#!/bin/sh\nprintf "managed-project-runtime-used\\n"\nexit 99\n', encoding="utf-8"
+            )
+            decoy_executable.chmod(0o755)
+            managed_pyproject = project / "pyproject.toml"
+            managed_pyproject.write_text("[project]\nname = 'managed-project'\n", encoding="utf-8")
+            managed_lock = project / "uv.lock"
+            managed_lock.write_text("managed project lock\n", encoding="utf-8")
+            managed_dependency_bytes = (
+                decoy_executable.read_bytes(),
+                managed_pyproject.read_bytes(),
+                managed_lock.read_bytes(),
+            )
             proposal_path = sandbox / "proposal.json"
             proposal_path.write_text(
                 json.dumps(
@@ -121,20 +198,7 @@ class PluginPackagingTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            environment = {
-                **os.environ,
-                "PINBOARD_RUNTIME": "claude",
-            }
-            launcher = plugin_root / "scripts" / "pinboard"
-
-            metadata_validation = subprocess.run(
-                [sys.executable, str(plugin_root / "scripts" / "validate-metadata.py")],
-                cwd=sandbox,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            self.assertIn("Codex and Claude plugins", metadata_validation.stdout)
+            launcher, environment, before = self.prepare_copied_launcher(sandbox, plugin_root, project)
 
             def run(*arguments: str) -> subprocess.CompletedProcess[str]:
                 result = subprocess.run(
@@ -168,6 +232,10 @@ class PluginPackagingTests(unittest.TestCase):
             self.assertNotIn("Optional next steps", reopened.stdout)
             self.assertTrue((project / ".codex" / "pinboard" / "state.sqlite3").is_file())
             self.assertEqual(before, tree_fingerprint(plugin_root))
+            self.assertEqual(
+                managed_dependency_bytes,
+                (decoy_executable.read_bytes(), managed_pyproject.read_bytes(), managed_lock.read_bytes()),
+            )
 
 
 if __name__ == "__main__":

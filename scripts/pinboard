@@ -2,8 +2,135 @@
 set -eu
 
 plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+runtime_root="$plugin_root/.pinboard-runtime"
+runtime_environment="$runtime_root/environment"
+runtime_executable="$runtime_environment/bin/pinboard"
+ready_marker="$runtime_root/.pinboard-ready"
+diagnostics="$runtime_root/.preparation-output"
+preparation_action='{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["uv and write access to launcher-root .pinboard-runtime"]}'
+
+launcher_result() {
+    printf '{"schema":"pinboard-launcher-result/v1","status":"%s","pinboard_started":false,"runtime_location":{"base":"launcher-root","relative":".pinboard-runtime"},"observations":%s,"upstream_exit_code":%s,"retry_disposition":"%s","effect_disposition":"%s","changed_surfaces":%s,"next_action":%s}\n' \
+        "$1" "$2" "$3" "$4" "$5" "$6" "$7"
+}
+
+runtime_write_failure() {
+    launcher_result \
+        "runtime-write-unavailable" \
+        '["Pinboard could not write its launcher-root private runtime."]' \
+        "$1" \
+        "authorize-runtime-write" \
+        "potentially-changed" \
+        '[".pinboard-runtime"]' \
+        '{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["write access to launcher-root .pinboard-runtime"]}'
+    exit 78
+}
+
+if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
+    if [ -f "$ready_marker" ] && [ -x "$runtime_executable" ]; then
+        launcher_result \
+            "runtime-already-ready" \
+            '["The launcher-root private runtime is already ready."]' \
+            "null" \
+            "retry-original-command" \
+            "unchanged" \
+            '[]' \
+            "null"
+        exit 0
+    fi
+
+    if ! command -v uv >/dev/null 2>&1; then
+        launcher_result \
+            "uv-unavailable" \
+            '["Explicit runtime preparation requires uv."]' \
+            "null" \
+            "correct-environment" \
+            "unchanged" \
+            '[]' \
+            '{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["uv"]}'
+        exit 78
+    fi
+
+    if [ -e "$runtime_root" ] && [ ! -d "$runtime_root" ]; then
+        printf 'launcher-root private runtime path is not a directory: %s\n' "$runtime_root" >&2
+        runtime_write_failure 1
+    fi
+    if mkdir -p "$runtime_root" && rm -rf "$runtime_environment" "$ready_marker" "$diagnostics"; then
+        :
+    else
+        upstream_exit_code=$?
+        runtime_write_failure "$upstream_exit_code"
+    fi
+
+    if : > "$diagnostics"; then
+        :
+    else
+        upstream_exit_code=$?
+        runtime_write_failure "$upstream_exit_code"
+    fi
+    if UV_PROJECT_ENVIRONMENT="$runtime_environment" uv sync --locked --no-dev --project "$plugin_root" >"$diagnostics" 2>&1; then
+        :
+    else
+        upstream_exit_code=$?
+        cat "$diagnostics" >&2
+        rm -f "$diagnostics"
+        launcher_result \
+            "runtime-sync-failed" \
+            '["Locked synchronization of the launcher-root private runtime failed."]' \
+            "$upstream_exit_code" \
+            "correct-environment" \
+            "potentially-changed" \
+            '[".pinboard-runtime"]' \
+            '{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["a corrected uv environment/cache"]}'
+        exit 78
+    fi
+
+    if "$runtime_executable" --version >"$diagnostics" 2>&1; then
+        :
+    else
+        upstream_exit_code=$?
+        cat "$diagnostics" >&2
+        rm -f "$diagnostics"
+        launcher_result \
+            "runtime-entrypoint-invalid" \
+            '["The locked private runtime Pinboard entry point failed verification."]' \
+            "$upstream_exit_code" \
+            "correct-environment" \
+            "potentially-changed" \
+            '[".pinboard-runtime"]' \
+            '{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["a valid locked runtime"]}'
+        exit 78
+    fi
+    if rm -f "$diagnostics" && : > "$ready_marker"; then
+        launcher_result \
+            "runtime-ready" \
+            '["The launcher-root private runtime is ready."]' \
+            "null" \
+            "retry-original-command" \
+            "changed" \
+            '[".pinboard-runtime"]' \
+            "null"
+        exit 0
+    else
+        upstream_exit_code=$?
+        runtime_write_failure "$upstream_exit_code"
+    fi
+fi
+
 export PYTHONDONTWRITEBYTECODE=1
 if [ -x "$plugin_root/.venv/bin/pinboard" ]; then
     exec "$plugin_root/.venv/bin/pinboard" "$@"
 fi
-exec uv run --isolated --locked --no-dev --project "$plugin_root" pinboard "$@"
+if [ -f "$ready_marker" ] && [ -x "$runtime_executable" ]; then
+    exec "$runtime_executable" "$@"
+fi
+
+launcher_result \
+    "runtime-preparation-required" \
+    '["Pinboard has no ready launcher-root runtime."]' \
+    "null" \
+    "run-preparation" \
+    "unchanged" \
+    '[]' \
+    "$preparation_action"
+exit 78

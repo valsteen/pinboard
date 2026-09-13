@@ -104,7 +104,7 @@ The [installation guide](INSTALL.md) covers first setup, Codex permissions, link
 
 ## Local data
 
-By default, Pinboard keeps project decisions and evidence in ignored files inside the repository. You can choose another location on your machine. The installed plugin contains Pinboard's code and skills, not your project data.
+By default, Pinboard keeps project decisions and evidence in ignored files inside the managed repository. You can choose another location on your machine. The installed plugin contains Pinboard's code, skills, and its version-local `.pinboard-runtime`; it never installs Python dependencies into the managed project. Pinboard source development uses the source checkout's separate `.venv`.
 
 ## Learn more
 

@@ -66,6 +66,10 @@ class WorkStore(Protocol):
         self, kind: work_models.ArtifactKind, key: str, revision: int
     ) -> stored_state.ArtifactReference | None: ...
 
+    def read_latest_artifact_reference(
+        self, kind: work_models.ArtifactKind, key: str
+    ) -> stored_state.ArtifactReference | None: ...
+
     def read_artifact_reference_by_id(
         self, artifact_ref_id: ArtifactRefId
     ) -> stored_state.ArtifactReference | None: ...

@@ -469,6 +469,32 @@ class WorkBriefReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
             raise ValueError("Brief review coverage must identify every authority family at most once.")
 
 
+class BlockingReviewFinding(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    finding_id: KebabId
+    summary: NonEmptyLine
+    detail: NonEmptyText
+    correction: NonEmptyText
+
+
+class WorkBriefReviewNeedsCorrection(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-work-brief-review-needs-correction/v1"]
+    artifact_revision: PositiveInt
+    accepted_brief_sha256: Sha256
+    attempt_id: KebabId
+    checkpoint_id: KebabId
+    checkpoint_sha256: Sha256
+    reviewed_authority_set_sha256: Sha256
+    reviewer_task_id: NonEmptyLine
+    status: Literal["complete"]
+    verdict: Literal["needs-correction"]
+    findings: Annotated[tuple[BlockingReviewFinding, ...], msgspec.Meta(min_length=1)]
+
+    def __post_init__(self) -> None:
+        finding_ids = tuple(finding.finding_id for finding in self.findings)
+        if len(set(finding_ids)) != len(finding_ids):
+            raise ValueError("Blocking finding identities must be unique.")
+
+
 class CheckpointIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     id: KebabId
     sha256: Sha256

@@ -76,7 +76,14 @@ from .support import (
     test_definition,
     with_definition_dependencies,
 )
-from .work_brief_support import CHECKPOINT_ID, example_work_brief, ready_review, work_a_brief, work_c_brief
+from .work_brief_support import (
+    CHECKPOINT_ID,
+    example_work_brief,
+    needs_correction_review,
+    ready_review,
+    work_a_brief,
+    work_c_brief,
+)
 
 
 class CliTest(unittest.TestCase):
@@ -2561,6 +2568,137 @@ class CliTest(unittest.TestCase):
             publication_clock.now.side_effect = (commit_time, render_time)
             self.run_json_cli(*common, "brief", "publish", "--file", str(brief_path))
         self.assertEqual(1, publication_clock.now.call_count)
+
+    def test_brief_needs_correction_publication_and_focused_status_are_exact(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        common = ("--project-root", str(project), "--work-root", str(work))
+        brief = work_a_brief(project)
+
+        absent = self.run_json_cli(
+            *common,
+            "brief",
+            "review-status",
+            "--brief-artifact-ref-id",
+            "1",
+        )
+        self.assertEqual("no-needs-correction-evidence", absent["status"])
+        self.assertNotIn("ready", str(absent["status"]))
+
+        first_path = project / "needs-correction-1.json"
+        first_path.write_bytes(needs_correction_review(brief))
+        first_publication = self.run_json_cli(
+            *common,
+            "brief",
+            "review-needs-correction",
+            "--brief-artifact-ref-id",
+            "1",
+            "--file",
+            str(first_path),
+        )
+        self.assertEqual("evidence", first_publication["kind"])
+
+        second_path = project / "needs-correction-2.json"
+        second_path.write_bytes(
+            needs_correction_review(
+                brief,
+                artifact_revision=2,
+                reviewer="second-reviewer",
+                finding_id="missing-second-owner",
+            )
+        )
+        second_publication = self.run_json_cli(
+            *common,
+            "brief",
+            "review-needs-correction",
+            "--brief-artifact-ref-id",
+            "1",
+            "--file",
+            str(second_path),
+        )
+        self.assertNotEqual(first_publication["artifact_ref_id"], second_publication["artifact_ref_id"])
+
+        found = self.run_json_cli(
+            *common,
+            "brief",
+            "review-status",
+            "--brief-artifact-ref-id",
+            "1",
+        )
+        self.assertEqual("needs-correction", found["status"])
+        self.assertEqual(2, found["artifact_revision"])
+        self.assertEqual("second-reviewer", found["reviewer_task_id"])
+        self.assertEqual("missing-second-owner", self.json_object(self.json_list(found["findings"])[0])["finding_id"])
+        self.assertIn("brief review-status", str(found["status_command"]))
+        self.assertIn("brief publish", str(found["republication_command"]))
+
+        root_changed = replace_struct(brief, artifact_revision=2, title="Corrected root title")
+        root_path = project / "root-corrected-brief.json"
+        root_path.write_bytes(canonical_work_brief_bytes(root_changed))
+        root_publication = self.run_json_cli(*common, "brief", "publish", "--file", str(root_path))
+        root_absent = self.run_json_cli(
+            *common,
+            "brief",
+            "review-status",
+            "--brief-artifact-ref-id",
+            str(root_publication["artifact_ref_id"]),
+        )
+        self.assertEqual("no-needs-correction-evidence", root_absent["status"])
+
+        checkpoint_changed = replace_struct(
+            brief,
+            artifact_revision=3,
+            checkpoint=replace_struct(brief.checkpoint, title="Corrected checkpoint title"),
+        )
+        checkpoint_path = project / "checkpoint-corrected-brief.json"
+        checkpoint_path.write_bytes(canonical_work_brief_bytes(checkpoint_changed))
+        checkpoint_publication = self.run_json_cli(*common, "brief", "publish", "--file", str(checkpoint_path))
+        checkpoint_absent = self.run_json_cli(
+            *common,
+            "brief",
+            "review-status",
+            "--brief-artifact-ref-id",
+            str(checkpoint_publication["artifact_ref_id"]),
+        )
+        self.assertEqual("no-needs-correction-evidence", checkpoint_absent["status"])
+
+    def test_brief_needs_correction_supports_long_valid_identity(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        common = ("--project-root", str(project), "--work-root", str(work))
+        attempt_id = "a" * 50
+        checkpoint_id = "c" * 50
+        original = work_a_brief(project)
+        brief = replace_struct(
+            original,
+            attempt_id=attempt_id,
+            checkpoint=replace_struct(original.checkpoint, checkpoint_id=checkpoint_id),
+        )
+        brief_path = project / "long-identity-brief.json"
+        brief_path.write_bytes(canonical_work_brief_bytes(brief))
+        brief_publication = self.run_json_cli(*common, "brief", "publish", "--file", str(brief_path))
+
+        review_path = project / "long-identity-needs-correction.json"
+        review_path.write_bytes(needs_correction_review(brief))
+        review_publication = self.run_json_cli(
+            *common,
+            "brief",
+            "review-needs-correction",
+            "--brief-artifact-ref-id",
+            str(brief_publication["artifact_ref_id"]),
+            "--file",
+            str(review_path),
+        )
+        self.assertLessEqual(len(str(review_publication["key"]).encode()), 255)
+
+        found = self.run_json_cli(
+            *common,
+            "brief",
+            "review-status",
+            "--brief-artifact-ref-id",
+            str(brief_publication["artifact_ref_id"]),
+        )
+        self.assertEqual("needs-correction", found["status"])
+        self.assertEqual(attempt_id, found["attempt_id"])
+        self.assertEqual(checkpoint_id, found["checkpoint_id"])
 
     def test_installed_brief_publication_repairs_a_post_acceptance_attempt_view_failure(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())

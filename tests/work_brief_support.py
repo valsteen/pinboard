@@ -8,7 +8,9 @@ from pinboard.interfaces import work_brief_models
 from pinboard.interfaces.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_reviewed_authority_set_bytes,
+    canonical_work_brief_bytes,
     canonical_work_brief_review_bytes,
+    canonical_work_brief_review_needs_correction_bytes,
 )
 from tests.support import SQLITE_DIGEST, test_definition
 
@@ -192,3 +194,35 @@ def ready_review(
         ),
     )
     return canonical_work_brief_review_bytes(review)
+
+
+def needs_correction_review(
+    value: work_brief_models.WorkBrief,
+    *,
+    artifact_revision: int = 1,
+    reviewer: str = "brief-reviewer",
+    finding_id: str = "missing-owner",
+) -> bytes:
+    checkpoint = value.checkpoint
+    assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+    review = work_brief_models.WorkBriefReviewNeedsCorrection(
+        "pinboard-work-brief-review-needs-correction/v1",
+        artifact_revision,
+        hashlib.sha256(canonical_work_brief_bytes(value)).hexdigest(),
+        value.attempt_id,
+        checkpoint.checkpoint_id,
+        hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest(),
+        hashlib.sha256(canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)).hexdigest(),
+        reviewer,
+        "complete",
+        "needs-correction",
+        (
+            work_brief_models.BlockingReviewFinding(
+                finding_id,
+                "A required owner is missing.",
+                "The accepted brief omits the source that owns the effect.",
+                "Add that source authority and cover its contract.",
+            ),
+        ),
+    )
+    return canonical_work_brief_review_needs_correction_bytes(review)

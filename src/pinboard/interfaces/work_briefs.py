@@ -122,6 +122,84 @@ def decode_canonical_work_brief_review(data: bytes) -> WorkBriefResult[work_brie
     return review
 
 
+def decode_work_brief_review_needs_correction(
+    data: bytes,
+) -> WorkBriefResult[work_brief_models.WorkBriefReviewNeedsCorrection]:
+    try:
+        return msgspec.json.decode(data, type=work_brief_models.WorkBriefReviewNeedsCorrection)
+    except msgspec.DecodeError as error:
+        return WorkBriefFailure(
+            WorkBriefErrorCode.REVIEW_INVALID,
+            f"Cannot decode canonical needs-correction work brief review: {error}",
+        )
+
+
+def canonical_work_brief_review_needs_correction_bytes(
+    review: work_brief_models.WorkBriefReviewNeedsCorrection,
+) -> bytes:
+    return _canonical_bytes(review) + b"\n"
+
+
+def decode_canonical_work_brief_review_needs_correction(
+    data: bytes,
+) -> WorkBriefResult[work_brief_models.WorkBriefReviewNeedsCorrection]:
+    review = decode_work_brief_review_needs_correction(data)
+    if isinstance(review, WorkBriefFailure):
+        return review
+    if data != canonical_work_brief_review_needs_correction_bytes(review):
+        return WorkBriefFailure(
+            WorkBriefErrorCode.REVIEW_NOT_CANONICAL,
+            "Accepted needs-correction work brief review bytes are not the canonical msgspec encoding.",
+        )
+    return review
+
+
+def needs_correction_review_key(brief: work_brief_models.WorkBrief) -> str:
+    checkpoint = brief.checkpoint
+    if not isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
+        raise ValueError("Local checkpoints do not use needs-correction brief reviews.")
+    brief_sha256 = hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
+    checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
+    identity_sha256 = hashlib.sha256(
+        _canonical_bytes((brief.attempt_id, checkpoint.checkpoint_id, brief_sha256, checkpoint_sha256))
+    ).hexdigest()
+    return f"brief-review-needs-correction-{identity_sha256}"
+
+
+def validate_work_brief_review_needs_correction(
+    review: work_brief_models.WorkBriefReviewNeedsCorrection,
+    brief: work_brief_models.WorkBrief,
+) -> WorkBriefFailure | None:
+    checkpoint = brief.checkpoint
+    if not isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
+        return WorkBriefFailure(WorkBriefErrorCode.REVIEW_INVALID, "Local checkpoints do not use brief reviews.")
+    if review.attempt_id != brief.attempt_id or review.checkpoint_id != checkpoint.checkpoint_id:
+        return WorkBriefFailure(
+            WorkBriefErrorCode.REVIEW_INVALID,
+            "Needs-correction brief review names a different attempt or checkpoint.",
+        )
+    if review.reviewer_task_id == brief.owner_task_id:
+        return WorkBriefFailure(
+            WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT,
+            "The brief reviewer must be a different task from the attempt owner.",
+        )
+    expected_brief_sha256 = hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
+    expected_checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
+    expected_authority_sha256 = hashlib.sha256(
+        canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)
+    ).hexdigest()
+    if (
+        review.accepted_brief_sha256 != expected_brief_sha256
+        or review.checkpoint_sha256 != expected_checkpoint_sha256
+        or review.reviewed_authority_set_sha256 != expected_authority_sha256
+    ):
+        return WorkBriefFailure(
+            WorkBriefErrorCode.REVIEW_STALE,
+            "Needs-correction brief review is not bound to the exact accepted brief, checkpoint, and reviewed authorities.",
+        )
+    return None
+
+
 def decode_checkpoint_review_package(data: bytes) -> WorkBriefResult[work_brief_models.CheckpointPackage]:
     try:
         return msgspec.json.decode(

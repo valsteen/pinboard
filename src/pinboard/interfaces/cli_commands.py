@@ -147,6 +147,17 @@ class BriefPublishCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     json: bool = False
 
 
+class BriefReviewNeedsCorrectionCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    brief_artifact_ref_id: PositiveInt
+    file: Path
+    json: bool = False
+
+
+class BriefReviewStatusCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    brief_artifact_ref_id: PositiveInt
+    json: bool = False
+
+
 class HandoverCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     json: bool
 
@@ -451,6 +462,8 @@ type CliCommand = (
     | BriefSourcesPlanToFileCommand
     | BriefSourcesEmitCommand
     | BriefPublishCommand
+    | BriefReviewNeedsCorrectionCommand
+    | BriefReviewStatusCommand
     | ArtifactVerifyCommand
     | HandoverCommand
     | InitializeCommand

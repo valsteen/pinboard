@@ -495,10 +495,14 @@ def _select_prior_checkpoint_package(
     if isinstance(package, errors.WorkBriefFailure):
         return _review_job_failure(package.message)
     candidate_reference = facts.checkpoint_candidate_reference
-    expected_candidate_sha256 = package.candidate.removeprefix("working-tree-sha256:")
+    expected_candidate_sha256 = (
+        ""
+        if isinstance(package, work_brief_models.CheckpointReviewPackageV2)
+        else package.candidate.removeprefix("working-tree-sha256:")
+    )
     if isinstance(package, work_brief_models.CheckpointReviewPackageV2) and candidate_reference is None:
         return _review_job_failure("Current checkpoint package candidate evidence is incomplete.")
-    if (
+    if isinstance(package, work_brief_models.CheckpointReviewPackage) and (
         not package.candidate.startswith("working-tree-sha256:")
         or len(expected_candidate_sha256) != 64
         or candidate_reference is None
@@ -551,6 +555,7 @@ def _select_prior_checkpoint_package(
                 alternatives=(),
             ),
         )
+    assert candidate_reference is not None
     try:
         candidate_bytes = read_reference(roots.work, candidate_reference)
     except ArtifactError as error:
@@ -559,7 +564,10 @@ def _select_prior_checkpoint_package(
         candidate_reference.kind != work_models.ArtifactKind.EVIDENCE
         or candidate_reference.key != f"{package.attempt_id}-{package.checkpoint.id}-candidate"
         or candidate_reference.revision != 1
-        or candidate_reference.content_sha256 != expected_candidate_sha256
+        or (
+            isinstance(package, work_brief_models.CheckpointReviewPackage)
+            and candidate_reference.content_sha256 != expected_candidate_sha256
+        )
     ):
         return _review_job_failure("Selected checkpoint candidate evidence does not match its accepted package.")
     if isinstance(package, work_brief_models.CheckpointReviewPackageV2):

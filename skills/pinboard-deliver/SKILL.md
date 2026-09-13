@@ -92,6 +92,8 @@ At that same boundary, compare the final diff with every accepted material-limit
 
 Before review:
 
+A stable candidate has one of two accepted forms. A working-tree candidate is the `working-tree-sha256:<digest>` identity of the exact binary diff from current `HEAD`. A committed candidate is the full current `HEAD` revision, accepted only while the working tree is clean; its immutable snapshot is the binary diff from the accepted brief base to that revision. Candidate observation is read-only. Select the form that truthfully describes the existing candidate state rather than changing Git to fit an identity.
+
 1. finish the complete accepted checkpoint;
 2. run every command required by the attempt, without replacing it with a narrower package, test, formatter, or linter command;
 3. inspect the final diff;

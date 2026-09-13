@@ -399,11 +399,12 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 hashlib.sha256(canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)).hexdigest(),
             ),
         )
-        encoded_portable = canonical_checkpoint_review_package_bytes(portable)
-        self.assertEqual(
-            portable, expect_work_brief_success(decode_canonical_checkpoint_review_package(encoded_portable))
-        )
-
+        for portable_package in (portable, replace(portable, candidate="a" * 40)):
+            encoded_portable = canonical_checkpoint_review_package_bytes(portable_package)
+            self.assertEqual(
+                portable_package,
+                expect_work_brief_success(decode_canonical_checkpoint_review_package(encoded_portable)),
+            )
         payload = msgspec.json.decode(canonical_checkpoint_review_package_bytes(cross))
         if not isinstance(payload, dict):
             self.fail("checkpoint review package JSON must be an object")

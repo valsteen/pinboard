@@ -9,6 +9,7 @@ import unittest
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 from unittest.mock import patch
 
 import msgspec
@@ -46,16 +47,23 @@ from tests.work_brief_support import ready_review, work_a_brief
 
 
 @dataclass(frozen=True, slots=True)
-class AcceptedPackageFixture:
+class CheckpointFixture:
     project: Path
     work: Path
     store: SQLiteWorkStore
     brief: work_brief_models.WorkBrief
-    package_reference: stored_state.ArtifactReference
+    candidate_revision: str
+    candidate_bytes: bytes
+    payload: Path
 
     @property
     def common(self) -> tuple[str, ...]:
         return "--project-root", str(self.project), "--work-root", str(self.work)
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedPackageFixture(CheckpointFixture):
+    package_reference: stored_state.ArtifactReference
 
 
 class CheckpointPackageTest(unittest.TestCase):
@@ -115,10 +123,36 @@ class CheckpointPackageTest(unittest.TestCase):
             self.fail("JSON value must be an object")
         return value
 
+    def json_array(self, value: JsonValue) -> list[JsonValue]:
+        if not isinstance(value, list):
+            self.fail("JSON value must be an array")
+        return value
+
     def run_json_cli(self, *arguments: str) -> JsonObject:
         result, stdout, stderr = self.run_cli(*arguments, "--json")
         self.assertEqual(0, result, f"{stdout}\n{stderr}")
         return self.json_object(json.loads(stdout))
+
+    def commit_all(self, project: Path, message: str) -> str:
+        subprocess.run(["git", "add", "--all"], cwd=project, check=True, capture_output=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Pinboard Tests",
+                "-c",
+                "user.email=pinboard@example.invalid",
+                "commit",
+                "-m",
+                message,
+            ],
+            cwd=project,
+            check=True,
+            capture_output=True,
+        )
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True, text=True
+        ).stdout.strip()
 
     def project_action(self, common: tuple[str, ...], action_id: str) -> JsonObject:
         actions = self.run_json_cli(*common, "actions", "--role", "project", "--action-id", action_id)
@@ -129,7 +163,7 @@ class CheckpointPackageTest(unittest.TestCase):
 
     def transition_json(
         self,
-        fixture: AcceptedPackageFixture,
+        fixture: CheckpointFixture,
         action: JsonObject,
         payload: Path,
     ) -> JsonObject:
@@ -156,7 +190,7 @@ class CheckpointPackageTest(unittest.TestCase):
 
     def project_transition_arguments(
         self,
-        fixture: AcceptedPackageFixture,
+        fixture: CheckpointFixture,
         action: JsonObject,
         payload: Path,
         *,
@@ -272,7 +306,13 @@ class CheckpointPackageTest(unittest.TestCase):
             ),
         )
 
-    def accepted_package_fixture(self, *, local: bool = False) -> AcceptedPackageFixture:
+    def checkpoint_fixture(
+        self,
+        *,
+        local: bool = False,
+        candidate_form: Literal["working-tree", "current-head"] = "working-tree",
+        accepted_base: str | None = None,
+    ) -> CheckpointFixture:
         state = complete_sqlite_state()
         now = datetime.now(UTC)
         state = replace(
@@ -307,39 +347,36 @@ class CheckpointPackageTest(unittest.TestCase):
             ),
         )
         project = Path(tempfile.mkdtemp()).resolve()
+        brief = self.local_brief(project) if local else work_a_brief(project)
         subprocess.run(["git", "init", "-b", "main"], cwd=project, check=True, capture_output=True)
+        (project / ".git" / "info" / "exclude").write_text("/.codex/pinboard/\n", encoding="utf-8")
         tracked = project / "tracked.txt"
         tracked.write_text("base\n", encoding="utf-8")
-        subprocess.run(["git", "add", "tracked.txt"], cwd=project, check=True, capture_output=True)
-        subprocess.run(
-            [
-                "git",
-                "-c",
-                "user.name=Pinboard Tests",
-                "-c",
-                "user.email=pinboard@example.invalid",
-                "commit",
-                "-m",
-                "base",
-            ],
-            cwd=project,
-            check=True,
-            capture_output=True,
-        )
+        base_revision = self.commit_all(project, "base")
         tracked.write_text("candidate\n", encoding="utf-8")
-        candidate_diff = subprocess.run(
-            ["git", "diff", "--binary", "HEAD", "--"],
-            cwd=project,
-            check=True,
-            capture_output=True,
-        ).stdout
-        candidate_revision = f"working-tree-sha256:{hashlib.sha256(candidate_diff).hexdigest()}"
+        if candidate_form == "current-head":
+            candidate_revision = self.commit_all(project, "candidate")
+            candidate_diff = subprocess.run(
+                ["git", "diff", "--binary", base_revision, candidate_revision, "--"],
+                cwd=project,
+                check=True,
+                capture_output=True,
+            ).stdout
+        else:
+            candidate_diff = subprocess.run(
+                ["git", "diff", "--binary", "HEAD", "--"],
+                cwd=project,
+                check=True,
+                capture_output=True,
+            ).stdout
+            candidate_revision = f"working-tree-sha256:{hashlib.sha256(candidate_diff).hexdigest()}"
+        brief_base_revision = base_revision if accepted_base is None else accepted_base
         state = replace(
             state,
             lifecycle=replace(
                 state.lifecycle,
                 attempts=tuple(
-                    replace(value, candidate_revision=candidate_revision)
+                    replace(value, candidate_revision=candidate_revision, base_revision=brief_base_revision)
                     if value.attempt_id == AttemptId("work-a-1")
                     else value
                     for value in state.lifecycle.attempts
@@ -348,7 +385,7 @@ class CheckpointPackageTest(unittest.TestCase):
         )
         roots = resolve_durable_roots(project)
         initialize_database(roots, SQLITE_NOW)
-        brief = self.local_brief(project) if local else work_a_brief(project)
+        brief = replace_struct(brief, base_revision=brief_base_revision)
         published_brief = write_revision(
             roots,
             NewArtifact(
@@ -391,7 +428,7 @@ class CheckpointPackageTest(unittest.TestCase):
         (attempt_root / "result.md").write_text("candidate result\n", encoding="utf-8")
         (attempt_root / "review.md").write_text("implementation review\n", encoding="utf-8")
         checkpoint_id = brief.checkpoint.checkpoint_id
-        payload = project / "accept-checkpoint.json"
+        payload = attempt_root / "accept-checkpoint.json"
         payload.write_text(
             json.dumps(
                 {
@@ -402,13 +439,43 @@ class CheckpointPackageTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        common = "--project-root", str(project), "--work-root", str(roots.work_root)
-        self.accept_checkpoint(common, self.project_action(common, "accept-checkpoint:work-a-1"), payload)
-        reloaded = store.validated_snapshot()
+        return CheckpointFixture(
+            project,
+            roots.work_root,
+            store,
+            brief,
+            candidate_revision,
+            candidate_diff,
+            payload,
+        )
+
+    def accepted_package_fixture(
+        self,
+        *,
+        local: bool = False,
+        candidate_form: Literal["working-tree", "current-head"] = "working-tree",
+    ) -> AcceptedPackageFixture:
+        fixture = self.checkpoint_fixture(local=local, candidate_form=candidate_form)
+        self.accept_checkpoint(
+            fixture.common,
+            self.project_action(fixture.common, "accept-checkpoint:work-a-1"),
+            fixture.payload,
+        )
+        reloaded = fixture.store.validated_snapshot()
+        checkpoint_id = fixture.brief.checkpoint.checkpoint_id
         package_reference = next(
             value for value in reloaded.artifact_references if value.key == f"work-a-1-{checkpoint_id}-review-package"
         )
-        return AcceptedPackageFixture(project, roots.work_root, store, brief, package_reference)
+        return AcceptedPackageFixture(
+            fixture.project,
+            fixture.work,
+            fixture.store,
+            fixture.brief,
+            fixture.candidate_revision,
+            fixture.candidate_bytes,
+            fixture.payload,
+            package_reference,
+        )
 
     def package(self, fixture: AcceptedPackageFixture) -> work_brief_models.CheckpointPackage:
         package = decode_canonical_checkpoint_review_package(
@@ -432,6 +499,79 @@ class CheckpointPackageTest(unittest.TestCase):
         self.assertEqual(f"working-tree-sha256:{candidate.content_sha256}", package.candidate)
         self.assertEqual(
             candidate.content_sha256, hashlib.sha256((fixture.work / candidate.selector).read_bytes()).hexdigest()
+        )
+
+    def test_checkpoint_acceptance_preserves_clean_current_head_from_the_accepted_base(self) -> None:
+        fixture = self.accepted_package_fixture(candidate_form="current-head")
+        package = self.package(fixture)
+
+        self.assertIsInstance(package, work_brief_models.CheckpointReviewPackageV2)
+        assert isinstance(package, work_brief_models.CheckpointReviewPackageV2)
+        candidate = package.candidate_snapshot
+        self.assertEqual(fixture.candidate_revision, package.candidate)
+        self.assertEqual(fixture.candidate_bytes, (fixture.work / candidate.selector).read_bytes())
+        self.assertEqual(hashlib.sha256(fixture.candidate_bytes).hexdigest(), candidate.content_sha256)
+        self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+        handover = msgspec.json.decode(
+            self.run_cli(*fixture.common, "handover", "--json")[1],
+            type=ProjectHandover,
+            strict=True,
+        )
+        self.assertEqual(fixture.candidate_revision, handover.checkpoint_packages[0].candidate)
+
+    def reject_checkpoint_without_publication(self, fixture: CheckpointFixture) -> JsonObject:
+        action = self.project_action(fixture.common, "accept-checkpoint:work-a-1")
+        before = fixture.store.validated_snapshot()
+        with patch(
+            "pinboard.interfaces.transitions.ArtifactRepository.publish",
+            side_effect=AssertionError("checkpoint rejection published immutable evidence"),
+        ):
+            result, stdout, stderr = self.run_cli(
+                *self.project_transition_arguments(fixture, action, fixture.payload),
+                "--json",
+            )
+        self.assertEqual(11, result, stderr)
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        rejected = self.json_object(json.loads(stdout))
+        self.assertEqual("rejected", rejected["status"])
+        self.assertFalse(rejected["state_changed"])
+        self.assertEqual([], rejected["changed_surfaces"])
+        return rejected
+
+    def test_checkpoint_acceptance_rejects_a_commit_different_from_current_head(self) -> None:
+        fixture = self.checkpoint_fixture(candidate_form="current-head")
+        (fixture.project / "tracked.txt").write_text("later\n", encoding="utf-8")
+        current_head = self.commit_all(fixture.project, "later")
+
+        rejected = self.reject_checkpoint_without_publication(fixture)
+
+        self.assertEqual("correct-input", rejected["retry"])
+        self.assertIn(
+            {"field": "current_head", "expected": fixture.candidate_revision, "observed": current_head},
+            self.json_array(rejected["mismatches"]),
+        )
+
+    def test_checkpoint_acceptance_rejects_a_dirty_current_head(self) -> None:
+        fixture = self.checkpoint_fixture(candidate_form="current-head")
+        (fixture.project / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+
+        rejected = self.reject_checkpoint_without_publication(fixture)
+
+        self.assertEqual("retry-same-input", rejected["retry"])
+        self.assertIn(
+            {"field": "working_tree_clean", "expected": True, "observed": False},
+            self.json_array(rejected["mismatches"]),
+        )
+
+    def test_checkpoint_acceptance_rejects_an_unreadable_base_comparison(self) -> None:
+        fixture = self.checkpoint_fixture(candidate_form="current-head", accepted_base="missing-accepted-base")
+
+        rejected = self.reject_checkpoint_without_publication(fixture)
+
+        self.assertEqual("retry-same-input", rejected["retry"])
+        self.assertIn(
+            {"field": "candidate_revision", "value": fixture.candidate_revision},
+            self.json_array(rejected["observed"]),
         )
 
     def legacy_review_fixture(self) -> tuple[AcceptedPackageFixture, int, int, bytes]:
@@ -1078,7 +1218,7 @@ class CheckpointPackageTest(unittest.TestCase):
         self.assertIn("Compare the receipt candidate and the review-file candidate separately", prompt)
 
     def test_review_job_accepts_a_local_checkpoint_package(self) -> None:
-        fixture = self.accepted_package_fixture(local=True)
+        fixture = self.accepted_package_fixture(local=True, candidate_form="current-head")
         package_receipt = next(
             value
             for value in fixture.store.validated_snapshot().transition_receipts
@@ -1108,7 +1248,9 @@ class CheckpointPackageTest(unittest.TestCase):
             "--checkpoint-history-id",
             str(int(package_receipt.history_id)),
         )
-        self.assertEqual("present", self.json_object(job["prior_checkpoint_package"])["kind"])
+        selected = self.json_object(job["prior_checkpoint_package"])
+        self.assertEqual("present", selected["kind"])
+        self.assertEqual(hashlib.sha256(fixture.candidate_bytes).hexdigest(), selected["candidate_sha256"])
 
     def test_package_aware_review_job_uses_one_bounded_read_transaction(self) -> None:
         fixture, package_history_id, correction_history_id = self.review_job_fixture()
@@ -1283,7 +1425,7 @@ class CheckpointPackageTest(unittest.TestCase):
     def test_covered_completion_consumes_the_complete_checkpoint_set_and_reloads(  # noqa: PLR0915 - one installed terminal journey
         self,
     ) -> None:
-        fixture = self.accepted_package_fixture(local=True)
+        fixture = self.accepted_package_fixture(local=True, candidate_form="current-head")
         connection = sqlite3.connect(fixture.work / "state.sqlite3")
         try:
             connection.execute("UPDATE work_items SET state = 'active' WHERE item_id = 'work-a'")

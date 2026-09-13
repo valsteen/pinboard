@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -120,12 +121,16 @@ class RootResolutionTest(unittest.TestCase):
             repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "candidate"
         )
         candidate_revision = self.run_git(repository, "rev-parse", "HEAD").strip()
+        index = repository / ".git" / "index"
+        original_index = index.read_bytes()
+        os.utime(tracked, (1, 1))
         observed = read_current_head_candidate(repository, candidate_revision, base_revision)
 
         self.assertIsInstance(observed, CurrentHeadCandidate)
         assert isinstance(observed, CurrentHeadCandidate)
         self.assertEqual(candidate_revision, observed.identity)
         self.assertIn(b"-base\n+candidate", observed.diff)
+        self.assertEqual(original_index, index.read_bytes())
 
     def test_returning_initialization_reads_an_existing_exclusion_without_write_access(self) -> None:
         repository = Path(tempfile.mkdtemp()).resolve()

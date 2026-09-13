@@ -19,7 +19,7 @@ from pinboard.adapters.files.file_io import (
 from pinboard.application import stored_state
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, BriefArtifactRef, NewArtifact
 from pinboard.domain import work_models
-from pinboard.domain.errors import ArtifactAcceptanceAfterPublicationError
+from pinboard.domain.errors import ArtifactAcceptanceAfterPublicationError, ChangedSurface
 
 _DIRECTORIES: dict[work_models.ArtifactKind, str] = {
     work_models.ArtifactKind.REQUIREMENTS: "requirements",
@@ -120,7 +120,11 @@ def _publish_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactPub
         try:
             created = create_immutable(path, artifact.content)
         except ImmutableFilePublishedError as error:
-            raise ArtifactAcceptanceAfterPublicationError(reference.selector, error) from error
+            raise ArtifactAcceptanceAfterPublicationError(
+                reference.selector,
+                error,
+                (ChangedSurface.IMMUTABLE_ARTIFACT,),
+            ) from error
         except FileIOError as error:
             if error.code == FileIOErrorCode.FILE_ALREADY_EXISTS:
                 raise ArtifactError(

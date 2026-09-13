@@ -305,6 +305,108 @@ class SQLiteQueriesTest(unittest.TestCase):
                 self.assertEqual((), status.attempts)
                 self.assertIsNone(status.notes)
 
+    def test_item_status_accepts_every_legal_item_and_current_attempt_shape(self) -> None:
+        class Reader:
+            def __init__(self, facts: query_models.ItemStatusFacts) -> None:
+                self.facts = facts
+
+            def read_item_status(self, item_id: ItemId) -> query_models.ItemStatusFacts | None:
+                if item_id != ItemId("selected"):
+                    raise AssertionError(f"Unexpected item selection: {item_id}")
+                return self.facts
+
+        legal_shapes = (
+            (stored_state.StoredWorkItemState.INTAKE, None),
+            (stored_state.StoredWorkItemState.READY, None),
+            (stored_state.StoredWorkItemState.ACTIVE, work_models.AttemptState.ACTIVE),
+            (stored_state.StoredWorkItemState.PAUSED, work_models.AttemptState.PAUSED),
+            (stored_state.StoredWorkItemState.BLOCKED, None),
+            (stored_state.StoredWorkItemState.BLOCKED, work_models.AttemptState.BLOCKED),
+            (stored_state.StoredWorkItemState.DEFERRED, None),
+            (stored_state.StoredWorkItemState.REVIEW, work_models.AttemptState.REVIEW),
+            (stored_state.StoredWorkItemState.DONE, None),
+            (stored_state.StoredWorkItemState.SUPERSEDED, None),
+            (stored_state.StoredWorkItemState.DROPPED, None),
+        )
+        for item_state, attempt_state in legal_shapes:
+            attempts = (
+                ()
+                if attempt_state is None
+                else (query_models.ItemStatusAttemptFacts(AttemptId("selected-1"), attempt_state, None),)
+            )
+            facts = query_models.ItemStatusFacts(
+                12,
+                query_models.ItemStatusItemFacts(
+                    ItemId("selected"), item_state, work_models.Timing.MUST_NOW, None, "continue", "source", None, 1
+                ),
+                "Selected work",
+                attempts,
+                None,
+            )
+
+            with self.subTest(item_state=item_state.value, attempt_state=attempt_state):
+                status = project_item_status(Reader(facts), ItemId("selected"), SQLITE_NOW)
+
+            self.assertIsInstance(status, query_models.ItemStatus)
+            assert isinstance(status, query_models.ItemStatus)
+            self.assertEqual(item_state, status.state)
+            self.assertEqual(0 if attempt_state is None else 1, len(status.attempts))
+
+    def test_item_status_rejects_both_selected_item_attempt_mismatch_directions_with_complete_facts(self) -> None:
+        class Reader:
+            def __init__(self, facts: query_models.ItemStatusFacts) -> None:
+                self.facts = facts
+
+            def read_item_status(self, item_id: ItemId) -> query_models.ItemStatusFacts | None:
+                if item_id != ItemId("selected"):
+                    raise AssertionError(f"Unexpected item selection: {item_id}")
+                return self.facts
+
+        item = query_models.ItemStatusItemFacts(
+            ItemId("selected"),
+            stored_state.StoredWorkItemState.READY,
+            work_models.Timing.CHEAPER_NOW,
+            "evidence",
+            "activate",
+            "source",
+            "notes",
+            3,
+        )
+        attempt = query_models.ItemStatusAttemptFacts(
+            AttemptId("selected-1"), work_models.AttemptState.ACTIVE, "candidate-a"
+        )
+        for selected_item, attempts, expected, observed in (
+            (item, (attempt,), "none", "active"),
+            (
+                replace(item, state=stored_state.StoredWorkItemState.ACTIVE),
+                (),
+                "active",
+                "none",
+            ),
+        ):
+            facts = query_models.ItemStatusFacts(12, selected_item, "Selected work", attempts, None)
+
+            with self.subTest(item_state=selected_item.state.value, observed=observed):
+                failure = project_item_status(Reader(facts), ItemId("selected"), SQLITE_NOW)
+
+            self.assertIsInstance(failure, DecisionFailure)
+            assert isinstance(failure, DecisionFailure)
+            self.assertEqual("ITEM_STATUS_INCONSISTENT", failure.code.value)
+            self.assertIsNotNone(failure.details)
+            assert failure.details is not None
+            self.assertEqual("do-not-retry", failure.details.retry.value)
+            self.assertEqual("unchanged", failure.details.effect.value)
+            self.assertEqual((), failure.details.changed_surfaces)
+            observed_facts = {value.field: value.value for value in failure.details.observed}
+            self.assertEqual("selected", observed_facts["item_id"])
+            self.assertEqual(selected_item.state.value, observed_facts["item_state"])
+            self.assertEqual(None if not attempts else "selected-1", observed_facts["attempt_id"])
+            self.assertEqual(observed, observed_facts["attempt_state"])
+            self.assertEqual(
+                [("current_attempt_state", expected, observed)],
+                [(value.field, value.expected, value.observed) for value in failure.details.mismatches],
+            )
+
     def test_item_status_rejects_an_unknown_canonical_identity(self) -> None:
         store = self._store()
 

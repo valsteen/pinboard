@@ -117,11 +117,13 @@ class OperationContract(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
 
 
 class ActionContract(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-agent-tool-action/v1"]
+    schema: Literal["pinboard-agent-tool-action/v2"]
     action_kind: str
     purpose: str
     mutation_class: MutationClass
     execution_route: ActionExecutionRoute
+    operation_selector: str | None
+    cli_usage: str | None
     lifecycle_effect: str
     permitted_roles: tuple[str, ...]
     required_authority: str
@@ -201,10 +203,19 @@ def _mutation_class(command_type: type[cli_commands.CliCommand]) -> MutationClas
         cli_commands.PreparationRevokeCommand,
     ):
         return "mutates-ledger"
-    if command_type is cli_commands.BriefPublishCommand:
+    if command_type in (
+        cli_commands.BriefPublishCommand,
+        cli_commands.ProjectDispatchCommand,
+        cli_commands.ProjectReviewedDispatchCommand,
+        cli_commands.ProjectCorrectionDispatchCommand,
+        cli_commands.InitialReviewJobCommand,
+        cli_commands.PackageInitialReviewJobCommand,
+        cli_commands.PackageInitialRecoveryReviewJobCommand,
+        cli_commands.CorrectionReviewJobCommand,
+        cli_commands.PackageCorrectionReviewJobCommand,
+        cli_commands.PackageCorrectionRecoveryReviewJobCommand,
+    ):
         return "publishes-and-records-artifact"
-    if command_type is cli_commands.ProjectReviewedDispatchCommand:
-        return "may-publish-and-record-artifact"
     if command_type is cli_commands.BriefSourcesPlanToFileCommand:
         return "publishes-selected-output"
     if command_type is cli_commands.RebuildViewsCommand:
@@ -223,14 +234,10 @@ def _mutation_class(command_type: type[cli_commands.CliCommand]) -> MutationClas
         cli_commands.ToolContractCommand,
         cli_commands.BriefSourcesPlanCommand,
         cli_commands.BriefSourcesEmitCommand,
+        cli_commands.ArtifactVerifyCommand,
         cli_commands.HandoverCommand,
-        cli_commands.ProjectDispatchCommand,
         cli_commands.AttemptStatusCommand,
         cli_commands.AttemptInspectCommand,
-        cli_commands.InitialReviewJobCommand,
-        cli_commands.PackageInitialReviewJobCommand,
-        cli_commands.CorrectionReviewJobCommand,
-        cli_commands.PackageCorrectionReviewJobCommand,
         cli_commands.PreparationStatusCommand,
         cli_commands.ParallelPreviewCommand,
     ):
@@ -290,6 +297,8 @@ def _purpose(operation_id: str, variant: str) -> str:  # noqa: C901, PLR0912 - e
         return f"{variant.capitalize()} deterministic, bounded accepted-authority source batches."
     if operation_id == "dispatch":
         return f"Prepare a candidate-bound worker launch {variant.replace('-', ' ')}."
+    if operation_id == "artifact/verify":
+        return "Verify supplied prompt reference facts and bytes against one accepted artifact reference."
     if operation_id.startswith("attempt/"):
         return f"{operation_id.removeprefix('attempt/').capitalize()} one attempt authority claim."
     if operation_id.startswith("preparation/"):
@@ -320,7 +329,7 @@ def _purpose(operation_id: str, variant: str) -> str:  # noqa: C901, PLR0912 - e
         case "proposal":
             return "Preserve one proposal as an intake item."
         case "review-job":
-            return "Render a candidate-bound read-only review job."
+            return "Read the focused candidate-review inputs, then publish and accept the immutable reviewer prompt."
         case "parallel/preview":
             return "Preview structurally independent work without launching it."
         case "views/rebuild":
@@ -364,6 +373,7 @@ def _roles_and_authority(
         cli_commands.ProjectTransitionCommand,
         cli_commands.ProjectDispatchCommand,
         cli_commands.ProjectReviewedDispatchCommand,
+        cli_commands.ProjectCorrectionDispatchCommand,
         cli_commands.AttemptRevokeCommand,
         cli_commands.PreparationRevokeCommand,
     ):
@@ -391,8 +401,10 @@ def _subject_and_precondition(  # noqa: C901, PLR0912 - exhaustive installed pre
         cli_commands.AttemptInspectCommand,
         cli_commands.InitialReviewJobCommand,
         cli_commands.PackageInitialReviewJobCommand,
+        cli_commands.PackageInitialRecoveryReviewJobCommand,
         cli_commands.CorrectionReviewJobCommand,
         cli_commands.PackageCorrectionReviewJobCommand,
+        cli_commands.PackageCorrectionRecoveryReviewJobCommand,
     ):
         return "attempt", "attempt-exists"
     if command_type in (cli_commands.PreparationStartCommand, cli_commands.PreparationAcquireCommand):
@@ -414,7 +426,11 @@ def _subject_and_precondition(  # noqa: C901, PLR0912 - exhaustive installed pre
         cli_commands.PreparationTransitionCommand,
     ):
         return "action-subject", "selected-action-remains-legal"
-    if command_type in (cli_commands.ProjectDispatchCommand, cli_commands.ProjectReviewedDispatchCommand):
+    if command_type in (
+        cli_commands.ProjectDispatchCommand,
+        cli_commands.ProjectReviewedDispatchCommand,
+        cli_commands.ProjectCorrectionDispatchCommand,
+    ):
         return "attempt", "active-attempt-current-scope"
     if command_type is cli_commands.ProposalCommand:
         return "proposal", "valid-ledger"
@@ -430,6 +446,8 @@ def _subject_and_precondition(  # noqa: C901, PLR0912 - exhaustive installed pre
         return "source-plan", "selected-source-checkout-readable"
     if command_type is cli_commands.BriefPublishCommand:
         return "brief-artifact", "canonical-brief-valid"
+    if command_type is cli_commands.ArtifactVerifyCommand:
+        return "accepted-artifact-reference", "accepted-reference-exists-and-matches-supplied-facts-and-bytes"
     return "ledger", "valid-ledger" if operation_id not in {
         "tool-contract",
         "input-contract",
@@ -450,8 +468,12 @@ def _artifact_selector(command_type: type[cli_commands.CliCommand]) -> str | Non
         return "pinboard-work-brief/v2 file"
     if command_type is cli_commands.ProposalCommand:
         return "pinboard-proposal/v1 file"
-    if command_type in (cli_commands.ProjectDispatchCommand, cli_commands.ProjectReviewedDispatchCommand):
-        return "pinboard-dispatch/v1 environment file; optional canonical prompt and ready-review files"
+    if command_type in (
+        cli_commands.ProjectDispatchCommand,
+        cli_commands.ProjectReviewedDispatchCommand,
+        cli_commands.ProjectCorrectionDispatchCommand,
+    ):
+        return "pinboard-dispatch/v2 environment file; optional canonical prompt and ready-review files"
     if command_type in (
         cli_commands.ProjectTransitionCommand,
         cli_commands.AttemptTransitionCommand,
@@ -472,8 +494,20 @@ def _artifact_schema(command_type: type[cli_commands.CliCommand]) -> msgspec.Raw
         return None
     elif command_type is cli_commands.ProposalCommand:
         model = proposal_models.Proposal
-    elif command_type in (cli_commands.ProjectDispatchCommand, cli_commands.ProjectReviewedDispatchCommand):
-        model = dispatch_models.DispatchEnvironment
+    elif command_type in (
+        cli_commands.ProjectDispatchCommand,
+        cli_commands.ProjectReviewedDispatchCommand,
+        cli_commands.ProjectCorrectionDispatchCommand,
+    ):
+        return msgspec.Raw(
+            msgspec.json.encode(
+                msgspec.json.schema(
+                    dispatch_models.DispatchEnvironment,
+                    schema_hook=dispatch_models.dispatch_environment_schema_hook,
+                ),
+                order="sorted",
+            )
+        )
     else:
         return None
     return msgspec.Raw(msgspec.json.encode(msgspec.json.schema(model), order="sorted"))
@@ -670,19 +704,36 @@ def describe_action(kind: decision_models.ActionKind) -> ActionContract:
             raise ValueError(str(encoded))
         input_schema = msgspec.Raw(encoded)
     mutation_class = _action_mutation_class(kind)
+    route = _action_execution_route(kind)
+    roles = semantics.permitted_roles
+    operation_selector = None
+    cli_usage = None
+    if route == "transition" and len(roles) == 1:
+        variant = {
+            decision_models.Role.PROJECT: "project",
+            decision_models.Role.WORKER: "attempt",
+            decision_models.Role.PREPARER: "preparation",
+        }.get(roles[0])
+        if variant is not None:
+            operation_selector = f"transition:{variant}"
+            operation = describe_operation("transition", variant)
+            if isinstance(operation, OperationContract):
+                cli_usage = operation.cli_usage
     return ActionContract(
-        "pinboard-agent-tool-action/v1",
+        "pinboard-agent-tool-action/v2",
         kind.value,
         semantics.use_case,
         mutation_class,
-        _action_execution_route(kind),
+        route,
+        operation_selector,
+        cli_usage,
         semantics.lifecycle_effect.value,
         tuple(role.value for role in semantics.permitted_roles),
         _action_authority(semantics.permitted_roles),
         semantics.subject_kind.value,
         semantics.lifecycle_precondition.value,
         input_schema,
-        "pinboard-dispatch/v1 environment file" if kind == decision_models.ActionKind.DISPATCH else None,
+        "pinboard-dispatch/v2 environment file" if kind == decision_models.ActionKind.DISPATCH else None,
         semantics.practical_result,
         "reselect-after-any-rejection" if mutation_class != "read-only" else "safe-to-repeat-after-fresh-inspection",
     )

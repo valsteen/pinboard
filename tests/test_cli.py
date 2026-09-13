@@ -4,6 +4,7 @@ import io
 import json
 import os
 import runpy
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -45,7 +46,7 @@ from pinboard.application.ports import WorkStore
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.history import work_item_definition_digest
-from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import AttemptId, HistoryId, HostId, ItemId, LeaseId, TaskId
 from pinboard.interfaces import (
     action_selection,
     dispatch_brief,
@@ -496,6 +497,47 @@ class CliTest(unittest.TestCase):
                 state = replace(state, artifact_references=(reference, *state.artifact_references[1:]))
             initialize_store(store, state)
         return project, roots.work_root, store
+
+    def protect_working_tree_candidate(
+        self,
+        project: Path,
+        work: Path,
+        *,
+        attempt_id: str = "work-a-1",
+    ) -> str:
+        candidate_path = project / "candidate.txt"
+        subprocess.run(("git", "init", "--quiet", str(project)), check=True)
+        candidate_path.write_text("accepted base\n", encoding="utf-8")
+        subprocess.run(("git", "-C", str(project), "add", "candidate.txt"), check=True)
+        subprocess.run(
+            (
+                "git",
+                "-C",
+                str(project),
+                "-c",
+                "user.name=Pinboard Test",
+                "-c",
+                "user.email=pinboard@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "accepted base",
+            ),
+            check=True,
+        )
+        candidate_path.write_text("accepted candidate\n", encoding="utf-8")
+        candidate_bytes = subprocess.run(
+            ("git", "-C", str(project), "diff", "--binary", "HEAD", "--"),
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+        candidate = f"working-tree-sha256:{hashlib.sha256(candidate_bytes).hexdigest()}"
+        with sqlite3.connect(work / "state.sqlite3") as connection:
+            connection.execute(
+                "UPDATE attempts SET candidate_revision = ? WHERE attempt_id = ?",
+                (candidate, attempt_id),
+            )
+        return candidate
 
     def prepared_state(self, expires_at: datetime) -> stored_state.StoredWorkState:
         state = complete_sqlite_state()
@@ -1737,6 +1779,59 @@ class CliTest(unittest.TestCase):
             "--ttl-seconds",
             "60",
         )
+        before_contention = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+        contention_result, contention_stdout, contention_stderr = self.run_cli(
+            *common,
+            "attempt",
+            "acquire",
+            "--attempt-id",
+            "work-a-1",
+            "--task-id",
+            "worker-b",
+            "--host-id",
+            "studio",
+            "--ttl-seconds",
+            "60",
+            "--json",
+        )
+        self.assertEqual(11, contention_result, contention_stderr)
+        contention = self.json_object(json.loads(contention_stdout))
+        self.assertEqual("ATTEMPT_AUTHORITY_REQUIRED", contention["code"])
+        self.assertEqual("do-not-retry", contention["retry"])
+        self.assertFalse(contention["state_changed"])
+        self.assertEqual([], contention["changed_surfaces"])
+        observed = {
+            str(value["field"]): value["value"]
+            for value in (self.json_object(row) for row in self.json_list(contention["observed"]))
+        }
+        self.assertEqual("worker-a", observed["holder_task_id"])
+        self.assertEqual("studio", observed["holder_host_id"])
+        self.assertEqual(acquired["generation"], observed["generation"])
+        self.assertEqual(acquired["expires_at"], observed["expires_at"])
+        self.assertEqual(
+            [
+                {
+                    "kind": "command",
+                    "command": shlex.join(
+                        (
+                            "pinboard",
+                            "--project-root",
+                            str(project),
+                            "--work-root",
+                            str(work),
+                            "attempt",
+                            "status",
+                            "--attempt-id",
+                            "work-a-1",
+                            "--json",
+                        )
+                    ),
+                }
+            ],
+            contention["next_actions"],
+        )
+        self.assertEqual("project", self.project_action(common, "dispatch:work-a-1")["authorization"])
+        self.assertEqual(before_contention, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
         revoked = self.run_json_cli(
             *common,
             "attempt",
@@ -2178,7 +2273,7 @@ class CliTest(unittest.TestCase):
                     "active", self.run_json_cli(*common, "preparation", "status", "--item-id", "work-c")["status"]
                 )
 
-    def test_local_editorial_start_reaches_dispatch_without_brief_review(self) -> None:
+    def test_local_editorial_start_reaches_dispatch_without_brief_review(self) -> None:  # noqa: PLR0915
         project, work, _store = self.initialized_state(complete_sqlite_state())
         self.run_git(project, "init", "-b", "codex/readme-artwork")
         (project / "README.md").write_text("# Product\n\n![Preview](docs/preview.png)\n", encoding="utf-8")
@@ -2264,35 +2359,25 @@ class CliTest(unittest.TestCase):
         self.assertEqual("codex/readme-artwork", attempt.branch)
         self.assertEqual(base_revision, attempt.base_revision)
         self.assertEqual("owner-task", attempt.provenance)
-        self.run_json_cli(
-            *common,
-            "attempt",
-            "acquire",
-            "--attempt-id",
-            "work-c-1",
-            "--task-id",
-            "implementation-worker",
-            "--host-id",
-            "studio",
-            "--ttl-seconds",
-            "60",
-        )
         dispatch = self.project_action(common, "dispatch:work-c-1")
         environment = project / "dispatch-environment.json"
         environment.write_bytes(
             msgspec.json.encode(
                 {
-                    "schema": "pinboard-dispatch/v1",
+                    "schema": "pinboard-dispatch/v2",
                     "checkout": str(project),
                     "branch": candidate.branch,
                     "starting_revision": candidate.base_revision,
+                    "host_id": "studio",
+                    "fresh_context": True,
+                    "lease_ttl_seconds": 60,
                     "permissions": ["repository-read", "repository-write"],
                 }
             )
         )
         before_dispatch = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
 
-        dispatch_result, _prompt, dispatch_stderr = self.run_cli(
+        dispatch_result, dispatch_stdout, dispatch_stderr = self.run_cli(
             *common,
             "dispatch",
             "--action-id",
@@ -2307,11 +2392,23 @@ class CliTest(unittest.TestCase):
             local.checkpoint_id,
             "--environment",
             str(environment),
+            "--json",
         )
 
         self.assertEqual(0, dispatch_result, dispatch_stderr)
+        dispatch_ready = self.json_object(json.loads(dispatch_stdout))
+        prompt_reference = self.json_object(dispatch_ready["prompt_reference"])
+        prompt = (work / str(prompt_reference["selector"])).read_text(encoding="utf-8")
+        self.assertIn(
+            f"--work-root {shlex.quote(str(work))} attempt acquire --attempt-id work-c-1 "
+            '--task-id "$CODEX_THREAD_ID" '
+            "--host-id studio --ttl-seconds 60 --json",
+            prompt,
+        )
         after_dispatch = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
-        self.assertEqual(before_dispatch, after_dispatch)
+        self.assertEqual(before_dispatch.lifecycle.work_items, after_dispatch.lifecycle.work_items)
+        self.assertEqual(before_dispatch.lifecycle.attempts, after_dispatch.lifecycle.attempts)
+        self.assertEqual(len(before_dispatch.artifact_references) + 1, len(after_dispatch.artifact_references))
         self.assertFalse(
             any(
                 reference.kind == work_models.ArtifactKind.EVIDENCE
@@ -2320,6 +2417,38 @@ class CliTest(unittest.TestCase):
             )
         )
         self.assertEqual([], list((work / "artifacts" / "evidence").glob("work-c-1-brief-review-*")))
+        acquire_line = next(line.strip() for line in prompt.splitlines() if " attempt acquire " in line)
+        fresh_environment = os.environ.copy()
+        fresh_environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+        fresh_environment["CODEX_THREAD_ID"] = "implementation-worker"
+        acquired_process = subprocess.run(
+            ["/bin/sh", "-c", acquire_line],
+            cwd=project,
+            env=fresh_environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, acquired_process.returncode, acquired_process.stderr or acquired_process.stdout)
+        acquired = self.json_object(json.loads(acquired_process.stdout))
+        continuation_line = next(line.strip() for line in prompt.splitlines() if " actions --role worker " in line)
+        continuation_line = continuation_line.replace("<returned-lease-id>", str(acquired["lease_id"])).replace(
+            "<returned-generation>", str(acquired["generation"])
+        )
+        continuation_process = subprocess.run(
+            ["/bin/sh", "-c", continuation_line],
+            cwd=project,
+            env=fresh_environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, continuation_process.returncode, continuation_process.stderr or continuation_process.stdout)
+        worker_actions = self.json_object(json.loads(continuation_process.stdout))
+        self.assertEqual(
+            "continue:work-c-1",
+            self.json_object(self.json_list(worker_actions["actions"])[0])["action_id"],
+        )
 
     def test_installed_authority_callers_sample_operation_refresh_and_preparation_render_separately(self) -> None:
         operation_time = SQLITE_NOW + timedelta(seconds=1)
@@ -2661,6 +2790,7 @@ class CliTest(unittest.TestCase):
             transition_receipts=(),
         )
         project, work, store = self.initialized_state(state)
+        candidate = self.protect_working_tree_candidate(project, work)
         common = ("--project-root", str(project), "--work-root", str(work))
         accepted_brief = work_a_brief(project)
         accepted_checkpoint = accepted_brief.checkpoint
@@ -2688,12 +2818,12 @@ class CliTest(unittest.TestCase):
         (attempt_root / "review.md").write_bytes(review_bytes)
         payload = project / "accept-checkpoint.json"
         payload.write_text(
-            f'{{"checkpoint":"{CHECKPOINT_ID}","candidate":"candidate-a","evidence":"Accepted."}}\n',
+            json.dumps({"checkpoint": CHECKPOINT_ID, "candidate": candidate, "evidence": "Accepted."}) + "\n",
             encoding="utf-8",
         )
         wrong_checkpoint_payload = project / "accept-wrong-checkpoint.json"
         wrong_checkpoint_payload.write_text(
-            '{"checkpoint":"checkpoint-a","candidate":"candidate-a","evidence":"Rejected."}\n',
+            json.dumps({"checkpoint": "checkpoint-a", "candidate": candidate, "evidence": "Rejected."}) + "\n",
             encoding="utf-8",
         )
         mismatch_payload = project / "accept-mismatched-checkpoint.json"
@@ -2855,6 +2985,49 @@ class CliTest(unittest.TestCase):
         self.assertFalse(mismatch["state_changed"])
         self.assertEqual([], mismatch["changed_surfaces"])
         self.assertEqual(before_mismatch, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
+
+        wrong_project_result, wrong_project_stdout, wrong_project_stderr = self.run_cli(
+            *common,
+            "transition",
+            "--action-id",
+            "submit-review:work-a-1",
+            "--subject-revision",
+            "12",
+            "--authorization",
+            "project",
+            "--task-id",
+            "project-task",
+            "--host-id",
+            "studio",
+            "--payload",
+            str(mismatch_payload),
+            "--json",
+        )
+        self.assertEqual(11, wrong_project_result, wrong_project_stderr)
+        wrong_project = self.json_object(json.loads(wrong_project_stdout))
+        self.assertEqual("ACTION_AUTHORITY_WRONG", wrong_project["code"])
+        self.assertEqual(
+            [
+                {
+                    "kind": "command",
+                    "command": shlex.join(
+                        (
+                            "pinboard",
+                            "--project-root",
+                            str(project),
+                            "--work-root",
+                            str(work),
+                            "attempt",
+                            "status",
+                            "--attempt-id",
+                            "work-a-1",
+                            "--json",
+                        )
+                    ),
+                }
+            ],
+            wrong_project["next_actions"],
+        )
         self.assertEqual(artifacts_before_mismatch, artifact_inventory())
         self.assertEqual(status_before_mismatch, self.run_json_cli(*common, "item", "status", "--item-id", "work-a"))
         self.assertEqual(handover_before_mismatch, self.run_json_cli(*common, "handover"))
@@ -2874,6 +3047,7 @@ class CliTest(unittest.TestCase):
         original_publish = ArtifactRepository.publish
         original_create_immutable = artifact_files.create_immutable
         expected_publication_selectors = (
+            f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-candidate/1.patch",
             f"artifacts/results/work-a-1-{CHECKPOINT_ID}-result/1.md",
             f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review/1.md",
             f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review-package/1.json",
@@ -2901,7 +3075,7 @@ class CliTest(unittest.TestCase):
 
             return fail_publication_sync
 
-        for failed_publication in (2, 3):
+        for failed_publication in (2, 3, 4):
             with (
                 self.subTest(failed_publication=failed_publication),
                 patch(
@@ -2952,6 +3126,10 @@ class CliTest(unittest.TestCase):
         self.assertEqual("do-not-retry", package_failure["retry"])
         self.assertEqual(
             [
+                {
+                    "field": "published_artifact_selector",
+                    "value": f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-candidate/1.patch",
+                },
                 {
                     "field": "published_artifact_selector",
                     "value": f"artifacts/results/work-a-1-{CHECKPOINT_ID}-result/1.md",
@@ -3048,7 +3226,7 @@ class CliTest(unittest.TestCase):
         if isinstance(package, WorkBriefFailure):
             self.fail(str(package))
         self.assertEqual(CHECKPOINT_ID, package.checkpoint.id)
-        self.assertEqual("candidate-a", package.candidate)
+        self.assertEqual(candidate, package.candidate)
         self.assertEqual("accepted-brief", package.accepted_brief.role)
         self.assertIsInstance(package.review_basis, work_brief_models.CrossBoundaryReviewBasis)
         assert isinstance(package.review_basis, work_brief_models.CrossBoundaryReviewBasis)
@@ -3056,7 +3234,7 @@ class CliTest(unittest.TestCase):
 
         conflicting_package_payload = project / "accept-conflicting-package.json"
         conflicting_package_payload.write_text(
-            f'{{"checkpoint":"{CHECKPOINT_ID}","candidate":"candidate-a","evidence":"Different evidence."}}\n',
+            json.dumps({"checkpoint": CHECKPOINT_ID, "candidate": candidate, "evidence": "Different evidence."}) + "\n",
             encoding="utf-8",
         )
         preserved_package_bytes = package_path.read_bytes()
@@ -3101,11 +3279,22 @@ class CliTest(unittest.TestCase):
         package_reference = next(
             value for value in reloaded.artifact_references if value.key == f"work-a-1-{CHECKPOINT_ID}-review-package"
         )
+        candidate_reference = next(
+            value for value in reloaded.artifact_references if value.key == f"work-a-1-{CHECKPOINT_ID}-candidate"
+        )
         self.assertEqual(result_reference.artifact_ref_id, attempt.result_artifact_ref_id)
         self.assertEqual(package_reference.artifact_ref_id, reloaded.transition_receipts[-1].artifact_ref_id)
         self.assertEqual("checkpoint-acceptance/v2", reloaded.transition_receipts[-1].outcome_schema)
         self.assertEqual(result_bytes, (work / result_reference.selector).read_bytes())
         self.assertEqual(review_bytes, (work / review_reference.selector).read_bytes())
+        self.assertEqual(
+            subprocess.run(
+                ("git", "-C", str(project), "diff", "--binary", "HEAD", "--"),
+                check=True,
+                stdout=subprocess.PIPE,
+            ).stdout,
+            (work / candidate_reference.selector).read_bytes(),
+        )
         self.assertEqual(package_path.read_bytes(), (work / package_reference.selector).read_bytes())
         self.assertEqual(before_missing.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
         self.assertEqual(len(before_missing.transition_receipts) + 1, len(reloaded.transition_receipts))
@@ -3137,6 +3326,7 @@ class CliTest(unittest.TestCase):
             ),
         )
         project, work, store = self.initialized_state(state)
+        candidate = self.protect_working_tree_candidate(project, work)
         common = ("--project-root", str(project), "--work-root", str(work))
         accepted_brief = work_a_brief(project)
         checkpoint = accepted_brief.checkpoint
@@ -3161,16 +3351,17 @@ class CliTest(unittest.TestCase):
         (attempt_root / "review.md").write_bytes(b"independent review\n")
         payload = project / "accept-checkpoint.json"
         payload.write_text(
-            f'{{"checkpoint":"{CHECKPOINT_ID}","candidate":"candidate-a","evidence":"Accepted."}}\n',
+            json.dumps({"checkpoint": CHECKPOINT_ID, "candidate": candidate, "evidence": "Accepted."}) + "\n",
             encoding="utf-8",
         )
         action = self.project_action(common, "accept-checkpoint:work-a-1")
         before = store.validated_snapshot()
         selectors = (
+            f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-candidate/1.patch",
             f"artifacts/results/work-a-1-{CHECKPOINT_ID}-result/1.md",
             f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review/1.md",
         )
-        review_publication = work / selectors[1]
+        review_publication = work / selectors[2]
         original_fsync = os.fsync
 
         def fail_after_review_link(descriptor: int) -> None:
@@ -3197,7 +3388,7 @@ class CliTest(unittest.TestCase):
             ),
         )
         self.assertEqual(before, store.validated_snapshot())
-        self.assertEqual(b"candidate result\n", (work / selectors[0]).read_bytes())
+        self.assertEqual(b"candidate result\n", (work / selectors[1]).read_bytes())
         self.assertEqual(b"independent review\n", review_publication.read_bytes())
 
         retry_result, _retry_stdout, retry_stderr = self.run_transition(common, action, payload, json_output=True)
@@ -3232,6 +3423,7 @@ class CliTest(unittest.TestCase):
             transition_receipts=(),
         )
         project, work, store = self.initialized_state(state)
+        candidate = self.protect_working_tree_candidate(project, work)
         common = ("--project-root", str(project), "--work-root", str(work))
         accepted_brief = work_a_brief(project)
         checkpoint = accepted_brief.checkpoint
@@ -3256,7 +3448,7 @@ class CliTest(unittest.TestCase):
         (attempt_root / "review.md").write_bytes(b"independent review\n")
         payload = project / "accept-checkpoint.json"
         payload.write_text(
-            f'{{"checkpoint":"{CHECKPOINT_ID}","candidate":"candidate-a","evidence":"Accepted."}}\n',
+            json.dumps({"checkpoint": CHECKPOINT_ID, "candidate": candidate, "evidence": "Accepted."}) + "\n",
             encoding="utf-8",
         )
         action = self.project_action(common, "accept-checkpoint:work-a-1")
@@ -3343,7 +3535,7 @@ class CliTest(unittest.TestCase):
         )
         reloaded = store.validated_snapshot()
         self.assertEqual(before.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
-        self.assertEqual(len(before.artifact_references) + 3, len(reloaded.artifact_references))
+        self.assertEqual(len(before.artifact_references) + 4, len(reloaded.artifact_references))
         self.assertEqual(len(before.transition_receipts) + 1, len(reloaded.transition_receipts))
 
     def test_replacement_recorded_after_checkpoint_publication_blocks_locked_acceptance(self) -> None:
@@ -3375,6 +3567,7 @@ class CliTest(unittest.TestCase):
             transition_receipts=(),
         )
         project, work, store = self.initialized_state(state)
+        candidate = self.protect_working_tree_candidate(project, work)
         common = ("--project-root", str(project), "--work-root", str(work))
         accepted_brief = work_a_brief(project)
         checkpoint = accepted_brief.checkpoint
@@ -3399,7 +3592,7 @@ class CliTest(unittest.TestCase):
         (attempt_root / "review.md").write_bytes(b"independent review\n")
         checkpoint_payload = project / "accept-checkpoint.json"
         checkpoint_payload.write_text(
-            f'{{"checkpoint":"{CHECKPOINT_ID}","candidate":"candidate-a","evidence":"Accepted."}}\n',
+            json.dumps({"checkpoint": CHECKPOINT_ID, "candidate": candidate, "evidence": "Accepted."}) + "\n",
             encoding="utf-8",
         )
         replacement_payload = project / "record-replacement.json"
@@ -3450,6 +3643,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual("do-not-retry", failure["retry"])
         self.assertEqual(
             (
+                f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-candidate/1.patch",
                 f"artifacts/results/work-a-1-{CHECKPOINT_ID}-result/1.md",
                 f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review/1.md",
                 f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review-package/1.json",
@@ -3519,6 +3713,7 @@ class CliTest(unittest.TestCase):
             ),
         )
         project, work, store = self.initialized_state(state, local_brief)
+        candidate = self.protect_working_tree_candidate(project, work)
         common = ("--project-root", str(project), "--work-root", str(work))
         attempt_root = work / "attempts" / "work-a-1"
         attempt_root.mkdir(parents=True)
@@ -3526,7 +3721,8 @@ class CliTest(unittest.TestCase):
         (attempt_root / "review.md").write_bytes(b"local review\n")
         payload = project / "accept-local-checkpoint.json"
         payload.write_text(
-            '{"checkpoint":"local-checkpoint","candidate":"local-candidate","evidence":"Accepted locally."}\n',
+            json.dumps({"checkpoint": "local-checkpoint", "candidate": candidate, "evidence": "Accepted locally."})
+            + "\n",
             encoding="utf-8",
         )
         action = next(
@@ -3547,7 +3743,7 @@ class CliTest(unittest.TestCase):
         if isinstance(package, WorkBriefFailure):
             self.fail(str(package))
         self.assertIsInstance(package.review_basis, work_brief_models.LocalReviewBasis)
-        self.assertEqual(len(before.artifact_references) + 3, len(reloaded.artifact_references))
+        self.assertEqual(len(before.artifact_references) + 4, len(reloaded.artifact_references))
         self.assertEqual(package_reference.artifact_ref_id, reloaded.transition_receipts[-1].artifact_ref_id)
         self.assertEqual("checkpoint-acceptance/v2", reloaded.transition_receipts[-1].outcome_schema)
 
@@ -4423,10 +4619,13 @@ Not launchable:
         old_environment_path.write_text(
             json.dumps(
                 {
-                    "schema": "pinboard-dispatch/v1",
+                    "schema": "pinboard-dispatch/v2",
                     "checkout": str(project),
                     "branch": original_attempt.branch,
                     "starting_revision": original_attempt.base_revision,
+                    "host_id": "studio",
+                    "fresh_context": True,
+                    "lease_ttl_seconds": 60,
                     "permissions": ["repository-read"],
                 }
             ),
@@ -4461,16 +4660,19 @@ Not launchable:
         corrected_environment_path.write_text(
             json.dumps(
                 {
-                    "schema": "pinboard-dispatch/v1",
+                    "schema": "pinboard-dispatch/v2",
                     "checkout": str(project),
                     "branch": replacement.branch,
                     "starting_revision": replacement.base_revision,
+                    "host_id": "studio",
+                    "fresh_context": True,
+                    "lease_ttl_seconds": 60,
                     "permissions": ["repository-read"],
                 }
             ),
             encoding="utf-8",
         )
-        dispatch_result, dispatch_stdout, dispatch_stderr = self.run_cli(
+        dispatch_result, dispatch_ready_stdout, dispatch_stderr = self.run_cli(
             *dispatch_arguments,
             "--environment",
             str(corrected_environment_path),
@@ -4478,8 +4680,12 @@ Not launchable:
             str(review_path),
             "--review-id",
             "replacement-review",
+            "--json",
         )
         self.assertEqual(0, dispatch_result, dispatch_stderr)
+        dispatch_ready = self.json_object(json.loads(dispatch_ready_stdout))
+        prompt_reference = self.json_object(dispatch_ready["prompt_reference"])
+        dispatch_stdout = (work / str(prompt_reference["selector"])).read_text(encoding="utf-8")
         self.assertIn(f"- Branch: {replacement.branch}", dispatch_stdout)
         self.assertIn(f"- Starting revision: {replacement.base_revision}", dispatch_stdout)
         self.assertEqual(checkout_bytes, checkout_file.read_bytes())
@@ -4759,6 +4965,49 @@ Not launchable:
         self.assertIn("pinboard attempt acquire", identifier_stderr)
         self.assertIn("$.task_id", identifier_stderr)
 
+        malformed_result, malformed_stdout, malformed_stderr = self.run_cli(
+            *common,
+            "attempt",
+            "acquire",
+            "--attempt-id",
+            "work-a-1",
+            "--task-id",
+            " worker ",
+            "--host-id",
+            "studio",
+            "--ttl-seconds",
+            "60",
+            "--json",
+        )
+        self.assertEqual(2, malformed_result, malformed_stderr)
+        malformed = self.json_object(json.loads(malformed_stdout))
+        self.assertEqual("CLI_ARGUMENT_INVALID", malformed["code"])
+        malformed_message = malformed["message"]
+        self.assertIsInstance(malformed_message, str)
+        assert isinstance(malformed_message, str)
+        self.assertIn("$.task_id", malformed_message)
+        self.assertEqual("correct-input", malformed["retry"])
+        self.assertFalse(malformed["state_changed"])
+        self.assertEqual(
+            [{"kind": "command", "command": "pinboard tool-contract --json"}],
+            malformed["next_actions"],
+        )
+
+        missing_role_result, missing_role_stdout, missing_role_stderr = self.run_cli(
+            *common,
+            "actions",
+            "--json",
+        )
+        self.assertEqual(2, missing_role_result, missing_role_stderr)
+        missing_role = self.json_object(json.loads(missing_role_stdout))
+        self.assertEqual("CLI_ARGUMENT_INVALID", missing_role["code"])
+        missing_role_message = missing_role["message"]
+        self.assertIsInstance(missing_role_message, str)
+        assert isinstance(missing_role_message, str)
+        self.assertIn("--role", missing_role_message)
+        self.assertEqual("correct-input", missing_role["retry"])
+        self.assertFalse(missing_role["state_changed"])
+
     def test_direct_transition_selects_exact_worker_capability(self) -> None:  # noqa: PLR0915 - one submit and read-only review journey
         state = complete_sqlite_state()
         now = datetime.now(UTC)
@@ -4791,6 +5040,65 @@ Not launchable:
         before_mismatch = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
         mismatched_payload = project / "pause-payload.json"
         mismatched_payload.write_text('{"reason":"pause"}\n', encoding="utf-8")
+
+        wrong_role_result, wrong_role_stdout, wrong_role_stderr = self.run_cli(
+            *common,
+            "transition",
+            "--action-id",
+            "dispatch:work-a-1",
+            "--subject-revision",
+            "12",
+            "--authorization",
+            "attempt",
+            "--lease-id",
+            "attempt-lease-a",
+            "--generation",
+            "3",
+            "--payload",
+            str(mismatched_payload),
+            "--json",
+        )
+        self.assertEqual(11, wrong_role_result, wrong_role_stderr)
+        wrong_role = self.json_object(json.loads(wrong_role_stdout))
+        self.assertEqual("ACTION_AUTHORITY_WRONG", wrong_role["code"])
+        self.assertEqual("correct-input", wrong_role["retry"])
+        self.assertFalse(wrong_role["state_changed"])
+        self.assertEqual(
+            [
+                {"field": "role", "value": "worker"},
+                {"field": "action_id", "value": "dispatch:work-a-1"},
+                {"field": "subject", "value": "work-a-1"},
+            ],
+            wrong_role["observed"],
+        )
+        self.assertEqual(
+            [{"field": "role", "expected": "project", "observed": "worker"}],
+            wrong_role["mismatches"],
+        )
+        self.assertEqual(
+            [
+                {
+                    "kind": "command",
+                    "command": shlex.join(
+                        (
+                            "pinboard",
+                            "--project-root",
+                            str(project),
+                            "--work-root",
+                            str(work),
+                            "actions",
+                            "--role",
+                            "project",
+                            "--action-id",
+                            "dispatch:work-a-1",
+                            "--json",
+                        )
+                    ),
+                }
+            ],
+            wrong_role["next_actions"],
+        )
+        self.assertEqual(before_mismatch, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
         mismatch_result, _mismatch_stdout, mismatch_stderr = self.run_transition(
             common, action, mismatched_payload, json_output=False
@@ -4834,7 +5142,58 @@ Not launchable:
         self.assertEqual(str(result_path), job["result_path"])
         self.assertEqual(hashlib.sha256(result_path.read_bytes()).hexdigest(), job["result_sha256"])
         self.assertEqual("candidate-cli-direct", job["candidate_revision"])
-        self.assertEqual(before_review_job, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
+        self.assertNotIn("prompt", job)
+        prompt_reference = self.json_object(job["prompt_reference"])
+        prompt_path = work / str(prompt_reference["selector"])
+        prompt_bytes = prompt_path.read_bytes()
+        self.assertEqual(hashlib.sha256(prompt_bytes).hexdigest(), prompt_reference["sha256"])
+        self.assertEqual(len(prompt_bytes), prompt_reference["size_bytes"])
+        self.assertTrue(prompt_reference["artifact_created"])
+        self.assertTrue(prompt_reference["ledger_changed"])
+        self.assertEqual(
+            ["immutable-artifact", "accepted-artifact-reference", "ledger"],
+            job["changed_surfaces"],
+        )
+        launch = self.json_object(job["native_launch"])
+        self.assertIn(str(prompt_reference["selector"]), str(launch["message"]))
+        self.assertIn(str(prompt_reference["sha256"]), str(launch["message"]))
+        verification_command = str(launch["message"]).split("run exactly: ", 1)[1].split(". Require", 1)[0]
+        fresh_environment = os.environ.copy()
+        fresh_environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+        launched = subprocess.run(
+            ["/bin/sh", "-c", verification_command],
+            cwd=project,
+            env=fresh_environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, launched.returncode, launched.stderr or launched.stdout)
+        self.assertEqual("pinboard-verified-artifact-reference/v1", json.loads(launched.stdout)["schema"])
+        verified_prompt = self.run_json_cli(
+            *common,
+            "artifact",
+            "verify",
+            "--artifact-ref-id",
+            str(prompt_reference["accepted_artifact_reference_id"]),
+            "--selector",
+            str(prompt_reference["selector"]),
+            "--sha256",
+            str(prompt_reference["sha256"]),
+            "--size-bytes",
+            str(prompt_reference["size_bytes"]),
+        )
+        self.assertEqual("pinboard-verified-artifact-reference/v1", verified_prompt["schema"])
+        self.assertTrue(verified_prompt["verified"])
+        after_review_job = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+        self.assertEqual(before_review_job.lifecycle.work_items, after_review_job.lifecycle.work_items)
+        self.assertEqual(before_review_job.lifecycle.attempts, after_review_job.lifecycle.attempts)
+        repeated_job = self.run_json_cli(*review_arguments)
+        repeated_reference = self.json_object(repeated_job["prompt_reference"])
+        self.assertFalse(repeated_reference["artifact_created"])
+        self.assertFalse(repeated_reference["ledger_changed"])
+        self.assertEqual([], repeated_job["changed_surfaces"])
+        self.assertEqual(after_review_job, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
         result_path.write_text("", encoding="utf-8")
         empty, _, _ = self.run_cli(*review_arguments)
         self.assertEqual(11, empty)
@@ -4844,7 +5203,7 @@ Not launchable:
         self.assertEqual(11, unreadable)
         mismatch, _, _ = self.run_cli(*review_arguments[:-1], "different-candidate")
         self.assertEqual(11, mismatch)
-        self.assertEqual(before_review_job, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
+        self.assertEqual(after_review_job, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
         invalid_cases = (
             (("--action-id", "invalid"), "ACTION_ID_MALFORMED"),
@@ -4940,11 +5299,538 @@ Not launchable:
                 )
                 self.assertEqual(work_models.AttemptState.ACTIVE, attempt.state)
                 self.assertIsNone(attempt.candidate_revision)
+                prior_authority = state.authority.attempt_leases[0]
+                fenced = reloaded.authority.attempt_leases[0]
+                self.assertEqual(prior_authority.generation + 1, fenced.generation)
+                self.assertEqual(authority_models.AttemptLeaseStatus.REVOKED, fenced.state)
+                reacquired = self.run_json_cli(
+                    *common,
+                    "attempt",
+                    "acquire",
+                    "--attempt-id",
+                    "work-a-1",
+                    "--task-id",
+                    "correction-worker",
+                    "--host-id",
+                    "studio",
+                    "--ttl-seconds",
+                    "60",
+                )
+                self.assertGreater(self.json_int(reacquired["generation"]), fenced.generation)
+                after_reacquire = store.validated_snapshot()
+                old_worker_result, old_worker_stdout, old_worker_stderr = self.run_cli(
+                    *common,
+                    "actions",
+                    "--role",
+                    "worker",
+                    "--lease-id",
+                    "attempt-lease-a",
+                    "--generation",
+                    str(prior_authority.generation),
+                    "--json",
+                )
+                self.assertEqual(11, old_worker_result, old_worker_stderr)
+                old_worker = self.json_object(json.loads(old_worker_stdout))
+                self.assertEqual("ATTEMPT_LEASE_REQUIRED", old_worker["code"])
                 rejected, _, _ = self.run_cli(
                     *common, "review-job", "--attempt-id", "work-a-1", "--candidate-revision", "candidate-cli-review"
                 )
                 self.assertEqual(11, rejected)
-                self.assertEqual(reloaded, store.validated_snapshot())
+                self.assertEqual(after_reacquire, store.validated_snapshot())
+
+    def test_correction_dispatch_binds_return_receipt_and_current_source_review(self) -> None:  # noqa: PLR0915
+        def correction_fixture() -> tuple[
+            Path,
+            Path,
+            SQLiteWorkStore,
+            tuple[str, ...],
+            JsonObject,
+            Path,
+            Path,
+            int,
+            str,
+            str,
+        ]:
+            state = complete_sqlite_state()
+            now = datetime.now(UTC)
+            state = replace(
+                state,
+                lifecycle=replace(
+                    state.lifecycle,
+                    work_items=tuple(
+                        replace(value, state=stored_state.StoredWorkItemState.REVIEW)
+                        if value.item_id == ItemId("work-a")
+                        else value
+                        for value in state.lifecycle.work_items
+                    ),
+                    attempts=tuple(
+                        replace(
+                            value,
+                            state=work_models.AttemptState.REVIEW,
+                            candidate_revision="candidate-before-correction",
+                            candidate_recorded_at=now,
+                        )
+                        if value.attempt_id == AttemptId("work-a-1")
+                        else value
+                        for value in state.lifecycle.attempts
+                    ),
+                ),
+                authority=replace(
+                    state.authority,
+                    attempt_leases=tuple(
+                        replace(value, expires_at=now + timedelta(minutes=5))
+                        for value in state.authority.attempt_leases
+                    ),
+                ),
+            )
+            project, work, store = self.initialized_state(state)
+            common = ("--project-root", str(project), "--work-root", str(work))
+            correction = self.project_action(common, "return-for-correction:work-a-1")
+            correction_payload = project / "correction.json"
+            correction_payload.write_text('{"reason":"Correct the dispatch path."}\n', encoding="utf-8")
+            result, stdout, stderr = self.run_transition(common, correction, correction_payload, json_output=True)
+            self.assertEqual(0, result, stderr)
+            history_id = self.json_int(self.json_object(json.loads(stdout))["history_id"])
+
+            authority_path = project / "architecture.md"
+            selected_source = b"## Contract\n\nCorrected typed JSON is canonical.\n"
+            authority_path.write_bytes(b"# Architecture\n\n" + selected_source)
+            brief = work_a_brief(project)
+            authority_path.write_bytes(b"# Architecture\n\n" + selected_source)
+            checkpoint = brief.checkpoint
+            assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+            provided_source_sha256 = checkpoint.reviewed_authorities[0].reviewed_sha256
+            current_source_sha256 = hashlib.sha256(selected_source).hexdigest()
+            refreshed_checkpoint = replace_struct(
+                checkpoint,
+                reviewed_authorities=(
+                    replace_struct(
+                        checkpoint.reviewed_authorities[0],
+                        reviewed_sha256=current_source_sha256,
+                    ),
+                ),
+            )
+            effective_brief = replace_struct(brief, checkpoint=refreshed_checkpoint)
+            review_path = project / "correction-review.json"
+            review_path.write_bytes(ready_review(effective_brief, reviewer="correction-source-reviewer"))
+            environment_path = project / "correction-environment.json"
+            environment_path.write_bytes(
+                msgspec.json.encode(
+                    {
+                        "schema": "pinboard-dispatch/v2",
+                        "checkout": str(project),
+                        "branch": brief.branch,
+                        "starting_revision": brief.base_revision,
+                        "host_id": "studio",
+                        "fresh_context": True,
+                        "lease_ttl_seconds": 60,
+                        "permissions": ["repository-read", "repository-write"],
+                    }
+                )
+            )
+            dispatch = self.project_action(common, "dispatch:work-a-1")
+            return (
+                project,
+                work,
+                store,
+                common,
+                dispatch,
+                environment_path,
+                review_path,
+                history_id,
+                provided_source_sha256,
+                current_source_sha256,
+            )
+
+        (
+            project,
+            work,
+            store,
+            common,
+            dispatch,
+            environment_path,
+            review_path,
+            history_id,
+            provided_source_sha256,
+            current_source_sha256,
+        ) = correction_fixture()
+        self.run_json_cli(
+            *common,
+            "close",
+            "intake-work",
+            "--outcome",
+            "done",
+            "--reason",
+            "Complete unrelated intake work.",
+            "--task-id",
+            "project-task",
+            "--host-id",
+            "studio",
+        )
+        ordinary_result, ordinary_stdout, ordinary_stderr = self.run_cli(
+            *common,
+            "dispatch",
+            "--action-id",
+            str(dispatch["action_id"]),
+            "--subject-revision",
+            str(dispatch["subject_revision"]),
+            "--task-id",
+            "project-task",
+            "--host-id",
+            "studio",
+            "--checkpoint",
+            CHECKPOINT_ID,
+            "--environment",
+            str(environment_path),
+            "--brief-review",
+            str(review_path),
+            "--review-id",
+            "ordinary-review",
+            "--json",
+        )
+        self.assertEqual(14, ordinary_result, ordinary_stderr)
+        ordinary = self.json_object(json.loads(ordinary_stdout))
+        self.assertEqual("DISPATCH_AUTHORITY_STALE", ordinary["code"])
+        self.assertEqual("correct-input", ordinary["retry"])
+        self.assertFalse(ordinary["state_changed"])
+        self.assertEqual([], ordinary["changed_surfaces"])
+        ordinary_observed = {
+            str(value["field"]): value["value"]
+            for value in (self.json_object(item) for item in self.json_list(ordinary["observed"]))
+        }
+        self.assertEqual("architecture", ordinary_observed["authority_id"])
+        self.assertEqual(provided_source_sha256, ordinary_observed["provided_selected_source_sha256"])
+        self.assertEqual(current_source_sha256, ordinary_observed["current_selected_source_sha256"])
+        self.assertEqual(
+            [
+                {
+                    "field": "selected_source_sha256",
+                    "expected": current_source_sha256,
+                    "observed": provided_source_sha256,
+                }
+            ],
+            ordinary["mismatches"],
+        )
+        self.assertEqual(
+            [
+                {
+                    "kind": "command",
+                    "command": dispatch_brief.FRESH_REVIEW_PREPARATION_COMMAND,
+                }
+            ],
+            ordinary["next_actions"],
+        )
+
+        valid_review = msgspec.json.decode(review_path.read_bytes(), type=work_brief_models.WorkBriefReview)
+        stale_review_path = project / "stale-correction-review.json"
+        stale_review_path.write_bytes(
+            canonical_work_brief_review_bytes(
+                replace_struct(
+                    valid_review,
+                    checkpoint_sha256="e" * 64,
+                    reviewed_authority_set_sha256="d" * 64,
+                )
+            )
+        )
+        stale_arguments = (
+            *common,
+            "dispatch",
+            "--action-id",
+            str(dispatch["action_id"]),
+            "--subject-revision",
+            str(dispatch["subject_revision"]),
+            "--task-id",
+            "project-task",
+            "--host-id",
+            "studio",
+            "--checkpoint",
+            CHECKPOINT_ID,
+            "--environment",
+            str(environment_path),
+            "--brief-review",
+            str(stale_review_path),
+            "--review-id",
+            "stale-correction-review",
+            "--correction-history-id",
+            str(history_id),
+            "--json",
+        )
+        before_stale_review = store.validated_snapshot()
+        stale_review_result, stale_review_stdout, stale_review_stderr = self.run_cli(*stale_arguments)
+        self.assertEqual(14, stale_review_result, stale_review_stderr)
+        stale_review = self.json_object(json.loads(stale_review_stdout))
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", stale_review["code"])
+        self.assertEqual("correct-input", stale_review["retry"])
+        self.assertFalse(stale_review["state_changed"])
+        self.assertEqual([], stale_review["changed_surfaces"])
+        stale_observed = {
+            str(value["field"]): value["value"]
+            for value in (self.json_object(item) for item in self.json_list(stale_review["observed"]))
+        }
+        self.assertEqual("e" * 64, stale_observed["provided_checkpoint_sha256"])
+        self.assertEqual(valid_review.checkpoint_sha256, stale_observed["current_checkpoint_sha256"])
+        self.assertEqual("d" * 64, stale_observed["provided_reviewed_authority_set_sha256"])
+        self.assertEqual(
+            valid_review.reviewed_authority_set_sha256,
+            stale_observed["current_reviewed_authority_set_sha256"],
+        )
+        self.assertEqual(
+            [
+                {
+                    "field": "checkpoint_sha256",
+                    "expected": valid_review.checkpoint_sha256,
+                    "observed": "e" * 64,
+                },
+                {
+                    "field": "reviewed_authority_set_sha256",
+                    "expected": valid_review.reviewed_authority_set_sha256,
+                    "observed": "d" * 64,
+                },
+            ],
+            stale_review["mismatches"],
+        )
+        self.assertEqual(ordinary["next_actions"], stale_review["next_actions"])
+        self.assertEqual(before_stale_review, store.validated_snapshot())
+
+        arguments = (
+            *common,
+            "dispatch",
+            "--action-id",
+            str(dispatch["action_id"]),
+            "--subject-revision",
+            str(dispatch["subject_revision"]),
+            "--task-id",
+            "project-task",
+            "--host-id",
+            "studio",
+            "--checkpoint",
+            CHECKPOINT_ID,
+            "--environment",
+            str(environment_path),
+            "--brief-review",
+            str(review_path),
+            "--review-id",
+            "correction-review",
+            "--correction-history-id",
+            str(history_id),
+            "--json",
+        )
+        before_dispatch = store.validated_snapshot()
+        correction_result, correction_stdout, correction_stderr = self.run_cli(*arguments)
+        self.assertEqual(0, correction_result, correction_stderr)
+        ready = self.json_object(json.loads(correction_stdout))
+        self.assertEqual("pinboard-dispatch-ready/v2", ready["schema"])
+        self.assertNotIn("prompt", ready)
+        prompt_reference = self.json_object(ready["prompt_reference"])
+        prompt_bytes = (work / str(prompt_reference["selector"])).read_bytes()
+        self.assertEqual(hashlib.sha256(prompt_bytes).hexdigest(), prompt_reference["sha256"])
+        self.assertEqual(len(prompt_bytes), prompt_reference["size_bytes"])
+        self.assertTrue(prompt_reference["artifact_created"])
+        self.assertTrue(prompt_reference["ledger_changed"])
+        changed_surfaces = self.json_list(ready["changed_surfaces"])
+        self.assertEqual(
+            ["immutable-artifact", "accepted-artifact-reference", "ledger"],
+            changed_surfaces[-3:],
+        )
+        after_dispatch = store.validated_snapshot()
+        self.assertEqual(before_dispatch.lifecycle.work_items, after_dispatch.lifecycle.work_items)
+        self.assertEqual(before_dispatch.lifecycle.attempts, after_dispatch.lifecycle.attempts)
+
+        stale_history = list(arguments)
+        stale_history[stale_history.index(str(history_id))] = str(history_id + 1)
+        stale_result, stale_stdout, stale_stderr = self.run_cli(*stale_history)
+        self.assertEqual(14, stale_result, stale_stderr)
+        self.assertEqual(
+            "DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID",
+            self.json_object(json.loads(stale_stdout))["code"],
+        )
+
+        (
+            project,
+            _work,
+            store,
+            common,
+            _dispatch,
+            environment_path,
+            review_path,
+            history_id,
+            _provided_source_sha256,
+            _current_source_sha256,
+        ) = correction_fixture()
+        authority = self.run_json_cli(
+            *common,
+            "attempt",
+            "acquire",
+            "--attempt-id",
+            "work-a-1",
+            "--task-id",
+            "later-round-worker",
+            "--host-id",
+            "studio",
+            "--ttl-seconds",
+            "60",
+        )
+        submit = self.json_object(
+            self.json_list(
+                self.run_json_cli(
+                    *common,
+                    "actions",
+                    "--role",
+                    "worker",
+                    "--lease-id",
+                    str(authority["lease_id"]),
+                    "--generation",
+                    str(authority["generation"]),
+                    "--action-id",
+                    "submit-review:work-a-1",
+                )["actions"]
+            )[0]
+        )
+        submit_payload = project / "later-round-submit.json"
+        submit_payload.write_text('{"candidate":"later-round-candidate"}\n', encoding="utf-8")
+        submit_result, _submit_stdout, submit_stderr = self.run_transition(
+            common,
+            submit,
+            submit_payload,
+            json_output=False,
+        )
+        self.assertEqual(0, submit_result, submit_stderr)
+        later_correction = self.project_action(common, "return-for-correction:work-a-1")
+        later_correction_payload = project / "later-round-correction.json"
+        later_correction_payload.write_text('{"reason":"Start a later correction round."}\n', encoding="utf-8")
+        later_result, _later_stdout, later_stderr = self.run_transition(
+            common,
+            later_correction,
+            later_correction_payload,
+            json_output=False,
+        )
+        self.assertEqual(0, later_result, later_stderr)
+        redispatch = self.project_action(common, "dispatch:work-a-1")
+        prior_round_arguments = (
+            *common,
+            "dispatch",
+            "--action-id",
+            str(redispatch["action_id"]),
+            "--subject-revision",
+            str(redispatch["subject_revision"]),
+            "--task-id",
+            "project-task",
+            "--host-id",
+            "studio",
+            "--checkpoint",
+            CHECKPOINT_ID,
+            "--environment",
+            str(environment_path),
+            "--brief-review",
+            str(review_path),
+            "--review-id",
+            "prior-round-review",
+            "--correction-history-id",
+            str(history_id),
+            "--json",
+        )
+        before_prior_round = store.validated_snapshot()
+        prior_round_result, prior_round_stdout, prior_round_stderr = self.run_cli(*prior_round_arguments)
+        self.assertEqual(14, prior_round_result, prior_round_stderr)
+        prior_round = self.json_object(json.loads(prior_round_stdout))
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", prior_round["code"])
+        self.assertEqual(
+            "Selected correction history is not the attempt's current correction round.",
+            prior_round["message"],
+        )
+        self.assertEqual("rejected", prior_round["status"])
+        self.assertFalse(prior_round["state_changed"])
+        self.assertEqual("correct-input", prior_round["retry"])
+        self.assertEqual([], prior_round["changed_surfaces"])
+        observed = {
+            str(value["field"]): value["value"]
+            for value in (self.json_object(item) for item in self.json_list(prior_round["observed"]))
+        }
+        self.assertEqual(history_id, observed["selected_correction_history_id"])
+        correction_receipt = next(
+            value for value in before_prior_round.transition_receipts if value.history_id == HistoryId(history_id)
+        )
+        self.assertEqual(correction_receipt.project_revision, observed["selected_correction_project_revision"])
+        self.assertEqual(redispatch["subject_revision"], observed["current_attempt_subject_revision"])
+        self.assertEqual(
+            [
+                {
+                    "field": "correction_project_revision",
+                    "expected": redispatch["subject_revision"],
+                    "observed": correction_receipt.project_revision,
+                }
+            ],
+            prior_round["mismatches"],
+        )
+        next_actions = self.json_list(prior_round["next_actions"])
+        recovery = self.json_object(next_actions[0])
+        self.assertEqual("command", recovery["kind"])
+        recovery_arguments = shlex.split(str(recovery["command"]))
+        self.assertNotIn("--correction-history-id", recovery_arguments)
+        self.assertEqual(
+            str(redispatch["subject_revision"]), recovery_arguments[recovery_arguments.index("--subject-revision") + 1]
+        )
+        self.assertEqual(str(environment_path), recovery_arguments[recovery_arguments.index("--environment") + 1])
+        self.assertEqual(str(review_path), recovery_arguments[recovery_arguments.index("--brief-review") + 1])
+        self.assertEqual(1, len(next_actions))
+        self.assertEqual(before_prior_round, store.validated_snapshot())
+
+        (
+            project,
+            _work,
+            store,
+            _common,
+            dispatch,
+            environment_path,
+            review_path,
+            history_id,
+            _provided_source_sha256,
+            _current_source_sha256,
+        ) = correction_fixture()
+        race_arguments = list(arguments)
+        replacements = {
+            arguments[1]: str(project),
+            arguments[3]: str(_work),
+            arguments[arguments.index("--action-id") + 1]: str(dispatch["action_id"]),
+            arguments[arguments.index("--subject-revision") + 1]: str(dispatch["subject_revision"]),
+            arguments[arguments.index("--environment") + 1]: str(environment_path),
+            arguments[arguments.index("--brief-review") + 1]: str(review_path),
+            arguments[arguments.index("--correction-history-id") + 1]: str(history_id),
+        }
+        race_arguments = [replacements.get(value, value) for value in race_arguments]
+        original_validate = dispatch_brief.validate_reviewed_authority_digests
+        before_race = store.validated_snapshot()
+
+        def change_source_then_validate(
+            source_root: Path,
+            authorities: tuple[work_brief_models.ReviewedAuthority, ...],
+        ) -> work_brief_models.ReviewedAuthorityValidationFailure | None:
+            (project / "architecture.md").write_text(
+                "# Architecture\n\n## Contract\n\nChanged during correction dispatch.\n",
+                encoding="utf-8",
+            )
+            return original_validate(source_root, authorities)
+
+        with patch.object(
+            dispatch_brief,
+            "validate_reviewed_authority_digests",
+            side_effect=change_source_then_validate,
+        ):
+            raced_result, raced_stdout, raced_stderr = self.run_cli(*race_arguments)
+        self.assertEqual(14, raced_result, raced_stderr)
+        raced = self.json_object(json.loads(raced_stdout))
+        self.assertEqual("DISPATCH_AUTHORITY_STALE", raced["code"])
+        self.assertEqual("committed-effect", raced["status"])
+        self.assertEqual("do-not-retry", raced["retry"])
+        self.assertEqual(
+            ["immutable-artifact", "accepted-artifact-reference", "ledger"],
+            raced["changed_surfaces"],
+        )
+        after_race = store.validated_snapshot()
+        self.assertEqual(work_models.AttemptState.ACTIVE, after_race.lifecycle.attempts[0].state)
+        self.assertEqual(before_race.lifecycle.work_items, after_race.lifecycle.work_items)
+        self.assertEqual(before_race.lifecycle.attempts, after_race.lifecycle.attempts)
+        self.assertEqual(len(before_race.artifact_references) + 1, len(after_race.artifact_references))
 
     def test_completion_continuation_is_terminal_and_inspection_is_read_only(self) -> None:
         project, work, store = self.initialized_state(complete_sqlite_state())
@@ -5781,10 +6667,13 @@ Not launchable:
         environment.write_text(
             json.dumps(
                 {
-                    "schema": "pinboard-dispatch/v1",
+                    "schema": "pinboard-dispatch/v2",
                     "checkout": str(project),
                     "branch": "codex/work-a",
                     "starting_revision": "base-revision",
+                    "host_id": "studio",
+                    "fresh_context": True,
+                    "lease_ttl_seconds": 60,
                     "permissions": ["repository-read"],
                 }
             ),
@@ -5798,6 +6687,7 @@ Not launchable:
                 wraps=action_selection.select_current_action,
             ) as select_action,
             patch.object(dispatch_brief, "prepare_dispatch", return_value="prepared prompt\n") as prepare,
+            patch.object(dispatch_brief, "_present_dispatch_ready"),
         ):
             result, _stdout, stderr = self.run_cli(
                 *common,

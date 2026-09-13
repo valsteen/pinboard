@@ -1,5 +1,6 @@
 import hashlib
-from dataclasses import dataclass
+import shlex
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, assert_never
@@ -7,6 +8,7 @@ from typing import Literal, assert_never
 import msgspec
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
+from pinboard.adapters.files.errors import ArtifactError
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application.dispatch import (
     find_dispatch_review,
@@ -18,25 +20,46 @@ from pinboard.application.dispatch_models import (
     DispatchArtifactPort,
     DispatchEnvironment,
     DispatchRejectionCode,
+    NativeLaunchEnvelope,
+    PromptReferenceView,
+    PublishedAgentPrompt,
+    dispatch_environment_dec_hook,
+    pinboard_launcher_command,
+    publish_agent_prompt,
 )
 from pinboard.application.dispatch_models import DispatchFailure as ApplicationDispatchFailure
-from pinboard.application.ports import WorkStore
+from pinboard.application.ports import WorkStore, WorkStoreError
 from pinboard.domain import decision_models
-from pinboard.domain.errors import DecisionFailureCode
-from pinboard.domain.identifiers import ReviewId
-from pinboard.interfaces import action_selection, cli_commands, work_brief_models
+from pinboard.domain.errors import (
+    ArtifactAcceptanceAfterPublicationError,
+    ChangedSurface,
+    DecisionFailure,
+    DecisionFailureCode,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    FailureMismatch,
+    RetryDisposition,
+)
+from pinboard.domain.identifiers import AttemptId, HistoryId, ReviewId
+from pinboard.interfaces import action_selection, cli_commands, work_brief_models, work_inspection
+from pinboard.interfaces.brief_source_models import authority_selector
+from pinboard.interfaces.brief_sources import select_brief_source
 from pinboard.interfaces.cli_output import write_json
 from pinboard.interfaces.errors import (
+    BriefSourceFailure,
     CliResult,
     CommandFailure,
     DispatchErrorCode,
     DispatchFailure,
+    DispatchFailureCode,
     DispatchResult,
     WorkBriefErrorCode,
     WorkBriefFailure,
 )
 from pinboard.interfaces.work_briefs import (
     canonical_checkpoint_bytes,
+    canonical_reviewed_authority_set_bytes,
     canonical_work_brief_review_bytes,
     decode_canonical_work_brief,
     decode_canonical_work_brief_review,
@@ -67,25 +90,142 @@ class PublishSuppliedDispatchReview:
 type DispatchReviewChoice = ReuseAcceptedDispatchReview | PublishSuppliedDispatchReview
 
 
+FRESH_REVIEW_PREPARATION_COMMAND: str = shlex.join(
+    (*pinboard_launcher_command(), "tool-contract", "--operation", "brief-sources:plan", "--json")
+)
+
+
 class DispatchReadyView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-dispatch-ready/v1"]
+    schema: Literal["pinboard-dispatch-ready/v2"]
     status: Literal["ready"]
-    prompt: str | None
+    prompt_reference: PromptReferenceView
+    native_launch: NativeLaunchEnvelope
+    changed_surfaces: tuple[str, ...]
 
 
-def _present_dispatch_ready(rendered_prompt: str, *, supplied_prompt: bool, json: bool) -> None:
+class _DispatchEnvironmentIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=False):
+    schema: str
+
+
+def _present_dispatch_ready(launch: PublishedAgentPrompt, *, json: bool) -> None:
     if json:
         write_json(
             DispatchReadyView(
-                "pinboard-dispatch-ready/v1",
+                "pinboard-dispatch-ready/v2",
                 "ready",
-                None if supplied_prompt else rendered_prompt,
+                launch.reference,
+                launch.native_launch,
+                tuple(surface.value for surface in launch.changed_surfaces),
             )
         )
-    elif supplied_prompt:
-        print("OK DISPATCH_READY")
     else:
-        print(rendered_prompt, end="")
+        print(launch.native_launch.message)
+
+
+def _merge_changed_surfaces(*groups: tuple[ChangedSurface, ...]) -> tuple[ChangedSurface, ...]:
+    return tuple(dict.fromkeys(surface for group in groups for surface in group))
+
+
+def _after_publication_failure(
+    code: DispatchFailureCode,
+    message: str,
+    changed_surfaces: tuple[ChangedSurface, ...],
+    details: FailureDetails | None = None,
+) -> DispatchFailure:
+    if not changed_surfaces:
+        return DispatchFailure(code, message, details)
+    prior = details
+    return DispatchFailure(
+        code,
+        message,
+        FailureDetails(
+            observed=() if prior is None else prior.observed,
+            mismatches=() if prior is None else prior.mismatches,
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.COMMITTED,
+            changed_surfaces=changed_surfaces,
+            alternatives=() if prior is None else prior.alternatives,
+        ),
+    )
+
+
+def _fresh_review_details(
+    observed: tuple[FailureFact, ...],
+    mismatches: tuple[FailureMismatch, ...],
+) -> FailureDetails:
+    return FailureDetails(
+        observed=(*observed, FailureFact("fresh_review_preparation_command", FRESH_REVIEW_PREPARATION_COMMAND)),
+        mismatches=mismatches,
+        retry=RetryDisposition.CORRECT_INPUT,
+        effect=EffectDisposition.UNCHANGED,
+        changed_surfaces=(),
+        alternatives=(),
+    )
+
+
+def _stale_review_failure(
+    review: work_brief_models.WorkBriefReview,
+    brief: work_brief_models.WorkBrief,
+) -> DispatchFailure:
+    checkpoint = brief.checkpoint
+    assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+    current_checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
+    current_authority_set_sha256 = hashlib.sha256(
+        canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)
+    ).hexdigest()
+    return DispatchFailure(
+        DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+        "Brief review is not bound to the current checkpoint and reviewed authorities.",
+        _fresh_review_details(
+            (
+                FailureFact("provided_checkpoint_sha256", review.checkpoint_sha256),
+                FailureFact("current_checkpoint_sha256", current_checkpoint_sha256),
+                FailureFact(
+                    "provided_reviewed_authority_set_sha256",
+                    review.reviewed_authority_set_sha256,
+                ),
+                FailureFact("current_reviewed_authority_set_sha256", current_authority_set_sha256),
+            ),
+            (
+                *(
+                    (FailureMismatch("checkpoint_sha256", current_checkpoint_sha256, review.checkpoint_sha256),)
+                    if review.checkpoint_sha256 != current_checkpoint_sha256
+                    else ()
+                ),
+                *(
+                    (
+                        FailureMismatch(
+                            "reviewed_authority_set_sha256",
+                            current_authority_set_sha256,
+                            review.reviewed_authority_set_sha256,
+                        ),
+                    )
+                    if review.reviewed_authority_set_sha256 != current_authority_set_sha256
+                    else ()
+                ),
+            ),
+        ),
+    )
+
+
+def _stale_authority_failure(
+    authority_id: str,
+    provided_sha256: str,
+    current_sha256: str,
+    message: str,
+) -> DispatchFailure:
+    return DispatchFailure(
+        DispatchErrorCode.DISPATCH_AUTHORITY_STALE,
+        message,
+        _fresh_review_details(
+            (
+                FailureFact("authority_id", authority_id),
+                FailureFact("provided_selected_source_sha256", provided_sha256),
+                FailureFact("current_selected_source_sha256", current_sha256),
+            ),
+            (FailureMismatch("selected_source_sha256", current_sha256, provided_sha256),),
+        ),
+    )
 
 
 def read_dispatch_environment(path: Path) -> DispatchResult[DispatchEnvironment]:
@@ -98,12 +238,26 @@ def read_dispatch_environment(path: Path) -> DispatchResult[DispatchEnvironment]
             None,
         )
     try:
-        return msgspec.json.decode(data, type=DispatchEnvironment)
+        identity = msgspec.json.decode(data, type=_DispatchEnvironmentIdentity)
+    except msgspec.DecodeError:
+        identity = None
+    try:
+        return msgspec.json.decode(data, type=DispatchEnvironment, dec_hook=dispatch_environment_dec_hook)
     except msgspec.DecodeError as error:
+        details = None
+        if identity is not None and identity.schema != "pinboard-dispatch/v2":
+            details = FailureDetails(
+                observed=(FailureFact("environment_schema", identity.schema),),
+                mismatches=(FailureMismatch("environment_schema", "pinboard-dispatch/v2", identity.schema),),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            )
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_ENVIRONMENT_INVALID,
             f"Cannot decode dispatch environment: {error}",
-            None,
+            details,
         )
 
 
@@ -154,12 +308,20 @@ def _dispatch_failure(failure: ApplicationDispatchFailure) -> DispatchFailure:
 
 
 def _canonical_prompt(
+    work_root: Path,
     attempt_path: Path,
     attempt_id: str,
     checkpoint_id: str,
     environment: DispatchEnvironment,
 ) -> str:
     permissions = ", ".join(sorted(permission.value for permission in environment.permissions)) or "none"
+    project_root = shlex.quote(environment.checkout)
+    work_root_argument = shlex.quote(str(work_root))
+    attempt = shlex.quote(attempt_id)
+    host = shlex.quote(str(environment.host_id))
+    launcher = shlex.join(pinboard_launcher_command())
+    result_path = work_root / "attempts" / attempt_id / "result.md"
+    blocker_path = work_root / "attempts" / attempt_id / "blocker.md"
     return (
         "Use $pinboard-deliver for this repository attempt.\n\n"
         f"Attempt: {attempt_id}\n"
@@ -171,9 +333,25 @@ def _canonical_prompt(
         f"- Checkout: {environment.checkout}\n"
         f"- Branch: {environment.branch}\n"
         f"- Starting revision: {environment.starting_revision}\n"
+        "- Fresh context: required\n"
+        f"- Runtime host: {environment.host_id}\n"
         f"- Declared permissions: {permissions}\n\n"
         "Pinboard validates the checkout and branch. The starting revision and permissions are task "
-        "declarations for the worker; they neither grant authority nor enforce the environment.\n"
+        "declarations for the worker; they neither grant authority nor enforce the environment.\n\n"
+        "Worker startup after native launch:\n"
+        "1. Worker task identity: read `CODEX_THREAD_ID` after launch. Do not use `CODEX_SESSION_ID` or a "
+        "pre-launch identity.\n"
+        "2. Acquire attempt authority with the generated command:\n"
+        f"   {launcher} --project-root {project_root} --work-root {work_root_argument} "
+        f"attempt acquire --attempt-id {attempt} "
+        f'--task-id "$CODEX_THREAD_ID" --host-id {host} --ttl-seconds {environment.lease_ttl_seconds} --json\n'
+        "3. Select the leased continuation with the returned authority:\n"
+        f"   {launcher} --project-root {project_root} --work-root {work_root_argument} actions --role worker "
+        "--lease-id <returned-lease-id> --generation <returned-generation> "
+        f"--action-id continue:{attempt} --json\n\n"
+        "Attempt evidence locations:\n"
+        f"- Result: {result_path}\n"
+        f"- Blocker: {blocker_path}\n"
     )
 
 
@@ -252,6 +430,8 @@ def _read_dispatch_brief(
     accepted_item_id: str | None,
     accepted_scope_revision: int | None,
     accepted_scope_digest: str | None,
+    *,
+    validate_original_authorities: bool,
 ) -> DispatchResult[work_brief_models.WorkBrief]:
     brief = decode_canonical_work_brief(accepted_brief_bytes)
     if isinstance(brief, WorkBriefFailure):
@@ -271,7 +451,7 @@ def _read_dispatch_brief(
         )
     ) is not None:
         return failure
-    if isinstance(brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint):
+    if validate_original_authorities and isinstance(brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint):
         failure = validate_reviewed_authority_digests(source_checkout_root, brief.checkpoint.reviewed_authorities)
         match failure:
             case None:
@@ -282,15 +462,98 @@ def _read_dispatch_brief(
                     f"Cannot read reviewed authority '{authority_id}': {reason}",
                     None,
                 )
-            case work_brief_models.ReviewedAuthorityDigestMismatch(authority_id=authority_id):
-                return DispatchFailure(
-                    DispatchErrorCode.DISPATCH_AUTHORITY_STALE,
+            case work_brief_models.ReviewedAuthorityDigestMismatch(
+                authority_id=authority_id,
+                expected_sha256=provided_sha256,
+                observed_sha256=current_sha256,
+            ):
+                return _stale_authority_failure(
+                    authority_id,
+                    provided_sha256,
+                    current_sha256,
                     f"Reviewed authority '{authority_id}' changed after review.",
-                    None,
                 )
             case _ as unreachable:
                 assert_never(unreachable)
     return brief
+
+
+def _validate_correction_history(
+    store: WorkStore,
+    attempt_id: str,
+    subject_revision: str,
+    correction_history_id: int,
+) -> DispatchFailure | None:
+    facts = store.read_review_job_context(AttemptId(attempt_id), None, HistoryId(correction_history_id))
+    receipt = None if facts is None else facts.correction_receipt
+    if receipt is None:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
+            "Selected correction history does not match this attempt's review return.",
+            None,
+        )
+    if str(receipt.project_revision) != subject_revision:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
+            "Selected correction history is not the attempt's current correction round.",
+            FailureDetails(
+                observed=(
+                    FailureFact("selected_correction_history_id", correction_history_id),
+                    FailureFact("selected_correction_project_revision", receipt.project_revision),
+                    FailureFact("current_attempt_subject_revision", subject_revision),
+                ),
+                mismatches=(
+                    FailureMismatch(
+                        "correction_project_revision",
+                        subject_revision,
+                        receipt.project_revision,
+                    ),
+                ),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    outcome = work_inspection.decode_correction_outcome(receipt, attempt_id)
+    if isinstance(outcome, CommandFailure):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
+            outcome.message,
+            outcome.details,
+        )
+    return None
+
+
+def _effective_correction_brief(
+    source_checkout_root: Path,
+    brief: work_brief_models.WorkBrief,
+) -> DispatchResult[work_brief_models.WorkBrief]:
+    checkpoint = brief.checkpoint
+    if not isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
+            "Correction dispatch source review is only valid for a cross-boundary checkpoint.",
+            None,
+        )
+    refreshed: list[work_brief_models.ReviewedAuthority] = []
+    for authority in checkpoint.reviewed_authorities:
+        selected = select_brief_source(
+            source_checkout_root,
+            authority_selector(authority.selector),
+            require_utf8=True,
+        )
+        if isinstance(selected, BriefSourceFailure):
+            return DispatchFailure(
+                DispatchErrorCode.DISPATCH_AUTHORITY_UNREADABLE,
+                f"Cannot read reviewed authority '{authority.authority_id}': {selected.message}",
+                None,
+            )
+        refreshed.append(
+            msgspec.structs.replace(authority, reviewed_sha256=hashlib.sha256(selected.content).hexdigest())
+        )
+    effective_checkpoint = msgspec.structs.replace(checkpoint, reviewed_authorities=tuple(refreshed))
+    return msgspec.structs.replace(brief, checkpoint=effective_checkpoint)
 
 
 def _select_dispatch_review(
@@ -313,6 +576,8 @@ def _select_dispatch_review(
             if isinstance(review, WorkBriefFailure):
                 return _review_failure(review)
             if (failure := validate_work_brief_review(review, brief)) is not None:
+                if failure.code == WorkBriefErrorCode.REVIEW_STALE:
+                    return _stale_review_failure(review, brief)
                 return _review_failure(failure)
             candidate = canonical_work_brief_review_bytes(review)
             return PublishSuppliedDispatchReview(review.checkpoint_sha256, candidate, supplied_review.review_id)
@@ -342,6 +607,8 @@ def _validate_accepted_review(
             if isinstance(review, WorkBriefFailure):
                 return _review_failure(review)
             if (failure := validate_work_brief_review(review, brief)) is not None:
+                if failure.code == WorkBriefErrorCode.REVIEW_STALE:
+                    return _stale_review_failure(review, brief)
                 return _review_failure(failure)
         case _ as unreachable:
             assert_never(unreachable)
@@ -350,6 +617,7 @@ def _validate_accepted_review(
 
 def _render_dispatch_prompt(
     brief: work_brief_models.WorkBrief,
+    work_root: Path,
     attempt_path: Path,
     checkpoint: str,
     environment: DispatchEnvironment,
@@ -358,7 +626,7 @@ def _render_dispatch_prompt(
 ) -> DispatchResult[str]:
     if (failure := _validate_accepted_review(brief, accepted_review)) is not None:
         return failure
-    prompt = _canonical_prompt(attempt_path, brief.attempt_id, checkpoint, environment)
+    prompt = _canonical_prompt(work_root, attempt_path, brief.attempt_id, checkpoint, environment)
     if supplied_prompt is not None and supplied_prompt != prompt.encode():
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_PROMPT_NOT_CANONICAL,
@@ -368,16 +636,17 @@ def _render_dispatch_prompt(
     return prompt
 
 
-def prepare_dispatch(
+def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, review, source, and authority recheck
     store: WorkStore,
     artifacts: DispatchArtifactPort,
     source_checkout_root: Path,
     action: decision_models.Action,
     checkpoint: str,
     environment: DispatchEnvironment,
-    supplied_prompt: bytes | None = None,
-    supplied_review: SuppliedDispatchReview | None = None,
-) -> DispatchResult[str]:
+    supplied_prompt: bytes | None,
+    supplied_review: SuppliedDispatchReview | None,
+    correction_history_id: int | None,
+) -> DispatchResult[PublishedAgentPrompt]:
     selected_dispatch = select_dispatch(store, action, datetime.now(UTC))
     if isinstance(selected_dispatch, ApplicationDispatchFailure):
         return _dispatch_failure(selected_dispatch)
@@ -397,13 +666,29 @@ def prepare_dispatch(
         str(selected_dispatch.attempt.item_id),
         selected_dispatch.attempt.accepted_scope_revision,
         selected_dispatch.attempt.accepted_scope_digest,
+        validate_original_authorities=correction_history_id is None,
     )
     if isinstance(validated_brief, DispatchFailure):
         return validated_brief
+    if correction_history_id is not None:
+        if (
+            failure := _validate_correction_history(
+                store,
+                str(selected_dispatch.attempt.attempt_id),
+                selected_dispatch.attempt.subject_revision,
+                correction_history_id,
+            )
+        ) is not None:
+            return failure
+        effective_brief = _effective_correction_brief(source_checkout_root, validated_brief)
+        if isinstance(effective_brief, DispatchFailure):
+            return effective_brief
+        validated_brief = effective_brief
     review_choice = _select_dispatch_review(validated_brief, supplied_review)
     if isinstance(review_choice, DispatchFailure):
         return review_choice
     accepted_review_bytes: bytes | None = None
+    review_publication_selector: str | None = None
     review_publication_surfaces = ()
     match review_choice:
         case None:
@@ -430,12 +715,58 @@ def prepare_dispatch(
             if isinstance(accepted_review, ApplicationDispatchFailure):
                 return _dispatch_failure(accepted_review)
             accepted_review_reference = accepted_review.reference
+            review_publication_selector = accepted_review_reference.selector
             review_publication_surfaces = accepted_review.changed_surfaces
-            accepted_review_bytes = artifacts.read(accepted_review_reference)
+            try:
+                accepted_review_bytes = artifacts.read(accepted_review_reference)
+            except ArtifactError as error:
+                if not review_publication_surfaces:
+                    raise
+                raise ArtifactAcceptanceAfterPublicationError(
+                    accepted_review_reference.selector,
+                    error,
+                    review_publication_surfaces,
+                ) from error
         case _ as unreachable:
             assert_never(unreachable)
+    if correction_history_id is not None:
+        checkpoint_value = validated_brief.checkpoint
+        assert isinstance(checkpoint_value, work_brief_models.CrossBoundaryCheckpoint)
+        failure = validate_reviewed_authority_digests(
+            source_checkout_root,
+            checkpoint_value.reviewed_authorities,
+        )
+        match failure:
+            case None:
+                pass
+            case work_brief_models.ReviewedAuthoritySelectionFailure(authority_id=authority_id, reason=reason):
+                return _after_publication_failure(
+                    DispatchErrorCode.DISPATCH_AUTHORITY_UNREADABLE,
+                    f"Cannot read reviewed authority '{authority_id}': {reason}",
+                    review_publication_surfaces,
+                )
+            case work_brief_models.ReviewedAuthorityDigestMismatch(
+                authority_id=authority_id,
+                expected_sha256=provided_sha256,
+                observed_sha256=current_sha256,
+            ):
+                stale = _stale_authority_failure(
+                    authority_id,
+                    provided_sha256,
+                    current_sha256,
+                    f"Reviewed authority '{authority_id}' changed during correction dispatch.",
+                )
+                return _after_publication_failure(
+                    stale.code,
+                    stale.message,
+                    review_publication_surfaces,
+                    stale.details,
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
     rendered_prompt = _render_dispatch_prompt(
         validated_brief,
+        artifacts.work_root,
         accepted_brief_path,
         checkpoint,
         environment,
@@ -443,17 +774,78 @@ def prepare_dispatch(
         supplied_prompt,
     )
     if isinstance(rendered_prompt, DispatchFailure):
-        return rendered_prompt
-    if (
-        failure := recheck_dispatch_authority(
+        return _after_publication_failure(
+            rendered_prompt.code,
+            rendered_prompt.message,
+            review_publication_surfaces,
+        )
+    try:
+        published_prompt = publish_agent_prompt(
+            store,
+            artifacts,
+            project_root=source_checkout_root,
+            prompt_role="worker",
+            attempt_id=str(attempt.attempt_id),
+            prompt=rendered_prompt,
+            accepted_at=datetime.now(UTC),
+        )
+    except ArtifactAcceptanceAfterPublicationError as error:
+        raise ArtifactAcceptanceAfterPublicationError(
+            error.selector,
+            error.cause,
+            _merge_changed_surfaces(review_publication_surfaces, error.changed_surfaces),
+        ) from error
+    except (ArtifactError, WorkStoreError) as error:
+        if not review_publication_surfaces:
+            raise
+        assert review_publication_selector is not None
+        raise ArtifactAcceptanceAfterPublicationError(
+            review_publication_selector,
+            error,
+            review_publication_surfaces,
+        ) from error
+    if isinstance(published_prompt, DecisionFailure):
+        details = published_prompt.details
+        if review_publication_surfaces:
+            details = FailureDetails(
+                observed=() if details is None else details.observed,
+                mismatches=() if details is None else details.mismatches,
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.COMMITTED,
+                changed_surfaces=_merge_changed_surfaces(
+                    review_publication_surfaces,
+                    () if details is None else details.changed_surfaces,
+                ),
+                alternatives=() if details is None else details.alternatives,
+            )
+        return DispatchFailure(
+            DispatchErrorCode.STALE_ACTION,
+            published_prompt.message,
+            details,
+        )
+    invocation_surfaces = _merge_changed_surfaces(review_publication_surfaces, published_prompt.changed_surfaces)
+    try:
+        failure = recheck_dispatch_authority(
             store,
             action,
-            review_publication_surfaces,
+            invocation_surfaces,
             datetime.now(UTC),
         )
-    ) is not None:
+    except WorkStoreError as error:
+        if not invocation_surfaces:
+            raise
+        published_selector = (
+            published_prompt.reference.selector if published_prompt.changed_surfaces else review_publication_selector
+        )
+        assert published_selector is not None
+        raise ArtifactAcceptanceAfterPublicationError(
+            published_selector,
+            error,
+            invocation_surfaces,
+        ) from error
+    if failure is not None:
         return _dispatch_failure(failure)
-    return rendered_prompt
+    return published_prompt
 
 
 def prepare_dispatch_command(
@@ -478,7 +870,10 @@ def prepare_dispatch_command(
                 None,
             )
     match command:
-        case cli_commands.ProjectReviewedDispatchCommand(brief_review=brief_review_path, review_id=review_id):
+        case (
+            cli_commands.ProjectReviewedDispatchCommand(brief_review=brief_review_path, review_id=review_id)
+            | cli_commands.ProjectCorrectionDispatchCommand(brief_review=brief_review_path, review_id=review_id)
+        ):
             try:
                 supplied_review = SuppliedDispatchReview(brief_review_path.read_bytes(), review_id)
             except OSError as error:
@@ -497,7 +892,7 @@ def prepare_dispatch_command(
     selected_action = action_selection.select_current_action(store, parsed_action)
     if isinstance(selected_action, CommandFailure):
         return selected_action
-    rendered_prompt = prepare_dispatch(
+    published_prompt = prepare_dispatch(
         store,
         ArtifactRepository(durable),
         roots.source_checkout,
@@ -506,8 +901,55 @@ def prepare_dispatch_command(
         decoded_environment,
         supplied_prompt_bytes,
         supplied_review,
+        command.correction_history_id if isinstance(command, cli_commands.ProjectCorrectionDispatchCommand) else None,
     )
-    if isinstance(rendered_prompt, DispatchFailure):
-        return rendered_prompt
-    _present_dispatch_ready(rendered_prompt, supplied_prompt=supplied_prompt_bytes is not None, json=command.json)
+    if isinstance(published_prompt, DispatchFailure):
+        if (
+            isinstance(command, cli_commands.ProjectCorrectionDispatchCommand)
+            and published_prompt.details is not None
+            and any(value.field == "correction_project_revision" for value in published_prompt.details.mismatches)
+        ):
+            suffix = (
+                "dispatch",
+                "--action-id",
+                command.action_id,
+                "--subject-revision",
+                command.subject_revision,
+                "--task-id",
+                command.task_id,
+                "--host-id",
+                command.host_id,
+                "--checkpoint",
+                command.checkpoint,
+                "--environment",
+                str(command.environment),
+                "--brief-review",
+                str(command.brief_review),
+                "--review-id",
+                command.review_id,
+                *(("--prompt", str(command.prompt)) if command.prompt is not None else ()),
+                *(("--json",) if command.json else ()),
+            )
+            recovery_command = shlex.join(
+                (
+                    *pinboard_launcher_command(),
+                    "--project-root",
+                    str(roots.source_checkout),
+                    "--work-root",
+                    str(roots.work),
+                    *suffix,
+                )
+            )
+            published_prompt = replace(
+                published_prompt,
+                details=replace(
+                    published_prompt.details,
+                    observed=(
+                        *published_prompt.details.observed,
+                        FailureFact("reviewed_dispatch_command", recovery_command),
+                    ),
+                ),
+            )
+        return published_prompt
+    _present_dispatch_ready(published_prompt, json=command.json)
     return 0

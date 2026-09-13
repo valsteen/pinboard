@@ -95,7 +95,7 @@ from pinboard.application.mutation_models import (
 )
 from pinboard.application.mutations import stored_transition_receipt
 from pinboard.application.ports import ArtifactReferenceAcceptance
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, ItemId, LeaseId, ProposalId
@@ -936,6 +936,13 @@ def _persist_checkpoint_acceptance(
     now = mutation.decision.receipt.decided_at
     accept_checkpoint_artifact(
         connection,
+        artifacts.candidate,
+        artifacts.candidate_id,
+        revision,
+        now,
+    )
+    accept_checkpoint_artifact(
+        connection,
         artifacts.result,
         artifacts.result_id,
         revision,
@@ -1602,6 +1609,23 @@ class SQLiteWorkStore:
                     if checkpoint_receipt is None or checkpoint_receipt.artifact_ref_id is None
                     else read_artifact_reference_by_id(connection, checkpoint_receipt.artifact_ref_id)
                 )
+                checkpoint_candidate_reference = None
+                if checkpoint_receipt is not None and checkpoint_receipt.outcome_schema == "checkpoint-acceptance/v2":
+                    try:
+                        checkpoint_outcome = msgspec.json.decode(
+                            bytes(checkpoint_receipt.outcome_payload),
+                            type=history.CheckpointAcceptanceOutcome,
+                            strict=True,
+                        )
+                    except msgspec.DecodeError:
+                        pass
+                    else:
+                        checkpoint_candidate_reference = read_artifact_reference(
+                            connection,
+                            work_models.ArtifactKind.EVIDENCE,
+                            f"{attempt_id}-{checkpoint_outcome.checkpoint}-candidate",
+                            1,
+                        )
                 correction_receipt = (
                     None
                     if correction_history_id is None
@@ -1611,6 +1635,7 @@ class SQLiteWorkStore:
                     attempt,
                     checkpoint_receipt,
                     checkpoint_package_reference,
+                    checkpoint_candidate_reference,
                     correction_receipt,
                 )
         finally:

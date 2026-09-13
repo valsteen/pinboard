@@ -4,12 +4,22 @@ from typing import Literal
 
 import msgspec
 
-from pinboard.application import query_models
+from pinboard.application import dispatch_models, query_models
 from pinboard.interfaces import work_brief_models
 
 
 class AttemptView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     continuation: query_models.AttemptContinuation
+
+
+class VerifiedArtifactReferenceView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-verified-artifact-reference/v1"]
+    artifact_ref_id: int
+    selector: str
+    sha256: str
+    size_bytes: int
+    accepted_revision: int
+    verified: Literal[True]
 
 
 class TransitionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -28,7 +38,11 @@ class PriorCheckpointPackage(msgspec.Struct, tag="present", tag_field="kind", fr
     artifact_ref_id: int
     path: str
     sha256: str
-    package: work_brief_models.CheckpointReviewPackage
+    package: work_brief_models.CheckpointPackage
+    candidate_artifact_ref_id: int
+    candidate_path: str
+    candidate_sha256: str
+    candidate_size_bytes: int
 
 
 type PriorCheckpointPackageSelection = NoPriorCheckpointPackage | PriorCheckpointPackage
@@ -52,7 +66,7 @@ type ReviewRound = InitialReviewRound | CorrectionReviewRound
 
 
 class ReviewJobView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-review-job/v2"]
+    schema: Literal["pinboard-review-job/v4"]
     attempt_id: str
     candidate_revision: str
     owner_task_id: str
@@ -64,7 +78,9 @@ class ReviewJobView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     result_sha256: str
     prior_checkpoint_package: PriorCheckpointPackageSelection
     review_round: ReviewRound
-    prompt: str
+    prompt_reference: dispatch_models.PromptReferenceView
+    native_launch: dispatch_models.NativeLaunchEnvelope
+    changed_surfaces: tuple[str, ...]
     return_contract: str
 
 

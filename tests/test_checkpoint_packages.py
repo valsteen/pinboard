@@ -29,7 +29,7 @@ from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.history import CheckpointAcceptanceOutcome
 from pinboard.domain.identifiers import AttemptId, ItemId
-from pinboard.interfaces import work_brief_models
+from pinboard.interfaces import work_brief_models, work_inspection
 from pinboard.interfaces.cli import main
 from pinboard.interfaces.errors import WorkBriefFailure
 from pinboard.interfaces.work_briefs import (
@@ -307,6 +307,45 @@ class CheckpointPackageTest(unittest.TestCase):
             ),
         )
         project = Path(tempfile.mkdtemp()).resolve()
+        subprocess.run(["git", "init", "-b", "main"], cwd=project, check=True, capture_output=True)
+        tracked = project / "tracked.txt"
+        tracked.write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=project, check=True, capture_output=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Pinboard Tests",
+                "-c",
+                "user.email=pinboard@example.invalid",
+                "commit",
+                "-m",
+                "base",
+            ],
+            cwd=project,
+            check=True,
+            capture_output=True,
+        )
+        tracked.write_text("candidate\n", encoding="utf-8")
+        candidate_diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD", "--"],
+            cwd=project,
+            check=True,
+            capture_output=True,
+        ).stdout
+        candidate_revision = f"working-tree-sha256:{hashlib.sha256(candidate_diff).hexdigest()}"
+        state = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                attempts=tuple(
+                    replace(value, candidate_revision=candidate_revision)
+                    if value.attempt_id == AttemptId("work-a-1")
+                    else value
+                    for value in state.lifecycle.attempts
+                ),
+            ),
+        )
         roots = resolve_durable_roots(project)
         initialize_database(roots, SQLITE_NOW)
         brief = self.local_brief(project) if local else work_a_brief(project)
@@ -357,7 +396,7 @@ class CheckpointPackageTest(unittest.TestCase):
             json.dumps(
                 {
                     "checkpoint": checkpoint_id,
-                    "candidate": "candidate-a",
+                    "candidate": candidate_revision,
                     "evidence": "Accepted evidence.",
                 }
             ),
@@ -371,13 +410,307 @@ class CheckpointPackageTest(unittest.TestCase):
         )
         return AcceptedPackageFixture(project, roots.work_root, store, brief, package_reference)
 
-    def package(self, fixture: AcceptedPackageFixture) -> work_brief_models.CheckpointReviewPackage:
+    def package(self, fixture: AcceptedPackageFixture) -> work_brief_models.CheckpointPackage:
         package = decode_canonical_checkpoint_review_package(
             (fixture.work / fixture.package_reference.selector).read_bytes()
         )
         if isinstance(package, WorkBriefFailure):
             self.fail(str(package))
         return package
+
+    def test_checkpoint_acceptance_preserves_verified_candidate_diff_in_v2_package(self) -> None:
+        fixture = self.accepted_package_fixture()
+        package = self.package(fixture)
+
+        self.assertIsInstance(package, work_brief_models.CheckpointReviewPackageV2)
+        assert isinstance(package, work_brief_models.CheckpointReviewPackageV2)
+        candidate = package.candidate_snapshot
+        self.assertEqual("candidate", candidate.role)
+        self.assertEqual("evidence", candidate.kind)
+        self.assertEqual(f"work-a-1-{package.checkpoint.id}-candidate", candidate.key)
+        self.assertEqual(1, candidate.revision)
+        self.assertEqual(f"working-tree-sha256:{candidate.content_sha256}", package.candidate)
+        self.assertEqual(
+            candidate.content_sha256, hashlib.sha256((fixture.work / candidate.selector).read_bytes()).hexdigest()
+        )
+
+    def legacy_review_fixture(self) -> tuple[AcceptedPackageFixture, int, int, bytes]:
+        fixture, history_id, correction_history_id = self.review_job_fixture()
+        package = self.package(fixture)
+        assert isinstance(package, work_brief_models.CheckpointReviewPackageV2)
+        candidate_reference = next(
+            value
+            for value in fixture.store.validated_snapshot().artifact_references
+            if value.key == package.candidate_snapshot.key
+        )
+        candidate_bytes = (fixture.work / candidate_reference.selector).read_bytes()
+        legacy = work_brief_models.CheckpointReviewPackage(
+            package.attempt_id,
+            package.item_id,
+            package.candidate,
+            package.acceptance_evidence,
+            package.accepted_scope,
+            package.checkpoint,
+            package.accepted_brief,
+            package.result,
+            package.implementation_review,
+            package.verdict,
+            package.review_basis,
+        )
+        self.replace_package(fixture, legacy)
+        connection = sqlite3.connect(fixture.work / "state.sqlite3")
+        try:
+            connection.execute(
+                "DELETE FROM artifact_refs WHERE artifact_ref_id = ?", (int(candidate_reference.artifact_ref_id),)
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        (fixture.work / candidate_reference.selector).unlink()
+        return fixture, history_id, correction_history_id, candidate_bytes
+
+    def test_legacy_review_missing_candidate_is_actionable_and_exact_recovery_continues(self) -> None:
+        fixture, history_id, correction_history_id, candidate_bytes = self.legacy_review_fixture()
+        common = (
+            *fixture.common,
+            "review-job",
+            "--attempt-id",
+            "work-a-1",
+            "--candidate-revision",
+            "candidate-b",
+            "--checkpoint-history-id",
+            str(history_id),
+        )
+        before = fixture.store.validated_snapshot()
+
+        result, stdout, stderr = self.run_cli(*common, "--json")
+
+        self.assertEqual(11, result, stderr)
+        rejected = self.json_object(json.loads(stdout))
+        self.assertEqual("correct-input", rejected["retry"])
+        self.assertFalse(rejected["state_changed"])
+        self.assertEqual([], rejected["changed_surfaces"])
+        observed_rows = rejected["observed"]
+        if not isinstance(observed_rows, list):
+            self.fail("Expected structured observations")
+        observed = {
+            str(row["field"]): row["value"] for value in observed_rows if isinstance(value, dict) for row in (value,)
+        }
+        self.assertEqual(history_id, observed["checkpoint_history_id"])
+        self.assertIn("--candidate-patch", str(observed["recovery_command"]))
+        self.assertEqual(before, fixture.store.validated_snapshot())
+
+        wrong = fixture.project / "wrong.patch"
+        wrong.write_bytes(b"wrong\n")
+        wrong_result, wrong_stdout, wrong_stderr = self.run_cli(*common, "--candidate-patch", str(wrong), "--json")
+        self.assertEqual(11, wrong_result, wrong_stderr)
+        wrong_rejection = self.json_object(json.loads(wrong_stdout))
+        self.assertEqual("correct-input", wrong_rejection["retry"])
+        self.assertFalse(wrong_rejection["state_changed"])
+        self.assertEqual([], wrong_rejection["changed_surfaces"])
+
+        recovered = fixture.project / "candidate.patch"
+        recovered.write_bytes(candidate_bytes)
+        job = self.run_json_cli(*common, "--candidate-patch", str(recovered))
+        self.assertEqual("pinboard-review-job/v4", job["schema"])
+        self.assertEqual(
+            ["immutable-artifact", "accepted-artifact-reference", "ledger"],
+            job["changed_surfaces"],
+        )
+        selected = self.json_object(job["prior_checkpoint_package"])
+        self.assertEqual(hashlib.sha256(candidate_bytes).hexdigest(), selected["candidate_sha256"])
+        accepted = fixture.store.read_artifact_reference(
+            work_models.ArtifactKind.EVIDENCE,
+            f"work-a-1-{fixture.brief.checkpoint.checkpoint_id}-candidate",
+            1,
+        )
+        self.assertIsNotNone(accepted)
+        after_recovery = fixture.store.validated_snapshot()
+
+        repeated = self.run_json_cli(*common, "--candidate-patch", str(recovered))
+        self.assertEqual([], repeated["changed_surfaces"])
+        self.assertEqual(after_recovery, fixture.store.validated_snapshot())
+
+        correction = self.run_json_cli(
+            *common,
+            "--correction-history-id",
+            str(correction_history_id),
+            "--candidate-patch",
+            str(recovered),
+        )
+        self.assertEqual("correction", self.json_object(correction["review_round"])["kind"])
+        self.assertEqual(
+            ["immutable-artifact", "accepted-artifact-reference", "ledger"],
+            correction["changed_surfaces"],
+        )
+
+    def test_legacy_recovery_reports_committed_effect_when_later_review_input_fails(self) -> None:
+        fixture, history_id, _correction_history_id, candidate_bytes = self.legacy_review_fixture()
+        (fixture.work / "attempts" / "work-a-1" / "result.md").unlink()
+        recovered = fixture.project / "candidate.patch"
+        recovered.write_bytes(candidate_bytes)
+
+        result, stdout, stderr = self.run_cli(
+            *fixture.common,
+            "review-job",
+            "--attempt-id",
+            "work-a-1",
+            "--candidate-revision",
+            "candidate-b",
+            "--checkpoint-history-id",
+            str(history_id),
+            "--candidate-patch",
+            str(recovered),
+            "--json",
+        )
+
+        self.assertEqual(11, result, stderr)
+        rejected = self.json_object(json.loads(stdout))
+        self.assertEqual("committed-effect", rejected["status"])
+        self.assertEqual("do-not-retry", rejected["retry"])
+        self.assertEqual(
+            ["immutable-artifact", "accepted-artifact-reference", "ledger"],
+            rejected["changed_surfaces"],
+        )
+        accepted = fixture.store.read_artifact_reference(
+            work_models.ArtifactKind.EVIDENCE,
+            f"work-a-1-{fixture.brief.checkpoint.checkpoint_id}-candidate",
+            1,
+        )
+        self.assertIsNotNone(accepted)
+
+    def test_legacy_recovery_reports_committed_effect_for_later_exceptions(self) -> None:
+        for boundary in ("context-reread", "prompt-publication"):
+            with self.subTest(boundary=boundary):
+                fixture, history_id, _correction_history_id, candidate_bytes = self.legacy_review_fixture()
+                recovered = fixture.project / "candidate.patch"
+                recovered.write_bytes(candidate_bytes)
+                failure = StorageError(StorageErrorCode.IO_ERROR, f"{boundary} failed")
+                arguments = (
+                    *fixture.common,
+                    "review-job",
+                    "--attempt-id",
+                    "work-a-1",
+                    "--candidate-revision",
+                    "candidate-b",
+                    "--checkpoint-history-id",
+                    str(history_id),
+                    "--candidate-patch",
+                    str(recovered),
+                    "--json",
+                )
+
+                if boundary == "context-reread":
+                    original = work_inspection.queries.select_review_job_context
+                    calls = 0
+
+                    def fail_second_read(
+                        *args: object,
+                        original_select: object = original,
+                        selected_failure: StorageError = failure,
+                        **kwargs: object,
+                    ) -> object:
+                        nonlocal calls
+                        calls += 1
+                        if calls == 2:
+                            raise selected_failure
+                        assert callable(original_select)
+                        return original_select(*args, **kwargs)
+
+                    selected_patch = patch.object(
+                        work_inspection.queries,
+                        "select_review_job_context",
+                        side_effect=fail_second_read,
+                    )
+                else:
+                    selected_patch = patch.object(
+                        work_inspection.dispatch_models,
+                        "publish_agent_prompt",
+                        side_effect=failure,
+                    )
+
+                before = fixture.store.validated_snapshot()
+                with selected_patch:
+                    result, stdout, stderr = self.run_cli(*arguments)
+
+                self.assertEqual(12, result, stderr)
+                rejected = self.json_object(json.loads(stdout))
+                self.assertEqual("committed-effect", rejected["status"])
+                self.assertEqual("do-not-retry", rejected["retry"])
+                self.assertEqual(
+                    ["immutable-artifact", "accepted-artifact-reference", "ledger"],
+                    rejected["changed_surfaces"],
+                )
+                observed_rows = rejected["observed"]
+                if not isinstance(observed_rows, list):
+                    self.fail("Expected structured observations")
+                observed = {
+                    str(row["field"]): row["value"]
+                    for value in observed_rows
+                    if isinstance(value, dict)
+                    for row in (value,)
+                }
+                self.assertIn("candidate", str(observed["published_artifact_selector"]))
+                after = fixture.store.validated_snapshot()
+                self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
+
+    def test_v2_missing_candidate_reference_cannot_enter_legacy_recovery(self) -> None:
+        for supply_patch in (False, True):
+            with self.subTest(supply_patch=supply_patch):
+                fixture, history_id, _correction_history_id = self.review_job_fixture()
+                package = self.package(fixture)
+                assert isinstance(package, work_brief_models.CheckpointReviewPackageV2)
+                candidate_reference = next(
+                    value
+                    for value in fixture.store.validated_snapshot().artifact_references
+                    if value.key == package.candidate_snapshot.key
+                )
+                candidate_bytes = (fixture.work / candidate_reference.selector).read_bytes()
+                connection = sqlite3.connect(fixture.work / "state.sqlite3")
+                try:
+                    connection.execute(
+                        "DELETE FROM artifact_refs WHERE artifact_ref_id = ?",
+                        (int(candidate_reference.artifact_ref_id),),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                (fixture.work / candidate_reference.selector).unlink()
+                arguments = [
+                    *fixture.common,
+                    "review-job",
+                    "--attempt-id",
+                    "work-a-1",
+                    "--candidate-revision",
+                    "candidate-b",
+                    "--checkpoint-history-id",
+                    str(history_id),
+                ]
+                if supply_patch:
+                    recovered = fixture.project / "candidate.patch"
+                    recovered.write_bytes(candidate_bytes)
+                    arguments.extend(("--candidate-patch", str(recovered)))
+                arguments.append("--json")
+                before = fixture.store.validated_snapshot()
+
+                result, stdout, stderr = self.run_cli(*arguments)
+
+                self.assertEqual(11, result, stderr)
+                rejected = self.json_object(json.loads(stdout))
+                self.assertEqual("rejected", rejected["status"])
+                self.assertFalse(rejected["state_changed"])
+                self.assertEqual([], rejected["changed_surfaces"])
+                observed_rows = rejected["observed"]
+                if not isinstance(observed_rows, list):
+                    self.fail("Expected structured observations")
+                observed = {
+                    str(row["field"]): row["value"]
+                    for value in observed_rows
+                    if isinstance(value, dict)
+                    for row in (value,)
+                }
+                self.assertNotIn("recovery_command", observed)
+                self.assertEqual(before, fixture.store.validated_snapshot())
 
     def review_job_fixture(self) -> tuple[AcceptedPackageFixture, int, int]:
         fixture = self.accepted_package_fixture()
@@ -463,7 +796,7 @@ class CheckpointPackageTest(unittest.TestCase):
                 "correction",
             ),
         )
-        database_before = (fixture.work / "state.sqlite3").read_bytes()
+        lifecycle_before = fixture.store.validated_snapshot().lifecycle
         for arguments, package_kind, round_kind in combinations:
             with self.subTest(package=package_kind, round=round_kind):
                 job = self.run_json_cli(
@@ -475,10 +808,12 @@ class CheckpointPackageTest(unittest.TestCase):
                     "candidate-b",
                     *arguments,
                 )
-                self.assertEqual("pinboard-review-job/v2", job["schema"])
+                self.assertEqual("pinboard-review-job/v4", job["schema"])
                 self.assertEqual(package_kind, self.json_object(job["prior_checkpoint_package"])["kind"])
                 self.assertEqual(round_kind, self.json_object(job["review_round"])["kind"])
-        self.assertEqual(database_before, (fixture.work / "state.sqlite3").read_bytes())
+        lifecycle_after = fixture.store.validated_snapshot().lifecycle
+        self.assertEqual(lifecycle_before.work_items, lifecycle_after.work_items)
+        self.assertEqual(lifecycle_before.attempts, lifecycle_after.attempts)
 
     def test_review_job_rejects_wrong_history_kinds_and_package_identity(self) -> None:
         fixture, package_history_id, correction_history_id = self.review_job_fixture()
@@ -684,7 +1019,9 @@ class CheckpointPackageTest(unittest.TestCase):
         self.assertEqual("candidate-b", round_view["candidate_revision"])
         self.assertEqual("Fix candidate B.", round_view["reason"])
         self.assertEqual(hashlib.sha256(review_path.read_bytes()).hexdigest(), round_view["review_sha256"])
-        self.assertIn("candidate-c", str(job["prompt"]))
+        prompt_reference = self.json_object(job["prompt_reference"])
+        prompt = (fixture.work / str(prompt_reference["selector"])).read_text(encoding="utf-8")
+        self.assertIn("candidate-c", prompt)
         self.assertIn("candidate-newer", review_path.read_text(encoding="utf-8"))
         reloaded = fixture.store.validated_snapshot()
         receipts = {int(value.history_id): value for value in reloaded.transition_receipts}
@@ -735,8 +1072,10 @@ class CheckpointPackageTest(unittest.TestCase):
         round_view = self.json_object(job["review_round"])
         self.assertEqual("candidate-a", round_view["candidate_revision"])
         self.assertEqual(hashlib.sha256(review_path.read_bytes()).hexdigest(), round_view["review_sha256"])
-        self.assertIn("independent evidence inputs", str(job["prompt"]))
-        self.assertIn("Compare the receipt candidate and the review-file candidate separately", str(job["prompt"]))
+        prompt_reference = self.json_object(job["prompt_reference"])
+        prompt = (fixture.work / str(prompt_reference["selector"])).read_text(encoding="utf-8")
+        self.assertIn("independent evidence inputs", prompt)
+        self.assertIn("Compare the receipt candidate and the review-file candidate separately", prompt)
 
     def test_review_job_accepts_a_local_checkpoint_package(self) -> None:
         fixture = self.accepted_package_fixture(local=True)
@@ -834,7 +1173,7 @@ class CheckpointPackageTest(unittest.TestCase):
                 "--correction-history-id",
                 str(correction_history_id),
             )
-        self.assertEqual("pinboard-review-job/v2", job["schema"])
+        self.assertEqual("pinboard-review-job/v4", job["schema"])
         self.assertEqual(1, transactions.call_count)
         self.assertEqual(2, receipt_reads.call_count)
         self.assertTrue(git_calls.call_args_list)
@@ -862,7 +1201,7 @@ class CheckpointPackageTest(unittest.TestCase):
     def replace_package(
         self,
         fixture: AcceptedPackageFixture,
-        package: work_brief_models.CheckpointReviewPackage,
+        package: work_brief_models.CheckpointPackage,
     ) -> None:
         self.replace_artifact_bytes(
             fixture,
@@ -912,7 +1251,7 @@ class CheckpointPackageTest(unittest.TestCase):
         result, stdout, stderr = self.run_cli(*fixture.common, "handover", "--json")
         self.assertEqual(0, result, stderr)
         handover = msgspec.json.decode(stdout, type=ProjectHandover, strict=True)
-        self.assertEqual("pinboard-project-handover/v5", handover.schema)
+        self.assertEqual("pinboard-project-handover/v6", handover.schema)
         self.assertEqual((), handover.completion_packages)
         self.assertEqual(1, len(handover.checkpoint_packages))
         exported = handover.checkpoint_packages[0]
@@ -923,7 +1262,7 @@ class CheckpointPackageTest(unittest.TestCase):
         )
         self.assertEqual(receipt.history_id, exported.history_id)
         self.assertEqual(int(fixture.package_reference.artifact_ref_id), exported.package_artifact_ref_id)
-        self.assertEqual("candidate-a", exported.candidate)
+        self.assertEqual(self.package(fixture).candidate, exported.candidate)
         self.assertEqual(
             {value.artifact_ref_id for value in handover.artifact_references},
             {value.artifact_ref_id for value in handover.artifact_contents},
@@ -1249,12 +1588,53 @@ class CheckpointPackageTest(unittest.TestCase):
         self.assertTrue(validation["valid"])
         self.assertEqual(1, snapshot_reads)
 
+    def corrupt_candidate_identity(
+        self,
+        case: str,
+        fixture: AcceptedPackageFixture,
+        package: work_brief_models.CheckpointPackage,
+    ) -> bool:
+        if case == "candidate-snapshot":
+            assert isinstance(package, work_brief_models.CheckpointReviewPackageV2)
+            self.replace_package(
+                fixture,
+                replace_struct(
+                    package,
+                    candidate_snapshot=replace_struct(package.candidate_snapshot, key="missing-candidate"),
+                ),
+            )
+        elif case == "candidate-bytes":
+            assert isinstance(package, work_brief_models.CheckpointReviewPackageV2)
+            candidate_reference = next(
+                value
+                for value in fixture.store.validated_snapshot().artifact_references
+                if value.key == package.candidate_snapshot.key
+            )
+            self.replace_artifact_bytes(fixture, candidate_reference, b"different candidate bytes\n")
+        elif case == "candidate-reference":
+            assert isinstance(package, work_brief_models.CheckpointReviewPackageV2)
+            candidate_reference = next(
+                value
+                for value in fixture.store.validated_snapshot().artifact_references
+                if value.key == package.candidate_snapshot.key
+            )
+            with sqlite3.connect(fixture.work / "state.sqlite3") as connection:
+                connection.execute(
+                    "DELETE FROM artifact_refs WHERE artifact_ref_id = ?",
+                    (int(candidate_reference.artifact_ref_id),),
+                )
+        else:
+            return False
+        return True
+
     def corrupt_package_identity(
         self,
         case: str,
         fixture: AcceptedPackageFixture,
-        package: work_brief_models.CheckpointReviewPackage,
+        package: work_brief_models.CheckpointPackage,
     ) -> bool:
+        if self.corrupt_candidate_identity(case, fixture, package):
+            return True
         if case == "malformed":
             self.replace_artifact_bytes(fixture, fixture.package_reference, b"{}\n")
         elif case == "noncanonical":
@@ -1335,7 +1715,7 @@ class CheckpointPackageTest(unittest.TestCase):
         self,
         case: str,
         fixture: AcceptedPackageFixture,
-        package: work_brief_models.CheckpointReviewPackage,
+        package: work_brief_models.CheckpointPackage,
     ) -> None:
         basis = package.review_basis
         assert isinstance(basis, work_brief_models.CrossBoundaryReviewBasis)
@@ -1383,6 +1763,9 @@ class CheckpointPackageTest(unittest.TestCase):
             "accepted-scope",
             "checkpoint-digest",
             "accepted-brief",
+            "candidate-snapshot",
+            "candidate-bytes",
+            "candidate-reference",
             "result",
             "implementation-review",
             "brief-review",

@@ -12,7 +12,16 @@ from typing import assert_never
 from pinboard.application import ports, query_models, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import ActionCapabilityFactory, project_attempt_action_groups
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.errors import (
+    DecisionFailure,
+    DecisionFailureCode,
+    DecisionResult,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    FailureMismatch,
+    RetryDisposition,
+)
 from pinboard.domain.identifiers import AttemptId, CandidateId, HistoryId, ItemId, TaskId
 from pinboard.domain.ledger import LedgerSnapshot
 
@@ -566,6 +575,36 @@ def project_item_status(
     if facts.definition_title is None:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Item '{item_id}' has no definition.", None
+        )
+    attempt = None if not facts.attempts else facts.attempts[0]
+    attempt_state = None if attempt is None else attempt.state
+    allowed_attempt_states = stored_state.allowed_current_attempt_states(item.state)
+    if attempt_state not in allowed_attempt_states:
+        expected = " or ".join("none" if value is None else value.value for value in allowed_attempt_states)
+        observed = "none" if attempt_state is None else attempt_state.value
+        return DecisionFailure(
+            DecisionFailureCode.ITEM_STATUS_INCONSISTENT,
+            f"Item '{item_id}' state '{item.state.value}' conflicts with current attempt state '{observed}'.",
+            FailureDetails(
+                observed=(
+                    FailureFact("item_id", str(item.item_id)),
+                    FailureFact("item_state", item.state.value),
+                    FailureFact("item_timing", None if item.timing is None else item.timing.value),
+                    FailureFact("item_outcome_evidence", item.outcome_evidence),
+                    FailureFact("item_next_action", item.next_action),
+                    FailureFact("item_source", item.source),
+                    FailureFact("item_notes", item.notes),
+                    FailureFact("item_queue_position", item.queue_position),
+                    FailureFact("attempt_id", None if attempt is None else str(attempt.attempt_id)),
+                    FailureFact("attempt_state", observed),
+                    FailureFact("attempt_candidate_revision", None if attempt is None else attempt.candidate_revision),
+                ),
+                mismatches=(FailureMismatch("current_attempt_state", expected, observed),),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
         )
     attempts = tuple(
         query_models.ItemStatusAttempt(str(attempt.attempt_id), attempt.state, attempt.candidate_revision)

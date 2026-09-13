@@ -208,6 +208,7 @@ class ReviewJobContextFacts:
     attempt: AttemptContextFacts
     checkpoint_receipt: stored_state.StoredTransitionReceipt | None
     checkpoint_package_reference: stored_state.ArtifactReference | None
+    checkpoint_candidate_reference: stored_state.ArtifactReference | None
     correction_receipt: stored_state.StoredTransitionReceipt | None
 
 

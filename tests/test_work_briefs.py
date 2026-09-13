@@ -334,6 +334,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         result = identity("result", "result", "result")
         implementation_review = identity("implementation-review", "evidence", "implementation-review")
         brief_review = identity("brief-review", "evidence", "brief-review")
+        candidate_snapshot = identity("candidate", "evidence", "candidate")
 
         def make_package(
             selected_brief: work_brief_models.PortableArtifactIdentity,
@@ -342,7 +343,6 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             review_basis: work_brief_models.ReviewBasis,
         ) -> work_brief_models.CheckpointReviewPackage:
             return work_brief_models.CheckpointReviewPackage(
-                "pinboard-checkpoint-review-package/v1",
                 value.attempt_id,
                 value.item_id,
                 "candidate-a",
@@ -380,6 +380,29 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     decode_canonical_checkpoint_review_package(encoded[:-1]),
                     WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
                 )
+
+        portable = work_brief_models.CheckpointReviewPackageV2(
+            value.attempt_id,
+            value.item_id,
+            f"working-tree-sha256:{candidate_snapshot.content_sha256}",
+            "Accepted.",
+            value.accepted_scope,
+            work_brief_models.CheckpointIdentity(checkpoint.checkpoint_id, checkpoint_sha256),
+            candidate_snapshot,
+            accepted_brief,
+            result,
+            implementation_review,
+            "ready",
+            work_brief_models.CrossBoundaryReviewBasis(
+                brief_review,
+                checkpoint_sha256,
+                hashlib.sha256(canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)).hexdigest(),
+            ),
+        )
+        encoded_portable = canonical_checkpoint_review_package_bytes(portable)
+        self.assertEqual(
+            portable, expect_work_brief_success(decode_canonical_checkpoint_review_package(encoded_portable))
+        )
 
         payload = msgspec.json.decode(canonical_checkpoint_review_package_bytes(cross))
         if not isinstance(payload, dict):

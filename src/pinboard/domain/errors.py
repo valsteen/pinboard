@@ -26,14 +26,21 @@ class ChangedSurface(Enum):
 
 
 class ArtifactAcceptanceAfterPublicationError(RuntimeError):
-    """Infrastructure failed after this invocation published new immutable bytes."""
+    """Infrastructure failed while accepting immutable bytes after exact prior effects."""
 
     selector: str
     cause: Exception
+    changed_surfaces: tuple[ChangedSurface, ...]
 
-    def __init__(self, selector: str, cause: Exception) -> None:
+    def __init__(
+        self,
+        selector: str,
+        cause: Exception,
+        changed_surfaces: tuple[ChangedSurface, ...],
+    ) -> None:
         self.selector = selector
         self.cause = cause
+        self.changed_surfaces = changed_surfaces
         super().__init__(str(cause))
 
 
@@ -85,6 +92,7 @@ class DecisionFailureCode(Enum):
     ITEM_DEFINITION_LIFECYCLE_INVALID = "ITEM_DEFINITION_LIFECYCLE_INVALID"
     ITEM_DEPENDENCY_CYCLE = "ITEM_DEPENDENCY_CYCLE"
     ITEM_NOT_FOUND = "ITEM_NOT_FOUND"
+    ITEM_STATUS_INCONSISTENT = "ITEM_STATUS_INCONSISTENT"
     LIVE_DEPENDENTS = "LIVE_DEPENDENTS"
     LEASE_FENCED = "LEASE_FENCED"
     PROPOSAL_NOT_FOUND = "PROPOSAL_NOT_FOUND"

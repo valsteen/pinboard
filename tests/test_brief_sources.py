@@ -281,6 +281,13 @@ class BriefSourcesTest(unittest.TestCase):
         self.assertEqual("rejected", rejection["status"])
         self.assertFalse(rejection["state_changed"])
         self.assertEqual([], rejection["changed_surfaces"])
+        self.assertEqual("correct-input", rejection["retry"])
+        self.assertEqual([{"field": "selected_output_path", "value": str(plan_path)}], rejection["observed"])
+        self.assertEqual(
+            [{"field": "selected_output_path", "expected": "unoccupied", "observed": "occupied"}],
+            rejection["mismatches"],
+        )
+        self.assertEqual([{"kind": "command", "command": "mktemp -d"}], rejection["next_actions"])
 
     def test_plan_to_file_reports_bytes_visible_before_sync_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

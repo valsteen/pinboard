@@ -15,6 +15,7 @@ from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
 MEDIA_TYPE_BY_SUFFIX = {
     ".json": "application/json",
     ".md": "text/markdown",
+    ".patch": "text/x-diff",
     ".txt": "text/plain",
     ".yaml": "application/yaml",
     ".yml": "application/yaml",

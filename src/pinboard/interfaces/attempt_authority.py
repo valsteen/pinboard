@@ -10,7 +10,15 @@ from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import ports, queries, query_models
 from pinboard.application.service import decide_and_commit_attempt_authority_change
 from pinboard.domain import authority_models, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
+from pinboard.domain.errors import (
+    DecisionFailure,
+    DecisionFailureCode,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    FailureMismatch,
+    RetryDisposition,
+)
 from pinboard.domain.identifiers import AttemptId, LeaseId
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.interfaces import cli_commands, work_views
@@ -95,7 +103,23 @@ def _resolve_requested_attempt_acquisition(
     if state == authority_models.AttemptLeaseStatus.ACTIVE:
         if retained.expires_at > requested_at:
             return CommandFailure(
-                DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED, "Attempt authority remains live.", None
+                DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
+                "Attempt authority remains live.",
+                FailureDetails(
+                    observed=(
+                        FailureFact("attempt_id", str(attempt_id)),
+                        FailureFact("holder_task_id", str(retained.task_id)),
+                        FailureFact("holder_host_id", str(retained.host_id)),
+                        FailureFact("generation", retained.generation),
+                        FailureFact("expires_at", retained.expires_at.isoformat()),
+                        FailureFact("authority_status", retained.status.value),
+                    ),
+                    mismatches=(FailureMismatch("authority_availability", "available", "live-holder"),),
+                    retry=RetryDisposition.DO_NOT_RETRY,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
             )
         state = authority_models.AttemptLeaseStatus.EXPIRED
     inactive = authority_models.InactiveAttemptAuthority(

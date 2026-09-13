@@ -188,6 +188,7 @@ def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
         case (
             cli_commands.ProjectDispatchCommand(subject_revision=subject_revision)
             | cli_commands.ProjectReviewedDispatchCommand(subject_revision=subject_revision)
+            | cli_commands.ProjectCorrectionDispatchCommand(subject_revision=subject_revision)
         ):
             authorization = decision_models.AuthorizationKind.PROJECT
             role = decision_models.Role.PROJECT
@@ -195,6 +196,31 @@ def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
             generation = 0
         case _ as unreachable:
             assert_never(unreachable)
+
+    semantics = decision_models.action_semantics(kind)
+    if role not in semantics.permitted_roles:
+        return CommandFailure(
+            CommandErrorCode.ACTION_AUTHORITY_WRONG,
+            f"Action '{selected_action_id}' is not available to role '{role.value}'.",
+            FailureDetails(
+                observed=(
+                    FailureFact("role", role.value),
+                    FailureFact("action_id", str(selected_action_id)),
+                    FailureFact("subject", subject),
+                ),
+                mismatches=(
+                    FailureMismatch(
+                        "role",
+                        ",".join(value.value for value in semantics.permitted_roles),
+                        role.value,
+                    ),
+                ),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
 
     def capability[SubjectT: SubjectId](
         subject_id: SubjectT,

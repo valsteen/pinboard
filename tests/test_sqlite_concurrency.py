@@ -149,7 +149,18 @@ def _commit_same_checkpoint(
             b"package\n",
         ),
     )
+    candidate = write_revision(
+        roots,
+        NewArtifact(work_models.ArtifactKind.EVIDENCE, "work-a-1-checkpoint-a-candidate", 1, ".patch", b"diff\n"),
+    )
     artifacts = CheckpointArtifacts(
+        EvidenceArtifactRef(
+            candidate.key,
+            candidate.revision,
+            candidate.selector,
+            candidate.content_sha256,
+            candidate.size_bytes,
+        ),
         ResultArtifactRef(result.key, result.revision, result.selector, result.content_sha256, result.size_bytes),
         EvidenceArtifactRef(review.key, review.revision, review.selector, review.content_sha256, review.size_bytes),
         EvidenceArtifactRef(
@@ -614,7 +625,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         self.assertCountEqual(("committed", "ACTION_NOT_AVAILABLE"), (results.get(), results.get()))
         reloaded = store.validated_snapshot()
         self.assertEqual(state.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
-        self.assertEqual(len(state.artifact_references) + 3, len(reloaded.artifact_references))
+        self.assertEqual(len(state.artifact_references) + 4, len(reloaded.artifact_references))
         self.assertEqual(len(state.transition_receipts) + 1, len(reloaded.transition_receipts))
         attempt = next(value for value in reloaded.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
         self.assertEqual(work_models.AttemptState.PAUSED, attempt.state)

@@ -82,7 +82,11 @@ def publish_accepted_artifact(
         accepted = store.accept_artifact_reference(publisher.work_root, published_reference, accepted_at)
     except WorkStoreError as error:
         if artifact_created:
-            raise ArtifactAcceptanceAfterPublicationError(published_reference.selector, error) from error
+            raise ArtifactAcceptanceAfterPublicationError(
+                published_reference.selector,
+                error,
+                (ChangedSurface.IMMUTABLE_ARTIFACT,),
+            ) from error
         raise
     if isinstance(accepted, DecisionFailure):
         if artifact_created:

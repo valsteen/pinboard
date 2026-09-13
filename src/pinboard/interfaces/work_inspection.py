@@ -1,25 +1,29 @@
-"""Read-only installed work-inspection composition and presentation.
+"""Installed work-inspection composition and presentation.
 
-Functions in this module may read an explicitly selected SQLite work root and
-write command output. They never mutate the ledger, publish artifacts, change
-authority, refresh generated views, obtain a lease, or own a transaction.
+Most functions only read an explicitly selected SQLite work root and write
+command output. Review-job additionally publishes and accepts its immutable
+prompt without changing lifecycle or authority.
 """
 
+import shlex
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import assert_never
+from typing import Never, assert_never
 
 import msgspec
 
-from pinboard.adapters.files.artifacts import read_reference
+from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
+from pinboard.adapters.files.errors import ArtifactError
+from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import actions as action_queries
-from pinboard.application import ports, queries, query_models, stored_state
+from pinboard.application import artifact_publication, dispatch_models, ports, queries, query_models, stored_state
+from pinboard.application.artifacts import NewArtifact
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain import errors as domain_errors
-from pinboard.domain.identifiers import ActionId, AttemptId, HistoryId, LeaseId, TaskId
+from pinboard.domain.identifiers import ActionId, ArtifactRefId, AttemptId, HistoryId, LeaseId, TaskId
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.interfaces import (
     action_selection,
@@ -136,6 +140,93 @@ def show_attempt(
     return 0
 
 
+def verify_artifact_reference(
+    durable: DurableRoots,
+    store: ports.WorkStore,
+    command: cli_commands.ArtifactVerifyCommand,
+) -> errors.CommandResult[int]:
+    reference = store.read_artifact_reference_by_id(ArtifactRefId(command.artifact_ref_id))
+    if reference is None:
+        return errors.CommandFailure(
+            errors.CommandErrorCode.ARTIFACT_REFERENCE_MISMATCH,
+            "The accepted artifact reference does not exist.",
+            domain_errors.FailureDetails(
+                observed=(domain_errors.FailureFact("artifact_ref_id", command.artifact_ref_id),),
+                mismatches=(domain_errors.FailureMismatch("accepted_artifact_reference", "present", "absent"),),
+                retry=domain_errors.RetryDisposition.CORRECT_INPUT,
+                effect=domain_errors.EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    mismatches = tuple(
+        domain_errors.FailureMismatch(field, expected, observed)
+        for field, expected, observed in (
+            ("selector", reference.selector, command.selector),
+            ("sha256", reference.content_sha256, command.sha256),
+            ("size_bytes", reference.size_bytes, command.size_bytes),
+        )
+        if expected != observed
+    )
+    observations = (
+        domain_errors.FailureFact("artifact_ref_id", command.artifact_ref_id),
+        domain_errors.FailureFact("selector", reference.selector),
+        domain_errors.FailureFact("sha256", reference.content_sha256),
+        domain_errors.FailureFact("size_bytes", reference.size_bytes),
+    )
+    if mismatches:
+        return errors.CommandFailure(
+            errors.CommandErrorCode.ARTIFACT_REFERENCE_MISMATCH,
+            "The supplied prompt reference facts do not match the accepted artifact reference.",
+            domain_errors.FailureDetails(
+                observed=observations,
+                mismatches=mismatches,
+                retry=domain_errors.RetryDisposition.CORRECT_INPUT,
+                effect=domain_errors.EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    try:
+        read_reference(durable.work_root, reference)
+    except ArtifactError:
+        return errors.CommandFailure(
+            errors.CommandErrorCode.ARTIFACT_REFERENCE_MISMATCH,
+            "The immutable artifact bytes do not match the accepted reference.",
+            domain_errors.FailureDetails(
+                observed=observations,
+                mismatches=(
+                    domain_errors.FailureMismatch(
+                        "artifact_bytes",
+                        "match accepted selector, size, and SHA-256",
+                        "unreadable or mismatched",
+                    ),
+                ),
+                retry=domain_errors.RetryDisposition.DO_NOT_RETRY,
+                effect=domain_errors.EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    view = work_inspection_models.VerifiedArtifactReferenceView(
+        "pinboard-verified-artifact-reference/v1",
+        command.artifact_ref_id,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+        reference.accepted_revision,
+        True,
+    )
+    if command.json:
+        write_json(view)
+    else:
+        print(
+            f"OK ARTIFACT_REFERENCE_VERIFIED artifact_ref_id={view.artifact_ref_id} "
+            f"selector={view.selector} sha256={view.sha256} size_bytes={view.size_bytes}"
+        )
+    return 0
+
+
 def _review_job_history_ids(
     command: cli_commands.ReviewJobCommand,
 ) -> tuple[HistoryId | None, HistoryId | None]:
@@ -144,9 +235,16 @@ def _review_job_history_ids(
             return None, None
         case cli_commands.PackageInitialReviewJobCommand(checkpoint_history_id=checkpoint_history_id):
             return HistoryId(checkpoint_history_id), None
+        case cli_commands.PackageInitialRecoveryReviewJobCommand(checkpoint_history_id=checkpoint_history_id):
+            return HistoryId(checkpoint_history_id), None
         case cli_commands.CorrectionReviewJobCommand(correction_history_id=correction_history_id):
             return None, HistoryId(correction_history_id)
         case cli_commands.PackageCorrectionReviewJobCommand(
+            checkpoint_history_id=checkpoint_history_id,
+            correction_history_id=correction_history_id,
+        ):
+            return HistoryId(checkpoint_history_id), HistoryId(correction_history_id)
+        case cli_commands.PackageCorrectionRecoveryReviewJobCommand(
             checkpoint_history_id=checkpoint_history_id,
             correction_history_id=correction_history_id,
         ):
@@ -159,7 +257,7 @@ def _review_job_failure(message: str) -> errors.CommandFailure:
     return errors.CommandFailure(domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, message, None)
 
 
-def _decode_correction_outcome(
+def decode_correction_outcome(
     receipt: stored_state.StoredTransitionReceipt,
     attempt_id: str,
 ) -> errors.CommandResult[history.TransitionReceiptOutcome]:
@@ -214,6 +312,163 @@ def _read_required_evidence(path: Path, label: str) -> errors.CommandResult[tupl
     return str(path), sha256(evidence_bytes).hexdigest()
 
 
+def _candidate_patch_path(command: cli_commands.ReviewJobCommand) -> Path | None:
+    match command:
+        case cli_commands.PackageInitialRecoveryReviewJobCommand(candidate_patch=candidate_patch):
+            return candidate_patch
+        case cli_commands.PackageCorrectionRecoveryReviewJobCommand(candidate_patch=candidate_patch):
+            return candidate_patch
+        case (
+            cli_commands.InitialReviewJobCommand()
+            | cli_commands.PackageInitialReviewJobCommand()
+            | cli_commands.CorrectionReviewJobCommand()
+            | cli_commands.PackageCorrectionReviewJobCommand()
+        ):
+            return None
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _recover_checkpoint_candidate(
+    roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
+    store: ports.WorkStore,
+    command: cli_commands.ReviewJobCommand,
+    facts: query_models.ReviewJobContextFacts,
+    checkpoint_history_id: HistoryId | None,
+) -> errors.CommandResult[artifact_publication.AcceptedArtifactPublication | None]:
+    candidate_patch = _candidate_patch_path(command)
+    if candidate_patch is None:
+        return None
+    if checkpoint_history_id is None:
+        raise AssertionError("Recovery commands require checkpoint history.")
+    receipt = facts.checkpoint_receipt
+    package_reference = facts.checkpoint_package_reference
+    if receipt is None or package_reference is None:
+        return _review_job_failure("Selected checkpoint history does not link an accepted package artifact.")
+    package = work_state.validate_selected_checkpoint_review_package(
+        receipt,
+        package_reference,
+        read_reference(roots.work, package_reference),
+        attempt_id=str(command.attempt_id),
+        item_id=str(facts.attempt.item_id),
+    )
+    if isinstance(package, errors.WorkBriefFailure):
+        return _review_job_failure(package.message)
+    if not isinstance(package, work_brief_models.CheckpointReviewPackage):
+        return _review_job_failure("Current checkpoint packages cannot use legacy candidate recovery.")
+    expected_sha256 = package.candidate.removeprefix("working-tree-sha256:")
+    if not package.candidate.startswith("working-tree-sha256:") or len(expected_sha256) != 64:
+        return _review_job_failure("Selected checkpoint candidate is not a recoverable working-tree identity.")
+    try:
+        patch_bytes = candidate_patch.read_bytes()
+    except OSError as error:
+        return errors.CommandFailure(
+            domain_errors.DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            f"Cannot read candidate patch: {error}",
+            domain_errors.FailureDetails(
+                observed=(domain_errors.FailureFact("candidate_patch", str(candidate_patch)),),
+                mismatches=(),
+                retry=domain_errors.RetryDisposition.CORRECT_INPUT,
+                effect=domain_errors.EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    observed_sha256 = sha256(patch_bytes).hexdigest()
+    if observed_sha256 != expected_sha256:
+        return errors.CommandFailure(
+            domain_errors.DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "Candidate patch does not match the accepted checkpoint candidate.",
+            domain_errors.FailureDetails(
+                observed=(
+                    domain_errors.FailureFact("checkpoint_history_id", int(checkpoint_history_id)),
+                    domain_errors.FailureFact("candidate_patch", str(candidate_patch)),
+                    domain_errors.FailureFact("observed_sha256", observed_sha256),
+                ),
+                mismatches=(domain_errors.FailureMismatch("candidate_sha256", expected_sha256, observed_sha256),),
+                retry=domain_errors.RetryDisposition.CORRECT_INPUT,
+                effect=domain_errors.EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    published = artifact_publication.publish_accepted_artifact(
+        store,
+        ArtifactRepository(durable),
+        NewArtifact(
+            work_models.ArtifactKind.EVIDENCE,
+            f"{package.attempt_id}-{package.checkpoint.id}-candidate",
+            1,
+            ".patch",
+            patch_bytes,
+        ),
+        datetime.now(UTC),
+    )
+    if isinstance(published, domain_errors.DecisionFailure):
+        return errors.CommandFailure(published.code, published.message, published.details)
+    return published
+
+
+def _recovery_surfaces(
+    publication: artifact_publication.AcceptedArtifactPublication | None,
+) -> tuple[domain_errors.ChangedSurface, ...]:
+    if publication is None:
+        return ()
+    return (
+        *((domain_errors.ChangedSurface.IMMUTABLE_ARTIFACT,) if publication.artifact_created else ()),
+        *((domain_errors.ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE,) if publication.ledger_changed else ()),
+        *((domain_errors.ChangedSurface.LEDGER,) if publication.ledger_changed else ()),
+    )
+
+
+def _after_recovery_failure(
+    failure: errors.CommandFailure,
+    publication: artifact_publication.AcceptedArtifactPublication | None,
+) -> errors.CommandFailure:
+    surfaces = _recovery_surfaces(publication)
+    if not surfaces:
+        return failure
+    assert publication is not None
+    details = failure.details
+    return errors.CommandFailure(
+        failure.code,
+        failure.message,
+        domain_errors.FailureDetails(
+            observed=(
+                domain_errors.FailureFact("recovered_candidate_selector", publication.reference.selector),
+                *(() if details is None else details.observed),
+            ),
+            mismatches=() if details is None else details.mismatches,
+            retry=domain_errors.RetryDisposition.DO_NOT_RETRY,
+            effect=domain_errors.EffectDisposition.COMMITTED,
+            changed_surfaces=surfaces,
+            alternatives=() if details is None else details.alternatives,
+        ),
+    )
+
+
+def _raise_after_recovery_exception(
+    error: Exception,
+    publication: artifact_publication.AcceptedArtifactPublication | None,
+) -> Never:
+    surfaces = _recovery_surfaces(publication)
+    if not surfaces:
+        raise error
+    assert publication is not None
+    if isinstance(error, domain_errors.ArtifactAcceptanceAfterPublicationError):
+        raise domain_errors.ArtifactAcceptanceAfterPublicationError(
+            error.selector,
+            error.cause,
+            tuple(dict.fromkeys((*surfaces, *error.changed_surfaces))),
+        ) from error
+    raise domain_errors.ArtifactAcceptanceAfterPublicationError(
+        publication.reference.selector,
+        error,
+        surfaces,
+    ) from error
+
+
 def _select_prior_checkpoint_package(
     roots: cli_commands.ResolvedRoots,
     facts: query_models.ReviewJobContextFacts,
@@ -239,19 +494,111 @@ def _select_prior_checkpoint_package(
     )
     if isinstance(package, errors.WorkBriefFailure):
         return _review_job_failure(package.message)
+    candidate_reference = facts.checkpoint_candidate_reference
+    expected_candidate_sha256 = package.candidate.removeprefix("working-tree-sha256:")
+    if isinstance(package, work_brief_models.CheckpointReviewPackageV2) and candidate_reference is None:
+        return _review_job_failure("Current checkpoint package candidate evidence is incomplete.")
+    if (
+        not package.candidate.startswith("working-tree-sha256:")
+        or len(expected_candidate_sha256) != 64
+        or candidate_reference is None
+    ):
+        candidate_patch = "CANDIDATE_PATCH"
+        recovery_command = shlex.join(
+            (
+                *dispatch_models.pinboard_launcher_command(),
+                "--project-root",
+                str(roots.source_checkout),
+                "--work-root",
+                str(roots.work),
+                "review-job",
+                "--attempt-id",
+                str(command.attempt_id),
+                "--candidate-revision",
+                command.candidate_revision,
+                "--checkpoint-history-id",
+                str(int(checkpoint_history_id)),
+                *(
+                    ()
+                    if not isinstance(
+                        command,
+                        (
+                            cli_commands.PackageCorrectionReviewJobCommand,
+                            cli_commands.PackageCorrectionRecoveryReviewJobCommand,
+                        ),
+                    )
+                    else ("--correction-history-id", str(command.correction_history_id))
+                ),
+                "--candidate-patch",
+                candidate_patch,
+                "--json",
+            )
+        )
+        return errors.CommandFailure(
+            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            "Selected checkpoint candidate bytes are not accepted; use the exact recovery command with the matching patch.",
+            domain_errors.FailureDetails(
+                observed=(
+                    domain_errors.FailureFact("checkpoint_history_id", int(checkpoint_history_id)),
+                    domain_errors.FailureFact("accepted_candidate", package.candidate),
+                    domain_errors.FailureFact("candidate_evidence_reference", None),
+                    domain_errors.FailureFact("recovery_command", recovery_command),
+                ),
+                mismatches=(domain_errors.FailureMismatch("candidate_evidence", "accepted immutable reference", None),),
+                retry=domain_errors.RetryDisposition.CORRECT_INPUT,
+                effect=domain_errors.EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    try:
+        candidate_bytes = read_reference(roots.work, candidate_reference)
+    except ArtifactError as error:
+        return _review_job_failure(str(error))
+    if (
+        candidate_reference.kind != work_models.ArtifactKind.EVIDENCE
+        or candidate_reference.key != f"{package.attempt_id}-{package.checkpoint.id}-candidate"
+        or candidate_reference.revision != 1
+        or candidate_reference.content_sha256 != expected_candidate_sha256
+    ):
+        return _review_job_failure("Selected checkpoint candidate evidence does not match its accepted package.")
+    if isinstance(package, work_brief_models.CheckpointReviewPackageV2):
+        identity = package.candidate_snapshot
+        if (
+            identity.kind,
+            identity.key,
+            identity.revision,
+            identity.selector,
+            identity.content_sha256,
+            identity.size_bytes,
+        ) != (
+            candidate_reference.kind.value,
+            candidate_reference.key,
+            candidate_reference.revision,
+            candidate_reference.selector,
+            candidate_reference.content_sha256,
+            candidate_reference.size_bytes,
+        ):
+            return _review_job_failure("Selected checkpoint candidate evidence does not match its portable identity.")
     package_path = roots.work / package_reference.selector
+    candidate_path = roots.work / candidate_reference.selector
     selection = work_inspection_models.PriorCheckpointPackage(
         int(receipt.history_id),
         int(package_reference.artifact_ref_id),
         str(package_path),
         package_reference.content_sha256,
         package,
+        int(candidate_reference.artifact_ref_id),
+        str(candidate_path),
+        candidate_reference.content_sha256,
+        len(candidate_bytes),
     )
     prompt = (
         f"Prior checkpoint package: history {int(receipt.history_id)}, {package_path}, "
-        f"SHA-256 {package_reference.content_sha256}, accepted candidate {package.candidate}. "
-        "Verify those package bytes and stop without a verdict if they differ from that digest. Resolve its "
-        "accepted candidate in Git and compare it with the current candidate. Stop without a verdict if either "
+        f"SHA-256 {package_reference.content_sha256}, accepted candidate {package.candidate}. Candidate snapshot: "
+        f"{candidate_path}, SHA-256 {candidate_reference.content_sha256}, size {candidate_reference.size_bytes}. "
+        "Verify both accepted artifacts, apply the binary patch to the package's recorded base, and compare that "
+        "reconstructed candidate with the current candidate. Stop without a verdict if either "
         "identity cannot be resolved, no comparison range can be established, or the histories diverge. Treat "
         "the package as historical assurance, never as authority over the current brief or candidate."
     )
@@ -271,7 +618,7 @@ def _select_review_round(
     correction_receipt = facts.correction_receipt
     if correction_receipt is None:
         return _review_job_failure("Selected correction history does not exist.")
-    correction_outcome = _decode_correction_outcome(correction_receipt, str(command.attempt_id))
+    correction_outcome = decode_correction_outcome(correction_receipt, str(command.attempt_id))
     if isinstance(correction_outcome, errors.CommandFailure):
         return correction_outcome
     review_path = roots.work / "attempts" / command.attempt_id / "review.md"
@@ -301,8 +648,11 @@ def _select_review_round(
     return round_view, prompt
 
 
-def show_review_job(
-    roots: cli_commands.ResolvedRoots, store: ports.WorkStore, command: cli_commands.ReviewJobCommand
+def show_review_job(  # noqa: C901, PLR0912, PLR0915 - one ordered selected-context and publication operation
+    roots: cli_commands.ResolvedRoots,
+    durable: DurableRoots,
+    store: ports.WorkStore,
+    command: cli_commands.ReviewJobCommand,
 ) -> errors.CommandResult[int]:
     unavailable = errors.CommandFailure(
         domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
@@ -319,11 +669,40 @@ def show_review_job(
     if isinstance(context, domain_errors.DecisionFailure):
         return unavailable
     facts = context
-    selected = _inspect_selected_attempt(roots, facts.attempt)
+    recovered = _recover_checkpoint_candidate(
+        roots,
+        durable,
+        store,
+        command,
+        facts,
+        checkpoint_history_id,
+    )
+    if isinstance(recovered, errors.CommandFailure):
+        return recovered
+    if recovered is not None:
+        try:
+            refreshed = queries.select_review_job_context(
+                store,
+                command.attempt_id,
+                checkpoint_history_id,
+                correction_history_id,
+            )
+        except ports.WorkStoreError as error:
+            _raise_after_recovery_exception(error, recovered)
+        if isinstance(refreshed, domain_errors.DecisionFailure):
+            return _after_recovery_failure(
+                errors.CommandFailure(refreshed.code, refreshed.message, refreshed.details),
+                recovered,
+            )
+        facts = refreshed
+    try:
+        selected = _inspect_selected_attempt(roots, facts.attempt)
+    except ArtifactError as error:
+        _raise_after_recovery_exception(error, recovered)
     if isinstance(selected, errors.CommandFailure):
-        return selected
+        return _after_recovery_failure(selected, recovered)
     if isinstance(selected, _TerminalAttemptInspection):
-        return unavailable
+        return _after_recovery_failure(unavailable, recovered)
     attempt = selected.context
     reference = attempt.brief_reference
     brief = selected.brief
@@ -332,20 +711,23 @@ def show_review_job(
         not isinstance(operation, query_models.ReviewContinuation)
         or operation.candidate_revision != command.candidate_revision
     ):
-        return unavailable
+        return _after_recovery_failure(unavailable, recovered)
     result_path = roots.work / "attempts" / command.attempt_id / "result.md"
     result_evidence = _read_required_evidence(result_path, "result.md")
     if isinstance(result_evidence, errors.CommandFailure):
-        return result_evidence
+        return _after_recovery_failure(result_evidence, recovered)
     rendered_result_path, digest = result_evidence
     brief_path = roots.work / reference.selector
-    selected_package = _select_prior_checkpoint_package(roots, facts, command, attempt, checkpoint_history_id)
+    try:
+        selected_package = _select_prior_checkpoint_package(roots, facts, command, attempt, checkpoint_history_id)
+    except ArtifactError as error:
+        _raise_after_recovery_exception(error, recovered)
     if isinstance(selected_package, errors.CommandFailure):
-        return selected_package
+        return _after_recovery_failure(selected_package, recovered)
     prior_package, package_prompt = selected_package
     selected_round = _select_review_round(roots, facts, command, correction_history_id)
     if isinstance(selected_round, errors.CommandFailure):
-        return selected_round
+        return _after_recovery_failure(selected_round, recovered)
     review_round, correction_prompt = selected_round
     return_contract = (
         "Return a complete verdict for this exact candidate, acceptance-criterion evidence, required verification, "
@@ -369,8 +751,33 @@ def show_review_job(
         f"Recheck candidate and result identity before returning; stop if either changed.\n\n{package_prompt}\n\n"
         f"{correction_prompt}\n\n{return_contract}"
     )
+    try:
+        published_prompt = dispatch_models.publish_agent_prompt(
+            store,
+            ArtifactRepository(durable),
+            project_root=roots.source_checkout,
+            prompt_role="reviewer",
+            attempt_id=str(attempt.attempt_id),
+            prompt=prompt,
+            accepted_at=datetime.now(UTC),
+        )
+    except (
+        domain_errors.ArtifactAcceptanceAfterPublicationError,
+        ArtifactError,
+        ports.WorkStoreError,
+    ) as error:
+        _raise_after_recovery_exception(error, recovered)
+    if isinstance(published_prompt, domain_errors.DecisionFailure):
+        return _after_recovery_failure(
+            errors.CommandFailure(
+                published_prompt.code,
+                published_prompt.message,
+                published_prompt.details,
+            ),
+            recovered,
+        )
     job = work_inspection_models.ReviewJobView(
-        "pinboard-review-job/v2",
+        "pinboard-review-job/v4",
         command.attempt_id,
         command.candidate_revision,
         brief.owner_task_id,
@@ -382,13 +789,18 @@ def show_review_job(
         digest,
         prior_package,
         review_round,
-        prompt,
+        published_prompt.reference,
+        published_prompt.native_launch,
+        tuple(
+            surface.value
+            for surface in dict.fromkeys((*_recovery_surfaces(recovered), *published_prompt.changed_surfaces))
+        ),
         return_contract,
     )
     if command.json:
         write_json(job)
     else:
-        print(job.prompt)
+        print(job.native_launch.message)
     return 0
 
 

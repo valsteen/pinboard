@@ -523,7 +523,18 @@ class ServiceTest(unittest.TestCase):
                 b"package\n",
             ),
         )
+        candidate_artifact = write_revision(
+            roots,
+            NewArtifact(work_models.ArtifactKind.EVIDENCE, "work-a-1-checkpoint-a-candidate", 1, ".patch", b"diff\n"),
+        )
         checkpoint_artifacts = CheckpointArtifacts(
+            EvidenceArtifactRef(
+                candidate_artifact.key,
+                candidate_artifact.revision,
+                candidate_artifact.selector,
+                candidate_artifact.content_sha256,
+                candidate_artifact.size_bytes,
+            ),
             ResultArtifactRef(
                 result_artifact.key,
                 result_artifact.revision,

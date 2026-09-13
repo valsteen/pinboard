@@ -259,6 +259,17 @@ def _validate_current_state(state: stored_state.StoredWorkState, error_code: Sto
     _validate_replacements(state.replacements, item_ids, error_code)
     current_definitions = _current_definitions(state, item_ids, error_code)
     item_states = {value.item_id: value.state for value in state.lifecycle.work_items}
+    current_attempt_states = {
+        value.item_id: value.state for value in state.lifecycle.attempts if value.state != work_models.AttemptState.DONE
+    }
+    for item_id, item_state in item_states.items():
+        attempt_state = current_attempt_states.get(item_id)
+        if attempt_state not in stored_state.allowed_current_attempt_states(item_state):
+            observed = "none" if attempt_state is None else attempt_state.value
+            raise StorageError(
+                error_code,
+                f"Work item '{item_id}' state '{item_state.value}' conflicts with current attempt state '{observed}'.",
+            )
     for lease in state.authority.preparation_leases:
         if (
             lease.state != authority_models.PreparationLeaseStatus.ACTIVE

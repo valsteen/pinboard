@@ -368,7 +368,7 @@ class HandoverTest(unittest.TestCase):
         result, stdout, stderr, statements = self.run_handover_with_trace(common)
         self.assertEqual(0, result, stderr)
         handover = self.decode_handover(stdout)
-        self.assertEqual("pinboard-project-handover/v5", handover.schema)
+        self.assertEqual("pinboard-project-handover/v6", handover.schema)
         self.assertEqual((), handover.completion_packages)
         self.assertEqual((), handover.checkpoint_packages)
         self.assertEqual("sqlite-v6", handover.authority)

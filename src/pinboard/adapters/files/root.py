@@ -1,5 +1,7 @@
 import fcntl
+import hashlib
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
@@ -7,6 +9,12 @@ from pinboard.adapters.files.errors import RootError, RootErrorCode
 
 PINBOARD_GIT_EXCLUDE = b"/.codex/pinboard/"
 _READ_CHUNK_BYTES = 64 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class WorkingTreeCandidate:
+    identity: str
+    diff: bytes
 
 
 def _resolve_git_path(cwd: Path, selector: str, unavailable_message: str) -> Path:
@@ -70,6 +78,24 @@ def observe_checkout_identity(cwd: Path) -> tuple[str, str]:
     branch = _git_text(cwd, "symbolic-ref", "--quiet", "--short", "HEAD")
     revision = _git_text(cwd, "rev-parse", "--verify", "HEAD")
     return branch, revision
+
+
+def read_working_tree_candidate(cwd: Path) -> WorkingTreeCandidate:
+    """Read the binary HEAD diff without changing Git state."""
+
+    result = subprocess.run(
+        ["git", "diff", "--binary", "HEAD", "--"],
+        cwd=cwd,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            result.stderr.decode(errors="replace").strip() or f"Cannot read the working-tree diff at '{cwd}'.",
+        )
+    digest = hashlib.sha256(result.stdout).hexdigest()
+    return WorkingTreeCandidate(f"working-tree-sha256:{digest}", result.stdout)
 
 
 def resolve_shared_repository_root(cwd: Path) -> Path:

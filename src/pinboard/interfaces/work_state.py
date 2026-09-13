@@ -133,7 +133,7 @@ def _portable_reference(
 
 
 def _validate_package_artifact_identities(
-    package: work_brief_models.CheckpointReviewPackage,
+    package: work_brief_models.CheckpointPackage,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> WorkBriefResult[tuple[stored_state.ArtifactReference, stored_state.ArtifactReference]]:
@@ -147,6 +147,16 @@ def _validate_package_artifact_identities(
     if isinstance(implementation_review, WorkBriefFailure):
         return implementation_review
     checkpoint_id = package.checkpoint.id
+    if isinstance(package, work_brief_models.CheckpointReviewPackageV2):
+        candidate = _portable_reference(package.candidate_snapshot, references, artifact_bytes)
+        if isinstance(candidate, WorkBriefFailure):
+            return candidate
+        if (package.candidate_snapshot.kind, package.candidate_snapshot.key, package.candidate_snapshot.revision) != (
+            work_models.ArtifactKind.EVIDENCE.value,
+            f"{package.attempt_id}-{checkpoint_id}-candidate",
+            1,
+        ) or package.candidate != f"working-tree-sha256:{package.candidate_snapshot.content_sha256}":
+            return _package_provenance_failure("Checkpoint package candidate snapshot identity is not canonical.")
     if (
         (package.accepted_brief.kind, package.accepted_brief.key)
         != (work_models.ArtifactKind.BRIEF.value, package.attempt_id)
@@ -160,7 +170,7 @@ def _validate_package_artifact_identities(
 
 
 def _validate_package_brief(
-    package: work_brief_models.CheckpointReviewPackage,
+    package: work_brief_models.CheckpointPackage,
     accepted_brief_reference: stored_state.ArtifactReference,
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> WorkBriefResult[work_brief_models.WorkBrief]:
@@ -181,7 +191,7 @@ def _validate_package_brief(
 
 
 def _validate_package_review_basis(
-    package: work_brief_models.CheckpointReviewPackage,
+    package: work_brief_models.CheckpointPackage,
     brief: work_brief_models.WorkBrief,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
@@ -241,7 +251,7 @@ def _checkpoint_outcome(
 
 def _validate_checkpoint_receipt(
     receipt: stored_state.StoredTransitionReceipt,
-    package: work_brief_models.CheckpointReviewPackage,
+    package: work_brief_models.CheckpointPackage,
 ) -> WorkBriefFailure | None:
     outcome = _checkpoint_outcome(receipt)
     if isinstance(outcome, WorkBriefFailure):
@@ -270,7 +280,7 @@ def validate_selected_checkpoint_review_package(
     *,
     attempt_id: str,
     item_id: str,
-) -> WorkBriefResult[work_brief_models.CheckpointReviewPackage]:
+) -> WorkBriefResult[work_brief_models.CheckpointPackage]:
     """Validate one caller-selected package without scanning retained state."""
 
     package = decode_canonical_checkpoint_review_package(package_bytes)
@@ -293,7 +303,7 @@ def validate_selected_checkpoint_review_package(
 
 
 def validate_checkpoint_package_closure(
-    package: work_brief_models.CheckpointReviewPackage,
+    package: work_brief_models.CheckpointPackage,
     artifact_references: tuple[stored_state.ArtifactReference, ...],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> WorkBriefFailure | None:
@@ -311,13 +321,13 @@ def validate_checkpoint_package_closure(
 def _validate_one_checkpoint_package(
     receipt: stored_state.StoredTransitionReceipt,
     package_reference: stored_state.ArtifactReference,
-    package: work_brief_models.CheckpointReviewPackage,
+    package: work_brief_models.CheckpointPackage,
     attempts: Mapping[str, stored_state.StoredAttempt],
     item_ids: frozenset[str],
     definition_digests: Mapping[tuple[str, int], str],
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> WorkBriefResult[handover.HandoverCheckpointPackage]:
+) -> WorkBriefResult[handover.HandoverCheckpointPackageValue]:
     if (failure := _validate_checkpoint_receipt(receipt, package)) is not None:
         return failure
     attempt = attempts.get(package.attempt_id)
@@ -341,15 +351,14 @@ def _validate_one_checkpoint_package(
         return failure
     if receipt.artifact_ref_id is None:
         raise AssertionError("Validated package receipt must link one artifact.")
-    return msgspec.convert(
-        {
-            "history_id": int(receipt.history_id),
-            "package_artifact_ref_id": int(receipt.artifact_ref_id),
-            **msgspec.to_builtins(package),
-        },
-        type=handover.HandoverCheckpointPackage,
-        strict=True,
-    )
+    packaged = {
+        "history_id": int(receipt.history_id),
+        "package_artifact_ref_id": int(receipt.artifact_ref_id),
+        **msgspec.to_builtins(package),
+    }
+    if isinstance(package, work_brief_models.CheckpointReviewPackageV2):
+        return msgspec.convert(packaged, type=handover.HandoverCheckpointPackageV2, strict=True)
+    return msgspec.convert(packaged, type=handover.HandoverCheckpointPackage, strict=True)
 
 
 def validate_checkpoint_review_packages(
@@ -357,7 +366,7 @@ def validate_checkpoint_review_packages(
     artifact_references: tuple[stored_state.ArtifactReference, ...],
     transition_receipts: tuple[stored_state.StoredTransitionReceipt, ...],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> WorkBriefResult[tuple[handover.HandoverCheckpointPackage, ...]]:
+) -> WorkBriefResult[tuple[handover.HandoverCheckpointPackageValue, ...]]:
     """Validate historical package provenance from one loaded state and verified bytes."""
 
     references_by_id = {value.artifact_ref_id: value for value in artifact_references}
@@ -368,7 +377,7 @@ def validate_checkpoint_review_packages(
         (str(value.item_id), value.revision): value.digest for value in lifecycle.definition_revisions
     }
     linked_package_ids: set[ArtifactRefId] = set()
-    packages: list[handover.HandoverCheckpointPackage] = []
+    packages: list[handover.HandoverCheckpointPackageValue] = []
     for receipt in transition_receipts:
         if receipt.outcome_schema != "checkpoint-acceptance/v2":
             continue
@@ -507,13 +516,13 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
     artifact_references: tuple[stored_state.ArtifactReference, ...],
     transition_receipts: tuple[stored_state.StoredTransitionReceipt, ...],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-    checkpoint_packages: tuple[handover.HandoverCheckpointPackage, ...],
+    checkpoint_packages: tuple[handover.HandoverCheckpointPackageValue, ...],
 ) -> WorkBriefResult[tuple[handover.HandoverCompletionReviewPackage, ...]]:
     references_by_id = {value.artifact_ref_id: value for value in artifact_references}
     references = {(value.kind.value, value.key, value.revision): value for value in artifact_references}
     attempts = {str(value.attempt_id): value for value in lifecycle.attempts}
     definitions = {(str(value.item_id), value.revision): value.digest for value in lifecycle.definition_revisions}
-    checkpoints_by_attempt: dict[str, list[handover.HandoverCheckpointPackage]] = {}
+    checkpoints_by_attempt: dict[str, list[handover.HandoverCheckpointPackageValue]] = {}
     for checkpoint in checkpoint_packages:
         checkpoints_by_attempt.setdefault(checkpoint.attempt_id, []).append(checkpoint)
     linked_package_ids: set[ArtifactRefId] = set()

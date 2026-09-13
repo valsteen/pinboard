@@ -1,12 +1,13 @@
 import contextlib
 import io
 import json
+import shlex
 import unittest
 from unittest.mock import patch
 
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.domain import decision_models
-from pinboard.interfaces import cli_parser, tool_contract
+from pinboard.interfaces import cli_commands, cli_parser, tool_contract
 from pinboard.interfaces.cli import main
 from pinboard.interfaces.errors import CommandFailure, CommandResult
 
@@ -54,7 +55,7 @@ class ToolContractTest(unittest.TestCase):
                 self.assertTrue(detail.purpose)
                 self.assertTrue(detail.success_postcondition)
 
-    def test_selected_command_and_action_expose_bounded_execution_facts(self) -> None:
+    def test_selected_command_and_action_expose_bounded_execution_facts(self) -> None:  # noqa: PLR0915
         command = expect_command_success(tool_contract.describe_operation("transition", "attempt"))
         self.assertIsInstance(command, tool_contract.OperationContract)
         assert isinstance(command, tool_contract.OperationContract)
@@ -64,7 +65,10 @@ class ToolContractTest(unittest.TestCase):
         self.assertTrue(
             command.cli_usage.startswith("pinboard [--project-root PROJECT_ROOT] [--work-root WORK_ROOT] transition ")
         )
-        self.assertIn("--authorization {project,attempt,preparation}", command.cli_usage)
+        self.assertIn("--authorization attempt", command.cli_usage)
+        self.assertNotIn("--task-id", command.cli_usage)
+        self.assertNotIn("--host-id", command.cli_usage)
+        self.assertNotIn("{project,attempt,preparation}", command.cli_usage)
         self.assertIn("--lease-id LEASE_ID", command.cli_usage)
         self.assertEqual("mutates-ledger", command.mutation_class)
         self.assertEqual(("worker",), command.permitted_roles)
@@ -82,14 +86,56 @@ class ToolContractTest(unittest.TestCase):
         )
 
         action = tool_contract.describe_action(decision_models.ActionKind.SUBMIT_REVIEW)
-        self.assertEqual("pinboard-agent-tool-action/v1", action.schema)
+        self.assertEqual("pinboard-agent-tool-action/v2", action.schema)
         self.assertEqual("submit-review", action.action_kind)
         self.assertEqual("mutates-ledger", action.mutation_class)
+        self.assertEqual("transition:attempt", action.operation_selector)
+        self.assertIsNotNone(action.cli_usage)
+        assert action.cli_usage is not None
+        self.assertIn("--authorization attempt", action.cli_usage)
+        self.assertNotIn("--task-id", action.cli_usage)
+        self.assertNotIn("--host-id", action.cli_usage)
         self.assertEqual(("worker",), action.permitted_roles)
         self.assertEqual("attempt", action.subject_kind)
         self.assertEqual("active-attempt-current-scope", action.lifecycle_precondition)
         self.assertIsNotNone(action.input_schema)
         self.assertEqual("reselect-after-any-rejection", action.retry_semantics)
+
+        dispatch_fields = {
+            "without-review": ("--brief-review", "--review-id", "--correction-history-id"),
+            "with-review": ("--correction-history-id",),
+            "correction": (),
+        }
+        expected_types = {
+            "without-review": cli_commands.ProjectDispatchCommand,
+            "with-review": cli_commands.ProjectReviewedDispatchCommand,
+            "correction": cli_commands.ProjectCorrectionDispatchCommand,
+        }
+        for variant, forbidden_fields in dispatch_fields.items():
+            with self.subTest(dispatch_variant=variant):
+                selected = expect_command_success(tool_contract.describe_operation("dispatch", variant))
+                self.assertIsInstance(selected, tool_contract.OperationContract)
+                assert isinstance(selected, tool_contract.OperationContract)
+                for field in forbidden_fields:
+                    self.assertNotIn(field, selected.cli_usage)
+                arguments = shlex.split(selected.cli_usage)
+                replacements = {
+                    "PROJECT_ROOT": "/tmp/project",
+                    "WORK_ROOT": "/tmp/work",
+                    "ACTION_ID": "dispatch:work-a-1",
+                    "SUBJECT_REVISION": "3",
+                    "TASK_ID": "owner-task",
+                    "HOST_ID": "local",
+                    "CHECKPOINT": "checkpoint-a",
+                    "ENVIRONMENT": "/tmp/environment.json",
+                    "BRIEF_REVIEW": "/tmp/review.json",
+                    "REVIEW_ID": "review-id",
+                    "CORRECTION_HISTORY_ID": "7",
+                    "PROMPT": "/tmp/prompt.txt",
+                }
+                concrete = [replacements.get(value.strip("[]"), value.strip("[]")) for value in arguments[1:]]
+                invocation = cli_parser.parse_invocation(concrete)
+                self.assertIsInstance(invocation.command, expected_types[variant])
 
         brief = expect_command_success(tool_contract.describe_operation("brief/publish", "default"))
         self.assertIsInstance(brief, tool_contract.OperationContract)
@@ -221,13 +267,20 @@ class ToolContractTest(unittest.TestCase):
         assert source_emit.artifact_schema is not None
         self.assertIn("BriefSourcePlanView", json.loads(bytes(source_emit.artifact_schema))["$defs"])
 
-    def test_review_job_exposes_four_exact_package_by_round_variants(self) -> None:
+    def test_review_job_exposes_exact_package_and_recovery_variants(self) -> None:
         contract = tool_contract.installed_tool_contract()
         review_variants = {
             operation.variant: operation for operation in contract.operations if operation.operation_id == "review-job"
         }
         self.assertEqual(
-            {"initial", "package-initial", "correction", "package-correction"},
+            {
+                "initial",
+                "package-initial",
+                "package-initial-recovery",
+                "correction",
+                "package-correction",
+                "package-correction-recovery",
+            },
             set(review_variants),
         )
         details = {
@@ -240,6 +293,16 @@ class ToolContractTest(unittest.TestCase):
         combined = bytes(details["package-correction"].input_schema or b"")
         self.assertIn(b"checkpoint_history_id", combined)
         self.assertIn(b"correction_history_id", combined)
+        for variant in ("package-initial-recovery", "package-correction-recovery"):
+            recovery = bytes(details[variant].input_schema or b"")
+            self.assertIn(b"checkpoint_history_id", recovery)
+            self.assertIn(b"candidate_patch", recovery)
+        for detail in details.values():
+            self.assertEqual("publishes-and-records-artifact", detail.mutation_class)
+            self.assertEqual(
+                "Read the focused candidate-review inputs, then publish and accept the immutable reviewer prompt.",
+                detail.purpose,
+            )
 
     def test_operation_contract_flags_every_project_wide_and_selection_dependent_scope(self) -> None:
         index = tool_contract.installed_tool_contract()
@@ -255,6 +318,7 @@ class ToolContractTest(unittest.TestCase):
         )
         self.assertEqual("current-project", scopes[("status", "default")])
         self.assertEqual("current-project", scopes[("overview", "default")])
+        self.assertEqual("focused", scopes[("item/status", "default")])
         self.assertEqual("focused-or-current-project", scopes[("actions", "unleased")])
         self.assertEqual("focused-or-current-project", scopes[("parallel/preview", "default")])
         handover = expect_command_success(tool_contract.describe_operation("handover", "default"))
@@ -319,7 +383,7 @@ class ToolContractTest(unittest.TestCase):
     def test_bare_multi_variant_operation_returns_exact_selectors(self) -> None:
         expected = {
             "transition": {"attempt", "preparation", "project"},
-            "dispatch": {"with-review", "without-review"},
+            "dispatch": {"correction", "with-review", "without-review"},
             "brief-sources": {"plan", "plan-to-file", "emit"},
         }
         for operation, variants in expected.items():

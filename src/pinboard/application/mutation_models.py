@@ -77,6 +77,18 @@ class CheckpointArtifactChanges:
 
 
 @dataclass(frozen=True, slots=True)
+class CheckpointAcceptanceArtifactChanges:
+    candidate: EvidenceArtifactRef
+    candidate_id: ArtifactRefId
+    result: ResultArtifactRef
+    result_id: ArtifactRefId
+    review: EvidenceArtifactRef
+    review_id: ArtifactRefId
+    package: EvidenceArtifactRef
+    package_id: ArtifactRefId
+
+
+@dataclass(frozen=True, slots=True)
 class CompletionAcceptanceMutation:
     decision: decision_models.CompletionAcceptanceDecision
     receipt: MutationReceipt
@@ -97,7 +109,7 @@ class CheckpointAcceptanceMutation:
 
     decision: decision_models.CheckpointAcceptanceDecision
     receipt: MutationReceipt
-    checkpoint_artifacts: CheckpointArtifactChanges
+    checkpoint_artifacts: CheckpointAcceptanceArtifactChanges
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,15 +8,21 @@ from pinboard.domain import decision_models, work_models
 from pinboard.domain.identifiers import ActionId, AttemptId, HostId, ItemId, LeaseId, ReviewId, TaskId
 
 _PATH_COMPONENT_ID = msgspec.Meta(min_length=1, pattern=r"\A(?!\.{1,2}\z)[^/\r\n\x00]+\z")
+_RUNTIME_ID = msgspec.Meta(
+    min_length=1,
+    pattern=r"\A(?!\s)(?!\.{1,2}\z)[^/\r\n\x00]*[^\s/\r\n\x00]\z",
+)
 type PositiveInt = Annotated[int, msgspec.Meta(ge=1)]
 type ItemDefinitionHistoryLimit = Annotated[int, msgspec.Meta(ge=1, le=100)]
 type KebabReviewId = Annotated[ReviewId, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
 type StableActionId = Annotated[ActionId, _PATH_COMPONENT_ID]
 type StableAttemptId = Annotated[AttemptId, _PATH_COMPONENT_ID]
-type StableHostId = Annotated[HostId, _PATH_COMPONENT_ID]
+type StableHostId = Annotated[HostId, _RUNTIME_ID]
 type StableItemId = Annotated[ItemId, _PATH_COMPONENT_ID]
 type StableLeaseId = Annotated[LeaseId, _PATH_COMPONENT_ID]
-type StableTaskId = Annotated[TaskId, _PATH_COMPONENT_ID]
+type StableTaskId = Annotated[TaskId, _RUNTIME_ID]
+type ArtifactSha256 = Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
+type ArtifactSelector = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\r\n]+\z")]
 type BriefBoundary = Literal["local", "cross-boundary"]
 BRIEF_BOUNDARIES: tuple[BriefBoundary, ...] = ("local", "cross-boundary")
 
@@ -149,6 +155,14 @@ class HandoverCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
             raise ValueError("handover output must be JSON")
 
 
+class ArtifactVerifyCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    artifact_ref_id: PositiveInt
+    selector: ArtifactSelector
+    sha256: ArtifactSha256
+    size_bytes: PositiveInt
+    json: bool = False
+
+
 class InitializeCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     json: bool = False
 
@@ -214,7 +228,21 @@ class ProjectReviewedDispatchCommand(msgspec.Struct, frozen=True, forbid_unknown
     json: bool = False
 
 
-type DispatchCommand = ProjectDispatchCommand | ProjectReviewedDispatchCommand
+class ProjectCorrectionDispatchCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    action_id: StableActionId
+    subject_revision: str
+    task_id: StableTaskId
+    host_id: StableHostId
+    checkpoint: str
+    environment: Path
+    brief_review: Path
+    review_id: KebabReviewId
+    correction_history_id: PositiveInt
+    prompt: Path | None = None
+    json: bool = False
+
+
+type DispatchCommand = ProjectDispatchCommand | ProjectReviewedDispatchCommand | ProjectCorrectionDispatchCommand
 
 
 class AttemptAcquireCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -272,6 +300,14 @@ class PackageInitialReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown
     json: bool = False
 
 
+class PackageInitialRecoveryReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: StableAttemptId
+    candidate_revision: Annotated[str, msgspec.Meta(min_length=1)]
+    checkpoint_history_id: PositiveInt
+    candidate_patch: Path
+    json: bool = False
+
+
 class CorrectionReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: StableAttemptId
     candidate_revision: Annotated[str, msgspec.Meta(min_length=1)]
@@ -287,11 +323,22 @@ class PackageCorrectionReviewJobCommand(msgspec.Struct, frozen=True, forbid_unkn
     json: bool = False
 
 
+class PackageCorrectionRecoveryReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: StableAttemptId
+    candidate_revision: Annotated[str, msgspec.Meta(min_length=1)]
+    checkpoint_history_id: PositiveInt
+    correction_history_id: PositiveInt
+    candidate_patch: Path
+    json: bool = False
+
+
 type ReviewJobCommand = (
     InitialReviewJobCommand
     | PackageInitialReviewJobCommand
+    | PackageInitialRecoveryReviewJobCommand
     | CorrectionReviewJobCommand
     | PackageCorrectionReviewJobCommand
+    | PackageCorrectionRecoveryReviewJobCommand
 )
 
 
@@ -404,6 +451,7 @@ type CliCommand = (
     | BriefSourcesPlanToFileCommand
     | BriefSourcesEmitCommand
     | BriefPublishCommand
+    | ArtifactVerifyCommand
     | HandoverCommand
     | InitializeCommand
     | ProposalCommand

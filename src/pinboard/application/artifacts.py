@@ -61,6 +61,7 @@ class EvidenceArtifactRef:
 
 @dataclass(frozen=True, slots=True)
 class CheckpointArtifacts:
+    candidate: EvidenceArtifactRef
     result: ResultArtifactRef
     review: EvidenceArtifactRef
     package: EvidenceArtifactRef

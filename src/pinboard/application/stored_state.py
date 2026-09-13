@@ -31,6 +31,31 @@ class StoredWorkItemState(Enum):
     DROPPED = "dropped"
 
 
+def allowed_current_attempt_states(
+    value: StoredWorkItemState,
+) -> tuple[work_models.AttemptState | None, ...]:
+    match value:
+        case StoredWorkItemState.ACTIVE:
+            return (work_models.AttemptState.ACTIVE,)
+        case StoredWorkItemState.PAUSED:
+            return (work_models.AttemptState.PAUSED,)
+        case StoredWorkItemState.BLOCKED:
+            return (None, work_models.AttemptState.BLOCKED)
+        case StoredWorkItemState.REVIEW:
+            return (work_models.AttemptState.REVIEW,)
+        case (
+            StoredWorkItemState.INTAKE
+            | StoredWorkItemState.READY
+            | StoredWorkItemState.DEFERRED
+            | StoredWorkItemState.DONE
+            | StoredWorkItemState.SUPERSEDED
+            | StoredWorkItemState.DROPPED
+        ):
+            return (None,)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def live_work_state(value: StoredWorkItemState) -> work_models.WorkState | None:
     match value:
         case (

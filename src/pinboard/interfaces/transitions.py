@@ -7,9 +7,9 @@ from typing import Literal, assert_never
 import msgspec
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
-from pinboard.adapters.files.errors import ArtifactError, FileIOError
+from pinboard.adapters.files.errors import ArtifactError, FileIOError, RootError
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.adapters.files.root import observe_checkout_identity
+from pinboard.adapters.files.root import observe_checkout_identity, read_working_tree_candidate
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.application import ports, query_models, stored_state
 from pinboard.application.actions import discover_current_actions
@@ -163,7 +163,7 @@ def _evidence_reference(reference: stored_state.ArtifactReference) -> EvidenceAr
 
 
 def _portable_identity(
-    role: Literal["accepted-brief", "result", "implementation-review", "brief-review"],
+    role: Literal["accepted-brief", "candidate", "result", "implementation-review", "brief-review"],
     reference: BriefArtifactRef | ResultArtifactRef | EvidenceArtifactRef,
 ) -> work_brief_models.PortableArtifactIdentity:
     return msgspec.convert(
@@ -227,7 +227,7 @@ def _completion_failure(message: str) -> CommandFailure:
     return CommandFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, message, None)
 
 
-def _read_completion_context(  # noqa: C901 - one exact completion-closure validation boundary
+def _read_completion_context(  # noqa: C901, PLR0912 - one exact completion-closure validation boundary
     store: ports.WorkStore,
     command: decision_models.CoveredCompleteCommand,
     artifacts: ArtifactRepository,
@@ -282,6 +282,8 @@ def _read_completion_context(  # noqa: C901 - one exact completion-closure valid
         if isinstance(package, WorkBriefFailure):
             return _completion_failure(package.message)
         identities = [package.accepted_brief, package.result, package.implementation_review]
+        if isinstance(package, work_brief_models.CheckpointReviewPackageV2):
+            identities.append(package.candidate_snapshot)
         if isinstance(package.review_basis, work_brief_models.CrossBoundaryReviewBasis):
             identities.append(package.review_basis.brief_review)
         closure_references: list[stored_state.ArtifactReference] = []
@@ -655,7 +657,7 @@ def read_brief_identity(
     return identity
 
 
-def publish_checkpoint_artifacts(
+def publish_checkpoint_artifacts(  # noqa: C901, PLR0912, PLR0915 - one ordered checkpoint publication boundary
     roots: cli_commands.ResolvedRoots,
     command: decision_models.AcceptCheckpointCommand,
     artifacts: ArtifactRepository,
@@ -666,6 +668,40 @@ def publish_checkpoint_artifacts(
     attempt_id = str(action.capability.subject)
     checkpoint_id = str(value.checkpoint)
     attempt_root = roots.work / "attempts" / attempt_id
+    try:
+        candidate_snapshot = read_working_tree_candidate(roots.source_checkout)
+    except RootError as error:
+        return CommandFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            f"Cannot read the protected checkpoint candidate diff: {error}",
+            FailureDetails(
+                observed=(FailureFact("candidate_revision", str(value.candidate)),),
+                mismatches=(),
+                retry=RetryDisposition.RETRY_SAME_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    if candidate_snapshot.identity != str(value.candidate):
+        return CommandFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "Checkpoint acceptance requires the protected candidate to match the current binary HEAD diff.",
+            FailureDetails(
+                observed=(FailureFact("working_tree_candidate", candidate_snapshot.identity),),
+                mismatches=(
+                    FailureMismatch(
+                        "candidate_revision",
+                        str(value.candidate),
+                        candidate_snapshot.identity,
+                    ),
+                ),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
     try:
         result_bytes = (attempt_root / "result.md").read_bytes()
         review_bytes = (attempt_root / "review.md").read_bytes()
@@ -689,8 +725,19 @@ def publish_checkpoint_artifacts(
         ".md",
         review_bytes,
     )
+    candidate_artifact = NewArtifact(
+        work_models.ArtifactKind.EVIDENCE,
+        f"{attempt_id}-{checkpoint_id}-candidate",
+        1,
+        ".patch",
+        candidate_snapshot.diff,
+    )
     new_artifact_selectors: list[str] = []
     try:
+        candidate_publication = artifacts.publish(candidate_artifact)
+        candidate = candidate_publication.reference
+        if candidate_publication.created:
+            new_artifact_selectors.append(candidate.selector)
         result_publication = artifacts.publish(result_artifact)
         result = result_publication.reference
         if result_publication.created:
@@ -707,6 +754,13 @@ def publish_checkpoint_artifacts(
         )
         implementation_review_reference = EvidenceArtifactRef(
             review.key, review.revision, review.selector, review.content_sha256, review.size_bytes
+        )
+        candidate_reference = EvidenceArtifactRef(
+            candidate.key,
+            candidate.revision,
+            candidate.selector,
+            candidate.content_sha256,
+            candidate.size_bytes,
         )
         match checkpoint:
             case work_brief_models.LocalCheckpoint():
@@ -735,13 +789,14 @@ def publish_checkpoint_artifacts(
                 assert_never(unreachable)
         package = msgspec.convert(
             {
-                "schema": "pinboard-checkpoint-review-package/v1",
+                "schema": "pinboard-checkpoint-review-package/v2",
                 "attempt_id": brief_context.brief.attempt_id,
                 "item_id": brief_context.brief.item_id,
                 "candidate": str(value.candidate),
                 "acceptance_evidence": value.evidence,
                 "accepted_scope": msgspec.to_builtins(brief_context.brief.accepted_scope),
                 "checkpoint": {"id": checkpoint.checkpoint_id, "sha256": checkpoint_sha256},
+                "candidate_snapshot": msgspec.to_builtins(_portable_identity("candidate", candidate_reference)),
                 "accepted_brief": msgspec.to_builtins(accepted_brief_identity),
                 "result": msgspec.to_builtins(_portable_identity("result", result_reference)),
                 "implementation_review": msgspec.to_builtins(
@@ -750,7 +805,7 @@ def publish_checkpoint_artifacts(
                 "verdict": "ready",
                 "review_basis": msgspec.to_builtins(review_basis),
             },
-            type=work_brief_models.CheckpointReviewPackage,
+            type=work_brief_models.CheckpointReviewPackageV2,
             strict=True,
         )
         package_artifact = NewArtifact(
@@ -779,6 +834,7 @@ def publish_checkpoint_artifacts(
         raise
     return _CheckpointArtifactPublication(
         CheckpointArtifacts(
+            candidate_reference,
             result_reference,
             implementation_review_reference,
             EvidenceArtifactRef(

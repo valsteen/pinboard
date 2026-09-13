@@ -16,6 +16,7 @@ from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError, StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import InitReceipt
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.application import stored_state
 from pinboard.application.artifacts import NewArtifact
 from pinboard.domain import work_models
 from pinboard.interfaces.cli import main
@@ -74,7 +75,16 @@ class SQLiteValidationTest(unittest.TestCase):
         state = complete_sqlite_state()
         state = replace(
             state,
-            lifecycle=replace(state.lifecycle, attempts=()),
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=tuple(
+                    replace(value, state=stored_state.StoredWorkItemState.READY)
+                    if value.item_id == work_models.ItemId("work-a")
+                    else value
+                    for value in state.lifecycle.work_items
+                ),
+                attempts=(),
+            ),
             artifact_references=(),
             authority=replace(
                 state.authority,

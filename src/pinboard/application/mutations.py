@@ -4,6 +4,7 @@ import msgspec
 
 from pinboard.application import stored_state
 from pinboard.application.artifacts import (
+    ArtifactRef,
     CheckpointArtifacts,
     CompletionArtifacts,
     EvidenceArtifactRef,
@@ -11,6 +12,7 @@ from pinboard.application.artifacts import (
 )
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
+    CheckpointAcceptanceArtifactChanges,
     CheckpointAcceptanceMutation,
     CheckpointArtifactChanges,
     CheckpointMutationAllocation,
@@ -133,10 +135,10 @@ def stored_transition_receipt(mutation: StoredStateMutation) -> stored_state.Sto
     )
 
 
-def _checkpoint_artifact_ids(
+def _artifact_ids(
     allocation: CheckpointMutationAllocation,
-    artifacts: CheckpointArtifacts,
-) -> CheckpointArtifactChanges:
+    artifacts: tuple[ArtifactRef | ResultArtifactRef | EvidenceArtifactRef, ...],
+) -> tuple[ArtifactRefId, ...]:
     assigned: list[tuple[work_models.ArtifactKind, str, int, ArtifactRefId, str, str, int]] = [
         (
             value.kind,
@@ -151,7 +153,7 @@ def _checkpoint_artifact_ids(
     ]
     next_id = int(allocation.next_artifact_ref_id)
 
-    def identify(published: ResultArtifactRef | EvidenceArtifactRef) -> ArtifactRefId:
+    def identify(published: ArtifactRef | ResultArtifactRef | EvidenceArtifactRef) -> ArtifactRefId:
         nonlocal next_id
         existing = next(
             (value for value in assigned if value[:3] == (published.kind, published.key, published.revision)),
@@ -174,17 +176,7 @@ def _checkpoint_artifact_ids(
         )
         return result
 
-    result_id = identify(artifacts.result)
-    review_id = identify(artifacts.review)
-    package_id = identify(artifacts.package)
-    return CheckpointArtifactChanges(
-        artifacts.result,
-        result_id,
-        artifacts.review,
-        review_id,
-        artifacts.package,
-        package_id,
-    )
+    return tuple(identify(artifact) for artifact in artifacts)
 
 
 def _transition_receipt[SubjectT: SubjectId](
@@ -297,7 +289,20 @@ def project_checkpoint_acceptance_mutation(
 ) -> CheckpointAcceptanceMutation:
     """Project checkpoint acceptance with its exact result and review artifacts."""
 
-    checkpoint_changes = _checkpoint_artifact_ids(allocation, artifacts)
+    candidate_id, result_id, review_id, package_id = _artifact_ids(
+        allocation,
+        (artifacts.candidate, artifacts.result, artifacts.review, artifacts.package),
+    )
+    checkpoint_changes = CheckpointAcceptanceArtifactChanges(
+        artifacts.candidate,
+        candidate_id,
+        artifacts.result,
+        result_id,
+        artifacts.review,
+        review_id,
+        artifacts.package,
+        package_id,
+    )
     return CheckpointAcceptanceMutation(
         decision,
         _transition_receipt(
@@ -323,9 +328,17 @@ def project_completion_acceptance_mutation(
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
 ) -> CompletionAcceptanceMutation:
-    changes = _checkpoint_artifact_ids(
+    result_id, review_id, package_id = _artifact_ids(
         allocation,
-        CheckpointArtifacts(artifacts.result, artifacts.review, artifacts.package),
+        (artifacts.result, artifacts.review, artifacts.package),
+    )
+    completion_changes = CheckpointArtifactChanges(
+        artifacts.result,
+        result_id,
+        artifacts.review,
+        review_id,
+        artifacts.package,
+        package_id,
     )
     input_payload = work_models.CanonicalJson(
         msgspec.json.encode(
@@ -356,11 +369,11 @@ def project_completion_acceptance_mutation(
             decision.action.capability,
             decision.action.kind,
             decision.receipt,
-            changes.package_id,
+            completion_changes.package_id,
             actor_task_id,
             actor_host_id,
             "pinboard-covered-completion/v1",
             input_payload,
         ),
-        changes,
+        completion_changes,
     )

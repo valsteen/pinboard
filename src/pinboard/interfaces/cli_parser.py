@@ -88,7 +88,12 @@ class _ReviewJobArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     candidate_revision: Annotated[str, msgspec.Meta(min_length=1)]
     checkpoint_history_id: cli_commands.PositiveInt | None
     correction_history_id: cli_commands.PositiveInt | None
+    candidate_patch: Path | None
     json: bool
+
+    def __post_init__(self) -> None:
+        if self.candidate_patch is not None and self.checkpoint_history_id is None:
+            raise ValueError("--candidate-patch requires --checkpoint-history-id")
 
 
 class _TransitionArguments(msgspec.Struct, frozen=True):
@@ -152,11 +157,14 @@ class _DispatchArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     prompt: Path | None
     brief_review: Path | None
     review_id: cli_commands.KebabReviewId | None
+    correction_history_id: cli_commands.PositiveInt | None
     json: bool
 
     def __post_init__(self) -> None:
         if (self.brief_review is None) != (self.review_id is None):
             raise ValueError("--brief-review and --review-id must be supplied together")
+        if self.correction_history_id is not None and self.brief_review is None:
+            raise ValueError("--correction-history-id requires --brief-review and --review-id")
 
 
 def _decode_brief_sources[RawT](
@@ -232,6 +240,22 @@ def _decode_transition[RawT](values: dict[str, RawT]) -> cli_commands.Transition
 
 def _decode_dispatch[RawT](values: dict[str, RawT]) -> cli_commands.DispatchCommand:
     arguments = msgspec.convert(values, type=_DispatchArguments, strict=True)
+    if arguments.correction_history_id is not None:
+        assert arguments.brief_review is not None
+        assert arguments.review_id is not None
+        return cli_commands.ProjectCorrectionDispatchCommand(
+            action_id=arguments.action_id,
+            subject_revision=arguments.subject_revision,
+            task_id=arguments.task_id,
+            host_id=arguments.host_id,
+            checkpoint=arguments.checkpoint,
+            environment=arguments.environment,
+            brief_review=arguments.brief_review,
+            review_id=arguments.review_id,
+            correction_history_id=arguments.correction_history_id,
+            prompt=arguments.prompt,
+            json=arguments.json,
+        )
     if arguments.brief_review is None:
         return cli_commands.ProjectDispatchCommand(
             action_id=arguments.action_id,
@@ -264,6 +288,13 @@ def _decode_review_job[RawT](values: dict[str, RawT]) -> cli_commands.ReviewJobC
     if arguments.checkpoint_history_id is None and arguments.correction_history_id is None:
         return cli_commands.InitialReviewJobCommand(*common, json=arguments.json)
     if arguments.checkpoint_history_id is not None and arguments.correction_history_id is None:
+        if arguments.candidate_patch is not None:
+            return cli_commands.PackageInitialRecoveryReviewJobCommand(
+                *common,
+                checkpoint_history_id=arguments.checkpoint_history_id,
+                candidate_patch=arguments.candidate_patch,
+                json=arguments.json,
+            )
         return cli_commands.PackageInitialReviewJobCommand(
             *common,
             checkpoint_history_id=arguments.checkpoint_history_id,
@@ -277,6 +308,14 @@ def _decode_review_job[RawT](values: dict[str, RawT]) -> cli_commands.ReviewJobC
         )
     assert arguments.checkpoint_history_id is not None
     assert arguments.correction_history_id is not None
+    if arguments.candidate_patch is not None:
+        return cli_commands.PackageCorrectionRecoveryReviewJobCommand(
+            *common,
+            checkpoint_history_id=arguments.checkpoint_history_id,
+            correction_history_id=arguments.correction_history_id,
+            candidate_patch=arguments.candidate_patch,
+            json=arguments.json,
+        )
     return cli_commands.PackageCorrectionReviewJobCommand(
         *common,
         checkpoint_history_id=arguments.checkpoint_history_id,
@@ -329,13 +368,16 @@ def _select_command(
                 variants = (
                     ("without-review", cli_commands.ProjectDispatchCommand),
                     ("with-review", cli_commands.ProjectReviewedDispatchCommand),
+                    ("correction", cli_commands.ProjectCorrectionDispatchCommand),
                 )
             case _CompoundCommand.REVIEW_JOB:
                 variants = (
                     ("initial", cli_commands.InitialReviewJobCommand),
                     ("package-initial", cli_commands.PackageInitialReviewJobCommand),
+                    ("package-initial-recovery", cli_commands.PackageInitialRecoveryReviewJobCommand),
                     ("correction", cli_commands.CorrectionReviewJobCommand),
                     ("package-correction", cli_commands.PackageCorrectionReviewJobCommand),
+                    ("package-correction-recovery", cli_commands.PackageCorrectionRecoveryReviewJobCommand),
                 )
             case _CompoundCommand.TRANSITION:
                 variants = (
@@ -565,6 +607,17 @@ def _add_brief_parser(commands: argparse._SubParsersAction[argparse.ArgumentPars
     _select_command(publish, cli_commands.BriefPublishCommand)
 
 
+def _add_artifact_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    artifact = commands.add_parser("artifact", help="Verify one accepted immutable artifact reference.")
+    verify = artifact.add_subparsers(required=True).add_parser("verify")
+    verify.add_argument("--artifact-ref-id", required=True, type=int)
+    verify.add_argument("--selector", required=True)
+    verify.add_argument("--sha256", required=True)
+    verify.add_argument("--size-bytes", required=True, type=int)
+    verify.add_argument("--json", action="store_true")
+    _select_command(verify, cli_commands.ArtifactVerifyCommand)
+
+
 def _add_root_selection(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project-root", type=Path, help="Select the exact source checkout for authority reads.")
     parser.add_argument("--work-root", type=Path)
@@ -583,6 +636,7 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - complete top-l
     initialize.add_argument("--json", action="store_true")
     _select_command(initialize, cli_commands.InitializeCommand)
     _add_brief_parser(commands)
+    _add_artifact_parser(commands)
     proposal = commands.add_parser("proposal", help="Create one intake item without activating it.")
     proposal.add_argument("--file", type=Path, required=True)
     proposal.add_argument("--task-id", required=True)
@@ -605,11 +659,14 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - complete top-l
     transition.add_argument("--json", action="store_true")
     _select_command(transition, _CompoundCommand.TRANSITION)
     dispatch = commands.add_parser("dispatch", help="Prepare or verify a canonical worker launch.")
-    review_job = commands.add_parser("review-job", help="Render a read-only job for the exact review candidate.")
+    review_job = commands.add_parser(
+        "review-job", help="Prepare the exact review job and publish its immutable reviewer prompt."
+    )
     review_job.add_argument("--attempt-id", required=True)
     review_job.add_argument("--candidate-revision", required=True)
     review_job.add_argument("--checkpoint-history-id", type=int)
     review_job.add_argument("--correction-history-id", type=int)
+    review_job.add_argument("--candidate-patch", type=Path)
     review_job.add_argument("--json", action="store_true")
     _select_command(review_job, _CompoundCommand.REVIEW_JOB)
     dispatch.add_argument("--action-id", required=True, help="Exact dispatch action returned by project actions.")
@@ -621,7 +678,10 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - complete top-l
         "--environment",
         required=True,
         type=Path,
-        help="pinboard-dispatch/v1 JSON declaring the checkout, branch, revision, and already-authorized permissions.",
+        help=(
+            "pinboard-dispatch/v2 JSON declaring checkout, branch, revision, runtime host, fresh context, "
+            "attempt lease interval, and already-authorized permissions."
+        ),
     )
     dispatch.add_argument(
         "--prompt",
@@ -636,6 +696,11 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - complete top-l
     dispatch.add_argument(
         "--review-id",
         help="Kebab-case identity used only when preserving a differing later review.",
+    )
+    dispatch.add_argument(
+        "--correction-history-id",
+        type=int,
+        help="Exact selected return-for-correction receipt required for correction dispatch.",
     )
     dispatch.add_argument("--json", action="store_true")
     _select_command(dispatch, _CompoundCommand.DISPATCH)
@@ -686,6 +751,37 @@ def installed_command_variants() -> tuple[InstalledCommandVariant, ...]:
     _add_root_selection(root_selection_parser)
     root_usage = " ".join(root_selection_parser.format_usage().removeprefix("usage: ").split())
 
+    transition_usage = {
+        "project": (
+            " transition --action-id ACTION_ID --subject-revision SUBJECT_REVISION --authorization project "
+            "--task-id TASK_ID --host-id HOST_ID --payload PAYLOAD [--json]"
+        ),
+        "attempt": (
+            " transition --action-id ACTION_ID --subject-revision SUBJECT_REVISION --authorization attempt "
+            "--lease-id LEASE_ID --generation GENERATION --payload PAYLOAD [--json]"
+        ),
+        "preparation": (
+            " transition --action-id ACTION_ID --subject-revision SUBJECT_REVISION --authorization preparation "
+            "--lease-id LEASE_ID --generation GENERATION --payload PAYLOAD [--json]"
+        ),
+    }
+    dispatch_usage = {
+        "without-review": (
+            " dispatch --action-id ACTION_ID --subject-revision SUBJECT_REVISION --task-id TASK_ID "
+            "--host-id HOST_ID --checkpoint CHECKPOINT --environment ENVIRONMENT [--prompt PROMPT] [--json]"
+        ),
+        "with-review": (
+            " dispatch --action-id ACTION_ID --subject-revision SUBJECT_REVISION --task-id TASK_ID "
+            "--host-id HOST_ID --checkpoint CHECKPOINT --environment ENVIRONMENT --brief-review BRIEF_REVIEW "
+            "--review-id REVIEW_ID [--prompt PROMPT] [--json]"
+        ),
+        "correction": (
+            " dispatch --action-id ACTION_ID --subject-revision SUBJECT_REVISION --task-id TASK_ID "
+            "--host-id HOST_ID --checkpoint CHECKPOINT --environment ENVIRONMENT --brief-review BRIEF_REVIEW "
+            "--review-id REVIEW_ID --correction-history-id CORRECTION_HISTORY_ID [--prompt PROMPT] [--json]"
+        ),
+    }
+
     def visit(parser: argparse.ArgumentParser) -> None:
         variants = parser.get_default("contract_variants")
         if variants:
@@ -693,7 +789,18 @@ def installed_command_variants() -> tuple[InstalledCommandVariant, ...]:
             leaf_usage = " ".join(parser.format_usage().removeprefix("usage: ").split())
             cli_usage = root_usage + leaf_usage.removeprefix("pinboard")
             discovered.extend(
-                InstalledCommandVariant(operation_id, variant, command_type, cli_usage)
+                InstalledCommandVariant(
+                    operation_id,
+                    variant,
+                    command_type,
+                    (
+                        root_usage + transition_usage[variant]
+                        if operation_id == "transition"
+                        else root_usage + dispatch_usage[variant]
+                        if operation_id == "dispatch"
+                        else cli_usage
+                    ),
+                )
                 for variant, command_type in variants
             )
         for action in parser._actions:

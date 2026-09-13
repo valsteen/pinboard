@@ -474,7 +474,7 @@ class CheckpointIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True
 
 
 class PortableArtifactIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    role: Literal["accepted-brief", "result", "implementation-review", "brief-review"]
+    role: Literal["accepted-brief", "candidate", "result", "implementation-review", "brief-review"]
     kind: Literal["brief", "result", "evidence"]
     key: NonEmptyLine
     revision: PositiveInt
@@ -508,8 +508,13 @@ class CrossBoundaryReviewBasis(
 type ReviewBasis = LocalReviewBasis | CrossBoundaryReviewBasis
 
 
-class CheckpointReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-checkpoint-review-package/v1"]
+class CheckpointReviewPackage(
+    msgspec.Struct,
+    tag="pinboard-checkpoint-review-package/v1",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
     attempt_id: KebabId
     item_id: KebabId
     candidate: NonEmptyLine
@@ -545,6 +550,57 @@ class CheckpointReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields
         portable_keys = tuple((value.kind, value.key, value.revision) for value in identities)
         if len(portable_keys) != len(set(portable_keys)):
             raise ValueError("Checkpoint package portable artifact identities must be unique.")
+
+
+class CheckpointReviewPackageV2(
+    msgspec.Struct,
+    tag="pinboard-checkpoint-review-package/v2",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    attempt_id: KebabId
+    item_id: KebabId
+    candidate: NonEmptyLine
+    acceptance_evidence: NonEmptyLine
+    accepted_scope: AcceptedScope
+    checkpoint: CheckpointIdentity
+    candidate_snapshot: PortableArtifactIdentity
+    accepted_brief: PortableArtifactIdentity
+    result: PortableArtifactIdentity
+    implementation_review: PortableArtifactIdentity
+    verdict: Literal["ready"]
+    review_basis: ReviewBasis
+
+    def __post_init__(self) -> None:
+        identities = (self.candidate_snapshot, self.accepted_brief, self.result, self.implementation_review)
+        expected = (
+            ("candidate", "evidence"),
+            ("accepted-brief", "brief"),
+            ("result", "result"),
+            ("implementation-review", "evidence"),
+        )
+        if tuple((value.role, value.kind) for value in identities) != expected:
+            raise ValueError("Checkpoint package artifact roles and kinds do not match their bindings.")
+        if self.candidate != f"working-tree-sha256:{self.candidate_snapshot.content_sha256}":
+            raise ValueError("Checkpoint candidate must match its portable snapshot digest.")
+        match self.review_basis:
+            case LocalReviewBasis():
+                pass
+            case CrossBoundaryReviewBasis(brief_review=brief_review, checkpoint_sha256=checkpoint_sha256):
+                if (brief_review.role, brief_review.kind) != ("brief-review", "evidence"):
+                    raise ValueError("Cross-boundary checkpoint packages require one brief-review Evidence identity.")
+                if checkpoint_sha256 != self.checkpoint.sha256:
+                    raise ValueError("Cross-boundary review basis must bind the package checkpoint digest.")
+                identities = (*identities, brief_review)
+            case _ as unreachable:
+                assert_never(unreachable)
+        portable_keys = tuple((value.kind, value.key, value.revision) for value in identities)
+        if len(portable_keys) != len(set(portable_keys)):
+            raise ValueError("Checkpoint package portable artifact identities must be unique.")
+
+
+type CheckpointPackage = CheckpointReviewPackage | CheckpointReviewPackageV2
 
 
 class AcceptedBriefCompletionIdentity(

@@ -446,20 +446,111 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
         self.assert_keyed_status_queries(work / "state.sqlite3", statements)
 
+    def test_item_status_and_same_revision_overview_agree_for_every_legal_live_shape(self) -> None:
+        base = complete_sqlite_state()
+        selected_item = base.lifecycle.work_items[1]
+        selected_attempt = base.lifecycle.attempts[0]
+        legal_shapes = (
+            (stored_state.StoredWorkItemState.INTAKE, None),
+            (stored_state.StoredWorkItemState.READY, None),
+            (stored_state.StoredWorkItemState.ACTIVE, work_models.AttemptState.ACTIVE),
+            (stored_state.StoredWorkItemState.PAUSED, work_models.AttemptState.PAUSED),
+            (stored_state.StoredWorkItemState.BLOCKED, None),
+            (stored_state.StoredWorkItemState.BLOCKED, work_models.AttemptState.BLOCKED),
+            (stored_state.StoredWorkItemState.DEFERRED, None),
+            (stored_state.StoredWorkItemState.REVIEW, work_models.AttemptState.REVIEW),
+        )
+        for item_state, attempt_state in legal_shapes:
+            item = replace(selected_item, state=item_state)
+            attempts = (
+                ()
+                if attempt_state is None
+                else (
+                    replace(
+                        selected_attempt,
+                        state=attempt_state,
+                        candidate_revision="candidate-a" if attempt_state == work_models.AttemptState.REVIEW else None,
+                        candidate_recorded_at=SQLITE_NOW if attempt_state == work_models.AttemptState.REVIEW else None,
+                    ),
+                )
+            )
+            state = replace(
+                base,
+                lifecycle=replace(
+                    base.lifecycle,
+                    work_items=(base.lifecycle.work_items[0], item, *base.lifecycle.work_items[2:]),
+                    attempts=attempts,
+                ),
+                authority=replace(
+                    base.authority,
+                    attempt_counters=() if attempt_state is None else base.authority.attempt_counters,
+                    attempt_generations=() if attempt_state is None else base.authority.attempt_generations,
+                    attempt_leases=() if attempt_state is None else base.authority.attempt_leases,
+                ),
+            )
+            project, work, _store = self.initialized_state(state)
+            common = ("--project-root", str(project), "--work-root", str(work))
+
+            with self.subTest(item_state=item_state.value, attempt_state=attempt_state):
+                with self.record_store_reads() as selected_reads:
+                    status_result, status_stdout, status_stderr = self.run_cli(
+                        *common, "item", "status", "--item-id", "work-a", "--json"
+                    )
+                overview_result, overview_stdout, overview_stderr = self.run_cli(*common, "overview", "--json")
+
+            self.assertEqual(0, status_result, status_stderr)
+            self.assertEqual(0, overview_result, overview_stderr)
+            status = json.loads(status_stdout)
+            overview = json.loads(overview_stdout)
+            overview_item = next(value for value in overview["items"] if value["item_id"] == "work-a")
+            self.assertEqual(status["revision"], overview["revision"])
+            for status_field, overview_field in (
+                ("item_id", "item_id"),
+                ("label", "label"),
+                ("state", "state"),
+                ("timing", "timing"),
+                ("next_action", "next_action"),
+                ("source", "source"),
+                ("notes", "notes"),
+                ("queue_position", "position"),
+                ("preparation", "preparation"),
+            ):
+                self.assertEqual(status[status_field], overview_item[overview_field], status_field)
+            current_attempt = None if not status["attempts"] else status["attempts"][0]["attempt_id"]
+            self.assertEqual(current_attempt, overview_item["attempt_id"])
+            self.assert_keyed_status_queries(work / "state.sqlite3", selected_reads[1])
+
     def test_terminal_item_status_does_not_read_retained_attempt_history(self) -> None:
-        project, work, _store = self.initialized_state(self.state_with_unrelated_attempt_authority(count=64))
-        common = ("--project-root", str(project), "--work-root", str(work))
+        base = self.state_with_unrelated_attempt_authority(count=64)
+        for terminal_state in (
+            stored_state.StoredWorkItemState.DONE,
+            stored_state.StoredWorkItemState.SUPERSEDED,
+            stored_state.StoredWorkItemState.DROPPED,
+        ):
+            terminal = replace(base.lifecycle.work_items[2], state=terminal_state)
+            state = replace(
+                base,
+                lifecycle=replace(
+                    base.lifecycle,
+                    work_items=(*base.lifecycle.work_items[:2], terminal, *base.lifecycle.work_items[3:]),
+                ),
+            )
+            project, work, _store = self.initialized_state(state)
+            common = ("--project-root", str(project), "--work-root", str(work))
 
-        with self.record_store_reads() as item_reads:
-            result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", "work-b", "--json")
+            with self.subTest(state=terminal_state.value), self.record_store_reads() as item_reads:
+                result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", "work-b", "--json")
 
-        self.assertEqual(0, result, stderr)
-        self.assertEqual([], json.loads(stdout)["attempts"])
-        _read_tables, statements = item_reads
-        self.assert_keyed_status_queries(work / "state.sqlite3", statements)
-        attempt_selects = tuple(statement.lower() for statement in statements if "from attempts" in statement.lower())
-        self.assertEqual(1, len(attempt_selects))
-        self.assertIn("state != 'done'", attempt_selects[0])
+            self.assertEqual(0, result, stderr)
+            self.assertEqual(terminal_state.value, json.loads(stdout)["state"])
+            self.assertEqual([], json.loads(stdout)["attempts"])
+            _read_tables, statements = item_reads
+            self.assert_keyed_status_queries(work / "state.sqlite3", statements)
+            attempt_selects = tuple(
+                statement.lower() for statement in statements if "from attempts" in statement.lower()
+            )
+            self.assertEqual(1, len(attempt_selects))
+            self.assertIn("state != 'done'", attempt_selects[0])
 
     def test_selected_parallel_preview_reads_only_selected_facts_and_preserves_metadata(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_unrelated_attempt_authority())
@@ -530,7 +621,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
     def test_installed_attempt_reads_only_selected_continuation_facts(self) -> None:
         state = self.state_with_unrelated_attempt_authority()
-        project, work, _store = self.initialized_attempt_context(state)
+        project, work, store = self.initialized_attempt_context(state)
         database = work / "state.sqlite3"
         common = ("--project-root", str(project), "--work-root", str(work))
         unrelated_view = work / "views" / "unrelated.md"
@@ -579,6 +670,8 @@ class AuthorityStatusReadTest(unittest.TestCase):
         raw = sqlite3.connect(database)
         try:
             raw.execute("UPDATE work_items SET state = 'review' WHERE item_id = 'work-a'")
+            raw.execute("UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = 'active'")
+            raw.execute("UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'review'")
             raw.execute(
                 """
                 UPDATE attempts
@@ -593,12 +686,8 @@ class AuthorityStatusReadTest(unittest.TestCase):
         result_path = work / "attempts" / "work-a-1" / "result.md"
         result_path.parent.mkdir(parents=True)
         result_path.write_text("Candidate evidence.\n", encoding="utf-8")
-        before_review = (
-            database.read_bytes(),
-            database.stat().st_mtime_ns,
-            unrelated_view.read_bytes(),
-            unrelated_view.stat().st_mtime_ns,
-        )
+        before_review = store.validated_snapshot()
+        unrelated_before = (unrelated_view.read_bytes(), unrelated_view.stat().st_mtime_ns)
 
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
@@ -616,15 +705,30 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
         self.assertEqual(0, result, stderr)
         self.assertIn('"candidate_revision": "candidate-a"', stdout)
-        self.assertEqual(
-            before_review,
-            (
-                database.read_bytes(),
-                database.stat().st_mtime_ns,
-                unrelated_view.read_bytes(),
-                unrelated_view.stat().st_mtime_ns,
-            ),
+        job = json.loads(stdout)
+        prompt_reference = job["prompt_reference"]
+        after_review = store.validated_snapshot()
+        accepted_prompt = next(
+            reference
+            for reference in after_review.artifact_references
+            if int(reference.artifact_ref_id) == prompt_reference["accepted_artifact_reference_id"]
         )
+        self.assertEqual(
+            replace(
+                before_review,
+                lifecycle=replace(
+                    before_review.lifecycle,
+                    project=replace(
+                        before_review.lifecycle.project,
+                        revision=before_review.lifecycle.project.revision + 1,
+                        updated_at=accepted_prompt.created_at,
+                    ),
+                ),
+                artifact_references=(*before_review.artifact_references, accepted_prompt),
+            ),
+            after_review,
+        )
+        self.assertEqual(unrelated_before, (unrelated_view.read_bytes(), unrelated_view.stat().st_mtime_ns))
         review_tables, review_statements = review_reads
         self.assertEqual(read_tables, review_tables)
         self.assert_keyed_status_queries(database, review_statements)
@@ -804,28 +908,66 @@ class AuthorityStatusReadTest(unittest.TestCase):
         self.assertEqual(12, authority_result)
         self.assertIn("WORK_STATE_INVALID", authority_stderr)
 
-    def test_item_status_rejects_selected_item_attempt_state_mismatch(self) -> None:
-        lifecycle_project, lifecycle_work, _lifecycle_store = self.initialized_state(
-            self.state_with_preparation(unrelated_count=1)
-        )
-        lifecycle_connection = sqlite3.connect(lifecycle_work / "state.sqlite3")
-        try:
-            lifecycle_connection.execute("UPDATE work_items SET state = 'ready' WHERE item_id = ?", ("work-a",))
-            lifecycle_connection.commit()
-        finally:
-            lifecycle_connection.close()
-        lifecycle_result, _lifecycle_stdout, lifecycle_stderr = self.run_cli(
-            "--project-root",
-            str(lifecycle_project),
-            "--work-root",
-            str(lifecycle_work),
-            "item",
-            "status",
-            "--item-id",
-            "work-a",
-        )
-        self.assertEqual(12, lifecycle_result)
-        self.assertIn("WORK_STATE_INVALID", lifecycle_stderr)
+    def test_item_status_explains_both_inconsistency_directions_and_validation_does_not_repair(self) -> None:
+        for item_id, mutation, expected_state, observed_attempt in (
+            ("work-a", "UPDATE work_items SET state = 'ready' WHERE item_id = 'work-a'", "none", "active"),
+            ("work-c", "UPDATE work_items SET state = 'active' WHERE item_id = 'work-c'", "active", "none"),
+        ):
+            project, work, _store = self.initialized_state(complete_sqlite_state())
+            database = work / "state.sqlite3"
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute(mutation)
+                connection.commit()
+            finally:
+                connection.close()
+            before = (database.read_bytes(), database.stat().st_mtime_ns)
+            common = ("--project-root", str(project), "--work-root", str(work))
+
+            with self.subTest(item_id=item_id), self.record_store_reads() as selected_reads:
+                result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", item_id, "--json")
+
+            self.assertEqual(11, result, (stdout, stderr))
+            self.assertEqual("", stderr)
+            rejection = json.loads(stdout)
+            self.assertEqual("pinboard-rejected-operation/v1", rejection["schema"])
+            self.assertEqual("ITEM_STATUS_INCONSISTENT", rejection["code"])
+            self.assertFalse(rejection["state_changed"])
+            self.assertEqual([], rejection["changed_surfaces"])
+            self.assertEqual("do-not-retry", rejection["retry"])
+            self.assertEqual([{"kind": "command", "command": "pinboard validate"}], rejection["next_actions"])
+            observed = {value["field"]: value["value"] for value in rejection["observed"]}
+            self.assertEqual(
+                {
+                    "item_id": item_id,
+                    "item_state": "ready" if item_id == "work-a" else "active",
+                    "item_timing": "must-now",
+                    "item_outcome_evidence": None,
+                    "item_next_action": "continue" if item_id == "work-a" else "activate",
+                    "item_source": "accepted requirement",
+                    "item_notes": "Current work remains bounded.",
+                    "item_queue_position": 2 if item_id == "work-a" else 3,
+                    "attempt_id": "work-a-1" if item_id == "work-a" else None,
+                    "attempt_state": observed_attempt,
+                    "attempt_candidate_revision": None,
+                },
+                observed,
+            )
+            self.assertEqual(
+                [{"field": "current_attempt_state", "expected": expected_state, "observed": observed_attempt}],
+                rejection["mismatches"],
+            )
+            self.assertEqual(before, (database.read_bytes(), database.stat().st_mtime_ns))
+            self.assert_keyed_status_queries(database, selected_reads[1])
+
+            validation_result, validation_stdout, validation_stderr = self.run_cli(*common, "validate", "--json")
+
+            self.assertEqual(10, validation_result, validation_stderr)
+            self.assertEqual("", validation_stderr)
+            validation = json.loads(validation_stdout)
+            self.assertFalse(validation["valid"])
+            self.assertIn("WORK_STATE_INVALID", [value["code"] for value in validation["diagnostics"]])
+            self.assertEqual(before, (database.read_bytes(), database.stat().st_mtime_ns))
 
     def test_selected_parallel_preview_rejects_selected_corruption_and_ignores_unrelated_corruption(self) -> None:
         state = complete_sqlite_state()
@@ -874,6 +1016,35 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
     def test_selected_parallel_preview_rejects_inconsistent_open_attempt_relationships(self) -> None:
         state = complete_sqlite_state()
+        blocked_without_attempt = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=tuple(
+                    replace(value, state=stored_state.StoredWorkItemState.BLOCKED)
+                    if value.item_id == ItemId("work-c")
+                    else value
+                    for value in state.lifecycle.work_items
+                ),
+            ),
+        )
+        blocked_project, blocked_work, _blocked_store = self.initialized_state(blocked_without_attempt)
+        blocked_result, blocked_stdout, blocked_stderr = self.run_cli(
+            "--project-root",
+            str(blocked_project),
+            "--work-root",
+            str(blocked_work),
+            "parallel",
+            "preview",
+            "--item",
+            "work-c",
+            "--json",
+        )
+        self.assertEqual(0, blocked_result, blocked_stderr)
+        blocked_payload = json.loads(blocked_stdout)
+        self.assertEqual([], blocked_payload["launchable"])
+        self.assertEqual("blocked", blocked_payload["excluded"][0]["state"])
+
         for item_id, state_after in (("work-a", "ready"), ("work-c", "active")):
             project, work, _store = self.initialized_state(state)
             connection = sqlite3.connect(work / "state.sqlite3")

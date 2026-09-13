@@ -9,7 +9,6 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import pairwise
-from typing import assert_never
 
 import msgspec
 
@@ -177,26 +176,7 @@ def _validate_selected_open_attempt(
     state: stored_state.StoredWorkItemState,
     attempt_state: work_models.AttemptState | None,
 ) -> None:
-    match state:
-        case (
-            stored_state.StoredWorkItemState.ACTIVE
-            | stored_state.StoredWorkItemState.PAUSED
-            | stored_state.StoredWorkItemState.BLOCKED
-            | stored_state.StoredWorkItemState.REVIEW
-        ) as attempted_state:
-            valid = attempt_state is not None and attempt_state.value == attempted_state.value
-        case (
-            stored_state.StoredWorkItemState.INTAKE
-            | stored_state.StoredWorkItemState.READY
-            | stored_state.StoredWorkItemState.DEFERRED
-            | stored_state.StoredWorkItemState.DONE
-            | stored_state.StoredWorkItemState.SUPERSEDED
-            | stored_state.StoredWorkItemState.DROPPED
-        ):
-            valid = attempt_state is None
-        case _ as unreachable:
-            assert_never(unreachable)
-    if not valid:
+    if attempt_state not in stored_state.allowed_current_attempt_states(state):
         raise StorageError(
             StorageErrorCode.INVALID_STATE,
             "The selected work item and open attempt states do not match.",
@@ -354,7 +334,6 @@ def read_item_status(connection: sqlite3.Connection, item_id: ItemId) -> query_m
         (item_id,),
     ).fetchone()
     selected_attempt = None if attempt_row is None else decode_row(attempt_row, query_models.ItemStatusAttemptFacts)
-    _validate_selected_open_attempt(item.state, None if selected_attempt is None else selected_attempt.state)
     attempts = () if selected_attempt is None else (selected_attempt,)
     return query_models.ItemStatusLifecycleFacts(
         project_revision,

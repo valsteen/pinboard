@@ -18,6 +18,19 @@ Do not enable Claude agent teams, open another session, create another worktree,
 
 Do not infer that subagents are unavailable because an unrelated, nested, shell, MCP, or dynamically listed tool surface omits their controls. Report a missing subagent capability only after the runtime's native launch surface is actually absent or unsupported, or an actual required native launch returns an unavailable or unsupported result.
 
+## Source-worktree setup recovery
+
+Run the repository's exact setup command in the selected checkout through normal runtime execution first. On failure, use its diagnostics or one cheapest additional observation to distinguish a sandbox permission restriction from a missing prerequisite, actual locked-install failure, network failure, or a defect in the tool being changed.
+
+For a diagnosed sandbox permission restriction during already-authorized source setup, request the runtime's permission review for one retry of that exact command in the same checkout. Do not add a separate conversational confirmation. Runtime approval still controls whether the retry executes:
+
+- In Codex, use the execution tool's `sandbox_permissions: "require_escalated"` with a justification naming the observed restriction and the authorized setup command. Request only that invocation; do not add a persistent approval rule.
+- In Claude Code, use the current runtime's native permission request for that invocation when available. Do not invent a permission API or treat a dispatch declaration as an execution grant.
+
+If permission is denied or unavailable, the retry fails, the cause is not a sandbox restriction, or recovery would change accepted scope, stop setup and report the exact observation. Ask the human to abort, authorize one bounded retry or investigation, or revise the accepted scope and evidence. Do not repeat the retry, relocate caches, edit global configuration, bypass approval, or weaken locked setup to continue.
+
+After successful setup, continue with the prepared checkout and preserve the result as setup evidence. This route changes only source-worktree setup recovery. Installed-runtime preparation and protected ledger writes retain their own recovery contracts; ordinary installed Pinboard commands use the prepared plugin runtime without uv or managed-project environments.
+
 ## Codex protected project writes
 
 Fresh default initialization is special: approve the exact `<launcher-root>/scripts/pinboard init` command once because it first idempotently adds only `/.codex/pinboard/` to the shared repository's `.git/info/exclude`, then creates `.codex/pinboard/`. Do not grant persistent `.git` write access. Pinboard never edits `.gitignore`, and sibling `.codex` paths remain visible to Git. If a later initialization step fails, inspect the exact effect before issuing a fresh command: `committed-effect` names `repository-git-exclude` when this invocation added it and also names `ledger` when it published the database before failing. A repeat that commits neither surface is an unchanged rejection.

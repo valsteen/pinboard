@@ -47,7 +47,7 @@ from pinboard.interfaces.work_briefs import canonical_work_brief_bytes, canonica
 from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
 from tests.support import SQLITE_DIGEST, SQLITE_NOW, complete_sqlite_state, initialize_store
-from tests.work_brief_support import CHECKPOINT_ID, ready_review, work_a_brief
+from tests.work_brief_support import CHECKPOINT_ID, needs_correction_review, ready_review, work_a_brief
 
 
 def expect_dispatch_success[T](result: DispatchResult[T]) -> T:
@@ -85,6 +85,7 @@ def prepare_dispatch_from_artifact(
         attempt_branch,
         attempt_base_revision,
         source_checkout_root,
+        attempt_path.parent,
         checkpoint,
         environment,
         accepted_item_id,
@@ -354,7 +355,34 @@ class DispatchTest(unittest.TestCase):
             }
             arguments.update(changed)
             with self.subTest(name=_name):
-                expect_dispatch_failure(prepare_dispatch_from_artifact(**arguments), code)
+                failure = expect_dispatch_failure(prepare_dispatch_from_artifact(**arguments), code)
+                if code == DispatchErrorCode.DISPATCH_BASE_REVISION_MISMATCH:
+                    assert failure.details is not None
+                    self.assertEqual("correct-input", failure.details.retry.value)
+                    self.assertEqual("unchanged", failure.details.effect.value)
+                    self.assertTrue(failure.details.mismatches)
+                    observed = {fact.field: fact.value for fact in failure.details.observed}
+                    self.assertEqual(value.base_revision, observed["brief_base_revision"])
+                    self.assertIn("tool-contract --operation dispatch --json", str(observed["tool_contract_command"]))
+                    self.assertIn(
+                        "actions --role project --action-id dispatch:work-a-1 --json",
+                        str(observed["current_dispatch_action_command"]),
+                    )
+
+        negative = prepare_dispatch_from_artifact(
+            path,
+            value.attempt_id,
+            value.branch,
+            value.base_revision,
+            project,
+            CHECKPOINT_ID,
+            environment,
+            accepted_item_id=value.item_id,
+            accepted_scope_revision=value.accepted_scope.revision,
+            accepted_scope_digest=value.accepted_scope.digest,
+            accepted_review=needs_correction_review(value),
+        )
+        expect_dispatch_failure(negative, DispatchErrorCode.DISPATCH_BRIEF_REVIEW_INVALID)
 
         review = msgspec.json.decode(ready_review(value), type=work_brief_models.WorkBriefReview)
         for changed, code in (
@@ -377,6 +405,65 @@ class DispatchTest(unittest.TestCase):
                     accepted_review=canonical_work_brief_review_bytes(replace(review, **changed)),
                 )
                 expect_dispatch_failure(failure, code)
+
+    def test_base_mismatch_reports_each_stale_source_and_recovery(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        value = work_a_brief(project)
+        path = project / "brief.json"
+        path.write_bytes(canonical_work_brief_bytes(value))
+        failure = expect_dispatch_failure(
+            prepare_dispatch_from_artifact(
+                path,
+                value.attempt_id,
+                value.branch,
+                "attempt-base",
+                project,
+                CHECKPOINT_ID,
+                replace(self.environment(project), starting_revision="environment-base"),
+                accepted_item_id=value.item_id,
+                accepted_scope_revision=value.accepted_scope.revision,
+                accepted_scope_digest=value.accepted_scope.digest,
+                accepted_review=ready_review(value),
+            ),
+            DispatchErrorCode.DISPATCH_BASE_REVISION_MISMATCH,
+        )
+        assert failure.details is not None
+        self.assertEqual("correct-input", failure.details.retry.value)
+        self.assertEqual("unchanged", failure.details.effect.value)
+        self.assertEqual(
+            {"brief_base_revision", "environment_base_revision"},
+            {mismatch.field for mismatch in failure.details.mismatches},
+        )
+        observed = {fact.field: fact.value for fact in failure.details.observed}
+        self.assertEqual("attempt-base", observed["attempt_base_revision"])
+        self.assertEqual(value.base_revision, observed["brief_base_revision"])
+        self.assertEqual("environment-base", observed["environment_base_revision"])
+        self.assertIn("tool-contract --operation dispatch --json", str(observed["tool_contract_command"]))
+        self.assertIn(
+            f"actions --role project --action-id dispatch:{value.attempt_id} --json",
+            str(observed["current_dispatch_action_command"]),
+        )
+
+    def test_needs_correction_review_remains_invalid_as_ready_dispatch_evidence(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        value = work_a_brief(project)
+        path = project / "brief.json"
+        path.write_bytes(canonical_work_brief_bytes(value))
+
+        failure = prepare_dispatch_from_artifact(
+            path,
+            value.attempt_id,
+            value.branch,
+            value.base_revision,
+            project,
+            CHECKPOINT_ID,
+            self.environment(project),
+            accepted_item_id=value.item_id,
+            accepted_scope_revision=value.accepted_scope.revision,
+            accepted_scope_digest=value.accepted_scope.digest,
+            accepted_review=needs_correction_review(value),
+        )
+        expect_dispatch_failure(failure, DispatchErrorCode.DISPATCH_BRIEF_REVIEW_INVALID)
 
     def test_local_checkpoint_rejects_review_arguments(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

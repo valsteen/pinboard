@@ -104,6 +104,10 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
             return work_inspection.show_actions(store, command)
         case cli_commands.BriefPublishCommand() as command:
             return work_brief_publication.publish_brief(durable, store, command)
+        case cli_commands.BriefReviewNeedsCorrectionCommand() as command:
+            return work_brief_publication.publish_brief_review_needs_correction(durable, store, command)
+        case cli_commands.BriefReviewStatusCommand() as command:
+            return work_brief_publication.show_brief_review_status(roots, durable, store, command)
         case cli_commands.ArtifactVerifyCommand() as command:
             return work_inspection.verify_artifact_reference(durable, store, command)
         case cli_commands.HandoverCommand() as command:
@@ -251,6 +255,12 @@ def _dispatch_failure_recovery(failure: DispatchFailure, operation: str) -> tupl
         return ()
     observed = {value.field: value.value for value in failure.details.observed}
     reviewed_dispatch = observed.get("reviewed_dispatch_command")
+    if failure.code.value == "DISPATCH_BASE_REVISION_MISMATCH":
+        commands = (
+            observed.get("tool_contract_command"),
+            observed.get("current_dispatch_action_command"),
+        )
+        return tuple(str(command) for command in commands if command is not None)
     if failure.code.value == "DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID" and reviewed_dispatch is not None:
         return (str(reviewed_dispatch),)
     fresh_review = observed.get("fresh_review_preparation_command")

@@ -75,6 +75,25 @@ def read_artifact_reference(
     return None if row is None else decode_row(row, stored_state.ArtifactReference)
 
 
+def read_latest_artifact_reference(
+    connection: sqlite3.Connection,
+    kind: work_models.ArtifactKind,
+    key: str,
+) -> stored_state.ArtifactReference | None:
+    row = connection.execute(
+        """
+        SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+               relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
+        FROM artifact_refs
+        WHERE kind = ? AND artifact_key = ?
+        ORDER BY artifact_revision DESC
+        LIMIT 1
+        """,
+        (kind.value, key),
+    ).fetchone()
+    return None if row is None else decode_row(row, stored_state.ArtifactReference)
+
+
 def read_artifact_reference_by_id(
     connection: sqlite3.Connection, artifact_ref_id: ArtifactRefId
 ) -> stored_state.ArtifactReference | None:

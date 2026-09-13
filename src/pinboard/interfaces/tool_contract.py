@@ -26,6 +26,7 @@ from pinboard.interfaces import (
     transition_input,
     transition_models,
     work_brief_contract,
+    work_brief_models,
 )
 from pinboard.interfaces.cli_output import write_json
 from pinboard.interfaces.errors import CommandFailure, CommandResult
@@ -205,6 +206,7 @@ def _mutation_class(command_type: type[cli_commands.CliCommand]) -> MutationClas
         return "mutates-ledger"
     if command_type in (
         cli_commands.BriefPublishCommand,
+        cli_commands.BriefReviewNeedsCorrectionCommand,
         cli_commands.ProjectDispatchCommand,
         cli_commands.ProjectReviewedDispatchCommand,
         cli_commands.ProjectCorrectionDispatchCommand,
@@ -234,6 +236,7 @@ def _mutation_class(command_type: type[cli_commands.CliCommand]) -> MutationClas
         cli_commands.ToolContractCommand,
         cli_commands.BriefSourcesPlanCommand,
         cli_commands.BriefSourcesEmitCommand,
+        cli_commands.BriefReviewStatusCommand,
         cli_commands.ArtifactVerifyCommand,
         cli_commands.HandoverCommand,
         cli_commands.AttemptStatusCommand,
@@ -326,6 +329,10 @@ def _purpose(operation_id: str, variant: str) -> str:  # noqa: C901, PLR0912 - e
             return "Create or verify an empty current Pinboard work state."
         case "brief/publish":
             return "Validate, publish, and accept one canonical work brief."
+        case "brief/review-needs-correction":
+            return "Validate, publish, and accept one canonical non-ready blocking brief review."
+        case "brief/review-status":
+            return "Read the latest verified blocking review for one exact accepted brief."
         case "proposal":
             return "Preserve one proposal as an intake item."
         case "review-job":
@@ -338,7 +345,7 @@ def _purpose(operation_id: str, variant: str) -> str:  # noqa: C901, PLR0912 - e
             raise ValueError(f"missing operation purpose classification: {operation_id}:{variant}")
 
 
-def _roles_and_authority(
+def _roles_and_authority(  # noqa: C901 - exhaustive installed authority owner
     command_type: type[cli_commands.CliCommand],
 ) -> tuple[tuple[str, ...], str]:
     if command_type in (
@@ -380,6 +387,8 @@ def _roles_and_authority(
         return ("project",), "direct-project-operation-with-task-host-attribution"
     if command_type is cli_commands.BriefPublishCommand:
         return ("local-caller",), "validated-brief-identity"
+    if command_type is cli_commands.BriefReviewNeedsCorrectionCommand:
+        return ("independent-reviewer",), "accepted-brief-reference"
     if command_type is cli_commands.BriefSourcesPlanToFileCommand:
         return ("local-caller",), "selected-output-path"
     if command_type is cli_commands.InitializeCommand:
@@ -446,6 +455,11 @@ def _subject_and_precondition(  # noqa: C901, PLR0912 - exhaustive installed pre
         return "source-plan", "selected-source-checkout-readable"
     if command_type is cli_commands.BriefPublishCommand:
         return "brief-artifact", "canonical-brief-valid"
+    if command_type in (
+        cli_commands.BriefReviewNeedsCorrectionCommand,
+        cli_commands.BriefReviewStatusCommand,
+    ):
+        return "accepted-brief-reference", "accepted-cross-boundary-brief-exists"
     if command_type is cli_commands.ArtifactVerifyCommand:
         return "accepted-artifact-reference", "accepted-reference-exists-and-matches-supplied-facts-and-bytes"
     return "ledger", "valid-ledger" if operation_id not in {
@@ -466,6 +480,8 @@ def _artifact_selector(command_type: type[cli_commands.CliCommand]) -> str | Non
         return "pinboard-brief-source-plan/v1 file"
     if command_type is cli_commands.BriefPublishCommand:
         return "pinboard-work-brief/v2 file"
+    if command_type is cli_commands.BriefReviewNeedsCorrectionCommand:
+        return "pinboard-work-brief-review-needs-correction/v1 file"
     if command_type is cli_commands.ProposalCommand:
         return "pinboard-proposal/v1 file"
     if command_type in (
@@ -492,6 +508,8 @@ def _artifact_schema(command_type: type[cli_commands.CliCommand]) -> msgspec.Raw
         model = brief_source_models.BriefSourcePlanView
     elif command_type is cli_commands.BriefPublishCommand:
         return None
+    elif command_type is cli_commands.BriefReviewNeedsCorrectionCommand:
+        model = work_brief_models.WorkBriefReviewNeedsCorrection
     elif command_type is cli_commands.ProposalCommand:
         model = proposal_models.Proposal
     elif command_type in (

@@ -145,6 +145,27 @@ class ToolContractTest(unittest.TestCase):
         assert brief.work_brief is not None
         self.assertEqual("pinboard-work-brief-contract/v1", brief.work_brief.schema)
 
+        needs_correction = expect_command_success(
+            tool_contract.describe_operation("brief/review-needs-correction", "default")
+        )
+        status = expect_command_success(tool_contract.describe_operation("brief/review-status", "default"))
+        self.assertIsInstance(needs_correction, tool_contract.OperationContract)
+        self.assertIsInstance(status, tool_contract.OperationContract)
+        assert isinstance(needs_correction, tool_contract.OperationContract)
+        assert isinstance(status, tool_contract.OperationContract)
+        self.assertEqual("publishes-and-records-artifact", needs_correction.mutation_class)
+        self.assertEqual("read-only", status.mutation_class)
+        self.assertEqual("focused", needs_correction.data_scope)
+        self.assertEqual("focused", status.data_scope)
+        self.assertIn("non-ready", needs_correction.purpose)
+        self.assertIn("latest verified blocking review", status.purpose)
+        assert needs_correction.artifact_schema is not None
+        negative_schema = json.loads(bytes(needs_correction.artifact_schema))
+        self.assertEqual(
+            ["pinboard-work-brief-review-needs-correction/v1"],
+            negative_schema["$defs"]["WorkBriefReviewNeedsCorrection"]["properties"]["schema"]["enum"],
+        )
+
         proposal = expect_command_success(tool_contract.describe_operation("proposal", "default"))
         self.assertIsInstance(proposal, tool_contract.OperationContract)
         assert isinstance(proposal, tool_contract.OperationContract)

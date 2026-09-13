@@ -366,6 +366,7 @@ def _validate_dispatch_identity(
     accepted_scope_revision: int | None,
     accepted_scope_digest: str | None,
     source_checkout_root: Path,
+    work_root: Path,
 ) -> DispatchFailure | None:
     if brief.attempt_id != attempt_id:
         return DispatchFailure(
@@ -393,11 +394,55 @@ def _validate_dispatch_identity(
             "Canonical brief, attempt, and dispatch environment branches must match.",
             None,
         )
-    if brief.base_revision != attempt_base_revision or environment.starting_revision != attempt_base_revision:
+    base_mismatches = tuple(
+        mismatch
+        for mismatch in (
+            FailureMismatch("brief_base_revision", attempt_base_revision, brief.base_revision),
+            FailureMismatch("environment_base_revision", attempt_base_revision, environment.starting_revision),
+        )
+        if mismatch.expected != mismatch.observed
+    )
+    if base_mismatches:
+        prefix = (
+            *pinboard_launcher_command(),
+            "--project-root",
+            str(source_checkout_root),
+            "--work-root",
+            str(work_root),
+        )
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BASE_REVISION_MISMATCH,
             "Canonical brief, attempt, and dispatch environment base revisions must match.",
-            None,
+            FailureDetails(
+                observed=(
+                    FailureFact("attempt_base_revision", attempt_base_revision),
+                    FailureFact("brief_base_revision", brief.base_revision),
+                    FailureFact("environment_base_revision", environment.starting_revision),
+                    FailureFact(
+                        "tool_contract_command",
+                        shlex.join((*prefix, "tool-contract", "--operation", "dispatch", "--json")),
+                    ),
+                    FailureFact(
+                        "current_dispatch_action_command",
+                        shlex.join(
+                            (
+                                *prefix,
+                                "actions",
+                                "--role",
+                                "project",
+                                "--action-id",
+                                f"dispatch:{attempt_id}",
+                                "--json",
+                            )
+                        ),
+                    ),
+                ),
+                mismatches=base_mismatches,
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
         )
     checkout = Path(environment.checkout)
     if not checkout.is_dir():
@@ -425,6 +470,7 @@ def _read_dispatch_brief(
     attempt_branch: str,
     attempt_base_revision: str,
     source_checkout_root: Path,
+    work_root: Path,
     checkpoint: str,
     environment: DispatchEnvironment,
     accepted_item_id: str | None,
@@ -448,6 +494,7 @@ def _read_dispatch_brief(
             accepted_scope_revision,
             accepted_scope_digest,
             source_checkout_root,
+            work_root,
         )
     ) is not None:
         return failure
@@ -661,6 +708,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
         selected_dispatch.attempt.branch,
         selected_dispatch.attempt.base_revision,
         source_checkout_root,
+        artifacts.work_root,
         checkpoint,
         environment,
         str(selected_dispatch.attempt.item_id),

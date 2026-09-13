@@ -32,7 +32,9 @@ from pinboard.interfaces.work_briefs import (
     canonical_checkpoint_review_package_bytes,
     canonical_reviewed_authority_set_bytes,
     canonical_work_brief_bytes,
+    canonical_work_brief_review_needs_correction_bytes,
     decode_canonical_checkpoint_review_package,
+    decode_canonical_work_brief_review_needs_correction,
     decode_checkpoint_review_package,
     decode_work_brief,
     decode_work_brief_review,
@@ -40,9 +42,10 @@ from pinboard.interfaces.work_briefs import (
     render_work_brief_markdown,
     validate_reviewed_authority_digests,
     validate_work_brief_review,
+    validate_work_brief_review_needs_correction,
 )
 from tests.support import SQLITE_NOW, complete_sqlite_state, decision_facts
-from tests.work_brief_support import example_work_brief, work_a_brief, work_c_brief
+from tests.work_brief_support import example_work_brief, needs_correction_review, work_a_brief, work_c_brief
 
 
 def expect_work_brief_success[T](result: WorkBriefResult[T]) -> T:
@@ -305,6 +308,38 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         stale = validate_work_brief_review(replace(review, checkpoint_sha256="f" * 64), value)
         assert stale is not None
         self.assertEqual(WorkBriefErrorCode.REVIEW_STALE, stale.code)
+
+    def test_needs_correction_review_is_canonical_digest_bound_and_independent(self) -> None:
+        value = example_work_brief()
+        candidate = needs_correction_review(value)
+        review = expect_work_brief_success(decode_canonical_work_brief_review_needs_correction(candidate))
+
+        self.assertEqual(candidate, canonical_work_brief_review_needs_correction_bytes(review))
+        self.assertIsNone(validate_work_brief_review_needs_correction(review, value))
+        same_owner = validate_work_brief_review_needs_correction(
+            replace(review, reviewer_task_id=value.owner_task_id), value
+        )
+        assert same_owner is not None
+        self.assertEqual(WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT, same_owner.code)
+        stale = validate_work_brief_review_needs_correction(replace(review, accepted_brief_sha256="f" * 64), value)
+        assert stale is not None
+        self.assertEqual(WorkBriefErrorCode.REVIEW_STALE, stale.code)
+
+        payload = msgspec.json.decode(candidate)
+        if not isinstance(payload, dict):
+            self.fail("needs-correction review JSON must be an object")
+        findings = payload["findings"]
+        if not isinstance(findings, list):
+            self.fail("needs-correction findings must be an array")
+        findings.append(findings[0])
+        expect_work_brief_failure(
+            decode_canonical_work_brief_review_needs_correction(msgspec.json.encode(payload)),
+            WorkBriefErrorCode.REVIEW_INVALID,
+        )
+        expect_work_brief_failure(
+            decode_canonical_work_brief_review_needs_correction(candidate.rstrip()),
+            WorkBriefErrorCode.REVIEW_NOT_CANONICAL,
+        )
 
     def test_checkpoint_review_package_variants_are_strict_canonical_and_portable(self) -> None:
         value = example_work_brief()

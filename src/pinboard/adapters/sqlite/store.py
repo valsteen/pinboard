@@ -27,6 +27,7 @@ from pinboard.adapters.sqlite.artifacts import (
     read_artifact_reference,
     read_artifact_reference_by_id,
     read_brief_artifact_reference,
+    read_latest_artifact_reference,
 )
 from pinboard.adapters.sqlite.authority import (
     consume_preparation_authority,
@@ -1384,6 +1385,16 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return read_artifact_reference(connection, kind, key, revision)
+        finally:
+            connection.close()
+
+    def read_latest_artifact_reference(
+        self, kind: work_models.ArtifactKind, key: str
+    ) -> stored_state.ArtifactReference | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_latest_artifact_reference(connection, kind, key)
         finally:
             connection.close()
 

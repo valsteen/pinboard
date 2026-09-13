@@ -121,6 +121,31 @@ class ArtifactPersistenceTest(unittest.TestCase):
         self.assertIn(accepted.reference, reloaded.artifact_references)
         self.assertEqual(13, reloaded.lifecycle.project.revision)
 
+    def test_latest_artifact_reference_is_selected_by_exact_kind_and_key(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        roots = resolve_durable_roots(project)
+        initialize_database(roots, SQLITE_NOW)
+        store = SQLiteWorkStore(roots.database_path)
+        initialize_store(store, complete_sqlite_state())
+        for revision in (1, 3, 2):
+            published = write_revision(
+                roots,
+                NewArtifact(
+                    work_models.ArtifactKind.EVIDENCE,
+                    "blocking-review",
+                    revision,
+                    ".json",
+                    f"{revision}\n".encode(),
+                ),
+            )
+            expect_success(store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW))
+
+        latest = store.read_latest_artifact_reference(work_models.ArtifactKind.EVIDENCE, "blocking-review")
+        assert latest is not None
+        self.assertEqual(3, latest.revision)
+        self.assertIsNone(store.read_latest_artifact_reference(work_models.ArtifactKind.RESULT, "blocking-review"))
+        self.assertIsNone(store.read_latest_artifact_reference(work_models.ArtifactKind.EVIDENCE, "other"))
+
     def test_revision_is_published_immutably_and_identical_retry_is_reused(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         roots = resolve_durable_roots(project)

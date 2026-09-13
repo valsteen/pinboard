@@ -599,12 +599,27 @@ def _add_inspection_parsers(commands: argparse._SubParsersAction[argparse.Argume
 
 
 def _add_brief_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    brief = commands.add_parser("brief", help="Publish canonical typed work briefs without scheduling them.")
+    brief = commands.add_parser("brief", help="Publish and inspect canonical typed work briefs and reviews.")
     operations = brief.add_subparsers(required=True)
     publish = operations.add_parser("publish", help="Validate and immutably publish one pinboard-work-brief/v2 file.")
     publish.add_argument("--file", type=Path, required=True)
     publish.add_argument("--json", action="store_true")
     _select_command(publish, cli_commands.BriefPublishCommand)
+    needs_correction = operations.add_parser(
+        "review-needs-correction",
+        help="Publish one canonical blocking review for an exact accepted brief.",
+    )
+    needs_correction.add_argument("--brief-artifact-ref-id", type=int, required=True)
+    needs_correction.add_argument("--file", type=Path, required=True)
+    needs_correction.add_argument("--json", action="store_true")
+    _select_command(needs_correction, cli_commands.BriefReviewNeedsCorrectionCommand)
+    review_status = operations.add_parser(
+        "review-status",
+        help="Read blocking review evidence for an exact accepted brief.",
+    )
+    review_status.add_argument("--brief-artifact-ref-id", type=int, required=True)
+    review_status.add_argument("--json", action="store_true")
+    _select_command(review_status, cli_commands.BriefReviewStatusCommand)
 
 
 def _add_artifact_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

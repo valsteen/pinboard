@@ -19,6 +19,7 @@ PROHIBITION: re.Pattern[str] = re.compile(
     r"\b(?:must not|do not|cannot|never|prohibition|prohibited)\b",
     re.IGNORECASE,
 )
+GIT_COMMIT_REVISION: re.Pattern[str] = re.compile(r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 
 
 class AcceptedScope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -590,8 +591,11 @@ class CheckpointReviewPackageV2(
         )
         if tuple((value.role, value.kind) for value in identities) != expected:
             raise ValueError("Checkpoint package artifact roles and kinds do not match their bindings.")
-        if self.candidate != f"working-tree-sha256:{self.candidate_snapshot.content_sha256}":
-            raise ValueError("Checkpoint candidate must match its portable snapshot digest.")
+        if self.candidate.startswith("working-tree-sha256:"):
+            if self.candidate != f"working-tree-sha256:{self.candidate_snapshot.content_sha256}":
+                raise ValueError("Working-tree checkpoint candidate must match its portable snapshot digest.")
+        elif GIT_COMMIT_REVISION.fullmatch(self.candidate) is None:
+            raise ValueError("Checkpoint candidate must be a working-tree digest or full Git commit revision.")
         _validate_checkpoint_review_basis(self.review_basis, self.checkpoint.sha256, identities)
 
 

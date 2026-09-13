@@ -12,8 +12,10 @@ from unittest.mock import patch
 
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
+    CurrentHeadCandidate,
     ensure_default_git_exclude,
     observe_checkout_identity,
+    read_current_head_candidate,
     resolve_shared_repository_root,
     resolve_source_checkout_root,
 )
@@ -103,6 +105,27 @@ class RootResolutionTest(unittest.TestCase):
             resolve_shared_repository_root(directory)
         with self.assertRaisesRegex(RootError, "PROJECT_GIT_CHECKOUT_UNAVAILABLE"):
             observe_checkout_identity(directory)
+
+    def test_current_head_candidate_reads_the_exact_base_diff(self) -> None:
+        repository = Path(tempfile.mkdtemp()).resolve()
+        self.run_git(repository, "init", "-b", "main")
+        tracked = repository / "tracked.txt"
+        tracked.write_text("base\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
+        base_revision = self.run_git(repository, "rev-parse", "HEAD").strip()
+        tracked.write_text("candidate\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(
+            repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "candidate"
+        )
+        candidate_revision = self.run_git(repository, "rev-parse", "HEAD").strip()
+        observed = read_current_head_candidate(repository, candidate_revision, base_revision)
+
+        self.assertIsInstance(observed, CurrentHeadCandidate)
+        assert isinstance(observed, CurrentHeadCandidate)
+        self.assertEqual(candidate_revision, observed.identity)
+        self.assertIn(b"-base\n+candidate", observed.diff)
 
     def test_returning_initialization_reads_an_existing_exclusion_without_write_access(self) -> None:
         repository = Path(tempfile.mkdtemp()).resolve()

@@ -155,7 +155,7 @@ def _validate_package_artifact_identities(
             work_models.ArtifactKind.EVIDENCE.value,
             f"{package.attempt_id}-{checkpoint_id}-candidate",
             1,
-        ) or package.candidate != f"working-tree-sha256:{package.candidate_snapshot.content_sha256}":
+        ):
             return _package_provenance_failure("Checkpoint package candidate snapshot identity is not canonical.")
     if (
         (package.accepted_brief.kind, package.accepted_brief.key)

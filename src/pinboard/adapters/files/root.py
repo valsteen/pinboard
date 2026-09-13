@@ -17,6 +17,26 @@ class WorkingTreeCandidate:
     diff: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class CurrentHeadCandidate:
+    identity: str
+    diff: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class DifferentHeadCandidate:
+    candidate_revision: str
+    current_head: str
+
+
+@dataclass(frozen=True, slots=True)
+class DirtyHeadCandidate:
+    candidate_revision: str
+
+
+type CommittedCandidateObservation = CurrentHeadCandidate | DifferentHeadCandidate | DirtyHeadCandidate
+
+
 def _resolve_git_path(cwd: Path, selector: str, unavailable_message: str) -> Path:
     result = subprocess.run(
         ["git", "rev-parse", "--path-format=absolute", selector],
@@ -72,6 +92,21 @@ def _git_text(cwd: Path, *arguments: str) -> str:
     return value
 
 
+def _git_bytes(cwd: Path, *arguments: str, unavailable_message: str) -> bytes:
+    result = subprocess.run(
+        ["git", *arguments],
+        cwd=cwd,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            result.stderr.decode(errors="replace").strip() or unavailable_message,
+        )
+    return result.stdout
+
+
 def observe_checkout_identity(cwd: Path) -> tuple[str, str]:
     """Return the exact current branch and HEAD revision for one selected checkout."""
 
@@ -83,19 +118,48 @@ def observe_checkout_identity(cwd: Path) -> tuple[str, str]:
 def read_working_tree_candidate(cwd: Path) -> WorkingTreeCandidate:
     """Read the binary HEAD diff without changing Git state."""
 
-    result = subprocess.run(
-        ["git", "diff", "--binary", "HEAD", "--"],
-        cwd=cwd,
-        capture_output=True,
-        check=False,
+    diff = _git_bytes(
+        cwd,
+        "diff",
+        "--binary",
+        "HEAD",
+        "--",
+        unavailable_message=f"Cannot read the working-tree diff at '{cwd}'.",
     )
-    if result.returncode != 0:
-        raise RootError(
-            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
-            result.stderr.decode(errors="replace").strip() or f"Cannot read the working-tree diff at '{cwd}'.",
-        )
-    digest = hashlib.sha256(result.stdout).hexdigest()
-    return WorkingTreeCandidate(f"working-tree-sha256:{digest}", result.stdout)
+    digest = hashlib.sha256(diff).hexdigest()
+    return WorkingTreeCandidate(f"working-tree-sha256:{digest}", diff)
+
+
+def read_current_head_candidate(
+    cwd: Path,
+    candidate_revision: str,
+    base_revision: str,
+) -> CommittedCandidateObservation:
+    """Read a clean exact-HEAD candidate from its accepted base without changing Git."""
+
+    current_head = _git_text(cwd, "rev-parse", "--verify", "HEAD")
+    if current_head != candidate_revision:
+        return DifferentHeadCandidate(candidate_revision, current_head)
+    status = _git_bytes(
+        cwd,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        unavailable_message=f"Cannot read the working-tree status at '{cwd}'.",
+    )
+    if status:
+        return DirtyHeadCandidate(candidate_revision)
+    diff = _git_bytes(
+        cwd,
+        "diff",
+        "--binary",
+        base_revision,
+        candidate_revision,
+        "--",
+        unavailable_message=f"Cannot compare accepted base '{base_revision}' with '{candidate_revision}'.",
+    )
+    return CurrentHeadCandidate(candidate_revision, diff)
 
 
 def resolve_shared_repository_root(cwd: Path) -> Path:

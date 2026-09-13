@@ -9,7 +9,15 @@ import msgspec
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, RootError
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.adapters.files.root import observe_checkout_identity, read_working_tree_candidate
+from pinboard.adapters.files.root import (
+    CurrentHeadCandidate,
+    DifferentHeadCandidate,
+    DirtyHeadCandidate,
+    WorkingTreeCandidate,
+    observe_checkout_identity,
+    read_current_head_candidate,
+    read_working_tree_candidate,
+)
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.application import ports, query_models, stored_state
 from pinboard.application.actions import discover_current_actions
@@ -657,6 +665,104 @@ def read_brief_identity(
     return identity
 
 
+def _read_checkpoint_candidate_snapshot(
+    roots: cli_commands.ResolvedRoots,
+    command: decision_models.AcceptCheckpointCommand,
+    brief: work_brief_models.WorkBrief,
+) -> CommandResult[WorkingTreeCandidate | CurrentHeadCandidate]:
+    candidate_revision = str(command.value.candidate)
+    if candidate_revision.startswith("working-tree-sha256:"):
+        try:
+            snapshot = read_working_tree_candidate(roots.source_checkout)
+        except RootError as error:
+            return CommandFailure(
+                DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                f"Cannot read the protected checkpoint candidate diff: {error}",
+                FailureDetails(
+                    observed=(FailureFact("candidate_revision", candidate_revision),),
+                    mismatches=(),
+                    retry=RetryDisposition.RETRY_SAME_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
+        if snapshot.identity == candidate_revision:
+            return snapshot
+        return CommandFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "Checkpoint acceptance requires the protected candidate to match the current binary HEAD diff.",
+            FailureDetails(
+                observed=(FailureFact("working_tree_candidate", snapshot.identity),),
+                mismatches=(FailureMismatch("candidate_revision", candidate_revision, snapshot.identity),),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    try:
+        observation = read_current_head_candidate(
+            roots.source_checkout,
+            candidate_revision,
+            brief.base_revision,
+        )
+    except RootError as error:
+        return CommandFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            f"Cannot read the protected current-HEAD candidate from the accepted brief base: {error}",
+            FailureDetails(
+                observed=(
+                    FailureFact("candidate_revision", candidate_revision),
+                    FailureFact("accepted_base_revision", brief.base_revision),
+                ),
+                mismatches=(),
+                retry=RetryDisposition.RETRY_SAME_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    match observation:
+        case CurrentHeadCandidate():
+            return observation
+        case DifferentHeadCandidate(current_head=current_head):
+            return CommandFailure(
+                DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                "Checkpoint acceptance requires a commit candidate to match the exact current HEAD.",
+                FailureDetails(
+                    observed=(
+                        FailureFact("candidate_revision", candidate_revision),
+                        FailureFact("current_head", current_head),
+                    ),
+                    mismatches=(FailureMismatch("current_head", candidate_revision, current_head),),
+                    retry=RetryDisposition.CORRECT_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
+        case DirtyHeadCandidate():
+            return CommandFailure(
+                DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                "Checkpoint acceptance requires a clean working tree for an exact current-HEAD candidate.",
+                FailureDetails(
+                    observed=(
+                        FailureFact("candidate_revision", candidate_revision),
+                        FailureFact("current_head", candidate_revision),
+                        FailureFact("working_tree_clean", False),
+                    ),
+                    mismatches=(FailureMismatch("working_tree_clean", True, False),),
+                    retry=RetryDisposition.RETRY_SAME_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def publish_checkpoint_artifacts(  # noqa: C901, PLR0912, PLR0915 - one ordered checkpoint publication boundary
     roots: cli_commands.ResolvedRoots,
     command: decision_models.AcceptCheckpointCommand,
@@ -668,40 +774,9 @@ def publish_checkpoint_artifacts(  # noqa: C901, PLR0912, PLR0915 - one ordered 
     attempt_id = str(action.capability.subject)
     checkpoint_id = str(value.checkpoint)
     attempt_root = roots.work / "attempts" / attempt_id
-    try:
-        candidate_snapshot = read_working_tree_candidate(roots.source_checkout)
-    except RootError as error:
-        return CommandFailure(
-            DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            f"Cannot read the protected checkpoint candidate diff: {error}",
-            FailureDetails(
-                observed=(FailureFact("candidate_revision", str(value.candidate)),),
-                mismatches=(),
-                retry=RetryDisposition.RETRY_SAME_INPUT,
-                effect=EffectDisposition.UNCHANGED,
-                changed_surfaces=(),
-                alternatives=(),
-            ),
-        )
-    if candidate_snapshot.identity != str(value.candidate):
-        return CommandFailure(
-            DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            "Checkpoint acceptance requires the protected candidate to match the current binary HEAD diff.",
-            FailureDetails(
-                observed=(FailureFact("working_tree_candidate", candidate_snapshot.identity),),
-                mismatches=(
-                    FailureMismatch(
-                        "candidate_revision",
-                        str(value.candidate),
-                        candidate_snapshot.identity,
-                    ),
-                ),
-                retry=RetryDisposition.CORRECT_INPUT,
-                effect=EffectDisposition.UNCHANGED,
-                changed_surfaces=(),
-                alternatives=(),
-            ),
-        )
+    candidate_snapshot = _read_checkpoint_candidate_snapshot(roots, command, brief_context.brief)
+    if isinstance(candidate_snapshot, CommandFailure):
+        return candidate_snapshot
     try:
         result_bytes = (attempt_root / "result.md").read_bytes()
         review_bytes = (attempt_root / "review.md").read_bytes()

@@ -1,6 +1,17 @@
 # Install Pinboard
 
-Pinboard supports macOS and Linux. Codex is the primary, stress-tested integration; Claude Code can load the same local plugin experimentally. Each installed plugin version uses uv once, during explicit preparation, to create its own Python 3.14 runtime at `.pinboard-runtime`. Pinboard never uses the managed project's Python environment or dependency files.
+Pinboard supports macOS and Linux. Codex is the primary, stress-tested integration; Claude Code can load the same local plugin experimentally.
+
+## Launcher and environment paths
+
+Pinboard uses these terms consistently:
+
+- `<launcher-root>` is the directory that contains `scripts/pinboard`. Every human and agent Pinboard command invokes `<launcher-root>/scripts/pinboard`.
+- `<launcher-root>/.pinboard-runtime/environment` is the installed private runtime. One explicit `--prepare-runtime` command uses uv to create it for an installed plugin version; ordinary installed commands use neither uv nor its cache.
+- `<pinboard-source>/.venv` is the development environment for a prepared Pinboard source checkout. Repository-owned `uv sync` and `uv run` commands create or use this environment only for Pinboard development; `uv build` may use uv's isolated build environment.
+- `<managed-project>` is the repository whose work Pinboard coordinates. Callers select it with `--project-root <managed-project>`; Pinboard never uses its Python environment, `.venv`, or dependency files.
+
+The launcher root may be a prepared Pinboard source checkout or an installed plugin version. A prepared source launcher uses `<pinboard-source>/.venv`; an installed launcher uses its private runtime. That runtime choice follows the resolved launcher root, not whether the caller is a human or an agent.
 
 ## Codex
 
@@ -15,7 +26,7 @@ Start a Codex task in the repository where you want to use Pinboard and ask:
 
 > Set up Pinboard here and explain how I can use it from one task or several tasks.
 
-The coding agent resolves the installed `scripts/pinboard` launcher relative to the active Pinboard skill. On first use, that launcher returns one machine-readable preparation action. The agent runs the same launcher with `--prepare-runtime`, requesting write access only to the installed plugin version when needed. Later commands use the prepared private runtime without uv or its cache.
+The coding agent discovers `<launcher-root>` relative to the active Pinboard skill and invokes `<launcher-root>/scripts/pinboard`. On first use, an unprepared installed launcher returns one machine-readable preparation action. The agent runs that same launcher with `--prepare-runtime`, requesting write access only to the installed plugin version when needed. Later commands use `<launcher-root>/.pinboard-runtime/environment` without uv or its cache.
 
 ### Allow routine project-data writes
 
@@ -41,7 +52,7 @@ Linked worktrees share the same repository-local exclusion, so repeating setup r
 
 ### Linked worktrees and custom data locations
 
-A linked worktree uses the shared repository's Pinboard data, which is outside the linked checkout. Run `pinboard root` to obtain the exact resolved location, then add a direct write rule for only that absolute `.codex/pinboard` directory under `[permissions.pinboard.filesystem]`.
+A linked worktree uses the shared repository's Pinboard data, which is outside the linked checkout. Run `<launcher-root>/scripts/pinboard root` to obtain the exact resolved location, then add a direct write rule for only that absolute `.codex/pinboard` directory under `[permissions.pinboard.filesystem]`.
 
 Do not add the shared repository as a workspace root. Do not grant access to its `.git` directory, sibling `.codex` paths, or the installed plugin cache.
 
@@ -75,7 +86,7 @@ The free Claude chat plan and Claude Code access are separate product surfaces. 
 
 ## Direct CLI use from a source checkout
 
-Humans who want to run Pinboard directly use a known source checkout rather than locating an application's installed plugin cache or creating a global alias. Prepare that source checkout's development environment once, then use its launcher and name the managed project explicitly:
+Humans who want to run Pinboard directly use a known `<pinboard-source>` checkout as `<launcher-root>` rather than locating an application's installed plugin cache or creating a global alias. Prepare `<pinboard-source>/.venv` once, then invoke the same launcher boundary and name `<managed-project>` explicitly:
 
 ```sh
 cd /path/to/pinboard
@@ -83,7 +94,7 @@ scripts/prepare-worktree
 /path/to/pinboard/scripts/pinboard --project-root /path/to/managed-project status --json
 ```
 
-The source checkout's `.venv` contains Pinboard development dependencies. It is distinct from an installed plugin's `.pinboard-runtime` and from any `.venv` belonging to the managed project.
+The source-development environment at `<pinboard-source>/.venv` contains Pinboard development dependencies. It is distinct from an installed plugin's `<launcher-root>/.pinboard-runtime/environment` and from any environment or dependency files under `<managed-project>`.
 
 ## After setup
 
@@ -101,8 +112,8 @@ For a normal primary checkout, grant only relative `.codex/pinboard`. For a link
 
 ### The launcher says runtime preparation is required
 
-An unprepared installed plugin exits before Pinboard starts and returns `pinboard-launcher-result/v1` with the exact same-launcher `--prepare-runtime` action. Run that action once with uv available and grant write access only to the launcher root's `.pinboard-runtime`. If preparation fails, keep the reported upstream diagnostics and follow its stated retry requirement; do not substitute the managed project's `.venv`, an import-path change, or an ad hoc uv command.
+An unprepared installed plugin exits before Pinboard starts and returns `pinboard-launcher-result/v1` with the exact same-launcher `--prepare-runtime` action. Run that action once with uv available and grant write access only to `<launcher-root>/.pinboard-runtime`. If preparation fails, keep the reported upstream diagnostics and follow its stated retry requirement; do not substitute `<managed-project>/.venv`, an import-path change, or an ad hoc uv command.
 
-After preparation succeeds, the same launcher uses the verified private entry point. Ordinary installed use does not invoke uv, read its cache, or mutate the prepared plugin tree. A source checkout prepared by `scripts/prepare-worktree` continues to use its separate locked development `.venv`.
+After preparation succeeds, `<launcher-root>/scripts/pinboard` uses the verified private entry point in `<launcher-root>/.pinboard-runtime/environment`. Ordinary installed use does not invoke uv, read its cache, or mutate the prepared plugin tree. A source checkout prepared by `<pinboard-source>/scripts/prepare-worktree` continues to use `<pinboard-source>/.venv`.
 
 For workflow and recovery behavior beyond installation, see [How Pinboard works](HOW_IT_WORKS.md). For system boundaries and current operating assumptions, see [Architecture](ARCHITECTURE.md).

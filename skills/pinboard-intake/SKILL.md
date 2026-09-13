@@ -27,8 +27,8 @@ An explicitly requested notification remains subordinate to this continuation. S
 
 ## Preconditions
 
-1. Resolve this plugin's executable relative to this file as `../../scripts/pinboard`. A prepared source checkout uses its development `.venv`; an installed plugin uses only its marker-backed `.pinboard-runtime`. Ordinary launch never invokes uv or consults the managed project's Python environment. If the launcher returns `pinboard-launcher-result/v1`, require `pinboard_started=false`, preserve any upstream diagnostics, and follow only its exact same-launcher `--prepare-runtime` action and retry disposition. Preparation may require one narrow write to the launcher root; never substitute an ad hoc uv command, ambient cache workaround, installed-cache locator, or managed-project `.venv`.
-2. Run `pinboard status --json` from the repository checkout.
+1. Resolve `../../scripts/pinboard` relative to the active skill. The directory two levels above the skill is `<launcher-root>`, so invoke `<launcher-root>/scripts/pinboard` for every Pinboard command. Integration-specific discovery belongs in the shared runtime adapters; the launcher-relative executable and downstream CLI contract are common. A prepared Pinboard source checkout uses `<pinboard-source>/.venv`; an installed plugin uses only its marker-backed `<launcher-root>/.pinboard-runtime/environment`. `<managed-project>` is the repository selected by `--project-root`; ordinary launch never invokes uv or consults that project's Python environment or dependency files. If the launcher returns `pinboard-launcher-result/v1`, require `pinboard_started=false`, preserve any upstream diagnostics, and follow only its exact same-launcher `--prepare-runtime` action and retry disposition. Preparation may require one narrow write to `<launcher-root>/.pinboard-runtime`; never substitute an ad hoc uv command, ambient cache workaround, installed-cache locator, or managed-project `.venv`.
+2. Run `<launcher-root>/scripts/pinboard status --json` from the repository checkout.
 3. Require authority `sqlite-v6`. Intake is a direct trusted-local project action; its task and host values are audit attribution, not credentials, and it does not require a lease.
 4. If the workflow or executable is unavailable, stop. Do not infer shared state from titles, recency, nearby tasks, branches, or old audit files.
 5. Determine the current source task identity from trusted task context. If the environment does not expose it, ask the human for the exact task ID rather than inventing one.
@@ -45,7 +45,7 @@ This conditional authority does not authorize a prerequisite relation, admission
 
 ## Prepare one proposal
 
-If any proposal field or relation shape is uncertain, read `pinboard tool-contract --operation proposal --json` and construct the artifact from its strict generated schema. This static read does not open the ledger. Do not infer the schema from an old example or inspect Pinboard source.
+If any proposal field or relation shape is uncertain, read `<launcher-root>/scripts/pinboard tool-contract --operation proposal --json` and construct the artifact from its strict generated schema. This static read does not open the ledger. Do not infer the schema from an old example or inspect Pinboard source.
 
 Create a bounded JSON proposal containing:
 
@@ -77,7 +77,7 @@ Before creating a proposal, distinguish exact prior coverage from a merely relat
 Before a first default initialization or after `SQLITE_READONLY`, follow the shared runtime adapter's [Codex protected project writes](../pinboard/references/runtime-adapters.md#codex-protected-project-writes) rule. A normal checkout uses relative `.codex/pinboard`; a linked worktree or explicit root uses only the exact absolute effective work root reported by recovery. Do not substitute the whole shared repository or treat a denied proposal write as saved intake.
 
 1. Write the proposal to a temporary file outside canonical work state.
-2. Run `pinboard proposal --file <path> --task-id <current-task> --host-id <current-host> --json`.
+2. Run `<launcher-root>/scripts/pinboard proposal --file <path> --task-id <current-task> --host-id <current-host> --json`.
 3. Treat the returned `pinboard-proposal-created/v1` record as proof that both the proposal facts and intake item persisted. Use its exact `proposal_id`, `position`, `state`, and `committed_revision`; do not scrape human output.
 4. After that success, announce the generated item summary as the readable accepted-definition view only when `<work-root>/views/items/<proposal-id>.md` is confirmed available, using a concise purpose label and a native clickable link. On every later user-facing reference to that item, keep its human-facing label linked to the confirmed view under the main Pinboard skill's shared readable-artifact rule. If the command reports a generated-view warning or the file is unavailable, preserve the successful intake receipt without a broken link; after a successful refresh or rebuild confirms availability, announce it then. Do not send a standalone re-announcement after an unchanged refresh.
 5. For explicitly requested delivery in Codex, read and follow the Codex-only `references/codex-transport.md`. For explicitly requested delivery in Claude Code, follow only the bounded optional-messaging behavior in the shared runtime adapters; do not read or apply the Codex transport leaf.

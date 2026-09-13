@@ -2,9 +2,9 @@
 
 This guide covers the supported development environment, repository checks, tests, and packaging. [Architecture](ARCHITECTURE.md) owns system boundaries and module responsibilities; [AGENTS.md](AGENTS.md) owns imperative guidance for coding agents working in this repository.
 
-## Prepare the development environment
+## Prepare the Pinboard source-development environment
 
-The repository pins Python 3.14.7 and uv 0.12.10. uv manages Python installation, the project environment, Python dependencies, the checked-in lockfile, builds, and Python command execution. msgspec provides immutable records and strict JSON decoding at repository boundaries.
+The repository pins Python 3.14.7 and uv 0.12.10. Every uv command in this guide is a Pinboard source-development operation run from `<pinboard-source>`. `uv sync` and `uv run` create or use `<pinboard-source>/.venv`; `uv build` may use uv's isolated build environment. None of these commands prepares Pinboard's installed private runtime at `<launcher-root>/.pinboard-runtime/environment` or uses an environment or dependency file from a `<managed-project>` repository. msgspec provides immutable records and strict JSON decoding at repository boundaries.
 
 After cloning the repository or creating a new implementation worktree, prepare both locked development environments:
 
@@ -12,11 +12,11 @@ After cloning the repository or creating a new implementation worktree, prepare 
 scripts/prepare-worktree
 ```
 
-The command runs `uv sync --locked` and `npm ci --prefer-offline --no-audit --no-fund` from the selected checkout. Each checkout keeps its own ignored `.venv/` and `node_modules/` directories while uv and npm may reuse their package caches. The checked-in locks make setup repeatable. jscpd 5.1.2 is the sole non-Python development dependency; it requires Node.js 18 or newer and npm, but no global installation.
+The command runs `uv sync --locked` and `npm ci --prefer-offline --no-audit --no-fund` from the selected `<pinboard-source>` checkout. Each checkout keeps its own ignored `.venv/` and `node_modules/` directories while uv and npm may reuse their package caches. The checked-in locks make setup repeatable. jscpd 5.1.2 is the sole non-Python development dependency; it requires Node.js 18 or newer and npm, but no global installation.
 
 ## Run the checks
 
-Use the installed package from the locked uv environment for every Python check:
+Use the Pinboard package installed in `<pinboard-source>/.venv` for every Python check:
 
 ```sh
 uv run --locked python -m docs.how_it_works.render --check
@@ -44,7 +44,7 @@ Every pull request and main-branch update runs the supported checks on macOS and
 
 ## Build and inspect the package
 
-Build without workspace sources, then exercise the repository launcher:
+Build without workspace sources, then exercise `<pinboard-source>/scripts/pinboard`, the same launcher boundary used from an installed plugin root:
 
 ```sh
 uv build --no-sources

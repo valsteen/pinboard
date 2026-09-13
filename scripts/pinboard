@@ -101,7 +101,7 @@ if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
             '{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["a valid locked runtime"]}'
         exit 78
     fi
-    if rm -f "$diagnostics" && : > "$ready_marker"; then
+    if rm -f "$diagnostics" && (: > "$ready_marker"); then
         launcher_result \
             "runtime-ready" \
             '["The launcher-root private runtime is ready."]' \

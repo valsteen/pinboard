@@ -142,6 +142,7 @@ def read_current_head_candidate(
         return DifferentHeadCandidate(candidate_revision, current_head)
     status = _git_bytes(
         cwd,
+        "--no-optional-locks",
         "status",
         "--porcelain=v1",
         "-z",

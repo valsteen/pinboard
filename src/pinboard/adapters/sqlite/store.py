@@ -89,6 +89,7 @@ from pinboard.application.mutation_models import (
     CommittedEffect,
     CompletionAcceptanceMutation,
     MutationAllocation,
+    OrderMutation,
     PreparationAuthorityMutation,
     ProposalCreationMutation,
     StoredStateMutation,
@@ -369,7 +370,7 @@ def _mutation_subjects(
                     assert_never(unreachable)
         case CheckpointAcceptanceMutation(decision=decision) | CompletionAcceptanceMutation(decision=decision):
             return (decision.change.item,), (decision.change.attempt,)
-        case ProposalCreationMutation() | AttemptAuthorityMutation() | PreparationAuthorityMutation():
+        case ProposalCreationMutation() | AttemptAuthorityMutation() | PreparationAuthorityMutation() | OrderMutation():
             return (), ()
         case _ as unreachable:
             assert_never(unreachable)
@@ -420,13 +421,15 @@ def _read_persistence_facts(connection: sqlite3.Connection, mutation: StoredStat
     return _PersistenceFacts(items, attempts, definitions)
 
 
-def _committed_effect_ids(  # noqa: PLR0912 - exhaustively projects every closed mutation effect
+def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every closed mutation effect
     connection: sqlite3.Connection, mutation: StoredStateMutation
 ) -> tuple[tuple[ItemId, ...], tuple[AttemptId, ...]]:
     item_ids, attempt_ids = _mutation_subjects(mutation)
     affected_items = list(item_ids)
     liveness_flip_roots: list[ItemId] = []
     match mutation:
+        case OrderMutation(change=change):
+            affected_items.extend(item for _position, item in change.changed_positions)
         case ProposalCreationMutation(decision=decision):
             affected_items.append(decision.intake_item.item_id)
             if decision.planned_replacement is not None:
@@ -1042,6 +1045,32 @@ def _persist_state_change(
     mutation: StoredStateMutation,
 ) -> DecisionFailure | None:
     match mutation:
+        case OrderMutation(change=change):
+            moved = change.changed_positions
+            # Move changed entries above the live range before assigning unique final positions.
+            for position, item in moved:
+                if (
+                    failure := require_one_changed_row(
+                        connection.execute(
+                            "UPDATE work_items SET queue_position = ? WHERE item_id = ? AND queue_position IS NOT NULL",
+                            (len(change.before) + position, item),
+                        ),
+                        "A reordered live item disappeared.",
+                    )
+                ) is not None:
+                    return failure
+            for position, item in moved:
+                if (
+                    failure := require_one_changed_row(
+                        connection.execute(
+                            "UPDATE work_items SET queue_position = ? WHERE item_id = ? AND queue_position = ?",
+                            (position, item, len(change.before) + position),
+                        ),
+                        "A reordered live item changed before final positioning.",
+                    )
+                ) is not None:
+                    return failure
+            return None
         case TransitionMutation():
             return _persist_transition(connection, facts, mutation)
         case CheckpointAcceptanceMutation():
@@ -1212,6 +1241,14 @@ class _SQLiteWorkTransaction:
             allocation.next_history_id,
             ArtifactRefId(selected_artifact_allocation.next_artifact_ref_id),
             tuple(accepted),
+        )
+
+    def read_live_order(self) -> tuple[ItemId, ...]:
+        return tuple(
+            decode_row(row, _ItemIdRow).item_id
+            for row in self.connection.execute(
+                "SELECT item_id FROM work_items WHERE queue_position IS NOT NULL ORDER BY queue_position"
+            ).fetchall()
         )
 
     def read_live_item_count(self) -> int:

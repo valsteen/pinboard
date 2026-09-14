@@ -754,6 +754,14 @@ def show_overview(store: ports.WorkStore, command: cli_commands.OverviewCommand)
         write_json(overview_projection)
         return 0
     print(f"OK WORK_OVERVIEW revision={overview_projection.revision} authority={overview_projection.authority}")
+    next_unstarted = overview_projection.next_unstarted
+    if next_unstarted is None:
+        print("next_unstarted=none")
+    else:
+        print(
+            f"next_unstarted={next_unstarted.item_id} "
+            f"live_dependencies={','.join(next_unstarted.live_dependencies) or 'none'}"
+        )
     if not overview_projection.items:
         print("live_work=none")
     for item in overview_projection.items:

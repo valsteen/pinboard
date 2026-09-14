@@ -1123,7 +1123,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual("sqlite-v6", self.run_json_cli(*common, "status")["authority"])
         overview = self.run_json_cli(*common, "overview")
         self.assertEqual("sqlite-v6", overview["authority"])
-        self.assertEqual("pinboard-overview/v4", overview["schema"])
+        self.assertEqual("pinboard-overview/v5", overview["schema"])
         actions = self.run_json_cli(*common, "actions", "--role", "observer")["actions"]
         self.assertIsInstance(actions, list)
         assert isinstance(actions, list)

@@ -1,6 +1,8 @@
 from datetime import datetime
 from typing import assert_never, overload
 
+import msgspec
+
 from pinboard.application import query_models
 from pinboard.application.actions import action_subject_ids
 from pinboard.application.artifact_publication import validate_transition_work_brief
@@ -9,6 +11,7 @@ from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     CommittedEffect,
     MutationReceipt,
+    OrderMutation,
     PreparationAuthorityMutation,
     PreparationStart,
     ProposalCreationMutation,
@@ -37,6 +40,7 @@ from pinboard.domain.identifiers import (
     TaskId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
+from pinboard.domain.ordering import OrderRequest, decide_order
 from pinboard.domain.proposal_decisions import decide_proposal_creation
 from pinboard.domain.proposal_models import (
     CreateProposalOperation,
@@ -698,3 +702,35 @@ def decide_and_commit_covered_completion(
             actor_host_id,
         )
         return transaction.commit(mutation)
+
+
+def reorder(
+    store: WorkStore,
+    expected: tuple[ItemId, ...],
+    requested: tuple[ItemId, ...],
+    actor_task_id: TaskId,
+    actor_host_id: HostId,
+    now: datetime,
+) -> DecisionResult[CommittedEffect]:
+    """Compare the complete live sequence under the write lock, then commit its permutation."""
+    with store.write() as transaction:
+        change = decide_order(transaction.read_live_order(), expected, requested)
+        if isinstance(change, DecisionFailure):
+            return change
+        allocation = transaction.read_mutation_allocation()
+        receipt = MutationReceipt(
+            decision_models.TransitionReceipt(ActionId("inspect:live-order"), None, "reorder", None, now),
+            allocation.next_history_id,
+            allocation.project_revision + 1,
+            decision_models.ActionKind.INSPECT,
+            HistorySubjectId("live-order"),
+            None,
+            decision_models.AuthorizationKind.PROJECT,
+            actor_task_id,
+            actor_host_id,
+            "pinboard-live-order/v1",
+            work_models.CanonicalJson(
+                msgspec.json.encode(OrderRequest("pinboard-live-order/v1", expected, requested), order="sorted")
+            ),
+        )
+        return transaction.commit(OrderMutation(receipt, change))

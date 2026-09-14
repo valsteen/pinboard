@@ -178,6 +178,13 @@ class InitializeCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     json: bool = False
 
 
+class OrderCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    file: Path
+    task_id: StableTaskId
+    host_id: StableHostId
+    json: bool = False
+
+
 class ProposalCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     file: Path
     task_id: StableTaskId
@@ -470,6 +477,7 @@ type CliCommand = (
     | HandoverCommand
     | InitializeCommand
     | ProposalCommand
+    | OrderCommand
     | TransitionCommand
     | DispatchCommand
     | AttemptCommand

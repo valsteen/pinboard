@@ -23,11 +23,17 @@ You decide what belongs in the product. You accept or reject proposed work, sett
 Pinboard keeps those decisions attached to the work. It:
 
 - preserves ideas without quietly starting them;
+- saves your explicit priority order and shows when the first unstarted item is blocked;
 - turns accepted direction into a stable brief;
 - carries that direction through implementation and a separate review of both the request and the change; and
 - restores the decision, current work, and evidence after an interruption.
 
 The coding agent operates that workflow and brings material choices back to you in ordinary language.
+
+To save a priority decision, the agent reads the current live order from `pinboard overview --json` and supplies both that expected sequence and its requested complete permutation to `pinboard order --file order.json --task-id TASK --host-id HOST --json`. The strict `pinboard-live-order/v1` request has `expected_order` and `requested_order` arrays. Pinboard compares the expected order inside its write transaction, commits the permutation with a receipt, refreshes only changed item views, and reports the saved order. Existing definitions, dependencies, evidence, attempts, and ownership retain their meaning.
+
+The overview identifies the first unstarted item even when a live dependency blocks it. Its `next_unstarted` context names that item and its live dependencies; the corresponding item row retains replacement and preparation facts. Available actions and parallel eligibility remain separate from priority. A changed order does not authorize starting work.
+
 
 ## Skills
 

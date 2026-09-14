@@ -221,7 +221,11 @@ When selecting work, explain:
 6. which choice genuinely requires human priority;
 7. the recommended next item and why now.
 
-Prefer, in order:
+Respect the saved live priority order from `overview` before making a heuristic recommendation. Its `next_unstarted` context identifies the first unstarted item and live dependencies. Read the matching item row for lifecycle, replacement and preparation facts. When that item is blocked, report its existing blocker rather than silently recommending a lower item. Active, review and previously started attempts remain current work, not new starts. Priority does not change dependencies, preparation authority, available actions or independent parallel eligibility.
+
+An explicit human priority decision may be saved with the discoverable `order` operation: read the current complete live sequence, supply it as `expected_order` and the complete requested permutation as `requested_order` in strict `pinboard-live-order/v1` JSON, then invoke `order --file FILE --task-id TASK --host-id HOST --json`. Preserve unmentioned relative order unless the human decided otherwise. A stale rejection requires a fresh overview and reconciliation with that same decision; a committed receipt must not be replayed because a replaceable view needs repair. Verify the saved order with a fresh overview.
+
+When the human asks for a new priority recommendation, prefer, in order:
 
 1. evidence preservation or avoidance of an irreversible transition;
 2. prerequisites required by the current product objective;

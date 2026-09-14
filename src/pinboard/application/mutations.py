@@ -19,6 +19,7 @@ from pinboard.application.mutation_models import (
     CompletionAcceptanceMutation,
     MutationAllocation,
     MutationReceipt,
+    OrderMutation,
     PreparationAuthorityMutation,
     ProposalCreationMutation,
     StoredStateMutation,
@@ -102,7 +103,7 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                     candidate=candidate,
                 ),
             )
-        case ProposalCreationMutation() | AttemptAuthorityMutation() | PreparationAuthorityMutation():
+        case ProposalCreationMutation() | AttemptAuthorityMutation() | PreparationAuthorityMutation() | OrderMutation():
             transition = mutation.receipt.transition
             return HistoryOutcome(
                 "transition-receipt/v1",

@@ -4,6 +4,7 @@ from pinboard.application import stored_state
 from pinboard.application.artifacts import EvidenceArtifactRef, ResultArtifactRef
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, HistorySubjectId, HostId, ItemId, TaskId
+from pinboard.domain.ordering import OrderChange
 from pinboard.domain.proposal_models import ProposalCreationDecision
 
 
@@ -128,8 +129,15 @@ class PreparationAuthorityMutation:
     decision: authority_models.PreparationAuthorityDecision
 
 
+@dataclass(frozen=True, slots=True)
+class OrderMutation:
+    receipt: MutationReceipt
+    change: OrderChange
+
+
 type StoredStateMutation = (
-    TransitionMutation
+    OrderMutation
+    | TransitionMutation
     | CheckpointAcceptanceMutation
     | ProposalCreationMutation
     | AttemptAuthorityMutation

@@ -1,10 +1,10 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import assert_never
 
 from pinboard.application import ports, query_models
 from pinboard.application.actions import action_subject_ids, discover_current_actions
-from pinboard.domain import decision_models
+from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
     DecisionFailure,
     EffectDisposition,
@@ -52,6 +52,51 @@ def action_identity_scope(action_id: ActionId) -> query_models.DecisionScope | N
             assert_never(unreachable)
 
 
+def completion_candidate_recovery(
+    selected: query_models.CompletionContextFacts,
+) -> CommandFailure | None:
+    """Withhold checkpointed completion until the existing submission route protects a candidate."""
+    attempt = selected.attempt
+    if not selected.checkpoints or (
+        isinstance(attempt, query_models.NonterminalAttemptContextFacts)
+        and attempt.state == work_models.AttemptState.REVIEW
+        and attempt.candidate_revision is not None
+    ):
+        return None
+    attempt_id = attempt.attempt_id
+    return CommandFailure(
+        CommandErrorCode.ACTION_LIFECYCLE_UNAVAILABLE,
+        "Checkpointed completion requires a protected review candidate. Use these commands with the same project and work roots; acquire only when authority status permits it, then submit the exact candidate and reinspect completion.",
+        FailureDetails(
+            observed=(
+                FailureFact("authority_status_command", f"attempt status --attempt-id {attempt_id} --json"),
+                FailureFact(
+                    "authority_acquisition_command",
+                    f"attempt acquire --attempt-id {attempt_id} --task-id <worker-task-id> --host-id <host-id> --ttl-seconds 3600 --json",
+                ),
+                FailureFact(
+                    "candidate_submission_action_command",
+                    f"actions --role worker --lease-id <returned-lease-id> --generation <returned-generation> --action-id submit-review:{attempt_id} --json",
+                ),
+                FailureFact(
+                    "candidate_submission_command",
+                    f"transition --action-id submit-review:{attempt_id} --subject-revision <returned-subject-revision> --authorization attempt --lease-id <returned-lease-id> --generation <returned-generation> --payload <candidate-payload-file> --json",
+                ),
+                FailureFact("candidate_payload", '{"candidate":"<exact-candidate-revision>"}'),
+                FailureFact(
+                    "completion_reinspection_command",
+                    f"actions --role project --action-id complete:{attempt_id} --json",
+                ),
+            ),
+            mismatches=(),
+            retry=RetryDisposition.REFRESH_ACTION,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
 def _failure_alternatives(
     actions: tuple[decision_models.Action, ...],
     supplied: ParsedActionReceipt,
@@ -61,6 +106,8 @@ def _failure_alternatives(
     for action in actions:
         capability = action.capability
         if not isinstance(capability, decision_models.MutationActionCapability) or capability.subject != subject:
+            continue
+        if isinstance(action, decision_models.CompleteAction):
             continue
         generation = (
             capability.command_authority.generation
@@ -112,16 +159,19 @@ def with_current_alternatives(
         if failure.details is None
         else failure.details
     )
-    return CommandFailure(
-        failure.code,
-        failure.message,
-        FailureDetails(
-            observed=details.observed,
-            mismatches=details.mismatches,
-            retry=details.retry,
-            effect=details.effect,
-            changed_surfaces=details.changed_surfaces,
-            alternatives=_failure_alternatives(current_actions, supplied),
+    return with_completion_reinspection(
+        supplied,
+        CommandFailure(
+            failure.code,
+            failure.message,
+            FailureDetails(
+                observed=details.observed,
+                mismatches=details.mismatches,
+                retry=details.retry,
+                effect=details.effect,
+                changed_surfaces=details.changed_surfaces,
+                alternatives=_failure_alternatives(current_actions, supplied),
+            ),
         ),
     )
 
@@ -440,7 +490,7 @@ def _subject_state(snapshot: LedgerSnapshot, action: decision_models.Action) -> 
             return "valid"
 
 
-def select_current_action(
+def _select_current_action(
     store: ports.WorkStore,
     supplied: ParsedActionReceipt,
 ) -> CommandResult[decision_models.Action]:
@@ -560,4 +610,43 @@ def select_current_action(
                 alternatives=alternatives,
             ),
         )
+    if isinstance(current_action, decision_models.CompleteAction):
+        completion = store.read_completion_context(current_action.capability.subject)
+        if completion is not None and (recovery := completion_candidate_recovery(completion)) is not None:
+            return recovery
     return current_action
+
+
+def with_completion_reinspection(
+    supplied: ParsedActionReceipt,
+    failure: CommandFailure,
+) -> CommandFailure:
+    if not isinstance(supplied.action, decision_models.CompleteAction):
+        return failure
+    details = failure.details
+    if details is None:
+        details = FailureDetails(
+            observed=(),
+            mismatches=(),
+            retry=RetryDisposition.REFRESH_ACTION,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        )
+    if any(fact.field == "completion_reinspection_command" for fact in details.observed):
+        return failure
+    observation = FailureFact(
+        "completion_reinspection_command",
+        f"actions --role project --action-id {decision_models.action_id(supplied.action)} --json",
+    )
+    return replace(failure, details=replace(details, observed=(*details.observed, observation)))
+
+
+def select_current_action(
+    store: ports.WorkStore,
+    supplied: ParsedActionReceipt,
+) -> CommandResult[decision_models.Action]:
+    selected = _select_current_action(store, supplied)
+    if isinstance(selected, CommandFailure):
+        return with_completion_reinspection(supplied, selected)
+    return selected

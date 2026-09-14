@@ -995,6 +995,10 @@ class CliTest(unittest.TestCase):
             },
             set(before_actions),
         )
+        focused_completion = self.run_json_cli(
+            *common, "actions", "--role", "project", "--action-id", "complete:work-a-1"
+        )
+        before_actions["complete:work-a-1"] = self.json_object(self.json_list(focused_completion["actions"])[0])
         definition, digest = test_definition(ItemId("work-a"))
         revision = self.write_item_revision(
             project / "review-item-revision.json",

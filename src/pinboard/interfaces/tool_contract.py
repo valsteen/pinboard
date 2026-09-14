@@ -18,6 +18,7 @@ from pinboard.domain.errors import (
     FailureMismatch,
     RetryDisposition,
 )
+from pinboard.domain.ordering import OrderRequest
 from pinboard.interfaces import (
     brief_source_models,
     cli_commands,
@@ -189,6 +190,7 @@ def _mutation_class(command_type: type[cli_commands.CliCommand]) -> MutationClas
         cli_commands.CloseCommand,
         cli_commands.InitializeCommand,
         cli_commands.ProposalCommand,
+        cli_commands.OrderCommand,
         cli_commands.ProjectTransitionCommand,
         cli_commands.AttemptTransitionCommand,
         cli_commands.PreparationTransitionCommand,
@@ -258,7 +260,7 @@ def _data_scope(command_type: type[cli_commands.CliCommand]) -> DataScope:
         cli_commands.RebuildViewsCommand,
     ):
         return "explicit-project-wide"
-    if command_type in (cli_commands.StatusCommand, cli_commands.OverviewCommand):
+    if command_type in (cli_commands.StatusCommand, cli_commands.OverviewCommand, cli_commands.OrderCommand):
         return "current-project"
     if command_type in (cli_commands.ActionsCommand, cli_commands.ParallelPreviewCommand):
         return "focused-or-current-project"
@@ -333,6 +335,8 @@ def _purpose(operation_id: str, variant: str) -> str:  # noqa: C901, PLR0912 - e
             return "Validate, publish, and accept one canonical non-ready blocking brief review."
         case "brief/review-status":
             return "Read the latest verified blocking review for one exact accepted brief."
+        case "order":
+            return "Atomically replace the complete live order after comparing its exact expected sequence."
         case "proposal":
             return "Preserve one proposal as an intake item."
         case "review-job":
@@ -377,6 +381,7 @@ def _roles_and_authority(  # noqa: C901 - exhaustive installed authority owner
         cli_commands.ItemReviseCommand,
         cli_commands.CloseCommand,
         cli_commands.ProposalCommand,
+        cli_commands.OrderCommand,
         cli_commands.ProjectTransitionCommand,
         cli_commands.ProjectDispatchCommand,
         cli_commands.ProjectReviewedDispatchCommand,
@@ -441,6 +446,8 @@ def _subject_and_precondition(  # noqa: C901, PLR0912 - exhaustive installed pre
         cli_commands.ProjectCorrectionDispatchCommand,
     ):
         return "attempt", "active-attempt-current-scope"
+    if command_type is cli_commands.OrderCommand:
+        return "live-order", "exact-expected-live-sequence-and-requested-permutation"
     if command_type is cli_commands.ProposalCommand:
         return "proposal", "valid-ledger"
     if command_type is cli_commands.InitializeCommand:
@@ -482,6 +489,8 @@ def _artifact_selector(command_type: type[cli_commands.CliCommand]) -> str | Non
         return "pinboard-work-brief/v2 file"
     if command_type is cli_commands.BriefReviewNeedsCorrectionCommand:
         return "pinboard-work-brief-review-needs-correction/v1 file"
+    if command_type is cli_commands.OrderCommand:
+        return "pinboard-live-order/v1 file"
     if command_type is cli_commands.ProposalCommand:
         return "pinboard-proposal/v1 file"
     if command_type in (
@@ -510,6 +519,8 @@ def _artifact_schema(command_type: type[cli_commands.CliCommand]) -> msgspec.Raw
         return None
     elif command_type is cli_commands.BriefReviewNeedsCorrectionCommand:
         model = work_brief_models.WorkBriefReviewNeedsCorrection
+    elif command_type is cli_commands.OrderCommand:
+        model = OrderRequest
     elif command_type is cli_commands.ProposalCommand:
         model = proposal_models.Proposal
     elif command_type in (

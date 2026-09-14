@@ -388,6 +388,12 @@ class OverviewItem:
 
 
 @dataclass(frozen=True, slots=True)
+class NextUnstarted:
+    item_id: str
+    live_dependencies: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class WorkOverview:
     schema: str
     authority: str
@@ -395,6 +401,7 @@ class WorkOverview:
     active_attempts: tuple[str, ...]
     items: tuple[OverviewItem, ...]
     immediate_options: tuple[str, ...]
+    next_unstarted: NextUnstarted | None
 
 
 @dataclass(frozen=True, slots=True)

@@ -37,6 +37,7 @@ from pinboard.interfaces import (
     cli_output,
     cli_parser,
     dispatch_brief,
+    ordering,
     preparation_authority,
     project_handover,
     proposal_commands,
@@ -114,6 +115,8 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
             return project_handover.export_project_handover(durable, store, command)
         case cli_commands.InitializeCommand() as command:
             return work_state_commands.initialize_state(roots, durable, store, command)
+        case cli_commands.OrderCommand() as command:
+            return ordering.reorder(durable, store, command)
         case cli_commands.ProposalCommand() as command:
             return proposal_commands.create_proposal(durable, store, command)
         case (

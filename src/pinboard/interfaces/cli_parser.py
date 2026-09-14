@@ -655,6 +655,13 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - complete top-l
     _select_command(initialize, cli_commands.InitializeCommand)
     _add_brief_parser(commands)
     _add_artifact_parser(commands)
+    order = commands.add_parser("order", help="Replace the complete live item order atomically.")
+    order.add_argument("--file", type=Path, required=True)
+    order.add_argument("--task-id", required=True)
+    order.add_argument("--host-id", required=True)
+    order.add_argument("--json", action="store_true")
+    _select_command(order, cli_commands.OrderCommand)
+
     proposal = commands.add_parser("proposal", help="Create one intake item without activating it.")
     proposal.add_argument("--file", type=Path, required=True)
     proposal.add_argument("--task-id", required=True)

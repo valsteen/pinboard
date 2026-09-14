@@ -363,6 +363,16 @@ def _review_flags(
     )
 
 
+def _next_unstarted(items: tuple[query_models.OverviewItem, ...]) -> query_models.NextUnstarted | None:
+    live_ids = frozenset(item.item_id for item in items)
+    for item in items:
+        if item.attempt_id is None and item.state not in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}:
+            return query_models.NextUnstarted(
+                item.item_id, tuple(dependency for dependency in item.depends_on if dependency in live_ids)
+            )
+    return None
+
+
 def project_overview(state: stored_state.StoredWorkState, now: datetime) -> query_models.WorkOverview:
     definitions = {value.item_id: value.definition for value in state.lifecycle.definition_revisions}
     attempts = {
@@ -440,7 +450,7 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
         )
     )
     return query_models.WorkOverview(
-        "pinboard-overview/v4",
+        "pinboard-overview/v5",
         "sqlite-v6",
         str(state.lifecycle.project.revision),
         tuple(
@@ -450,6 +460,7 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
         ),
         items,
         immediate,
+        _next_unstarted(items),
     )
 
 
@@ -533,7 +544,7 @@ def project_current_overview(facts: query_models.ProjectOverviewFacts, now: date
         }
     )
     return query_models.WorkOverview(
-        "pinboard-overview/v4",
+        "pinboard-overview/v5",
         "sqlite-v6",
         snapshot.revision,
         tuple(
@@ -541,6 +552,7 @@ def project_current_overview(facts: query_models.ProjectOverviewFacts, now: date
         ),
         items,
         immediate,
+        _next_unstarted(items),
     )
 
 

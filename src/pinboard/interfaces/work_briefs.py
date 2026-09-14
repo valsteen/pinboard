@@ -10,7 +10,7 @@ from pinboard.application.artifacts import BriefArtifactRef, WorkBriefIdentity
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import AttemptId
-from pinboard.interfaces import work_brief_models
+from pinboard.interfaces import checkpoint_compatibility_models, work_brief_models
 from pinboard.interfaces.brief_source_models import authority_selector
 from pinboard.interfaces.brief_sources import select_brief_source
 from pinboard.interfaces.errors import (
@@ -18,6 +18,10 @@ from pinboard.interfaces.errors import (
     WorkBriefErrorCode,
     WorkBriefFailure,
     WorkBriefResult,
+)
+
+type CheckpointPackage = (
+    checkpoint_compatibility_models.CheckpointReviewPackage | work_brief_models.CheckpointReviewPackageV2
 )
 
 
@@ -200,11 +204,11 @@ def validate_work_brief_review_needs_correction(
     return None
 
 
-def decode_checkpoint_review_package(data: bytes) -> WorkBriefResult[work_brief_models.CheckpointPackage]:
+def decode_checkpoint_review_package(data: bytes) -> WorkBriefResult[CheckpointPackage]:
     try:
         return msgspec.json.decode(
             data,
-            type=work_brief_models.CheckpointReviewPackage | work_brief_models.CheckpointReviewPackageV2,
+            type=checkpoint_compatibility_models.CheckpointReviewPackage | work_brief_models.CheckpointReviewPackageV2,
         )
     except msgspec.DecodeError as error:
         return WorkBriefFailure(
@@ -213,13 +217,13 @@ def decode_checkpoint_review_package(data: bytes) -> WorkBriefResult[work_brief_
         )
 
 
-def canonical_checkpoint_review_package_bytes(package: work_brief_models.CheckpointPackage) -> bytes:
+def canonical_checkpoint_review_package_bytes(package: CheckpointPackage) -> bytes:
     return _canonical_bytes(package) + b"\n"
 
 
 def decode_canonical_checkpoint_review_package(
     data: bytes,
-) -> WorkBriefResult[work_brief_models.CheckpointPackage]:
+) -> WorkBriefResult[CheckpointPackage]:
     package = decode_checkpoint_review_package(data)
     if isinstance(package, WorkBriefFailure):
         return package

@@ -74,12 +74,6 @@ def dispatch_environment_dec_hook(value_type: type, value: bool) -> FreshContext
     raise ValueError("fresh_context must be true")
 
 
-def dispatch_environment_enc_hook(value: FreshContextRequired) -> bool:
-    if isinstance(value, FreshContextRequired):
-        return True
-    raise TypeError(f"unsupported dispatch environment value: {value!r}")
-
-
 def dispatch_environment_schema_hook(value_type: type) -> dict[str, bool | str]:
     if value_type is FreshContextRequired:
         return {"type": "boolean", "const": True}

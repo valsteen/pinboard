@@ -289,7 +289,7 @@ def _decode_review_job[RawT](values: dict[str, RawT]) -> cli_commands.ReviewJobC
         return cli_commands.InitialReviewJobCommand(*common, json=arguments.json)
     if arguments.checkpoint_history_id is not None and arguments.correction_history_id is None:
         if arguments.candidate_patch is not None:
-            return cli_commands.PackageInitialRecoveryReviewJobCommand(
+            return cli_commands.CompatibilityPackageInitialRecoveryReviewJobCommand(
                 *common,
                 checkpoint_history_id=arguments.checkpoint_history_id,
                 candidate_patch=arguments.candidate_patch,
@@ -309,7 +309,7 @@ def _decode_review_job[RawT](values: dict[str, RawT]) -> cli_commands.ReviewJobC
     assert arguments.checkpoint_history_id is not None
     assert arguments.correction_history_id is not None
     if arguments.candidate_patch is not None:
-        return cli_commands.PackageCorrectionRecoveryReviewJobCommand(
+        return cli_commands.CompatibilityPackageCorrectionRecoveryReviewJobCommand(
             *common,
             checkpoint_history_id=arguments.checkpoint_history_id,
             correction_history_id=arguments.correction_history_id,
@@ -374,10 +374,13 @@ def _select_command(
                 variants = (
                     ("initial", cli_commands.InitialReviewJobCommand),
                     ("package-initial", cli_commands.PackageInitialReviewJobCommand),
-                    ("package-initial-recovery", cli_commands.PackageInitialRecoveryReviewJobCommand),
+                    ("package-initial-recovery", cli_commands.CompatibilityPackageInitialRecoveryReviewJobCommand),
                     ("correction", cli_commands.CorrectionReviewJobCommand),
                     ("package-correction", cli_commands.PackageCorrectionReviewJobCommand),
-                    ("package-correction-recovery", cli_commands.PackageCorrectionRecoveryReviewJobCommand),
+                    (
+                        "package-correction-recovery",
+                        cli_commands.CompatibilityPackageCorrectionRecoveryReviewJobCommand,
+                    ),
                 )
             case _CompoundCommand.TRANSITION:
                 variants = (

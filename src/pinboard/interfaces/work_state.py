@@ -23,7 +23,7 @@ from pinboard.adapters.sqlite.models import InitReceipt, OpenMode
 from pinboard.application import handover, ports, stored_state
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId
-from pinboard.interfaces import transition_models, work_brief_models
+from pinboard.interfaces import transition_models, work_brief_models, work_briefs
 from pinboard.interfaces.errors import (
     InitializationAfterCommittedEffectsError,
     WorkBriefErrorCode,
@@ -133,7 +133,7 @@ def _portable_reference(
 
 
 def _validate_package_artifact_identities(
-    package: work_brief_models.CheckpointPackage,
+    package: work_briefs.CheckpointPackage,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> WorkBriefResult[tuple[stored_state.ArtifactReference, stored_state.ArtifactReference]]:
@@ -170,7 +170,7 @@ def _validate_package_artifact_identities(
 
 
 def _validate_package_brief(
-    package: work_brief_models.CheckpointPackage,
+    package: work_briefs.CheckpointPackage,
     accepted_brief_reference: stored_state.ArtifactReference,
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> WorkBriefResult[work_brief_models.WorkBrief]:
@@ -191,7 +191,7 @@ def _validate_package_brief(
 
 
 def _validate_package_review_basis(
-    package: work_brief_models.CheckpointPackage,
+    package: work_briefs.CheckpointPackage,
     brief: work_brief_models.WorkBrief,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
@@ -251,7 +251,7 @@ def _checkpoint_outcome(
 
 def _validate_checkpoint_receipt(
     receipt: stored_state.StoredTransitionReceipt,
-    package: work_brief_models.CheckpointPackage,
+    package: work_briefs.CheckpointPackage,
 ) -> WorkBriefFailure | None:
     outcome = _checkpoint_outcome(receipt)
     if isinstance(outcome, WorkBriefFailure):
@@ -280,7 +280,7 @@ def validate_selected_checkpoint_review_package(
     *,
     attempt_id: str,
     item_id: str,
-) -> WorkBriefResult[work_brief_models.CheckpointPackage]:
+) -> WorkBriefResult[work_briefs.CheckpointPackage]:
     """Validate one caller-selected package without scanning retained state."""
 
     package = decode_canonical_checkpoint_review_package(package_bytes)
@@ -303,7 +303,7 @@ def validate_selected_checkpoint_review_package(
 
 
 def validate_checkpoint_package_closure(
-    package: work_brief_models.CheckpointPackage,
+    package: work_briefs.CheckpointPackage,
     artifact_references: tuple[stored_state.ArtifactReference, ...],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> WorkBriefFailure | None:
@@ -321,7 +321,7 @@ def validate_checkpoint_package_closure(
 def _validate_one_checkpoint_package(
     receipt: stored_state.StoredTransitionReceipt,
     package_reference: stored_state.ArtifactReference,
-    package: work_brief_models.CheckpointPackage,
+    package: work_briefs.CheckpointPackage,
     attempts: Mapping[str, stored_state.StoredAttempt],
     item_ids: frozenset[str],
     definition_digests: Mapping[tuple[str, int], str],
@@ -358,7 +358,7 @@ def _validate_one_checkpoint_package(
     }
     if isinstance(package, work_brief_models.CheckpointReviewPackageV2):
         return msgspec.convert(packaged, type=handover.HandoverCheckpointPackageV2, strict=True)
-    return msgspec.convert(packaged, type=handover.HandoverCheckpointPackage, strict=True)
+    return msgspec.convert(packaged, type=handover.CompatibilityHandoverCheckpointPackage, strict=True)
 
 
 def validate_checkpoint_review_packages(

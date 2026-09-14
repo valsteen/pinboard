@@ -212,10 +212,10 @@ def _mutation_class(command_type: type[cli_commands.CliCommand]) -> MutationClas
         cli_commands.ProjectCorrectionDispatchCommand,
         cli_commands.InitialReviewJobCommand,
         cli_commands.PackageInitialReviewJobCommand,
-        cli_commands.PackageInitialRecoveryReviewJobCommand,
+        cli_commands.CompatibilityPackageInitialRecoveryReviewJobCommand,
         cli_commands.CorrectionReviewJobCommand,
         cli_commands.PackageCorrectionReviewJobCommand,
-        cli_commands.PackageCorrectionRecoveryReviewJobCommand,
+        cli_commands.CompatibilityPackageCorrectionRecoveryReviewJobCommand,
     ):
         return "publishes-and-records-artifact"
     if command_type is cli_commands.BriefSourcesPlanToFileCommand:
@@ -410,10 +410,10 @@ def _subject_and_precondition(  # noqa: C901, PLR0912 - exhaustive installed pre
         cli_commands.AttemptInspectCommand,
         cli_commands.InitialReviewJobCommand,
         cli_commands.PackageInitialReviewJobCommand,
-        cli_commands.PackageInitialRecoveryReviewJobCommand,
+        cli_commands.CompatibilityPackageInitialRecoveryReviewJobCommand,
         cli_commands.CorrectionReviewJobCommand,
         cli_commands.PackageCorrectionReviewJobCommand,
-        cli_commands.PackageCorrectionRecoveryReviewJobCommand,
+        cli_commands.CompatibilityPackageCorrectionRecoveryReviewJobCommand,
     ):
         return "attempt", "attempt-exists"
     if command_type in (cli_commands.PreparationStartCommand, cli_commands.PreparationAcquireCommand):

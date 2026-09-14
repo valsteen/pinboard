@@ -535,7 +535,7 @@ class CrossBoundaryReviewBasis(
 type ReviewBasis = LocalReviewBasis | CrossBoundaryReviewBasis
 
 
-def _validate_checkpoint_review_basis(
+def validate_checkpoint_review_basis(
     review_basis: ReviewBasis,
     checkpoint_sha256: Sha256,
     identities: tuple[PortableArtifactIdentity, ...],
@@ -554,37 +554,6 @@ def _validate_checkpoint_review_basis(
     portable_keys = tuple((value.kind, value.key, value.revision) for value in identities)
     if len(portable_keys) != len(set(portable_keys)):
         raise ValueError("Checkpoint package portable artifact identities must be unique.")
-
-
-class CheckpointReviewPackage(
-    msgspec.Struct,
-    tag="pinboard-checkpoint-review-package/v1",
-    tag_field="schema",
-    frozen=True,
-    forbid_unknown_fields=True,
-):
-    attempt_id: KebabId
-    item_id: KebabId
-    candidate: NonEmptyLine
-    acceptance_evidence: NonEmptyLine
-    accepted_scope: AcceptedScope
-    checkpoint: CheckpointIdentity
-    accepted_brief: PortableArtifactIdentity
-    result: PortableArtifactIdentity
-    implementation_review: PortableArtifactIdentity
-    verdict: Literal["ready"]
-    review_basis: ReviewBasis
-
-    def __post_init__(self) -> None:
-        identities = (self.accepted_brief, self.result, self.implementation_review)
-        expected = (
-            ("accepted-brief", "brief"),
-            ("result", "result"),
-            ("implementation-review", "evidence"),
-        )
-        if tuple((value.role, value.kind) for value in identities) != expected:
-            raise ValueError("Checkpoint package artifact roles and kinds do not match their bindings.")
-        _validate_checkpoint_review_basis(self.review_basis, self.checkpoint.sha256, identities)
 
 
 class CheckpointReviewPackageV2(
@@ -622,10 +591,7 @@ class CheckpointReviewPackageV2(
                 raise ValueError("Working-tree checkpoint candidate must match its portable snapshot digest.")
         elif GIT_COMMIT_REVISION.fullmatch(self.candidate) is None:
             raise ValueError("Checkpoint candidate must be a working-tree digest or full Git commit revision.")
-        _validate_checkpoint_review_basis(self.review_basis, self.checkpoint.sha256, identities)
-
-
-type CheckpointPackage = CheckpointReviewPackage | CheckpointReviewPackageV2
+        validate_checkpoint_review_basis(self.review_basis, self.checkpoint.sha256, identities)
 
 
 class AcceptedBriefCompletionIdentity(

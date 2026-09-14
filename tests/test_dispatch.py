@@ -15,7 +15,7 @@ from unittest.mock import patch
 import msgspec
 from msgspec.structs import replace
 
-from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
+from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
@@ -27,7 +27,7 @@ from pinboard.application.dispatch_models import (
     FRESH_CONTEXT_REQUIRED,
     DispatchEnvironment,
     DispatchPermission,
-    dispatch_environment_enc_hook,
+    FreshContextRequired,
 )
 from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.domain import decision_models, work_models
@@ -44,10 +44,17 @@ from pinboard.interfaces.dispatch_brief import (
 )
 from pinboard.interfaces.errors import DispatchErrorCode, DispatchFailure, DispatchResult
 from pinboard.interfaces.work_briefs import canonical_work_brief_bytes, canonical_work_brief_review_bytes
+from tests.artifact_support import write_revision
 from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
 from tests.support import SQLITE_DIGEST, SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.work_brief_support import CHECKPOINT_ID, needs_correction_review, ready_review, work_a_brief
+
+
+def dispatch_environment_enc_hook(value: FreshContextRequired) -> bool:
+    if isinstance(value, FreshContextRequired):
+        return True
+    raise TypeError(f"unsupported dispatch environment value: {value!r}")
 
 
 def expect_dispatch_success[T](result: DispatchResult[T]) -> T:

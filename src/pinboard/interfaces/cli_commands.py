@@ -311,7 +311,9 @@ class PackageInitialReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown
     json: bool = False
 
 
-class PackageInitialRecoveryReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+# Historical recovery leaves share these argument constraints and the closed
+# ReviewJobCommand union; moving them alone would reverse that dependency.
+class CompatibilityPackageInitialRecoveryReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: StableAttemptId
     candidate_revision: Annotated[str, msgspec.Meta(min_length=1)]
     checkpoint_history_id: PositiveInt
@@ -334,7 +336,7 @@ class PackageCorrectionReviewJobCommand(msgspec.Struct, frozen=True, forbid_unkn
     json: bool = False
 
 
-class PackageCorrectionRecoveryReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class CompatibilityPackageCorrectionRecoveryReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: StableAttemptId
     candidate_revision: Annotated[str, msgspec.Meta(min_length=1)]
     checkpoint_history_id: PositiveInt
@@ -346,10 +348,10 @@ class PackageCorrectionRecoveryReviewJobCommand(msgspec.Struct, frozen=True, for
 type ReviewJobCommand = (
     InitialReviewJobCommand
     | PackageInitialReviewJobCommand
-    | PackageInitialRecoveryReviewJobCommand
+    | CompatibilityPackageInitialRecoveryReviewJobCommand
     | CorrectionReviewJobCommand
     | PackageCorrectionReviewJobCommand
-    | PackageCorrectionRecoveryReviewJobCommand
+    | CompatibilityPackageCorrectionRecoveryReviewJobCommand
 )
 
 

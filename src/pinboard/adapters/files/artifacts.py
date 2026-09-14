@@ -137,10 +137,6 @@ def _publish_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactPub
         raise ArtifactError(ArtifactErrorCode.STORAGE_IO_ERROR, str(error)) from error
 
 
-def write_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactRef:
-    return _publish_revision(roots, artifact).reference
-
-
 @dataclass(frozen=True, slots=True)
 class ArtifactRepository:
     """Concrete durable artifact access used by interface composition."""

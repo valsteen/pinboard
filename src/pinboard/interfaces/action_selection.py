@@ -172,11 +172,6 @@ def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
             ),
         )
     match command:
-        case cli_commands.ProjectTransitionCommand(subject_revision=subject_revision):
-            authorization = decision_models.AuthorizationKind.PROJECT
-            role = decision_models.Role.PROJECT
-            lease_id = None
-            generation = 0
         case cli_commands.AttemptTransitionCommand(lease_id=lease_id, subject_revision=subject_revision):
             authorization = decision_models.AuthorizationKind.ATTEMPT
             role = decision_models.Role.WORKER
@@ -186,7 +181,8 @@ def parse_action_receipt(  # noqa: C901, PLR0912, PLR0915
             role = decision_models.Role.PREPARER
             generation = command.generation
         case (
-            cli_commands.ProjectDispatchCommand(subject_revision=subject_revision)
+            cli_commands.ProjectTransitionCommand(subject_revision=subject_revision)
+            | cli_commands.ProjectDispatchCommand(subject_revision=subject_revision)
             | cli_commands.ProjectReviewedDispatchCommand(subject_revision=subject_revision)
             | cli_commands.ProjectCorrectionDispatchCommand(subject_revision=subject_revision)
         ):

@@ -31,9 +31,7 @@ def _input_model_or_none(kind: decision_models.ActionKind) -> transition_models.
             return transition_models.BlockInputPayload
         case decision_models.ActionKind.CLOSE:
             return transition_models.CloseInputPayload
-        case decision_models.ActionKind.COMPLETE:
-            return transition_models.EvidenceInputPayload
-        case decision_models.ActionKind.REOPEN:
+        case decision_models.ActionKind.COMPLETE | decision_models.ActionKind.REOPEN:
             return transition_models.EvidenceInputPayload
         case decision_models.ActionKind.RECORD_REPLACEMENT:
             return transition_models.RecordPlannedReplacementInputPayload

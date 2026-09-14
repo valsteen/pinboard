@@ -289,7 +289,9 @@ class HandoverCrossBoundaryReviewBasis(
 type HandoverReviewBasis = HandoverLocalReviewBasis | HandoverCrossBoundaryReviewBasis
 
 
-class HandoverCheckpointPackage(
+# The retained v1 export binding shares the portable identities and complete
+# handover union here; moving it alone would create a reverse import.
+class CompatibilityHandoverCheckpointPackage(
     msgspec.Struct,
     tag="pinboard-checkpoint-review-package/v1",
     tag_field="schema",
@@ -334,7 +336,7 @@ class HandoverCheckpointPackageV2(
     review_basis: HandoverReviewBasis
 
 
-type HandoverCheckpointPackageValue = HandoverCheckpointPackage | HandoverCheckpointPackageV2
+type HandoverCheckpointPackageValue = CompatibilityHandoverCheckpointPackage | HandoverCheckpointPackageV2
 
 
 class HandoverAcceptedBriefCompletionIdentity(
@@ -379,14 +381,6 @@ class HandoverCheckpointPackageCompletionIdentity(
     selector: str
     content_sha256: str
     size_bytes: int
-
-
-type HandoverCompletionPortableArtifactIdentity = (
-    HandoverAcceptedBriefCompletionIdentity
-    | HandoverTerminalResultCompletionIdentity
-    | HandoverFinalReviewCompletionIdentity
-    | HandoverCheckpointPackageCompletionIdentity
-)
 
 
 class HandoverCompletionCheckpointCoverage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

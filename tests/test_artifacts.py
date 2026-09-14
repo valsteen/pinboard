@@ -9,7 +9,7 @@ from threading import Barrier
 from typing import Never, override
 from unittest.mock import patch
 
-from pinboard.adapters.files.artifacts import ArtifactRepository, verify_reference, write_revision
+from pinboard.adapters.files.artifacts import ArtifactRepository, verify_reference
 from pinboard.adapters.files.errors import (
     ArtifactError,
     ArtifactErrorCode,
@@ -25,6 +25,7 @@ from pinboard.application.artifact_publication import publish_accepted_artifact
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, NewArtifact
 from pinboard.domain import work_models
 from pinboard.domain.errors import ArtifactAcceptanceAfterPublicationError, DecisionFailure, DecisionFailureCode
+from tests.artifact_support import write_revision
 from tests.domain_support import expect_success
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 

@@ -12,7 +12,6 @@ from unittest.mock import patch
 
 import msgspec
 
-from pinboard.adapters.files.artifacts import write_revision
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite import store as sqlite_store
@@ -28,6 +27,7 @@ from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import ArtifactRefId, ItemId, ProposalId, TaskId
 from pinboard.interfaces.cli import main
 from pinboard.interfaces.cli_output import RejectedOperationView
+from tests.artifact_support import write_revision
 from tests.decision_support import project_decision_snapshot
 
 from .support import SQLITE_NOW, complete_sqlite_state, initialize_store, test_definition

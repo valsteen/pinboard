@@ -5,7 +5,7 @@ from typing import Literal
 import msgspec
 
 from pinboard.application import dispatch_models, query_models
-from pinboard.interfaces import work_brief_models
+from pinboard.interfaces import work_briefs
 
 
 class AttemptView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -38,7 +38,7 @@ class PriorCheckpointPackage(msgspec.Struct, tag="present", tag_field="kind", fr
     artifact_ref_id: int
     path: str
     sha256: str
-    package: work_brief_models.CheckpointPackage
+    package: work_briefs.CheckpointPackage
     candidate_artifact_ref_id: int
     candidate_path: str
     candidate_sha256: str

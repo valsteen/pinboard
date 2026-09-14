@@ -135,10 +135,10 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
         case (
             cli_commands.InitialReviewJobCommand()
             | cli_commands.PackageInitialReviewJobCommand()
-            | cli_commands.PackageInitialRecoveryReviewJobCommand()
+            | cli_commands.CompatibilityPackageInitialRecoveryReviewJobCommand()
             | cli_commands.CorrectionReviewJobCommand()
             | cli_commands.PackageCorrectionReviewJobCommand()
-            | cli_commands.PackageCorrectionRecoveryReviewJobCommand()
+            | cli_commands.CompatibilityPackageCorrectionRecoveryReviewJobCommand()
         ) as command:
             return work_inspection.show_review_job(roots, durable, store, command)
         case (

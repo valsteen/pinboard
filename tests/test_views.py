@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
+from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_facts, refresh_facts
@@ -18,6 +18,7 @@ from pinboard.interfaces.work_briefs import (
     build_selected_attempt_brief_views,
     canonical_work_brief_bytes,
 )
+from tests.artifact_support import write_revision
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.work_brief_support import work_a_brief
 

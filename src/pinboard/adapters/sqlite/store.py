@@ -367,9 +367,7 @@ def _mutation_subjects(
                     return (ItemId(proposal),), ()
                 case _ as unreachable:
                     assert_never(unreachable)
-        case CheckpointAcceptanceMutation(decision=decision):
-            return (decision.change.item,), (decision.change.attempt,)
-        case CompletionAcceptanceMutation(decision=decision):
+        case CheckpointAcceptanceMutation(decision=decision) | CompletionAcceptanceMutation(decision=decision):
             return (decision.change.item,), (decision.change.attempt,)
         case ProposalCreationMutation() | AttemptAuthorityMutation() | PreparationAuthorityMutation():
             return (), ()

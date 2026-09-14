@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from pinboard.adapters.files.artifacts import write_revision
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
@@ -49,6 +48,7 @@ from pinboard.domain.proposal_models import (
     ProposalIntake,
 )
 from pinboard.interfaces.transition_input import parse_transition_input
+from tests.artifact_support import write_revision
 from tests.decision_support import (
     project_decision_snapshot,
     project_inactive_attempt_authority,

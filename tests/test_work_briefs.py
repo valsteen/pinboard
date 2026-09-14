@@ -13,7 +13,7 @@ from unittest.mock import patch
 import msgspec
 from msgspec.structs import replace
 
-from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
+from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import translate_database_error
@@ -24,7 +24,7 @@ from pinboard.application.artifacts import NewArtifact
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
-from pinboard.interfaces import work_brief_models
+from pinboard.interfaces import checkpoint_compatibility_models, work_brief_models
 from pinboard.interfaces.cli import main
 from pinboard.interfaces.errors import WorkBriefErrorCode, WorkBriefFailure, WorkBriefResult
 from pinboard.interfaces.work_briefs import (
@@ -44,6 +44,7 @@ from pinboard.interfaces.work_briefs import (
     validate_work_brief_review,
     validate_work_brief_review_needs_correction,
 )
+from tests.artifact_support import write_revision
 from tests.support import SQLITE_NOW, complete_sqlite_state, decision_facts
 from tests.work_brief_support import example_work_brief, needs_correction_review, work_a_brief, work_c_brief
 
@@ -371,13 +372,13 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         brief_review = identity("brief-review", "evidence", "brief-review")
         candidate_snapshot = identity("candidate", "evidence", "candidate")
 
-        def make_package(
+        def make_compatibility_package(
             selected_brief: work_brief_models.PortableArtifactIdentity,
             selected_result: work_brief_models.PortableArtifactIdentity,
             selected_implementation_review: work_brief_models.PortableArtifactIdentity,
             review_basis: work_brief_models.ReviewBasis,
-        ) -> work_brief_models.CheckpointReviewPackage:
-            return work_brief_models.CheckpointReviewPackage(
+        ) -> checkpoint_compatibility_models.CheckpointReviewPackage:
+            return checkpoint_compatibility_models.CheckpointReviewPackage(
                 value.attempt_id,
                 value.item_id,
                 "candidate-a",
@@ -391,8 +392,10 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 review_basis,
             )
 
-        local = make_package(accepted_brief, result, implementation_review, work_brief_models.LocalReviewBasis())
-        cross = make_package(
+        local = make_compatibility_package(
+            accepted_brief, result, implementation_review, work_brief_models.LocalReviewBasis()
+        )
+        cross = make_compatibility_package(
             accepted_brief,
             result,
             implementation_review,

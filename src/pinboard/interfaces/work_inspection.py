@@ -5,13 +5,12 @@ command output. Review-job additionally publishes and accepts its immutable
 prompt without changing lifecycle or authority.
 """
 
-import shlex
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Never, assert_never
+from typing import assert_never
 
 import msgspec
 
@@ -19,14 +18,15 @@ from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.errors import ArtifactError
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import actions as action_queries
-from pinboard.application import artifact_publication, dispatch_models, ports, queries, query_models, stored_state
-from pinboard.application.artifacts import NewArtifact
+from pinboard.application import dispatch_models, ports, queries, query_models, stored_state
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain import errors as domain_errors
 from pinboard.domain.identifiers import ActionId, ArtifactRefId, AttemptId, HistoryId, LeaseId, TaskId
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.interfaces import (
     action_selection,
+    checkpoint_compatibility,
+    checkpoint_compatibility_models,
     cli_commands,
     errors,
     transition_input,
@@ -233,20 +233,24 @@ def _review_job_history_ids(
     match command:
         case cli_commands.InitialReviewJobCommand():
             return None, None
-        case cli_commands.PackageInitialReviewJobCommand(checkpoint_history_id=checkpoint_history_id):
-            return HistoryId(checkpoint_history_id), None
-        case cli_commands.PackageInitialRecoveryReviewJobCommand(checkpoint_history_id=checkpoint_history_id):
+        case (
+            cli_commands.PackageInitialReviewJobCommand(checkpoint_history_id=checkpoint_history_id)
+            | cli_commands.CompatibilityPackageInitialRecoveryReviewJobCommand(
+                checkpoint_history_id=checkpoint_history_id
+            )
+        ):
             return HistoryId(checkpoint_history_id), None
         case cli_commands.CorrectionReviewJobCommand(correction_history_id=correction_history_id):
             return None, HistoryId(correction_history_id)
-        case cli_commands.PackageCorrectionReviewJobCommand(
-            checkpoint_history_id=checkpoint_history_id,
-            correction_history_id=correction_history_id,
-        ):
-            return HistoryId(checkpoint_history_id), HistoryId(correction_history_id)
-        case cli_commands.PackageCorrectionRecoveryReviewJobCommand(
-            checkpoint_history_id=checkpoint_history_id,
-            correction_history_id=correction_history_id,
+        case (
+            cli_commands.PackageCorrectionReviewJobCommand(
+                checkpoint_history_id=checkpoint_history_id,
+                correction_history_id=correction_history_id,
+            )
+            | cli_commands.CompatibilityPackageCorrectionRecoveryReviewJobCommand(
+                checkpoint_history_id=checkpoint_history_id,
+                correction_history_id=correction_history_id,
+            )
         ):
             return HistoryId(checkpoint_history_id), HistoryId(correction_history_id)
         case _ as unreachable:
@@ -312,163 +316,6 @@ def _read_required_evidence(path: Path, label: str) -> errors.CommandResult[tupl
     return str(path), sha256(evidence_bytes).hexdigest()
 
 
-def _candidate_patch_path(command: cli_commands.ReviewJobCommand) -> Path | None:
-    match command:
-        case cli_commands.PackageInitialRecoveryReviewJobCommand(candidate_patch=candidate_patch):
-            return candidate_patch
-        case cli_commands.PackageCorrectionRecoveryReviewJobCommand(candidate_patch=candidate_patch):
-            return candidate_patch
-        case (
-            cli_commands.InitialReviewJobCommand()
-            | cli_commands.PackageInitialReviewJobCommand()
-            | cli_commands.CorrectionReviewJobCommand()
-            | cli_commands.PackageCorrectionReviewJobCommand()
-        ):
-            return None
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-def _recover_checkpoint_candidate(
-    roots: cli_commands.ResolvedRoots,
-    durable: DurableRoots,
-    store: ports.WorkStore,
-    command: cli_commands.ReviewJobCommand,
-    facts: query_models.ReviewJobContextFacts,
-    checkpoint_history_id: HistoryId | None,
-) -> errors.CommandResult[artifact_publication.AcceptedArtifactPublication | None]:
-    candidate_patch = _candidate_patch_path(command)
-    if candidate_patch is None:
-        return None
-    if checkpoint_history_id is None:
-        raise AssertionError("Recovery commands require checkpoint history.")
-    receipt = facts.checkpoint_receipt
-    package_reference = facts.checkpoint_package_reference
-    if receipt is None or package_reference is None:
-        return _review_job_failure("Selected checkpoint history does not link an accepted package artifact.")
-    package = work_state.validate_selected_checkpoint_review_package(
-        receipt,
-        package_reference,
-        read_reference(roots.work, package_reference),
-        attempt_id=str(command.attempt_id),
-        item_id=str(facts.attempt.item_id),
-    )
-    if isinstance(package, errors.WorkBriefFailure):
-        return _review_job_failure(package.message)
-    if not isinstance(package, work_brief_models.CheckpointReviewPackage):
-        return _review_job_failure("Current checkpoint packages cannot use legacy candidate recovery.")
-    expected_sha256 = package.candidate.removeprefix("working-tree-sha256:")
-    if not package.candidate.startswith("working-tree-sha256:") or len(expected_sha256) != 64:
-        return _review_job_failure("Selected checkpoint candidate is not a recoverable working-tree identity.")
-    try:
-        patch_bytes = candidate_patch.read_bytes()
-    except OSError as error:
-        return errors.CommandFailure(
-            domain_errors.DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            f"Cannot read candidate patch: {error}",
-            domain_errors.FailureDetails(
-                observed=(domain_errors.FailureFact("candidate_patch", str(candidate_patch)),),
-                mismatches=(),
-                retry=domain_errors.RetryDisposition.CORRECT_INPUT,
-                effect=domain_errors.EffectDisposition.UNCHANGED,
-                changed_surfaces=(),
-                alternatives=(),
-            ),
-        )
-    observed_sha256 = sha256(patch_bytes).hexdigest()
-    if observed_sha256 != expected_sha256:
-        return errors.CommandFailure(
-            domain_errors.DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            "Candidate patch does not match the accepted checkpoint candidate.",
-            domain_errors.FailureDetails(
-                observed=(
-                    domain_errors.FailureFact("checkpoint_history_id", int(checkpoint_history_id)),
-                    domain_errors.FailureFact("candidate_patch", str(candidate_patch)),
-                    domain_errors.FailureFact("observed_sha256", observed_sha256),
-                ),
-                mismatches=(domain_errors.FailureMismatch("candidate_sha256", expected_sha256, observed_sha256),),
-                retry=domain_errors.RetryDisposition.CORRECT_INPUT,
-                effect=domain_errors.EffectDisposition.UNCHANGED,
-                changed_surfaces=(),
-                alternatives=(),
-            ),
-        )
-    published = artifact_publication.publish_accepted_artifact(
-        store,
-        ArtifactRepository(durable),
-        NewArtifact(
-            work_models.ArtifactKind.EVIDENCE,
-            f"{package.attempt_id}-{package.checkpoint.id}-candidate",
-            1,
-            ".patch",
-            patch_bytes,
-        ),
-        datetime.now(UTC),
-    )
-    if isinstance(published, domain_errors.DecisionFailure):
-        return errors.CommandFailure(published.code, published.message, published.details)
-    return published
-
-
-def _recovery_surfaces(
-    publication: artifact_publication.AcceptedArtifactPublication | None,
-) -> tuple[domain_errors.ChangedSurface, ...]:
-    if publication is None:
-        return ()
-    return (
-        *((domain_errors.ChangedSurface.IMMUTABLE_ARTIFACT,) if publication.artifact_created else ()),
-        *((domain_errors.ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE,) if publication.ledger_changed else ()),
-        *((domain_errors.ChangedSurface.LEDGER,) if publication.ledger_changed else ()),
-    )
-
-
-def _after_recovery_failure(
-    failure: errors.CommandFailure,
-    publication: artifact_publication.AcceptedArtifactPublication | None,
-) -> errors.CommandFailure:
-    surfaces = _recovery_surfaces(publication)
-    if not surfaces:
-        return failure
-    assert publication is not None
-    details = failure.details
-    return errors.CommandFailure(
-        failure.code,
-        failure.message,
-        domain_errors.FailureDetails(
-            observed=(
-                domain_errors.FailureFact("recovered_candidate_selector", publication.reference.selector),
-                *(() if details is None else details.observed),
-            ),
-            mismatches=() if details is None else details.mismatches,
-            retry=domain_errors.RetryDisposition.DO_NOT_RETRY,
-            effect=domain_errors.EffectDisposition.COMMITTED,
-            changed_surfaces=surfaces,
-            alternatives=() if details is None else details.alternatives,
-        ),
-    )
-
-
-def _raise_after_recovery_exception(
-    error: Exception,
-    publication: artifact_publication.AcceptedArtifactPublication | None,
-) -> Never:
-    surfaces = _recovery_surfaces(publication)
-    if not surfaces:
-        raise error
-    assert publication is not None
-    if isinstance(error, domain_errors.ArtifactAcceptanceAfterPublicationError):
-        raise domain_errors.ArtifactAcceptanceAfterPublicationError(
-            error.selector,
-            error.cause,
-            tuple(dict.fromkeys((*surfaces, *error.changed_surfaces))),
-        ) from error
-    raise domain_errors.ArtifactAcceptanceAfterPublicationError(
-        publication.reference.selector,
-        error,
-        surfaces,
-    ) from error
-
-
 def _select_prior_checkpoint_package(
     roots: cli_commands.ResolvedRoots,
     facts: query_models.ReviewJobContextFacts,
@@ -495,66 +342,14 @@ def _select_prior_checkpoint_package(
     if isinstance(package, errors.WorkBriefFailure):
         return _review_job_failure(package.message)
     candidate_reference = facts.checkpoint_candidate_reference
-    expected_candidate_sha256 = (
-        ""
-        if isinstance(package, work_brief_models.CheckpointReviewPackageV2)
-        else package.candidate.removeprefix("working-tree-sha256:")
-    )
     if isinstance(package, work_brief_models.CheckpointReviewPackageV2) and candidate_reference is None:
         return _review_job_failure("Current checkpoint package candidate evidence is incomplete.")
-    if isinstance(package, work_brief_models.CheckpointReviewPackage) and (
-        not package.candidate.startswith("working-tree-sha256:")
-        or len(expected_candidate_sha256) != 64
-        or candidate_reference is None
-    ):
-        candidate_patch = "CANDIDATE_PATCH"
-        recovery_command = shlex.join(
-            (
-                *dispatch_models.pinboard_launcher_command(),
-                "--project-root",
-                str(roots.source_checkout),
-                "--work-root",
-                str(roots.work),
-                "review-job",
-                "--attempt-id",
-                str(command.attempt_id),
-                "--candidate-revision",
-                command.candidate_revision,
-                "--checkpoint-history-id",
-                str(int(checkpoint_history_id)),
-                *(
-                    ()
-                    if not isinstance(
-                        command,
-                        (
-                            cli_commands.PackageCorrectionReviewJobCommand,
-                            cli_commands.PackageCorrectionRecoveryReviewJobCommand,
-                        ),
-                    )
-                    else ("--correction-history-id", str(command.correction_history_id))
-                ),
-                "--candidate-patch",
-                candidate_patch,
-                "--json",
-            )
+    if isinstance(package, checkpoint_compatibility_models.CheckpointReviewPackage):
+        failure = checkpoint_compatibility.require_candidate_reference(
+            roots, command, package, candidate_reference, checkpoint_history_id
         )
-        return errors.CommandFailure(
-            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            "Selected checkpoint candidate bytes are not accepted; use the exact recovery command with the matching patch.",
-            domain_errors.FailureDetails(
-                observed=(
-                    domain_errors.FailureFact("checkpoint_history_id", int(checkpoint_history_id)),
-                    domain_errors.FailureFact("accepted_candidate", package.candidate),
-                    domain_errors.FailureFact("candidate_evidence_reference", None),
-                    domain_errors.FailureFact("recovery_command", recovery_command),
-                ),
-                mismatches=(domain_errors.FailureMismatch("candidate_evidence", "accepted immutable reference", None),),
-                retry=domain_errors.RetryDisposition.CORRECT_INPUT,
-                effect=domain_errors.EffectDisposition.UNCHANGED,
-                changed_surfaces=(),
-                alternatives=(),
-            ),
-        )
+        if failure is not None:
+            return failure
     assert candidate_reference is not None
     try:
         candidate_bytes = read_reference(roots.work, candidate_reference)
@@ -565,8 +360,8 @@ def _select_prior_checkpoint_package(
         or candidate_reference.key != f"{package.attempt_id}-{package.checkpoint.id}-candidate"
         or candidate_reference.revision != 1
         or (
-            isinstance(package, work_brief_models.CheckpointReviewPackage)
-            and candidate_reference.content_sha256 != expected_candidate_sha256
+            isinstance(package, checkpoint_compatibility_models.CheckpointReviewPackage)
+            and not checkpoint_compatibility.candidate_matches(package, candidate_reference)
         )
     ):
         return _review_job_failure("Selected checkpoint candidate evidence does not match its accepted package.")
@@ -677,7 +472,7 @@ def show_review_job(  # noqa: C901, PLR0912, PLR0915 - one ordered selected-cont
     if isinstance(context, domain_errors.DecisionFailure):
         return unavailable
     facts = context
-    recovered = _recover_checkpoint_candidate(
+    recovered = checkpoint_compatibility.recover_checkpoint_candidate(
         roots,
         durable,
         store,
@@ -696,9 +491,9 @@ def show_review_job(  # noqa: C901, PLR0912, PLR0915 - one ordered selected-cont
                 correction_history_id,
             )
         except ports.WorkStoreError as error:
-            _raise_after_recovery_exception(error, recovered)
+            checkpoint_compatibility.raise_after_recovery_exception(error, recovered)
         if isinstance(refreshed, domain_errors.DecisionFailure):
-            return _after_recovery_failure(
+            return checkpoint_compatibility.after_recovery_failure(
                 errors.CommandFailure(refreshed.code, refreshed.message, refreshed.details),
                 recovered,
             )
@@ -706,11 +501,11 @@ def show_review_job(  # noqa: C901, PLR0912, PLR0915 - one ordered selected-cont
     try:
         selected = _inspect_selected_attempt(roots, facts.attempt)
     except ArtifactError as error:
-        _raise_after_recovery_exception(error, recovered)
+        checkpoint_compatibility.raise_after_recovery_exception(error, recovered)
     if isinstance(selected, errors.CommandFailure):
-        return _after_recovery_failure(selected, recovered)
+        return checkpoint_compatibility.after_recovery_failure(selected, recovered)
     if isinstance(selected, _TerminalAttemptInspection):
-        return _after_recovery_failure(unavailable, recovered)
+        return checkpoint_compatibility.after_recovery_failure(unavailable, recovered)
     attempt = selected.context
     reference = attempt.brief_reference
     brief = selected.brief
@@ -719,23 +514,23 @@ def show_review_job(  # noqa: C901, PLR0912, PLR0915 - one ordered selected-cont
         not isinstance(operation, query_models.ReviewContinuation)
         or operation.candidate_revision != command.candidate_revision
     ):
-        return _after_recovery_failure(unavailable, recovered)
+        return checkpoint_compatibility.after_recovery_failure(unavailable, recovered)
     result_path = roots.work / "attempts" / command.attempt_id / "result.md"
     result_evidence = _read_required_evidence(result_path, "result.md")
     if isinstance(result_evidence, errors.CommandFailure):
-        return _after_recovery_failure(result_evidence, recovered)
+        return checkpoint_compatibility.after_recovery_failure(result_evidence, recovered)
     rendered_result_path, digest = result_evidence
     brief_path = roots.work / reference.selector
     try:
         selected_package = _select_prior_checkpoint_package(roots, facts, command, attempt, checkpoint_history_id)
     except ArtifactError as error:
-        _raise_after_recovery_exception(error, recovered)
+        checkpoint_compatibility.raise_after_recovery_exception(error, recovered)
     if isinstance(selected_package, errors.CommandFailure):
-        return _after_recovery_failure(selected_package, recovered)
+        return checkpoint_compatibility.after_recovery_failure(selected_package, recovered)
     prior_package, package_prompt = selected_package
     selected_round = _select_review_round(roots, facts, command, correction_history_id)
     if isinstance(selected_round, errors.CommandFailure):
-        return _after_recovery_failure(selected_round, recovered)
+        return checkpoint_compatibility.after_recovery_failure(selected_round, recovered)
     review_round, correction_prompt = selected_round
     return_contract = (
         "Return a complete verdict for this exact candidate, acceptance-criterion evidence, required verification, "
@@ -774,9 +569,9 @@ def show_review_job(  # noqa: C901, PLR0912, PLR0915 - one ordered selected-cont
         ArtifactError,
         ports.WorkStoreError,
     ) as error:
-        _raise_after_recovery_exception(error, recovered)
+        checkpoint_compatibility.raise_after_recovery_exception(error, recovered)
     if isinstance(published_prompt, domain_errors.DecisionFailure):
-        return _after_recovery_failure(
+        return checkpoint_compatibility.after_recovery_failure(
             errors.CommandFailure(
                 published_prompt.code,
                 published_prompt.message,
@@ -801,7 +596,9 @@ def show_review_job(  # noqa: C901, PLR0912, PLR0915 - one ordered selected-cont
         published_prompt.native_launch,
         tuple(
             surface.value
-            for surface in dict.fromkeys((*_recovery_surfaces(recovered), *published_prompt.changed_surfaces))
+            for surface in dict.fromkeys(
+                (*checkpoint_compatibility.recovery_surfaces(recovered), *published_prompt.changed_surfaces)
+            )
         ),
         return_contract,
     )

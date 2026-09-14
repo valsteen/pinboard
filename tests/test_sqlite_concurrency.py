@@ -8,7 +8,6 @@ from datetime import timedelta
 from multiprocessing.synchronize import Barrier
 from pathlib import Path
 
-from pinboard.adapters.files.artifacts import write_revision
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -45,6 +44,7 @@ from pinboard.domain.identifiers import (
     TaskId,
 )
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
+from tests.artifact_support import write_revision
 from tests.decision_support import project_decision_snapshot
 from tests.domain_support import expect_success
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, mutation_allocation

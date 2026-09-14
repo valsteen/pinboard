@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 from msgspec.structs import replace as struct_replace
 
-from pinboard.adapters.files.artifacts import write_revision
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError, StorageError, StorageErrorCode
@@ -23,6 +22,7 @@ from pinboard.interfaces.cli import main
 from pinboard.interfaces.errors import InitializationAfterCommittedEffectsError, WorkBriefFailure, WorkBriefResult
 from pinboard.interfaces.work_briefs import canonical_work_brief_bytes, render_work_brief_markdown
 from pinboard.interfaces.work_state import initialize_work_state
+from tests.artifact_support import write_revision
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.work_brief_support import work_a_brief
 

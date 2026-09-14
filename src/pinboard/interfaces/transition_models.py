@@ -73,9 +73,6 @@ class CoveredCompleteInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fi
             raise ValueError("packages must be unique and strictly ascending by history_id")
 
 
-type CompletionInputPayload = EvidenceInputPayload | CoveredCompleteInputPayload
-
-
 class AcceptCheckpointInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     checkpoint: Identity
     candidate: NonEmptyLine

@@ -22,7 +22,7 @@ from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files import artifacts as artifact_files
 from pinboard.adapters.files import views as file_views
-from pinboard.adapters.files.artifacts import ArtifactRepository, write_revision
+from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import (
     ArtifactError,
     ArtifactErrorCode,
@@ -63,6 +63,7 @@ from pinboard.interfaces.work_briefs import (
     canonical_work_brief_review_bytes,
     decode_canonical_checkpoint_review_package,
 )
+from tests.artifact_support import write_revision
 from tests.decision_support import discover_actions
 
 from .domain_support import expect_success

@@ -7,7 +7,7 @@ description: Coordinate one pinboard for live status, next-work selection, safe 
 
 Coordinate shared work through one project-local ledger while keeping execution isolated by attempt. Any task may apply an atomic project transition. Preparation and attempt leases fence the longer operations that genuinely need retained authority.
 
-Use [the coding-agent runtime adapters](references/runtime-adapters.md) for identity, checkout isolation, subagents and reviewers, permission declarations, waiting, and optional messaging. This skill owns the shared decisions in both integrations.
+Use [the coding-agent runtime adapters](references/runtime-adapters.md) for identity, checkout isolation, subagents and reviewers, permission declarations, waiting, writing a `--file` payload, and optional messaging. This skill owns the shared decisions in both integrations.
 
 ## Confirm broad scope once
 

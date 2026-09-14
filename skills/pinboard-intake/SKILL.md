@@ -7,7 +7,7 @@ description: Preserve one newly proposed piece of project work as an intake item
 
 Convert one explicit concern into immutable proposal facts and a same-identity intake item. Do not claim that intake made it ready, active, or current work.
 
-Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) for coding-agent identity and optional messaging. Intake persistence remains the correctness boundary.
+Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) for coding-agent identity, writing a `--file` payload, and optional messaging. Intake persistence remains the correctness boundary.
 
 Intake may be standalone or embedded in ongoing Pinboard work. Standalone intake may end after its persistence receipt only when the user did not also ask to begin the new work. Before embedded intake, retain a compact continuation anchor containing the pre-intake objective, the next promised action, and the exact durable owner selector. Intake changes queue state but preserves active attempts, so return control to that anchor after persistence and any explicitly requested notification handling.
 

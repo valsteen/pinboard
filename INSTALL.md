@@ -84,6 +84,10 @@ claude --plugin-dir /path/to/pinboard
 
 The free Claude chat plan and Claude Code access are separate product surfaces. Check [Anthropic's current authentication options](https://code.claude.com/docs/en/authentication) before an authenticated smoke test because access can change.
 
+### Permission prompts
+
+The plugin ships a `PreToolUse` hook (`hooks/hooks.json`, `scripts/permission-hook.sh`) that auto-allows Bash invocations of the installed `scripts/pinboard` launcher when the subcommand is confirmed read-only against the CLI parser: `overview`, `status`, `root`, `validate`, `actions`, `input-contract`, `tool-contract`, `attempt status`, `attempt inspect`, `preparation status`, `item status`, `item definition`, `item definition-history`, `parallel preview`, `brief review-status`, `artifact verify`, and `brief-sources` without `--output-plan`. The hook only recognizes a single, unadorned invocation of that exact launcher path — any shell chaining, substitution, or redirection in the command falls through to the normal permission flow, as does every command that mutates state (`transition`, `proposal`, `dispatch`, `close`, `order`, `item revise`, lease acquisition, and so on). Those still prompt for approval by design.
+
 ## Direct CLI use from a source checkout
 
 Humans who want to run Pinboard directly use a known `<pinboard-source>` checkout as `<launcher-root>` rather than locating an application's installed plugin cache or creating a global alias. Prepare `<pinboard-source>/.venv` once, then invoke the same launcher boundary and name `<managed-project>` explicitly:

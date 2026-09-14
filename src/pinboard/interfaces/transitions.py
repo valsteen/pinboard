@@ -492,7 +492,10 @@ def transition(
     artifacts = ArtifactRepository(durable)
     decoded_input = parse_transition_input(selected_action, encoded_payload)
     if isinstance(decoded_input, TransitionInputFailure):
-        return CommandFailure(decoded_input.code, decoded_input.message, decoded_input.details)
+        return action_selection.with_completion_reinspection(
+            supplied_action_receipt,
+            CommandFailure(decoded_input.code, decoded_input.message, decoded_input.details),
+        )
     decoded_command = _resolve_transition_input(roots, store, artifacts, selected_action, decoded_input)
     if isinstance(decoded_command, CommandFailure):
         return decoded_command

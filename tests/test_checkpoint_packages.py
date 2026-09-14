@@ -741,7 +741,8 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 }
             ],
         }
-        active_action = self.project_action(fixture.common, "complete:work-a-1")
+        active_action = self.project_action(fixture.common, "continue:work-a-1")
+        active_action["action_id"] = "complete:work-a-1"
         active_payload = fixture.project / "covered-complete-active.json"
         active_payload.write_text(json.dumps(covered_value), encoding="utf-8")
         before_active_rejection = fixture.store.validated_snapshot()

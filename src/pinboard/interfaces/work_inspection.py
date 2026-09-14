@@ -938,6 +938,91 @@ def _select_requested_actions(
     )
 
 
+def _completion_action_view(
+    store: ports.WorkStore,
+    action: decision_models.CompleteAction,
+    projected: work_inspection_models.ActionView,
+) -> errors.CommandResult[work_inspection_models.ActionView]:
+    completion = store.read_completion_context(action.capability.subject)
+    if completion is None:
+        return errors.CommandFailure(
+            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            "Completion attempt disappeared; reinspect the focused action.",
+            None,
+        )
+    if (recovery := action_selection.completion_candidate_recovery(completion)) is not None:
+        return recovery
+    packages: list[work_inspection_models.CompletionPackageView] = []
+    for checkpoint in completion.checkpoints:
+        reference = checkpoint.package_reference
+        if reference is None:
+            return errors.CommandFailure(
+                domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                "An accepted checkpoint package reference is missing.",
+                None,
+            )
+        packages.append(
+            work_inspection_models.CompletionPackageView(
+                int(checkpoint.receipt.history_id),
+                reference.content_sha256,
+                int(reference.artifact_ref_id),
+                reference.selector,
+                reference.size_bytes,
+            )
+        )
+    model = transition_models.CoveredCompleteInputPayload if packages else transition_models.EvidenceInputPayload
+    attempt = completion.attempt
+    candidate = attempt.candidate_revision if isinstance(attempt, query_models.NonterminalAttemptContextFacts) else None
+    return msgspec.structs.replace(
+        projected,
+        input_contract=work_inspection_models.CompletionInputContractView(
+            action.kind.value,
+            projected.semantics,
+            msgspec.Raw(msgspec.json.encode(msgspec.json.schema(model))),
+            candidate,
+            tuple(packages),
+        ),
+    )
+
+
+def _discovered_action_view(
+    store: ports.WorkStore,
+    action: decision_models.Action,
+    focused: bool,
+) -> errors.CommandResult[work_inspection_models.ActionView | work_inspection_models.CompletionInspectionView]:
+    if isinstance(action, decision_models.CompleteAction) and not focused:
+        return work_inspection_models.CompletionInspectionView(
+            decision_models.action_id(action),
+            "inspect-completion",
+            action.capability.subject,
+            "Inspect the current completion evidence and recovery path",
+            "advisory",
+            ("actions", "--role", "project", "--action-id", decision_models.action_id(action), "--json"),
+        )
+    projected = project_action(action, include_input_contract=focused)
+    if isinstance(projected, errors.TransitionInputFailure):
+        return errors.CommandFailure(projected.code, projected.message, projected.details)
+    if isinstance(action, decision_models.CompleteAction):
+        return _completion_action_view(store, action, projected)
+    return projected
+
+
+def _present_actions(
+    action_views: tuple[work_inspection_models.ActionView | work_inspection_models.CompletionInspectionView, ...],
+    as_json: bool,
+) -> None:
+    if as_json:
+        write_json(work_inspection_models.ActionsView(action_views))
+    elif not action_views:
+        print("OK NO_ACTIONS_AVAILABLE")
+    else:
+        for view in action_views:
+            if isinstance(view, work_inspection_models.CompletionInspectionView):
+                print(" ".join(view.inspection_arguments))
+            else:
+                print(f"{view.action_id}\t{view.label}")
+
+
 def show_actions(
     store: ports.WorkStore,
     command: cli_commands.ActionsCommand | cli_commands.LeasedActionsCommand,
@@ -969,19 +1054,13 @@ def show_actions(
     if isinstance(selected_actions, errors.CommandFailure):
         return selected_actions
     available_actions = selected_actions
-    if command.json:
-        action_views: list[work_inspection_models.ActionView] = []
-        for action in available_actions:
-            projected_action = project_action(action, include_input_contract=exact_action_id is not None)
-            if isinstance(projected_action, errors.TransitionInputFailure):
-                return errors.CommandFailure(projected_action.code, projected_action.message, projected_action.details)
-            action_views.append(projected_action)
-        write_json(work_inspection_models.ActionsView(tuple(action_views)))
-    elif not available_actions:
-        print("OK NO_ACTIONS_AVAILABLE")
-    else:
-        for action in available_actions:
-            print(f"{decision_models.action_id(action)}\t{action.capability.label}")
+    action_views: list[work_inspection_models.ActionView | work_inspection_models.CompletionInspectionView] = []
+    for action in available_actions:
+        projected_action = _discovered_action_view(store, action, exact_action_id is not None)
+        if isinstance(projected_action, errors.CommandFailure):
+            return projected_action
+        action_views.append(projected_action)
+    _present_actions(tuple(action_views), command.json)
     return 0
 
 

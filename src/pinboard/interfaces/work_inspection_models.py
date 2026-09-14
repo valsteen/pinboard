@@ -124,8 +124,30 @@ class ActionView(msgspec.Struct, frozen=True, omit_defaults=True):
     input_contract: InputContractView | None = None
 
 
+class CompletionPackageView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: int
+    package_sha256: str
+    artifact_ref_id: int
+    selector: str
+    size_bytes: int
+
+
+class CompletionInputContractView(InputContractView, frozen=True, forbid_unknown_fields=True):
+    candidate: str | None
+    checkpoint_packages: tuple[CompletionPackageView, ...]
+
+
+class CompletionInspectionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    action_id: str
+    kind: Literal["inspect-completion"]
+    subject: str
+    label: str
+    effect: Literal["advisory"]
+    inspection_arguments: tuple[str, ...]
+
+
 class ActionsView(msgspec.Struct, frozen=True):
-    actions: tuple[ActionView, ...]
+    actions: tuple[ActionView | CompletionInspectionView, ...]
 
 
 class ParallelItemView(msgspec.Struct, frozen=True):

@@ -1,0 +1,33 @@
+skills/pinboard-deliver/SKILL.md
+  s_3330aa6c34ca02::t_65b47a666e30c3 12
+scripts/permission-hook.py
+  s_3330aa6c34ca02::t_4c8e0d4c17b908 1-108
+skills/pinboard/references/runtime-adapters.md
+  s_3330aa6c34ca02::t_ac3f72a4bf57c4 10
+skills/pinboard-intake/SKILL.md
+  s_3330aa6c34ca02::t_e4ac599624415d 10
+scripts/permission-hook.sh
+  s_3330aa6c34ca02::t_58251ac5921f24 1-7
+skills/pinboard/SKILL.md
+  s_3330aa6c34ca02::t_9ce4cfa4c44a7e 10
+hooks/hooks.json
+  s_3330aa6c34ca02::t_52aee0a4874837 1-16
+INSTALL.md
+  s_3330aa6c34ca02::t_901e56b923f204 87-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "a8223cc781da2e7685717d307e0e77f9c13f4877",
+  "prompts": {},
+  "sessions": {
+    "s_3330aa6c34ca02": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dd885191-404f-45e6-b072-0bd3df6a1908",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Vincent Alsteen <vincent.alsteen@deliveryhero.com>"
+    }
+  }
+}

@@ -28,7 +28,7 @@ def storage_failure_details(
         if roots is None:
             raise AssertionError("A SQLite read-only failure requires resolved project roots.") from error
         permission_work_root = (
-            ".codex/pinboard"
+            ".pinboard"
             if not roots.explicit_work_root and roots.source_checkout == roots.shared_repository
             else str(roots.work)
         )
@@ -41,8 +41,8 @@ def storage_failure_details(
                 "permission_recovery",
                 "For routine Pinboard commands, select a Codex permission profile extending ':workspace' whose "
                 f"narrow filesystem write rule grants access to '{permission_work_root}', the effective work root for "
-                "this command. A normal checkout uses the relative '.codex/pinboard' rule; a linked worktree uses "
-                "only the resolved absolute shared-repository '.codex/pinboard' directory; an explicit '--work-root' "
+                "this command. A normal checkout uses the relative '.pinboard' rule; a linked worktree uses "
+                "only the resolved absolute shared-repository '.pinboard' directory; an explicit '--work-root' "
                 "uses that exact directory. Remove legacy 'sandbox_mode' and 'sandbox_workspace_write' settings "
                 "because they override permission profiles. For fresh default initialization, approve the exact "
                 "'pinboard init' command once so it can also update '.git/info/exclude'; do not grant persistent "
@@ -259,7 +259,7 @@ def initialization_failure_details(
         *(
             (
                 FailureFact("git_exclude_path", str(error.git_exclude_path)),
-                FailureFact("git_exclude_entry", "/.codex/pinboard/"),
+                FailureFact("git_exclude_entry", "/.pinboard/"),
             )
             if error.git_exclude_path is not None
             else ()

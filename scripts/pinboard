@@ -119,9 +119,15 @@ fi
 
 export PYTHONDONTWRITEBYTECODE=1
 if [ -x "$plugin_root/.venv/bin/pinboard" ]; then
+    if [ "$#" -eq 1 ] && [ "$1" = "--permission-hook" ]; then
+        exec "$plugin_root/.venv/bin/python" "$plugin_root/scripts/permission-hook.py" "$plugin_root/scripts/pinboard"
+    fi
     exec "$plugin_root/.venv/bin/pinboard" "$@"
 fi
 if [ -f "$ready_marker" ] && [ -x "$runtime_executable" ]; then
+    if [ "$#" -eq 1 ] && [ "$1" = "--permission-hook" ]; then
+        exec "$runtime_environment/bin/python" "$plugin_root/scripts/permission-hook.py" "$plugin_root/scripts/pinboard"
+    fi
     exec "$runtime_executable" "$@"
 fi
 

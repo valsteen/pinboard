@@ -221,19 +221,15 @@ class DispatchTest(unittest.TestCase):
             )
         )
 
-        self.assertTrue(prompt.startswith("Use $pinboard-deliver for this repository attempt.\n"))
-        self.assertNotIn("$deliver", prompt)
         self.assertIn(f"Checkpoint: {CHECKPOINT_ID}", prompt)
         self.assertIn(f"Canonical brief: {path}", prompt)
         self.assertIn("- Fresh context: required", prompt)
         self.assertIn("- Runtime host: local", prompt)
-        self.assertIn("Worker task identity: read `CODEX_THREAD_ID` after launch", prompt)
-        self.assertIn("Do not use `CODEX_SESSION_ID`", prompt)
         self.assertIn(f"- Result: {project / 'attempts' / value.attempt_id / 'result.md'}", prompt)
         self.assertIn(f"- Blocker: {project / 'attempts' / value.attempt_id / 'blocker.md'}", prompt)
         self.assertIn(
             f"pinboard --project-root {project} --work-root {project} attempt acquire --attempt-id {value.attempt_id} "
-            '--task-id "$CODEX_THREAD_ID" --host-id local --ttl-seconds 3600 --json',
+            "--task-id <exact-worker-task-id> --host-id local --ttl-seconds 3600 --json",
             prompt,
         )
         self.assertIn(
@@ -1427,7 +1423,7 @@ class DispatchTest(unittest.TestCase):
             ready = json.loads(ready_stdout)
             prompt = (roots.work_root / ready["prompt_reference"]["selector"]).read_text(encoding="utf-8")
             shared_database_exists = (roots.work_root / "state.sqlite3").is_file()
-            duplicate_ledger_exists = (linked / ".codex" / "pinboard").exists()
+            duplicate_ledger_exists = (linked / ".pinboard").exists()
             linked_checkout = str(linked)
 
         self.assertEqual(0, result, stderr)

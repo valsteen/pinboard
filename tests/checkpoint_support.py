@@ -296,7 +296,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         project = Path(tempfile.mkdtemp()).resolve()
         brief = self.local_brief(project) if local else work_a_brief(project)
         subprocess.run(["git", "init", "-b", "main"], cwd=project, check=True, capture_output=True)
-        (project / ".git" / "info" / "exclude").write_text("/.codex/pinboard/\n", encoding="utf-8")
+        (project / ".git" / "info" / "exclude").write_text("/.pinboard/\n", encoding="utf-8")
         tracked = project / "tracked.txt"
         tracked.write_text("base\n", encoding="utf-8")
         base_revision = self.commit_all(project, "base")

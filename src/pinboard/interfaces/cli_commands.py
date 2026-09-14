@@ -178,6 +178,10 @@ class InitializeCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     json: bool = False
 
 
+class MigrateStorageCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    json: bool = False
+
+
 class OrderCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     file: Path
     task_id: StableTaskId
@@ -476,6 +480,7 @@ type CliCommand = (
     | ArtifactVerifyCommand
     | HandoverCommand
     | InitializeCommand
+    | MigrateStorageCommand
     | ProposalCommand
     | OrderCommand
     | TransitionCommand

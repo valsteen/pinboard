@@ -7,7 +7,6 @@ from typing import BinaryIO
 
 from pinboard.adapters.files.errors import RootError, RootErrorCode
 
-PINBOARD_GIT_EXCLUDE = b"/.codex/pinboard/"
 _READ_CHUNK_BYTES = 64 * 1024
 
 
@@ -167,7 +166,7 @@ def resolve_shared_repository_root(cwd: Path) -> Path:
     return _resolve_git_common_directory(cwd).parent
 
 
-def _exclude_contains_pinboard_line(stream: BinaryIO) -> tuple[bool, bool]:
+def _exclude_contains_pinboard_line(stream: BinaryIO, entry: bytes) -> tuple[bool, bool]:
     """Scan one Git exclude in bounded memory and report whether append needs a separator."""
 
     stream.seek(0)
@@ -178,20 +177,20 @@ def _exclude_contains_pinboard_line(stream: BinaryIO) -> tuple[bool, bool]:
         for byte in chunk:
             last_byte = byte
             if byte in (10, 13):
-                if line_matches and line_length == len(PINBOARD_GIT_EXCLUDE):
+                if line_matches and line_length == len(entry):
                     return True, False
                 line_matches = True
                 line_length = 0
                 continue
-            if line_length >= len(PINBOARD_GIT_EXCLUDE) or byte != PINBOARD_GIT_EXCLUDE[line_length]:
+            if line_length >= len(entry) or byte != entry[line_length]:
                 line_matches = False
             line_length += 1
-    if line_matches and line_length == len(PINBOARD_GIT_EXCLUDE):
+    if line_matches and line_length == len(entry):
         return True, False
     return False, last_byte is not None and last_byte not in (10, 13)
 
 
-def ensure_default_git_exclude(shared_repository_root: Path) -> Path | None:
+def ensure_git_exclude(shared_repository_root: Path, entry: bytes) -> Path | None:
     """Exclude the default work root and return the path only when this call changed it."""
 
     try:
@@ -204,7 +203,7 @@ def ensure_default_git_exclude(shared_repository_root: Path) -> Path | None:
     try:
         try:
             with exclude.open("rb") as stream:
-                contains_line, _ = _exclude_contains_pinboard_line(stream)
+                contains_line, _ = _exclude_contains_pinboard_line(stream, entry)
         except FileNotFoundError:
             pass
         else:
@@ -212,10 +211,10 @@ def ensure_default_git_exclude(shared_repository_root: Path) -> Path | None:
                 return None
         with exclude.open("a+b") as stream:
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-            contains_line, needs_separator = _exclude_contains_pinboard_line(stream)
+            contains_line, needs_separator = _exclude_contains_pinboard_line(stream, entry)
             if contains_line:
                 return None
-            stream.write((b"\n" if needs_separator else b"") + PINBOARD_GIT_EXCLUDE + b"\n")
+            stream.write((b"\n" if needs_separator else b"") + entry + b"\n")
     except OSError as error:
         raise RootError(
             RootErrorCode.PROJECT_GIT_EXCLUDE_UNAVAILABLE,

@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/pinboard",
+            "args": ["--permission-hook"],
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

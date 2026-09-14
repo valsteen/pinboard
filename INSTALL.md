@@ -30,7 +30,7 @@ The coding agent discovers `<launcher-root>` relative to the active Pinboard ski
 
 ### Allow routine project-data writes
 
-For normal commands from a primary checkout, create a named [Codex permission profile](https://learn.chatgpt.com/docs/permissions) that grants write access only to Pinboard's repository-local data:
+Retain the permissions already granted to the workspace. If `.pinboard` is writable in a primary checkout, no additional grant is needed. If access is unavailable, the following [Codex permission profile](https://learn.chatgpt.com/docs/permissions) adds only the exact Pinboard data path to the existing workspace boundary:
 
 ```toml
 default_permissions = "pinboard"
@@ -39,20 +39,20 @@ default_permissions = "pinboard"
 extends = ":workspace"
 
 [permissions.pinboard.filesystem.":workspace_roots"]
-".codex/pinboard" = "write"
+".pinboard" = "write"
 ```
 
-Remove legacy `sandbox_mode` and `sandbox_workspace_write` settings before relying on this profile because they override permission profiles.
+When choosing this profile, remove legacy `sandbox_mode` and `sandbox_workspace_write` settings that override it. If existing access is sufficient, retain the current configuration.
 
 ### First setup
 
-The first default initialization adds only `/.codex/pinboard/` to the repository's local `.git/info/exclude`, then creates the Pinboard data directory. Approve that exact initialization once; it needs the narrow Git-metadata write only for this setup. Pinboard does not edit `.gitignore`, and sibling `.codex` paths remain visible to Git.
+The first default initialization adds only `/.pinboard/` to the repository's local `.git/info/exclude`, then creates the Pinboard data directory. Approve that exact initialization once; it needs the narrow Git-metadata write only for this setup. Pinboard does not edit `.gitignore`, and sibling `.codex` paths remain visible to Git.
 
 Linked worktrees share the same repository-local exclusion, so repeating setup remains idempotent. If setup stops after making a durable change, Pinboard reports which surface changed so the coding agent can inspect it before retrying.
 
 ### Linked worktrees and custom data locations
 
-A linked worktree uses the shared repository's Pinboard data, which is outside the linked checkout. Run `<launcher-root>/scripts/pinboard root` to obtain the exact resolved location, then add a direct write rule for only that absolute `.codex/pinboard` directory under `[permissions.pinboard.filesystem]`.
+A linked worktree uses the shared repository's Pinboard data, which is outside the linked checkout. Run `<launcher-root>/scripts/pinboard root` to obtain the exact resolved location, then add a direct write rule for only that absolute `.pinboard` directory under `[permissions.pinboard.filesystem]`.
 
 Do not add the shared repository as a workspace root. Do not grant access to its `.git` directory, sibling `.codex` paths, or the installed plugin cache.
 
@@ -84,6 +84,10 @@ claude --plugin-dir /path/to/pinboard
 
 The free Claude chat plan and Claude Code access are separate product surfaces. Check [Anthropic's current authentication options](https://code.claude.com/docs/en/authentication) before an authenticated smoke test because access can change.
 
+### Permission prompts
+
+The plugin ships a `PreToolUse` hook (`hooks/hooks.json`, `scripts/permission-hook.py`) that runs through the launcher's prepared Python environment and auto-allows direct launcher calls for confirmed read-only routes. It accepts the documented `PINBOARD_RUNTIME=claude` and root-selection prefixes. Pinboard-associated heredocs and command substitution receive a bounded denial: use the Write tool for input files, resolve exact identities separately, and invoke the launcher directly. Unrelated heredocs, ordinary shell composition, redirection, `brief-sources --output-plan`, migration, and other state-changing routes retain normal permission handling.
+
 ## Direct CLI use from a source checkout
 
 Humans who want to run Pinboard directly use a known `<pinboard-source>` checkout as `<launcher-root>` rather than locating an application's installed plugin cache or creating a global alias. Prepare `<pinboard-source>/.venv` once, then invoke the same launcher boundary and name `<managed-project>` explicitly:
@@ -98,6 +102,14 @@ The source-development environment at `<pinboard-source>/.venv` contains Pinboar
 
 ## After setup
 
+### Upgrade an existing project
+
+The default data directory is `.pinboard` in the shared repository. Fresh setup creates no `.codex` directory. If a state command discovers `.codex/pinboard` without `.pinboard`, it returns `pinboard-storage-recovery/v1` and the exact rooted `migrate-storage --json` action. The agent runs that action through the same launcher, then retries the original command; reinstalling the plugin does not scan or relocate projects.
+
+During this one-time move, no other Pinboard command may access the project. The action verifies the current SQLite schema, moves the existing tree, creates `.codex/pinboard` as a relative link to `../.pinboard`, and ensures exact local Git exclusions for the data directory and link. Ledger identity, revision, and immutable bytes remain unchanged. Old absolute evidence links remain usable, and unrelated `.codex` content remains intact.
+
+Migration reports the exact paths changed by an incomplete attempt and gives the same rooted action for recovery. Repeating the action with a matching alias changes nothing; invoking it on an existing neutral ledger can restore a missing legacy alias. Independent old and new roots, unexpected entries, and custom `--work-root` selections are rejected rather than overwritten. Correct a reported conflict before continuing. This operation changes filesystem location only, not the SQLite schema.
+
 After the first successful setup, Pinboard may point to the optional Repository Readiness, Slop Cleanup, and Maintaining Agent Guidance skills. It does not run them, create work, or change configuration.
 
 Pinboard may also recommend the `model_auto_compact_token_limit_scope` setting for long Codex tasks when that user setting is absent. It reads `~/.codex/config.toml`, or the equivalent under `CODEX_HOME`, but never edits user or project Codex configuration. A trusted project's `.codex/config.toml` can override the user default. Returning to an existing Pinboard, a failed setup, or an unreadable or malformed configuration produces no recommendation.
@@ -108,7 +120,7 @@ Pinboard may also recommend the `model_auto_compact_token_limit_scope` setting f
 
 When a routine Codex operation lacks the required permission, Pinboard reports `SQLITE_READONLY`, the affected location and operation, whether anything changed, and the exact recovery path.
 
-For a normal primary checkout, grant only relative `.codex/pinboard`. For a linked worktree or explicit data location, grant only the exact absolute location reported by Pinboard. If the failure says an immutable artifact was already published, inspect current state before retrying rather than replaying the operation.
+For a normal primary checkout, grant only relative `.pinboard`. For a linked worktree or explicit data location, grant only the exact absolute location reported by Pinboard. If the failure says an immutable artifact was already published, inspect current state before retrying rather than replaying the operation.
 
 ### The launcher says runtime preparation is required
 

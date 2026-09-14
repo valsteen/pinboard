@@ -14,7 +14,7 @@ from unittest.mock import patch
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
-    ensure_default_git_exclude,
+    ensure_git_exclude,
     observe_checkout_identity,
     read_current_head_candidate,
     resolve_shared_repository_root,
@@ -24,6 +24,20 @@ from pinboard.interfaces.cli import main
 
 
 class RootResolutionTest(unittest.TestCase):
+    def test_fresh_default_is_neutral_and_legacy_requires_explicit_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory).resolve()
+            result, output, error = self.run_cli("--project-root", str(repository), "init", "--json")
+            self.assertEqual((0, ""), (result, error))
+            self.assertTrue((repository / ".pinboard" / "state.sqlite3").is_file(), output)
+            self.assertFalse((repository / ".codex").exists())
+            (repository / ".codex").mkdir()
+            (repository / ".pinboard").rename(repository / ".codex" / "pinboard")
+            result, output, _ = self.run_cli("--project-root", str(repository), "status", "--json")
+            self.assertNotEqual(0, result)
+            self.assertIn("migrate", output)
+            self.assertFalse((repository / ".pinboard").exists())
+
     def run_git(self, cwd: Path, *args: str) -> str:
         return subprocess.run(
             ["git", *args],
@@ -75,7 +89,7 @@ class RootResolutionTest(unittest.TestCase):
             {
                 "source_checkout_root": str(linked.resolve()),
                 "shared_repository_root": str(repository.resolve()),
-                "work_root": str(repository.resolve() / ".codex" / "pinboard"),
+                "work_root": str(repository.resolve() / ".pinboard"),
             },
             json.loads(stdout),
         )
@@ -86,10 +100,10 @@ class RootResolutionTest(unittest.TestCase):
         exclude = repository / ".git" / "info" / "exclude"
         exclude_mtime = exclude.stat().st_mtime_ns
         self.assertEqual(0, main(("--project-root", str(linked), "init")))
-        self.assertTrue((repository / ".codex" / "pinboard" / "state.sqlite3").is_file())
-        self.assertFalse((linked / ".codex" / "pinboard").exists())
+        self.assertTrue((repository / ".pinboard" / "state.sqlite3").is_file())
+        self.assertFalse((linked / ".pinboard").exists())
         self.assertEqual(
-            original_exclude + b"/.codex/pinboard/\n",
+            original_exclude + b"/.pinboard/\n",
             exclude.read_bytes(),
         )
         self.assertEqual(exclude_mtime, exclude.stat().st_mtime_ns)
@@ -136,10 +150,10 @@ class RootResolutionTest(unittest.TestCase):
         repository = Path(tempfile.mkdtemp()).resolve()
         self.run_git(repository, "init", "-b", "main")
         exclude = repository / ".git" / "info" / "exclude"
-        exclude.write_bytes(b"/.codex/pinboard/\n")
+        exclude.write_bytes(b"/.pinboard/\n")
         exclude.chmod(0o400)
         try:
-            self.assertIsNone(ensure_default_git_exclude(repository))
+            self.assertIsNone(ensure_git_exclude(repository, b"/.pinboard/"))
         finally:
             exclude.chmod(0o600)
 
@@ -178,11 +192,11 @@ class RootResolutionTest(unittest.TestCase):
             patch.object(Path, "open", synchronized_open),
             ThreadPoolExecutor(max_workers=2) as executor,
         ):
-            results = tuple(executor.map(ensure_default_git_exclude, (repository, linked)))
+            results = tuple(executor.map(ensure_git_exclude, (repository, linked), (b"/.pinboard/", b"/.pinboard/")))
 
         self.assertEqual(1, results.count(exclude))
         self.assertEqual(1, results.count(None))
-        self.assertEqual(1, exclude.read_text(encoding="utf-8").splitlines().count("/.codex/pinboard/"))
+        self.assertEqual(1, exclude.read_text(encoding="utf-8").splitlines().count("/.pinboard/"))
 
     def test_store_free_routes_do_not_validate_an_unused_external_work_root(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

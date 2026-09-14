@@ -9,7 +9,7 @@ Deliver the accepted checkpoint of one active attempt: implement its complete sc
 
 Do not initialize delivery for a request that only asks to read named context, get oriented, or wait. Read only that bounded context and leave lifecycle, authority, source planning, dispatch, and review untouched until the human requests revision or implementation.
 
-Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) for identity, checkout isolation, worker and reviewer launch, permission declarations, waiting, and writing a `--file` payload. This skill continues to own delivery semantics.
+Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) for identity, checkout isolation, worker and reviewer launch, permission declarations, and waiting. This skill continues to own delivery semantics.
 
 Direct human invocation to start a named Pinboard item is not an attempt-establishment failure. When no already prepared active attempt was supplied, follow the main skill's [human task-start route](../pinboard/SKILL.md#route-human-task-starts-through-pinboard): give its one gentle clarification, suggest ordinary Pinboard wording, and continue through Pinboard when the item and outcome are clear. Do not enter the worker checks merely to surface missing internal preparation, and do not stop after explaining the route when Pinboard can continue.
 

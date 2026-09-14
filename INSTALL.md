@@ -86,7 +86,7 @@ The free Claude chat plan and Claude Code access are separate product surfaces. 
 
 ### Permission prompts
 
-The plugin ships a `PreToolUse` hook (`hooks/hooks.json`, `scripts/permission-hook.sh`) that auto-allows Bash invocations of the installed `scripts/pinboard` launcher when the subcommand is confirmed read-only against the CLI parser: `overview`, `status`, `root`, `validate`, `actions`, `input-contract`, `tool-contract`, `attempt status`, `attempt inspect`, `preparation status`, `item status`, `item definition`, `item definition-history`, `parallel preview`, `brief review-status`, `artifact verify`, and `brief-sources` without `--output-plan`. The hook only recognizes a single, unadorned invocation of that exact launcher path — any shell chaining, substitution, or redirection in the command falls through to the normal permission flow, as does every command that mutates state (`transition`, `proposal`, `dispatch`, `close`, `order`, `item revise`, lease acquisition, and so on). Those still prompt for approval by design.
+The plugin ships a `PreToolUse` hook (`hooks/hooks.json`, `scripts/permission-hook.py`) that auto-allows direct invocations of the installed launcher for CLI routes confirmed to be read-only. It accepts the documented `PINBOARD_RUNTIME=claude` and root-selection prefixes. Shell composition, redirection, `brief-sources --output-plan`, and every state-changing route remain in Claude's normal permission flow.
 
 ## Direct CLI use from a source checkout
 

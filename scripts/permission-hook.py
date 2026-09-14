@@ -1,21 +1,14 @@
-"""PreToolUse hook: auto-allow read-only pinboard CLI invocations.
-
-Confirmed read-only against src/pinboard/interfaces/cli_parser.py: each listed
-command either only reads SQLite state, reads a static schema, or (validate,
-artifact verify) explicitly does not mutate anything. Everything else is left
-to the normal permission flow.
-"""
+"""Auto-allow read-only Pinboard CLI invocations in Claude Code."""
 
 import json
 import shlex
 import sys
+from typing import Final
 
-# Any read-only pinboard invocation is a single, unadorned command. Reject
-# outright if the raw string carries shell chaining, substitution, or
-# redirection, so a mutating command cannot ride along after a safe prefix.
-DANGEROUS_SUBSTRINGS = ("&&", "||", ";", "|", chr(96), "$(", "\n", ">", "<")
+DANGEROUS_SUBSTRINGS: Final = ("&", "||", ";", "|", "`", "$(", "\n", ">", "<")
+ROOT_OPTIONS: Final = frozenset({"--project-root", "--work-root"})
 
-SAFE_PREFIXES = (
+SAFE_ROUTES: Final = (
     ("overview",),
     ("status",),
     ("root",),
@@ -35,73 +28,80 @@ SAFE_PREFIXES = (
 )
 
 
-def allow(reason):
+def _allow() -> None:
     print(
         json.dumps(
             {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "allow",
-                    "permissionDecisionReason": reason,
+                    "permissionDecisionReason": "Read-only Pinboard inspection command",
                 }
             }
         )
     )
 
 
-def pass_through():
-    print("{}")
-
-
-def has_prefix(tokens, prefix):
-    return tuple(tokens[: len(prefix)]) == prefix
-
-
-def main():
-    launcher = sys.argv[1]
-
+def _read_command() -> str | None:
     try:
-        data = json.load(sys.stdin)
-    except Exception:
-        pass_through()
-        return
+        data: object = json.load(sys.stdin)
+    except json.JSONDecodeError, OSError:
+        return None
 
-    if data.get("tool_name") != "Bash":
-        pass_through()
-        return
+    if not isinstance(data, dict) or data.get("tool_name") != "Bash":
+        return None
+    tool_input = data.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    command = tool_input.get("command")
+    return command if isinstance(command, str) and command.strip() else None
 
-    command = data.get("tool_input", {}).get("command", "")
-    if not isinstance(command, str) or not command.strip():
-        pass_through()
-        return
 
+def _pinboard_arguments(tokens: list[str], launcher: str) -> list[str] | None:
+    if tokens and tokens[0] == "PINBOARD_RUNTIME=claude":
+        tokens = tokens[1:]
+    if not tokens or tokens[0] != launcher:
+        return None
+
+    arguments = tokens[1:]
+    while arguments and arguments[0] in ROOT_OPTIONS:
+        if len(arguments) < 2:
+            return None
+        arguments = arguments[2:]
+    return arguments
+
+
+def _matches(arguments: list[str], route: tuple[str, ...]) -> bool:
+    return tuple(arguments[: len(route)]) == route
+
+
+def _selects_output_plan(argument: str) -> bool:
+    option = argument.partition("=")[0]
+    return len(option) > 2 and "--output-plan".startswith(option)
+
+
+def _is_read_only(arguments: list[str]) -> bool:
+    if any(_matches(arguments, route) for route in SAFE_ROUTES):
+        return True
+    return _matches(arguments, ("brief-sources",)) and not any(
+        _selects_output_plan(argument) for argument in arguments[1:]
+    )
+
+
+def main() -> None:
+    if len(sys.argv) != 2 or (command := _read_command()) is None:
+        return
     if any(marker in command for marker in DANGEROUS_SUBSTRINGS):
-        pass_through()
         return
 
     try:
         tokens = shlex.split(command)
     except ValueError:
-        pass_through()
         return
 
-    if not tokens or tokens[0] != launcher:
-        pass_through()
-        return
-
-    rest = tokens[1:]
-
-    if any(has_prefix(rest, prefix) for prefix in SAFE_PREFIXES):
-        allow("Read-only pinboard inspection command")
-        return
-
-    # brief-sources only reads and plans unless it is told to write the plan
-    # to disk via --output-plan.
-    if has_prefix(rest, ("brief-sources",)) and "--output-plan" not in rest:
-        allow("Read-only pinboard inspection command")
-        return
-
-    pass_through()
+    arguments = _pinboard_arguments(tokens, sys.argv[1])
+    if arguments is not None and _is_read_only(arguments):
+        _allow()
 
 
 if __name__ == "__main__":

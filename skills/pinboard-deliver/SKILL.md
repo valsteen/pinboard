@@ -92,7 +92,19 @@ At that same boundary, compare the final diff with every accepted material-limit
 
 Before review:
 
-A stable candidate has one of two accepted forms. A working-tree candidate is the `working-tree-sha256:<digest>` identity of the exact binary diff from current `HEAD`. A committed candidate is the full current `HEAD` revision, accepted only while the working tree is clean; its immutable snapshot is the binary diff from the accepted brief base to that revision. Candidate observation is read-only. Select the form that truthfully describes the existing candidate state rather than changing Git to fit an identity.
+A stable candidate has one of two accepted forms. A working-tree candidate is the `working-tree-sha256:<digest>` identity of the exact binary diff from current `HEAD`. A committed candidate is the full current `HEAD` revision, accepted only while the working tree is clean; its immutable snapshot is the binary diff from the accepted brief base to that revision. Prepare the candidate before observing and submitting its identity. Candidate observation itself is read-only and must truthfully describe the resulting Git state.
+
+When acceptance requires CI on an exact pushed head, use one unchanged commit throughout:
+
+1. After implementation and required local checks, establish the local commit candidate and confirm that the working tree is clean.
+2. Record that full commit identity in `result.md`, then have the owning task submit it and obtain independent review of that exact commit.
+3. After a favorable review, push that commit unchanged.
+4. Wait for the required CI results and verify that they belong to that exact commit.
+5. Have the owning task accept the same protected candidate when the review and required CI pass, without rebinding its identity.
+
+Apply the [repository-disposition authority](../pinboard/SKILL.md#review-and-completion) to local commit creation, remote publication, and acceptance. Reuse authority already granted; ask the owning task to resolve only a missing authorization before its effect. An exact-head CI requirement does not itself authorize a push. Keep the working-tree candidate route available when acceptance does not require a pushed commit; do not first submit a working-tree identity and later relabel it as a commit to satisfy exact-head CI.
+
+For either candidate form, prepare the review evidence in this order:
 
 1. finish the complete accepted checkpoint;
 2. run every command required by the attempt, without replacing it with a narrower package, test, formatter, or linter command;

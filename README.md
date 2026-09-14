@@ -108,7 +108,11 @@ The [installation guide](INSTALL.md) covers first setup, Codex permissions, link
 
 ## Local data
 
-By default, Pinboard keeps project decisions and evidence in ignored files inside the managed project, which is the repository whose work Pinboard coordinates. Every caller uses `<launcher-root>/scripts/pinboard`. An installed plugin keeps its private Python environment at `<launcher-root>/.pinboard-runtime/environment`, while Pinboard source development uses `<pinboard-source>/.venv`. Neither environment is created in or borrowed from the managed project.
+By default, Pinboard keeps project decisions and evidence in the ignored `.pinboard` directory of the managed repository. Linked worktrees share that directory. Codex and Claude use the same storage location.
+
+After an upgrade, a command that finds legacy `.codex/pinboard` data returns an exact migration action without changing it. The coding agent runs that built-in action for the selected project, then retries its original command. Migration moves the existing tree and leaves a relative compatibility symlink so old evidence links still work. No other Pinboard command may access that project during this one-time move. Conflicting roots are reported without overwriting either location.
+
+Every caller uses `<launcher-root>/scripts/pinboard`. An installed plugin keeps its private Python environment at `<launcher-root>/.pinboard-runtime/environment`, while Pinboard source development uses `<pinboard-source>/.venv`. Neither environment is created in or borrowed from the managed project.
 
 ## Learn more
 

@@ -84,5 +84,5 @@ jobs:
           smoke_repository=$(mktemp -d)
           git -C "$smoke_repository" init
           uv run --isolated --no-project --with ./dist/*.whl pinboard --project-root "$smoke_repository" init
-          test -f "$smoke_repository/.codex/pinboard/state.sqlite3"
-          git -C "$smoke_repository" check-ignore -q .codex/pinboard/state.sqlite3
+          test -f "$smoke_repository/.pinboard/state.sqlite3"
+          git -C "$smoke_repository" check-ignore -q .pinboard/state.sqlite3

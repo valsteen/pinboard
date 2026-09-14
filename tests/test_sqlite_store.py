@@ -355,7 +355,7 @@ class SQLiteStoreTest(unittest.TestCase):
 
     def test_database_open_rejects_missing_and_malformed_identity(self) -> None:
         path, _store = self._store(populated=False)
-        roots = resolve_durable_roots(path.parents[2])
+        roots = resolve_durable_roots(path.parents[1])
         with self.assertRaises(StorageError) as existing_database_error:
             initialize_database(roots, SQLITE_NOW)
         self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, existing_database_error.exception.code)
@@ -530,7 +530,7 @@ class SQLiteStoreTest(unittest.TestCase):
     def test_durable_root_and_single_file_interruption_contract(self) -> None:
         for failure in range(1, 4):
             project = Path(tempfile.mkdtemp()).resolve()
-            roots = resolve_durable_roots(project)
+            roots = resolve_durable_roots(project, project / ".codex" / "custom")
             calls = 0
 
             def interrupt(_path: Path, *, failure_at: int = failure) -> None:

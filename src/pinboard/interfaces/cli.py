@@ -41,6 +41,7 @@ from pinboard.interfaces import (
     preparation_authority,
     project_handover,
     proposal_commands,
+    storage_migration,
     tool_contract,
     transitions,
     work_brief_publication,
@@ -82,6 +83,10 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
         | cli_commands.BriefSourcesEmitCommand,
     ):
         return brief_source_commands.plan_or_emit_brief_sources(roots, invocation.command)
+    if isinstance(invocation.command, cli_commands.MigrateStorageCommand):
+        return storage_migration.migrate_storage(roots)
+    if (recovery := storage_migration.require_current_storage(roots)) is not None:
+        return recovery
     durable = work_state_commands.resolve_durable_layout(roots)
     store = work_state_commands.compose_store(durable)
     match invocation.command:

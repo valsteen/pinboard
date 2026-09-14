@@ -6,11 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3",
-            "args": [
-              "${CLAUDE_PLUGIN_ROOT}/scripts/permission-hook.py",
-              "${CLAUDE_PLUGIN_ROOT}/scripts/pinboard"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/pinboard",
+            "args": ["--permission-hook"],
             "timeout": 5
           }
         ]

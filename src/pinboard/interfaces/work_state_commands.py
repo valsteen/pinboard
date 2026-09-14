@@ -43,7 +43,7 @@ def resolve_roots(selection: cli_commands.RootSelection) -> cli_commands.Resolve
         source_checkout = project_argument.resolve()
         shared_repository = source_checkout
     work_argument = selection.work_root
-    work = work_argument.resolve() if work_argument is not None else shared_repository / ".codex" / "pinboard"
+    work = work_argument.resolve() if work_argument is not None else shared_repository / ".pinboard"
     return cli_commands.ResolvedRoots(source_checkout, shared_repository, work, work_argument is not None)
 
 

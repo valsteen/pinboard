@@ -10,6 +10,22 @@ LAUNCHER = "/plugin root/scripts/pinboard"
 
 
 class PermissionHookTests(unittest.TestCase):
+    def test_pinboard_heredoc_and_substitution_receive_bounded_recovery(self) -> None:
+        for command in (
+            f"cat > /tmp/input.json <<'EOF'\n{{}}\nEOF\n'{LAUNCHER}' proposal --host-id $(hostname)",
+            f"'{LAUNCHER}' status --host-id $(hostname)",
+        ):
+            with self.subTest(command=command):
+                decision = self.decision_for(command)
+                self.assertIsNotNone(decision)
+                assert decision is not None
+                output = decision["hookSpecificOutput"]
+                assert isinstance(output, dict)
+                self.assertEqual("deny", output["permissionDecision"])
+        self.assertIsNone(self.decision_for("cat <<'EOF'\nunrelated\nEOF"))
+        self.assertIsNone(self.decision_for(f"'{LAUNCHER}-other' --value $(hostname)"))
+        self.assertIsNone(self.decision_for(f"echo '{LAUNCHER}' $(hostname)"))
+
     def decision_for(self, command: str, *, tool_name: str = "Bash") -> dict[str, object] | None:
         result = subprocess.run(
             [sys.executable, str(HOOK), LAUNCHER],
@@ -38,6 +54,7 @@ class PermissionHookTests(unittest.TestCase):
 
     def test_leaves_mutation_and_shell_composition_in_the_permission_flow(self) -> None:
         commands = (
+            f"'{LAUNCHER}' migrate-storage --json",
             f"'{LAUNCHER}' proposal --file proposal.json",
             f"'{LAUNCHER}' status --json && touch changed",
             f"'{LAUNCHER}' status --json & touch changed",

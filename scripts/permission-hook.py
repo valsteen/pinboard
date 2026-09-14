@@ -1,6 +1,7 @@
 """Auto-allow read-only Pinboard CLI invocations in Claude Code."""
 
 import json
+import re
 import shlex
 import sys
 from typing import Final
@@ -28,14 +29,14 @@ SAFE_ROUTES: Final = (
 )
 
 
-def _allow() -> None:
+def _decision(decision: str, reason: str) -> None:
     print(
         json.dumps(
             {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "permissionDecisionReason": "Read-only Pinboard inspection command",
+                    "permissionDecision": decision,
+                    "permissionDecisionReason": reason,
                 }
             }
         )
@@ -91,6 +92,17 @@ def _is_read_only(arguments: list[str]) -> bool:
 def main() -> None:
     if len(sys.argv) != 2 or (command := _read_command()) is None:
         return
+    launcher_spellings = (shlex.quote(sys.argv[1]), '"' + sys.argv[1] + '"')
+    launcher_pattern = "(?:" + "|".join(re.escape(value) for value in launcher_spellings) + ")(?:\\s|$)"
+    direct_launcher = re.search(r"(?:^|[\n;&|])\s*(?:PINBOARD_RUNTIME=claude\s+)?" + launcher_pattern, command)
+    if direct_launcher and any(marker in command for marker in ("<<", "$(", "`")):
+        _decision(
+            "deny",
+            "Use the Write tool to create Pinboard input files, then invoke the exact launcher separately. "
+            "Resolve the exact task/session identity through the runtime adapter and pass it literally; "
+            "obtain any host identity separately. Do not combine heredocs or command substitution with Pinboard.",
+        )
+        return
     if any(marker in command for marker in DANGEROUS_SUBSTRINGS):
         return
 
@@ -101,7 +113,7 @@ def main() -> None:
 
     arguments = _pinboard_arguments(tokens, sys.argv[1])
     if arguments is not None and _is_read_only(arguments):
-        _allow()
+        _decision("allow", "Read-only Pinboard inspection command")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@ description: Preserve one newly proposed piece of project work as an intake item
 
 # Add to the pinboard
 
+Claude Code current session identity (substituted only when this skill is invoked): `${CLAUDE_SESSION_ID}`. Follow the [runtime adapters](../pinboard/references/runtime-adapters.md) for identity, invocation, and project storage upgrade recovery.
+
 Convert one explicit concern into immutable proposal facts and a same-identity intake item. Do not claim that intake made it ready, active, or current work.
 
 Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) for coding-agent identity and optional messaging. Intake persistence remains the correctness boundary.
@@ -13,11 +15,11 @@ Intake may be standalone or embedded in ongoing Pinboard work. Standalone intake
 
 ## Preserve immediate-start intent
 
-When the same request says `start`, `begin`, `work on`, `implement`, `fix now`, or otherwise clearly asks for immediate execution, treat intake as the first atomic step rather than the requested outcome. After persistence, continue through `$pinboard` to admit, prepare, and activate the same-identity item, then use `$pinboard-deliver` to complete its accepted work. Do not end with a save-for-later receipt merely because the user explicitly named `$pinboard-intake`.
+When the same request says `start`, `begin`, `work on`, `implement`, `fix now`, or otherwise clearly asks for immediate execution, treat intake as the first atomic step rather than the requested outcome. After persistence, continue through `pinboard` to admit, prepare, and activate the same-identity item, then use `pinboard-deliver` to complete its accepted work. Do not end with a save-for-later receipt merely because the user explicitly named `pinboard-intake`.
 
 Follow the main Pinboard skill's user-facing detail threshold during that continuation. Preserve every higher-level required first-use skill disclosure, keep each one concise and outcome-oriented, and add no separate Pinboard explanation of companion-skill selection or internal routing.
 
-Intake remains a thin caller of the main Pinboard interaction owner. Do not duplicate its collaboration rules or select `$technical-writing` merely because the proposal has a human-readable label or generated summary. When the same user request materially creates or revises a document, let the main Pinboard route make that separate selection.
+Intake remains a thin caller of the main Pinboard interaction owner. Do not duplicate its collaboration rules or select `technical-writing` merely because the proposal has a human-readable label or generated summary. When the same user request materially creates or revises a document, let the main Pinboard route make that separate selection.
 
 Immediate-start language authorizes continuing now; it does not prove that the human agreed with an unspoken magnitude interpretation. When the work is broad, route through Pinboard's one-sentence scope confirmation before preparation: state the outcome, principal read and touch surfaces, approximate magnitude, and any surprising exclusion, then continue without asking redundant permission. Ask only if that sentence exposes a real unresolved choice.
 
@@ -74,7 +76,7 @@ Before creating a proposal, distinguish exact prior coverage from a merely relat
 
 ## Persist, then deliver
 
-Before a first default initialization or after `SQLITE_READONLY`, follow the shared runtime adapter's [Codex protected project writes](../pinboard/references/runtime-adapters.md#codex-protected-project-writes) rule. A normal checkout uses relative `.codex/pinboard`; a linked worktree or explicit root uses only the exact absolute effective work root reported by recovery. Do not substitute the whole shared repository or treat a denied proposal write as saved intake.
+Before a first default initialization or after `SQLITE_READONLY`, follow the shared runtime adapter's [Codex protected project writes](../pinboard/references/runtime-adapters.md#codex-protected-project-writes) rule. A normal checkout uses relative `.pinboard`; a linked worktree or explicit root uses only the exact absolute effective work root reported by recovery. Do not substitute the whole shared repository or treat a denied proposal write as saved intake.
 
 1. Write the proposal to a temporary file outside canonical work state.
 2. Run `<launcher-root>/scripts/pinboard proposal --file <path> --task-id <current-task> --host-id <current-host> --json`.

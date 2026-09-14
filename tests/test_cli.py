@@ -1572,8 +1572,8 @@ class CliTest(unittest.TestCase):
                 "permission_recovery": (
                     "For routine Pinboard commands, select a Codex permission profile extending ':workspace' whose "
                     f"narrow filesystem write rule grants access to '{permission_work_root}', the effective work root "
-                    "for this command. A normal checkout uses the relative '.codex/pinboard' rule; a linked worktree "
-                    "uses only the resolved absolute shared-repository '.codex/pinboard' directory; an explicit "
+                    "for this command. A normal checkout uses the relative '.pinboard' rule; a linked worktree "
+                    "uses only the resolved absolute shared-repository '.pinboard' directory; an explicit "
                     "'--work-root' uses that exact directory. Remove legacy 'sandbox_mode' and "
                     "'sandbox_workspace_write' settings because they override permission profiles. For fresh default "
                     "initialization, approve the exact 'pinboard init' command once so it can also update "
@@ -1591,11 +1591,12 @@ class CliTest(unittest.TestCase):
     def test_readonly_mutation_at_default_root_reports_relative_permission_and_unchanged_ledger(self) -> None:
         project, work, store = self.initialized_state(complete_sqlite_state())
 
-        self.assert_readonly_attempt_renewal(("--project-root", str(project)), work, store, ".codex/pinboard")
+        self.assert_readonly_attempt_renewal(("--project-root", str(project)), work, store, ".pinboard")
 
     def test_readonly_mutation_at_explicit_work_root_reports_exact_permission_and_unchanged_ledger(self) -> None:
         project, default_work, _store = self.initialized_state(complete_sqlite_state())
         work = project / ".codex" / "custom-pinboard"
+        work.parent.mkdir()
         default_work.rename(work)
 
         self.assert_readonly_attempt_renewal(
@@ -2413,7 +2414,7 @@ class CliTest(unittest.TestCase):
         prompt = (work / str(prompt_reference["selector"])).read_text(encoding="utf-8")
         self.assertIn(
             f"--work-root {shlex.quote(str(work))} attempt acquire --attempt-id work-c-1 "
-            '--task-id "$CODEX_THREAD_ID" '
+            "--task-id <exact-worker-task-id> "
             "--host-id studio --ttl-seconds 60 --json",
             prompt,
         )
@@ -2432,7 +2433,7 @@ class CliTest(unittest.TestCase):
         acquire_line = next(line.strip() for line in prompt.splitlines() if " attempt acquire " in line)
         fresh_environment = os.environ.copy()
         fresh_environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
-        fresh_environment["CODEX_THREAD_ID"] = "implementation-worker"
+        acquire_line = acquire_line.replace("<exact-worker-task-id>", shlex.quote("implementation-worker"))
         acquired_process = subprocess.run(
             ["/bin/sh", "-c", acquire_line],
             cwd=project,
@@ -3355,7 +3356,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(str(work / "state.sqlite3"), diagnostic_observations["database_path"])
         self.assertEqual("transition:project", diagnostic_observations["operation"])
         self.assertEqual("SQLITE_READONLY", diagnostic_observations["sqlite_error_code"])
-        self.assertIn(".codex/pinboard", str(diagnostic_observations["permission_recovery"]))
+        self.assertIn(".pinboard", str(diagnostic_observations["permission_recovery"]))
         self.assertEqual(before_missing, store.validated_snapshot())
         self.assertEqual(
             result_bytes,

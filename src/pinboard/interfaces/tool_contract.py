@@ -39,6 +39,7 @@ type MutationClass = Literal[
     "may-publish-and-record-artifact",
     "publishes-selected-output",
     "repairs-derived-views",
+    "migrates-storage-location",
 ]
 type DataScope = Literal[
     "static",
@@ -185,6 +186,8 @@ def _unknown_selector(supplied: str, message: str) -> CommandFailure:
 
 
 def _mutation_class(command_type: type[cli_commands.CliCommand]) -> MutationClass:
+    if command_type is cli_commands.MigrateStorageCommand:
+        return "migrates-storage-location"
     if command_type in (
         cli_commands.ItemReviseCommand,
         cli_commands.CloseCommand,
@@ -329,6 +332,8 @@ def _purpose(operation_id: str, variant: str) -> str:  # noqa: C901, PLR0912 - e
             return "Export one complete tool-neutral project handover."
         case "init":
             return "Create or verify an empty current Pinboard work state."
+        case "migrate-storage":
+            return "Move legacy project storage to .pinboard with a compatibility alias."
         case "brief/publish":
             return "Validate, publish, and accept one canonical work brief."
         case "brief/review-needs-correction":
@@ -396,7 +401,7 @@ def _roles_and_authority(  # noqa: C901 - exhaustive installed authority owner
         return ("independent-reviewer",), "accepted-brief-reference"
     if command_type is cli_commands.BriefSourcesPlanToFileCommand:
         return ("local-caller",), "selected-output-path"
-    if command_type is cli_commands.InitializeCommand:
+    if command_type in (cli_commands.InitializeCommand, cli_commands.MigrateStorageCommand):
         return ("local-caller",), "filesystem-access"
     return ("observer",), "none"
 
@@ -452,6 +457,8 @@ def _subject_and_precondition(  # noqa: C901, PLR0912 - exhaustive installed pre
         return "proposal", "valid-ledger"
     if command_type is cli_commands.InitializeCommand:
         return "work-root", "source-checkout-resolvable"
+    if command_type is cli_commands.MigrateStorageCommand:
+        return "work-root", "nonconflicting-current-ledger-and-no-simultaneous-project-access"
     if command_type is cli_commands.RootCommand:
         return "repository-roots", "source-checkout-resolvable"
     if command_type is cli_commands.BriefSourcesPlanCommand:
@@ -542,7 +549,7 @@ def _artifact_schema(command_type: type[cli_commands.CliCommand]) -> msgspec.Raw
     return msgspec.Raw(msgspec.json.encode(msgspec.json.schema(model), order="sorted"))
 
 
-def _success_postcondition(
+def _success_postcondition(  # noqa: C901 - exhaustive installed effect-description owner
     command_type: type[cli_commands.CliCommand],
     mutation_class: MutationClass,
 ) -> str:
@@ -588,6 +595,8 @@ def _success_postcondition(
             return "Publish only the exact caller-selected output and return its receipt."
         case "repairs-derived-views":
             return "Make replaceable views match the current authoritative state."
+        case "migrates-storage-location":
+            return "Move the existing tree, preserve ledger and artifact bytes, and retain the legacy alias."
 
 
 def _retry_semantics(operation_id: str, mutation_class: MutationClass) -> str:

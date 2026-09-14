@@ -230,7 +230,7 @@ class PluginPackagingTests(unittest.TestCase):
             self.assertEqual("intake", item["state"])
             self.assertTrue(validation["valid"])
             self.assertNotIn("Optional next steps", reopened.stdout)
-            self.assertTrue((project / ".codex" / "pinboard" / "state.sqlite3").is_file())
+            self.assertTrue((project / ".pinboard" / "state.sqlite3").is_file())
             self.assertEqual(before, tree_fingerprint(plugin_root))
             self.assertEqual(
                 managed_dependency_bytes,

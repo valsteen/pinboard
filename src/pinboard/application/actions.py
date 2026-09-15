@@ -1,11 +1,15 @@
-"""Discover currently legal actions from application-owned decision facts."""
+"""Discover and describe currently legal actions from application-owned facts."""
 
+from datetime import datetime
 from typing import assert_never
 
+import msgspec
+
+from pinboard.application import action_models, ports, query_models
 from pinboard.domain import decision_models
 from pinboard.domain.decisions import available_actions
-from pinboard.domain.errors import DecisionResult
-from pinboard.domain.identifiers import AttemptId, ItemId, LeaseId, ProposalId
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.identifiers import ActionId, AttemptId, ItemId, LeaseId, ProposalId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
@@ -103,3 +107,134 @@ def discover_current_actions(
                 preparations=preparations,
             )
     return available_actions(snapshot, actor)
+
+
+def action_identity_scope(action_id: ActionId) -> query_models.DecisionScope | None:
+    """Map one known action identity to the exact persisted subject it selects."""
+
+    if ":" not in action_id:
+        return None
+    kind_value, subject = action_id.split(":", 1)
+    if not kind_value or not subject:
+        return None
+    try:
+        semantics = decision_models.action_semantics(decision_models.ActionKind(kind_value))
+    except ValueError:
+        return None
+    match semantics.subject_kind:
+        case decision_models.ActionSubjectKind.ITEM:
+            return query_models.DecisionScope((ItemId(subject),), (), (), (), (), (), (), ())
+        case decision_models.ActionSubjectKind.ATTEMPT:
+            return query_models.DecisionScope((), (), (), (), (AttemptId(subject),), (), (), ())
+        case decision_models.ActionSubjectKind.PROPOSAL:
+            return query_models.DecisionScope((), (), (), (), (), (ProposalId(subject),), (), ())
+        case decision_models.ActionSubjectKind.LEDGER:
+            return query_models.DecisionScope((), (), (), (), (), (), (), ())
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def select_current_actions(
+    reader: ports.WorkStore,
+    role: decision_models.Role,
+    *,
+    observed_at: datetime,
+    lease_id: LeaseId | None,
+    generation: int | None,
+    action_id: ActionId | None,
+) -> DecisionResult[tuple[decision_models.Action, ...]]:
+    """Read the minimum current facts and select an optional exact legal action."""
+
+    if role == decision_models.Role.OBSERVER:
+        snapshot = LedgerSnapshot("", ())
+    elif action_id is not None:
+        scope = action_identity_scope(action_id)
+        if scope is None:
+            return DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                f"Action '{action_id}' is not currently legal for this role and lease.",
+                None,
+            )
+        snapshot = reader.read_decision_facts(scope, observed_at).snapshot
+    elif role == decision_models.Role.PROJECT:
+        snapshot = reader.read_current_action_snapshot(observed_at)
+    elif lease_id is not None and generation is not None:
+        snapshot = reader.read_leased_action_snapshot(role, lease_id, generation, observed_at)
+    else:
+        snapshot = LedgerSnapshot("", ())
+    discovered = discover_current_actions(snapshot, role, lease_id=lease_id, generation=generation)
+    if isinstance(discovered, DecisionFailure) or action_id is None:
+        return discovered
+    selected = tuple(action for action in discovered if decision_models.action_id(action) == action_id)
+    if selected:
+        return selected
+    return DecisionFailure(
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        f"Action '{action_id}' is not currently legal for this role and lease.",
+        None,
+    )
+
+
+def encoded_action_input_schema(kind: decision_models.ActionKind) -> bytes | None:
+    """Return the canonical strict payload schema, or no payload for advisory actions."""
+
+    schema = action_models.action_payload_schema(kind)
+    return None if schema is None else msgspec.json.encode(schema, order="sorted")
+
+
+def project_action_semantics(semantics: decision_models.ActionSemantics) -> action_models.ActionSemanticsView:
+    return action_models.ActionSemanticsView(
+        semantics.use_case,
+        semantics.lifecycle_effect,
+        semantics.permitted_roles,
+        semantics.subject_kind,
+        semantics.lifecycle_precondition,
+        semantics.practical_result,
+    )
+
+
+def project_action(
+    action: decision_models.Action, *, include_input_contract: bool
+) -> action_models.ProjectedActionView:
+    """Project one action and its shared payload contract without transport concerns."""
+
+    capability = action.capability
+    semantics = project_action_semantics(decision_models.action_semantics(action.kind))
+    match capability.authorization:
+        case None:
+            authorization: action_models.ActionAuthorization = "observer"
+        case decision_models.AuthorizationKind.PROJECT:
+            authorization = "project"
+        case decision_models.AuthorizationKind.ATTEMPT:
+            authorization = "attempt"
+        case decision_models.AuthorizationKind.PREPARATION:
+            authorization = "preparation"
+        case _ as unreachable:
+            assert_never(unreachable)
+    common = (
+        decision_models.action_id(action),
+        action.kind,
+        capability.subject,
+        capability.label,
+        capability.subject_revision if isinstance(capability, decision_models.MutationActionCapability) else None,
+        authorization,
+        capability.lease_id,
+        capability.command_authority.generation
+        if capability.command_authority is not None
+        else capability.preparation_authority.generation
+        if capability.preparation_authority is not None
+        else None,
+        semantics,
+    )
+    if not include_input_contract:
+        return action_models.ActionSummaryView(*common, None)
+    return action_models.ActionView(
+        *common,
+        action_models.InputContractView(
+            action.kind,
+            semantics,
+            None
+            if (schema := encoded_action_input_schema(action.kind)) is None
+            else msgspec.json.decode(schema, type=action_models.JsonSchema),
+        ),
+    )

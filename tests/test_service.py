@@ -25,6 +25,7 @@ from pinboard.application.service import (
     decide_and_commit_transition,
     preflight_checkpoint_candidate,
 )
+from pinboard.cli.transition_input import parse_transition_input
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import (
     available_actions,
@@ -47,7 +48,6 @@ from pinboard.domain.proposal_models import (
     CreateProposalOperation,
     ProposalIntake,
 )
-from pinboard.interfaces.transition_input import parse_transition_input
 from tests.artifact_support import write_revision
 from tests.decision_support import (
     project_decision_snapshot,

@@ -2,9 +2,8 @@ import json
 import unittest
 from datetime import UTC, datetime
 
-from pinboard.interfaces.errors import ProposalFailure
-from pinboard.interfaces.proposal_models import Proposal
-from pinboard.interfaces.proposals import parse_proposal
+from pinboard.application.proposal_models import Proposal, ProposalFailure
+from pinboard.application.proposals import parse_proposal
 from tests.support import JsonObject
 
 

@@ -1,17 +1,17 @@
 import json
 import unittest
 
-from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CandidateId, ItemId, ProposalId
-from pinboard.interfaces import transition_models
-from pinboard.interfaces.errors import TransitionInputFailure
-from pinboard.interfaces.transition_input import (
+from pinboard.application import action_models
+from pinboard.cli.errors import TransitionInputFailure
+from pinboard.cli.transition_input import (
     INPUT_CONTRACT_ACTION_KINDS,
     ParsedTransitionInput,
     encoded_transition_input_schema,
     parse_transition_input,
 )
+from pinboard.domain import decision_models, work_models
+from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CandidateId, ItemId, ProposalId
 from tests.domain_support import action
 from tests.support import JsonObject, JsonValue
 
@@ -21,7 +21,7 @@ def expect_transition_command(
 ) -> decision_models.TransitionCommand:
     if isinstance(value, TransitionInputFailure):
         raise AssertionError(str(value))
-    if isinstance(value, transition_models.ActivateInputPayload):
+    if isinstance(value, action_models.ActivateInputPayload):
         raise AssertionError("Expected a domain command, received an unresolved activation request.")
     return value
 
@@ -128,7 +128,7 @@ class TransitionInputTest(unittest.TestCase):
         activation_action = action(decision_models.ActivateAction, ItemId("item-1"))
         activation = parse_transition_input(activation_action, '{"brief_artifact_ref_id":7}')
         self.assertEqual(
-            transition_models.ActivateInputPayload(ArtifactRefId(7)),
+            action_models.ActivateInputPayload(ArtifactRefId(7)),
             activation,
         )
         resume_action = action(decision_models.ResumeAction, ItemId("item-1"))
@@ -349,7 +349,7 @@ class TransitionInputTest(unittest.TestCase):
             with self.subTest(kind=selected_action.kind):
                 decoded = parse_transition_input(selected_action, json.dumps(payload))
                 if isinstance(selected_action, decision_models.ActivateAction):
-                    self.assertIsInstance(decoded, transition_models.ActivateInputPayload)
+                    self.assertIsInstance(decoded, action_models.ActivateInputPayload)
                 else:
                     expect_transition_command(decoded)
                 schema = expect_schema(encoded_transition_input_schema(selected_action.kind))

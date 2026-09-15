@@ -1,14 +1,15 @@
 import ast
 import tempfile
+import tomllib
 import unittest
 from importlib.util import resolve_name
 from pathlib import Path
 
 SOURCE_ROOT = Path(__file__).parents[1] / "src" / "pinboard"
 FORBIDDEN_DEPENDENCIES = {
-    "domain": ("pinboard.adapters", "pinboard.application", "pinboard.interfaces"),
-    "application": ("pinboard.adapters", "pinboard.interfaces"),
-    "adapters": ("pinboard.interfaces",),
+    "domain": ("pinboard.adapters", "pinboard.application", "pinboard.cli", "pinboard.mcp"),
+    "application": ("pinboard.adapters", "pinboard.cli", "pinboard.mcp"),
+    "adapters": ("pinboard.cli", "pinboard.mcp"),
 }
 
 
@@ -53,11 +54,9 @@ def _violations(source_root: Path) -> list[str]:
     return violations
 
 
-def _interface_cycles(source_root: Path = SOURCE_ROOT) -> tuple[tuple[str, ...], ...]:
-    interface_root = source_root / "interfaces"
-    modules = {
-        f"pinboard.interfaces.{path.stem}": path for path in interface_root.glob("*.py") if path.name != "__init__.py"
-    }
+def _cli_cycles(source_root: Path = SOURCE_ROOT) -> tuple[tuple[str, ...], ...]:
+    cli_root = source_root / "cli"
+    modules = {f"pinboard.cli.{path.stem}": path for path in cli_root.glob("*.py") if path.name != "__init__.py"}
     edges = {
         module: tuple(sorted(value for value in _imports(path, source_root) if value in modules))
         for module, path in modules.items()
@@ -112,6 +111,18 @@ def _database_location_literals(source_root: Path = SOURCE_ROOT) -> tuple[Path, 
 
 
 class ArchitectureDependencyTest(unittest.TestCase):
+    def test_package_exposes_cli_and_local_stdio_mcp_entrypoints(self) -> None:
+        metadata = tomllib.loads((SOURCE_ROOT.parents[1] / "pyproject.toml").read_text())
+        self.assertEqual(
+            {
+                "pinboard": "pinboard.cli.entrypoint:main",
+                "pinboard-mcp": "pinboard.mcp.server:main",
+            },
+            metadata["project"]["scripts"],
+        )
+        self.assertIn("mcp==2.2.0", metadata["project"]["dependencies"])
+        self.assertNotIn("mcp==2.2.0", metadata["dependency-groups"]["dev"])
+
     def test_outward_relative_import_cannot_bypass_dependency_direction(self) -> None:
         source_root = Path(tempfile.mkdtemp()) / "src" / "pinboard"
         module = source_root / "application" / "probe.py"
@@ -132,14 +143,15 @@ class ArchitectureDependencyTest(unittest.TestCase):
     def test_production_layers_preserve_inward_dependency_direction(self) -> None:
         self.assertEqual([], _violations(SOURCE_ROOT))
 
-    def test_interface_composition_is_acyclic_and_the_cli_root_only_routes(self) -> None:
-        self.assertEqual((), _interface_cycles())
-        allowed_non_interface = (
+    def test_cli_composition_is_acyclic_and_the_entrypoint_only_routes(self) -> None:
+        self.assertFalse((SOURCE_ROOT / "interfaces").exists())
+        self.assertEqual((), _cli_cycles())
+        allowed_non_cli = (
             "pinboard.adapters.files.errors",
             "pinboard.adapters.sqlite.errors",
             "pinboard.domain.errors",
         )
-        cli_imports = _imports(SOURCE_ROOT / "interfaces" / "cli.py")
+        cli_imports = _imports(SOURCE_ROOT / "cli" / "entrypoint.py")
         outward = {
             value
             for value in cli_imports
@@ -150,14 +162,30 @@ class ArchitectureDependencyTest(unittest.TestCase):
             {
                 value
                 for value in outward
-                if not any(value == allowed or value.startswith(f"{allowed}.") for allowed in allowed_non_interface)
+                if not any(value == allowed or value.startswith(f"{allowed}.") for allowed in allowed_non_cli)
             },
         )
 
+    def test_cli_and_mcp_are_independent_sibling_boundaries(self) -> None:
+        cli_imports = tuple(
+            imported
+            for path in (SOURCE_ROOT / "cli").glob("*.py")
+            for imported in _imports(path)
+            if imported.startswith("pinboard.mcp")
+        )
+        mcp_imports = tuple(
+            imported
+            for path in (SOURCE_ROOT / "mcp").glob("*.py")
+            for imported in _imports(path)
+            if imported.startswith("pinboard.cli")
+        )
+        self.assertEqual((), cli_imports)
+        self.assertEqual((), mcp_imports)
+
     def test_sqlite_location_and_store_composition_have_one_explicit_owner(self) -> None:
         self.assertEqual((Path("adapters/files/file_io.py"),), _database_location_literals())
-        self.assertEqual((Path("interfaces/work_state_commands.py"),), _sqlite_store_importers())
-        self.assertEqual((Path("interfaces/work_state_commands.py"),), _sqlite_store_constructors())
+        self.assertEqual((Path("cli/work_state_commands.py"), Path("mcp/server.py")), _sqlite_store_importers())
+        self.assertEqual((Path("cli/work_state_commands.py"), Path("mcp/server.py")), _sqlite_store_constructors())
 
 
 if __name__ == "__main__":

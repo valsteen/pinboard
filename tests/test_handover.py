@@ -22,11 +22,11 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.application.artifacts import ArtifactRef, NewArtifact
 from pinboard.application.handover import ContentEncoding, HandoverState, ProjectHandover, merge_handover_batches
+from pinboard.cli.cli_output import RejectedOperationView
+from pinboard.cli.entrypoint import main
 from pinboard.domain import work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import ArtifactRefId, ItemId, ProposalId, TaskId
-from pinboard.interfaces.cli import main
-from pinboard.interfaces.cli_output import RejectedOperationView
 from tests.artifact_support import write_revision
 from tests.decision_support import project_decision_snapshot
 
@@ -489,7 +489,7 @@ class HandoverTest(unittest.TestCase):
                 }
             )
         )
-        with patch("pinboard.interfaces.proposal_commands.datetime") as proposal_clock:
+        with patch("pinboard.cli.proposal_commands.datetime") as proposal_clock:
             proposal_clock.fromisoformat.side_effect = datetime.fromisoformat
             proposal_clock.now.side_effect = (commit_time, render_time)
             result, _stdout, stderr = self.run_cli(

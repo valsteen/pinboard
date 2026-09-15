@@ -1,9 +1,9 @@
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import service
 from pinboard.application.mutation_models import PreparationAuthorityMutation
+from pinboard.cli import cli_commands, preparation_authority, work_views
 from pinboard.domain import authority_models
 from pinboard.domain.authority_decisions import decide_preparation_authority
-from pinboard.interfaces import cli_commands, preparation_authority, work_views
 
 from .model import Box, Connector, Diagram, Guide, Note, Section
 

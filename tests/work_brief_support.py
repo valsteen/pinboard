@@ -3,15 +3,15 @@ from pathlib import Path
 
 from msgspec.structs import replace
 
-from pinboard.domain.identifiers import ItemId
-from pinboard.interfaces import work_brief_models
-from pinboard.interfaces.work_briefs import (
+from pinboard.application import work_brief_models
+from pinboard.application.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_reviewed_authority_set_bytes,
     canonical_work_brief_bytes,
     canonical_work_brief_review_bytes,
     canonical_work_brief_review_needs_correction_bytes,
 )
+from pinboard.domain.identifiers import ItemId
 from tests.support import SQLITE_DIGEST, test_definition
 
 CHECKPOINT_ID = "typed-json-cutover"

@@ -39,30 +39,29 @@ from pinboard.adapters.sqlite.database import initialize_database, translate_dat
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import query_models, stored_state
+from pinboard.application import query_models, stored_state, work_brief_models
 from pinboard.application.artifacts import ArtifactPublication, NewArtifact, WorkBriefIdentity
+from pinboard.application.brief_sources import BriefSourceSelector
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.ports import WorkStore
-from pinboard.domain import authority_models, decision_models, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionResult
-from pinboard.domain.history import work_item_definition_digest
-from pinboard.domain.identifiers import AttemptId, HistoryId, HostId, ItemId, LeaseId, TaskId
-from pinboard.interfaces import (
-    action_selection,
-    dispatch_brief,
-    work_brief_models,
-    work_inspection_models,
-    work_state_commands,
-)
-from pinboard.interfaces import transitions as transition_interface
-from pinboard.interfaces.cli import build_parser, main
-from pinboard.interfaces.errors import WorkBriefErrorCode, WorkBriefFailure
-from pinboard.interfaces.work_briefs import (
+from pinboard.application.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_work_brief_bytes,
     canonical_work_brief_review_bytes,
     decode_canonical_checkpoint_review_package,
 )
+from pinboard.cli import (
+    action_selection,
+    dispatch_brief,
+    work_inspection_models,
+    work_state_commands,
+)
+from pinboard.cli import transitions as transition_interface
+from pinboard.cli.entrypoint import build_parser, main
+from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain.errors import DecisionFailure, DecisionResult
+from pinboard.domain.history import work_item_definition_digest
+from pinboard.domain.identifiers import AttemptId, HistoryId, HostId, ItemId, LeaseId, TaskId
 from tests.artifact_support import write_revision
 from tests.decision_support import discover_actions
 
@@ -224,7 +223,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(before_rejection, store.validated_snapshot())
 
         expires_at = datetime.fromisoformat(str(prepared["expires_at"]))
-        with patch("pinboard.interfaces.work_inspection.datetime") as inspection_clock:
+        with patch("pinboard.cli.work_inspection.datetime") as inspection_clock:
             inspection_clock.now.return_value = expires_at
             rejected, _stdout, rejected_stderr = self.run_cli(
                 *common,
@@ -247,7 +246,7 @@ class CliTest(unittest.TestCase):
         ):
             with (
                 self.subTest(expired_activation=label),
-                patch("pinboard.interfaces.action_selection.datetime") as action_clock,
+                patch("pinboard.cli.action_selection.datetime") as action_clock,
             ):
                 action_clock.now.return_value = observed_at
                 rejected, _stdout, rejected_stderr = self.run_transition(
@@ -297,10 +296,10 @@ class CliTest(unittest.TestCase):
         wrong_facts = replace(decision_facts, snapshot=wrong_snapshot)
         before = store.validated_snapshot()
         with (
-            patch("pinboard.interfaces.action_selection.select_current_action", return_value=wrong_action),
+            patch("pinboard.cli.action_selection.select_current_action", return_value=wrong_action),
             patch("pinboard.adapters.sqlite.store.read_selected_decision_facts", return_value=wrong_facts),
             patch(
-                "pinboard.interfaces.transitions.observe_checkout_identity",
+                "pinboard.cli.transitions.observe_checkout_identity",
                 return_value=("codex/work-c", "candidate-base"),
             ),
         ):
@@ -383,7 +382,7 @@ class CliTest(unittest.TestCase):
             )
             before = store.validated_snapshot()
             with patch(
-                "pinboard.interfaces.transitions.observe_checkout_identity",
+                "pinboard.cli.transitions.observe_checkout_identity",
                 return_value=("codex/work-c", "candidate-base"),
             ):
                 rejected, _stdout, rejected_stderr = self.run_transition(
@@ -1073,8 +1072,10 @@ class CliTest(unittest.TestCase):
         )
 
         with patch(
-            "pinboard.interfaces.work_views.build_selected_attempt_brief_views",
-            return_value=WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, "injected revision projection failure"),
+            "pinboard.cli.work_views.build_selected_attempt_brief_views",
+            return_value=work_brief_models.WorkBriefFailure(
+                work_brief_models.WorkBriefErrorCode.BRIEF_INVALID, "injected revision projection failure"
+            ),
         ):
             result, stdout, stderr = self.run_cli(
                 *common,
@@ -1538,7 +1539,7 @@ class CliTest(unittest.TestCase):
 
         with (
             patch.object(sqlite_store, "open_database", side_effect=open_query_only_database),
-            patch("pinboard.interfaces.attempt_authority.datetime") as clock,
+            patch("pinboard.cli.attempt_authority.datetime") as clock,
         ):
             clock.now.return_value = SQLITE_NOW
             result, stdout, stderr = self.run_cli(
@@ -2010,7 +2011,7 @@ class CliTest(unittest.TestCase):
         work = project / ".codex" / "work"
         initialized_at = datetime.now(UTC)
 
-        with patch("pinboard.interfaces.work_state_commands.datetime") as clock:
+        with patch("pinboard.cli.work_state_commands.datetime") as clock:
             clock.now.return_value = initialized_at
             result, stdout, stderr = self.run_cli(
                 "--project-root",
@@ -2036,7 +2037,7 @@ class CliTest(unittest.TestCase):
         ):
             with self.subTest(label=label):
                 project, work, _store = self.initialized_state(self.prepared_state(expires_at))
-                with patch("pinboard.interfaces.work_state_commands.datetime") as clock:
+                with patch("pinboard.cli.work_state_commands.datetime") as clock:
                     clock.now.return_value = observed_at
                     result, stdout, stderr = self.run_cli(
                         "--project-root",
@@ -2070,10 +2071,10 @@ class CliTest(unittest.TestCase):
                 "pinboard.adapters.files.views.atomic_replace",
                 side_effect=FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "injected view failure"),
             ),
-            patch("pinboard.interfaces.action_selection.datetime") as selection_clock,
-            patch("pinboard.interfaces.transitions.datetime") as transition_clock,
+            patch("pinboard.cli.action_selection.datetime") as selection_clock,
+            patch("pinboard.cli.transitions.datetime") as transition_clock,
             patch(
-                "pinboard.interfaces.transitions.observe_checkout_identity",
+                "pinboard.cli.transitions.observe_checkout_identity",
                 return_value=("codex/work-c", "candidate-base"),
             ),
         ):
@@ -2255,7 +2256,7 @@ class CliTest(unittest.TestCase):
                 checkout_patch = contextlib.nullcontext()
                 if name == "unreadable-checkout":
                     checkout_patch = patch(
-                        "pinboard.interfaces.transitions.observe_checkout_identity",
+                        "pinboard.cli.transitions.observe_checkout_identity",
                         side_effect=RootError(
                             RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
                             "checkout unavailable",
@@ -2468,7 +2469,7 @@ class CliTest(unittest.TestCase):
         project, work, state_store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))
         attempt = state_store.validated_snapshot().authority.attempt_leases[0]
-        with patch("pinboard.interfaces.attempt_authority.datetime") as attempt_clock:
+        with patch("pinboard.cli.attempt_authority.datetime") as attempt_clock:
             attempt_clock.now.side_effect = (operation_time, render_time)
             renewed = self.run_json_cli(
                 *common,
@@ -2490,7 +2491,7 @@ class CliTest(unittest.TestCase):
         project, work, _store = self.initialized_state(self.prepared_state(expires_at))
         common = ("--project-root", str(project), "--work-root", str(work))
         preparation_render_time = render_time + timedelta(microseconds=1)
-        with patch("pinboard.interfaces.preparation_authority.datetime") as preparation_clock:
+        with patch("pinboard.cli.preparation_authority.datetime") as preparation_clock:
             preparation_clock.now.side_effect = (operation_time, render_time, preparation_render_time)
             renewed = self.run_json_cli(
                 *common,
@@ -2511,7 +2512,7 @@ class CliTest(unittest.TestCase):
     def test_project_task_never_advertises_claimless_activation(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))
-        with patch("pinboard.interfaces.work_inspection.datetime") as inspection_clock:
+        with patch("pinboard.cli.work_inspection.datetime") as inspection_clock:
             inspection_clock.now.return_value = SQLITE_NOW
             result, _stdout, stderr = self.run_cli(
                 *common,
@@ -2550,7 +2551,7 @@ class CliTest(unittest.TestCase):
         )
         commit_time = SQLITE_NOW + timedelta(seconds=1)
         render_time = commit_time + timedelta(microseconds=1)
-        with patch("pinboard.interfaces.proposal_commands.datetime") as proposal_clock:
+        with patch("pinboard.cli.proposal_commands.datetime") as proposal_clock:
             proposal_clock.fromisoformat.side_effect = datetime.fromisoformat
             proposal_clock.now.side_effect = (commit_time, render_time)
             result, _stdout, stderr = self.run_cli(
@@ -2569,10 +2570,18 @@ class CliTest(unittest.TestCase):
         brief_path = project / "timed-brief.json"
         timed_brief = replace_struct(work_c_brief(), attempt_id="timed-brief-attempt")
         brief_path.write_bytes(canonical_work_brief_bytes(timed_brief))
-        with patch("pinboard.interfaces.work_brief_publication.datetime") as publication_clock:
+        with (
+            patch("pinboard.cli.work_brief_publication.datetime") as publication_clock,
+            patch(
+                "pinboard.cli.work_brief_publication.work_views.refresh",
+                return_value=ViewRefreshResult(2, None),
+            ) as refresh,
+        ):
             publication_clock.now.side_effect = (commit_time, render_time)
             self.run_json_cli(*common, "brief", "publish", "--file", str(brief_path))
         self.assertEqual(1, publication_clock.now.call_count)
+        refresh.assert_called_once()
+        self.assertEqual(commit_time, refresh.call_args.args[3])
 
     def test_brief_needs_correction_publication_and_focused_status_are_exact(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())
@@ -2796,7 +2805,7 @@ class CliTest(unittest.TestCase):
             with self.subTest(label=label):
                 project, work, _store = self.initialized_state(self.prepared_state(expires_at))
                 common = ("--project-root", str(project), "--work-root", str(work))
-                with patch("pinboard.interfaces.work_inspection.datetime") as inspection_clock:
+                with patch("pinboard.cli.work_inspection.datetime") as inspection_clock:
                     inspection_clock.now.return_value = observed_at
                     overview = self.run_json_cli(*common, "overview")
                     item = self.run_json_cli(*common, "item", "status", "--item-id", "work-c")
@@ -2826,7 +2835,7 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(0 if not expected_available else 11, action_result)
                 if expected_available:
                     self.assertIn("ACTION_NOT_AVAILABLE", action_stderr)
-                with patch("pinboard.interfaces.work_state_commands.datetime") as work_state_clock:
+                with patch("pinboard.cli.work_state_commands.datetime") as work_state_clock:
                     work_state_clock.now.side_effect = (observed_at, observed_at)
                     view_result, _view_stdout, view_stderr = self.run_cli(*common, "views", "rebuild")
                     validation_result, validation_stdout, validation_stderr = self.run_cli(
@@ -2878,7 +2887,7 @@ class CliTest(unittest.TestCase):
                     encoding="utf-8",
                 )
                 before = store.validated_snapshot()
-                with patch("pinboard.interfaces.proposal_commands.datetime") as clock:
+                with patch("pinboard.cli.proposal_commands.datetime") as clock:
                     clock.fromisoformat.side_effect = datetime.fromisoformat
                     clock.now.side_effect = (observed_at, observed_at)
                     result, _stdout, stderr = self.run_cli(
@@ -3366,7 +3375,7 @@ class CliTest(unittest.TestCase):
             (work / f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review/1.md").read_bytes(),
         )
         package = decode_canonical_checkpoint_review_package(package_path.read_bytes())
-        if isinstance(package, WorkBriefFailure):
+        if isinstance(package, work_brief_models.WorkBriefFailure):
             self.fail(str(package))
         self.assertEqual(CHECKPOINT_ID, package.checkpoint.id)
         self.assertEqual(candidate, package.candidate)
@@ -3883,7 +3892,7 @@ class CliTest(unittest.TestCase):
             value for value in reloaded.artifact_references if value.key == "work-a-1-local-checkpoint-review-package"
         )
         package = decode_canonical_checkpoint_review_package((work / package_reference.selector).read_bytes())
-        if isinstance(package, WorkBriefFailure):
+        if isinstance(package, work_brief_models.WorkBriefFailure):
             self.fail(str(package))
         self.assertIsInstance(package.review_basis, work_brief_models.LocalReviewBasis)
         self.assertEqual(len(before.artifact_references) + 4, len(reloaded.artifact_references))
@@ -5003,8 +5012,10 @@ Not launchable:
         payload.write_text('{"candidate":"projection-failure-candidate"}\n', encoding="utf-8")
 
         with patch(
-            "pinboard.interfaces.work_views.build_selected_attempt_brief_views",
-            return_value=WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, "injected projection failure"),
+            "pinboard.cli.work_views.build_selected_attempt_brief_views",
+            return_value=work_brief_models.WorkBriefFailure(
+                work_brief_models.WorkBriefErrorCode.BRIEF_INVALID, "injected projection failure"
+            ),
         ):
             result, stdout, stderr = self.run_transition(common, action, payload, json_output=False)
 
@@ -5054,7 +5065,7 @@ Not launchable:
 
         with (
             patch(
-                "pinboard.interfaces.work_views.build_selected_attempt_brief_views",
+                "pinboard.cli.work_views.build_selected_attempt_brief_views",
                 side_effect=RuntimeError("unexpected"),
             ),
             self.assertRaisesRegex(RuntimeError, "unexpected"),
@@ -5945,14 +5956,14 @@ Not launchable:
         before_race = store.validated_snapshot()
 
         def change_source_then_validate(
-            source_root: Path,
+            select_source: BriefSourceSelector,
             authorities: tuple[work_brief_models.ReviewedAuthority, ...],
         ) -> work_brief_models.ReviewedAuthorityValidationFailure | None:
             (project / "architecture.md").write_text(
                 "# Architecture\n\n## Contract\n\nChanged during correction dispatch.\n",
                 encoding="utf-8",
             )
-            return original_validate(source_root, authorities)
+            return original_validate(select_source, authorities)
 
         with patch.object(
             dispatch_brief,
@@ -6003,7 +6014,7 @@ Not launchable:
         )
         before_covered = store.validated_snapshot()
         with patch(
-            "pinboard.interfaces.transitions.ArtifactRepository.publish",
+            "pinboard.cli.transitions.ArtifactRepository.publish",
             side_effect=AssertionError("covered empty-history cross-use published evidence"),
         ):
             covered_result, _, _ = self.run_transition(common, action, covered_payload, json_output=False)
@@ -6014,11 +6025,13 @@ Not launchable:
         payload.write_text('{"evidence":"All accepted work is complete."}', encoding="utf-8")
         with (
             patch(
-                "pinboard.interfaces.work_views.build_selected_attempt_brief_views",
-                return_value=WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, "injected view failure"),
+                "pinboard.cli.work_views.build_selected_attempt_brief_views",
+                return_value=work_brief_models.WorkBriefFailure(
+                    work_brief_models.WorkBriefErrorCode.BRIEF_INVALID, "injected view failure"
+                ),
             ),
             patch(
-                "pinboard.interfaces.transitions.ArtifactRepository.publish",
+                "pinboard.cli.transitions.ArtifactRepository.publish",
                 side_effect=AssertionError("direct completion published evidence"),
             ),
         ):
@@ -6186,7 +6199,7 @@ Not launchable:
             return commit_result
 
         with patch(
-            "pinboard.interfaces.transitions.decide_and_commit_transition",
+            "pinboard.cli.transitions.decide_and_commit_transition",
             side_effect=commit_then_create_disjoint_proposal,
         ):
             result, stdout, stderr = self.run_transition(common, action, payload, json_output=False)
@@ -6254,7 +6267,7 @@ Not launchable:
             )
 
         with patch(
-            "pinboard.interfaces.transitions.decide_and_commit_transition",
+            "pinboard.cli.transitions.decide_and_commit_transition",
             side_effect=commit_disjoint_change_then_recheck,
         ):
             result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)
@@ -6773,7 +6786,7 @@ Not launchable:
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("unexpected SQLite read")),
             patch(
-                "pinboard.interfaces.cli.work_state_commands.resolve_roots",
+                "pinboard.cli.entrypoint.work_state_commands.resolve_roots",
                 side_effect=AssertionError("unexpected project-root read"),
             ),
         ):

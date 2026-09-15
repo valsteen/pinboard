@@ -1,0 +1,1462 @@
+"""Local-stdio MCP boundary with bounded synchronous application execution."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import itertools
+import sys
+import threading
+import time
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import Enum
+from functools import partial
+from pathlib import Path
+from typing import TextIO, assert_never
+
+import anyio
+import msgspec
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+
+from pinboard import __version__
+from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
+from pinboard.adapters.files.errors import ArtifactError
+from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
+from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
+from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
+from pinboard.adapters.files.views import refresh_facts
+from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.application import (
+    action_models,
+    actions,
+    proposal_models,
+    proposals,
+    queries,
+    query_models,
+    service,
+    work_brief_models,
+    work_briefs,
+)
+from pinboard.application.artifact_publication import AcceptedArtifactPublication
+from pinboard.application.ports import GeneratedViewReader
+from pinboard.domain import decision_models
+from pinboard.domain.errors import (
+    ArtifactAcceptanceAfterPublicationError,
+    ChangedSurface,
+    DecisionFailure,
+    DecisionFailureCode,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    FailureMismatch,
+    RetryDisposition,
+)
+from pinboard.domain.identifiers import ActionId, ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.mcp import contracts
+
+ITEM_STATUS_TOOL = "pinboard_item_status"
+PROPOSAL_CREATE_TOOL = "pinboard_proposal_create"
+BRIEF_PUBLISH_TOOL = "pinboard_brief_publish"
+OVERVIEW_TOOL = "pinboard_overview"
+ACTIONS_TOOL = "pinboard_actions"
+ATTEMPT_INSPECT_TOOL = "pinboard_attempt_inspect"
+ARTIFACT_VERIFY_TOOL = "pinboard_artifact_verify"
+THREAD_NAME_PREFIX = "pinboard-mcp-worker"
+
+type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
+type IntegerBoundaryValue = bool | int | float | str | None
+
+
+@dataclass(frozen=True, slots=True)
+class OperationResult:
+    content: dict[str, JsonValue]
+    classification: str
+    commit_reference: str | None
+
+
+class ExecutorBusy(RuntimeError):
+    """The bounded executor rejected work before its callback began."""
+
+
+class ExecutorClosed(RuntimeError):
+    """The bounded executor no longer accepts work."""
+
+
+class OperationCancelled(RuntimeError):
+    """A running callback observed its request-local cancellation token."""
+
+
+class _OmittedAuthorityField(Enum):
+    VALUE = "omitted"
+
+
+class CancellationToken:
+    def __init__(self) -> None:
+        self._cancelled = threading.Event()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def checkpoint(self) -> None:
+        if self.cancelled:
+            raise OperationCancelled("The request was cancelled at a cooperative checkpoint.")
+
+
+class Execution[Result]:
+    def __init__(
+        self,
+        future: Future[Result],
+        token: CancellationToken,
+        finished: threading.Event,
+    ) -> None:
+        self._future = future
+        self._token = token
+        self.finished: threading.Event = finished
+
+    async def result(self) -> Result:
+        try:
+            return await asyncio.wrap_future(self._future)
+        except asyncio.CancelledError:
+            self._token.cancel()
+            if self._future.cancel():
+                raise
+            return await asyncio.wrap_future(self._future)
+
+
+class BoundedExecutor:
+    """A fixed worker pool whose semaphore bounds every unfinished callback."""
+
+    def __init__(self, *, worker_count: int, unfinished_limit: int) -> None:
+        if worker_count < 1 or unfinished_limit < worker_count:
+            raise ValueError("The unfinished-work limit must cover at least one positive worker set.")
+        self._pool = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix=THREAD_NAME_PREFIX)
+        self._admission = threading.BoundedSemaphore(unfinished_limit)
+        self._lock = threading.Lock()
+        self._closed = False
+
+    def submit[Result](self, callback: Callable[[CancellationToken], Result]) -> Execution[Result]:
+        with self._lock:
+            if self._closed:
+                raise ExecutorClosed("The executor is closed.")
+            if not self._admission.acquire(blocking=False):
+                raise ExecutorBusy("The executor has reached its unfinished-work limit.")
+            token = CancellationToken()
+            finished = threading.Event()
+            try:
+                future = self._pool.submit(callback, token)
+            except BaseException:
+                self._admission.release()
+                raise
+
+            def release(_future: Future[Result]) -> None:
+                self._admission.release()
+                finished.set()
+
+            future.add_done_callback(release)
+            return Execution(future, token, finished)
+
+    def shutdown(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        self._pool.shutdown(wait=True, cancel_futures=True)
+
+
+class Diagnostics:
+    """Emit a fixed number of short, metadata-only stderr records."""
+
+    def __init__(self, stream: TextIO, *, event_limit: int, line_limit: int) -> None:
+        if event_limit < 1 or line_limit < 2:
+            raise ValueError("Diagnostic bounds must be positive.")
+        self._stream = stream
+        self._event_limit = event_limit
+        self._line_limit = line_limit
+        self._events = 0
+        self._lock = threading.Lock()
+
+    def emit(
+        self,
+        *,
+        event: str,
+        request_id: int | None,
+        operation: str | None,
+        project_id: str | None,
+        duration_ms: int | None,
+        classification: str | None,
+        commit_reference: str | None,
+    ) -> None:
+        fields = ["pinboard_mcp", f"version={__version__}", f"event={event}"]
+        if request_id is not None:
+            fields.append(f"request_id={request_id}")
+        if operation is not None:
+            fields.append(f"operation={operation}")
+        if project_id is not None:
+            fields.append(f"project={project_id}")
+        if duration_ms is not None:
+            fields.append(f"duration_ms={duration_ms}")
+        if classification is not None:
+            fields.append(f"classification={classification}")
+        if commit_reference is not None:
+            fields.append(f"commit={commit_reference}")
+        line = " ".join(fields)
+        with self._lock:
+            if self._events >= self._event_limit:
+                return
+            self._events += 1
+            self._stream.write(line[: self._line_limit - 1] + "\n")
+            self._stream.flush()
+
+
+def _item_status_json(status: query_models.ItemStatus) -> dict[str, JsonValue]:
+    preparation = status.preparation
+    return {
+        "schema": status.schema,
+        "authority": status.authority,
+        "revision": status.revision,
+        "item_id": status.item_id,
+        "label": status.label,
+        "state": status.state.value,
+        "timing": None if status.timing is None else status.timing.value,
+        "outcome_evidence": status.outcome_evidence,
+        "next_action": status.next_action,
+        "source": status.source,
+        "notes": status.notes,
+        "queue_position": status.queue_position,
+        "attempts": [
+            {
+                "attempt_id": attempt.attempt_id,
+                "state": attempt.state.value,
+                "candidate_revision": attempt.candidate_revision,
+            }
+            for attempt in status.attempts
+        ],
+        "preparation": (
+            None
+            if preparation is None
+            else {
+                "definition_revision": preparation.definition_revision,
+                "definition_digest": preparation.definition_digest,
+                "task_id": preparation.task_id,
+                "host_id": preparation.host_id,
+                "lease_id": preparation.lease_id,
+                "generation": preparation.generation,
+                "expires_at": preparation.expires_at,
+                "status": preparation.status.value,
+            }
+        ),
+    }
+
+
+def _read_item_status(
+    project_root: str,
+    work_root: str,
+    item_id: str,
+    token: CancellationToken,
+) -> OperationResult:
+    token.checkpoint()
+    try:
+        request = msgspec.convert(
+            {"project_root": project_root, "work_root": work_root, "item_id": item_id},
+            type=contracts.ItemStatusRequest,
+            strict=True,
+        )
+        durable = _resolve_durable(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        return _item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
+    token.checkpoint()
+    projected = queries.project_item_status(compose_store(durable), ItemId(request.item_id), datetime.now(UTC))
+    if isinstance(projected, DecisionFailure):
+        return _item_status_failure(projected.code.value, projected.message, projected.details)
+    token.checkpoint()
+    return OperationResult(_item_status_json(projected), "ok", projected.revision)
+
+
+def _item_status_failure(
+    code: str,
+    message: str,
+    details: FailureDetails | None,
+) -> OperationResult:
+    rendered = _details_json(details)
+    return OperationResult(
+        {
+            "schema": "pinboard-mcp-item-status-result/v1",
+            "status": "rejected",
+            "code": code,
+            "message": message,
+            "state_changed": False,
+            **rendered,
+        },
+        "rejected",
+        None,
+    )
+
+
+def _read_failure(
+    schema: str,
+    code: str,
+    message: str,
+    details: FailureDetails | None,
+) -> OperationResult:
+    return OperationResult(
+        {
+            "schema": schema,
+            "status": "rejected",
+            "code": code,
+            "message": message,
+            "state_changed": False,
+            **_details_json(details),
+        },
+        "rejected",
+        None,
+    )
+
+
+def _resolve_durable(project_root: str, work_root: str) -> DurableRoots:
+    source_checkout = resolve_source_checkout_root(Path(project_root))
+    shared_repository = resolve_shared_repository_root(source_checkout)
+    return resolve_durable_roots(shared_repository, Path(work_root))
+
+
+def compose_store(durable: DurableRoots) -> SQLiteWorkStore:
+    return SQLiteWorkStore(durable.database_path)
+
+
+def _read_overview(project_root: str, work_root: str, token: CancellationToken) -> OperationResult:
+    token.checkpoint()
+    try:
+        request = msgspec.convert(
+            {"project_root": project_root, "work_root": work_root},
+            type=contracts.OverviewRequest,
+            strict=True,
+        )
+        durable = _resolve_durable(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        return _read_failure(
+            "pinboard-mcp-overview-result/v1", "OVERVIEW_INVALID", f"Cannot read overview: {error}", None
+        )
+    token.checkpoint()
+    operation_time = datetime.now(UTC)
+    store = compose_store(durable)
+    overview = queries.project_current_overview(store.read_project_overview(operation_time), operation_time)
+    token.checkpoint()
+    content = msgspec.to_builtins(overview)
+    assert isinstance(content, dict)
+    return OperationResult(content, "ok", overview.revision)
+
+
+def _action_failure_details(
+    failure: DecisionFailure,
+    role: decision_models.Role,
+    lease_id: LeaseId | None,
+    generation: int | None,
+    action_id: ActionId | None,
+) -> FailureDetails:
+    observations = (
+        FailureFact("role", role.value),
+        FailureFact("lease_id", lease_id),
+        FailureFact("generation", generation),
+        FailureFact("action_id", action_id),
+    )
+    match failure.code:
+        case DecisionFailureCode.ATTEMPT_LEASE_REQUIRED:
+            return FailureDetails(
+                observed=observations,
+                mismatches=(
+                    FailureMismatch(
+                        "attempt_authority", "current active attempt lease and generation", "absent or stale"
+                    ),
+                ),
+                retry=RetryDisposition.REACQUIRE_AUTHORITY,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            )
+        case DecisionFailureCode.ACTION_NOT_AVAILABLE:
+            return FailureDetails(
+                observed=observations,
+                mismatches=(FailureMismatch("legal_action", "currently available", "unavailable"),),
+                retry=RetryDisposition.REFRESH_ACTION,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            )
+        case _:
+            raise RuntimeError(f"Unsupported action-discovery failure '{failure.code.value}'.")
+
+
+def _read_actions(
+    project_root: str,
+    work_root: str,
+    role: str,
+    lease_id: str | _OmittedAuthorityField | None,
+    generation: IntegerBoundaryValue | _OmittedAuthorityField,
+    action_id: dict[str, JsonValue] | None,
+    token: CancellationToken,
+) -> OperationResult:
+    token.checkpoint()
+    raw: dict[str, JsonValue] = {"project_root": project_root, "work_root": work_root, "role": role}
+    if lease_id is not _OmittedAuthorityField.VALUE:
+        raw["lease_id"] = lease_id
+    if generation is not _OmittedAuthorityField.VALUE:
+        raw["generation"] = generation
+    if action_id is not None:
+        raw["action_id"] = action_id
+    try:
+        request: contracts.ActionsRequest = msgspec.convert(raw, type=contracts.ActionsRequest, strict=True)
+        durable = _resolve_durable(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        return _read_failure(
+            "pinboard-mcp-actions-result/v1", "ACTIONS_INVALID", f"Cannot discover actions: {error}", None
+        )
+    match request:
+        case contracts.ObserverActionsRequest(action_id=selected_action_id):
+            selected_role = decision_models.Role.OBSERVER
+            selected_lease = None
+            selected_generation = None
+        case contracts.ProjectActionsRequest(action_id=selected_action_id):
+            selected_role = decision_models.Role.PROJECT
+            selected_lease = None
+            selected_generation = None
+        case contracts.WorkerActionsRequest(
+            lease_id=selected_lease_value,
+            generation=selected_generation,
+            action_id=selected_action_id,
+        ):
+            selected_role = decision_models.Role.WORKER
+            selected_lease = LeaseId(selected_lease_value)
+        case contracts.PreparerActionsRequest(
+            lease_id=selected_lease_value,
+            generation=selected_generation,
+            action_id=selected_action_id,
+        ):
+            selected_role = decision_models.Role.PREPARER
+            selected_lease = LeaseId(selected_lease_value)
+        case _ as unreachable:
+            assert_never(unreachable)
+    token.checkpoint()
+    selected_action = (
+        None
+        if selected_action_id is None
+        else ActionId(f"{selected_action_id.kind.value}:{selected_action_id.subject}")
+    )
+    selected = actions.select_current_actions(
+        compose_store(durable),
+        selected_role,
+        observed_at=datetime.now(UTC),
+        lease_id=selected_lease,
+        generation=selected_generation,
+        action_id=selected_action,
+    )
+    if isinstance(selected, DecisionFailure):
+        return _read_failure(
+            "pinboard-mcp-actions-result/v1",
+            selected.code.value,
+            selected.message,
+            _action_failure_details(selected, selected_role, selected_lease, selected_generation, selected_action),
+        )
+    token.checkpoint()
+    content: dict[str, JsonValue] = {
+        "schema": "pinboard-mcp-actions-result/v1",
+        "status": "ok",
+        "actions": [_mcp_action(action) for action in selected],
+        "state_changed": False,
+        "effect": EffectDisposition.UNCHANGED.value,
+        "retry": "safe-to-repeat",
+        "changed_surfaces": [],
+    }
+    return OperationResult(content, "ok", None)
+
+
+def _mcp_action(action: decision_models.Action) -> dict[str, JsonValue]:
+    projected = actions.project_action(action, include_input_contract=True)
+    if not isinstance(projected, action_models.ActionView):
+        raise RuntimeError("MCP action discovery requires an inline input contract.")
+    content = msgspec.to_builtins(
+        contracts.ActionView(
+            contracts.ActionIdentity(projected.kind, projected.subject),
+            projected.label,
+            projected.subject_revision,
+            projected.authorization,
+            projected.lease_id,
+            projected.generation,
+            projected.semantics,
+            projected.input_contract,
+        )
+    )
+    assert isinstance(content, dict)
+    return content
+
+
+def _evidence_reference(path: Path) -> contracts.EvidenceReference:
+    try:
+        content = path.read_bytes()
+    except FileNotFoundError:
+        return contracts.EvidenceAbsent(str(path))
+    return contracts.EvidencePresent(str(path), hashlib.sha256(content).hexdigest(), len(content))
+
+
+def _relative_action(action_id: str, attempt_id: str, item_id: str) -> contracts.RelativeActionIdentity:
+    kind_value, separator, subject = action_id.partition(":")
+    if not separator:
+        raise RuntimeError("Attempt continuation contains a noncanonical action identity.")
+    kind = decision_models.ActionKind(kind_value)
+    match decision_models.action_semantics(kind).subject_kind:
+        case decision_models.ActionSubjectKind.ATTEMPT:
+            if subject != attempt_id:
+                raise RuntimeError("Attempt continuation action targets a different attempt.")
+            return contracts.RelativeActionIdentity("attempt", kind)
+        case decision_models.ActionSubjectKind.ITEM:
+            if subject != item_id:
+                raise RuntimeError("Attempt continuation action targets a different item.")
+            return contracts.RelativeActionIdentity("item", kind)
+        case decision_models.ActionSubjectKind.LEDGER | decision_models.ActionSubjectKind.PROPOSAL:
+            raise RuntimeError("Attempt continuation contains an unrelated action family.")
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _continuation_operation(
+    operation: query_models.ActionContinuation | query_models.ReviewContinuation | query_models.DependencyContinuation,
+    attempt_id: str,
+    item_id: str,
+) -> contracts.ContinuationOperation:
+    match operation:
+        case query_models.ActionContinuation(action_id=action_id, action_kind=action_kind, condition=condition):
+            action = _relative_action(action_id, attempt_id, item_id)
+            if action.action_kind != action_kind:
+                raise RuntimeError("Attempt continuation action kind differs from its identity.")
+            return contracts.ContinuationAction(action, condition)
+        case query_models.ReviewContinuation(candidate_revision=candidate, required_capability=capability):
+            return contracts.ContinuationReview(candidate, capability)
+        case query_models.DependencyContinuation(dependencies=dependencies):
+            return contracts.ContinuationDependencies(dependencies)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _mcp_attempt_continuation(
+    continuation: query_models.AttemptContinuation,
+) -> contracts.AttemptContinuation:
+    common = (
+        continuation.schema,
+        continuation.attempt_id,
+        continuation.item_id,
+        continuation.revision,
+    )
+    match continuation:
+        case query_models.TerminalAttemptContinuation():
+            return contracts.TerminalAttemptContinuation(
+                *common,
+                None,
+                True,
+                False,
+                None,
+                (),
+                continuation.forbidden_routes,
+            )
+        case (
+            query_models.ActiveAttemptContinuation()
+            | query_models.ReviewAttemptContinuation()
+            | query_models.PausedAttemptContinuation()
+            | query_models.BlockedAttemptContinuation()
+        ):
+            operation = _continuation_operation(
+                continuation.next_operation,
+                continuation.attempt_id,
+                continuation.item_id,
+            )
+            legal_actions = tuple(
+                _relative_action(action_id, continuation.attempt_id, continuation.item_id)
+                for action_id in continuation.legal_actions
+            )
+            arguments = (
+                *common,
+                continuation.owner_task_id,
+                False,
+                False,
+                operation,
+                legal_actions,
+                continuation.forbidden_routes,
+            )
+            match continuation:
+                case query_models.ActiveAttemptContinuation():
+                    return contracts.ActiveAttemptContinuation(*arguments)
+                case query_models.ReviewAttemptContinuation():
+                    return contracts.ReviewAttemptContinuation(*arguments)
+                case query_models.PausedAttemptContinuation():
+                    return contracts.PausedAttemptContinuation(*arguments)
+                case query_models.BlockedAttemptContinuation():
+                    return contracts.BlockedAttemptContinuation(*arguments)
+                case _ as unreachable:
+                    assert_never(unreachable)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _attempt_inspection_success(
+    continuation: query_models.AttemptContinuation,
+    accepted_brief: contracts.AcceptedBriefIdentity | None,
+    result: contracts.EvidenceReference,
+    review: contracts.EvidenceReference,
+    blocker: contracts.EvidenceReference,
+) -> dict[str, JsonValue]:
+    if isinstance(continuation, query_models.TerminalAttemptContinuation):
+        presented_continuation = _mcp_attempt_continuation(continuation)
+        if not isinstance(presented_continuation, contracts.TerminalAttemptContinuation):
+            raise RuntimeError("Terminal attempt projection changed continuation family.")
+        record: contracts.TerminalAttemptInspectionSuccess | contracts.NonterminalAttemptInspectionSuccess = (
+            contracts.TerminalAttemptInspectionSuccess(
+                "pinboard-mcp-attempt-inspection-result/v1",
+                "ok",
+                presented_continuation,
+                None,
+                result,
+                review,
+                blocker,
+                False,
+                "unchanged",
+                "safe-to-repeat",
+                (),
+            )
+        )
+    else:
+        if accepted_brief is None:
+            raise RuntimeError("A nonterminal attempt inspection requires its verified accepted brief.")
+        presented_continuation = _mcp_attempt_continuation(continuation)
+        if isinstance(presented_continuation, contracts.TerminalAttemptContinuation):
+            raise RuntimeError("Nonterminal attempt projection changed continuation family.")
+        record = contracts.NonterminalAttemptInspectionSuccess(
+            "pinboard-mcp-attempt-inspection-result/v1",
+            "ok",
+            presented_continuation,
+            accepted_brief,
+            result,
+            review,
+            blocker,
+            False,
+            "unchanged",
+            "safe-to-repeat",
+            (),
+        )
+    content = msgspec.to_builtins(record)
+    assert isinstance(content, dict)
+    return content
+
+
+def _read_attempt_inspection(
+    project_root: str,
+    work_root: str,
+    attempt_id: str,
+    token: CancellationToken,
+) -> OperationResult:
+    token.checkpoint()
+    try:
+        request = msgspec.convert(
+            {"project_root": project_root, "work_root": work_root, "attempt_id": attempt_id},
+            type=contracts.AttemptInspectRequest,
+            strict=True,
+        )
+        durable = _resolve_durable(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        return _read_failure(
+            "pinboard-mcp-attempt-inspection-result/v1",
+            "ATTEMPT_INSPECT_INVALID",
+            f"Cannot inspect attempt: {error}",
+            None,
+        )
+    store = compose_store(durable)
+    context = queries.select_attempt_context(store, AttemptId(request.attempt_id))
+    if isinstance(context, DecisionFailure):
+        return _read_failure(
+            "pinboard-mcp-attempt-inspection-result/v1",
+            "ATTEMPT_NOT_FOUND",
+            context.message,
+            context.details,
+        )
+    token.checkpoint()
+    accepted_brief: contracts.AcceptedBriefIdentity | None = None
+    owner_task_id: TaskId | None = None
+    if isinstance(context, query_models.NonterminalAttemptContextFacts):
+        reference = context.brief_reference
+        try:
+            brief = work_briefs.decode_canonical_work_brief(read_reference(durable.work_root, reference))
+        except ArtifactError as error:
+            return _read_failure(
+                "pinboard-mcp-attempt-inspection-result/v1",
+                "ATTEMPT_BRIEF_INVALID",
+                f"Accepted attempt brief could not be verified: {error}",
+                FailureDetails(
+                    observed=(
+                        FailureFact("attempt_id", request.attempt_id),
+                        FailureFact("artifact_ref_id", int(context.brief_artifact_ref_id)),
+                        FailureFact("selector", reference.selector),
+                        FailureFact("sha256", reference.content_sha256),
+                        FailureFact("size_bytes", reference.size_bytes),
+                    ),
+                    mismatches=(
+                        FailureMismatch(
+                            "accepted_brief_bytes",
+                            "match the accepted selector, size, and SHA-256",
+                            "unreadable or mismatched",
+                        ),
+                    ),
+                    retry=RetryDisposition.DO_NOT_RETRY,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
+        if isinstance(brief, work_brief_models.WorkBriefFailure):
+            return _read_failure(
+                "pinboard-mcp-attempt-inspection-result/v1",
+                "ATTEMPT_BRIEF_INVALID",
+                brief.message,
+                FailureDetails(
+                    observed=(
+                        FailureFact("attempt_id", request.attempt_id),
+                        FailureFact("artifact_ref_id", int(context.brief_artifact_ref_id)),
+                        FailureFact("selector", reference.selector),
+                    ),
+                    mismatches=(
+                        FailureMismatch("accepted_brief", "canonical work brief", "invalid canonical content"),
+                    ),
+                    retry=RetryDisposition.DO_NOT_RETRY,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
+        if (failure := queries.validate_attempt_brief_identity(context, brief)) is not None:
+            return _read_failure(
+                "pinboard-mcp-attempt-inspection-result/v1",
+                "ATTEMPT_BRIEF_INVALID",
+                failure.message,
+                FailureDetails(
+                    observed=(
+                        FailureFact("attempt_id", request.attempt_id),
+                        FailureFact("brief_attempt_id", brief.attempt_id),
+                        FailureFact("brief_item_id", brief.item_id),
+                        FailureFact("brief_scope_revision", brief.accepted_scope.revision),
+                        FailureFact("brief_scope_digest", brief.accepted_scope.digest),
+                    ),
+                    mismatches=(FailureMismatch("accepted_brief_identity", "match the current attempt", "different"),),
+                    retry=RetryDisposition.DO_NOT_RETRY,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
+        owner_task_id = TaskId(brief.owner_task_id)
+        stored_reference = store.read_artifact_reference_by_id(context.brief_artifact_ref_id)
+        if stored_reference is None or (
+            stored_reference.selector,
+            stored_reference.content_sha256,
+            stored_reference.size_bytes,
+        ) != (reference.selector, reference.content_sha256, reference.size_bytes):
+            return _read_failure(
+                "pinboard-mcp-attempt-inspection-result/v1",
+                "ATTEMPT_BRIEF_INVALID",
+                "Accepted brief reference identity differs from the attempt.",
+                FailureDetails(
+                    observed=(
+                        FailureFact("attempt_id", request.attempt_id),
+                        FailureFact("artifact_ref_id", int(context.brief_artifact_ref_id)),
+                        FailureFact("selector", reference.selector),
+                    ),
+                    mismatches=(
+                        FailureMismatch(
+                            "accepted_brief_reference",
+                            "match the attempt brief reference",
+                            "absent or different",
+                        ),
+                    ),
+                    retry=RetryDisposition.DO_NOT_RETRY,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
+        accepted_brief = contracts.AcceptedBriefIdentity(
+            int(context.brief_artifact_ref_id),
+            str(durable.work_root / reference.selector),
+            reference.selector,
+            reference.content_sha256,
+            reference.size_bytes,
+            stored_reference.accepted_revision,
+            context.accepted_scope_revision,
+            context.accepted_scope_digest,
+        )
+    continuation = queries.project_attempt_continuation(context, owner_task_id)
+    if isinstance(continuation, DecisionFailure):
+        details = continuation.details
+        if details is None:
+            details = FailureDetails(
+                observed=(FailureFact("attempt_id", request.attempt_id),),
+                mismatches=(FailureMismatch("continuation", "currently legal action", "unavailable"),),
+                retry=RetryDisposition.REFRESH_ACTION,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            )
+        return _read_failure(
+            "pinboard-mcp-attempt-inspection-result/v1",
+            "ACTION_NOT_AVAILABLE",
+            continuation.message,
+            details,
+        )
+    attempt_root = durable.work_root / "attempts" / request.attempt_id
+    try:
+        result = _evidence_reference(attempt_root / "result.md")
+        review = _evidence_reference(attempt_root / "review.md")
+        blocker = _evidence_reference(attempt_root / "blocker.md")
+    except OSError as error:
+        return _read_failure(
+            "pinboard-mcp-attempt-inspection-result/v1",
+            "ATTEMPT_BRIEF_INVALID",
+            f"Attempt evidence could not be inspected: {error}",
+            FailureDetails(
+                observed=(FailureFact("attempt_id", request.attempt_id),),
+                mismatches=(FailureMismatch("attempt_evidence", "readable regular files or absence", "unreadable"),),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    token.checkpoint()
+    content = _attempt_inspection_success(continuation, accepted_brief, result, review, blocker)
+    return OperationResult(content, "ok", str(context.project_revision))
+
+
+def _verify_artifact(
+    project_root: str,
+    work_root: str,
+    artifact_ref_id: IntegerBoundaryValue,
+    selector: str,
+    sha256: str,
+    size_bytes: IntegerBoundaryValue,
+    token: CancellationToken,
+) -> OperationResult:
+    token.checkpoint()
+    try:
+        request = msgspec.convert(
+            {
+                "project_root": project_root,
+                "work_root": work_root,
+                "artifact_ref_id": artifact_ref_id,
+                "selector": selector,
+                "sha256": sha256,
+                "size_bytes": size_bytes,
+            },
+            type=contracts.ArtifactVerifyRequest,
+            strict=True,
+        )
+        durable = _resolve_durable(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        return _read_failure(
+            "pinboard-mcp-artifact-verification-result/v1",
+            "ARTIFACT_VERIFY_INVALID",
+            f"Cannot verify artifact: {error}",
+            None,
+        )
+    store = compose_store(durable)
+    reference = store.read_artifact_reference_by_id(ArtifactRefId(request.artifact_ref_id))
+    if reference is None:
+        details = FailureDetails(
+            (FailureFact("artifact_ref_id", request.artifact_ref_id),),
+            (FailureMismatch("accepted_artifact_reference", "present", "absent"),),
+            RetryDisposition.CORRECT_INPUT,
+            EffectDisposition.UNCHANGED,
+            (),
+            (),
+        )
+        return _read_failure(
+            "pinboard-mcp-artifact-verification-result/v1",
+            "ARTIFACT_REFERENCE_MISMATCH",
+            "The accepted artifact reference does not exist.",
+            details,
+        )
+    mismatches = tuple(
+        FailureMismatch(field, expected, observed)
+        for field, expected, observed in (
+            ("selector", reference.selector, request.selector),
+            ("sha256", reference.content_sha256, request.sha256),
+            ("size_bytes", reference.size_bytes, request.size_bytes),
+        )
+        if expected != observed
+    )
+    observations = (
+        FailureFact("artifact_ref_id", request.artifact_ref_id),
+        FailureFact("selector", reference.selector),
+        FailureFact("sha256", reference.content_sha256),
+        FailureFact("size_bytes", reference.size_bytes),
+    )
+    if mismatches:
+        return _read_failure(
+            "pinboard-mcp-artifact-verification-result/v1",
+            "ARTIFACT_REFERENCE_MISMATCH",
+            "The supplied facts do not match the accepted artifact reference.",
+            FailureDetails(
+                observations,
+                mismatches,
+                RetryDisposition.CORRECT_INPUT,
+                EffectDisposition.UNCHANGED,
+                (),
+                (),
+            ),
+        )
+    try:
+        read_reference(durable.work_root, reference)
+    except ArtifactError:
+        return _read_failure(
+            "pinboard-mcp-artifact-verification-result/v1",
+            "ARTIFACT_BYTES_INVALID",
+            "The immutable artifact bytes do not match the accepted reference.",
+            FailureDetails(
+                observations,
+                (
+                    FailureMismatch(
+                        "artifact_bytes", "match accepted selector, size, and SHA-256", "unreadable or mismatched"
+                    ),
+                ),
+                RetryDisposition.DO_NOT_RETRY,
+                EffectDisposition.UNCHANGED,
+                (),
+                (),
+            ),
+        )
+    token.checkpoint()
+    content = msgspec.to_builtins(
+        contracts.ArtifactVerified(
+            "pinboard-verified-artifact-reference/v1",
+            request.artifact_ref_id,
+            reference.selector,
+            reference.content_sha256,
+            reference.size_bytes,
+            reference.accepted_revision,
+            True,
+            False,
+            "unchanged",
+            "safe-to-repeat",
+            (),
+        )
+    )
+    assert isinstance(content, dict)
+    return OperationResult(content, "ok", str(reference.artifact_ref_id))
+
+
+def _details_json(details: FailureDetails | None) -> dict[str, JsonValue]:
+    if details is None:
+        return {
+            "effect": EffectDisposition.UNCHANGED.value,
+            "retry": RetryDisposition.CORRECT_INPUT.value,
+            "changed_surfaces": [],
+            "observed": [],
+            "mismatches": [],
+        }
+    return {
+        "effect": details.effect.value,
+        "retry": details.retry.value,
+        "changed_surfaces": [surface.value for surface in details.changed_surfaces],
+        "observed": [{"field": fact.field, "value": fact.value} for fact in details.observed],
+        "mismatches": [
+            {"field": mismatch.field, "expected": mismatch.expected, "observed": mismatch.observed}
+            for mismatch in details.mismatches
+        ],
+    }
+
+
+def _proposal_failure(failure: proposal_models.ProposalFailure | DecisionFailure) -> OperationResult:
+    details = _details_json(failure.details)
+    if failure.details is None and failure.code == DecisionFailureCode.PROPOSAL_ALREADY_EXISTS:
+        details["retry"] = RetryDisposition.DO_NOT_RETRY.value
+    content: dict[str, JsonValue] = {
+        "schema": "pinboard-mcp-proposal-result/v1",
+        "status": "rejected",
+        "code": failure.code.value,
+        "message": failure.message,
+        "state_changed": details["effect"] == EffectDisposition.COMMITTED.value,
+        **details,
+    }
+    if failure.code == DecisionFailureCode.PROPOSAL_ALREADY_EXISTS:
+        content["recovery"] = "Read item status for the proposal_id before deciding whether any new proposal is needed."
+    else:
+        content["recovery"] = None
+    return OperationResult(content, "rejected", None)
+
+
+def _brief_failure(failure: work_brief_models.WorkBriefFailure | DecisionFailure) -> OperationResult:
+    details = _details_json(failure.details if isinstance(failure, DecisionFailure) else None)
+    return OperationResult(
+        {
+            "schema": "pinboard-mcp-brief-publication-result/v1",
+            "status": "rejected",
+            "code": failure.code.value,
+            "message": failure.message,
+            "state_changed": details["effect"] == EffectDisposition.COMMITTED.value,
+            **details,
+        },
+        "rejected",
+        None,
+    )
+
+
+def _refresh_affected_views(
+    durable: DurableRoots,
+    store: GeneratedViewReader,
+    affected: AffectedViews,
+    now: datetime,
+) -> ViewRefreshResult:
+    facts = store.read_generated_view_facts(affected.items, affected.attempts, affected.history_receipts, now)
+    briefs = work_briefs.build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(durable))
+    if isinstance(briefs, work_brief_models.WorkBriefFailure):
+        return ViewRefreshResult(
+            facts.project_revision,
+            ViewWarning(
+                f"The SQLite mutation succeeded, but generated views need repair: {briefs}",
+                "Run 'pinboard views rebuild'.",
+            ),
+        )
+    return refresh_facts(facts, durable.work_root, briefs)
+
+
+def _proposal_created(
+    project_root: str,
+    work_root: str,
+    proposal: dict[str, proposal_models.ProposalJsonValue],
+    actor_task_id: str,
+    actor_host_id: str,
+    token: CancellationToken,
+) -> OperationResult:
+    token.checkpoint()
+    try:
+        request = msgspec.convert(
+            {
+                "project_root": project_root,
+                "work_root": work_root,
+                "proposal": proposal,
+                "actor_task_id": actor_task_id,
+                "actor_host_id": actor_host_id,
+            },
+            type=contracts.ProposalCreateRequest,
+            strict=True,
+        )
+    except (msgspec.ValidationError, ValueError) as error:
+        return _proposal_failure(
+            proposal_models.ProposalFailure(
+                DecisionFailureCode.PROPOSAL_INVALID,
+                f"Cannot decode proposal request: {error}",
+                None,
+            )
+        )
+    decoded = request.proposal
+    durable = _resolve_durable(request.project_root, request.work_root)
+    store = compose_store(durable)
+    token.checkpoint()
+    now = datetime.now(UTC)
+    committed = service.create_proposal(
+        store,
+        proposals.convert_proposal(decoded),
+        now,
+        actor_task_id=TaskId(request.actor_task_id),
+        actor_host_id=HostId(request.actor_host_id),
+    )
+    if isinstance(committed, DecisionFailure):
+        return _proposal_failure(committed)
+    view_result = _refresh_affected_views(
+        durable,
+        store,
+        AffectedViews(committed.item_ids, committed.attempt_ids, (committed.receipt.history_id,)),
+        now,
+    )
+    status = store.read_item_status(ItemId(decoded.proposal_id))
+    if status is None or status.item.queue_position is None:
+        raise RuntimeError("Committed proposal status did not reload exactly.")
+    warning = view_result.warning
+    content: dict[str, JsonValue] = {
+        "schema": "pinboard-mcp-proposal-result/v1",
+        "status": "committed" if warning is None else "committed-with-warning",
+        "proposal_id": decoded.proposal_id,
+        "position": status.item.queue_position,
+        "item_state": status.item.state.value,
+        "committed_revision": committed.receipt.project_revision,
+        "history_id": int(committed.receipt.history_id),
+        "state_changed": True,
+        "effect": EffectDisposition.COMMITTED.value,
+        "retry": RetryDisposition.DO_NOT_RETRY.value,
+        "changed_surfaces": [ChangedSurface.LEDGER.value],
+        "continuation": "Read item status or inspect the proposal before choosing a project disposition.",
+        "warning": None if warning is None else {"message": warning.message, "recovery": warning.repair},
+    }
+    return OperationResult(
+        content, "committed" if warning is None else "committed-warning", str(committed.receipt.project_revision)
+    )
+
+
+def _brief_published(
+    project_root: str,
+    work_root: str,
+    brief: dict[str, work_brief_models.WorkBriefJsonValue],
+    token: CancellationToken,
+) -> OperationResult:
+    token.checkpoint()
+    try:
+        request = msgspec.convert(
+            {"project_root": project_root, "work_root": work_root, "brief": brief},
+            type=contracts.BriefPublishRequest,
+            strict=True,
+        )
+    except (msgspec.ValidationError, ValueError) as error:
+        return _brief_failure(
+            work_brief_models.WorkBriefFailure(
+                work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
+                f"Cannot decode brief publication request: {error}",
+            )
+        )
+    decoded = request.brief
+    durable = _resolve_durable(request.project_root, request.work_root)
+    store = compose_store(durable)
+    token.checkpoint()
+    now = datetime.now(UTC)
+    try:
+        publication = work_briefs.publish_work_brief(store, ArtifactRepository(durable), decoded, now)
+    except ArtifactAcceptanceAfterPublicationError as error:
+        changed_surfaces = [surface.value for surface in error.changed_surfaces]
+        return OperationResult(
+            {
+                "schema": "pinboard-mcp-brief-publication-result/v1",
+                "status": "failed-after-publication",
+                "code": "ARTIFACT_ACCEPTANCE_FAILED",
+                "message": "The brief was published, but its accepted reference could not be committed.",
+                "state_changed": True,
+                "effect": EffectDisposition.COMMITTED.value,
+                "retry": RetryDisposition.DO_NOT_RETRY.value,
+                "changed_surfaces": changed_surfaces,
+                "observed": [],
+                "mismatches": [],
+                "published_selector": error.selector,
+                "recovery": "Preserve the published selector and repair artifact-reference acceptance before continuing.",
+            },
+            "infrastructure-failure",
+            error.selector,
+        )
+    if isinstance(publication, DecisionFailure):
+        return _brief_failure(publication)
+    view_result = _refresh_affected_views(durable, store, AffectedViews((), (), ()), now)
+    warning = view_result.warning
+    changed_surfaces: list[JsonValue] = [
+        *([ChangedSurface.IMMUTABLE_ARTIFACT.value] if publication.artifact_created else []),
+        *(
+            [ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE.value, ChangedSurface.LEDGER.value]
+            if publication.ledger_changed
+            else []
+        ),
+    ]
+    state_changed = bool(changed_surfaces)
+    if state_changed:
+        status = "committed" if warning is None else "committed-with-warning"
+        classification = "committed" if warning is None else "committed-warning"
+    else:
+        status = "unchanged" if warning is None else "unchanged-with-warning"
+        classification = "unchanged" if warning is None else "unchanged-warning"
+    content: dict[str, JsonValue] = {
+        "schema": "pinboard-mcp-brief-publication-result/v1",
+        "status": status,
+        "reference": _artifact_reference_json(publication),
+        "state_changed": state_changed,
+        "effect": (EffectDisposition.COMMITTED.value if state_changed else EffectDisposition.UNCHANGED.value),
+        "retry": (RetryDisposition.DO_NOT_RETRY.value if state_changed else RetryDisposition.RETRY_SAME_INPUT.value),
+        "changed_surfaces": changed_surfaces,
+        "continuation": "Use the verified reference when preparing or rebinding the matching attempt.",
+        "warning": None if warning is None else {"message": warning.message, "recovery": warning.repair},
+    }
+    return OperationResult(
+        content,
+        classification,
+        str(publication.reference.artifact_ref_id),
+    )
+
+
+def _artifact_reference_json(publication: AcceptedArtifactPublication) -> dict[str, JsonValue]:
+    reference = publication.reference
+    return {
+        "artifact_ref_id": int(reference.artifact_ref_id),
+        "kind": reference.kind.value,
+        "key": reference.key,
+        "revision": reference.revision,
+        "selector": reference.selector,
+        "sha256": reference.content_sha256,
+        "size_bytes": reference.size_bytes,
+        "accepted_revision": reference.accepted_revision,
+    }
+
+
+async def _run_request(
+    executor: BoundedExecutor,
+    diagnostics: Diagnostics,
+    request_id: int,
+    operation: str,
+    project_root: str,
+    callback: Callable[[CancellationToken], OperationResult],
+) -> dict[str, JsonValue]:
+    project_id = hashlib.sha256(project_root.encode()).hexdigest()[:12]
+    started = time.monotonic_ns()
+
+    def emit(classification: str, commit_reference: str | None) -> None:
+        diagnostics.emit(
+            event="result",
+            request_id=request_id,
+            operation=operation,
+            project_id=project_id,
+            duration_ms=(time.monotonic_ns() - started) // 1_000_000,
+            classification=classification,
+            commit_reference=commit_reference,
+        )
+
+    try:
+        execution = executor.submit(callback)
+    except ExecutorBusy:
+        emit("busy", None)
+        busy: dict[str, JsonValue] = {
+            "schema": "pinboard-mcp-execution-result/v1",
+            "status": "busy",
+            "code": "EXECUTOR_BUSY",
+            "message": "The MCP executor is busy; retry after current work finishes.",
+            "state_changed": False,
+            "effect": EffectDisposition.UNCHANGED.value,
+            "retry": RetryDisposition.RETRY_SAME_INPUT.value,
+            "changed_surfaces": [],
+            "observed": [],
+            "mismatches": [],
+        }
+        return contracts.validate_result(operation, busy)
+    try:
+        result = await execution.result()
+    except asyncio.CancelledError:
+        emit("cancelled", None)
+        raise
+    except OperationCancelled as error:
+        emit("cancelled", None)
+        raise ToolError("The request was cancelled at a cooperative checkpoint.") from error
+    except ToolError:
+        emit("rejected", None)
+        raise
+    except Exception:
+        emit("error", None)
+        raise
+    emit(result.classification, result.commit_reference)
+    return contracts.validate_result(operation, result.content)
+
+
+def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPServer:
+    server = MCPServer("pinboard", version=__version__, log_level="ERROR")
+    request_ids = itertools.count(1)
+
+    @server.tool(
+        name=ITEM_STATUS_TOOL,
+        description="Read one current Pinboard item status from an explicit local project and work root.",
+    )
+    async def item_status(project_root: str, work_root: str, item_id: str) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            ITEM_STATUS_TOOL,
+            project_root,
+            partial(_read_item_status, project_root, work_root, item_id),
+        )
+
+    @server.tool(
+        name=PROPOSAL_CREATE_TOOL,
+        description="Create one durable Pinboard proposal from its canonical structured input.",
+    )
+    async def proposal_create(
+        project_root: str,
+        work_root: str,
+        proposal: dict[str, proposal_models.ProposalJsonValue],
+        actor_task_id: str,
+        actor_host_id: str,
+    ) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            PROPOSAL_CREATE_TOOL,
+            project_root,
+            partial(_proposal_created, project_root, work_root, proposal, actor_task_id, actor_host_id),
+        )
+
+    @server.tool(
+        name=BRIEF_PUBLISH_TOOL,
+        description="Publish and accept one canonical Pinboard work brief from structured input.",
+    )
+    async def brief_publish(
+        project_root: str,
+        work_root: str,
+        brief: dict[str, work_brief_models.WorkBriefJsonValue],
+    ) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            BRIEF_PUBLISH_TOOL,
+            project_root,
+            partial(_brief_published, project_root, work_root, brief),
+        )
+
+    @server.tool(
+        name=OVERVIEW_TOOL,
+        description="Read the current authoritative Pinboard work overview without changing durable state.",
+    )
+    async def overview(project_root: str, work_root: str) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            OVERVIEW_TOOL,
+            project_root,
+            partial(_read_overview, project_root, work_root),
+        )
+
+    @server.tool(
+        name=ACTIONS_TOOL,
+        description="Discover exact current legal Pinboard actions and their strict payload contracts.",
+    )
+    async def action_discovery(
+        project_root: str,
+        work_root: str,
+        role: str,
+        lease_id: str | _OmittedAuthorityField | None = _OmittedAuthorityField.VALUE,
+        generation: IntegerBoundaryValue | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
+        action_id: dict[str, JsonValue] | None = None,
+    ) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            ACTIONS_TOOL,
+            project_root,
+            partial(_read_actions, project_root, work_root, role, lease_id, generation, action_id),
+        )
+
+    @server.tool(
+        name=ATTEMPT_INSPECT_TOOL,
+        description="Inspect one exact Pinboard attempt, its accepted brief, evidence references, and continuation.",
+    )
+    async def attempt_inspect(project_root: str, work_root: str, attempt_id: str) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            ATTEMPT_INSPECT_TOOL,
+            project_root,
+            partial(_read_attempt_inspection, project_root, work_root, attempt_id),
+        )
+
+    @server.tool(
+        name=ARTIFACT_VERIFY_TOOL,
+        description="Verify an exact accepted Pinboard artifact reference and its immutable bytes.",
+    )
+    async def artifact_verify(
+        project_root: str,
+        work_root: str,
+        artifact_ref_id: IntegerBoundaryValue,
+        selector: str,
+        sha256: str,
+        size_bytes: IntegerBoundaryValue,
+    ) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            ARTIFACT_VERIFY_TOOL,
+            project_root,
+            partial(
+                _verify_artifact,
+                project_root,
+                work_root,
+                artifact_ref_id,
+                selector,
+                sha256,
+                size_bytes,
+            ),
+        )
+
+    _install_boundary_contracts(server)
+    return server
+
+
+def _install_boundary_contracts(server: MCPServer) -> None:
+    """Install exact schemas through the pinned SDK's mutable tool metadata seam."""
+    definitions = (
+        (
+            ITEM_STATUS_TOOL,
+            contracts.schema_for(contracts.ItemStatusRequest),
+            contracts.union_schema_for(contracts.ITEM_STATUS_RESULT_TYPES),
+        ),
+        (
+            PROPOSAL_CREATE_TOOL,
+            contracts.schema_for(contracts.ProposalCreateRequest),
+            contracts.union_schema_for(contracts.PROPOSAL_RESULT_TYPES),
+        ),
+        (
+            BRIEF_PUBLISH_TOOL,
+            contracts.schema_for(contracts.BriefPublishRequest),
+            contracts.union_schema_for(contracts.BRIEF_PUBLICATION_RESULT_TYPES),
+        ),
+        (
+            OVERVIEW_TOOL,
+            contracts.schema_for(contracts.OverviewRequest),
+            contracts.union_schema_for(contracts.OVERVIEW_RESULT_TYPES),
+        ),
+        (
+            ACTIONS_TOOL,
+            contracts.actions_request_schema(),
+            contracts.union_schema_for(contracts.ACTIONS_RESULT_TYPES),
+        ),
+        (
+            ATTEMPT_INSPECT_TOOL,
+            contracts.schema_for(contracts.AttemptInspectRequest),
+            contracts.union_schema_for(contracts.ATTEMPT_INSPECTION_RESULT_TYPES),
+        ),
+        (
+            ARTIFACT_VERIFY_TOOL,
+            contracts.schema_for(contracts.ArtifactVerifyRequest),
+            contracts.union_schema_for(contracts.ARTIFACT_VERIFICATION_RESULT_TYPES),
+        ),
+    )
+    for name, input_schema, output_schema in definitions:
+        tool = server._tool_manager.get_tool(name)
+        if tool is None:
+            raise RuntimeError(f"MCP tool '{name}' was not registered.")
+        tool.parameters = input_schema
+        tool.fn_metadata.output_schema = output_schema
+        tool.fn_metadata.arg_model.model_config["extra"] = "forbid"
+        tool.fn_metadata.arg_model.model_rebuild(force=True)
+
+
+def main() -> None:
+    executor = BoundedExecutor(worker_count=2, unfinished_limit=4)
+    diagnostics = Diagnostics(sys.stderr, event_limit=32, line_limit=256)
+    diagnostics.emit(
+        event="startup",
+        request_id=None,
+        operation=None,
+        project_id=None,
+        duration_ms=None,
+        classification="ready",
+        commit_reference=None,
+    )
+    try:
+        anyio.run(create_server(executor, diagnostics).run_stdio_async)
+    finally:
+        executor.shutdown()

@@ -1,5 +1,6 @@
+from pinboard.application import work_brief_models
+from pinboard.cli import work_inspection_models
 from pinboard.domain import decision_models
-from pinboard.interfaces import work_brief_models, work_inspection_models
 
 from .model import Box, Connector, Diagram, Guide, Note, Section
 

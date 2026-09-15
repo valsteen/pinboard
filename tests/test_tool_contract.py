@@ -6,10 +6,10 @@ import unittest
 from unittest.mock import patch
 
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.cli import cli_commands, cli_parser, tool_contract
+from pinboard.cli.entrypoint import main
+from pinboard.cli.errors import CommandFailure, CommandResult
 from pinboard.domain import decision_models
-from pinboard.interfaces import cli_commands, cli_parser, tool_contract
-from pinboard.interfaces.cli import main
-from pinboard.interfaces.errors import CommandFailure, CommandResult
 
 
 def expect_command_success[T](result: CommandResult[T]) -> T:
@@ -375,7 +375,7 @@ class ToolContractTest(unittest.TestCase):
                     contextlib.redirect_stdout(stdout),
                     contextlib.redirect_stderr(stderr),
                     patch(
-                        "pinboard.interfaces.cli.work_state_commands.resolve_roots",
+                        "pinboard.cli.entrypoint.work_state_commands.resolve_roots",
                         side_effect=AssertionError("unexpected project-root read"),
                     ),
                 ):
@@ -488,7 +488,7 @@ class ToolContractTest(unittest.TestCase):
             contextlib.redirect_stdout(stdout),
             contextlib.redirect_stderr(stderr),
             patch(
-                "pinboard.interfaces.cli._dispatch",
+                "pinboard.cli.entrypoint._dispatch",
                 side_effect=StorageError(StorageErrorCode.BUSY, "held by another process", retryable=True),
             ),
         ):

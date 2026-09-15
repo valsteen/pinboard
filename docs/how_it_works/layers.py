@@ -3,7 +3,7 @@ from pathlib import Path
 from .model import Box, Connector, Diagram, Guide, Note, Section
 
 LAYER_DIRECTORIES: dict[str, str] = {
-    "interfaces": "Turn outside input and optional setup context into exact commands and thematic use cases.",
+    "cli": "Turn outside input and optional setup context into exact commands and thematic use cases.",
     "application": "Request exact operation facts or complete state, then project accepted decisions into targeted mutations.",
     "domain": "Decide what is legal without reading files, issuing SQL, or presenting commands.",
     "adapters": "Store and recover accepted facts without deciding workflow policy.",
@@ -14,7 +14,7 @@ REQUIRED_ARCHITECTURE_HEADINGS = (
     "### Domain",
     "### Application",
     "### Adapters",
-    "### Interfaces",
+    "### CLI",
 )
 
 

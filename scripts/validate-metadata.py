@@ -51,7 +51,8 @@ EXPECTED_SKILL_DISPLAY_NAMES: Final = {
     "technical-writing": "Technical Writing",
 }
 EXPECTED_ENTRY_POINTS: Final = {
-    "pinboard": "pinboard.interfaces.cli:main",
+    "pinboard": "pinboard.cli.entrypoint:main",
+    "pinboard-mcp": "pinboard.mcp.server:main",
 }
 
 type SkillName = Annotated[
@@ -249,10 +250,10 @@ def validate_project_metadata() -> None:
         raise ValueError("distribution identity, readme, or license publication is invalid")
     if project.requires_python != ">=3.14,<3.15":
         raise ValueError("distribution must preserve Python 3.14-only compatibility")
-    if project.dependencies != ("msgspec>=0.21.1",):
-        raise ValueError("msgspec must remain the sole runtime dependency")
+    if project.dependencies != ("mcp==2.2.0", "msgspec>=0.21.1"):
+        raise ValueError("runtime dependencies must be exact and limited to MCP plus msgspec")
     if project.scripts != EXPECTED_ENTRY_POINTS:
-        raise ValueError("pinboard must be the only project entry point to the current engine")
+        raise ValueError("project entry points must expose exactly the CLI and local-stdio MCP boundaries")
 
 
 def validate_codex_marketplace() -> None:

@@ -6,8 +6,9 @@ import sqlite3
 from unittest.mock import patch
 
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.application import checkpoint_compatibility_models, work_brief_models
+from pinboard.cli import work_inspection
 from pinboard.domain import work_models
-from pinboard.interfaces import checkpoint_compatibility_models, work_brief_models, work_inspection
 from tests.checkpoint_support import AcceptedPackageFixture, CheckpointPackageSupport
 
 

@@ -21,7 +21,7 @@ from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state
+from pinboard.application import stored_state, work_brief_models
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, BriefArtifactRef, NewArtifact
 from pinboard.application.dispatch_models import (
     FRESH_CONTEXT_REQUIRED,
@@ -30,20 +30,20 @@ from pinboard.application.dispatch_models import (
     FreshContextRequired,
 )
 from pinboard.application.ports import ArtifactReferenceAcceptance
-from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import HostId, ReviewId
-from pinboard.interfaces import dispatch_brief, work_brief_models
-from pinboard.interfaces.cli import main
-from pinboard.interfaces.dispatch_brief import (
+from pinboard.application.work_briefs import canonical_work_brief_bytes, canonical_work_brief_review_bytes
+from pinboard.cli import dispatch_brief
+from pinboard.cli.dispatch_brief import (
     SuppliedDispatchReview,
     _read_dispatch_brief,
     _render_dispatch_prompt,
     prepare_dispatch,
     read_dispatch_environment,
 )
-from pinboard.interfaces.errors import DispatchErrorCode, DispatchFailure, DispatchResult
-from pinboard.interfaces.work_briefs import canonical_work_brief_bytes, canonical_work_brief_review_bytes
+from pinboard.cli.entrypoint import main
+from pinboard.cli.errors import DispatchErrorCode, DispatchFailure, DispatchResult
+from pinboard.domain import decision_models, work_models
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.identifiers import HostId, ReviewId
 from tests.artifact_support import write_revision
 from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
@@ -288,7 +288,7 @@ class DispatchTest(unittest.TestCase):
         first = datetime.now(UTC)
         samples = tuple(first + timedelta(microseconds=index) for index in range(4))
 
-        with patch("pinboard.interfaces.dispatch_brief.datetime") as clock:
+        with patch("pinboard.cli.dispatch_brief.datetime") as clock:
             clock.now.side_effect = samples
             prompt = expect_dispatch_success(
                 prepare_dispatch(
@@ -838,7 +838,7 @@ class DispatchTest(unittest.TestCase):
             return rendered
 
         with patch(
-            "pinboard.interfaces.dispatch_brief._render_dispatch_prompt",
+            "pinboard.cli.dispatch_brief._render_dispatch_prompt",
             side_effect=render_then_accept_unrelated_revision,
         ):
             result = prepare_dispatch(
@@ -1337,7 +1337,7 @@ class DispatchTest(unittest.TestCase):
 
         before = store.validated_snapshot()
         before_files = {path.relative_to(roots.work_root) for path in roots.artifacts_root.rglob("*") if path.is_file()}
-        with patch("pinboard.interfaces.dispatch_brief.recheck_dispatch_authority", side_effect=authority_failure):
+        with patch("pinboard.cli.dispatch_brief.recheck_dispatch_authority", side_effect=authority_failure):
             result, stdout, stderr = self.run_cli(
                 *arguments(action(), publish_review=True, review_id="authority-recheck-failure")
             )
@@ -1355,7 +1355,7 @@ class DispatchTest(unittest.TestCase):
         after_files = {path.relative_to(roots.work_root) for path in roots.artifacts_root.rglob("*") if path.is_file()}
         self.assertEqual(len(before_files) + 2, len(after_files))
 
-        with patch("pinboard.interfaces.dispatch_brief.recheck_dispatch_authority", side_effect=authority_failure):
+        with patch("pinboard.cli.dispatch_brief.recheck_dispatch_authority", side_effect=authority_failure):
             result, stdout, stderr = self.run_cli(*arguments(action(), publish_review=False))
         self.assertEqual(12, result, stderr)
         without_prior_effect = msgspec.json.decode(stdout.encode())
@@ -1571,7 +1571,7 @@ class DispatchTest(unittest.TestCase):
         )
         self.assertEqual(14, result)
         self.assertEqual("", stdout)
-        self.assertTrue(stderr.startswith(f"DISPATCH_PROMPT_UNREADABLE: Cannot read '{missing_prompt}': "))
+        self.assertTrue(stderr.startswith(f"DISPATCH_PROMPT_UNREADABLE: Cannot read '{missing_prompt}': "), stderr)
 
         missing_review = project / "missing-review.json"
         result, stdout, stderr = self.run_cli(

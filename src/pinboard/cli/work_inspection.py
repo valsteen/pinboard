@@ -17,8 +17,8 @@ import msgspec
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.errors import ArtifactError
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.application import actions as action_queries
 from pinboard.application import (
+    action_models,
     checkpoint_compatibility_models,
     dispatch_models,
     ports,
@@ -27,14 +27,15 @@ from pinboard.application import (
     stored_state,
     work_brief_models,
 )
+from pinboard.application import (
+    actions as action_queries,
+)
 from pinboard.application.work_briefs import decode_canonical_work_brief
 from pinboard.cli import (
     action_selection,
     checkpoint_compatibility,
     cli_commands,
     errors,
-    transition_input,
-    transition_models,
     work_inspection_models,
     work_state,
 )
@@ -53,26 +54,8 @@ def _read_attempt_brief(
     brief = decode_canonical_work_brief(read_reference(roots.work, reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return errors.CommandFailure(domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, str(brief), None)
-    if (
-        brief.attempt_id,
-        brief.item_id,
-        brief.branch,
-        brief.base_revision,
-        brief.accepted_scope.revision,
-        brief.accepted_scope.digest,
-    ) != (
-        context.attempt_id,
-        context.item_id,
-        context.branch,
-        context.base_revision,
-        context.accepted_scope_revision,
-        context.accepted_scope_digest,
-    ):
-        return errors.CommandFailure(
-            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            "Accepted brief identity differs from the attempt.",
-            None,
-        )
+    if (failure := queries.validate_attempt_brief_identity(context, brief)) is not None:
+        return errors.CommandFailure(failure.code, failure.message, failure.details)
     return brief
 
 
@@ -284,7 +267,7 @@ def decode_correction_outcome(
     try:
         correction_input = msgspec.json.decode(
             bytes(receipt.input_payload),
-            type=transition_models.ReasonInputPayload,
+            type=action_models.ReasonInputPayload,
             strict=True,
         )
     except msgspec.DecodeError as error:
@@ -615,33 +598,16 @@ def show_review_job(  # noqa: C901, PLR0912, PLR0915 - one ordered selected-cont
     return 0
 
 
-def _project_action_semantics(
-    semantics: decision_models.ActionSemantics,
-) -> work_inspection_models.ActionSemanticsView:
-    """Preserve the stable `effect` field while naming its narrower lifecycle meaning internally."""
-
-    return work_inspection_models.ActionSemanticsView(
-        semantics.use_case,
-        semantics.lifecycle_effect.value,
-        tuple(role.value for role in semantics.permitted_roles),
-        semantics.subject_kind.value,
-        semantics.lifecycle_precondition.value,
-        semantics.practical_result,
-    )
-
-
 def describe_input_contract(
     kind: decision_models.ActionKind,
 ) -> errors.TransitionInputResult[work_inspection_models.InputContractView]:
     semantics = decision_models.action_semantics(kind)
-    encoded_schema = transition_input.encoded_transition_input_schema(kind)
-    if isinstance(encoded_schema, errors.TransitionInputFailure):
-        if encoded_schema.code != domain_errors.DecisionFailureCode.ACTION_NOT_MUTATING:
-            return encoded_schema
-        payload_schema = None
-    else:
-        payload_schema = msgspec.Raw(encoded_schema)
-    return work_inspection_models.InputContractView(kind.value, _project_action_semantics(semantics), payload_schema)
+    encoded_schema = action_queries.encoded_action_input_schema(kind)
+    return work_inspection_models.InputContractView(
+        kind,
+        action_queries.project_action_semantics(semantics),
+        None if encoded_schema is None else msgspec.json.decode(encoded_schema, type=action_models.JsonSchema),
+    )
 
 
 def project_action(
@@ -649,34 +615,7 @@ def project_action(
     *,
     include_input_contract: bool = False,
 ) -> errors.TransitionInputResult[work_inspection_models.ActionView]:
-    capability = action.capability
-    input_contract: work_inspection_models.InputContractView | None = None
-    if include_input_contract:
-        contract = describe_input_contract(action.kind)
-        if isinstance(contract, errors.TransitionInputFailure):
-            return contract
-        input_contract = contract
-    subject_revision = (
-        capability.subject_revision if isinstance(capability, decision_models.MutationActionCapability) else None
-    )
-    return work_inspection_models.ActionView(
-        action_id=decision_models.action_id(action),
-        kind=action.kind.value,
-        subject=capability.subject,
-        label=capability.label,
-        subject_revision=subject_revision,
-        authorization="observer" if capability.authorization is None else capability.authorization.value,
-        lease_id=capability.lease_id,
-        generation=(
-            capability.command_authority.generation
-            if capability.command_authority is not None
-            else capability.preparation_authority.generation
-            if capability.preparation_authority is not None
-            else None
-        ),
-        semantics=_project_action_semantics(decision_models.action_semantics(action.kind)),
-        input_contract=input_contract,
-    )
+    return action_queries.project_action(action, include_input_contract=include_input_contract)
 
 
 def project_parallel_preview(
@@ -914,7 +853,7 @@ def _read_action_snapshot(
     ):
         return LedgerSnapshot("", ())
     if action_id is not None:
-        scope = action_selection.action_identity_scope(action_id)
+        scope = action_queries.action_identity_scope(action_id)
         if scope is None:
             return errors.CommandFailure(
                 domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
@@ -976,15 +915,15 @@ def _completion_action_view(
                 reference.size_bytes,
             )
         )
-    model = transition_models.CoveredCompleteInputPayload if packages else transition_models.EvidenceInputPayload
+    model = action_models.CoveredCompleteInputPayload if packages else action_models.EvidenceInputPayload
     attempt = completion.attempt
     candidate = attempt.candidate_revision if isinstance(attempt, query_models.NonterminalAttemptContextFacts) else None
     return msgspec.structs.replace(
         projected,
         input_contract=work_inspection_models.CompletionInputContractView(
-            action.kind.value,
+            action.kind,
             projected.semantics,
-            msgspec.Raw(msgspec.json.encode(msgspec.json.schema(model))),
+            msgspec.json.schema(model),
             candidate,
             tuple(packages),
         ),
@@ -1079,19 +1018,21 @@ def show_input_contract(
     if command.json:
         write_json(contract)
     else:
-        print(f"OK INPUT_CONTRACT action_kind={contract.action_kind}")
+        print(f"OK INPUT_CONTRACT action_kind={contract.action_kind.value}")
         print(f"use_case={contract.semantics.use_case}")
         print(
-            f"effect={contract.semantics.effect} "
-            f"permitted_roles={','.join(contract.semantics.permitted_roles)} "
-            f"subject_kind={contract.semantics.subject_kind} "
-            f"lifecycle_precondition={contract.semantics.lifecycle_precondition}"
+            f"effect={contract.semantics.effect.value} "
+            f"permitted_roles={','.join(role.value for role in contract.semantics.permitted_roles)} "
+            f"subject_kind={contract.semantics.subject_kind.value} "
+            f"lifecycle_precondition={contract.semantics.lifecycle_precondition.value}"
         )
         print(f"practical_result={contract.semantics.practical_result}")
         if contract.payload_schema is None:
             print("payload_schema=none")
         else:
-            sys.stdout.write(msgspec.json.format(bytes(contract.payload_schema), indent=2).decode() + "\n")
+            sys.stdout.write(
+                msgspec.json.format(msgspec.json.encode(contract.payload_schema), indent=2).decode() + "\n"
+            )
     return 0
 
 

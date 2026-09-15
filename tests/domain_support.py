@@ -3,7 +3,7 @@ from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime
 from typing import Any  # noqa: TID251 - fixture corruption intentionally crosses the typed boundary
 
-from pinboard.cli import transition_models
+from pinboard.application import action_models
 from pinboard.cli.errors import TransitionInputFailure
 from pinboard.cli.transition_input import ParsedTransitionInput
 from pinboard.domain import decision_models, work_models
@@ -47,7 +47,7 @@ def expect_transition_command(
 ) -> decision_models.TransitionCommand:
     if isinstance(value, TransitionInputFailure):
         raise AssertionError(f"Expected a transition command, received {value.code.value}: {value.message}")
-    if isinstance(value, transition_models.ActivateInputPayload):
+    if isinstance(value, action_models.ActivateInputPayload):
         raise AssertionError("Expected a domain command, received an unresolved activation request.")
     return value
 

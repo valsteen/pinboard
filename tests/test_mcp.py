@@ -6,7 +6,9 @@ import tempfile
 import threading
 import unittest
 from collections.abc import Callable, Coroutine
-from datetime import UTC, datetime
+from copy import deepcopy
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,16 +25,19 @@ from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import queries, stored_state
+from pinboard.application import queries, query_models, stored_state
+from pinboard.application.artifacts import NewArtifact
 from pinboard.application.ports import WorkStoreError
 from pinboard.application.work_briefs import canonical_work_brief_bytes
-from pinboard.domain import work_models
+from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure
-from pinboard.domain.identifiers import ArtifactRefId, ItemId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, ItemId
+from pinboard.mcp import contracts
 from pinboard.mcp import server as mcp_server
+from tests.domain_support import action
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.test_proposals import proposal as proposal_input
-from tests.work_brief_support import example_work_brief
+from tests.work_brief_support import example_work_brief, work_a_brief
 
 
 def _run_async[Result](operation: Coroutine[None, None, Result]) -> Result:
@@ -146,7 +151,41 @@ class McpTransportTest(unittest.TestCase):
         subprocess.run(("git", "init", "--quiet", str(project)), check=True)
         roots = resolve_durable_roots(project)
         initialize_database(roots, SQLITE_NOW)
-        initialize_store(SQLiteWorkStore(roots.database_path), complete_sqlite_state())
+        brief_bytes = canonical_work_brief_bytes(work_a_brief(project))
+        published = (
+            ArtifactRepository(roots)
+            .publish(NewArtifact(work_models.ArtifactKind.BRIEF, "work-a-brief", 1, ".opaque", brief_bytes))
+            .reference
+        )
+        state = complete_sqlite_state()
+        observed_at = datetime.now(UTC)
+        authority = replace(
+            state.authority,
+            attempt_leases=tuple(
+                replace(lease, acquired_at=observed_at, expires_at=observed_at + timedelta(minutes=5))
+                for lease in state.authority.attempt_leases
+            ),
+        )
+        prior_reference = state.artifact_references[0]
+        brief_reference = stored_state.ArtifactReference(
+            prior_reference.artifact_ref_id,
+            published.key,
+            published.revision,
+            published.kind,
+            published.selector,
+            published.content_sha256,
+            published.size_bytes,
+            prior_reference.accepted_revision,
+            prior_reference.created_at,
+        )
+        initialize_store(
+            SQLiteWorkStore(roots.database_path),
+            replace(
+                state,
+                artifact_references=(brief_reference, *state.artifact_references[1:]),
+                authority=authority,
+            ),
+        )
         return temporary, project, roots
 
     def _expected_bytes(self, roots: DurableRoots, item_id: str) -> bytes:
@@ -156,6 +195,630 @@ class McpTransportTest(unittest.TestCase):
         if isinstance(projected, DecisionFailure):
             raise AssertionError(projected.message)
         return msgspec.json.encode(projected)
+
+    def test_action_and_continuation_results_reject_cross_correlated_content(self) -> None:
+        action_result = msgspec.json.decode(
+            msgspec.json.encode(
+                {
+                    "schema": "pinboard-mcp-actions-result/v1",
+                    "status": "ok",
+                    "actions": [
+                        mcp_server._mcp_action(action(decision_models.AcceptCheckpointAction, AttemptId("attempt-1")))
+                    ],
+                    "state_changed": False,
+                    "effect": "unchanged",
+                    "retry": "safe-to-repeat",
+                    "changed_surfaces": [],
+                }
+            )
+        )
+        assert isinstance(action_result, dict)
+        contracts.validate_result(mcp_server.ACTIONS_TOOL, action_result)
+
+        wrong_payload = deepcopy(action_result)
+        wrong_payload_action = wrong_payload["actions"][0]
+        assert isinstance(wrong_payload_action, dict)
+        wrong_payload_contract = wrong_payload_action["input_contract"]
+        assert isinstance(wrong_payload_contract, dict)
+        wrong_payload_contract["payload_schema"] = {"type": "object"}
+        with self.assertRaises((msgspec.ValidationError, ValueError)):
+            contracts.validate_result(mcp_server.ACTIONS_TOOL, wrong_payload)
+
+        wrong_identity = deepcopy(action_result)
+        wrong_identity_action = wrong_identity["actions"][0]
+        assert isinstance(wrong_identity_action, dict)
+        wrong_identity_action["action_id"] = {"kind": "block", "subject": "attempt-1"}
+        with self.assertRaises((msgspec.ValidationError, ValueError)):
+            contracts.validate_result(mcp_server.ACTIONS_TOOL, wrong_identity)
+
+        continuation = query_models.ActiveAttemptContinuation(
+            "pinboard-attempt-continuation/v1",
+            "attempt-1",
+            "item-1",
+            1,
+            "owner-task",
+            False,
+            False,
+            query_models.ActionContinuation("continue:attempt-1", decision_models.ActionKind.CONTINUE, "Continue."),
+            ("continue:attempt-1", "pause:attempt-1", "revise-item:item-1"),
+            ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
+        )
+        absent = contracts.EvidenceAbsent("/work/attempts/attempt-1/result.md")
+        presented_continuation = mcp_server._mcp_attempt_continuation(continuation)
+        assert not isinstance(presented_continuation, contracts.TerminalAttemptContinuation)
+        inspection = contracts.NonterminalAttemptInspectionSuccess(
+            "pinboard-mcp-attempt-inspection-result/v1",
+            "ok",
+            presented_continuation,
+            contracts.AcceptedBriefIdentity(
+                1, "/work/brief.json", "artifacts/briefs/a/1.json", "a" * 64, 1, 1, 1, "b" * 64
+            ),
+            absent,
+            contracts.EvidenceAbsent("/work/attempts/attempt-1/review.md"),
+            contracts.EvidenceAbsent("/work/attempts/attempt-1/blocker.md"),
+            False,
+            "unchanged",
+            "safe-to-repeat",
+            (),
+        )
+        inspection_result = msgspec.json.decode(msgspec.json.encode(inspection))
+        assert isinstance(inspection_result, dict)
+        contracts.validate_result(mcp_server.ATTEMPT_INSPECT_TOOL, inspection_result)
+
+        for field, value in (
+            (
+                "next_operation",
+                {
+                    "kind": "action",
+                    "action": {"target": "item", "action_kind": "continue"},
+                    "condition": "Continue.",
+                },
+            ),
+            ("legal_actions", [{"target": "item", "action_kind": "continue"}]),
+            ("forbidden_routes", list[str]()),
+        ):
+            with self.subTest(field=field):
+                invalid = deepcopy(inspection_result)
+                invalid_continuation = invalid["continuation"]
+                assert isinstance(invalid_continuation, dict)
+                invalid_continuation[field] = value
+                with self.assertRaises((msgspec.ValidationError, ValueError)):
+                    contracts.validate_result(mcp_server.ATTEMPT_INSPECT_TOOL, invalid)
+
+        missing_forbidden = deepcopy(inspection_result)
+        missing_forbidden_continuation = missing_forbidden["continuation"]
+        assert isinstance(missing_forbidden_continuation, dict)
+        missing_forbidden_continuation["forbidden_routes"] = list[str]()
+
+        state_incompatible_legal = deepcopy(inspection_result)
+        incompatible_continuation = state_incompatible_legal["continuation"]
+        assert isinstance(incompatible_continuation, dict)
+        incompatible_continuation["legal_actions"][0] = {
+            "target": "item",
+            "action_kind": "resume",
+        }
+        with self.assertRaises((msgspec.ValidationError, ValueError)):
+            contracts.validate_result(mcp_server.ATTEMPT_INSPECT_TOOL, state_incompatible_legal)
+
+        async def advertised_schema_scenario() -> None:
+            parameters = StdioServerParameters(command=sys.executable, args=["-m", "pinboard.mcp"], cwd=Path.cwd())
+            async with (
+                stdio_client(parameters) as streams,
+                ClientSession(*streams) as session,
+            ):
+                await session.initialize()
+                for tool_name, invalid in (
+                    (mcp_server.ACTIONS_TOOL, wrong_payload),
+                    (mcp_server.ACTIONS_TOOL, wrong_identity),
+                    (mcp_server.ATTEMPT_INSPECT_TOOL, missing_forbidden),
+                    (mcp_server.ATTEMPT_INSPECT_TOOL, state_incompatible_legal),
+                ):
+                    with self.assertRaises(RuntimeError):
+                        await session.validate_tool_result(
+                            tool_name,
+                            CallToolResult(content=[], structured_content=invalid),
+                        )
+
+        _run_async(advertised_schema_scenario())
+
+    def test_actions_reject_explicit_null_authority_fields_for_unleased_roles(self) -> None:
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+
+        async def scenario() -> tuple[CallToolResult, CallToolResult]:
+            parameters = StdioServerParameters(command=sys.executable, args=["-m", "pinboard.mcp"], cwd=Path.cwd())
+            async with (
+                stdio_client(parameters) as streams,
+                ClientSession(*streams) as session,
+            ):
+                await session.initialize()
+                common = {"project_root": str(project), "work_root": str(roots.work_root)}
+                return (
+                    await session.call_tool(
+                        mcp_server.ACTIONS_TOOL,
+                        common | {"role": "project", "lease_id": None},
+                    ),
+                    await session.call_tool(
+                        mcp_server.ACTIONS_TOOL,
+                        common | {"role": "observer", "generation": None},
+                    ),
+                )
+
+        for result in _run_async(scenario()):
+            self.assertFalse(result.is_error)
+            content = result.structured_content
+            self.assertIsInstance(content, dict)
+            self.assertEqual("ACTIONS_INVALID", content["code"])
+            self.assertFalse(content["state_changed"])
+
+    def test_negotiated_numeric_inputs_reach_strict_request_records_without_coercion(self) -> None:
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        brief_reference = SQLiteWorkStore(roots.database_path).validated_snapshot().artifact_references[0]
+
+        async def scenario() -> tuple[tuple[CallToolResult, str], ...]:
+            parameters = StdioServerParameters(command=sys.executable, args=["-m", "pinboard.mcp"], cwd=Path.cwd())
+            async with (
+                stdio_client(parameters) as streams,
+                ClientSession(*streams) as session,
+            ):
+                await session.initialize()
+                common = {"project_root": str(project), "work_root": str(roots.work_root)}
+                artifact = {
+                    "artifact_ref_id": int(brief_reference.artifact_ref_id),
+                    "selector": brief_reference.selector,
+                    "sha256": brief_reference.content_sha256,
+                    "size_bytes": brief_reference.size_bytes,
+                }
+                return (
+                    (
+                        await session.call_tool(
+                            mcp_server.ACTIONS_TOOL,
+                            common | {"role": "worker", "lease_id": "attempt-lease-a", "generation": "3"},
+                        ),
+                        "ACTIONS_INVALID",
+                    ),
+                    (
+                        await session.call_tool(
+                            mcp_server.ACTIONS_TOOL,
+                            common | {"role": "worker", "lease_id": "attempt-lease-a", "generation": True},
+                        ),
+                        "ACTIONS_INVALID",
+                    ),
+                    (
+                        await session.call_tool(
+                            mcp_server.ARTIFACT_VERIFY_TOOL,
+                            common | artifact | {"artifact_ref_id": str(brief_reference.artifact_ref_id)},
+                        ),
+                        "ARTIFACT_VERIFY_INVALID",
+                    ),
+                    (
+                        await session.call_tool(
+                            mcp_server.ARTIFACT_VERIFY_TOOL,
+                            common | artifact | {"artifact_ref_id": True},
+                        ),
+                        "ARTIFACT_VERIFY_INVALID",
+                    ),
+                    (
+                        await session.call_tool(
+                            mcp_server.ARTIFACT_VERIFY_TOOL,
+                            common | artifact | {"size_bytes": str(brief_reference.size_bytes)},
+                        ),
+                        "ARTIFACT_VERIFY_INVALID",
+                    ),
+                    (
+                        await session.call_tool(
+                            mcp_server.ARTIFACT_VERIFY_TOOL,
+                            common | artifact | {"size_bytes": True},
+                        ),
+                        "ARTIFACT_VERIFY_INVALID",
+                    ),
+                )
+
+        for result, expected_code in _run_async(scenario()):
+            self.assertFalse(result.is_error)
+            content = result.structured_content
+            self.assertIsInstance(content, dict)
+            self.assertEqual(expected_code, content["code"])
+            self.assertFalse(content["state_changed"])
+            self.assertEqual([], content["changed_surfaces"])
+
+    def test_negotiated_schemas_reject_cross_parent_action_identities(self) -> None:
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        token = mcp_server.CancellationToken()
+        common = (str(project), str(roots.work_root))
+        action_result = msgspec.json.decode(
+            msgspec.json.encode(
+                mcp_server._read_actions(
+                    *common,
+                    "project",
+                    mcp_server._OmittedAuthorityField.VALUE,
+                    mcp_server._OmittedAuthorityField.VALUE,
+                    {"kind": "continue", "subject": "work-a-1"},
+                    token,
+                ).content
+            )
+        )
+        attempt_result = msgspec.json.decode(
+            msgspec.json.encode(mcp_server._read_attempt_inspection(*common, "work-a-1", token).content)
+        )
+        assert isinstance(action_result, dict)
+        assert isinstance(attempt_result, dict)
+
+        wrong_action_subject = deepcopy(action_result)
+        action = wrong_action_subject["actions"][0]
+        assert isinstance(action, dict)
+        action["subject"] = "work-a-2"
+
+        wrong_next_operation = deepcopy(attempt_result)
+        continuation = wrong_next_operation["continuation"]
+        assert isinstance(continuation, dict)
+        operation = continuation["next_operation"]
+        assert isinstance(operation, dict)
+        selected_action = operation["action"]
+        assert isinstance(selected_action, dict)
+        selected_action["attempt_id"] = "work-a-2"
+
+        wrong_legal_action = deepcopy(attempt_result)
+        continuation = wrong_legal_action["continuation"]
+        assert isinstance(continuation, dict)
+        legal_action = continuation["legal_actions"][0]
+        assert isinstance(legal_action, dict)
+        legal_action["attempt_id"] = "work-a-2"
+
+        async def scenario() -> None:
+            parameters = StdioServerParameters(command=sys.executable, args=["-m", "pinboard.mcp"], cwd=Path.cwd())
+            async with (
+                stdio_client(parameters) as streams,
+                ClientSession(*streams) as session,
+            ):
+                await session.initialize()
+                await session.validate_tool_result(
+                    mcp_server.ACTIONS_TOOL,
+                    CallToolResult(content=[], structured_content=action_result),
+                )
+                await session.validate_tool_result(
+                    mcp_server.ATTEMPT_INSPECT_TOOL,
+                    CallToolResult(content=[], structured_content=attempt_result),
+                )
+                for tool_name, invalid in (
+                    (mcp_server.ACTIONS_TOOL, wrong_action_subject),
+                    (mcp_server.ATTEMPT_INSPECT_TOOL, wrong_next_operation),
+                    (mcp_server.ATTEMPT_INSPECT_TOOL, wrong_legal_action),
+                ):
+                    with self.assertRaises(RuntimeError):
+                        await session.validate_tool_result(
+                            tool_name,
+                            CallToolResult(content=[], structured_content=invalid),
+                        )
+
+        _run_async(scenario())
+
+    def test_attempt_projection_preserves_every_closed_continuation_without_parent_duplicates(self) -> None:
+        forbidden = ("create-user-task", "wake-user-task", "return-ownership-to-parent")
+        common = ("pinboard-attempt-continuation/v1", "attempt-1", "item-1", 1, "owner-task", False, False)
+        continuations: tuple[query_models.AttemptContinuation, ...] = (
+            query_models.ActiveAttemptContinuation(
+                *common,
+                query_models.ActionContinuation("continue:attempt-1", decision_models.ActionKind.CONTINUE, "Continue."),
+                ("continue:attempt-1", "revise-item:item-1"),
+                forbidden,
+            ),
+            query_models.ReviewAttemptContinuation(
+                *common,
+                query_models.ReviewContinuation("attempt-1", "candidate-1", "runtime-subagent"),
+                ("accept-checkpoint:attempt-1", "return-for-correction:attempt-1"),
+                forbidden,
+            ),
+            query_models.PausedAttemptContinuation(
+                *common,
+                query_models.ActionContinuation("resume:item-1", decision_models.ActionKind.RESUME, "Resume."),
+                ("resume:item-1",),
+                forbidden,
+            ),
+            query_models.BlockedAttemptContinuation(
+                *common,
+                query_models.DependencyContinuation(("dependency-1",)),
+                ("resume:item-1",),
+                forbidden,
+            ),
+            query_models.TerminalAttemptContinuation(
+                "pinboard-attempt-continuation/v1",
+                "attempt-1",
+                "item-1",
+                1,
+                None,
+                True,
+                False,
+                None,
+                (),
+                forbidden,
+            ),
+        )
+
+        for continuation in continuations:
+            with self.subTest(state=continuation.state):
+                presented = mcp_server._mcp_attempt_continuation(continuation)
+                encoded = msgspec.to_builtins(presented)
+                assert isinstance(encoded, dict)
+                self.assertEqual("attempt-1", encoded["attempt_id"])
+                self.assertEqual("item-1", encoded["item_id"])
+                self.assertNotIn("attempt_id", encoded.get("next_operation") or {})
+                for action_identity in encoded["legal_actions"]:
+                    self.assertEqual({"target", "action_kind"}, set(action_identity))
+
+        with self.assertRaises(ValueError):
+            contracts.ContinuationDependencies(("dependency-1", "dependency-1"))
+        with self.assertRaises(ValueError):
+            contracts.TerminalAttemptContinuation(
+                "pinboard-attempt-continuation/v1",
+                "attempt-1",
+                "item-1",
+                1,
+                None,
+                False,
+                False,
+                None,
+                (),
+                forbidden,
+            )
+
+    def test_sdk_stdio_workflow_discovery_and_verification_are_read_only(self) -> None:
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        store = SQLiteWorkStore(roots.database_path)
+        before = store.validated_snapshot()
+        brief_reference = before.artifact_references[0]
+        brief_bytes = (roots.work_root / brief_reference.selector).read_bytes()
+        view_files = tuple(
+            sorted(
+                path.relative_to(roots.work_root) for path in (roots.work_root / "views").rglob("*") if path.is_file()
+            )
+        )
+
+        async def scenario() -> tuple[CallToolResult, ...]:
+            parameters = StdioServerParameters(command=sys.executable, args=["-m", "pinboard.mcp"], cwd=Path.cwd())
+            async with (
+                stdio_client(parameters) as streams,
+                ClientSession(*streams) as session,
+            ):
+                await session.initialize()
+                common = {"project_root": str(project), "work_root": str(roots.work_root)}
+                return (
+                    await session.call_tool(mcp_server.OVERVIEW_TOOL, common),
+                    await session.call_tool(mcp_server.ACTIONS_TOOL, common | {"role": "observer"}),
+                    await session.call_tool(mcp_server.ACTIONS_TOOL, common | {"role": "project"}),
+                    await session.call_tool(
+                        mcp_server.ACTIONS_TOOL,
+                        common
+                        | {
+                            "role": "project",
+                            "action_id": {"kind": "continue", "subject": "work-a-1"},
+                        },
+                    ),
+                    await session.call_tool(
+                        mcp_server.ACTIONS_TOOL,
+                        common
+                        | {
+                            "role": "worker",
+                            "lease_id": "attempt-lease-a",
+                            "generation": 3,
+                        },
+                    ),
+                    await session.call_tool(
+                        mcp_server.ACTIONS_TOOL,
+                        common | {"role": "preparer", "lease_id": "missing-lease", "generation": 1},
+                    ),
+                    await session.call_tool(
+                        mcp_server.ACTIONS_TOOL,
+                        common | {"role": "worker", "lease_id": "attempt-lease-a"},
+                    ),
+                    await session.call_tool(
+                        mcp_server.ATTEMPT_INSPECT_TOOL,
+                        common | {"attempt_id": "work-a-1"},
+                    ),
+                    await session.call_tool(
+                        mcp_server.ARTIFACT_VERIFY_TOOL,
+                        common
+                        | {
+                            "artifact_ref_id": int(brief_reference.artifact_ref_id),
+                            "selector": brief_reference.selector,
+                            "sha256": brief_reference.content_sha256,
+                            "size_bytes": brief_reference.size_bytes,
+                        },
+                    ),
+                    await session.call_tool(
+                        mcp_server.ARTIFACT_VERIFY_TOOL,
+                        common
+                        | {
+                            "artifact_ref_id": int(brief_reference.artifact_ref_id),
+                            "selector": brief_reference.selector,
+                            "sha256": "0" * 64,
+                            "size_bytes": brief_reference.size_bytes,
+                        },
+                    ),
+                )
+
+        (
+            overview,
+            observer,
+            project_actions,
+            selected_action,
+            worker,
+            preparer,
+            invalid_worker,
+            attempt,
+            verified,
+            mismatch,
+        ) = _run_async(scenario())
+        for successful in (overview, observer, project_actions, selected_action, worker, attempt, verified):
+            self.assertFalse(successful.is_error)
+            self.assertIsInstance(successful.structured_content, dict)
+        overview_content = overview.structured_content
+        assert isinstance(overview_content, dict)
+        self.assertEqual("pinboard-overview/v5", overview_content["schema"])
+        self.assertEqual("sqlite-v6", overview_content["authority"])
+        self.assertEqual(["work-a-1"], overview_content["active_attempts"])
+        observer_content = observer.structured_content
+        assert isinstance(observer_content, dict)
+        self.assertEqual(["inspect"], [value["action_id"]["kind"] for value in observer_content["actions"]])
+        project_content = project_actions.structured_content
+        assert isinstance(project_content, dict)
+        self.assertTrue(project_content["actions"])
+        self.assertTrue(all(value["input_contract"] is not None for value in project_content["actions"]))
+        selected_content = selected_action.structured_content
+        assert isinstance(selected_content, dict)
+        self.assertEqual(
+            [{"kind": "continue", "subject": "work-a-1"}],
+            [value["action_id"] for value in selected_content["actions"]],
+        )
+        worker_content = worker.structured_content
+        assert isinstance(worker_content, dict)
+        self.assertIn("continue", [value["action_id"]["kind"] for value in worker_content["actions"]])
+        for failure, code in (
+            (preparer, "ACTION_NOT_AVAILABLE"),
+            (invalid_worker, "ACTIONS_INVALID"),
+            (mismatch, "ARTIFACT_REFERENCE_MISMATCH"),
+        ):
+            self.assertFalse(failure.is_error)
+            failure_content = failure.structured_content
+            assert isinstance(failure_content, dict)
+            self.assertEqual(code, failure_content["code"])
+            self.assertFalse(failure_content["state_changed"])
+            self.assertEqual([], failure_content["changed_surfaces"])
+        attempt_content = attempt.structured_content
+        assert isinstance(attempt_content, dict)
+        self.assertEqual("work-a-1", attempt_content["continuation"]["attempt_id"])
+        self.assertEqual(brief_reference.content_sha256, attempt_content["accepted_brief"]["sha256"])
+        verified_content = verified.structured_content
+        assert isinstance(verified_content, dict)
+        self.assertEqual("pinboard-verified-artifact-reference/v1", verified_content["schema"])
+        self.assertTrue(verified_content["verified"])
+        self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
+        self.assertEqual(brief_bytes, (roots.work_root / brief_reference.selector).read_bytes())
+        self.assertEqual(
+            view_files,
+            tuple(
+                sorted(
+                    path.relative_to(roots.work_root)
+                    for path in (roots.work_root / "views").rglob("*")
+                    if path.is_file()
+                )
+            ),
+        )
+
+    def test_workflow_read_handlers_cover_success_and_structured_rejections(self) -> None:
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        token = mcp_server.CancellationToken()
+        reference = SQLiteWorkStore(roots.database_path).validated_snapshot().artifact_references[0]
+        common = (str(project), str(roots.work_root))
+
+        results = (
+            (mcp_server.OVERVIEW_TOOL, mcp_server._read_overview(*common, token)),
+            (mcp_server.OVERVIEW_TOOL, mcp_server._read_overview("", str(roots.work_root), token)),
+            (mcp_server.ACTIONS_TOOL, mcp_server._read_actions(*common, "observer", None, None, None, token)),
+            (mcp_server.ACTIONS_TOOL, mcp_server._read_actions(*common, "project", None, None, None, token)),
+            (
+                mcp_server.ACTIONS_TOOL,
+                mcp_server._read_actions(*common, "worker", "attempt-lease-a", 3, None, token),
+            ),
+            (
+                mcp_server.ACTIONS_TOOL,
+                mcp_server._read_actions(*common, "preparer", "missing-lease", 1, None, token),
+            ),
+            (
+                mcp_server.ACTIONS_TOOL,
+                mcp_server._read_actions(*common, "worker", "attempt-lease-a", None, None, token),
+            ),
+            (
+                mcp_server.ACTIONS_TOOL,
+                mcp_server._read_actions(
+                    *common,
+                    "project",
+                    None,
+                    None,
+                    {"kind": "continue", "subject": "missing"},
+                    token,
+                ),
+            ),
+            (
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                mcp_server._read_attempt_inspection(*common, "work-a-1", token),
+            ),
+            (
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                mcp_server._read_attempt_inspection(*common, "missing-attempt", token),
+            ),
+            (
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                mcp_server._read_attempt_inspection(*common, "", token),
+            ),
+            (
+                mcp_server.ARTIFACT_VERIFY_TOOL,
+                mcp_server._verify_artifact(
+                    *common,
+                    int(reference.artifact_ref_id),
+                    reference.selector,
+                    reference.content_sha256,
+                    reference.size_bytes,
+                    token,
+                ),
+            ),
+            (
+                mcp_server.ARTIFACT_VERIFY_TOOL,
+                mcp_server._verify_artifact(
+                    *common,
+                    999,
+                    reference.selector,
+                    reference.content_sha256,
+                    reference.size_bytes,
+                    token,
+                ),
+            ),
+            (
+                mcp_server.ARTIFACT_VERIFY_TOOL,
+                mcp_server._verify_artifact(
+                    *common,
+                    int(reference.artifact_ref_id),
+                    reference.selector,
+                    "0" * 64,
+                    reference.size_bytes,
+                    token,
+                ),
+            ),
+            (
+                mcp_server.ARTIFACT_VERIFY_TOOL,
+                mcp_server._verify_artifact(
+                    *common,
+                    int(reference.artifact_ref_id),
+                    "",
+                    reference.content_sha256,
+                    reference.size_bytes,
+                    token,
+                ),
+            ),
+        )
+        for tool_name, result in results:
+            with self.subTest(tool_name=tool_name, classification=result.classification):
+                self.assertEqual(result.content, contracts.validate_result(tool_name, result.content))
+
+        artifact_path = roots.work_root / reference.selector
+        artifact_path.write_bytes(b"corrupt")
+        corrupted = mcp_server._verify_artifact(
+            *common,
+            int(reference.artifact_ref_id),
+            reference.selector,
+            reference.content_sha256,
+            reference.size_bytes,
+            token,
+        )
+        self.assertEqual("ARTIFACT_BYTES_INVALID", corrupted.content["code"])
+        self.assertEqual(
+            corrupted.content,
+            contracts.validate_result(mcp_server.ARTIFACT_VERIFY_TOOL, corrupted.content),
+        )
 
     def test_mcp_cancellation_releases_running_and_queued_admission(self) -> None:  # noqa: PLR0915 - one MCP cancellation journey
         executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=2)
@@ -820,7 +1483,15 @@ class McpTransportTest(unittest.TestCase):
             diagnostics.seek(0)
             stderr = diagnostics.read()
         self.assertEqual(
-            {mcp_server.ITEM_STATUS_TOOL, mcp_server.PROPOSAL_CREATE_TOOL, mcp_server.BRIEF_PUBLISH_TOOL},
+            {
+                mcp_server.ITEM_STATUS_TOOL,
+                mcp_server.PROPOSAL_CREATE_TOOL,
+                mcp_server.BRIEF_PUBLISH_TOOL,
+                mcp_server.OVERVIEW_TOOL,
+                mcp_server.ACTIONS_TOOL,
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                mcp_server.ARTIFACT_VERIFY_TOOL,
+            },
             {tool.name for tool in tools},
         )
         tools_by_name = {tool.name: tool for tool in tools}

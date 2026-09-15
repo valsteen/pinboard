@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -119,6 +119,10 @@ class ActionContinuation(msgspec.Struct, tag="action", tag_field="kind", frozen=
     action_kind: decision_models.ActionKind
     condition: str
 
+    def __post_init__(self) -> None:
+        if not self.action_id.startswith(f"{self.action_kind.value}:"):
+            raise ValueError("continuation action identity must match its action kind")
+
 
 class ReviewContinuation(
     msgspec.Struct, tag="review-subagent", tag_field="kind", frozen=True, forbid_unknown_fields=True
@@ -134,18 +138,206 @@ class DependencyContinuation(
     dependencies: tuple[str, ...]
 
 
-class AttemptContinuation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+type NonterminalAttemptState = Literal[
+    work_models.AttemptState.ACTIVE,
+    work_models.AttemptState.PAUSED,
+    work_models.AttemptState.BLOCKED,
+    work_models.AttemptState.REVIEW,
+]
+
+
+class AttemptContinuationIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-attempt-continuation/v1"]
     attempt_id: str
     item_id: str
     revision: int
-    state: work_models.AttemptState
-    owner_task_id: str | None
+
+
+def _continuation_action_subject(
+    kind: decision_models.ActionKind,
+    attempt_id: str,
+    item_id: str,
+) -> str:
+    match decision_models.action_semantics(kind).subject_kind:
+        case decision_models.ActionSubjectKind.ATTEMPT:
+            return attempt_id
+        case decision_models.ActionSubjectKind.ITEM:
+            return item_id
+        case decision_models.ActionSubjectKind.LEDGER | decision_models.ActionSubjectKind.PROPOSAL:
+            raise ValueError("attempt continuations may contain only attempt and item actions")
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _validate_continuation_action(action_id: str, attempt_id: str, item_id: str) -> None:
+    kind_value, separator, subject = action_id.partition(":")
+    if not separator or not subject:
+        raise ValueError("continuation legal action identities must be canonical")
+    try:
+        kind = decision_models.ActionKind(kind_value)
+    except ValueError as error:
+        raise ValueError("continuation legal action kind must be known") from error
+    if subject != _continuation_action_subject(kind, attempt_id, item_id):
+        raise ValueError("continuation legal action must target its parent attempt or item")
+
+
+class TerminalAttemptContinuation(
+    AttemptContinuationIdentity,
+    tag="done",
+    tag_field="state",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    owner_task_id: None
     terminal: bool
     user_input_required: bool
-    next_operation: ActionContinuation | ReviewContinuation | DependencyContinuation | None
+    next_operation: None
+    legal_actions: tuple[()]
+    forbidden_routes: tuple[Literal["create-user-task", "wake-user-task", "return-ownership-to-parent"], ...]
+
+    @property
+    def state(self) -> work_models.AttemptState:
+        return work_models.AttemptState.DONE
+
+    def __post_init__(self) -> None:
+        if not self.attempt_id or not self.item_id or not self.terminal or self.user_input_required:
+            raise ValueError("a terminal continuation requires exact terminal flags")
+        if self.forbidden_routes != ("create-user-task", "wake-user-task", "return-ownership-to-parent"):
+            raise ValueError("an attempt continuation requires the exact forbidden routes")
+
+
+class NonterminalAttemptContinuationBase(AttemptContinuationIdentity, frozen=True, forbid_unknown_fields=True):
+    owner_task_id: str
+    terminal: bool
+    user_input_required: bool
+    next_operation: ActionContinuation | ReviewContinuation | DependencyContinuation
     legal_actions: tuple[str, ...]
     forbidden_routes: tuple[Literal["create-user-task", "wake-user-task", "return-ownership-to-parent"], ...]
+
+    def _validate_common(self) -> None:
+        if (
+            not self.attempt_id
+            or not self.item_id
+            or self.terminal
+            or self.user_input_required
+            or not self.owner_task_id
+            or not self.legal_actions
+        ):
+            raise ValueError("a nonterminal continuation requires at least one legal action")
+        if self.forbidden_routes != ("create-user-task", "wake-user-task", "return-ownership-to-parent"):
+            raise ValueError("an attempt continuation requires the exact forbidden routes")
+        if len(set(self.legal_actions)) != len(self.legal_actions):
+            raise ValueError("continuation legal actions must be unique")
+        for action_id in self.legal_actions:
+            _validate_continuation_action(action_id, self.attempt_id, self.item_id)
+        operation = self.next_operation
+        if isinstance(operation, ActionContinuation):
+            if operation.action_id not in self.legal_actions:
+                raise ValueError("continuation action must be one of its legal actions")
+        elif isinstance(operation, ReviewContinuation):
+            if operation.attempt_id != self.attempt_id or not operation.candidate_revision:
+                raise ValueError("review continuation must target its parent attempt and candidate")
+            if f"{decision_models.ActionKind.ACCEPT_CHECKPOINT.value}:{self.attempt_id}" not in self.legal_actions:
+                raise ValueError("review continuation requires the matching accept-checkpoint action")
+        elif not operation.dependencies or len(set(operation.dependencies)) != len(operation.dependencies):
+            raise ValueError("dependency continuations require unique dependencies")
+
+
+class ActiveAttemptContinuation(
+    NonterminalAttemptContinuationBase,
+    tag="active",
+    tag_field="state",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    @property
+    def state(self) -> work_models.AttemptState:
+        return work_models.AttemptState.ACTIVE
+
+    def __post_init__(self) -> None:
+        self._validate_common()
+        operation = self.next_operation
+        if not isinstance(operation, ActionContinuation) or operation.action_kind not in (
+            decision_models.ActionKind.CONTINUE,
+            decision_models.ActionKind.PAUSE,
+        ):
+            raise ValueError("an active continuation requires a continue or pause action")
+
+
+class ReviewAttemptContinuation(
+    NonterminalAttemptContinuationBase,
+    tag="review",
+    tag_field="state",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    @property
+    def state(self) -> work_models.AttemptState:
+        return work_models.AttemptState.REVIEW
+
+    def __post_init__(self) -> None:
+        self._validate_common()
+        operation = self.next_operation
+        if not (
+            isinstance(operation, ReviewContinuation)
+            or (
+                isinstance(operation, ActionContinuation)
+                and operation.action_kind == decision_models.ActionKind.RETURN_FOR_CORRECTION
+            )
+        ):
+            raise ValueError("a review continuation requires review or correction work")
+
+
+class PausedAttemptContinuation(
+    NonterminalAttemptContinuationBase,
+    tag="paused",
+    tag_field="state",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    @property
+    def state(self) -> work_models.AttemptState:
+        return work_models.AttemptState.PAUSED
+
+    def __post_init__(self) -> None:
+        self._validate_common()
+        operation = self.next_operation
+        if not (
+            isinstance(operation, DependencyContinuation)
+            or (
+                isinstance(operation, ActionContinuation) and operation.action_kind == decision_models.ActionKind.RESUME
+            )
+        ):
+            raise ValueError("a paused continuation requires dependency or resume work")
+
+
+class BlockedAttemptContinuation(
+    NonterminalAttemptContinuationBase,
+    tag="blocked",
+    tag_field="state",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    @property
+    def state(self) -> work_models.AttemptState:
+        return work_models.AttemptState.BLOCKED
+
+    def __post_init__(self) -> None:
+        self._validate_common()
+        operation = self.next_operation
+        if not (
+            isinstance(operation, DependencyContinuation)
+            or (
+                isinstance(operation, ActionContinuation) and operation.action_kind == decision_models.ActionKind.RESUME
+            )
+        ):
+            raise ValueError("a blocked continuation requires dependency or resume work")
+
+
+type NonterminalAttemptContinuation = (
+    ActiveAttemptContinuation | ReviewAttemptContinuation | PausedAttemptContinuation | BlockedAttemptContinuation
+)
+type AttemptContinuation = TerminalAttemptContinuation | NonterminalAttemptContinuation
 
 
 type NonterminalItemState = Literal[
@@ -173,14 +365,6 @@ class TerminalAttemptContextFacts:
     project_revision: int
     attempt_id: AttemptId
     item_id: ItemId
-
-
-type NonterminalAttemptState = Literal[
-    work_models.AttemptState.ACTIVE,
-    work_models.AttemptState.PAUSED,
-    work_models.AttemptState.BLOCKED,
-    work_models.AttemptState.REVIEW,
-]
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,29 +529,25 @@ class ParallelPreviewFacts:
     items: tuple[ParallelPreviewItemFacts, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class DependencyReason:
+class DependencyReason(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: str
     reason: str
 
 
-@dataclass(frozen=True, slots=True)
-class ReviewFlag:
+class ReviewFlag(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     kind: work_models.ProposalRelationKind
     related_item: str | None
     reason: str
 
 
-@dataclass(frozen=True, slots=True)
-class PlannedReplacementWarning:
+class PlannedReplacementWarning(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     relation_revision: int
     replacement_item_id: str
     replacement_cost: str
     temporarily_retained: bool
 
 
-@dataclass(frozen=True, slots=True)
-class OverviewItem:
+class OverviewItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: str
     label: str
     effect: str
@@ -384,19 +564,17 @@ class OverviewItem:
     source: str | None
     notes: str | None
     planned_replacement: PlannedReplacementWarning | None
-    preparation: PreparationStatusView | None = None
+    preparation: PreparationStatusView | None
 
 
-@dataclass(frozen=True, slots=True)
-class NextUnstarted:
+class NextUnstarted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: str
     live_dependencies: tuple[str, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class WorkOverview:
-    schema: str
-    authority: str
+class WorkOverview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-overview/v5"]
+    authority: Literal["sqlite-v6"]
     revision: str
     active_attempts: tuple[str, ...]
     items: tuple[OverviewItem, ...]

@@ -8,12 +8,17 @@ from typing import Literal, TypeAliasType, assert_never, get_args
 import msgspec
 
 from pinboard import __version__
-from pinboard.application import brief_source_models, dispatch_models, proposal_models, work_brief_models
+from pinboard.application import (
+    action_models,
+    actions,
+    brief_source_models,
+    dispatch_models,
+    proposal_models,
+    work_brief_models,
+)
 from pinboard.cli import (
     cli_commands,
     cli_parser,
-    transition_input,
-    transition_models,
     work_brief_contract,
 )
 from pinboard.cli.cli_output import write_json
@@ -507,7 +512,7 @@ def _artifact_selector(command_type: type[cli_commands.CliCommand]) -> str | Non
 
 def _artifact_schema(command_type: type[cli_commands.CliCommand]) -> msgspec.Raw | None:
     if command_type is cli_commands.ItemReviseCommand:
-        model = transition_models.ReviseItemInputPayload
+        model = action_models.ReviseItemInputPayload
     elif command_type in (cli_commands.BriefSourcesPlanCommand, cli_commands.BriefSourcesPlanToFileCommand):
         model = brief_source_models.BriefSourceManifest
     elif command_type is cli_commands.BriefSourcesEmitCommand:
@@ -725,10 +730,9 @@ def describe_action(kind: decision_models.ActionKind) -> ActionContract:
     semantics = decision_models.action_semantics(kind)
     input_schema: msgspec.Raw | None = None
     if _action_execution_route(kind) == "transition":
-        encoded = transition_input.encoded_transition_input_schema(kind)
-        if not isinstance(encoded, bytes):
-            raise ValueError(str(encoded))
-        input_schema = msgspec.Raw(encoded)
+        encoded = actions.encoded_action_input_schema(kind)
+        if encoded is not None:
+            input_schema = msgspec.Raw(encoded)
     mutation_class = _action_mutation_class(kind)
     route = _action_execution_route(kind)
     roles = semantics.permitted_roles

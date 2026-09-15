@@ -4,7 +4,8 @@ from typing import Annotated, Literal
 
 import msgspec
 
-from pinboard.application import proposal_models, query_models, work_brief_models
+from pinboard.application import action_models, proposal_models, query_models, work_brief_models
+from pinboard.domain import decision_models
 
 type JsonScalar = bool | int | float | str | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
@@ -12,6 +13,7 @@ type JsonSchemaValue = JsonScalar | list[JsonSchemaValue] | dict[str, JsonSchema
 type NonEmptyText = Annotated[str, msgspec.Meta(min_length=1)]
 type RootPath = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\x00]+\z")]
 type PositiveInt = Annotated[int, msgspec.Meta(ge=1)]
+type NonNegativeInt = Annotated[int, msgspec.Meta(ge=0)]
 type Sha256 = Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
 type PathComponent = Annotated[
     str,
@@ -58,6 +60,62 @@ class BriefPublishRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     project_root: RootPath
     work_root: RootPath
     brief: work_brief_models.WorkBrief
+
+
+class OverviewRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+
+
+class ActionIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    kind: decision_models.ActionKind
+    subject: PathComponent
+
+
+class ObserverActionsRequest(msgspec.Struct, tag="observer", tag_field="role", frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    action_id: ActionIdentity | None = None
+
+
+class ProjectActionsRequest(msgspec.Struct, tag="project", tag_field="role", frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    action_id: ActionIdentity | None = None
+
+
+class WorkerActionsRequest(msgspec.Struct, tag="worker", tag_field="role", frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+    action_id: ActionIdentity | None = None
+
+
+class PreparerActionsRequest(msgspec.Struct, tag="preparer", tag_field="role", frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+    action_id: ActionIdentity | None = None
+
+
+type ActionsRequest = ObserverActionsRequest | ProjectActionsRequest | WorkerActionsRequest | PreparerActionsRequest
+
+
+class AttemptInspectRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    attempt_id: PathComponent
+
+
+class ArtifactVerifyRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    artifact_ref_id: PositiveInt
+    selector: NonEmptyText
+    sha256: Sha256
+    size_bytes: PositiveInt
 
 
 class FailureObservation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -117,6 +175,437 @@ class ItemStatusInconsistent(msgspec.Struct, frozen=True, forbid_unknown_fields=
 
     def __post_init__(self) -> None:
         _require_state_changed(self.state_changed, False)
+
+
+class OverviewRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-overview-result/v1"]
+    status: Literal["rejected"]
+    code: Literal["OVERVIEW_INVALID"]
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["correct-input"]
+    changed_surfaces: Empty
+    observed: Empty
+    mismatches: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class RejectedReadResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    status: Literal["rejected"]
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class ActionsInvalid(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-actions-result/v1"]
+    code: Literal["ACTIONS_INVALID"]
+    retry: Literal["correct-input"]
+    observed: Empty
+    mismatches: Empty
+
+
+class ActionUnavailable(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-actions-result/v1"]
+    code: Literal["ACTION_NOT_AVAILABLE"]
+    retry: Literal["refresh-action"]
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+
+class AttemptLeaseRequired(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-actions-result/v1"]
+    code: Literal["ATTEMPT_LEASE_REQUIRED"]
+    retry: Literal["reacquire-authority"]
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
+    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
+
+
+class AttemptInspectInvalid(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
+    code: Literal["ATTEMPT_INSPECT_INVALID"]
+    retry: Literal["correct-input"]
+    observed: Empty
+    mismatches: Empty
+
+
+class AttemptNotFound(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
+    code: Literal["ATTEMPT_NOT_FOUND"]
+    retry: Literal["correct-input"]
+    observed: Empty
+    mismatches: Empty
+
+
+class AttemptBriefInvalid(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
+    code: Literal["ATTEMPT_BRIEF_INVALID"]
+    retry: Literal["do-not-retry"]
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
+    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
+
+
+class AttemptActionUnavailable(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
+    code: Literal["ACTION_NOT_AVAILABLE"]
+    retry: Literal["refresh-action"]
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+
+class ArtifactVerificationInvalid(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-artifact-verification-result/v1"]
+    code: Literal["ARTIFACT_VERIFY_INVALID"]
+    retry: Literal["correct-input"]
+    observed: Empty
+    mismatches: Empty
+
+
+class ArtifactReferenceMismatch(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-artifact-verification-result/v1"]
+    code: Literal["ARTIFACT_REFERENCE_MISMATCH"]
+    retry: Literal["correct-input"]
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
+    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
+
+
+class ArtifactBytesInvalid(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-artifact-verification-result/v1"]
+    code: Literal["ARTIFACT_BYTES_INVALID"]
+    retry: Literal["do-not-retry"]
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
+    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
+
+
+class ActionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    action_id: ActionIdentity
+    label: NonEmptyText
+    subject_revision: NonEmptyText | None
+    authorization: action_models.ActionAuthorization
+    lease_id: NonEmptyText | None
+    generation: PositiveInt | None
+    semantics: action_models.ActionSemanticsView
+    input_contract: action_models.InputContractView
+
+    def __post_init__(self) -> None:
+        identity = self.action_id
+        action_models.ActionView(
+            f"{identity.kind.value}:{identity.subject}",
+            identity.kind,
+            identity.subject,
+            self.label,
+            self.subject_revision,
+            self.authorization,
+            self.lease_id,
+            self.generation,
+            self.semantics,
+            self.input_contract,
+        )
+
+
+class ActionsSuccess(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-actions-result/v1"]
+    status: Literal["ok"]
+    actions: tuple[ActionView, ...]
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class AcceptedBriefIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    artifact_ref_id: PositiveInt
+    path: NonEmptyText
+    selector: NonEmptyText
+    sha256: Sha256
+    size_bytes: PositiveInt
+    accepted_revision: PositiveInt
+    accepted_scope_revision: PositiveInt
+    accepted_scope_digest: Sha256
+
+
+class EvidenceAbsent(msgspec.Struct, tag="absent", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    path: NonEmptyText
+
+
+class EvidencePresent(msgspec.Struct, tag="present", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    path: NonEmptyText
+    sha256: Sha256
+    size_bytes: NonNegativeInt
+
+
+type EvidenceReference = EvidenceAbsent | EvidencePresent
+
+
+class RelativeActionIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    target: Literal["attempt", "item"]
+    action_kind: decision_models.ActionKind
+
+    def __post_init__(self) -> None:
+        if decision_models.action_semantics(self.action_kind).subject_kind.value != self.target:
+            raise ValueError("continuation action target must match its action kind")
+
+
+class ContinuationAction(msgspec.Struct, tag="action", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    action: RelativeActionIdentity
+    condition: NonEmptyText
+
+
+class ContinuationReview(
+    msgspec.Struct, tag="review-subagent", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    candidate_revision: NonEmptyText
+    required_capability: Literal["runtime-subagent"]
+
+
+class ContinuationDependencies(
+    msgspec.Struct, tag="wait-for-dependencies", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    dependencies: Annotated[tuple[PathComponent, ...], msgspec.Meta(min_length=1)]
+
+    def __post_init__(self) -> None:
+        if len(set(self.dependencies)) != len(self.dependencies):
+            raise ValueError("dependency continuations require unique dependencies")
+
+
+type ContinuationOperation = ContinuationAction | ContinuationReview | ContinuationDependencies
+
+
+_ACTIVE_CONTINUATION_ACTION_KINDS = (
+    decision_models.ActionKind.CONTINUE,
+    decision_models.ActionKind.DISPATCH,
+    decision_models.ActionKind.REBIND_ATTEMPT,
+    decision_models.ActionKind.PAUSE,
+    decision_models.ActionKind.BLOCK,
+    decision_models.ActionKind.COMPLETE,
+    decision_models.ActionKind.RECORD_REPLACEMENT,
+    decision_models.ActionKind.RETAIN_TEMPORARILY,
+    decision_models.ActionKind.REVISE_ITEM,
+)
+_REVIEW_CONTINUATION_ACTION_KINDS = (
+    decision_models.ActionKind.COMPLETE,
+    decision_models.ActionKind.RETURN_FOR_CORRECTION,
+    decision_models.ActionKind.ACCEPT_CHECKPOINT,
+    decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE,
+    decision_models.ActionKind.RECORD_REPLACEMENT,
+    decision_models.ActionKind.RETAIN_TEMPORARILY,
+    decision_models.ActionKind.REVISE_ITEM,
+)
+_PAUSED_CONTINUATION_ACTION_KINDS = (
+    decision_models.ActionKind.REBIND_ATTEMPT,
+    decision_models.ActionKind.RECORD_REPLACEMENT,
+    decision_models.ActionKind.RETAIN_TEMPORARILY,
+    decision_models.ActionKind.REVISE_ITEM,
+    decision_models.ActionKind.RESUME,
+    decision_models.ActionKind.CLOSE,
+)
+_BLOCKED_CONTINUATION_ACTION_KINDS = (
+    decision_models.ActionKind.RECORD_REPLACEMENT,
+    decision_models.ActionKind.RETAIN_TEMPORARILY,
+    decision_models.ActionKind.REVISE_ITEM,
+    decision_models.ActionKind.RESUME,
+    decision_models.ActionKind.CLOSE,
+)
+
+
+class TerminalAttemptContinuation(
+    msgspec.Struct, tag="done", tag_field="state", frozen=True, forbid_unknown_fields=True
+):
+    schema: Literal["pinboard-attempt-continuation/v1"]
+    attempt_id: PathComponent
+    item_id: PathComponent
+    revision: PositiveInt
+    owner_task_id: None
+    terminal: bool
+    user_input_required: bool
+    next_operation: None
+    legal_actions: Empty
+    forbidden_routes: tuple[Literal["create-user-task", "wake-user-task", "return-ownership-to-parent"], ...]
+
+    def __post_init__(self) -> None:
+        if not self.terminal or self.user_input_required:
+            raise ValueError("a terminal continuation requires exact terminal flags")
+        if self.forbidden_routes != ("create-user-task", "wake-user-task", "return-ownership-to-parent"):
+            raise ValueError("an attempt continuation requires the exact forbidden routes")
+
+
+class NonterminalAttemptContinuationBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-attempt-continuation/v1"]
+    attempt_id: PathComponent
+    item_id: PathComponent
+    revision: PositiveInt
+    owner_task_id: RuntimeIdentity
+    terminal: bool
+    user_input_required: bool
+    next_operation: ContinuationOperation
+    legal_actions: Annotated[tuple[RelativeActionIdentity, ...], msgspec.Meta(min_length=1)]
+    forbidden_routes: tuple[Literal["create-user-task", "wake-user-task", "return-ownership-to-parent"], ...]
+
+    def _validate_common(self) -> None:
+        if self.terminal or self.user_input_required:
+            raise ValueError("a nonterminal continuation requires exact nonterminal flags")
+        if self.forbidden_routes != ("create-user-task", "wake-user-task", "return-ownership-to-parent"):
+            raise ValueError("an attempt continuation requires the exact forbidden routes")
+        if len(set(self.legal_actions)) != len(self.legal_actions):
+            raise ValueError("continuation legal actions must be unique")
+        operation = self.next_operation
+        if isinstance(operation, ContinuationAction):
+            if operation.action not in self.legal_actions:
+                raise ValueError("continuation action must be one of its legal actions")
+        elif isinstance(operation, ContinuationReview):
+            expected = RelativeActionIdentity("attempt", decision_models.ActionKind.ACCEPT_CHECKPOINT)
+            if expected not in self.legal_actions:
+                raise ValueError("review continuation requires the matching accept-checkpoint action")
+
+    def _validate_legal_action_kinds(self, allowed: tuple[decision_models.ActionKind, ...]) -> None:
+        if any(action.action_kind not in allowed for action in self.legal_actions):
+            raise ValueError("continuation legal actions must match its state")
+
+
+class ActiveAttemptContinuation(
+    NonterminalAttemptContinuationBase,
+    tag="active",
+    tag_field="state",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    def __post_init__(self) -> None:
+        self._validate_common()
+        self._validate_legal_action_kinds(_ACTIVE_CONTINUATION_ACTION_KINDS)
+        operation = self.next_operation
+        if not isinstance(operation, ContinuationAction) or operation.action.action_kind not in (
+            decision_models.ActionKind.CONTINUE,
+            decision_models.ActionKind.PAUSE,
+        ):
+            raise ValueError("an active continuation requires a continue or pause action")
+
+
+class ReviewAttemptContinuation(
+    NonterminalAttemptContinuationBase,
+    tag="review",
+    tag_field="state",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    def __post_init__(self) -> None:
+        self._validate_common()
+        self._validate_legal_action_kinds(_REVIEW_CONTINUATION_ACTION_KINDS)
+        operation = self.next_operation
+        if not (
+            isinstance(operation, ContinuationReview)
+            or (
+                isinstance(operation, ContinuationAction)
+                and operation.action.action_kind == decision_models.ActionKind.RETURN_FOR_CORRECTION
+            )
+        ):
+            raise ValueError("a review continuation requires review or correction work")
+
+
+class DependencyOrResumeAttemptContinuationBase(NonterminalAttemptContinuationBase, frozen=True):
+    def _validate_dependency_or_resume(self) -> None:
+        self._validate_common()
+        operation = self.next_operation
+        if not (
+            isinstance(operation, ContinuationDependencies)
+            or (
+                isinstance(operation, ContinuationAction)
+                and operation.action.action_kind == decision_models.ActionKind.RESUME
+            )
+        ):
+            raise ValueError("a paused or blocked continuation requires dependency or resume work")
+
+
+class PausedAttemptContinuation(
+    DependencyOrResumeAttemptContinuationBase,
+    tag="paused",
+    tag_field="state",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    def __post_init__(self) -> None:
+        self._validate_dependency_or_resume()
+        self._validate_legal_action_kinds(_PAUSED_CONTINUATION_ACTION_KINDS)
+
+
+class BlockedAttemptContinuation(
+    DependencyOrResumeAttemptContinuationBase,
+    tag="blocked",
+    tag_field="state",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    def __post_init__(self) -> None:
+        self._validate_dependency_or_resume()
+        self._validate_legal_action_kinds(_BLOCKED_CONTINUATION_ACTION_KINDS)
+
+
+type NonterminalAttemptContinuation = (
+    ActiveAttemptContinuation | ReviewAttemptContinuation | PausedAttemptContinuation | BlockedAttemptContinuation
+)
+type AttemptContinuation = TerminalAttemptContinuation | NonterminalAttemptContinuation
+
+
+class TerminalAttemptInspectionSuccess(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
+    status: Literal["ok"]
+    continuation: TerminalAttemptContinuation
+    accepted_brief: None
+    result: EvidenceReference
+    review: EvidenceReference
+    blocker: EvidenceReference
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class NonterminalAttemptInspectionSuccess(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
+    status: Literal["ok"]
+    continuation: NonterminalAttemptContinuation
+    accepted_brief: AcceptedBriefIdentity
+    result: EvidenceReference
+    review: EvidenceReference
+    blocker: EvidenceReference
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class ArtifactVerified(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-verified-artifact-reference/v1"]
+    artifact_ref_id: PositiveInt
+    selector: NonEmptyText
+    sha256: Sha256
+    size_bytes: PositiveInt
+    accepted_revision: PositiveInt
+    verified: bool
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+        if not self.verified:
+            raise ValueError("verified must be true for a verified artifact result.")
 
 
 class ExecutorBusyResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -406,6 +895,24 @@ ITEM_STATUS_RESULT_TYPES = (
     ItemStatusInconsistent,
     ExecutorBusyResult,
 )
+OVERVIEW_RESULT_TYPES = (query_models.WorkOverview, OverviewRejected, ExecutorBusyResult)
+ACTIONS_RESULT_TYPES = (ActionsSuccess, ActionsInvalid, ActionUnavailable, AttemptLeaseRequired, ExecutorBusyResult)
+ATTEMPT_INSPECTION_RESULT_TYPES = (
+    TerminalAttemptInspectionSuccess,
+    NonterminalAttemptInspectionSuccess,
+    AttemptInspectInvalid,
+    AttemptNotFound,
+    AttemptBriefInvalid,
+    AttemptActionUnavailable,
+    ExecutorBusyResult,
+)
+ARTIFACT_VERIFICATION_RESULT_TYPES = (
+    ArtifactVerified,
+    ArtifactVerificationInvalid,
+    ArtifactReferenceMismatch,
+    ArtifactBytesInvalid,
+    ExecutorBusyResult,
+)
 PROPOSAL_RESULT_TYPES = (
     ProposalCommitted,
     ProposalCommittedWithWarning,
@@ -427,7 +934,14 @@ BRIEF_PUBLICATION_RESULT_TYPES = (
     BriefPublicationAcceptanceFailure,
     ExecutorBusyResult,
 )
-type RequestBoundary = type[ItemStatusRequest] | type[ProposalCreateRequest] | type[BriefPublishRequest]
+type RequestBoundary = (
+    type[ItemStatusRequest]
+    | type[ProposalCreateRequest]
+    | type[BriefPublishRequest]
+    | type[OverviewRequest]
+    | type[AttemptInspectRequest]
+    | type[ArtifactVerifyRequest]
+)
 type ResultBoundary = (
     type[query_models.ItemStatus]
     | type[ItemStatusInvalid]
@@ -449,6 +963,22 @@ type ResultBoundary = (
     | type[BriefRejected]
     | type[BriefPublishedRejection]
     | type[BriefPublicationAcceptanceFailure]
+    | type[query_models.WorkOverview]
+    | type[OverviewRejected]
+    | type[ActionsInvalid]
+    | type[ActionUnavailable]
+    | type[AttemptLeaseRequired]
+    | type[AttemptInspectInvalid]
+    | type[AttemptNotFound]
+    | type[AttemptBriefInvalid]
+    | type[AttemptActionUnavailable]
+    | type[ArtifactVerificationInvalid]
+    | type[ArtifactReferenceMismatch]
+    | type[ArtifactBytesInvalid]
+    | type[ActionsSuccess]
+    | type[TerminalAttemptInspectionSuccess]
+    | type[NonterminalAttemptInspectionSuccess]
+    | type[ArtifactVerified]
 )
 
 
@@ -465,6 +995,13 @@ def schema_for(boundary_type: RequestBoundary) -> dict[str, JsonSchemaValue]:
     if not isinstance(definition, dict):
         raise TypeError("The MCP request schema root must be an object definition.")
     return {**definition, **schema}
+
+
+def actions_request_schema() -> dict[str, JsonSchemaValue]:
+    """Return the exact role-discriminated action request schema."""
+
+    schema: dict[str, JsonSchemaValue] = msgspec.json.schema(ActionsRequest)
+    return {"type": "object", **schema}
 
 
 def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
@@ -490,6 +1027,21 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
         "BriefUnchanged",
         "BriefUnchangedWithWarning",
         "BriefRejected",
+        "OverviewRejected",
+        "ActionsInvalid",
+        "ActionUnavailable",
+        "AttemptLeaseRequired",
+        "AttemptInspectInvalid",
+        "AttemptNotFound",
+        "AttemptBriefInvalid",
+        "AttemptActionUnavailable",
+        "ArtifactVerificationInvalid",
+        "ArtifactReferenceMismatch",
+        "ArtifactBytesInvalid",
+        "ActionsSuccess",
+        "TerminalAttemptInspectionSuccess",
+        "NonterminalAttemptInspectionSuccess",
+        "ArtifactVerified",
     }
     for name, definition in definitions.items():
         if name not in changed_results | unchanged_results:
@@ -500,6 +1052,228 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
         if not isinstance(properties, dict):
             raise TypeError(f"MCP result definition '{name}' must declare properties.")
         properties["state_changed"] = {"type": "boolean", "const": name in changed_results}
+        if name == "ArtifactVerified":
+            properties["verified"] = {"type": "boolean", "const": True}
+
+
+def _action_semantics_constraint(kind: decision_models.ActionKind) -> dict[str, JsonSchemaValue]:
+    semantics = decision_models.action_semantics(kind)
+    roles = [role.value for role in semantics.permitted_roles]
+    return {
+        "type": "object",
+        "properties": {
+            "use_case": {"const": semantics.use_case},
+            "effect": {"const": semantics.lifecycle_effect.value},
+            "permitted_roles": {
+                "type": "array",
+                "prefixItems": [{"const": role} for role in roles],
+                "minItems": len(roles),
+                "maxItems": len(roles),
+            },
+            "subject_kind": {"const": semantics.subject_kind.value},
+            "lifecycle_precondition": {"const": semantics.lifecycle_precondition.value},
+            "practical_result": {"const": semantics.practical_result},
+        },
+    }
+
+
+def _apply_action_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
+    definition = definitions.get("ActionView")
+    if not isinstance(definition, dict):
+        return
+    authority_shapes: list[JsonSchemaValue] = [
+        {
+            "properties": {
+                "authorization": {"const": "observer"},
+                "subject_revision": {"type": "null"},
+                "lease_id": {"type": "null"},
+                "generation": {"type": "null"},
+            }
+        },
+        {
+            "properties": {
+                "authorization": {"const": "project"},
+                "subject_revision": {"type": "string"},
+                "lease_id": {"type": "null"},
+                "generation": {"type": "null"},
+            }
+        },
+        {
+            "properties": {
+                "authorization": {"const": "attempt"},
+                "subject_revision": {"type": "string"},
+                "lease_id": {"type": "string"},
+                "generation": {"type": "integer", "minimum": 1},
+            }
+        },
+        {
+            "properties": {
+                "authorization": {"const": "preparation"},
+                "subject_revision": {"type": "string"},
+                "lease_id": {"type": "string"},
+                "generation": {"type": "integer", "minimum": 1},
+            }
+        },
+    ]
+    role_authorities = {
+        decision_models.Role.OBSERVER: "observer",
+        decision_models.Role.PROJECT: "project",
+        decision_models.Role.WORKER: "attempt",
+        decision_models.Role.PREPARER: "preparation",
+    }
+    correlations: list[JsonSchemaValue] = [{"oneOf": authority_shapes}]
+    for kind in decision_models.ActionKind:
+        semantics = decision_models.action_semantics(kind)
+        semantic_constraint = _action_semantics_constraint(kind)
+        payload_schema = action_models.action_payload_schema(kind)
+        correlations.append(
+            {
+                "if": {
+                    "properties": {
+                        "action_id": {"properties": {"kind": {"const": kind.value}}},
+                    }
+                },
+                "then": {
+                    "properties": {
+                        "authorization": {"enum": [role_authorities[role] for role in semantics.permitted_roles]},
+                        "semantics": semantic_constraint,
+                        "input_contract": {
+                            "type": "object",
+                            "properties": {
+                                "action_kind": {"const": kind.value},
+                                "semantics": semantic_constraint,
+                                "payload_schema": {"const": payload_schema},
+                            },
+                        },
+                    }
+                },
+            }
+        )
+    definition["allOf"] = correlations
+
+
+def _relative_action(kind: decision_models.ActionKind) -> dict[str, JsonSchemaValue]:
+    target = decision_models.action_semantics(kind).subject_kind.value
+    if target not in {"attempt", "item"}:
+        raise ValueError(f"Action kind '{kind.value}' cannot appear in an attempt continuation.")
+    return {
+        "allOf": [
+            {"$ref": "#/$defs/RelativeActionIdentity"},
+            {
+                "properties": {
+                    "target": {"const": target},
+                    "action_kind": {"const": kind.value},
+                }
+            },
+        ]
+    }
+
+
+def _apply_relative_action_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
+    definition = definitions.get("RelativeActionIdentity")
+    if not isinstance(definition, dict):
+        return
+    definition["oneOf"] = [
+        {
+            "properties": {
+                "target": {"const": semantics.subject_kind.value},
+                "action_kind": {"const": kind.value},
+            }
+        }
+        for kind in decision_models.ActionKind
+        if (semantics := decision_models.action_semantics(kind)).subject_kind
+        in {decision_models.ActionSubjectKind.ATTEMPT, decision_models.ActionSubjectKind.ITEM}
+    ]
+
+
+def _action_continuation(kind: decision_models.ActionKind) -> dict[str, JsonSchemaValue]:
+    return {
+        "allOf": [
+            {"$ref": "#/$defs/ContinuationAction"},
+            {
+                "properties": {
+                    "action": _relative_action(kind),
+                }
+            },
+        ]
+    }
+
+
+def _forbidden_routes_constraint() -> dict[str, JsonSchemaValue]:
+    values = ("create-user-task", "wake-user-task", "return-ownership-to-parent")
+    return {
+        "type": "array",
+        "prefixItems": [{"const": value} for value in values],
+        "minItems": len(values),
+        "maxItems": len(values),
+    }
+
+
+def _apply_attempt_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
+    terminal = definitions.get("TerminalAttemptContinuation")
+    if isinstance(terminal, dict) and isinstance(terminal.get("properties"), dict):
+        terminal["properties"]["state"] = {"const": "done"}
+        terminal["properties"]["terminal"] = {"type": "boolean", "const": True}
+        terminal["properties"]["user_input_required"] = {"type": "boolean", "const": False}
+        terminal["properties"]["forbidden_routes"] = _forbidden_routes_constraint()
+    continuation_constraints: tuple[
+        tuple[
+            str,
+            tuple[dict[str, JsonSchemaValue], ...],
+            tuple[decision_models.ActionKind, ...],
+        ],
+        ...,
+    ] = (
+        (
+            "ActiveAttemptContinuation",
+            (
+                _action_continuation(decision_models.ActionKind.CONTINUE),
+                _action_continuation(decision_models.ActionKind.PAUSE),
+            ),
+            _ACTIVE_CONTINUATION_ACTION_KINDS,
+        ),
+        (
+            "ReviewAttemptContinuation",
+            (
+                {"$ref": "#/$defs/ContinuationReview"},
+                _action_continuation(decision_models.ActionKind.RETURN_FOR_CORRECTION),
+            ),
+            _REVIEW_CONTINUATION_ACTION_KINDS,
+        ),
+        (
+            "PausedAttemptContinuation",
+            (
+                {"$ref": "#/$defs/ContinuationDependencies"},
+                _action_continuation(decision_models.ActionKind.RESUME),
+            ),
+            _PAUSED_CONTINUATION_ACTION_KINDS,
+        ),
+        (
+            "BlockedAttemptContinuation",
+            (
+                {"$ref": "#/$defs/ContinuationDependencies"},
+                _action_continuation(decision_models.ActionKind.RESUME),
+            ),
+            _BLOCKED_CONTINUATION_ACTION_KINDS,
+        ),
+    )
+    for definition_name, next_operations, legal_action_kinds in continuation_constraints:
+        definition = definitions.get(definition_name)
+        if not isinstance(definition, dict):
+            continue
+        properties = definition.get("properties")
+        if isinstance(properties, dict):
+            properties["terminal"] = {"type": "boolean", "const": False}
+            properties["user_input_required"] = {"type": "boolean", "const": False}
+            properties["owner_task_id"] = {"type": "string", "minLength": 1}
+            properties["legal_actions"] = {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": True,
+                "items": {"anyOf": [_relative_action(kind) for kind in legal_action_kinds]},
+            }
+            properties["forbidden_routes"] = _forbidden_routes_constraint()
+            properties["next_operation"] = {"anyOf": list(next_operations)}
 
 
 def union_schema_for(boundary_types: tuple[ResultBoundary, ...]) -> dict[str, JsonSchemaValue]:
@@ -508,19 +1282,55 @@ def union_schema_for(boundary_types: tuple[ResultBoundary, ...]) -> dict[str, Js
     schemas: tuple[dict[str, JsonSchemaValue], ...] = components[0]
     definitions: dict[str, JsonSchemaValue] = components[1]
     _apply_boolean_constants(definitions)
+    _apply_action_constraints(definitions)
+    _apply_relative_action_constraints(definitions)
+    _apply_attempt_constraints(definitions)
     return {"type": "object", "anyOf": list[JsonSchemaValue](schemas), "$defs": definitions}
 
 
-def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, JsonValue]:  # noqa: C901, PLR0912
+def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, JsonValue]:  # noqa: C901, PLR0912, PLR0915
     """Validate one emitted result against the exact alternative it claims."""
     schema = content.get("schema")
     status = content.get("status")
     code = content.get("code")
     surfaces = content.get("changed_surfaces")
-    if schema == "pinboard-item-status/v1" and tool_name == "pinboard_item_status":
-        msgspec.convert(content, type=query_models.ItemStatus, strict=True)
-    elif schema == "pinboard-mcp-execution-result/v1":
+    if schema == "pinboard-mcp-execution-result/v1":
         msgspec.convert(content, type=ExecutorBusyResult, strict=True)
+    elif schema == "pinboard-overview/v5" and tool_name == "pinboard_overview":
+        msgspec.convert(content, type=query_models.WorkOverview, strict=True)
+    elif tool_name == "pinboard_actions" and status == "ok":
+        msgspec.convert(content, type=ActionsSuccess, strict=True)
+    elif tool_name == "pinboard_attempt_inspect" and status == "ok":
+        continuation = content.get("continuation")
+        state = continuation.get("state") if isinstance(continuation, dict) else None
+        result_type = TerminalAttemptInspectionSuccess if state == "done" else NonterminalAttemptInspectionSuccess
+        msgspec.convert(content, type=result_type, strict=True)
+    elif tool_name == "pinboard_artifact_verify" and schema == "pinboard-verified-artifact-reference/v1":
+        msgspec.convert(content, type=ArtifactVerified, strict=True)
+    elif tool_name == "pinboard_overview":
+        msgspec.convert(content, type=OverviewRejected, strict=True)
+    elif tool_name == "pinboard_actions" and code == "ACTIONS_INVALID":
+        msgspec.convert(content, type=ActionsInvalid, strict=True)
+    elif tool_name == "pinboard_actions" and code == "ATTEMPT_LEASE_REQUIRED":
+        msgspec.convert(content, type=AttemptLeaseRequired, strict=True)
+    elif tool_name == "pinboard_actions":
+        msgspec.convert(content, type=ActionUnavailable, strict=True)
+    elif tool_name == "pinboard_attempt_inspect" and code == "ATTEMPT_INSPECT_INVALID":
+        msgspec.convert(content, type=AttemptInspectInvalid, strict=True)
+    elif tool_name == "pinboard_attempt_inspect" and code == "ATTEMPT_NOT_FOUND":
+        msgspec.convert(content, type=AttemptNotFound, strict=True)
+    elif tool_name == "pinboard_attempt_inspect" and code == "ATTEMPT_BRIEF_INVALID":
+        msgspec.convert(content, type=AttemptBriefInvalid, strict=True)
+    elif tool_name == "pinboard_attempt_inspect":
+        msgspec.convert(content, type=AttemptActionUnavailable, strict=True)
+    elif tool_name == "pinboard_artifact_verify" and code == "ARTIFACT_VERIFY_INVALID":
+        msgspec.convert(content, type=ArtifactVerificationInvalid, strict=True)
+    elif tool_name == "pinboard_artifact_verify" and code == "ARTIFACT_REFERENCE_MISMATCH":
+        msgspec.convert(content, type=ArtifactReferenceMismatch, strict=True)
+    elif tool_name == "pinboard_artifact_verify":
+        msgspec.convert(content, type=ArtifactBytesInvalid, strict=True)
+    elif schema == "pinboard-item-status/v1" and tool_name == "pinboard_item_status":
+        msgspec.convert(content, type=query_models.ItemStatus, strict=True)
     elif tool_name == "pinboard_item_status" and code == "ITEM_STATUS_INVALID":
         msgspec.convert(content, type=ItemStatusInvalid, strict=True)
     elif tool_name == "pinboard_item_status" and code in {"ITEM_NOT_FOUND", "ITEM_DEFINITION_INVALID"}:

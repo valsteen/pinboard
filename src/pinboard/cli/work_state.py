@@ -20,7 +20,7 @@ from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_fa
 from pinboard.adapters.sqlite.database import initialize_database, open_database, reconcile_database_publication
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import InitReceipt, OpenMode
-from pinboard.application import handover, ports, stored_state, work_brief_models, work_briefs
+from pinboard.application import action_models, handover, ports, stored_state, work_brief_models, work_briefs
 from pinboard.application.work_briefs import (
     build_selected_attempt_brief_views,
     canonical_checkpoint_bytes,
@@ -31,7 +31,6 @@ from pinboard.application.work_briefs import (
     decode_canonical_work_brief_review,
     validate_work_brief_review,
 )
-from pinboard.cli import transition_models
 from pinboard.cli.errors import (
     InitializationAfterCommittedEffectsError,
 )
@@ -438,7 +437,7 @@ def _completion_outcome(
 
 def _completion_input(
     receipt: stored_state.StoredTransitionReceipt,
-) -> work_brief_models.WorkBriefResult[transition_models.CoveredCompleteInputPayload]:
+) -> work_brief_models.WorkBriefResult[action_models.CoveredCompleteInputPayload]:
     if receipt.input_schema != "pinboard-covered-completion/v1":
         return _package_provenance_failure(
             f"Completion history {int(receipt.history_id)} does not preserve covered completion input."
@@ -446,7 +445,7 @@ def _completion_input(
     try:
         value = msgspec.json.decode(
             bytes(receipt.input_payload),
-            type=transition_models.CoveredCompleteInputPayload,
+            type=action_models.CoveredCompleteInputPayload,
         )
     except msgspec.DecodeError as error:
         return _package_provenance_failure(
@@ -460,7 +459,7 @@ def _completion_input(
 
 
 def _completion_input_matches_package(
-    value: transition_models.CoveredCompleteInputPayload,
+    value: action_models.CoveredCompleteInputPayload,
     package: work_brief_models.CompletionReviewPackage,
 ) -> bool:
     return (

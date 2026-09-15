@@ -21,8 +21,8 @@ from pinboard.adapters.files.root import (
     read_working_tree_candidate,
 )
 from pinboard.adapters.sqlite.errors import StorageError
-from pinboard.application import ports, query_models, stored_state, work_brief_models
-from pinboard.application.actions import discover_current_actions
+from pinboard.application import action_models, ports, query_models, stored_state, work_brief_models
+from pinboard.application.actions import action_identity_scope, discover_current_actions
 from pinboard.application.artifacts import (
     BriefArtifactRef,
     CheckpointArtifacts,
@@ -537,7 +537,7 @@ def _resolve_transition_input(
     action: decision_models.Action,
     decoded_input: ParsedTransitionInput,
 ) -> CommandResult[decision_models.TransitionCommand]:
-    if not isinstance(decoded_input, transition_models.ActivateInputPayload):
+    if not isinstance(decoded_input, action_models.ActivateInputPayload):
         return decoded_input
     if not isinstance(action, decision_models.ActivateAction):
         raise AssertionError("Activate input requires an activate action.")
@@ -1193,7 +1193,7 @@ def _decode_selected_project_transition(
             decoded_input = parse_transition_input(action, encoded_payload)
             if isinstance(decoded_input, TransitionInputFailure):
                 return CommandFailure(decoded_input.code, decoded_input.message, decoded_input.details)
-            if isinstance(decoded_input, transition_models.ActivateInputPayload):
+            if isinstance(decoded_input, action_models.ActivateInputPayload):
                 return CommandFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     "Activation requires preparation authority.",
@@ -1225,7 +1225,7 @@ def execute_project_transition(
     artifacts = ArtifactRepository(durable)
     requested_action_id = _requested_project_action_id(request)
     observed_at = datetime.now(UTC)
-    scope = action_selection.action_identity_scope(requested_action_id)
+    scope = action_identity_scope(requested_action_id)
     if scope is None:
         return CommandFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,

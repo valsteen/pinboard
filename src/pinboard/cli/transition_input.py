@@ -2,7 +2,8 @@ from typing import Final, assert_never
 
 import msgspec
 
-from pinboard.cli import transition_models
+from pinboard.application import action_models as transition_models
+from pinboard.application import actions
 from pinboard.cli.errors import TransitionInputFailure, TransitionInputResult
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailureCode, EffectDisposition, FailureDetails, RetryDisposition
@@ -16,70 +17,7 @@ from pinboard.domain.identifiers import (
     TaskId,
 )
 
-
-def _input_model_or_none(kind: decision_models.ActionKind) -> transition_models.InputModel | None:  # noqa: C901, PLR0912
-    match kind:
-        case decision_models.ActionKind.ACCEPT_CHECKPOINT:
-            return transition_models.AcceptCheckpointInputPayload
-        case decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE:
-            return transition_models.AcceptReviewAndContinueInputPayload
-        case decision_models.ActionKind.ACCEPT_PROPOSAL:
-            return transition_models.AcceptProposalInputPayload
-        case decision_models.ActionKind.ACTIVATE:
-            return transition_models.ActivateInputPayload
-        case decision_models.ActionKind.BLOCK | decision_models.ActionKind.BLOCK_ITEM:
-            return transition_models.BlockInputPayload
-        case decision_models.ActionKind.CLOSE:
-            return transition_models.CloseInputPayload
-        case decision_models.ActionKind.COMPLETE | decision_models.ActionKind.REOPEN:
-            return transition_models.EvidenceInputPayload
-        case decision_models.ActionKind.RECORD_REPLACEMENT:
-            return transition_models.RecordPlannedReplacementInputPayload
-        case decision_models.ActionKind.RETAIN_TEMPORARILY:
-            return transition_models.RetainTemporarilyInputPayload
-        case decision_models.ActionKind.DEFER:
-            return transition_models.DeferInputPayload
-        case (
-            decision_models.ActionKind.MARK_READY
-            | decision_models.ActionKind.PAUSE
-            | decision_models.ActionKind.REJECT_PROPOSAL
-            | decision_models.ActionKind.RETURN_FOR_CORRECTION
-            | decision_models.ActionKind.RETURN_PROPOSAL
-        ):
-            return transition_models.ReasonInputPayload
-        case decision_models.ActionKind.MERGE_PROPOSAL:
-            return transition_models.MergeProposalInputPayload
-        case decision_models.ActionKind.RESUME:
-            return transition_models.ResumeInputPayload
-        case decision_models.ActionKind.REBIND_ATTEMPT:
-            return transition_models.RebindAttemptInputPayload
-        case decision_models.ActionKind.REVISE_ITEM:
-            return transition_models.ReviseItemInputPayload
-        case decision_models.ActionKind.SUBMIT_REVIEW:
-            return transition_models.SubmitReviewInputPayload
-        case (
-            decision_models.ActionKind.CONTINUE
-            | decision_models.ActionKind.DISPATCH
-            | decision_models.ActionKind.INSPECT
-            | decision_models.ActionKind.REPORT_BLOCKER
-        ):
-            return None
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
 INPUT_CONTRACT_ACTION_KINDS: Final = tuple(kind.value for kind in decision_models.ActionKind)
-
-
-def _input_model(kind: decision_models.ActionKind) -> TransitionInputResult[transition_models.InputModel]:
-    model = _input_model_or_none(kind)
-    if model is None:
-        return TransitionInputFailure(
-            DecisionFailureCode.ACTION_NOT_MUTATING,
-            f"Action '{kind.value}' is not a canonical transition.",
-            None,
-        )
-    return model
 
 
 def _decode[PayloadT: transition_models.InputPayload](
@@ -345,17 +283,11 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
 
 
 def encoded_transition_input_schema(kind: decision_models.ActionKind) -> TransitionInputResult[bytes]:
-    if kind == decision_models.ActionKind.COMPLETE:
-        direct = msgspec.json.schema(transition_models.EvidenceInputPayload)
-        covered = msgspec.json.schema(transition_models.CoveredCompleteInputPayload)
-        return msgspec.json.encode(
-            {
-                "oneOf": [{"$ref": direct["$ref"]}, {"$ref": covered["$ref"]}],
-                "$defs": {**direct["$defs"], **covered["$defs"]},
-            },
-            order="sorted",
-        )
-    model = _input_model(kind)
-    if isinstance(model, TransitionInputFailure):
-        return model
-    return msgspec.json.encode(msgspec.json.schema(model), order="sorted")
+    encoded = actions.encoded_action_input_schema(kind)
+    if encoded is not None:
+        return encoded
+    return TransitionInputFailure(
+        DecisionFailureCode.ACTION_NOT_MUTATING,
+        f"Action '{kind.value}' is not a canonical transition.",
+        None,
+    )

@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import assert_never
 
-from pinboard.application import ports, query_models, stored_state
+from pinboard.application import ports, query_models, stored_state, work_brief_models
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import ActionCapabilityFactory, project_attempt_action_groups
 from pinboard.domain.errors import (
@@ -84,6 +84,35 @@ def select_review_job_context(
     return selected
 
 
+def validate_attempt_brief_identity(
+    context: query_models.NonterminalAttemptContextFacts,
+    brief: work_brief_models.WorkBrief,
+) -> DecisionFailure | None:
+    """Require one decoded brief to be the exact accepted identity for an attempt."""
+
+    if (
+        brief.attempt_id,
+        brief.item_id,
+        brief.branch,
+        brief.base_revision,
+        brief.accepted_scope.revision,
+        brief.accepted_scope.digest,
+    ) == (
+        context.attempt_id,
+        context.item_id,
+        context.branch,
+        context.base_revision,
+        context.accepted_scope_revision,
+        context.accepted_scope_digest,
+    ):
+        return None
+    return DecisionFailure(
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        "Accepted brief identity differs from the attempt.",
+        None,
+    )
+
+
 def project_attempt_continuation(
     context: query_models.AttemptContextFacts,
     owner_task_id: TaskId | None,
@@ -96,12 +125,11 @@ def project_attempt_continuation(
     """
     match context:
         case query_models.TerminalAttemptContextFacts():
-            return query_models.AttemptContinuation(
+            return query_models.TerminalAttemptContinuation(
                 "pinboard-attempt-continuation/v1",
                 context.attempt_id,
                 context.item_id,
                 context.project_revision,
-                work_models.AttemptState.DONE,
                 None,
                 True,
                 False,
@@ -110,6 +138,12 @@ def project_attempt_continuation(
                 ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
             )
         case query_models.NonterminalAttemptContextFacts():
+            if owner_task_id is None:
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    "A nonterminal attempt requires its verified owner task identity.",
+                    None,
+                )
             item = context.item
             attempt_record = work_models.AttemptRecord(
                 context.attempt_id,
@@ -147,12 +181,11 @@ def project_attempt_continuation(
             selected = _next_attempt_operation(context, actions)
             if isinstance(selected, DecisionFailure):
                 return selected
-            return query_models.AttemptContinuation(
+            continuation_arguments = (
                 "pinboard-attempt-continuation/v1",
                 context.attempt_id,
                 context.item_id,
                 context.project_revision,
-                context.state,
                 owner_task_id,
                 False,
                 False,
@@ -160,6 +193,17 @@ def project_attempt_continuation(
                 tuple(decision_models.action_id(value) for value in actions),
                 ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
             )
+            match context.state:
+                case work_models.AttemptState.ACTIVE:
+                    return query_models.ActiveAttemptContinuation(*continuation_arguments)
+                case work_models.AttemptState.REVIEW:
+                    return query_models.ReviewAttemptContinuation(*continuation_arguments)
+                case work_models.AttemptState.PAUSED:
+                    return query_models.PausedAttemptContinuation(*continuation_arguments)
+                case work_models.AttemptState.BLOCKED:
+                    return query_models.BlockedAttemptContinuation(*continuation_arguments)
+                case _ as unreachable:
+                    assert_never(unreachable)
         case _ as unreachable:
             assert_never(unreachable)
 

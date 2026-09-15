@@ -33,6 +33,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     action_models,
     actions,
+    candidate_snapshots,
     proposal_models,
     proposals,
     queries,
@@ -604,6 +605,7 @@ def _mcp_attempt_continuation(
 
 def _attempt_inspection_success(
     continuation: query_models.AttemptContinuation,
+    candidate_recovery: contracts.CandidateRecovery,
     accepted_brief: contracts.AcceptedBriefIdentity | None,
     result: contracts.EvidenceReference,
     review: contracts.EvidenceReference,
@@ -618,6 +620,7 @@ def _attempt_inspection_success(
                 "pinboard-mcp-attempt-inspection-result/v1",
                 "ok",
                 presented_continuation,
+                candidate_recovery,
                 None,
                 result,
                 review,
@@ -638,6 +641,7 @@ def _attempt_inspection_success(
             "pinboard-mcp-attempt-inspection-result/v1",
             "ok",
             presented_continuation,
+            candidate_recovery,
             accepted_brief,
             result,
             review,
@@ -650,6 +654,66 @@ def _attempt_inspection_success(
     content = msgspec.to_builtins(record)
     assert isinstance(content, dict)
     return content
+
+
+def _mcp_candidate_recovery(
+    durable: DurableRoots,
+    store: SQLiteWorkStore,
+    context: query_models.AttemptContextFacts,
+    attempt_id: str,
+) -> contracts.CandidateRecovery | OperationResult:
+    snapshot_context = store.read_candidate_snapshot_context(AttemptId(attempt_id))
+    if snapshot_context is None:
+        return contracts.CandidateRecoveryAbsent()
+    try:
+        snapshot_bytes = read_reference(durable.work_root, snapshot_context.reference)
+        candidate = (
+            context.candidate_revision if isinstance(context, query_models.NonterminalAttemptContextFacts) else None
+        )
+        evidence = candidate_snapshots.verify_candidate_snapshot_context(snapshot_context, candidate, snapshot_bytes)
+    except (ArtifactError, ValueError) as error:
+        return _read_failure(
+            "pinboard-mcp-attempt-inspection-result/v1",
+            "ATTEMPT_BRIEF_INVALID",
+            f"Accepted candidate snapshot could not be verified: {error}",
+            FailureDetails(
+                observed=(FailureFact("attempt_id", attempt_id),),
+                mismatches=(
+                    FailureMismatch(
+                        "accepted_candidate_snapshot",
+                        "canonical bytes matching the accepted receipt",
+                        "unreadable, invalid, or mismatched",
+                    ),
+                ),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    snapshot = evidence.snapshot
+    return contracts.CandidateRecoveryPresent(
+        "working-tree" if isinstance(snapshot, candidate_snapshots.WorkingTreeCandidateSnapshot) else "commit",
+        snapshot.candidate,
+        snapshot.branch,
+        snapshot.preimage_revision,
+        int(evidence.reference.artifact_ref_id),
+        evidence.reference.selector,
+        evidence.reference.content_sha256,
+        evidence.reference.size_bytes,
+        (
+            str(Path(sys.executable).with_name("pinboard")),
+            "--project-root",
+            "<exact-clean-checkout>",
+            "--work-root",
+            str(durable.work_root),
+            "candidate",
+            "restore",
+            "--attempt-id",
+            attempt_id,
+            "--json",
+        ),
+    )
 
 
 def _read_attempt_inspection(
@@ -833,7 +897,10 @@ def _read_attempt_inspection(
             ),
         )
     token.checkpoint()
-    content = _attempt_inspection_success(continuation, accepted_brief, result, review, blocker)
+    recovery = _mcp_candidate_recovery(durable, store, context, request.attempt_id)
+    if isinstance(recovery, OperationResult):
+        return recovery
+    content = _attempt_inspection_success(continuation, recovery, accepted_brief, result, review, blocker)
     return OperationResult(content, "ok", str(context.project_revision))
 
 

@@ -79,7 +79,7 @@ from pinboard.adapters.sqlite.proposals import (
     read_proposal,
     set_proposal_disposition,
 )
-from pinboard.application import queries, query_models, stored_state
+from pinboard.application import candidate_snapshots, queries, query_models, stored_state
 from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
 from pinboard.application.handover import HandoverState
 from pinboard.application.mutation_models import (
@@ -92,6 +92,7 @@ from pinboard.application.mutation_models import (
     OrderMutation,
     PreparationAuthorityMutation,
     ProposalCreationMutation,
+    ReviewSubmissionMutation,
     StoredStateMutation,
     TransitionMutation,
 )
@@ -150,6 +151,16 @@ class _ProjectRevisionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 class _StateCountRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     state: str
     item_count: int
+
+
+class _CandidateSnapshotAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    item_id: ItemId
+    state: work_models.AttemptState
+    branch: str
+    base_revision: str
+    candidate_revision: str | None
+    candidate_recorded_at: datetime | None
 
 
 def _read_generated_view_facts(
@@ -332,7 +343,7 @@ def _mutation_subjects(
     mutation: StoredStateMutation,
 ) -> tuple[tuple[ItemId, ...], tuple[AttemptId, ...]]:
     match mutation:
-        case TransitionMutation(decision=decision):
+        case TransitionMutation(decision=decision) | ReviewSubmissionMutation(decision=decision):
             match decision.change:
                 case (
                     decision_models.ItemStateChange(item=item)
@@ -449,6 +460,7 @@ def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every 
             pass
         case (
             TransitionMutation(decision=decision)
+            | ReviewSubmissionMutation(decision=decision)
             | CheckpointAcceptanceMutation(decision=decision)
             | CompletionAcceptanceMutation(decision=decision)
         ):
@@ -1039,7 +1051,7 @@ def _persist_completion_acceptance(
     return None
 
 
-def _persist_state_change(
+def _persist_state_change(  # noqa: C901, PLR0912 - exhaustive closed mutation persistence
     connection: sqlite3.Connection,
     facts: _PersistenceFacts,
     mutation: StoredStateMutation,
@@ -1073,6 +1085,19 @@ def _persist_state_change(
             return None
         case TransitionMutation():
             return _persist_transition(connection, facts, mutation)
+        case ReviewSubmissionMutation():
+            accept_checkpoint_artifact(
+                connection,
+                mutation.candidate_snapshot,
+                mutation.candidate_snapshot_id,
+                mutation.receipt.project_revision,
+                mutation.decision.receipt.decided_at,
+            )
+            return _persist_transition(
+                connection,
+                facts,
+                TransitionMutation(mutation.decision, mutation.receipt),
+            )
         case CheckpointAcceptanceMutation():
             return _persist_checkpoint_acceptance(connection, facts, mutation)
         case CompletionAcceptanceMutation():
@@ -1293,7 +1318,7 @@ class _SQLiteWorkTransaction:
             return self._select(failure)
         if (
             continuation_attempt_id is None
-            and isinstance(mutation, TransitionMutation)
+            and isinstance(mutation, (TransitionMutation, ReviewSubmissionMutation))
             and isinstance(mutation.decision.change, decision_models.ActivationChange)
         ):
             continuation_attempt_id = mutation.decision.change.attempt
@@ -1347,6 +1372,69 @@ def _read_attempt_context_facts(
             )
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _read_candidate_snapshot_context_facts(
+    connection: sqlite3.Connection,
+    attempt_id: AttemptId,
+) -> query_models.CandidateSnapshotContextFacts | None:
+    attempt_row = connection.execute(
+        """
+        SELECT attempt_id, item_id, state, branch, base_revision,
+               candidate_revision, candidate_recorded_at
+        FROM attempts WHERE attempt_id = ?
+        """,
+        (attempt_id,),
+    ).fetchone()
+    if attempt_row is None:
+        return None
+    attempt = decode_row(attempt_row, _CandidateSnapshotAttemptRow)
+    if attempt.candidate_revision is None or attempt.candidate_recorded_at is None:
+        return None
+    artifact_key = candidate_snapshots.candidate_snapshot_artifact_key(
+        str(attempt.attempt_id),
+        attempt.candidate_revision,
+        attempt.candidate_recorded_at.isoformat(),
+    )
+    reference = read_latest_artifact_reference(
+        connection,
+        work_models.ArtifactKind.EVIDENCE,
+        artifact_key,
+    )
+    if reference is None:
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE,
+            "The protected candidate has no accepted snapshot artifact.",
+        )
+    history_row = connection.execute(
+        """
+        SELECT history_id FROM transition_history
+        WHERE project_revision = ?
+        """,
+        (reference.accepted_revision,),
+    ).fetchone()
+    if history_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Candidate snapshot receipt is missing.")
+    history_id = decode_row(history_row, _HistoryIdRow).history_id
+    receipt = sqlite_state.read_history_receipt(connection, history_id)
+    if receipt is None or receipt.artifact_ref_id is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Candidate snapshot receipt is incomplete.")
+    if receipt.artifact_ref_id != reference.artifact_ref_id:
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE,
+            "Candidate snapshot receipt names a different artifact reference.",
+        )
+    return query_models.CandidateSnapshotContextFacts(
+        attempt.attempt_id,
+        attempt.item_id,
+        attempt.state,
+        attempt.branch,
+        attempt.base_revision,
+        attempt.candidate_revision,
+        attempt.candidate_recorded_at,
+        receipt,
+        reference,
+    )
 
 
 class SQLiteWorkStore:
@@ -1633,6 +1721,16 @@ class SQLiteWorkStore:
         finally:
             connection.close()
 
+    def read_candidate_snapshot_context(
+        self, attempt_id: AttemptId
+    ) -> query_models.CandidateSnapshotContextFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return _read_candidate_snapshot_context_facts(connection, attempt_id)
+        finally:
+            connection.close()
+
     def read_review_job_context(
         self,
         attempt_id: AttemptId,
@@ -1679,6 +1777,7 @@ class SQLiteWorkStore:
                 )
                 return query_models.ReviewJobContextFacts(
                     attempt,
+                    _read_candidate_snapshot_context_facts(connection, attempt_id),
                     checkpoint_receipt,
                     checkpoint_package_reference,
                     checkpoint_candidate_reference,

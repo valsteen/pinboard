@@ -37,6 +37,26 @@ class DirtyHeadCandidate:
 type CommittedCandidateObservation = CurrentHeadCandidate | DifferentHeadCandidate | DirtyHeadCandidate
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateRestoreSuccess:
+    changed: bool
+    candidate: str
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateRestoreRejection:
+    reason: str
+    branch: str
+    head: str
+
+
+type CandidateRestoreResult = CandidateRestoreSuccess | CandidateRestoreRejection
+
+
+class CandidateRestoreAfterMutationError(RootError):
+    """The checkout changed before exact restoration verification failed."""
+
+
 def _resolve_git_path(cwd: Path, selector: str, unavailable_message: str) -> Path:
     result = subprocess.run(
         ["git", "rev-parse", "--path-format=absolute", selector],
@@ -46,7 +66,7 @@ def _resolve_git_path(cwd: Path, selector: str, unavailable_message: str) -> Pat
         check=False,
     )
     if result.returncode != 0:
-        raise RootError(
+        raise CandidateRestoreAfterMutationError(
             RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE,
             result.stderr.strip() or unavailable_message,
         )
@@ -60,7 +80,7 @@ def _resolve_git_common_directory(cwd: Path) -> Path:
         f"'{cwd}' is not inside a Git repository.",
     )
     if common_directory.name != ".git":
-        raise RootError(
+        raise CandidateRestoreAfterMutationError(
             RootErrorCode.PROJECT_GIT_LAYOUT_UNSUPPORTED,
             f"Expected the shared Git directory to end in '.git', found '{common_directory}'.",
         )
@@ -161,6 +181,112 @@ def read_current_head_candidate(
         unavailable_message=f"Cannot compare accepted base '{base_revision}' with '{candidate_revision}'.",
     )
     return CurrentHeadCandidate(candidate_revision, diff)
+
+
+def _working_tree_status(cwd: Path) -> bytes:
+    return _git_bytes(
+        cwd,
+        "--no-optional-locks",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        unavailable_message=f"Cannot read the working-tree status at '{cwd}'.",
+    )
+
+
+def restore_working_tree_candidate(
+    cwd: Path,
+    *,
+    expected_branch: str,
+    preimage_revision: str,
+    candidate: str,
+    diff: bytes,
+) -> CandidateRestoreResult:
+    """Apply one exact working-tree snapshot with index participation."""
+
+    branch, head = observe_checkout_identity(cwd)
+    if branch != expected_branch:
+        return CandidateRestoreRejection("wrong-branch", branch, head)
+    if head != preimage_revision:
+        return CandidateRestoreRejection("wrong-head", branch, head)
+    current = read_working_tree_candidate(cwd)
+    if current.identity == candidate and current.diff == diff:
+        return CandidateRestoreSuccess(False, candidate)
+    if _working_tree_status(cwd):
+        return CandidateRestoreRejection("dirty-working-tree", branch, head)
+    applied = subprocess.run(
+        ["git", "apply", "--index", "--binary", "-"],
+        cwd=cwd,
+        input=diff,
+        capture_output=True,
+        check=False,
+    )
+    if applied.returncode != 0:
+        return CandidateRestoreRejection("patch-rejected", branch, head)
+    restored = read_working_tree_candidate(cwd)
+    if restored.identity != candidate or restored.diff != diff:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            "Candidate restoration changed the checkout but did not produce the exact snapshot.",
+        )
+    return CandidateRestoreSuccess(True, candidate)
+
+
+def restore_commit_candidate(
+    cwd: Path,
+    *,
+    expected_branch: str,
+    preimage_revision: str,
+    accepted_base_revision: str,
+    candidate: str,
+    diff: bytes,
+) -> CandidateRestoreResult:
+    """Reuse or fast-forward one exact clean commit candidate."""
+
+    branch, head = observe_checkout_identity(cwd)
+    if branch != expected_branch:
+        return CandidateRestoreRejection("wrong-branch", branch, head)
+    if _working_tree_status(cwd):
+        return CandidateRestoreRejection("dirty-working-tree", branch, head)
+    if head not in {preimage_revision, candidate}:
+        return CandidateRestoreRejection("wrong-head", branch, head)
+    exists = subprocess.run(
+        ["git", "cat-file", "-e", f"{candidate}^{{commit}}"], cwd=cwd, capture_output=True, check=False
+    )
+    if exists.returncode != 0:
+        return CandidateRestoreRejection("missing-commit", branch, head)
+    observed = _git_bytes(
+        cwd,
+        "diff",
+        "--binary",
+        accepted_base_revision,
+        candidate,
+        "--",
+        unavailable_message=f"Cannot compare accepted base '{accepted_base_revision}' with '{candidate}'.",
+    )
+    if observed != diff:
+        return CandidateRestoreRejection("candidate-diff-mismatch", branch, head)
+    if head == candidate:
+        return CandidateRestoreSuccess(False, candidate)
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", preimage_revision, candidate],
+        cwd=cwd,
+        capture_output=True,
+        check=False,
+    )
+    if ancestor.returncode != 0:
+        return CandidateRestoreRejection("non-fast-forward", branch, head)
+    advanced = subprocess.run(["git", "merge", "--ff-only", candidate], cwd=cwd, capture_output=True, check=False)
+    if advanced.returncode != 0:
+        return CandidateRestoreRejection("fast-forward-rejected", branch, head)
+    restored_branch, restored_head = observe_checkout_identity(cwd)
+    if restored_branch != expected_branch or restored_head != candidate or _working_tree_status(cwd):
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            "Candidate restoration changed the checkout but did not produce the exact clean commit.",
+        )
+    return CandidateRestoreSuccess(True, candidate)
 
 
 def resolve_shared_repository_root(cwd: Path) -> Path:

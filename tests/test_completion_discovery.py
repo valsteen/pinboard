@@ -112,8 +112,9 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
             selection = selection.replace(old, new)
         selected = self.run_json_cli(*fixture.common, *shlex.split(selection)[:-1])
         action = self.json_object(self.json_array(selected["actions"])[0])
+        candidate = fixture.candidate_revision
         payload.write_text(
-            observations["candidate_payload"].replace("<exact-candidate-revision>", "recovered-candidate"),
+            observations["candidate_payload"].replace("<exact-candidate-revision>", candidate),
             encoding="utf-8",
         )
         submission = observations["candidate_submission_command"]
@@ -126,7 +127,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
             *fixture.common, *shlex.split(observations["completion_reinspection_command"])[:-1]
         )
         contract = self.json_object(self.json_object(self.json_array(reinspected["actions"])[0])["input_contract"])
-        self.assertEqual("recovered-candidate", contract["candidate"])
+        self.assertEqual(candidate, contract["candidate"])
         complete_action = self.json_object(self.json_array(reinspected["actions"])[0])
         payload.write_text('{"unexpected":true}', encoding="utf-8")
         invalid, stdout, _ = self.run_cli(

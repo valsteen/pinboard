@@ -115,60 +115,31 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         )
         self.assertEqual(fixture.candidate_revision, handover.checkpoint_packages[0].candidate)
 
-    def reject_checkpoint_without_publication(self, fixture: CheckpointFixture) -> JsonObject:
+    def accept_checkpoint_from_immutable_snapshot(self, fixture: CheckpointFixture) -> None:
         action = self.project_action(fixture.common, "accept-checkpoint:work-a-1")
-        before = fixture.store.validated_snapshot()
-        with patch(
-            "pinboard.cli.transitions.ArtifactRepository.publish",
-            side_effect=AssertionError("checkpoint rejection published immutable evidence"),
-        ):
-            result, stdout, stderr = self.run_cli(
-                *self.project_transition_arguments(fixture, action, fixture.payload),
-                "--json",
-            )
-        self.assertEqual(11, result, stderr)
-        self.assertEqual(before, fixture.store.validated_snapshot())
-        rejected = self.json_object(json.loads(stdout))
-        self.assertEqual("rejected", rejected["status"])
-        self.assertFalse(rejected["state_changed"])
-        self.assertEqual([], rejected["changed_surfaces"])
-        return rejected
+        result, _stdout, stderr = self.run_cli(*self.project_transition_arguments(fixture, action, fixture.payload))
+        self.assertEqual(0, result, stderr)
+        reference = next(
+            value
+            for value in fixture.store.validated_snapshot().artifact_references
+            if value.key.endswith("-candidate")
+        )
+        self.assertEqual(fixture.candidate_bytes, (fixture.work / reference.selector).read_bytes())
 
-    def test_checkpoint_acceptance_rejects_a_commit_different_from_current_head(self) -> None:
+    def test_checkpoint_acceptance_ignores_a_later_mutable_head(self) -> None:
         fixture = self.checkpoint_fixture(candidate_form="current-head")
         (fixture.project / "tracked.txt").write_text("later\n", encoding="utf-8")
-        current_head = self.commit_all(fixture.project, "later")
+        self.commit_all(fixture.project, "later")
+        self.accept_checkpoint_from_immutable_snapshot(fixture)
 
-        rejected = self.reject_checkpoint_without_publication(fixture)
-
-        self.assertEqual("correct-input", rejected["retry"])
-        self.assertIn(
-            {"field": "current_head", "expected": fixture.candidate_revision, "observed": current_head},
-            self.json_array(rejected["mismatches"]),
-        )
-
-    def test_checkpoint_acceptance_rejects_a_dirty_current_head(self) -> None:
+    def test_checkpoint_acceptance_ignores_a_dirty_mutable_checkout(self) -> None:
         fixture = self.checkpoint_fixture(candidate_form="current-head")
         (fixture.project / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+        self.accept_checkpoint_from_immutable_snapshot(fixture)
 
-        rejected = self.reject_checkpoint_without_publication(fixture)
-
-        self.assertEqual("retry-same-input", rejected["retry"])
-        self.assertIn(
-            {"field": "working_tree_clean", "expected": True, "observed": False},
-            self.json_array(rejected["mismatches"]),
-        )
-
-    def test_checkpoint_acceptance_rejects_an_unreadable_base_comparison(self) -> None:
+    def test_checkpoint_acceptance_needs_no_live_base_comparison(self) -> None:
         fixture = self.checkpoint_fixture(candidate_form="current-head", accepted_base="missing-accepted-base")
-
-        rejected = self.reject_checkpoint_without_publication(fixture)
-
-        self.assertEqual("retry-same-input", rejected["retry"])
-        self.assertIn(
-            {"field": "candidate_revision", "value": fixture.candidate_revision},
-            self.json_array(rejected["observed"]),
-        )
+        self.accept_checkpoint_from_immutable_snapshot(fixture)
 
     def test_v2_missing_candidate_reference_cannot_enter_legacy_recovery(self) -> None:
         for supply_patch in (False, True):
@@ -198,7 +169,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                     "--attempt-id",
                     "work-a-1",
                     "--candidate-revision",
-                    "candidate-b",
+                    "b" * 40,
                     "--checkpoint-history-id",
                     str(history_id),
                 ]
@@ -254,7 +225,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                     "--attempt-id",
                     "work-a-1",
                     "--candidate-revision",
-                    "candidate-b",
+                    "b" * 40,
                     *arguments,
                 )
                 self.assertEqual("pinboard-review-job/v4", job["schema"])
@@ -272,7 +243,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             "--attempt-id",
             "work-a-1",
             "--candidate-revision",
-            "candidate-b",
+            "b" * 40,
         )
         for arguments in (
             ("--checkpoint-history-id", str(correction_history_id)),
@@ -318,7 +289,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             "--attempt-id",
             "work-a-1",
             "--candidate-revision",
-            "candidate-b",
+            "b" * 40,
             "--checkpoint-history-id",
             str(package_history_id),
         )
@@ -370,7 +341,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                     "--attempt-id",
                     "work-a-1",
                     "--candidate-revision",
-                    "candidate-b",
+                    "b" * 40,
                     "--checkpoint-history-id",
                     str(package_history_id),
                     "--correction-history-id",
@@ -396,29 +367,14 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             if value.outcome_schema == "checkpoint-acceptance/v2"
         )
 
-        connection = sqlite3.connect(fixture.work / "state.sqlite3")
-        try:
-            connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = 'work-a'")
-            connection.execute("UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = 'paused'")
-            connection.execute("UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'review'")
-            connection.execute(
-                """
-                UPDATE attempts
-                SET state = 'review', candidate_revision = 'candidate-b', candidate_recorded_at = ?
-                WHERE attempt_id = 'work-a-1'
-                """,
-                (SQLITE_NOW.isoformat(),),
-            )
-            connection.commit()
-        finally:
-            connection.close()
+        self.record_review_candidate(fixture, "b" * 40)
 
         older_history_id = self.return_for_correction(fixture, "Fix candidate B.", "b")
-        self.submit_review(fixture, "candidate-newer", "worker-newer")
+        newer_candidate = self.submit_review(fixture, "candidate-newer", "worker-newer")
         newer_history_id = self.return_for_correction(fixture, "Fix the newer candidate.", "newer")
         review_path = fixture.work / "attempts" / "work-a-1" / "review.md"
         review_path.write_text("Candidate: candidate-newer\nFinding: newer finding.\n", encoding="utf-8")
-        self.submit_review(fixture, "candidate-c", "worker-c")
+        candidate_c = self.submit_review(fixture, "candidate-c", "worker-c")
         (fixture.work / "attempts" / "work-a-1" / "result.md").write_text("candidate C result\n", encoding="utf-8")
         before_review = fixture.store.validated_snapshot()
         selected_receipt = next(
@@ -452,7 +408,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             "--attempt-id",
             "work-a-1",
             "--candidate-revision",
-            "candidate-c",
+            candidate_c,
             "--checkpoint-history-id",
             str(int(package_receipt.history_id)),
             "--correction-history-id",
@@ -465,20 +421,18 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         self.assertLess(older_history_id, newer_history_id)
         round_view = self.json_object(job["review_round"])
         self.assertEqual(older_history_id, round_view["history_id"])
-        self.assertEqual("candidate-b", round_view["candidate_revision"])
+        self.assertEqual("b" * 40, round_view["candidate_revision"])
         self.assertEqual("Fix candidate B.", round_view["reason"])
         self.assertEqual(hashlib.sha256(review_path.read_bytes()).hexdigest(), round_view["review_sha256"])
         prompt_reference = self.json_object(job["prompt_reference"])
         prompt = (fixture.work / str(prompt_reference["selector"])).read_text(encoding="utf-8")
-        self.assertIn("candidate-c", prompt)
+        self.assertIn(candidate_c, prompt)
         self.assertIn("candidate-newer", review_path.read_text(encoding="utf-8"))
         reloaded = fixture.store.validated_snapshot()
         receipts = {int(value.history_id): value for value in reloaded.transition_receipts}
         self.assertEqual(b'{"reason":"Fix the newer candidate."}', bytes(receipts[newer_history_id].input_payload))
-        self.assertEqual("candidate-b", msgspec.json.decode(receipts[older_history_id].outcome_payload)["candidate"])
-        self.assertEqual(
-            "candidate-newer", msgspec.json.decode(receipts[newer_history_id].outcome_payload)["candidate"]
-        )
+        self.assertEqual("b" * 40, msgspec.json.decode(receipts[older_history_id].outcome_payload)["candidate"])
+        self.assertEqual(newer_candidate, msgspec.json.decode(receipts[newer_history_id].outcome_payload)["candidate"])
 
     def test_review_job_rejects_missing_or_corrupt_selected_package_bytes(self) -> None:
         for failure in ("missing", "corrupt"):
@@ -494,7 +448,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 "--attempt-id",
                 "work-a-1",
                 "--candidate-revision",
-                "candidate-b",
+                "b" * 40,
                 "--checkpoint-history-id",
                 str(package_history_id),
             )
@@ -512,7 +466,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             "--attempt-id",
             "work-a-1",
             "--candidate-revision",
-            "candidate-b",
+            "b" * 40,
             "--checkpoint-history-id",
             str(package_history_id),
             "--correction-history-id",
@@ -533,27 +487,14 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             for value in fixture.store.validated_snapshot().transition_receipts
             if value.outcome_schema == "checkpoint-acceptance/v2"
         )
-        connection = sqlite3.connect(fixture.work / "state.sqlite3")
-        try:
-            connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = 'work-a'")
-            connection.execute(
-                """
-                UPDATE attempts
-                SET state = 'review', candidate_revision = 'candidate-b', candidate_recorded_at = ?
-                WHERE attempt_id = 'work-a-1'
-                """,
-                (SQLITE_NOW.isoformat(),),
-            )
-            connection.commit()
-        finally:
-            connection.close()
+        self.record_review_candidate(fixture, "b" * 40)
         job = self.run_json_cli(
             *fixture.common,
             "review-job",
             "--attempt-id",
             "work-a-1",
             "--candidate-revision",
-            "candidate-b",
+            "b" * 40,
             "--checkpoint-history-id",
             str(int(package_receipt.history_id)),
         )
@@ -618,7 +559,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 "--attempt-id",
                 "work-a-1",
                 "--candidate-revision",
-                "candidate-b",
+                "b" * 40,
                 "--checkpoint-history-id",
                 str(package_history_id),
                 "--correction-history-id",
@@ -626,7 +567,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             )
         self.assertEqual("pinboard-review-job/v4", job["schema"])
         self.assertEqual(1, transactions.call_count)
-        self.assertEqual(2, receipt_reads.call_count)
+        self.assertEqual(3, receipt_reads.call_count)
         self.assertTrue(git_calls.call_args_list)
         self.assertTrue(
             all(call.args[0][1:3] == ["rev-parse", "--path-format=absolute"] for call in git_calls.call_args_list)
@@ -756,7 +697,8 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         self.assertEqual(11, active_result)
         self.assertEqual(before_active_rejection, fixture.store.validated_snapshot())
 
-        self.submit_review(fixture, "terminal-candidate", "terminal-worker")
+        terminal_candidate = self.submit_review(fixture, "terminal-candidate", "terminal-worker")
+        covered_value["candidate"] = terminal_candidate
         complete_action = self.project_action(fixture.common, "complete:work-a-1")
 
         direct_payload = fixture.project / "direct-complete.json"

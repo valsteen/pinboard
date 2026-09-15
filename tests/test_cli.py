@@ -39,7 +39,7 @@ from pinboard.adapters.sqlite.database import initialize_database, translate_dat
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import query_models, stored_state, work_brief_models
+from pinboard.application import candidate_snapshots, query_models, stored_state, work_brief_models
 from pinboard.application.artifacts import ArtifactPublication, NewArtifact, WorkBriefIdentity
 from pinboard.application.brief_sources import BriefSourceSelector
 from pinboard.application.mutation_models import CommittedEffect
@@ -60,7 +60,7 @@ from pinboard.cli import transitions as transition_interface
 from pinboard.cli.entrypoint import build_parser, main
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionResult
-from pinboard.domain.history import work_item_definition_digest
+from pinboard.domain.history import encode_transition_receipt_outcome, work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, HistoryId, HostId, ItemId, LeaseId, TaskId
 from tests.artifact_support import write_revision
 from tests.decision_support import discover_actions
@@ -161,8 +161,8 @@ class CliTest(unittest.TestCase):
                     *common, "attempt", "inspect", "--attempt-id", transition.continuation.attempt_id
                 )
                 self.assertEqual(
-                    json.loads(msgspec.json.encode(work_inspection_models.AttemptView(transition.continuation))),
-                    inspected,
+                    json.loads(msgspec.json.encode(transition.continuation)),
+                    inspected["continuation"],
                 )
         elif result == 0 and "\n{" in stdout:
             encoded = stdout[stdout.index("\n{") + 1 :].encode()
@@ -512,8 +512,17 @@ class CliTest(unittest.TestCase):
         *,
         attempt_id: str = "work-a-1",
     ) -> str:
+        with sqlite3.connect(work / "state.sqlite3") as connection:
+            branch, accepted_base, item_id, recorded_at = connection.execute(
+                """
+                SELECT branch, base_revision, item_id, candidate_recorded_at
+                FROM attempts WHERE attempt_id = ?
+                """,
+                (attempt_id,),
+            ).fetchone()
+        assert recorded_at is not None
         candidate_path = project / "candidate.txt"
-        subprocess.run(("git", "init", "--quiet", str(project)), check=True)
+        subprocess.run(("git", "init", "--quiet", "-b", branch, str(project)), check=True)
         candidate_path.write_text("accepted base\n", encoding="utf-8")
         subprocess.run(("git", "-C", str(project), "add", "candidate.txt"), check=True)
         subprocess.run(
@@ -539,12 +548,115 @@ class CliTest(unittest.TestCase):
             stdout=subprocess.PIPE,
         ).stdout
         candidate = f"working-tree-sha256:{hashlib.sha256(candidate_bytes).hexdigest()}"
+        preimage = subprocess.run(
+            ("git", "-C", str(project), "rev-parse", "HEAD"),
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        snapshot = candidate_snapshots.WorkingTreeCandidateSnapshot(
+            "pinboard-candidate-snapshot/v1",
+            attempt_id,
+            item_id,
+            candidate,
+            branch,
+            preimage,
+            accepted_base,
+            recorded_at,
+            candidate_bytes,
+        )
+        published = write_revision(
+            resolve_durable_roots(project),
+            NewArtifact(
+                work_models.ArtifactKind.EVIDENCE,
+                candidate_snapshots.candidate_snapshot_key(snapshot),
+                1,
+                ".json",
+                candidate_snapshots.canonical_candidate_snapshot_bytes(snapshot),
+            ),
+        )
+        accepted = SQLiteWorkStore(work / "state.sqlite3").accept_artifact_reference(
+            work,
+            published,
+            datetime.fromisoformat(recorded_at),
+        )
+        if isinstance(accepted, DecisionFailure):
+            self.fail(str(accepted))
         with sqlite3.connect(work / "state.sqlite3") as connection:
             connection.execute(
                 "UPDATE attempts SET candidate_revision = ? WHERE attempt_id = ?",
                 (candidate, attempt_id),
             )
+            history_id = connection.execute(
+                "SELECT COALESCE(MAX(history_id), 0) + 1 FROM transition_history"
+            ).fetchone()[0]
+            project_revision = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO transition_history(
+                    history_id, project_revision, action_id, action_kind, subject_id,
+                    artifact_ref_id, artifact_kind, authorization_kind, actor_task_id, actor_host_id,
+                    input_schema, input_json, outcome_schema, outcome_json, committed_at
+                ) VALUES (?, ?, ?, 'submit-review', ?, ?, 'evidence', 'attempt', NULL, NULL, ?, ?, ?, ?, ?)
+                """,
+                (
+                    history_id,
+                    project_revision,
+                    f"submit-review:{attempt_id}",
+                    attempt_id,
+                    int(accepted.reference.artifact_ref_id),
+                    "pinboard-candidate-snapshot/v1",
+                    msgspec.json.encode(
+                        {
+                            "candidate": candidate,
+                            "snapshot_artifact_ref_id": int(accepted.reference.artifact_ref_id),
+                        },
+                        order="sorted",
+                    ).decode(),
+                    "transition-receipt/v1",
+                    encode_transition_receipt_outcome(
+                        evidence=None,
+                        outcome="submit-review",
+                        candidate=candidate,
+                    ).decode(),
+                    recorded_at,
+                ),
+            )
         return candidate
+
+    def create_working_tree_candidate(self, project: Path, work: Path, *, attempt_id: str = "work-a-1") -> str:
+        with sqlite3.connect(work / "state.sqlite3") as connection:
+            branch = connection.execute(
+                "SELECT branch FROM attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()[0]
+        subprocess.run(("git", "init", "--quiet", "-b", branch, str(project)), check=True)
+        candidate_path = project / "candidate.txt"
+        candidate_path.write_text("accepted base\n", encoding="utf-8")
+        subprocess.run(("git", "-C", str(project), "add", "candidate.txt"), check=True)
+        subprocess.run(
+            (
+                "git",
+                "-C",
+                str(project),
+                "-c",
+                "user.name=Pinboard Test",
+                "-c",
+                "user.email=pinboard@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "accepted base",
+            ),
+            check=True,
+        )
+        candidate_path.write_text("accepted candidate\n", encoding="utf-8")
+        candidate_bytes = subprocess.run(
+            ("git", "-C", str(project), "diff", "--binary", "HEAD", "--"),
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+        return f"working-tree-sha256:{hashlib.sha256(candidate_bytes).hexdigest()}"
 
     def prepared_state(self, expires_at: datetime) -> stored_state.StoredWorkState:
         state = complete_sqlite_state()
@@ -967,6 +1079,7 @@ class CliTest(unittest.TestCase):
             ),
         )
         project, work, store = self.initialized_state(state)
+        candidate = self.protect_working_tree_candidate(project, work)
         common = ("--project-root", str(project), "--work-root", str(work))
         action_values = self.json_list(
             self.run_json_cli(
@@ -1035,13 +1148,17 @@ class CliTest(unittest.TestCase):
         )
         self.assertEqual("return-for-correction", self.json_object(continuation["next_operation"])["action_kind"])
         rejected, _, _ = self.run_cli(
-            *common, "review-job", "--attempt-id", "work-a-1", "--candidate-revision", "candidate-review"
+            *common, "review-job", "--attempt-id", "work-a-1", "--candidate-revision", candidate
         )
         self.assertEqual(11, rejected)
         self.assertEqual(after_revision, store.validated_snapshot())
         payloads = {
-            "accept-checkpoint:work-a-1": '{"checkpoint":"checkpoint-a","candidate":"candidate-review","evidence":"accepted"}',
-            "accept-review-and-continue:work-a-1": '{"candidate":"candidate-review","evidence":"accepted"}',
+            "accept-checkpoint:work-a-1": json.dumps(
+                {"checkpoint": "checkpoint-a", "candidate": candidate, "evidence": "accepted"}
+            ),
+            "accept-review-and-continue:work-a-1": json.dumps(
+                {"candidate": candidate, "evidence": "accepted"}
+            ),
             "complete:work-a-1": '{"evidence":"accepted"}',
         }
         for action_id, action in before_actions.items():
@@ -5008,8 +5125,9 @@ Not launchable:
                 )["actions"]
             )[0]
         )
+        candidate = self.create_working_tree_candidate(project, work)
         payload = project / "submit-review.json"
-        payload.write_text('{"candidate":"projection-failure-candidate"}\n', encoding="utf-8")
+        payload.write_text(json.dumps({"candidate": candidate}) + "\n", encoding="utf-8")
 
         with patch(
             "pinboard.cli.work_views.build_selected_attempt_brief_views",
@@ -5060,8 +5178,9 @@ Not launchable:
                 )["actions"]
             )[0]
         )
+        candidate = self.create_working_tree_candidate(project, work)
         payload = project / "submit-review.json"
-        payload.write_text('{"candidate":"unexpected-projection-candidate"}\n', encoding="utf-8")
+        payload.write_text(json.dumps({"candidate": candidate}) + "\n", encoding="utf-8")
 
         with (
             patch(
@@ -5262,8 +5381,9 @@ Not launchable:
         self.assertIn("TRANSITION_INPUT_INVALID:", mismatch_stderr)
         self.assertEqual(before_mismatch, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
+        candidate = self.create_working_tree_candidate(project, work)
         payload = project / "submit-review.json"
-        payload.write_text('{"candidate":"candidate-cli-direct"}\n', encoding="utf-8")
+        payload.write_text(json.dumps({"candidate": candidate}) + "\n", encoding="utf-8")
 
         result, stdout, stderr = self.run_transition(common, action, payload, json_output=False)
         self.assertEqual(0, result, stderr)
@@ -5276,7 +5396,26 @@ Not launchable:
         self.assertFalse(continuation["user_input_required"])
         self.assertEqual(work_a_brief(project).owner_task_id, continuation["owner_task_id"])
         self.assertEqual("review-subagent", self.json_object(continuation["next_operation"])["kind"])
-        self.assertEqual("candidate-cli-direct", self.json_object(continuation["next_operation"])["candidate_revision"])
+        self.assertEqual(candidate, self.json_object(continuation["next_operation"])["candidate_revision"])
+        recovery = self.json_object(inspected["candidate_recovery"])
+        self.assertEqual("present", recovery["kind"])
+        self.assertEqual(candidate, recovery["candidate"])
+        candidate_diff = subprocess.run(
+            ("git", "-C", str(project), "diff", "--binary", "HEAD", "--"),
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+        subprocess.run(
+            ("git", "-C", str(project), "apply", "--reverse", "-"),
+            input=candidate_diff,
+            check=True,
+        )
+        (project / ".git" / "info" / "exclude").write_text("*\n", encoding="utf-8")
+        restored = self.run_json_cli(*common, "candidate", "restore", "--attempt-id", "work-a-1")
+        self.assertTrue(restored["changed"])
+        self.assertEqual(candidate, restored["candidate"])
+        restored_again = self.run_json_cli(*common, "candidate", "restore", "--attempt-id", "work-a-1")
+        self.assertFalse(restored_again["changed"])
         before_review_job = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
         self.assertIsNone(before_review_job.lifecycle.attempts[0].result_artifact_ref_id)
         review_arguments = (
@@ -5285,7 +5424,7 @@ Not launchable:
             "--attempt-id",
             "work-a-1",
             "--candidate-revision",
-            "candidate-cli-direct",
+            candidate,
         )
         missing, _, _ = self.run_cli(*review_arguments)
         self.assertEqual(11, missing)
@@ -5295,7 +5434,7 @@ Not launchable:
         job = self.run_json_cli(*review_arguments)
         self.assertEqual(str(result_path), job["result_path"])
         self.assertEqual(hashlib.sha256(result_path.read_bytes()).hexdigest(), job["result_sha256"])
-        self.assertEqual("candidate-cli-direct", job["candidate_revision"])
+        self.assertEqual(candidate, job["candidate_revision"])
         self.assertNotIn("prompt", job)
         prompt_reference = self.json_object(job["prompt_reference"])
         prompt_path = work / str(prompt_reference["selector"])
@@ -5840,8 +5979,9 @@ Not launchable:
                 )["actions"]
             )[0]
         )
+        candidate = self.create_working_tree_candidate(project, _work)
         submit_payload = project / "later-round-submit.json"
-        submit_payload.write_text('{"candidate":"later-round-candidate"}\n', encoding="utf-8")
+        submit_payload.write_text(json.dumps({"candidate": candidate}) + "\n", encoding="utf-8")
         submit_result, _submit_stdout, submit_stderr = self.run_transition(
             common,
             submit,

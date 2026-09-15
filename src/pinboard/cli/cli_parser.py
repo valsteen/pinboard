@@ -438,6 +438,15 @@ def _add_attempt_parser(commands: argparse._SubParsersAction[argparse.ArgumentPa
     _select_command(inspect, cli_commands.AttemptInspectCommand)
 
 
+def _add_candidate_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    candidate = commands.add_parser("candidate", help="Recover an accepted immutable review candidate.")
+    operations = candidate.add_subparsers(required=True)
+    restore = operations.add_parser("restore", help="Restore one exact accepted candidate into a clean checkout.")
+    restore.add_argument("--attempt-id", required=True)
+    restore.add_argument("--json", action="store_true")
+    _select_command(restore, cli_commands.CandidateRestoreCommand)
+
+
 def _add_preparation_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:  # noqa: PLR0915 - complete preparation grammar
     preparation = commands.add_parser("preparation", help="Manage a renewable ready-item preparation claim.")
     operations = preparation.add_subparsers(required=True)
@@ -730,6 +739,7 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - complete top-l
     dispatch.add_argument("--json", action="store_true")
     _select_command(dispatch, _CompoundCommand.DISPATCH)
     _add_attempt_parser(commands)
+    _add_candidate_parser(commands)
     _add_preparation_parser(commands)
     _add_parallel_parser(commands)
     views = commands.add_parser("views", help="Repair generated human-readable views.")

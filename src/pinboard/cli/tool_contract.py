@@ -41,6 +41,7 @@ type MutationClass = Literal[
     "may-publish-and-record-artifact",
     "publishes-selected-output",
     "repairs-derived-views",
+    "mutates-source-checkout",
 ]
 type DataScope = Literal[
     "static",
@@ -187,6 +188,8 @@ def _unknown_selector(supplied: str, message: str) -> CommandFailure:
 
 
 def _mutation_class(command_type: type[cli_commands.CliCommand]) -> MutationClass:
+    if command_type is cli_commands.CandidateRestoreCommand:
+        return "mutates-source-checkout"
     if command_type in (
         cli_commands.ItemReviseCommand,
         cli_commands.CloseCommand,
@@ -306,6 +309,8 @@ def _purpose(operation_id: str, variant: str) -> str:  # noqa: C901, PLR0912 - e
         return f"Prepare a candidate-bound worker launch {variant.replace('-', ' ')}."
     if operation_id == "artifact/verify":
         return "Verify supplied prompt reference facts and bytes against one accepted artifact reference."
+    if operation_id == "candidate/restore":
+        return "Restore one exact accepted immutable candidate into its recorded clean checkout preimage."
     if operation_id.startswith("attempt/"):
         return f"{operation_id.removeprefix('attempt/').capitalize()} one attempt authority claim."
     if operation_id.startswith("preparation/"):
@@ -409,6 +414,8 @@ def _subject_and_precondition(  # noqa: C901, PLR0912 - exhaustive installed pre
 ) -> tuple[str, str]:
     if command_type is cli_commands.AttemptAcquireCommand:
         return "attempt", "active-attempt-with-no-live-lease"
+    if command_type is cli_commands.CandidateRestoreCommand:
+        return "attempt-candidate", "accepted-candidate-snapshot-and-exact-clean-recovery-checkout"
     if command_type in (
         cli_commands.AttemptRenewCommand,
         cli_commands.AttemptReleaseCommand,
@@ -544,7 +551,7 @@ def _artifact_schema(command_type: type[cli_commands.CliCommand]) -> msgspec.Raw
     return msgspec.Raw(msgspec.json.encode(msgspec.json.schema(model), order="sorted"))
 
 
-def _success_postcondition(
+def _success_postcondition(  # noqa: C901 - exhaustive installed mutation-family contract
     command_type: type[cli_commands.CliCommand],
     mutation_class: MutationClass,
 ) -> str:
@@ -590,6 +597,8 @@ def _success_postcondition(
             return "Publish only the exact caller-selected output and return its receipt."
         case "repairs-derived-views":
             return "Make replaceable views match the current authoritative state."
+        case "mutates-source-checkout":
+            return "Restore the exact accepted candidate or report an unchanged structured rejection."
 
 
 def _retry_semantics(operation_id: str, mutation_class: MutationClass) -> str:
@@ -601,6 +610,8 @@ def _retry_semantics(operation_id: str, mutation_class: MutationClass) -> str:
         return "repeat-only-with-the-same-canonical-artifact"
     if mutation_class == "publishes-selected-output":
         return "repeat-only-with-the-same-canonical-bytes-and-destination"
+    if mutation_class == "mutates-source-checkout":
+        return "safe-to-repeat-only-after-success;inspect-checkout-after-committed-failure"
     return "inspect-current-state-before-retry"
 
 

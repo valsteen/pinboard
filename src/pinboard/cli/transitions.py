@@ -15,13 +15,19 @@ from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
     DifferentHeadCandidate,
     DirtyHeadCandidate,
-    WorkingTreeCandidate,
     observe_checkout_identity,
     read_current_head_candidate,
     read_working_tree_candidate,
 )
 from pinboard.adapters.sqlite.errors import StorageError
-from pinboard.application import action_models, ports, query_models, stored_state, work_brief_models
+from pinboard.application import (
+    action_models,
+    candidate_snapshots,
+    ports,
+    query_models,
+    stored_state,
+    work_brief_models,
+)
 from pinboard.application.actions import action_identity_scope, discover_current_actions
 from pinboard.application.artifacts import (
     BriefArtifactRef,
@@ -36,6 +42,7 @@ from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.service import (
     decide_and_commit_checkpoint_acceptance,
     decide_and_commit_covered_completion,
+    decide_and_commit_review_submission,
     decide_and_commit_transition,
     preflight_checkpoint_candidate,
     preflight_covered_completion,
@@ -53,6 +60,7 @@ from pinboard.application.work_briefs import (
 )
 from pinboard.cli import (
     action_selection,
+    candidate_recovery,
     cli_commands,
     transition_models,
     work_inspection,
@@ -507,12 +515,180 @@ def transition(
             actor_host_id = None
         case _ as unreachable:
             assert_never(unreachable)
-    commit_result = _execute_transition_command(roots, store, artifacts, decoded_command, actor_task_id, actor_host_id)
+    if isinstance(decoded_command, decision_models.SubmitReviewCommand):
+        commit_result = _submit_review_with_snapshot(roots, store, artifacts, decoded_command)
+    else:
+        commit_result = _execute_transition_command(
+            roots, store, artifacts, decoded_command, actor_task_id, actor_host_id
+        )
     if isinstance(commit_result, CommittedEffectFailure):
         return commit_result
     if isinstance(commit_result, CommandFailure):
         return action_selection.with_current_alternatives(store, supplied_action_receipt, commit_result)
     return _present_committed_transition(roots, durable, store, selected_action, commit_result, json=cli_command.json)
+
+
+def _candidate_observation_failure(
+    message: str,
+    candidate: str,
+    *,
+    field: str | None = None,
+    expected: str | bool | None = None,
+    observed: str | bool | None = None,
+) -> CommandFailure:
+    return CommandFailure(
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+        message,
+        FailureDetails(
+            observed=(FailureFact("candidate_revision", candidate),),
+            mismatches=() if field is None else (FailureMismatch(field, expected, observed),),
+            retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def _observe_review_candidate(
+    roots: cli_commands.ResolvedRoots,
+    store: ports.WorkStore,
+    command: decision_models.SubmitReviewCommand,
+    recorded_at: datetime,
+) -> CommandResult[candidate_snapshots.CandidateSnapshot]:
+    context = store.read_attempt_context(command.action.capability.subject)
+    if not isinstance(context, query_models.NonterminalAttemptContextFacts):
+        return _candidate_observation_failure(
+            "Review submission requires one current nonterminal attempt.", str(command.value.candidate)
+        )
+    candidate = str(command.value.candidate)
+    try:
+        branch, head = observe_checkout_identity(roots.source_checkout)
+    except RootError as error:
+        return _candidate_observation_failure(f"Cannot observe the review candidate checkout: {error}", candidate)
+    if branch != context.branch:
+        return _candidate_observation_failure(
+            "Review submission requires the attempt's exact branch.",
+            candidate,
+            field="branch",
+            expected=context.branch,
+            observed=branch,
+        )
+    if candidate.startswith("working-tree-sha256:"):
+        try:
+            observed_candidate = read_working_tree_candidate(roots.source_checkout)
+        except RootError as error:
+            return _candidate_observation_failure(f"Cannot read the working-tree candidate: {error}", candidate)
+        if observed_candidate.identity != candidate:
+            return _candidate_observation_failure(
+                "Review submission requires the exact current binary HEAD diff.",
+                candidate,
+                field="candidate_revision",
+                expected=candidate,
+                observed=observed_candidate.identity,
+            )
+        return candidate_snapshots.WorkingTreeCandidateSnapshot(
+            "pinboard-candidate-snapshot/v1",
+            str(context.attempt_id),
+            str(context.item_id),
+            candidate,
+            branch,
+            head,
+            context.base_revision,
+            recorded_at.isoformat(),
+            observed_candidate.diff,
+        )
+    try:
+        observed_commit = read_current_head_candidate(roots.source_checkout, candidate, context.base_revision)
+    except RootError as error:
+        return _candidate_observation_failure(f"Cannot read the commit candidate: {error}", candidate)
+    match observed_commit:
+        case CurrentHeadCandidate():
+            return candidate_snapshots.CommitCandidateSnapshot(
+                "pinboard-candidate-snapshot/v1",
+                str(context.attempt_id),
+                str(context.item_id),
+                candidate,
+                branch,
+                context.base_revision,
+                context.base_revision,
+                recorded_at.isoformat(),
+                observed_commit.diff,
+            )
+        case DifferentHeadCandidate(current_head=current_head):
+            return _candidate_observation_failure(
+                "Review submission requires a commit candidate to match the exact current HEAD.",
+                candidate,
+                field="current_head",
+                expected=candidate,
+                observed=current_head,
+            )
+        case DirtyHeadCandidate():
+            return _candidate_observation_failure(
+                "Review submission requires a clean working tree for a commit candidate.",
+                candidate,
+                field="working_tree_clean",
+                expected=True,
+                observed=False,
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _submit_review_with_snapshot(
+    roots: cli_commands.ResolvedRoots,
+    store: ports.WorkStore,
+    artifacts: ArtifactRepository,
+    command: decision_models.SubmitReviewCommand,
+) -> CommandResult[CommittedEffect] | CommittedEffectFailure:
+    recorded_at = datetime.now(UTC)
+    snapshot = _observe_review_candidate(roots, store, command, recorded_at)
+    if isinstance(snapshot, CommandFailure):
+        return snapshot
+    encoded = candidate_snapshots.canonical_candidate_snapshot_bytes(snapshot)
+    artifact = NewArtifact(
+        work_models.ArtifactKind.EVIDENCE,
+        candidate_snapshots.candidate_snapshot_key(snapshot),
+        1,
+        ".json",
+        encoded,
+    )
+    try:
+        publication = artifacts.publish(artifact)
+    except ArtifactAcceptanceAfterPublicationError as error:
+        cause = error.cause
+        if not isinstance(cause, FileIOError):
+            raise
+        return _committed_immutable_artifact_failure(cause, (error.selector,), roots)
+    snapshot_reference = EvidenceArtifactRef(
+        publication.reference.key,
+        publication.reference.revision,
+        publication.reference.selector,
+        publication.reference.content_sha256,
+        publication.reference.size_bytes,
+    )
+    try:
+        result = decide_and_commit_review_submission(store, command, recorded_at, snapshot_reference)
+    except StorageError as error:
+        if publication.created:
+            return _committed_immutable_artifact_failure(error, (snapshot_reference.selector,), roots)
+        raise
+    if isinstance(result, DecisionFailure):
+        if not publication.created:
+            return CommandFailure(result.code, result.message, result.details)
+        return CommittedEffectFailure(
+            result.code.value,
+            result.message,
+            FailureDetails(
+                observed=(FailureFact("published_artifact_selector", snapshot_reference.selector),),
+                mismatches=() if result.details is None else result.details.mismatches,
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.COMMITTED,
+                changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+                alternatives=(),
+            ),
+        )
+    return result
 
 
 def _activation_input_failure(message: str, mismatches: tuple[FailureMismatch, ...] = ()) -> CommandFailure:
@@ -645,7 +821,20 @@ def _present_committed_transition(
     else:
         print(f"OK TRANSITION_APPLIED {decision_models.action_id(selected_action)} revision={committed_revision}")
         if continuation is not None:
-            write_json(work_inspection_models.AttemptView(continuation))
+            assert affected_attempt is not None
+            context = store.read_attempt_context(affected_attempt)
+            if context is None:
+                recovery: work_inspection_models.CandidateRecoverySelection = (
+                    work_inspection_models.NoCandidateRecovery()
+                )
+            else:
+                selected_recovery = work_inspection.read_candidate_recovery(roots, store, context, affected_attempt)
+                if isinstance(selected_recovery, CommandFailure):
+                    print(f"Transition committed; candidate recovery unavailable: {selected_recovery}", file=sys.stderr)
+                    recovery = work_inspection_models.NoCandidateRecovery()
+                else:
+                    recovery = selected_recovery
+            write_json(work_inspection_models.AttemptView(continuation, recovery))
     return 0
 
 
@@ -669,106 +858,9 @@ def read_brief_identity(
     return identity
 
 
-def _read_checkpoint_candidate_snapshot(
-    roots: cli_commands.ResolvedRoots,
-    command: decision_models.AcceptCheckpointCommand,
-    brief: work_brief_models.WorkBrief,
-) -> CommandResult[WorkingTreeCandidate | CurrentHeadCandidate]:
-    candidate_revision = str(command.value.candidate)
-    if candidate_revision.startswith("working-tree-sha256:"):
-        try:
-            snapshot = read_working_tree_candidate(roots.source_checkout)
-        except RootError as error:
-            return CommandFailure(
-                DecisionFailureCode.TRANSITION_INPUT_INVALID,
-                f"Cannot read the protected checkpoint candidate diff: {error}",
-                FailureDetails(
-                    observed=(FailureFact("candidate_revision", candidate_revision),),
-                    mismatches=(),
-                    retry=RetryDisposition.RETRY_SAME_INPUT,
-                    effect=EffectDisposition.UNCHANGED,
-                    changed_surfaces=(),
-                    alternatives=(),
-                ),
-            )
-        if snapshot.identity == candidate_revision:
-            return snapshot
-        return CommandFailure(
-            DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            "Checkpoint acceptance requires the protected candidate to match the current binary HEAD diff.",
-            FailureDetails(
-                observed=(FailureFact("working_tree_candidate", snapshot.identity),),
-                mismatches=(FailureMismatch("candidate_revision", candidate_revision, snapshot.identity),),
-                retry=RetryDisposition.CORRECT_INPUT,
-                effect=EffectDisposition.UNCHANGED,
-                changed_surfaces=(),
-                alternatives=(),
-            ),
-        )
-    try:
-        observation = read_current_head_candidate(
-            roots.source_checkout,
-            candidate_revision,
-            brief.base_revision,
-        )
-    except RootError as error:
-        return CommandFailure(
-            DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            f"Cannot read the protected current-HEAD candidate from the accepted brief base: {error}",
-            FailureDetails(
-                observed=(
-                    FailureFact("candidate_revision", candidate_revision),
-                    FailureFact("accepted_base_revision", brief.base_revision),
-                ),
-                mismatches=(),
-                retry=RetryDisposition.RETRY_SAME_INPUT,
-                effect=EffectDisposition.UNCHANGED,
-                changed_surfaces=(),
-                alternatives=(),
-            ),
-        )
-    match observation:
-        case CurrentHeadCandidate():
-            return observation
-        case DifferentHeadCandidate(current_head=current_head):
-            return CommandFailure(
-                DecisionFailureCode.TRANSITION_INPUT_INVALID,
-                "Checkpoint acceptance requires a commit candidate to match the exact current HEAD.",
-                FailureDetails(
-                    observed=(
-                        FailureFact("candidate_revision", candidate_revision),
-                        FailureFact("current_head", current_head),
-                    ),
-                    mismatches=(FailureMismatch("current_head", candidate_revision, current_head),),
-                    retry=RetryDisposition.CORRECT_INPUT,
-                    effect=EffectDisposition.UNCHANGED,
-                    changed_surfaces=(),
-                    alternatives=(),
-                ),
-            )
-        case DirtyHeadCandidate():
-            return CommandFailure(
-                DecisionFailureCode.TRANSITION_INPUT_INVALID,
-                "Checkpoint acceptance requires a clean working tree for an exact current-HEAD candidate.",
-                FailureDetails(
-                    observed=(
-                        FailureFact("candidate_revision", candidate_revision),
-                        FailureFact("current_head", candidate_revision),
-                        FailureFact("working_tree_clean", False),
-                    ),
-                    mismatches=(FailureMismatch("working_tree_clean", True, False),),
-                    retry=RetryDisposition.RETRY_SAME_INPUT,
-                    effect=EffectDisposition.UNCHANGED,
-                    changed_surfaces=(),
-                    alternatives=(),
-                ),
-            )
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
 def publish_checkpoint_artifacts(  # noqa: C901, PLR0912, PLR0915 - one ordered checkpoint publication boundary
     roots: cli_commands.ResolvedRoots,
+    store: ports.WorkStore,
     command: decision_models.AcceptCheckpointCommand,
     artifacts: ArtifactRepository,
     brief_context: _CheckpointBriefContext,
@@ -778,9 +870,14 @@ def publish_checkpoint_artifacts(  # noqa: C901, PLR0912, PLR0915 - one ordered 
     attempt_id = str(action.capability.subject)
     checkpoint_id = str(value.checkpoint)
     attempt_root = roots.work / "attempts" / attempt_id
-    candidate_snapshot = _read_checkpoint_candidate_snapshot(roots, command, brief_context.brief)
-    if isinstance(candidate_snapshot, CommandFailure):
-        return candidate_snapshot
+    candidate_evidence = candidate_recovery.read_candidate_evidence(
+        roots.work,
+        store,
+        action.capability.subject,
+        str(value.candidate),
+    )
+    if isinstance(candidate_evidence, CommandFailure):
+        return candidate_evidence
     try:
         result_bytes = (attempt_root / "result.md").read_bytes()
         review_bytes = (attempt_root / "review.md").read_bytes()
@@ -809,7 +906,7 @@ def publish_checkpoint_artifacts(  # noqa: C901, PLR0912, PLR0915 - one ordered 
         f"{attempt_id}-{checkpoint_id}-candidate",
         1,
         ".patch",
-        candidate_snapshot.diff,
+        candidate_evidence.snapshot.diff,
     )
     new_artifact_selectors: list[str] = []
     try:
@@ -1086,7 +1183,7 @@ def _execute_transition_command(  # noqa: C901, PLR0912 - one exhaustive command
             brief_context = _read_checkpoint_brief_context(store, command, artifacts)
             if isinstance(brief_context, CommandFailure):
                 return brief_context
-            checkpoint_artifacts = publish_checkpoint_artifacts(roots, command, artifacts, brief_context)
+            checkpoint_artifacts = publish_checkpoint_artifacts(roots, store, command, artifacts, brief_context)
             if isinstance(checkpoint_artifacts, (CommandFailure, CommittedEffectFailure)):
                 return checkpoint_artifacts
             try:
@@ -1145,7 +1242,6 @@ def _execute_transition_command(  # noqa: C901, PLR0912 - one exhaustive command
             | decision_models.CloseCommand()
             | decision_models.RebindAttemptCommand()
             | decision_models.ResumeCommand()
-            | decision_models.SubmitReviewCommand()
             | decision_models.ReturnForCorrectionCommand()
             | decision_models.ReopenCommand()
             | decision_models.MarkReadyCommand()
@@ -1167,6 +1263,8 @@ def _execute_transition_command(  # noqa: C901, PLR0912 - one exhaustive command
                 actor_host_id=actor_host_id,
                 transition_brief_identity=transition_brief_identity,
             )
+        case decision_models.SubmitReviewCommand():
+            raise AssertionError("Review submission must be committed with its immutable candidate snapshot.")
         case _ as unreachable:
             assert_never(unreachable)
     if isinstance(result, DecisionFailure):

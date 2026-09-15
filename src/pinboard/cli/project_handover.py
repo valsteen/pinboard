@@ -6,7 +6,7 @@ from pathlib import PurePosixPath
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.application import handover, ports, work_brief_models
+from pinboard.application import candidate_snapshots, handover, ports, work_brief_models
 from pinboard.cli import cli_commands, work_state
 from pinboard.cli.cli_output import write_json
 from pinboard.domain.identifiers import ArtifactRefId
@@ -68,6 +68,13 @@ def export_project_handover(
     projected_references, encoded_contents, verified_artifacts = _read_and_encode_artifacts(
         captured_state, artifact_repository
     )
+    try:
+        candidate_snapshots.validate_candidate_snapshot_history(captured_state, verified_artifacts)
+    except ValueError as error:
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
+            str(error),
+        )
     checkpoint_packages = work_state.validate_checkpoint_review_packages(
         captured_state.lifecycle,
         captured_state.artifact_references,

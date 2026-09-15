@@ -16,10 +16,10 @@ from typing import Literal
 import msgspec
 from msgspec.structs import replace as replace_struct
 
-from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state, work_brief_models, work_briefs
+from pinboard.application import candidate_snapshots, stored_state, work_brief_models, work_briefs
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.work_briefs import (
     canonical_checkpoint_review_package_bytes,
@@ -158,7 +158,16 @@ class CheckpointPackageSupport(unittest.TestCase):
             "local",
         ]
 
-    def submit_review(self, fixture: AcceptedPackageFixture, candidate: str, worker: str) -> None:
+    def submit_review(self, fixture: AcceptedPackageFixture, label: str, worker: str) -> str:
+        tracked = fixture.project / "tracked.txt"
+        tracked.write_text(f"{label}\n", encoding="utf-8")
+        candidate_diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD", "--"],
+            cwd=fixture.project,
+            check=True,
+            capture_output=True,
+        ).stdout
+        candidate = f"working-tree-sha256:{hashlib.sha256(candidate_diff).hexdigest()}"
         lease = self.run_json_cli(
             *fixture.common,
             "attempt",
@@ -190,6 +199,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         payload = fixture.project / f"submit-{candidate}.json"
         payload.write_text(json.dumps({"candidate": candidate}), encoding="utf-8")
         self.transition_json(fixture, self.json_object(actions[0]), payload)
+        return candidate
 
     def return_for_correction(self, fixture: AcceptedPackageFixture, reason: str, suffix: str) -> int:
         payload = fixture.project / f"return-{suffix}.json"
@@ -251,6 +261,114 @@ class CheckpointPackageSupport(unittest.TestCase):
             ),
         )
 
+    def accept_candidate_snapshot(
+        self,
+        roots: DurableRoots,
+        store: SQLiteWorkStore,
+        attempt: stored_state.StoredAttempt,
+        candidate_form: Literal["working-tree", "current-head"],
+        candidate_revision: str,
+        candidate_diff: bytes,
+        preimage_revision: str,
+        accepted_base_revision: str,
+        recorded_at: datetime,
+    ) -> None:
+        snapshot_type = (
+            candidate_snapshots.WorkingTreeCandidateSnapshot
+            if candidate_form == "working-tree"
+            else candidate_snapshots.CommitCandidateSnapshot
+        )
+        snapshot = snapshot_type(
+            "pinboard-candidate-snapshot/v1",
+            str(attempt.attempt_id),
+            str(attempt.item_id),
+            candidate_revision,
+            attempt.branch,
+            preimage_revision,
+            accepted_base_revision,
+            recorded_at.isoformat(),
+            candidate_diff,
+        )
+        published = write_revision(
+            roots,
+            NewArtifact(
+                work_models.ArtifactKind.EVIDENCE,
+                candidate_snapshots.candidate_snapshot_key(snapshot),
+                1,
+                ".json",
+                candidate_snapshots.canonical_candidate_snapshot_bytes(snapshot),
+            ),
+        )
+        accepted = store.accept_artifact_reference(roots.work_root, published, recorded_at)
+        if isinstance(accepted, DecisionFailure):
+            self.fail(str(accepted))
+        with sqlite3.connect(roots.database_path) as connection:
+            history_id = connection.execute(
+                "SELECT COALESCE(MAX(history_id), 0) + 1 FROM transition_history"
+            ).fetchone()[0]
+            project_revision = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()[0]
+            reference_id = int(accepted.reference.artifact_ref_id)
+            connection.execute(
+                """
+                INSERT INTO transition_history(
+                    history_id, project_revision, action_id, action_kind, subject_id,
+                    artifact_ref_id, artifact_kind, authorization_kind, actor_task_id, actor_host_id,
+                    input_schema, input_json, outcome_schema, outcome_json, committed_at
+                ) VALUES (?, ?, 'submit-review:work-a-1', 'submit-review', 'work-a-1', ?, 'evidence',
+                          'attempt', NULL, NULL, 'pinboard-candidate-snapshot/v1', ?,
+                          'transition-receipt/v1', ?, ?)
+                """,
+                (
+                    history_id,
+                    project_revision,
+                    reference_id,
+                    msgspec.json.encode(
+                        {"candidate": candidate_revision, "snapshot_artifact_ref_id": reference_id},
+                        order="sorted",
+                    ).decode(),
+                    history.encode_transition_receipt_outcome(
+                        evidence=None,
+                        outcome="submit-review",
+                        candidate=candidate_revision,
+                    ).decode(),
+                    recorded_at.isoformat(),
+                ),
+            )
+
+    def record_review_candidate(self, fixture: AcceptedPackageFixture, candidate: str) -> None:
+        state = fixture.store.validated_snapshot()
+        attempt = next(value for value in state.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
+        self.accept_candidate_snapshot(
+            resolve_durable_roots(fixture.project),
+            fixture.store,
+            attempt,
+            "current-head",
+            candidate,
+            fixture.candidate_bytes,
+            attempt.base_revision,
+            attempt.base_revision,
+            SQLITE_NOW,
+        )
+        with sqlite3.connect(fixture.work / "state.sqlite3") as connection:
+            current_state = connection.execute("SELECT state FROM work_items WHERE item_id = 'work-a'").fetchone()[0]
+            connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = 'work-a'")
+            if current_state != "review":
+                connection.execute(
+                    "UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = ?",
+                    (current_state,),
+                )
+                connection.execute(
+                    "UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'review'"
+                )
+            connection.execute(
+                """
+                UPDATE attempts
+                SET state = 'review', candidate_revision = ?, candidate_recorded_at = ?
+                WHERE attempt_id = 'work-a-1'
+                """,
+                (candidate, SQLITE_NOW.isoformat()),
+            )
+
     def checkpoint_fixture(
         self,
         *,
@@ -293,7 +411,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         )
         project = Path(tempfile.mkdtemp()).resolve()
         brief = self.local_brief(project) if local else work_a_brief(project)
-        subprocess.run(["git", "init", "-b", "main"], cwd=project, check=True, capture_output=True)
+        subprocess.run(["git", "init", "-b", "codex/work-a"], cwd=project, check=True, capture_output=True)
         (project / ".git" / "info" / "exclude").write_text("/.codex/pinboard/\n", encoding="utf-8")
         tracked = project / "tracked.txt"
         tracked.write_text("base\n", encoding="utf-8")
@@ -351,6 +469,18 @@ class CheckpointPackageSupport(unittest.TestCase):
         )
         store = SQLiteWorkStore(roots.database_path)
         initialize_store(store, replace(state, artifact_references=(brief_reference,)))
+        attempt = next(value for value in state.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
+        self.accept_candidate_snapshot(
+            roots,
+            store,
+            attempt,
+            candidate_form,
+            candidate_revision,
+            candidate_diff,
+            base_revision if candidate_form == "working-tree" else brief_base_revision,
+            brief_base_revision,
+            now,
+        )
         if not local:
             checkpoint = brief.checkpoint
             assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
@@ -437,23 +567,14 @@ class CheckpointPackageSupport(unittest.TestCase):
             for value in fixture.store.validated_snapshot().transition_receipts
             if value.outcome_schema == "checkpoint-acceptance/v2"
         )
+        current_candidate = "b" * 40
+        self.record_review_candidate(fixture, current_candidate)
         connection = sqlite3.connect(fixture.work / "state.sqlite3")
         try:
             revision = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()[0]
             correction_history_id = connection.execute("SELECT max(history_id) + 1 FROM transition_history").fetchone()[
                 0
             ]
-            connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = 'work-a'")
-            connection.execute("UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = 'paused'")
-            connection.execute("UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'review'")
-            connection.execute(
-                """
-                UPDATE attempts
-                SET state = 'review', candidate_revision = 'candidate-b', candidate_recorded_at = ?
-                WHERE attempt_id = 'work-a-1'
-                """,
-                (SQLITE_NOW.isoformat(),),
-            )
             connection.execute(
                 """
                 INSERT INTO transition_history(

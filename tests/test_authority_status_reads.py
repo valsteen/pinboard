@@ -91,8 +91,10 @@ class AuthorityStatusReadTest(unittest.TestCase):
         with patch.object(sqlite_store, "open_database", traced_open):
             yield read_tables, statements
 
-    def assert_keyed_status_queries(self, database: Path, statements: list[str]) -> None:
-        self.assertEqual(1, sum(statement == "BEGIN" for statement in statements), statements)
+    def assert_keyed_status_queries(
+        self, database: Path, statements: list[str], *, expected_operations: int = 1
+    ) -> None:
+        self.assertEqual(expected_operations, sum(statement == "BEGIN" for statement in statements), statements)
         selects = tuple(statement for statement in statements if statement.lstrip().upper().startswith("SELECT"))
         self.assertTrue(selects)
         connection = sqlite3.connect(database)
@@ -703,31 +705,10 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 "--json",
             )
 
-        self.assertEqual(0, result, stderr)
-        self.assertIn('"candidate_revision": "candidate-a"', stdout)
-        job = json.loads(stdout)
-        prompt_reference = job["prompt_reference"]
+        self.assertEqual(12, result, stderr)
+        self.assertEqual("WORK_STATE_INVALID", json.loads(stdout)["code"])
         after_review = store.validated_snapshot()
-        accepted_prompt = next(
-            reference
-            for reference in after_review.artifact_references
-            if int(reference.artifact_ref_id) == prompt_reference["accepted_artifact_reference_id"]
-        )
-        self.assertEqual(
-            replace(
-                before_review,
-                lifecycle=replace(
-                    before_review.lifecycle,
-                    project=replace(
-                        before_review.lifecycle.project,
-                        revision=before_review.lifecycle.project.revision + 1,
-                        updated_at=accepted_prompt.created_at,
-                    ),
-                ),
-                artifact_references=(*before_review.artifact_references, accepted_prompt),
-            ),
-            after_review,
-        )
+        self.assertEqual(before_review, after_review)
         self.assertEqual(unrelated_before, (unrelated_view.read_bytes(), unrelated_view.stat().st_mtime_ns))
         review_tables, review_statements = review_reads
         self.assertEqual(read_tables, review_tables)

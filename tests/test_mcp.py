@@ -250,6 +250,7 @@ class McpTransportTest(unittest.TestCase):
             "pinboard-mcp-attempt-inspection-result/v1",
             "ok",
             presented_continuation,
+            contracts.CandidateRecoveryAbsent(),
             contracts.AcceptedBriefIdentity(
                 1, "/work/brief.json", "artifacts/briefs/a/1.json", "a" * 64, 1, 1, 1, "b" * 64
             ),

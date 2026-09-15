@@ -20,7 +20,15 @@ from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_fa
 from pinboard.adapters.sqlite.database import initialize_database, open_database, reconcile_database_publication
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import InitReceipt, OpenMode
-from pinboard.application import action_models, handover, ports, stored_state, work_brief_models, work_briefs
+from pinboard.application import (
+    action_models,
+    candidate_snapshots,
+    handover,
+    ports,
+    stored_state,
+    work_brief_models,
+    work_briefs,
+)
 from pinboard.application.work_briefs import (
     build_selected_attempt_brief_views,
     canonical_checkpoint_bytes,
@@ -660,6 +668,10 @@ def validate_loaded_work_state(
             verified_artifacts[reference.artifact_ref_id] = read_reference(work_root, reference)
         except ArtifactError as error:
             diagnostics.append(_error_diagnostic(error.code.value, work_root / reference.selector, str(error)))
+    try:
+        candidate_snapshots.validate_candidate_snapshot_history(state, verified_artifacts)
+    except ValueError as error:
+        diagnostics.append(_error_diagnostic("CANDIDATE_SNAPSHOT_INVALID", work_root, str(error)))
     packages = validate_checkpoint_review_packages(
         state.lifecycle,
         state.artifact_references,

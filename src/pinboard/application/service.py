@@ -6,7 +6,12 @@ import msgspec
 from pinboard.application import query_models
 from pinboard.application.actions import action_subject_ids
 from pinboard.application.artifact_publication import validate_transition_work_brief
-from pinboard.application.artifacts import CheckpointArtifacts, CompletionArtifacts, WorkBriefIdentity
+from pinboard.application.artifacts import (
+    CheckpointArtifacts,
+    CompletionArtifacts,
+    EvidenceArtifactRef,
+    WorkBriefIdentity,
+)
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     CommittedEffect,
@@ -19,6 +24,7 @@ from pinboard.application.mutation_models import (
 from pinboard.application.mutations import (
     project_checkpoint_acceptance_mutation,
     project_completion_acceptance_mutation,
+    project_review_submission_mutation,
     project_transition_mutation,
 )
 from pinboard.application.ports import WorkStore, WorkTransaction
@@ -602,6 +608,24 @@ def decide_and_commit_transition(
         accepted_decision = decision_result
         allocation = transaction.read_mutation_allocation()
         mutation = project_transition_mutation(allocation, accepted_decision, actor_task_id, actor_host_id)
+        return transaction.commit(mutation)
+
+
+def decide_and_commit_review_submission(
+    store: WorkStore,
+    command: decision_models.SubmitReviewCommand,
+    now: datetime,
+    candidate_snapshot: EvidenceArtifactRef,
+) -> DecisionResult[CommittedEffect]:
+    """Atomically accept one candidate snapshot with its review transition."""
+
+    with store.write() as transaction:
+        facts = transaction.read_decision_facts(_transition_decision_scope(command), now)
+        decision_result = _validate_supplied_transition_and_decide(facts, command, now, None, None, None)
+        if isinstance(decision_result, DecisionFailure):
+            return decision_result
+        allocation = transaction.read_checkpoint_mutation_allocation((candidate_snapshot,))
+        mutation = project_review_submission_mutation(allocation, decision_result, candidate_snapshot)
         return transaction.commit(mutation)
 
 

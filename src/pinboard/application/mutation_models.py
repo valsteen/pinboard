@@ -105,6 +105,16 @@ class TransitionMutation:
 
 
 @dataclass(frozen=True, slots=True)
+class ReviewSubmissionMutation:
+    """Persists review submission with its accepted immutable candidate snapshot."""
+
+    decision: decision_models.TransitionDecision
+    receipt: MutationReceipt
+    candidate_snapshot: EvidenceArtifactRef
+    candidate_snapshot_id: ArtifactRefId
+
+
+@dataclass(frozen=True, slots=True)
 class CheckpointAcceptanceMutation:
     """Persists checkpoint acceptance with its required result, review, and package artifacts."""
 
@@ -138,6 +148,7 @@ class OrderMutation:
 type StoredStateMutation = (
     OrderMutation
     | TransitionMutation
+    | ReviewSubmissionMutation
     | CheckpointAcceptanceMutation
     | ProposalCreationMutation
     | AttemptAuthorityMutation

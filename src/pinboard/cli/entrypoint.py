@@ -23,6 +23,7 @@ from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.cli import (
     attempt_authority,
     brief_source_commands,
+    candidate_recovery,
     cli_commands,
     cli_output,
     cli_parser,
@@ -135,6 +136,8 @@ def _dispatch(  # noqa: C901, PLR0912 - one visible exhaustive command-family ro
             return attempt_authority.show_attempt_authority_status(store, command)
         case cli_commands.AttemptInspectCommand() as command:
             return work_inspection.show_attempt(roots, store, command)
+        case cli_commands.CandidateRestoreCommand() as command:
+            return candidate_recovery.restore_candidate(roots, store, command)
         case (
             cli_commands.InitialReviewJobCommand()
             | cli_commands.PackageInitialReviewJobCommand()

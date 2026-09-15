@@ -10,8 +10,36 @@ from pinboard.application.action_models import ProjectedActionView as ActionView
 from pinboard.domain import decision_models
 
 
+class NoCandidateRecovery(msgspec.Struct, tag="absent", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    pass
+
+
+class CandidateRecovery(msgspec.Struct, tag="present", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    candidate_kind: Literal["working-tree", "commit"]
+    candidate: str
+    branch: str
+    preimage_revision: str
+    artifact_ref_id: int
+    selector: str
+    sha256: str
+    size_bytes: int
+    restore_command: tuple[str, ...]
+
+
+type CandidateRecoverySelection = NoCandidateRecovery | CandidateRecovery
+
+
+class CandidateRestoreView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-candidate-restore/v1"]
+    attempt_id: str
+    candidate: str
+    changed: bool
+    source_checkout: str
+
+
 class AttemptView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     continuation: query_models.AttemptContinuation
+    candidate_recovery: CandidateRecoverySelection
 
 
 class VerifiedArtifactReferenceView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -71,6 +99,7 @@ class ReviewJobView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-review-job/v4"]
     attempt_id: str
     candidate_revision: str
+    candidate_recovery: CandidateRecovery
     owner_task_id: str
     brief_path: str
     brief_sha256: str

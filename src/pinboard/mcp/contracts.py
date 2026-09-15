@@ -555,10 +555,32 @@ type NonterminalAttemptContinuation = (
 type AttemptContinuation = TerminalAttemptContinuation | NonterminalAttemptContinuation
 
 
+class CandidateRecoveryAbsent(msgspec.Struct, tag="absent", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    pass
+
+
+class CandidateRecoveryPresent(
+    msgspec.Struct, tag="present", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    candidate_kind: Literal["working-tree", "commit"]
+    candidate: NonEmptyText
+    branch: NonEmptyText
+    preimage_revision: NonEmptyText
+    artifact_ref_id: PositiveInt
+    selector: NonEmptyText
+    sha256: Sha256
+    size_bytes: PositiveInt
+    restore_command: tuple[NonEmptyText, ...]
+
+
+type CandidateRecovery = CandidateRecoveryAbsent | CandidateRecoveryPresent
+
+
 class TerminalAttemptInspectionSuccess(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
     status: Literal["ok"]
     continuation: TerminalAttemptContinuation
+    candidate_recovery: CandidateRecovery
     accepted_brief: None
     result: EvidenceReference
     review: EvidenceReference
@@ -576,6 +598,7 @@ class NonterminalAttemptInspectionSuccess(msgspec.Struct, frozen=True, forbid_un
     schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
     status: Literal["ok"]
     continuation: NonterminalAttemptContinuation
+    candidate_recovery: CandidateRecovery
     accepted_brief: AcceptedBriefIdentity
     result: EvidenceReference
     review: EvidenceReference

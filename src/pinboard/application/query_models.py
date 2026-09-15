@@ -390,10 +390,24 @@ type AttemptContextFacts = TerminalAttemptContextFacts | NonterminalAttemptConte
 @dataclass(frozen=True, slots=True)
 class ReviewJobContextFacts:
     attempt: AttemptContextFacts
+    candidate_snapshot: CandidateSnapshotContextFacts | None
     checkpoint_receipt: stored_state.StoredTransitionReceipt | None
     checkpoint_package_reference: stored_state.ArtifactReference | None
     checkpoint_candidate_reference: stored_state.ArtifactReference | None
     correction_receipt: stored_state.StoredTransitionReceipt | None
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateSnapshotContextFacts:
+    attempt_id: AttemptId
+    item_id: ItemId
+    state: work_models.AttemptState
+    branch: str
+    base_revision: str
+    candidate_revision: str | None
+    candidate_recorded_at: datetime | None
+    receipt: stored_state.StoredTransitionReceipt
+    reference: stored_state.ArtifactReference
 
 
 @dataclass(frozen=True, slots=True)

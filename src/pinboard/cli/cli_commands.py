@@ -305,6 +305,11 @@ class AttemptInspectCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     json: bool = False
 
 
+class CandidateRestoreCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: StableAttemptId
+    json: bool = False
+
+
 class InitialReviewJobCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: StableAttemptId
     candidate_revision: Annotated[str, msgspec.Meta(min_length=1)]
@@ -481,6 +486,7 @@ type CliCommand = (
     | TransitionCommand
     | DispatchCommand
     | AttemptCommand
+    | CandidateRestoreCommand
     | PreparationCommand
     | ParallelPreviewCommand
     | RebuildViewsCommand

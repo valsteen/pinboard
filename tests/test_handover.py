@@ -210,11 +210,11 @@ class HandoverTest(unittest.TestCase):
 
         attempt = replace(
             state.lifecycle.attempts[0],
-            state=work_models.AttemptState.REVIEW,
+            state=work_models.AttemptState.ACTIVE,
             brief_artifact_ref_id=brief.artifact_ref_id,
             result_artifact_ref_id=result.artifact_ref_id,
-            candidate_revision="candidate-123",
-            candidate_recorded_at=SQLITE_NOW,
+            candidate_revision=None,
+            candidate_recorded_at=None,
             accepted_scope_revision=2,
             accepted_scope_digest=revised_digest,
         )
@@ -249,7 +249,7 @@ class HandoverTest(unittest.TestCase):
                 state.lifecycle,
                 work_items=(
                     *(
-                        replace(value, state=stored_state.StoredWorkItemState.REVIEW)
+                        replace(value, state=stored_state.StoredWorkItemState.ACTIVE)
                         if value.item_id == ItemId("work-a")
                         else value
                         for value in state.lifecycle.work_items
@@ -402,7 +402,7 @@ class HandoverTest(unittest.TestCase):
         )
         self.assertNotIn("proposal-decided", {value.proposal_id for value in handover.proposals})
         self.assert_handover_read_scope(statements)
-        self.assertEqual("candidate-123", handover.attempts[0].candidate_revision)
+        self.assertIsNone(handover.attempts[0].candidate_revision)
         self.assertEqual(1, len(handover.planned_replacements))
         self.assertEqual("terminal-done", handover.planned_replacements[0].replacement_item_id)
         self.assertEqual(1, len(handover.replacement_dispositions))

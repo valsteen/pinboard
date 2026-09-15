@@ -22,6 +22,7 @@ from pinboard.application.mutation_models import (
     OrderMutation,
     PreparationAuthorityMutation,
     ProposalCreationMutation,
+    ReviewSubmissionMutation,
     StoredStateMutation,
     TransitionMutation,
 )
@@ -64,7 +65,7 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                     outcome=decision.receipt.outcome,
                 ),
             )
-        case TransitionMutation(decision=decision):
+        case TransitionMutation(decision=decision) | ReviewSubmissionMutation(decision=decision):
             candidate = None
             match decision.change:
                 case (
@@ -278,6 +279,42 @@ def project_transition_mutation(
             input_schema,
             input_payload,
         ),
+    )
+
+
+def project_review_submission_mutation(
+    allocation: CheckpointMutationAllocation,
+    decision: decision_models.TransitionDecision,
+    candidate_snapshot: EvidenceArtifactRef,
+) -> ReviewSubmissionMutation:
+    """Project one review submission and its exact snapshot acceptance."""
+
+    if not isinstance(decision.change, decision_models.ReviewSubmissionChange):
+        raise TypeError("review submission mutation requires a review-submission decision")
+    (snapshot_id,) = _artifact_ids(allocation, (candidate_snapshot,))
+    return ReviewSubmissionMutation(
+        decision,
+        _transition_receipt(
+            allocation,
+            decision.action.capability,
+            decision.action.kind,
+            decision.receipt,
+            snapshot_id,
+            None,
+            None,
+            "pinboard-candidate-snapshot/v1",
+            work_models.CanonicalJson(
+                msgspec.json.encode(
+                    {
+                        "candidate": str(decision.change.protected_candidate_after),
+                        "snapshot_artifact_ref_id": int(snapshot_id),
+                    },
+                    order="sorted",
+                )
+            ),
+        ),
+        candidate_snapshot,
+        snapshot_id,
     )
 
 

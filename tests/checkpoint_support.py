@@ -19,16 +19,14 @@ from msgspec.structs import replace as replace_struct
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state
+from pinboard.application import stored_state, work_brief_models, work_briefs
 from pinboard.application.artifacts import NewArtifact
-from pinboard.cli import work_brief_models, work_briefs
-from pinboard.cli.entrypoint import main
-from pinboard.cli.errors import WorkBriefFailure
-from pinboard.cli.work_briefs import (
+from pinboard.application.work_briefs import (
     canonical_checkpoint_review_package_bytes,
     canonical_work_brief_bytes,
     decode_canonical_checkpoint_review_package,
 )
+from pinboard.cli.entrypoint import main
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId, ItemId
@@ -428,7 +426,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         package = decode_canonical_checkpoint_review_package(
             (fixture.work / fixture.package_reference.selector).read_bytes()
         )
-        if isinstance(package, WorkBriefFailure):
+        if isinstance(package, work_brief_models.WorkBriefFailure):
             self.fail(str(package))
         return package
 

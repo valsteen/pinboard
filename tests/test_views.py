@@ -10,9 +10,9 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_facts, refresh_facts
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.application import work_brief_models
 from pinboard.application.artifacts import NewArtifact
-from pinboard.cli.errors import WorkBriefErrorCode, WorkBriefFailure, WorkBriefResult
-from pinboard.cli.work_briefs import (
+from pinboard.application.work_briefs import (
     build_attempt_brief_views,
     build_selected_attempt_brief_views,
     canonical_work_brief_bytes,
@@ -23,8 +23,8 @@ from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.work_brief_support import work_a_brief
 
 
-def expect_work_brief_success[T](result: WorkBriefResult[T]) -> T:
-    if isinstance(result, WorkBriefFailure):
+def expect_work_brief_success[T](result: work_brief_models.WorkBriefResult[T]) -> T:
+    if isinstance(result, work_brief_models.WorkBriefFailure):
         raise AssertionError(str(result))
     return result
 
@@ -162,9 +162,9 @@ class GeneratedViewsTest(unittest.TestCase):
         roots = resolve_durable_roots(project)
 
         failure = build_attempt_brief_views(complete_sqlite_state(), ArtifactRepository(roots))
-        self.assertIsInstance(failure, WorkBriefFailure)
-        assert isinstance(failure, WorkBriefFailure)
-        self.assertEqual(WorkBriefErrorCode.BRIEF_INVALID, failure.code)
+        self.assertIsInstance(failure, work_brief_models.WorkBriefFailure)
+        assert isinstance(failure, work_brief_models.WorkBriefFailure)
+        self.assertEqual(work_brief_models.WorkBriefErrorCode.BRIEF_INVALID, failure.code)
         self.assertIn("work-a-1", failure.message)
 
 

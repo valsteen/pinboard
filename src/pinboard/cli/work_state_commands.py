@@ -10,10 +10,10 @@ from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErr
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import ports
+from pinboard.application import ports, work_brief_models
 from pinboard.cli import cli_commands, work_views
 from pinboard.cli.cli_output import write_json
-from pinboard.cli.errors import CliResult, WorkBriefFailure
+from pinboard.cli.errors import CliResult
 from pinboard.cli.work_state import (
     initialize_work_state,
     read_state_for_validation,
@@ -100,7 +100,7 @@ def validate_state(
             attempt_briefs = {}
             brief_diagnostic = Diagnostic(error.code.value, Severity.ERROR, roots.work, str(error))
         else:
-            if isinstance(brief_result, WorkBriefFailure):
+            if isinstance(brief_result, work_brief_models.WorkBriefFailure):
                 attempt_briefs = {}
                 brief_diagnostic = Diagnostic(
                     brief_result.code.value,
@@ -158,7 +158,7 @@ def initialize_state(
         store=store,
         now=operation_time,
     )
-    if isinstance(receipt, WorkBriefFailure):
+    if isinstance(receipt, work_brief_models.WorkBriefFailure):
         return receipt
     optional_next_skills = (
         () if receipt.resumed else ("repository-readiness", "slop-cleanup", "maintaining-agent-guidance")

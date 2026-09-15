@@ -1,7 +1,24 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 import msgspec
+
+from pinboard.domain.errors import DecisionFailureCode, FailureDetails
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalFailure:
+    code: DecisionFailureCode
+    message: str
+    details: FailureDetails | None
+
+    def __str__(self) -> str:
+        return f"{self.code.value}: {self.message}"
+
+
+type ProposalResult[T] = T | ProposalFailure
+type ProposalJsonValue = bool | int | float | str | list[ProposalJsonValue] | dict[str, ProposalJsonValue] | None
 
 type ProposalSchema = Literal["pinboard-proposal/v1"]
 type ProposalIdentity = Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]

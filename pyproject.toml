@@ -11,11 +11,13 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.14,<3.15"
 dependencies = [
+    "mcp==2.2.0",
     "msgspec>=0.21.1",
 ]
 
 [project.scripts]
 pinboard = "pinboard.cli.entrypoint:main"
+pinboard-mcp = "pinboard.mcp.server:main"
 
 [tool.uv]
 required-version = "==0.12.10"
@@ -43,7 +45,7 @@ banned-from = [
     "pinboard.domain.work_models",
     "pinboard.cli.cli_commands",
     "pinboard.cli.transition_models",
-    "pinboard.cli.work_brief_models",
+    "pinboard.application.work_brief_models",
 ]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
@@ -95,5 +97,4 @@ dev = [
     "pyyaml>=6.0.3",
     "pyrefly>=1.2.0",
     "ruff>=0.16.3",
-    "mcp==2.2.0",
 ]

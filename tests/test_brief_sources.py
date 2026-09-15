@@ -6,20 +6,31 @@ import subprocess
 import tempfile
 import unittest
 from contextlib import chdir
+from functools import partial
 from pathlib import Path
 from unittest.mock import patch
 
 import msgspec
 
+from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
-from pinboard.cli.brief_source_models import BriefSourceManifest, BriefSourceRequest
-from pinboard.cli.brief_sources import (
+from pinboard.application.brief_source_models import (
+    AuthoritySelector,
+    BriefSourceErrorCode,
+    BriefSourceFailure,
+    BriefSourceManifest,
+    BriefSourceRequest,
+    BriefSourceResult,
+    SelectedBriefSource,
+)
+from pinboard.application.brief_sources import (
+    BriefSourceSelector,
     decode_brief_source_manifest,
     plan_brief_sources,
     render_brief_source_batch,
+    select_brief_source_bytes,
 )
 from pinboard.cli.entrypoint import main
-from pinboard.cli.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
 
 
 def expect_brief_source_success[T](result: BriefSourceResult[T]) -> T:
@@ -36,6 +47,10 @@ def expect_brief_source_failure[T](result: BriefSourceResult[T], code: BriefSour
     return result
 
 
+def source_selector(project: Path) -> BriefSourceSelector:
+    return partial(select_checkout_brief_source, project)
+
+
 class BriefSourcesTest(unittest.TestCase):
     def run_cli(self, *arguments: str) -> tuple[int, str, str]:
         stdout = io.StringIO()
@@ -49,6 +64,28 @@ class BriefSourcesTest(unittest.TestCase):
 
     def run_git(self, cwd: Path, *arguments: str) -> None:
         subprocess.run(["git", *arguments], cwd=cwd, check=True, capture_output=True)
+
+    def test_application_plans_from_an_injected_byte_capability(self) -> None:
+        selections: list[tuple[AuthoritySelector, bool]] = []
+
+        def select_source(selector: AuthoritySelector, require_utf8: bool) -> BriefSourceResult[SelectedBriefSource]:
+            selections.append((selector, require_utf8))
+            return select_brief_source_bytes(selector, b"# Authority\n\nReviewed.\n", require_utf8)
+
+        plan = expect_brief_source_success(
+            plan_brief_sources(
+                select_source,
+                self.manifest(BriefSourceRequest("authority", "authority.md", ("contract",))),
+                128,
+            )
+        )
+
+        rendered = expect_brief_source_success(render_brief_source_batch(select_source, plan, 0))
+
+        self.assertEqual(2, len(selections))
+        self.assertTrue(selections[0][1])
+        self.assertEqual("authority.md", str(selections[0][0].relative_path))
+        self.assertIn(b"# Authority\n\nReviewed.\n", rendered)
 
     def test_manifest_boundary_rejects_unknown_fields_duplicates_and_unsafe_selectors(self) -> None:
         cases = (
@@ -73,7 +110,7 @@ class BriefSourcesTest(unittest.TestCase):
             (project / "acceptance.txt").write_bytes(b"first line\nsecond line\n")
             plan = expect_brief_source_success(
                 plan_brief_sources(
-                    project,
+                    source_selector(project),
                     self.manifest(
                         BriefSourceRequest("architecture", "architecture.md#Contract", ("contract",)),
                         BriefSourceRequest("acceptance", "acceptance.txt", ("acceptance",)),
@@ -85,7 +122,7 @@ class BriefSourcesTest(unittest.TestCase):
             rendered_batches = tuple(
                 (
                     batch,
-                    expect_brief_source_success(render_brief_source_batch(project, plan, batch.index)),
+                    expect_brief_source_success(render_brief_source_batch(source_selector(project), plan, batch.index)),
                 )
                 for batch in plan.batches
             )
@@ -110,14 +147,14 @@ class BriefSourcesTest(unittest.TestCase):
                 BriefSourceRequest("section", "source.md#Contract", ("acceptance",)),
             )
             expect_brief_source_failure(
-                plan_brief_sources(project, overlapping, max_batch_bytes=128),
+                plan_brief_sources(source_selector(project), overlapping, max_batch_bytes=128),
                 BriefSourceErrorCode.SELECTOR_OVERLAP,
             )
 
             (project / "binary.dat").write_bytes(b"\xff\xfe")
             expect_brief_source_failure(
                 plan_brief_sources(
-                    project,
+                    source_selector(project),
                     self.manifest(BriefSourceRequest("binary", "binary.dat", ("contract",))),
                     max_batch_bytes=128,
                 ),
@@ -126,7 +163,7 @@ class BriefSourcesTest(unittest.TestCase):
 
             expect_brief_source_failure(
                 plan_brief_sources(
-                    project,
+                    source_selector(project),
                     self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
                     max_batch_bytes=8,
                 ),
@@ -135,18 +172,18 @@ class BriefSourcesTest(unittest.TestCase):
 
             plan = expect_brief_source_success(
                 plan_brief_sources(
-                    project,
+                    source_selector(project),
                     self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
                     max_batch_bytes=128,
                 )
             )
             expect_brief_source_failure(
-                render_brief_source_batch(project, plan, 1), BriefSourceErrorCode.BATCH_NOT_FOUND
+                render_brief_source_batch(source_selector(project), plan, 1), BriefSourceErrorCode.BATCH_NOT_FOUND
             )
 
             (project / "source.md").write_text("# Source\n\nChanged.\n", encoding="utf-8")
             expect_brief_source_failure(
-                render_brief_source_batch(project, plan, 0), BriefSourceErrorCode.SOURCE_CHANGED
+                render_brief_source_batch(source_selector(project), plan, 0), BriefSourceErrorCode.SOURCE_CHANGED
             )
 
     def test_cli_plans_and_emits_an_empty_selected_source(self) -> None:
@@ -354,7 +391,7 @@ class BriefSourcesTest(unittest.TestCase):
             second.write_bytes(b"second\n")
             plan = expect_brief_source_success(
                 plan_brief_sources(
-                    project,
+                    source_selector(project),
                     self.manifest(
                         BriefSourceRequest("first", first.name, ("contract",)),
                         BriefSourceRequest("second", second.name, ("acceptance",)),
@@ -370,7 +407,7 @@ class BriefSourcesTest(unittest.TestCase):
                 return original_read_bytes(path)
 
             with patch.object(Path, "read_bytes", autospec=True, side_effect=tracked_read_bytes):
-                rendered = expect_brief_source_success(render_brief_source_batch(project, plan, 0))
+                rendered = expect_brief_source_success(render_brief_source_batch(source_selector(project), plan, 0))
 
         self.assertIn(b"authority=first", rendered)
         self.assertNotIn(b"authority=second", rendered)

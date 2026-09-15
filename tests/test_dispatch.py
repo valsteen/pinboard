@@ -21,7 +21,7 @@ from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state
+from pinboard.application import stored_state, work_brief_models
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, BriefArtifactRef, NewArtifact
 from pinboard.application.dispatch_models import (
     FRESH_CONTEXT_REQUIRED,
@@ -30,7 +30,8 @@ from pinboard.application.dispatch_models import (
     FreshContextRequired,
 )
 from pinboard.application.ports import ArtifactReferenceAcceptance
-from pinboard.cli import dispatch_brief, work_brief_models
+from pinboard.application.work_briefs import canonical_work_brief_bytes, canonical_work_brief_review_bytes
+from pinboard.cli import dispatch_brief
 from pinboard.cli.dispatch_brief import (
     SuppliedDispatchReview,
     _read_dispatch_brief,
@@ -40,7 +41,6 @@ from pinboard.cli.dispatch_brief import (
 )
 from pinboard.cli.entrypoint import main
 from pinboard.cli.errors import DispatchErrorCode, DispatchFailure, DispatchResult
-from pinboard.cli.work_briefs import canonical_work_brief_bytes, canonical_work_brief_review_bytes
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import HostId, ReviewId
@@ -1571,7 +1571,7 @@ class DispatchTest(unittest.TestCase):
         )
         self.assertEqual(14, result)
         self.assertEqual("", stdout)
-        self.assertTrue(stderr.startswith(f"DISPATCH_PROMPT_UNREADABLE: Cannot read '{missing_prompt}': "))
+        self.assertTrue(stderr.startswith(f"DISPATCH_PROMPT_UNREADABLE: Cannot read '{missing_prompt}': "), stderr)
 
         missing_review = project / "missing-review.json"
         result, stdout, stderr = self.run_cli(

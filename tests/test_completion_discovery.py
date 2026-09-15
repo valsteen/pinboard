@@ -1,3 +1,4 @@
+import contextlib
 import json
 import shlex
 import sqlite3
@@ -139,7 +140,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
 
     def test_focused_completion_enumerates_only_ordered_same_attempt_packages(self) -> None:
         fixture, history_id, _ = self.review_job_fixture()
-        with sqlite3.connect(fixture.work / "state.sqlite3") as connection:
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             next_id = connection.execute("SELECT max(history_id) + 1 FROM transition_history").fetchone()[0]
             next_revision = connection.execute("SELECT max(project_revision) + 1 FROM transition_history").fetchone()[0]
             for index in range(101):

@@ -8,19 +8,17 @@ returned as values; infrastructure failures remain exceptions.
 
 import sys
 from datetime import UTC, datetime
-from typing import Literal, assert_never
+from typing import Literal
 
 import msgspec
 
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.application import ports, service
-from pinboard.cli import cli_commands, proposal_models, proposals, work_views
+from pinboard.application import ports, proposals, service
+from pinboard.application.proposal_models import ProposalFailure, ProposalResult
+from pinboard.cli import cli_commands, work_views
 from pinboard.cli.cli_output import write_json
-from pinboard.cli.errors import ProposalFailure, ProposalResult
-from pinboard.domain import proposal_models as domain_proposal_models
-from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.domain.identifiers import ItemId, ProposalId, TaskId
+from pinboard.domain.identifiers import ItemId
 
 
 class ProposalCreatedView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -29,26 +27,6 @@ class ProposalCreatedView(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     position: int
     state: str
     committed_revision: str
-
-
-def _convert_proposal_relation(value: proposal_models.ProposalRelation) -> work_models.ProposalRelation:
-    match value:
-        case proposal_models.IndependentProposalRelation():
-            return work_models.IndependentProposalRelation()
-        case proposal_models.PrerequisiteProposalRelation(item=item):
-            return work_models.PrerequisiteProposalRelation(ItemId(item))
-        case proposal_models.FollowUpProposalRelation(item=item):
-            return work_models.FollowUpProposalRelation(ItemId(item))
-        case proposal_models.DuplicateProposalRelation(item=item):
-            return work_models.DuplicateProposalRelation(ItemId(item))
-        case proposal_models.ContradictionProposalRelation(item=item):
-            return work_models.ContradictionProposalRelation(ItemId(item))
-        case proposal_models.ClarificationProposalRelation():
-            return work_models.ClarificationProposalRelation()
-        case proposal_models.PlannedReplacementProposalRelation(item=item, replacement_cost=cost):
-            return work_models.PlannedReplacementProposalRelation(ItemId(item), cost)
-        case _ as unreachable:
-            assert_never(unreachable)
 
 
 def create_proposal(
@@ -68,24 +46,10 @@ def create_proposal(
     decoded_proposal = proposals.parse_proposal(encoded_proposal)
     if isinstance(decoded_proposal, ProposalFailure):
         return decoded_proposal
-    requested_intake = domain_proposal_models.ProposalIntake(
-        ProposalId(decoded_proposal.proposal_id),
-        decoded_proposal.created_at_utc(),
-        TaskId(decoded_proposal.source_task_id),
-        decoded_proposal.user_label,
-        decoded_proposal.trigger,
-        decoded_proposal.why_it_matters,
-        decoded_proposal.effect,
-        decoded_proposal.unlock,
-        _convert_proposal_relation(decoded_proposal.relation),
-        decoded_proposal.urgency_evidence,
-        decoded_proposal.evidence,
-        decoded_proposal.freshness_assumptions,
-        decoded_proposal.position,
-    )
+    requested_intake = proposals.convert_proposal(decoded_proposal)
     creation_result = service.create_proposal(
         store,
-        domain_proposal_models.CreateProposalOperation(requested_intake),
+        requested_intake,
         datetime.now(UTC),
         actor_task_id=command.task_id,
         actor_host_id=command.host_id,

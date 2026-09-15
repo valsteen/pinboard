@@ -14,12 +14,10 @@ from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state
+from pinboard.application import stored_state, work_brief_models, work_briefs
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.handover import ProjectHandover
-from pinboard.cli import work_brief_models, work_briefs
-from pinboard.cli.errors import WorkBriefFailure
-from pinboard.cli.work_briefs import (
+from pinboard.application.work_briefs import (
     canonical_checkpoint_review_package_bytes,
     canonical_completion_review_package_bytes,
     canonical_work_brief_bytes,
@@ -79,7 +77,9 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         mixed = json.loads(encoded)
         assert isinstance(mixed, dict)
         mixed["accepted_brief"]["role"] = "terminal-result"
-        self.assertIsInstance(decode_canonical_completion_review_package(json.dumps(mixed).encode()), WorkBriefFailure)
+        self.assertIsInstance(
+            decode_canonical_completion_review_package(json.dumps(mixed).encode()), work_brief_models.WorkBriefFailure
+        )
 
     def test_checkpoint_acceptance_preserves_verified_candidate_diff_in_v2_package(self) -> None:
         fixture = self.accepted_package_fixture()
@@ -1159,7 +1159,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             == (basis.brief_review.kind, basis.brief_review.key, basis.brief_review.revision)
         )
         review = decode_canonical_work_brief_review((fixture.work / ready_reference.selector).read_bytes())
-        if isinstance(review, WorkBriefFailure):
+        if isinstance(review, work_brief_models.WorkBriefFailure):
             self.fail(str(review))
         review_bytes = canonical_work_brief_review_bytes(
             replace_struct(review, reviewer_task_id=fixture.brief.owner_task_id)

@@ -1,14 +1,15 @@
 import ast
 import tempfile
+import tomllib
 import unittest
 from importlib.util import resolve_name
 from pathlib import Path
 
 SOURCE_ROOT = Path(__file__).parents[1] / "src" / "pinboard"
 FORBIDDEN_DEPENDENCIES = {
-    "domain": ("pinboard.adapters", "pinboard.application", "pinboard.cli"),
-    "application": ("pinboard.adapters", "pinboard.cli"),
-    "adapters": ("pinboard.cli",),
+    "domain": ("pinboard.adapters", "pinboard.application", "pinboard.cli", "pinboard.mcp"),
+    "application": ("pinboard.adapters", "pinboard.cli", "pinboard.mcp"),
+    "adapters": ("pinboard.cli", "pinboard.mcp"),
 }
 
 
@@ -110,6 +111,18 @@ def _database_location_literals(source_root: Path = SOURCE_ROOT) -> tuple[Path, 
 
 
 class ArchitectureDependencyTest(unittest.TestCase):
+    def test_package_exposes_cli_and_local_stdio_mcp_entrypoints(self) -> None:
+        metadata = tomllib.loads((SOURCE_ROOT.parents[1] / "pyproject.toml").read_text())
+        self.assertEqual(
+            {
+                "pinboard": "pinboard.cli.entrypoint:main",
+                "pinboard-mcp": "pinboard.mcp.server:main",
+            },
+            metadata["project"]["scripts"],
+        )
+        self.assertIn("mcp==2.2.0", metadata["project"]["dependencies"])
+        self.assertNotIn("mcp==2.2.0", metadata["dependency-groups"]["dev"])
+
     def test_outward_relative_import_cannot_bypass_dependency_direction(self) -> None:
         source_root = Path(tempfile.mkdtemp()) / "src" / "pinboard"
         module = source_root / "application" / "probe.py"
@@ -153,10 +166,26 @@ class ArchitectureDependencyTest(unittest.TestCase):
             },
         )
 
+    def test_cli_and_mcp_are_independent_sibling_boundaries(self) -> None:
+        cli_imports = tuple(
+            imported
+            for path in (SOURCE_ROOT / "cli").glob("*.py")
+            for imported in _imports(path)
+            if imported.startswith("pinboard.mcp")
+        )
+        mcp_imports = tuple(
+            imported
+            for path in (SOURCE_ROOT / "mcp").glob("*.py")
+            for imported in _imports(path)
+            if imported.startswith("pinboard.cli")
+        )
+        self.assertEqual((), cli_imports)
+        self.assertEqual((), mcp_imports)
+
     def test_sqlite_location_and_store_composition_have_one_explicit_owner(self) -> None:
         self.assertEqual((Path("adapters/files/file_io.py"),), _database_location_literals())
-        self.assertEqual((Path("cli/work_state_commands.py"),), _sqlite_store_importers())
-        self.assertEqual((Path("cli/work_state_commands.py"),), _sqlite_store_constructors())
+        self.assertEqual((Path("cli/work_state_commands.py"), Path("mcp/server.py")), _sqlite_store_importers())
+        self.assertEqual((Path("cli/work_state_commands.py"), Path("mcp/server.py")), _sqlite_store_constructors())
 
 
 if __name__ == "__main__":

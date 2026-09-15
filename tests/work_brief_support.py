@@ -3,8 +3,8 @@ from pathlib import Path
 
 from msgspec.structs import replace
 
-from pinboard.cli import work_brief_models
-from pinboard.cli.work_briefs import (
+from pinboard.application import work_brief_models
+from pinboard.application.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_reviewed_authority_set_bytes,
     canonical_work_brief_bytes,

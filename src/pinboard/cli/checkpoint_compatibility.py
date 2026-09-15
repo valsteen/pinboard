@@ -14,9 +14,17 @@ from typing import Never, assert_never
 
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.application import artifact_publication, dispatch_models, ports, query_models, stored_state
+from pinboard.application import (
+    artifact_publication,
+    checkpoint_compatibility_models,
+    dispatch_models,
+    ports,
+    query_models,
+    stored_state,
+    work_brief_models,
+)
 from pinboard.application.artifacts import NewArtifact
-from pinboard.cli import checkpoint_compatibility_models, cli_commands, errors, work_state
+from pinboard.cli import cli_commands, errors, work_state
 from pinboard.domain import errors as domain_errors
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import HistoryId
@@ -68,7 +76,7 @@ def recover_checkpoint_candidate(
         attempt_id=str(command.attempt_id),
         item_id=str(facts.attempt.item_id),
     )
-    if isinstance(package, errors.WorkBriefFailure):
+    if isinstance(package, work_brief_models.WorkBriefFailure):
         return errors.CommandFailure(domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, package.message, None)
     if not isinstance(package, checkpoint_compatibility_models.CheckpointReviewPackage):
         return errors.CommandFailure(

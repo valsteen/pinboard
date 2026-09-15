@@ -1,11 +1,37 @@
 import re
 from dataclasses import dataclass
+from enum import Enum
 from typing import Annotated, Literal, assert_never
 
 import msgspec
 
-from pinboard.cli.brief_source_models import parse_authority_selector
-from pinboard.cli.errors import BriefSourceFailure
+from pinboard.application.brief_source_models import BriefSourceFailure, parse_authority_selector
+
+
+class WorkBriefErrorCode(Enum):
+    BRIEF_INVALID = "WORK_BRIEF_INVALID"
+    BRIEF_NOT_CANONICAL = "WORK_BRIEF_NOT_CANONICAL"
+    REVIEW_INVALID = "WORK_BRIEF_REVIEW_INVALID"
+    REVIEW_NOT_CANONICAL = "WORK_BRIEF_REVIEW_NOT_CANONICAL"
+    REVIEW_NOT_INDEPENDENT = "WORK_BRIEF_REVIEW_NOT_INDEPENDENT"
+    REVIEW_NOT_READY = "WORK_BRIEF_REVIEW_NOT_READY"
+    REVIEW_STALE = "WORK_BRIEF_REVIEW_STALE"
+    PACKAGE_INVALID = "CHECKPOINT_REVIEW_PACKAGE_INVALID"
+    PACKAGE_NOT_CANONICAL = "CHECKPOINT_REVIEW_PACKAGE_NOT_CANONICAL"
+    PACKAGE_PROVENANCE_INVALID = "CHECKPOINT_REVIEW_PACKAGE_PROVENANCE_INVALID"
+
+
+@dataclass(frozen=True, slots=True)
+class WorkBriefFailure:
+    code: WorkBriefErrorCode
+    message: str
+
+    def __str__(self) -> str:
+        return f"{self.code.value}: {self.message}"
+
+
+type WorkBriefResult[T] = T | WorkBriefFailure
+type WorkBriefJsonValue = bool | int | float | str | list[WorkBriefJsonValue] | dict[str, WorkBriefJsonValue] | None
 
 type NonEmptyText = Annotated[str, msgspec.Meta(min_length=1)]
 type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A\S(?:[^\n]*\S)?\z")]

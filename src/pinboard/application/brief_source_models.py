@@ -1,11 +1,34 @@
 from dataclasses import dataclass
+from enum import Enum
 from itertools import pairwise
 from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
 import msgspec
 
-from pinboard.cli.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
+
+class BriefSourceErrorCode(Enum):
+    BATCH_NOT_FOUND = "BRIEF_SOURCE_BATCH_NOT_FOUND"
+    LINE_TOO_LARGE = "BRIEF_SOURCE_LINE_TOO_LARGE"
+    MANIFEST_INVALID = "BRIEF_SOURCE_MANIFEST_INVALID"
+    PLAN_INVALID = "BRIEF_SOURCE_PLAN_INVALID"
+    SELECTOR_INVALID = "BRIEF_SOURCE_SELECTOR_INVALID"
+    SELECTOR_OVERLAP = "BRIEF_SOURCE_SELECTOR_OVERLAP"
+    SOURCE_NOT_UTF8 = "BRIEF_SOURCE_NOT_UTF8"
+    SOURCE_CHANGED = "BRIEF_SOURCE_CHANGED"
+    SOURCE_UNREADABLE = "BRIEF_SOURCE_UNREADABLE"
+
+
+@dataclass(frozen=True, slots=True)
+class BriefSourceFailure:
+    code: BriefSourceErrorCode
+    message: str
+
+    def __str__(self) -> str:
+        return f"{self.code.value}: {self.message}"
+
+
+type BriefSourceResult[T] = T | BriefSourceFailure
 
 type BriefSourceManifestSchema = Literal["pinboard-brief-sources/v1"]
 type BriefSourcePlanSchema = Literal["pinboard-brief-source-plan/v1"]

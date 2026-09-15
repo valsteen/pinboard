@@ -2,17 +2,16 @@ import unittest
 
 import msgspec
 
-from pinboard.cli import work_brief_models
-from pinboard.cli.errors import WorkBriefFailure, WorkBriefResult
+from pinboard.application import work_brief_models
+from pinboard.application.work_briefs import decode_work_brief
 from pinboard.cli.work_brief_contract import WorkBriefStructuralChoice, describe_work_brief_contract
-from pinboard.cli.work_briefs import decode_work_brief
 from tests.work_brief_support import example_work_brief, work_c_brief
 
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
 
 
-def expect_work_brief_success[T](result: WorkBriefResult[T]) -> T:
-    if isinstance(result, WorkBriefFailure):
+def expect_work_brief_success[T](result: work_brief_models.WorkBriefResult[T]) -> T:
+    if isinstance(result, work_brief_models.WorkBriefFailure):
         raise AssertionError(str(result))
     return result
 
@@ -170,7 +169,7 @@ class WorkBriefContractTest(unittest.TestCase):
             checkpoint = json_object(payload["checkpoint"])
             checkpoint_keys = {field.name for field in msgspec.structs.fields(checkpoint_type)} | {"boundary"}
             self.assertEqual(checkpoint_keys, checkpoint.keys())
-            self.assertIsInstance(decode_work_brief(bytes(starter)), WorkBriefFailure)
+            self.assertIsInstance(decode_work_brief(bytes(starter)), work_brief_models.WorkBriefFailure)
 
         local_payload = json_object(msgspec.json.decode(bytes(contract.local_starter)))
         local_checkpoint = json_object(local_payload["checkpoint"])

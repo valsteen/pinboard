@@ -4,8 +4,7 @@ from typing import Literal
 
 import msgspec
 
-from pinboard.application import dispatch_models, query_models
-from pinboard.cli import work_briefs
+from pinboard.application import dispatch_models, query_models, work_briefs
 
 
 class AttemptView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

@@ -6,10 +6,9 @@ from pathlib import PurePosixPath
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.application import handover, ports
+from pinboard.application import handover, ports, work_brief_models
 from pinboard.cli import cli_commands, work_state
 from pinboard.cli.cli_output import write_json
-from pinboard.cli.errors import WorkBriefFailure, WorkBriefResult
 from pinboard.domain.identifiers import ArtifactRefId
 
 MEDIA_TYPE_BY_SUFFIX = {
@@ -63,7 +62,7 @@ def _read_and_encode_artifacts(
 
 def export_project_handover(
     durable: DurableRoots, store: ports.HandoverReader, _command: cli_commands.HandoverCommand
-) -> WorkBriefResult[int]:
+) -> work_brief_models.WorkBriefResult[int]:
     captured_state = handover.merge_handover_batches(store.read_handover_batches())
     artifact_repository = ArtifactRepository(durable)
     projected_references, encoded_contents, verified_artifacts = _read_and_encode_artifacts(
@@ -75,7 +74,7 @@ def export_project_handover(
         captured_state.transition_receipts,
         verified_artifacts,
     )
-    if isinstance(checkpoint_packages, WorkBriefFailure):
+    if isinstance(checkpoint_packages, work_brief_models.WorkBriefFailure):
         return checkpoint_packages
     completion_packages = work_state.validate_completion_review_packages(
         captured_state.lifecycle,
@@ -84,7 +83,7 @@ def export_project_handover(
         verified_artifacts,
         checkpoint_packages,
     )
-    if isinstance(completion_packages, WorkBriefFailure):
+    if isinstance(completion_packages, work_brief_models.WorkBriefFailure):
         return completion_packages
     portable_package = handover.project_handover_from_state(
         captured_state,

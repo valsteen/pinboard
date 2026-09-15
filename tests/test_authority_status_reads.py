@@ -18,8 +18,8 @@ from pinboard.adapters.sqlite.database import initialize_database, open_database
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
+from pinboard.application.work_briefs import canonical_work_brief_bytes
 from pinboard.cli.entrypoint import main
-from pinboard.cli.work_briefs import canonical_work_brief_bytes
 from pinboard.domain import authority_models, work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId

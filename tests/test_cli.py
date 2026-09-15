@@ -39,26 +39,25 @@ from pinboard.adapters.sqlite.database import initialize_database, translate_dat
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import query_models, stored_state
+from pinboard.application import query_models, stored_state, work_brief_models
 from pinboard.application.artifacts import ArtifactPublication, NewArtifact, WorkBriefIdentity
+from pinboard.application.brief_sources import BriefSourceSelector
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.ports import WorkStore
-from pinboard.cli import (
-    action_selection,
-    dispatch_brief,
-    work_brief_models,
-    work_inspection_models,
-    work_state_commands,
-)
-from pinboard.cli import transitions as transition_interface
-from pinboard.cli.entrypoint import build_parser, main
-from pinboard.cli.errors import WorkBriefErrorCode, WorkBriefFailure
-from pinboard.cli.work_briefs import (
+from pinboard.application.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_work_brief_bytes,
     canonical_work_brief_review_bytes,
     decode_canonical_checkpoint_review_package,
 )
+from pinboard.cli import (
+    action_selection,
+    dispatch_brief,
+    work_inspection_models,
+    work_state_commands,
+)
+from pinboard.cli import transitions as transition_interface
+from pinboard.cli.entrypoint import build_parser, main
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.history import work_item_definition_digest
@@ -1074,7 +1073,9 @@ class CliTest(unittest.TestCase):
 
         with patch(
             "pinboard.cli.work_views.build_selected_attempt_brief_views",
-            return_value=WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, "injected revision projection failure"),
+            return_value=work_brief_models.WorkBriefFailure(
+                work_brief_models.WorkBriefErrorCode.BRIEF_INVALID, "injected revision projection failure"
+            ),
         ):
             result, stdout, stderr = self.run_cli(
                 *common,
@@ -2569,10 +2570,18 @@ class CliTest(unittest.TestCase):
         brief_path = project / "timed-brief.json"
         timed_brief = replace_struct(work_c_brief(), attempt_id="timed-brief-attempt")
         brief_path.write_bytes(canonical_work_brief_bytes(timed_brief))
-        with patch("pinboard.cli.work_brief_publication.datetime") as publication_clock:
+        with (
+            patch("pinboard.cli.work_brief_publication.datetime") as publication_clock,
+            patch(
+                "pinboard.cli.work_brief_publication.work_views.refresh",
+                return_value=ViewRefreshResult(2, None),
+            ) as refresh,
+        ):
             publication_clock.now.side_effect = (commit_time, render_time)
             self.run_json_cli(*common, "brief", "publish", "--file", str(brief_path))
         self.assertEqual(1, publication_clock.now.call_count)
+        refresh.assert_called_once()
+        self.assertEqual(commit_time, refresh.call_args.args[3])
 
     def test_brief_needs_correction_publication_and_focused_status_are_exact(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())
@@ -3366,7 +3375,7 @@ class CliTest(unittest.TestCase):
             (work / f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review/1.md").read_bytes(),
         )
         package = decode_canonical_checkpoint_review_package(package_path.read_bytes())
-        if isinstance(package, WorkBriefFailure):
+        if isinstance(package, work_brief_models.WorkBriefFailure):
             self.fail(str(package))
         self.assertEqual(CHECKPOINT_ID, package.checkpoint.id)
         self.assertEqual(candidate, package.candidate)
@@ -3883,7 +3892,7 @@ class CliTest(unittest.TestCase):
             value for value in reloaded.artifact_references if value.key == "work-a-1-local-checkpoint-review-package"
         )
         package = decode_canonical_checkpoint_review_package((work / package_reference.selector).read_bytes())
-        if isinstance(package, WorkBriefFailure):
+        if isinstance(package, work_brief_models.WorkBriefFailure):
             self.fail(str(package))
         self.assertIsInstance(package.review_basis, work_brief_models.LocalReviewBasis)
         self.assertEqual(len(before.artifact_references) + 4, len(reloaded.artifact_references))
@@ -5004,7 +5013,9 @@ Not launchable:
 
         with patch(
             "pinboard.cli.work_views.build_selected_attempt_brief_views",
-            return_value=WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, "injected projection failure"),
+            return_value=work_brief_models.WorkBriefFailure(
+                work_brief_models.WorkBriefErrorCode.BRIEF_INVALID, "injected projection failure"
+            ),
         ):
             result, stdout, stderr = self.run_transition(common, action, payload, json_output=False)
 
@@ -5945,14 +5956,14 @@ Not launchable:
         before_race = store.validated_snapshot()
 
         def change_source_then_validate(
-            source_root: Path,
+            select_source: BriefSourceSelector,
             authorities: tuple[work_brief_models.ReviewedAuthority, ...],
         ) -> work_brief_models.ReviewedAuthorityValidationFailure | None:
             (project / "architecture.md").write_text(
                 "# Architecture\n\n## Contract\n\nChanged during correction dispatch.\n",
                 encoding="utf-8",
             )
-            return original_validate(source_root, authorities)
+            return original_validate(select_source, authorities)
 
         with patch.object(
             dispatch_brief,
@@ -6015,7 +6026,9 @@ Not launchable:
         with (
             patch(
                 "pinboard.cli.work_views.build_selected_attempt_brief_views",
-                return_value=WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, "injected view failure"),
+                return_value=work_brief_models.WorkBriefFailure(
+                    work_brief_models.WorkBriefErrorCode.BRIEF_INVALID, "injected view failure"
+                ),
             ),
             patch(
                 "pinboard.cli.transitions.ArtifactRepository.publish",

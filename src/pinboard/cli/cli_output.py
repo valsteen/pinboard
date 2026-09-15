@@ -6,8 +6,9 @@ from typing import Literal
 
 import msgspec
 
-from pinboard.application import query_models
-from pinboard.cli.errors import BriefSourceFailure, CliFailure, CommittedEffectFailure, WorkBriefFailure
+from pinboard.application import query_models, work_brief_models
+from pinboard.application.brief_source_models import BriefSourceFailure
+from pinboard.cli.errors import CliFailure, CommittedEffectFailure
 from pinboard.domain.errors import EffectDisposition, FailureDetails, FailureFactValue, RetryDisposition
 
 type AuthorityStatus = query_models.AttemptAuthorityStatus | query_models.PreparationAuthorityStatus
@@ -118,10 +119,10 @@ def write_json[T](value: T) -> None:
 def write_rejected_operation(operation: str, failure: CliFailure) -> None:
     """Present one expected failure without reconstructing facts from its prose message."""
     assert not isinstance(failure, CommittedEffectFailure)
-    details = None if isinstance(failure, (BriefSourceFailure, WorkBriefFailure)) else failure.details
+    details = None if isinstance(failure, (BriefSourceFailure, work_brief_models.WorkBriefFailure)) else failure.details
     default_retry = (
         RetryDisposition.CORRECT_INPUT
-        if isinstance(failure, (BriefSourceFailure, WorkBriefFailure))
+        if isinstance(failure, (BriefSourceFailure, work_brief_models.WorkBriefFailure))
         else RetryDisposition.DO_NOT_RETRY
     )
     write_operation_rejection(

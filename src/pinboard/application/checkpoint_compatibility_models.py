@@ -4,7 +4,7 @@ from typing import Literal
 
 import msgspec
 
-from pinboard.cli import work_brief_models
+from pinboard.application import work_brief_models
 
 
 class CheckpointReviewPackage(

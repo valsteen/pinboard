@@ -12,17 +12,16 @@ from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
 from pinboard.adapters.files.views import rebuild_facts as rebuild_file_views
 from pinboard.adapters.files.views import refresh_facts as refresh_file_views
-from pinboard.application import ports, stored_state
+from pinboard.application import ports, stored_state, work_brief_models
 from pinboard.application.mutation_models import CommittedEffect
-from pinboard.cli.errors import WorkBriefFailure, WorkBriefResult
-from pinboard.cli.work_briefs import build_attempt_brief_views, build_selected_attempt_brief_views
+from pinboard.application.work_briefs import build_attempt_brief_views, build_selected_attempt_brief_views
 from pinboard.domain.identifiers import AttemptId
 
 
 def read_attempt_brief_views(
     durable: DurableRoots,
     state: stored_state.StoredWorkState,
-) -> WorkBriefResult[dict[AttemptId, bytes]]:
+) -> work_brief_models.WorkBriefResult[dict[AttemptId, bytes]]:
     return build_attempt_brief_views(
         state,
         ArtifactRepository(durable),
@@ -37,7 +36,7 @@ def refresh(
 ) -> ViewRefreshResult:
     facts = store.read_generated_view_facts(affected.items, affected.attempts, affected.history_receipts, now)
     attempt_briefs = build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(durable))
-    if isinstance(attempt_briefs, WorkBriefFailure):
+    if isinstance(attempt_briefs, work_brief_models.WorkBriefFailure):
         return ViewRefreshResult(
             facts.project_revision,
             ViewWarning(
@@ -63,7 +62,7 @@ def refresh_effect(
 def rebuild(durable: DurableRoots, store: ports.GeneratedViewSetReader, now: datetime) -> ViewRefreshResult:
     facts = store.read_all_generated_view_facts(now)
     attempt_briefs = build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(durable))
-    if isinstance(attempt_briefs, WorkBriefFailure):
+    if isinstance(attempt_briefs, work_brief_models.WorkBriefFailure):
         return ViewRefreshResult(
             facts.project_revision,
             ViewWarning(

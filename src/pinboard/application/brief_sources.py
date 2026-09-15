@@ -1,34 +1,41 @@
-"""Select reviewed source bytes and plan exact context-bounded batches.
-
-Selection reads only project-relative files from the caller's chosen source
-checkout. Planning normalizes, segments, and batches those bytes without
-opening Pinboard work state or writing project files.
-"""
+"""Select reviewed source bytes and plan exact context-bounded batches."""
 
 import hashlib
 import re
-from pathlib import Path, PurePosixPath
-from typing import Final
+from pathlib import PurePosixPath
+from typing import Final, Protocol
 
 import msgspec
 
-from pinboard.cli.brief_source_models import (
+from pinboard.application.brief_source_models import (
     AuthoritySelector,
     BriefSourceBatch,
+    BriefSourceErrorCode,
+    BriefSourceFailure,
     BriefSourceLine,
     BriefSourceManifest,
     BriefSourcePlan,
     BriefSourcePlanView,
     BriefSourceRequest,
+    BriefSourceResult,
     BriefSourceSegment,
     BriefSourceSegmentView,
     PlannedBriefSource,
     SelectedBriefSource,
     authority_selector,
 )
-from pinboard.cli.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
 
 MARKDOWN_HEADING: Final = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+
+
+class BriefSourceSelector(Protocol):
+    """Acquire and select one authority through an outer-owned capability."""
+
+    def __call__(
+        self,
+        selector: AuthoritySelector,
+        require_utf8: bool,
+    ) -> BriefSourceResult[SelectedBriefSource]: ...
 
 
 def decode_brief_source_manifest(raw: bytes) -> BriefSourceResult[BriefSourceManifest]:
@@ -89,7 +96,9 @@ def decode_brief_source_plan(raw: bytes) -> BriefSourceResult[BriefSourcePlan]:
     return BriefSourcePlan(plan.schema, plan.manifest_sha256, plan.max_batch_bytes, sources, batches)
 
 
-def _find_heading_range(lines: tuple[str, ...], heading: str, path: Path) -> BriefSourceResult[tuple[int, int]]:
+def _find_heading_range(
+    lines: tuple[str, ...], heading: str, relative_path: PurePosixPath
+) -> BriefSourceResult[tuple[int, int]]:
     matches: list[tuple[int, int]] = []
     for index, line in enumerate(lines):
         match = MARKDOWN_HEADING.fullmatch(line)
@@ -98,12 +107,12 @@ def _find_heading_range(lines: tuple[str, ...], heading: str, path: Path) -> Bri
     if not matches:
         return BriefSourceFailure(
             BriefSourceErrorCode.SELECTOR_INVALID,
-            f"Heading '{heading}' is not in '{path}'.",
+            f"Heading '{heading}' is not in '{relative_path}'.",
         )
     if len(matches) != 1:
         return BriefSourceFailure(
             BriefSourceErrorCode.SELECTOR_INVALID,
-            f"Heading '{heading}' is not unique in '{path}'.",
+            f"Heading '{heading}' is not unique in '{relative_path}'.",
         )
     start, level = matches[0]
     end = len(lines)
@@ -115,20 +124,11 @@ def _find_heading_range(lines: tuple[str, ...], heading: str, path: Path) -> Bri
     return start, end
 
 
-def select_brief_source(
-    source_checkout_root: Path,
+def select_brief_source_bytes(
     selector: AuthoritySelector,
-    *,
+    raw: bytes,
     require_utf8: bool,
 ) -> BriefSourceResult[SelectedBriefSource]:
-    path = source_checkout_root / Path(*selector.relative_path.parts)
-    try:
-        raw = path.read_bytes()
-    except OSError as error:
-        return BriefSourceFailure(
-            BriefSourceErrorCode.SOURCE_UNREADABLE,
-            f"Cannot read authority at '{path}': {error}",
-        )
     if selector.heading is None:
         if require_utf8:
             try:
@@ -136,7 +136,7 @@ def select_brief_source(
             except UnicodeDecodeError:
                 return BriefSourceFailure(
                     BriefSourceErrorCode.SOURCE_NOT_UTF8,
-                    f"Authority '{path}' is not UTF-8 text.",
+                    f"Authority '{selector.relative_path}' is not UTF-8 text.",
                 )
         raw_lines = raw.splitlines(keepends=True)
         lines = tuple(BriefSourceLine(index, content) for index, content in enumerate(raw_lines, start=1))
@@ -147,10 +147,10 @@ def select_brief_source(
     except UnicodeDecodeError:
         return BriefSourceFailure(
             BriefSourceErrorCode.SOURCE_NOT_UTF8,
-            f"Heading-selected authority '{path}' is not UTF-8 text.",
+            f"Heading-selected authority '{selector.relative_path}' is not UTF-8 text.",
         )
     text_lines = tuple(text.splitlines())
-    heading_range = _find_heading_range(text_lines, selector.heading, path)
+    heading_range = _find_heading_range(text_lines, selector.heading, selector.relative_path)
     if isinstance(heading_range, BriefSourceFailure):
         return heading_range
     start, end = heading_range
@@ -285,7 +285,7 @@ def _group_segments_into_batches(
 
 
 def plan_brief_sources(
-    source_checkout_root: Path,
+    select_source: BriefSourceSelector,
     manifest: BriefSourceManifest,
     max_batch_bytes: int,
 ) -> BriefSourceResult[BriefSourcePlan]:
@@ -293,11 +293,7 @@ def plan_brief_sources(
     planned_sources: list[PlannedBriefSource] = []
     all_segments: list[BriefSourceSegment] = []
     for request in manifest.sources:
-        selected = select_brief_source(
-            source_checkout_root,
-            authority_selector(request.selector),
-            require_utf8=True,
-        )
+        selected = select_source(authority_selector(request.selector), True)
         if isinstance(selected, BriefSourceFailure):
             return selected
         if (failure := _reject_overlap(request, selected, selected_ranges)) is not None:
@@ -333,7 +329,7 @@ def plan_brief_sources(
 
 
 def render_brief_source_batch(
-    source_checkout_root: Path, plan: BriefSourcePlan, batch_index: int
+    select_source: BriefSourceSelector, plan: BriefSourcePlan, batch_index: int
 ) -> BriefSourceResult[bytes]:
     if batch_index < 0 or batch_index >= len(plan.batches):
         return BriefSourceFailure(
@@ -347,11 +343,7 @@ def render_brief_source_batch(
     for segment in plan.batches[batch_index].segments:
         source = sources[segment.authority_id]
         if segment.authority_id != selected_id:
-            selected = select_brief_source(
-                source_checkout_root,
-                authority_selector(source.selector),
-                require_utf8=True,
-            )
+            selected = select_source(authority_selector(source.selector), True)
             if isinstance(selected, BriefSourceFailure):
                 return selected
             if (

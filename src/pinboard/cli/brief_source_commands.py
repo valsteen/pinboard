@@ -8,11 +8,14 @@ command branching.
 
 import hashlib
 import sys
+from functools import partial
 from typing import assert_never
 
+from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.file_io import create_immutable
-from pinboard.cli import brief_source_models, brief_sources, cli_commands, cli_output
-from pinboard.cli.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
+from pinboard.application import brief_source_models, brief_sources
+from pinboard.application.brief_source_models import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
+from pinboard.cli import cli_commands, cli_output
 
 
 def _project_brief_source_segment(
@@ -107,7 +110,7 @@ def plan_or_emit_brief_sources(
             if isinstance(decoded_manifest, BriefSourceFailure):
                 return decoded_manifest
             source_plan = brief_sources.plan_brief_sources(
-                roots.source_checkout,
+                partial(select_checkout_brief_source, roots.source_checkout),
                 decoded_manifest,
                 max_batch_bytes,
             )
@@ -131,7 +134,11 @@ def plan_or_emit_brief_sources(
             source_plan = brief_sources.decode_brief_source_plan(plan_bytes)
             if isinstance(source_plan, BriefSourceFailure):
                 return source_plan
-            rendered_batch = brief_sources.render_brief_source_batch(roots.source_checkout, source_plan, batch_index)
+            rendered_batch = brief_sources.render_brief_source_batch(
+                partial(select_checkout_brief_source, roots.source_checkout),
+                source_plan,
+                batch_index,
+            )
             if isinstance(rendered_batch, BriefSourceFailure):
                 return rendered_batch
             sys.stdout.write(rendered_batch.decode("utf-8"))

@@ -1,21 +1,20 @@
 import hashlib
-from pathlib import Path
+from datetime import datetime
 from typing import assert_never
 
 import msgspec
 
-from pinboard.application import query_models, stored_state
-from pinboard.application.artifact_publication import ArtifactReader
-from pinboard.application.artifacts import BriefArtifactRef, WorkBriefIdentity
-from pinboard.cli import checkpoint_compatibility_models, work_brief_models
-from pinboard.cli.brief_source_models import authority_selector
-from pinboard.cli.brief_sources import select_brief_source
-from pinboard.cli.errors import (
-    BriefSourceFailure,
-    WorkBriefErrorCode,
-    WorkBriefFailure,
-    WorkBriefResult,
+from pinboard.application import checkpoint_compatibility_models, query_models, stored_state, work_brief_models
+from pinboard.application.artifact_publication import (
+    AcceptedArtifactPublication,
+    ArtifactPublisher,
+    ArtifactReader,
+    publish_accepted_artifact,
 )
+from pinboard.application.artifacts import BriefArtifactRef, NewArtifact, WorkBriefIdentity
+from pinboard.application.brief_source_models import BriefSourceFailure, authority_selector
+from pinboard.application.brief_sources import BriefSourceSelector
+from pinboard.application.ports import WorkStore
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import AttemptId
@@ -25,8 +24,37 @@ type CheckpointPackage = (
 )
 
 
-def _invalid(message: str) -> WorkBriefFailure:
-    return WorkBriefFailure(WorkBriefErrorCode.BRIEF_INVALID, message)
+def publish_work_brief(
+    store: WorkStore,
+    publisher: ArtifactPublisher,
+    brief: work_brief_models.WorkBrief,
+    accepted_at: datetime,
+) -> DecisionResult[AcceptedArtifactPublication]:
+    return publish_accepted_artifact(
+        store,
+        publisher,
+        NewArtifact(
+            work_models.ArtifactKind.BRIEF,
+            brief.attempt_id,
+            brief.artifact_revision,
+            ".json",
+            canonical_work_brief_bytes(brief),
+        ),
+        accepted_at,
+    )
+
+
+def convert_work_brief_input(
+    data: dict[str, work_brief_models.WorkBriefJsonValue],
+) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBrief]:
+    try:
+        return msgspec.convert(data, type=work_brief_models.WorkBrief, strict=True)
+    except (msgspec.ValidationError, ValueError) as error:
+        return _invalid(f"Cannot decode work brief JSON: {error}")
+
+
+def _invalid(message: str) -> work_brief_models.WorkBriefFailure:
+    return work_brief_models.WorkBriefFailure(work_brief_models.WorkBriefErrorCode.BRIEF_INVALID, message)
 
 
 def _canonical_bytes[T](value: T) -> bytes:
@@ -47,7 +75,7 @@ def _owner_key(owner: work_brief_models.CoverageOwner) -> tuple[str, str | int]:
             assert_never(unreachable)
 
 
-def decode_work_brief(data: bytes) -> WorkBriefResult[work_brief_models.WorkBrief]:
+def decode_work_brief(data: bytes) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBrief]:
     try:
         return msgspec.json.decode(data, type=work_brief_models.WorkBrief)
     except msgspec.DecodeError as error:
@@ -58,13 +86,13 @@ def canonical_work_brief_bytes(brief: work_brief_models.WorkBrief) -> bytes:
     return _canonical_bytes(brief) + b"\n"
 
 
-def decode_canonical_work_brief(data: bytes) -> WorkBriefResult[work_brief_models.WorkBrief]:
+def decode_canonical_work_brief(data: bytes) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBrief]:
     brief = decode_work_brief(data)
-    if isinstance(brief, WorkBriefFailure):
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
         return brief
     if data != canonical_work_brief_bytes(brief):
-        return WorkBriefFailure(
-            WorkBriefErrorCode.BRIEF_NOT_CANONICAL,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.BRIEF_NOT_CANONICAL,
             "Accepted work brief bytes are not the canonical msgspec encoding.",
         )
     return brief
@@ -79,15 +107,11 @@ def canonical_reviewed_authority_set_bytes(authorities: tuple[work_brief_models.
 
 
 def validate_reviewed_authority_digests(
-    source_checkout_root: Path,
+    select_source: BriefSourceSelector,
     authorities: tuple[work_brief_models.ReviewedAuthority, ...],
 ) -> work_brief_models.ReviewedAuthorityValidationFailure | None:
     for authority in authorities:
-        selected = select_brief_source(
-            source_checkout_root,
-            authority_selector(authority.selector),
-            require_utf8=True,
-        )
+        selected = select_source(authority_selector(authority.selector), True)
         if isinstance(selected, BriefSourceFailure):
             return work_brief_models.ReviewedAuthoritySelectionFailure(authority.authority_id, selected.message)
         observed_sha256 = hashlib.sha256(selected.content).hexdigest()
@@ -100,12 +124,12 @@ def validate_reviewed_authority_digests(
     return None
 
 
-def decode_work_brief_review(data: bytes) -> WorkBriefResult[work_brief_models.WorkBriefReview]:
+def decode_work_brief_review(data: bytes) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBriefReview]:
     try:
         return msgspec.json.decode(data, type=work_brief_models.WorkBriefReview)
     except msgspec.DecodeError as error:
-        return WorkBriefFailure(
-            WorkBriefErrorCode.REVIEW_INVALID,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,
             f"Cannot decode canonical work brief review: {error}",
         )
 
@@ -114,13 +138,15 @@ def canonical_work_brief_review_bytes(review: work_brief_models.WorkBriefReview)
     return _canonical_bytes(review) + b"\n"
 
 
-def decode_canonical_work_brief_review(data: bytes) -> WorkBriefResult[work_brief_models.WorkBriefReview]:
+def decode_canonical_work_brief_review(
+    data: bytes,
+) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBriefReview]:
     review = decode_work_brief_review(data)
-    if isinstance(review, WorkBriefFailure):
+    if isinstance(review, work_brief_models.WorkBriefFailure):
         return review
     if data != canonical_work_brief_review_bytes(review):
-        return WorkBriefFailure(
-            WorkBriefErrorCode.REVIEW_NOT_CANONICAL,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_NOT_CANONICAL,
             "Accepted work brief review bytes are not the canonical msgspec encoding.",
         )
     return review
@@ -128,12 +154,12 @@ def decode_canonical_work_brief_review(data: bytes) -> WorkBriefResult[work_brie
 
 def decode_work_brief_review_needs_correction(
     data: bytes,
-) -> WorkBriefResult[work_brief_models.WorkBriefReviewNeedsCorrection]:
+) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBriefReviewNeedsCorrection]:
     try:
         return msgspec.json.decode(data, type=work_brief_models.WorkBriefReviewNeedsCorrection)
     except msgspec.DecodeError as error:
-        return WorkBriefFailure(
-            WorkBriefErrorCode.REVIEW_INVALID,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,
             f"Cannot decode canonical needs-correction work brief review: {error}",
         )
 
@@ -146,13 +172,13 @@ def canonical_work_brief_review_needs_correction_bytes(
 
 def decode_canonical_work_brief_review_needs_correction(
     data: bytes,
-) -> WorkBriefResult[work_brief_models.WorkBriefReviewNeedsCorrection]:
+) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBriefReviewNeedsCorrection]:
     review = decode_work_brief_review_needs_correction(data)
-    if isinstance(review, WorkBriefFailure):
+    if isinstance(review, work_brief_models.WorkBriefFailure):
         return review
     if data != canonical_work_brief_review_needs_correction_bytes(review):
-        return WorkBriefFailure(
-            WorkBriefErrorCode.REVIEW_NOT_CANONICAL,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_NOT_CANONICAL,
             "Accepted needs-correction work brief review bytes are not the canonical msgspec encoding.",
         )
     return review
@@ -170,21 +196,32 @@ def needs_correction_review_key(brief: work_brief_models.WorkBrief) -> str:
     return f"brief-review-needs-correction-{identity_sha256}"
 
 
+def _review_checkpoint(
+    brief: work_brief_models.WorkBrief,
+) -> work_brief_models.CrossBoundaryCheckpoint | work_brief_models.WorkBriefFailure:
+    checkpoint = brief.checkpoint
+    if isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
+        return checkpoint
+    return work_brief_models.WorkBriefFailure(
+        work_brief_models.WorkBriefErrorCode.REVIEW_INVALID, "Local checkpoints do not use brief reviews."
+    )
+
+
 def validate_work_brief_review_needs_correction(
     review: work_brief_models.WorkBriefReviewNeedsCorrection,
     brief: work_brief_models.WorkBrief,
-) -> WorkBriefFailure | None:
-    checkpoint = brief.checkpoint
-    if not isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
-        return WorkBriefFailure(WorkBriefErrorCode.REVIEW_INVALID, "Local checkpoints do not use brief reviews.")
+) -> work_brief_models.WorkBriefFailure | None:
+    checkpoint = _review_checkpoint(brief)
+    if isinstance(checkpoint, work_brief_models.WorkBriefFailure):
+        return checkpoint
     if review.attempt_id != brief.attempt_id or review.checkpoint_id != checkpoint.checkpoint_id:
-        return WorkBriefFailure(
-            WorkBriefErrorCode.REVIEW_INVALID,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,
             "Needs-correction brief review names a different attempt or checkpoint.",
         )
     if review.reviewer_task_id == brief.owner_task_id:
-        return WorkBriefFailure(
-            WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT,
             "The brief reviewer must be a different task from the attempt owner.",
         )
     expected_brief_sha256 = hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
@@ -197,22 +234,22 @@ def validate_work_brief_review_needs_correction(
         or review.checkpoint_sha256 != expected_checkpoint_sha256
         or review.reviewed_authority_set_sha256 != expected_authority_sha256
     ):
-        return WorkBriefFailure(
-            WorkBriefErrorCode.REVIEW_STALE,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_STALE,
             "Needs-correction brief review is not bound to the exact accepted brief, checkpoint, and reviewed authorities.",
         )
     return None
 
 
-def decode_checkpoint_review_package(data: bytes) -> WorkBriefResult[CheckpointPackage]:
+def decode_checkpoint_review_package(data: bytes) -> work_brief_models.WorkBriefResult[CheckpointPackage]:
     try:
         return msgspec.json.decode(
             data,
             type=checkpoint_compatibility_models.CheckpointReviewPackage | work_brief_models.CheckpointReviewPackageV2,
         )
     except msgspec.DecodeError as error:
-        return WorkBriefFailure(
-            WorkBriefErrorCode.PACKAGE_INVALID,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
             f"Cannot decode checkpoint review package: {error}",
         )
 
@@ -223,24 +260,26 @@ def canonical_checkpoint_review_package_bytes(package: CheckpointPackage) -> byt
 
 def decode_canonical_checkpoint_review_package(
     data: bytes,
-) -> WorkBriefResult[CheckpointPackage]:
+) -> work_brief_models.WorkBriefResult[CheckpointPackage]:
     package = decode_checkpoint_review_package(data)
-    if isinstance(package, WorkBriefFailure):
+    if isinstance(package, work_brief_models.WorkBriefFailure):
         return package
     if data != canonical_checkpoint_review_package_bytes(package):
-        return WorkBriefFailure(
-            WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
             "Checkpoint review package bytes are not the canonical msgspec encoding.",
         )
     return package
 
 
-def decode_completion_review_package(data: bytes) -> WorkBriefResult[work_brief_models.CompletionReviewPackage]:
+def decode_completion_review_package(
+    data: bytes,
+) -> work_brief_models.WorkBriefResult[work_brief_models.CompletionReviewPackage]:
     try:
         return msgspec.json.decode(data, type=work_brief_models.CompletionReviewPackage)
     except msgspec.DecodeError as error:
-        return WorkBriefFailure(
-            WorkBriefErrorCode.PACKAGE_INVALID,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
             f"Cannot decode completion review package: {error}",
         )
 
@@ -251,13 +290,13 @@ def canonical_completion_review_package_bytes(package: work_brief_models.Complet
 
 def decode_canonical_completion_review_package(
     data: bytes,
-) -> WorkBriefResult[work_brief_models.CompletionReviewPackage]:
+) -> work_brief_models.WorkBriefResult[work_brief_models.CompletionReviewPackage]:
     package = decode_completion_review_package(data)
-    if isinstance(package, WorkBriefFailure):
+    if isinstance(package, work_brief_models.WorkBriefFailure):
         return package
     if data != canonical_completion_review_package_bytes(package):
-        return WorkBriefFailure(
-            WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
             "Completion review package bytes are not the canonical msgspec encoding.",
         )
     return package
@@ -267,34 +306,34 @@ def validate_work_brief_review(
     review: work_brief_models.WorkBriefReview,
     brief: work_brief_models.WorkBrief,
     reviewer_task_id: str | None = None,
-) -> WorkBriefFailure | None:
-    checkpoint = brief.checkpoint
-    if not isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
-        return WorkBriefFailure(WorkBriefErrorCode.REVIEW_INVALID, "Local checkpoints do not use brief reviews.")
+) -> work_brief_models.WorkBriefFailure | None:
+    checkpoint = _review_checkpoint(brief)
+    if isinstance(checkpoint, work_brief_models.WorkBriefFailure):
+        return checkpoint
     if review.attempt_id != brief.attempt_id or review.checkpoint_id != checkpoint.checkpoint_id:
-        return WorkBriefFailure(
-            WorkBriefErrorCode.REVIEW_INVALID,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,
             "Brief review names a different attempt or checkpoint.",
         )
     owner_task_id = brief.owner_task_id if reviewer_task_id is None else reviewer_task_id
     if review.reviewer_task_id == owner_task_id:
-        return WorkBriefFailure(
-            WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT,
             "The brief reviewer must be a different task from the attempt owner.",
         )
     if review.checkpoint_sha256 != hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest() or (
         review.reviewed_authority_set_sha256
         != hashlib.sha256(canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)).hexdigest()
     ):
-        return WorkBriefFailure(
-            WorkBriefErrorCode.REVIEW_STALE,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_STALE,
             "Brief review is not bound to the current checkpoint and reviewed authorities.",
         )
     expected = {(record.authority_id, record.family, _owner_key(record.owner)) for record in checkpoint.coverage}
     observed = {(record.authority_id, record.family, _owner_key(record.owner)) for record in review.coverage}
     if len(observed) != len(review.coverage) or observed != expected:
-        return WorkBriefFailure(
-            WorkBriefErrorCode.REVIEW_NOT_READY,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_NOT_READY,
             "Brief review must contain exactly one covered result for every coverage owner.",
         )
     return None
@@ -447,9 +486,9 @@ def render_work_brief_markdown(brief: work_brief_models.WorkBrief) -> bytes:
     return "\n".join(lines).encode()
 
 
-def decode_work_brief_identity(data: bytes) -> WorkBriefResult[WorkBriefIdentity]:
+def decode_work_brief_identity(data: bytes) -> work_brief_models.WorkBriefResult[WorkBriefIdentity]:
     brief = decode_canonical_work_brief(data)
-    if isinstance(brief, WorkBriefFailure):
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
         return brief
     return WorkBriefIdentity(
         brief.attempt_id,
@@ -468,7 +507,7 @@ def read_selected_work_brief_identity(
     if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
         return None
     identity = decode_work_brief_identity(artifacts.read(reference))
-    if isinstance(identity, WorkBriefFailure):
+    if isinstance(identity, work_brief_models.WorkBriefFailure):
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             f"The selected brief artifact is not a valid canonical typed work brief: {identity}",
@@ -481,13 +520,13 @@ def _render_attempt_brief_view(
     attempt: stored_state.StoredAttempt,
     reference: stored_state.ArtifactReference | BriefArtifactRef | None,
     artifacts: ArtifactReader,
-) -> WorkBriefResult[bytes]:
+) -> work_brief_models.WorkBriefResult[bytes]:
     if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
         return _invalid(f"Live attempt '{attempt.attempt_id}' has no accepted brief reference.")
     if not reference.selector.endswith(".json"):
         return _invalid(f"Live attempt '{attempt.attempt_id}' accepted brief is not canonical v2 JSON.")
     brief = decode_canonical_work_brief(artifacts.read(reference))
-    if isinstance(brief, WorkBriefFailure):
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
         return brief
     expected = (
         str(attempt.attempt_id),
@@ -512,7 +551,7 @@ def _render_attempt_brief_view(
 
 def build_attempt_brief_views(
     state: stored_state.StoredWorkState, artifacts: ArtifactReader
-) -> WorkBriefResult[dict[AttemptId, bytes]]:
+) -> work_brief_models.WorkBriefResult[dict[AttemptId, bytes]]:
     result: dict[AttemptId, bytes] = {}
     references = {value.artifact_ref_id: value for value in state.artifact_references}
     for attempt in state.lifecycle.attempts:
@@ -520,7 +559,7 @@ def build_attempt_brief_views(
             continue
         reference = references.get(attempt.brief_artifact_ref_id)
         rendered = _render_attempt_brief_view(attempt, reference, artifacts)
-        if isinstance(rendered, WorkBriefFailure):
+        if isinstance(rendered, work_brief_models.WorkBriefFailure):
             return rendered
         result[attempt.attempt_id] = rendered
     return result
@@ -528,7 +567,7 @@ def build_attempt_brief_views(
 
 def build_selected_attempt_brief_views(
     attempts: tuple[query_models.AttemptProjectionFacts, ...], artifacts: ArtifactReader
-) -> WorkBriefResult[dict[AttemptId, bytes]]:
+) -> work_brief_models.WorkBriefResult[dict[AttemptId, bytes]]:
     """Render only the accepted briefs required by selected attempt views."""
 
     result: dict[AttemptId, bytes] = {}
@@ -537,7 +576,7 @@ def build_selected_attempt_brief_views(
         if attempt.state == work_models.AttemptState.DONE:
             continue
         rendered = _render_attempt_brief_view(attempt, selected.brief_reference, artifacts)
-        if isinstance(rendered, WorkBriefFailure):
+        if isinstance(rendered, work_brief_models.WorkBriefFailure):
             return rendered
         result[attempt.attempt_id] = rendered
     return result

@@ -2,11 +2,13 @@ import hashlib
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from typing import Literal, assert_never
 
 import msgspec
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
+from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, RootError
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.root import (
@@ -19,7 +21,7 @@ from pinboard.adapters.files.root import (
     read_working_tree_candidate,
 )
 from pinboard.adapters.sqlite.errors import StorageError
-from pinboard.application import ports, query_models, stored_state
+from pinboard.application import ports, query_models, stored_state, work_brief_models
 from pinboard.application.actions import discover_current_actions
 from pinboard.application.artifacts import (
     BriefArtifactRef,
@@ -38,11 +40,21 @@ from pinboard.application.service import (
     preflight_checkpoint_candidate,
     preflight_covered_completion,
 )
+from pinboard.application.work_briefs import (
+    canonical_checkpoint_bytes,
+    canonical_checkpoint_review_package_bytes,
+    canonical_completion_review_package_bytes,
+    canonical_reviewed_authority_set_bytes,
+    decode_canonical_work_brief,
+    decode_canonical_work_brief_review,
+    read_selected_work_brief_identity,
+    validate_reviewed_authority_digests,
+    validate_work_brief_review,
+)
 from pinboard.cli import (
     action_selection,
     cli_commands,
     transition_models,
-    work_brief_models,
     work_inspection,
     work_inspection_models,
     work_state,
@@ -54,24 +66,12 @@ from pinboard.cli.errors import (
     CommandResult,
     CommittedEffectFailure,
     TransitionInputFailure,
-    WorkBriefFailure,
     storage_failure_details,
 )
 from pinboard.cli.transition_input import (
     ParsedTransitionInput,
     parse_item_revision_input,
     parse_transition_input,
-)
-from pinboard.cli.work_briefs import (
-    canonical_checkpoint_bytes,
-    canonical_checkpoint_review_package_bytes,
-    canonical_completion_review_package_bytes,
-    canonical_reviewed_authority_set_bytes,
-    decode_canonical_work_brief,
-    decode_canonical_work_brief_review,
-    read_selected_work_brief_identity,
-    validate_reviewed_authority_digests,
-    validate_work_brief_review,
 )
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
@@ -245,7 +245,7 @@ def _read_completion_context(  # noqa: C901, PLR0912 - one exact completion-clos
         return _completion_failure("Covered completion requires one current nonterminal attempt.")
     attempt = selected.attempt
     brief = decode_canonical_work_brief(artifacts.read(attempt.brief_reference))
-    if isinstance(brief, WorkBriefFailure):
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _completion_failure(f"The accepted brief is invalid: {brief}")
     expected_identity = (
         str(attempt.attempt_id),
@@ -287,7 +287,7 @@ def _read_completion_context(  # noqa: C901, PLR0912 - one exact completion-clos
             attempt_id=str(attempt.attempt_id),
             item_id=str(attempt.item_id),
         )
-        if isinstance(package, WorkBriefFailure):
+        if isinstance(package, work_brief_models.WorkBriefFailure):
             return _completion_failure(package.message)
         identities = [package.accepted_brief, package.result, package.implementation_review]
         if isinstance(package, work_brief_models.CheckpointReviewPackageV2):
@@ -334,7 +334,7 @@ def _read_checkpoint_brief_context(
             None,
         )
     brief = decode_canonical_work_brief(artifacts.read(context.brief_reference))
-    if isinstance(brief, WorkBriefFailure):
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
         return CommandFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             f"The accepted brief is invalid: {brief}",
@@ -387,10 +387,10 @@ def _read_checkpoint_brief_context(
                 )
             review = decode_canonical_work_brief_review(artifacts.read(stored_review))
             if (
-                isinstance(review, WorkBriefFailure)
+                isinstance(review, work_brief_models.WorkBriefFailure)
                 or (failure := validate_work_brief_review(review, brief)) is not None
             ):
-                detail = review if isinstance(review, WorkBriefFailure) else failure
+                detail = review if isinstance(review, work_brief_models.WorkBriefFailure) else failure
                 return CommandFailure(
                     DecisionFailureCode.TRANSITION_INPUT_INVALID,
                     f"The accepted ready brief review is invalid: {detail}",
@@ -546,7 +546,7 @@ def _resolve_transition_input(
     if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
         return _activation_input_failure("Activation requires one existing brief artifact reference.")
     brief = decode_canonical_work_brief(artifacts.read(reference))
-    if isinstance(brief, WorkBriefFailure):
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _activation_input_failure(f"The selected brief artifact is invalid: {brief.message}")
     preparation = action.capability.preparation_authority
     if preparation is None:
@@ -579,7 +579,8 @@ def _resolve_transition_input(
         )
     if isinstance(brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint):
         authority_failure = validate_reviewed_authority_digests(
-            roots.source_checkout, brief.checkpoint.reviewed_authorities
+            partial(select_checkout_brief_source, roots.source_checkout),
+            brief.checkpoint.reviewed_authorities,
         )
         match authority_failure:
             case None:

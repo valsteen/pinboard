@@ -4,6 +4,10 @@ from pathlib import Path
 
 from pinboard.adapters.files.errors import ArtifactError, FileIOError
 from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError, StorageError
+from pinboard.application import work_brief_models
+from pinboard.application.brief_source_models import BriefSourceFailure
+from pinboard.application.proposal_models import ProposalFailure
+from pinboard.application.work_brief_models import WorkBriefFailure  # noqa: ICN003
 from pinboard.cli import cli_commands
 from pinboard.domain.errors import (
     ChangedSurface,
@@ -107,19 +111,6 @@ type CommandResult[T] = T | CommandFailure
 
 
 @dataclass(frozen=True, slots=True)
-class ProposalFailure:
-    code: DecisionFailureCode
-    message: str
-    details: FailureDetails | None
-
-    def __str__(self) -> str:
-        return f"{self.code.value}: {self.message}"
-
-
-type ProposalResult[T] = T | ProposalFailure
-
-
-@dataclass(frozen=True, slots=True)
 class TransitionInputFailure:
     code: DecisionFailureCode
     message: str
@@ -175,54 +166,7 @@ class DispatchFailure:
 type DispatchResult[T] = T | DispatchFailure
 
 
-class BriefSourceErrorCode(Enum):
-    BATCH_NOT_FOUND = "BRIEF_SOURCE_BATCH_NOT_FOUND"
-    LINE_TOO_LARGE = "BRIEF_SOURCE_LINE_TOO_LARGE"
-    MANIFEST_INVALID = "BRIEF_SOURCE_MANIFEST_INVALID"
-    PLAN_INVALID = "BRIEF_SOURCE_PLAN_INVALID"
-    SELECTOR_INVALID = "BRIEF_SOURCE_SELECTOR_INVALID"
-    SELECTOR_OVERLAP = "BRIEF_SOURCE_SELECTOR_OVERLAP"
-    SOURCE_NOT_UTF8 = "BRIEF_SOURCE_NOT_UTF8"
-    SOURCE_CHANGED = "BRIEF_SOURCE_CHANGED"
-    SOURCE_UNREADABLE = "BRIEF_SOURCE_UNREADABLE"
-
-
-@dataclass(frozen=True, slots=True)
-class BriefSourceFailure:
-    code: BriefSourceErrorCode
-    message: str
-
-    def __str__(self) -> str:
-        return f"{self.code.value}: {self.message}"
-
-
-type BriefSourceResult[T] = T | BriefSourceFailure
-
-
-class WorkBriefErrorCode(Enum):
-    BRIEF_INVALID = "WORK_BRIEF_INVALID"
-    BRIEF_NOT_CANONICAL = "WORK_BRIEF_NOT_CANONICAL"
-    REVIEW_INVALID = "WORK_BRIEF_REVIEW_INVALID"
-    REVIEW_NOT_CANONICAL = "WORK_BRIEF_REVIEW_NOT_CANONICAL"
-    REVIEW_NOT_INDEPENDENT = "WORK_BRIEF_REVIEW_NOT_INDEPENDENT"
-    REVIEW_NOT_READY = "WORK_BRIEF_REVIEW_NOT_READY"
-    REVIEW_STALE = "WORK_BRIEF_REVIEW_STALE"
-    PACKAGE_INVALID = "CHECKPOINT_REVIEW_PACKAGE_INVALID"
-    PACKAGE_NOT_CANONICAL = "CHECKPOINT_REVIEW_PACKAGE_NOT_CANONICAL"
-    PACKAGE_PROVENANCE_INVALID = "CHECKPOINT_REVIEW_PACKAGE_PROVENANCE_INVALID"
-
-
-@dataclass(frozen=True, slots=True)
-class WorkBriefFailure:
-    code: WorkBriefErrorCode
-    message: str
-
-    def __str__(self) -> str:
-        return f"{self.code.value}: {self.message}"
-
-
-type WorkBriefResult[T] = T | WorkBriefFailure
-type InitializationFailure = StorageError | ArtifactError | FileIOError | WorkBriefFailure
+type InitializationFailure = StorageError | ArtifactError | FileIOError | work_brief_models.WorkBriefFailure
 
 
 class InitializationAfterCommittedEffectsError(RuntimeError):

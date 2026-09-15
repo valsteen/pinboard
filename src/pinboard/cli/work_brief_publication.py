@@ -9,6 +9,7 @@ storage, and malformed boundary data remain exact exceptions.
 
 import hashlib
 import shlex
+import sys
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -16,14 +17,21 @@ import msgspec
 
 from pinboard.adapters.files import artifacts as artifact_files
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.application import artifact_publication, artifacts, dispatch_models, ports, stored_state
-from pinboard.cli import cli_commands, work_brief_models, work_briefs
+from pinboard.adapters.files.models import AffectedViews
+from pinboard.application import (
+    artifact_publication,
+    artifacts,
+    dispatch_models,
+    ports,
+    stored_state,
+    work_brief_models,
+    work_briefs,
+)
+from pinboard.cli import cli_commands, work_views
 from pinboard.cli.cli_output import write_json
 from pinboard.cli.errors import (
     CommandFailure,
     CommandResult,
-    WorkBriefErrorCode,
-    WorkBriefFailure,
 )
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
@@ -73,32 +81,29 @@ def publish_brief(
     durable: DurableRoots,
     store: ports.WorkStore,
     command: cli_commands.BriefPublishCommand,
-) -> CommandResult[int] | WorkBriefFailure:
+) -> CommandResult[int] | work_brief_models.WorkBriefFailure:
     try:
         candidate_bytes = command.file.read_bytes()
     except OSError as error:
-        return WorkBriefFailure(
-            WorkBriefErrorCode.BRIEF_INVALID,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
             f"Cannot read work brief candidate '{command.file}': {error}",
         )
     validated_brief = work_briefs.decode_work_brief(candidate_bytes)
-    if isinstance(validated_brief, WorkBriefFailure):
+    if isinstance(validated_brief, work_brief_models.WorkBriefFailure):
         return validated_brief
-    canonical_brief_bytes = work_briefs.canonical_work_brief_bytes(validated_brief)
-    accepted_reference = artifact_publication.publish_accepted_artifact(
+    operation_time = datetime.now(UTC)
+    accepted_reference = work_briefs.publish_work_brief(
         store,
         artifact_files.ArtifactRepository(durable),
-        artifacts.NewArtifact(
-            work_models.ArtifactKind.BRIEF,
-            validated_brief.attempt_id,
-            validated_brief.artifact_revision,
-            ".json",
-            canonical_brief_bytes,
-        ),
-        datetime.now(UTC),
+        validated_brief,
+        operation_time,
     )
     if isinstance(accepted_reference, DecisionFailure):
         return CommandFailure(accepted_reference.code, accepted_reference.message, accepted_reference.details)
+    view_result = work_views.refresh(durable, store, AffectedViews((), (), ()), operation_time)
+    if view_result.warning is not None:
+        print(view_result.warning.message, file=sys.stderr)
     reference = accepted_reference.reference
     publication_view = BriefPublicationView(
         int(reference.artifact_ref_id),
@@ -137,16 +142,16 @@ def _read_accepted_brief(
     durable: DurableRoots,
     store: ports.WorkStore,
     brief_artifact_ref_id: int,
-) -> WorkBriefFailure | tuple[work_brief_models.WorkBrief, bytes]:
+) -> work_brief_models.WorkBriefFailure | tuple[work_brief_models.WorkBrief, bytes]:
     reference = store.read_artifact_reference_by_id(ArtifactRefId(brief_artifact_ref_id))
     if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
-        return WorkBriefFailure(
-            WorkBriefErrorCode.BRIEF_INVALID,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
             "The selected accepted brief reference does not exist or is not a brief.",
         )
     content = artifact_files.read_reference(durable.work_root, reference)
     brief = work_briefs.decode_canonical_work_brief(content)
-    if isinstance(brief, WorkBriefFailure):
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
         return brief
     return brief, content
 
@@ -155,20 +160,20 @@ def publish_brief_review_needs_correction(
     durable: DurableRoots,
     store: ports.WorkStore,
     command: cli_commands.BriefReviewNeedsCorrectionCommand,
-) -> CommandResult[int] | WorkBriefFailure:
+) -> CommandResult[int] | work_brief_models.WorkBriefFailure:
     selected = _read_accepted_brief(durable, store, command.brief_artifact_ref_id)
-    if isinstance(selected, WorkBriefFailure):
+    if isinstance(selected, work_brief_models.WorkBriefFailure):
         return selected
     brief, _brief_bytes = selected
     try:
         candidate = command.file.read_bytes()
     except OSError as error:
-        return WorkBriefFailure(
-            WorkBriefErrorCode.REVIEW_INVALID,
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,
             f"Cannot read needs-correction brief review candidate '{command.file}': {error}",
         )
     review = work_briefs.decode_canonical_work_brief_review_needs_correction(candidate)
-    if isinstance(review, WorkBriefFailure):
+    if isinstance(review, work_brief_models.WorkBriefFailure):
         return review
     if (failure := work_briefs.validate_work_brief_review_needs_correction(review, brief)) is not None:
         return failure
@@ -226,14 +231,16 @@ def show_brief_review_status(
     durable: DurableRoots,
     store: ports.WorkStore,
     command: cli_commands.BriefReviewStatusCommand,
-) -> CommandResult[int] | WorkBriefFailure:
+) -> CommandResult[int] | work_brief_models.WorkBriefFailure:
     selected = _read_accepted_brief(durable, store, command.brief_artifact_ref_id)
-    if isinstance(selected, WorkBriefFailure):
+    if isinstance(selected, work_brief_models.WorkBriefFailure):
         return selected
     brief, brief_bytes = selected
     checkpoint = brief.checkpoint
     if not isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
-        return WorkBriefFailure(WorkBriefErrorCode.REVIEW_INVALID, "Local checkpoints do not use brief reviews.")
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID, "Local checkpoints do not use brief reviews."
+        )
     brief_sha256 = hashlib.sha256(brief_bytes).hexdigest()
     status_command, correction_command, republication_command, rereview_instruction = _review_recovery(
         roots, command.brief_artifact_ref_id
@@ -257,7 +264,7 @@ def show_brief_review_status(
     else:
         review_bytes = artifact_files.read_reference(durable.work_root, reference)
         review = work_briefs.decode_canonical_work_brief_review_needs_correction(review_bytes)
-        if isinstance(review, WorkBriefFailure):
+        if isinstance(review, work_brief_models.WorkBriefFailure):
             return review
         if (failure := work_briefs.validate_work_brief_review_needs_correction(review, brief)) is not None:
             return failure

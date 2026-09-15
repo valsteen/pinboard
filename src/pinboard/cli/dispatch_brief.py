@@ -2,14 +2,18 @@ import hashlib
 import shlex
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Literal, assert_never
 
 import msgspec
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
+from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError
 from pinboard.adapters.files.file_io import DurableRoots
+from pinboard.application import work_brief_models
+from pinboard.application.brief_source_models import BriefSourceFailure, authority_selector
 from pinboard.application.dispatch import (
     find_dispatch_review,
     publish_dispatch_review,
@@ -29,22 +33,7 @@ from pinboard.application.dispatch_models import (
 )
 from pinboard.application.dispatch_models import DispatchFailure as ApplicationDispatchFailure
 from pinboard.application.ports import WorkStore, WorkStoreError
-from pinboard.cli import action_selection, cli_commands, work_brief_models, work_inspection
-from pinboard.cli.brief_source_models import authority_selector
-from pinboard.cli.brief_sources import select_brief_source
-from pinboard.cli.cli_output import write_json
-from pinboard.cli.errors import (
-    BriefSourceFailure,
-    CliResult,
-    CommandFailure,
-    DispatchErrorCode,
-    DispatchFailure,
-    DispatchFailureCode,
-    DispatchResult,
-    WorkBriefErrorCode,
-    WorkBriefFailure,
-)
-from pinboard.cli.work_briefs import (
+from pinboard.application.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_reviewed_authority_set_bytes,
     canonical_work_brief_review_bytes,
@@ -53,6 +42,16 @@ from pinboard.cli.work_briefs import (
     decode_work_brief_review,
     validate_reviewed_authority_digests,
     validate_work_brief_review,
+)
+from pinboard.cli import action_selection, cli_commands, work_inspection
+from pinboard.cli.cli_output import write_json
+from pinboard.cli.errors import (
+    CliResult,
+    CommandFailure,
+    DispatchErrorCode,
+    DispatchFailure,
+    DispatchFailureCode,
+    DispatchResult,
 )
 from pinboard.domain import decision_models
 from pinboard.domain.errors import (
@@ -261,23 +260,23 @@ def read_dispatch_environment(path: Path) -> DispatchResult[DispatchEnvironment]
         )
 
 
-def _review_failure(error: WorkBriefFailure) -> DispatchFailure:
+def _review_failure(error: work_brief_models.WorkBriefFailure) -> DispatchFailure:
     match error.code:
         case (
-            WorkBriefErrorCode.BRIEF_INVALID
-            | WorkBriefErrorCode.BRIEF_NOT_CANONICAL
-            | WorkBriefErrorCode.REVIEW_INVALID
-            | WorkBriefErrorCode.REVIEW_NOT_CANONICAL
-            | WorkBriefErrorCode.PACKAGE_INVALID
-            | WorkBriefErrorCode.PACKAGE_NOT_CANONICAL
-            | WorkBriefErrorCode.PACKAGE_PROVENANCE_INVALID
+            work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
+            | work_brief_models.WorkBriefErrorCode.BRIEF_NOT_CANONICAL
+            | work_brief_models.WorkBriefErrorCode.REVIEW_INVALID
+            | work_brief_models.WorkBriefErrorCode.REVIEW_NOT_CANONICAL
+            | work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID
+            | work_brief_models.WorkBriefErrorCode.PACKAGE_NOT_CANONICAL
+            | work_brief_models.WorkBriefErrorCode.PACKAGE_PROVENANCE_INVALID
         ):
             code = DispatchErrorCode.DISPATCH_BRIEF_REVIEW_INVALID
-        case WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT:
+        case work_brief_models.WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT:
             code = DispatchErrorCode.DISPATCH_BRIEF_REVIEW_NOT_INDEPENDENT
-        case WorkBriefErrorCode.REVIEW_NOT_READY:
+        case work_brief_models.WorkBriefErrorCode.REVIEW_NOT_READY:
             code = DispatchErrorCode.DISPATCH_BRIEF_REVIEW_NOT_READY
-        case WorkBriefErrorCode.REVIEW_STALE:
+        case work_brief_models.WorkBriefErrorCode.REVIEW_STALE:
             code = DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE
         case _ as unreachable:
             assert_never(unreachable)
@@ -480,7 +479,7 @@ def _read_dispatch_brief(
     validate_original_authorities: bool,
 ) -> DispatchResult[work_brief_models.WorkBrief]:
     brief = decode_canonical_work_brief(accepted_brief_bytes)
-    if isinstance(brief, WorkBriefFailure):
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, brief.message, None)
     if (
         failure := _validate_dispatch_identity(
@@ -499,7 +498,10 @@ def _read_dispatch_brief(
     ) is not None:
         return failure
     if validate_original_authorities and isinstance(brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint):
-        failure = validate_reviewed_authority_digests(source_checkout_root, brief.checkpoint.reviewed_authorities)
+        failure = validate_reviewed_authority_digests(
+            partial(select_checkout_brief_source, source_checkout_root),
+            brief.checkpoint.reviewed_authorities,
+        )
         match failure:
             case None:
                 pass
@@ -585,11 +587,7 @@ def _effective_correction_brief(
         )
     refreshed: list[work_brief_models.ReviewedAuthority] = []
     for authority in checkpoint.reviewed_authorities:
-        selected = select_brief_source(
-            source_checkout_root,
-            authority_selector(authority.selector),
-            require_utf8=True,
-        )
+        selected = select_checkout_brief_source(source_checkout_root, authority_selector(authority.selector), True)
         if isinstance(selected, BriefSourceFailure):
             return DispatchFailure(
                 DispatchErrorCode.DISPATCH_AUTHORITY_UNREADABLE,
@@ -620,10 +618,10 @@ def _select_dispatch_review(
             if supplied_review is None:
                 return ReuseAcceptedDispatchReview(hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest())
             review = decode_work_brief_review(supplied_review.content)
-            if isinstance(review, WorkBriefFailure):
+            if isinstance(review, work_brief_models.WorkBriefFailure):
                 return _review_failure(review)
             if (failure := validate_work_brief_review(review, brief)) is not None:
-                if failure.code == WorkBriefErrorCode.REVIEW_STALE:
+                if failure.code == work_brief_models.WorkBriefErrorCode.REVIEW_STALE:
                     return _stale_review_failure(review, brief)
                 return _review_failure(failure)
             candidate = canonical_work_brief_review_bytes(review)
@@ -651,10 +649,10 @@ def _validate_accepted_review(
                     None,
                 )
             review = decode_canonical_work_brief_review(accepted_review)
-            if isinstance(review, WorkBriefFailure):
+            if isinstance(review, work_brief_models.WorkBriefFailure):
                 return _review_failure(review)
             if (failure := validate_work_brief_review(review, brief)) is not None:
-                if failure.code == WorkBriefErrorCode.REVIEW_STALE:
+                if failure.code == work_brief_models.WorkBriefErrorCode.REVIEW_STALE:
                     return _stale_review_failure(review, brief)
                 return _review_failure(failure)
         case _ as unreachable:
@@ -781,7 +779,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
         checkpoint_value = validated_brief.checkpoint
         assert isinstance(checkpoint_value, work_brief_models.CrossBoundaryCheckpoint)
         failure = validate_reviewed_authority_digests(
-            source_checkout_root,
+            partial(select_checkout_brief_source, source_checkout_root),
             checkpoint_value.reviewed_authorities,
         )
         match failure:

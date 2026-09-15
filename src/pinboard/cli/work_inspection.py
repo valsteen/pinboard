@@ -18,21 +18,27 @@ from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.errors import ArtifactError
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import actions as action_queries
-from pinboard.application import dispatch_models, ports, queries, query_models, stored_state
+from pinboard.application import (
+    checkpoint_compatibility_models,
+    dispatch_models,
+    ports,
+    queries,
+    query_models,
+    stored_state,
+    work_brief_models,
+)
+from pinboard.application.work_briefs import decode_canonical_work_brief
 from pinboard.cli import (
     action_selection,
     checkpoint_compatibility,
-    checkpoint_compatibility_models,
     cli_commands,
     errors,
     transition_input,
     transition_models,
-    work_brief_models,
     work_inspection_models,
     work_state,
 )
 from pinboard.cli.cli_output import write_json
-from pinboard.cli.work_briefs import decode_canonical_work_brief
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain import errors as domain_errors
 from pinboard.domain.identifiers import ActionId, ArtifactRefId, AttemptId, HistoryId, LeaseId, TaskId
@@ -45,7 +51,7 @@ def _read_attempt_brief(
 ) -> errors.CommandResult[work_brief_models.WorkBrief]:
     reference = context.brief_reference
     brief = decode_canonical_work_brief(read_reference(roots.work, reference))
-    if isinstance(brief, errors.WorkBriefFailure):
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
         return errors.CommandFailure(domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, str(brief), None)
     if (
         brief.attempt_id,
@@ -339,7 +345,7 @@ def _select_prior_checkpoint_package(
         attempt_id=str(command.attempt_id),
         item_id=str(attempt.item_id),
     )
-    if isinstance(package, errors.WorkBriefFailure):
+    if isinstance(package, work_brief_models.WorkBriefFailure):
         return _review_job_failure(package.message)
     candidate_reference = facts.checkpoint_candidate_reference
     if isinstance(package, work_brief_models.CheckpointReviewPackageV2) and candidate_reference is None:

@@ -17,17 +17,17 @@ import msgspec
 from pinboard.adapters.files import artifacts as artifact_files
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import artifact_publication, artifacts, dispatch_models, ports, stored_state
-from pinboard.domain import work_models
-from pinboard.domain.errors import DecisionFailure
-from pinboard.domain.identifiers import ArtifactRefId
-from pinboard.interfaces import cli_commands, work_brief_models, work_briefs
-from pinboard.interfaces.cli_output import write_json
-from pinboard.interfaces.errors import (
+from pinboard.cli import cli_commands, work_brief_models, work_briefs
+from pinboard.cli.cli_output import write_json
+from pinboard.cli.errors import (
     CommandFailure,
     CommandResult,
     WorkBriefErrorCode,
     WorkBriefFailure,
 )
+from pinboard.domain import work_models
+from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.identifiers import ArtifactRefId
 
 
 class BriefPublicationView(msgspec.Struct, frozen=True):

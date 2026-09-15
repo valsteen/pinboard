@@ -21,16 +21,14 @@ from pinboard.adapters.sqlite.database import initialize_database, open_database
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import InitReceipt, OpenMode
 from pinboard.application import handover, ports, stored_state
-from pinboard.domain import decision_models, history, work_models
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId
-from pinboard.interfaces import transition_models, work_brief_models, work_briefs
-from pinboard.interfaces.errors import (
+from pinboard.cli import transition_models, work_brief_models, work_briefs
+from pinboard.cli.errors import (
     InitializationAfterCommittedEffectsError,
     WorkBriefErrorCode,
     WorkBriefFailure,
     WorkBriefResult,
 )
-from pinboard.interfaces.work_briefs import (
+from pinboard.cli.work_briefs import (
     build_selected_attempt_brief_views,
     canonical_checkpoint_bytes,
     canonical_reviewed_authority_set_bytes,
@@ -40,7 +38,9 @@ from pinboard.interfaces.work_briefs import (
     decode_canonical_work_brief_review,
     validate_work_brief_review,
 )
-from pinboard.interfaces.work_state_models import Diagnostic, Severity, ValidationReport
+from pinboard.cli.work_state_models import Diagnostic, Severity, ValidationReport
+from pinboard.domain import decision_models, history, work_models
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId
 
 
 def initialize_work_state(

@@ -21,13 +21,10 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.artifact_publication import validate_transition_work_brief
 from pinboard.application.artifacts import NewArtifact
-from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
-from pinboard.interfaces import checkpoint_compatibility_models, work_brief_models
-from pinboard.interfaces.cli import main
-from pinboard.interfaces.errors import WorkBriefErrorCode, WorkBriefFailure, WorkBriefResult
-from pinboard.interfaces.work_briefs import (
+from pinboard.cli import checkpoint_compatibility_models, work_brief_models
+from pinboard.cli.entrypoint import main
+from pinboard.cli.errors import WorkBriefErrorCode, WorkBriefFailure, WorkBriefResult
+from pinboard.cli.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_checkpoint_review_package_bytes,
     canonical_reviewed_authority_set_bytes,
@@ -44,6 +41,9 @@ from pinboard.interfaces.work_briefs import (
     validate_work_brief_review,
     validate_work_brief_review_needs_correction,
 )
+from pinboard.domain import decision_models, work_models
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
 from tests.artifact_support import write_revision
 from tests.support import SQLITE_NOW, complete_sqlite_state, decision_facts
 from tests.work_brief_support import example_work_brief, needs_correction_review, work_a_brief, work_c_brief
@@ -608,7 +608,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 self.assertIn("not a valid canonical typed work brief", invalid_identity.message)
                 with (
                     patch(
-                        "pinboard.interfaces.work_briefs.decode_work_brief_identity",
+                        "pinboard.cli.work_briefs.decode_work_brief_identity",
                         side_effect=ValueError("unrelated value failure"),
                     ),
                     self.assertRaisesRegex(ValueError, "unrelated value failure"),

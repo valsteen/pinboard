@@ -16,8 +16,8 @@ from typing import Annotated, assert_never
 import msgspec
 
 from pinboard import __version__
+from pinboard.cli import cli_commands, transition_input
 from pinboard.domain import decision_models, work_models
-from pinboard.interfaces import cli_commands, transition_input
 
 
 class _CompoundCommand(Enum):

@@ -17,13 +17,9 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.handover import ProjectHandover
-from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailure
-from pinboard.domain.history import CheckpointAcceptanceOutcome
-from pinboard.domain.identifiers import AttemptId
-from pinboard.interfaces import work_brief_models, work_briefs
-from pinboard.interfaces.errors import WorkBriefFailure
-from pinboard.interfaces.work_briefs import (
+from pinboard.cli import work_brief_models, work_briefs
+from pinboard.cli.errors import WorkBriefFailure
+from pinboard.cli.work_briefs import (
     canonical_checkpoint_review_package_bytes,
     canonical_completion_review_package_bytes,
     canonical_work_brief_bytes,
@@ -31,6 +27,10 @@ from pinboard.interfaces.work_briefs import (
     decode_canonical_completion_review_package,
     decode_canonical_work_brief_review,
 )
+from pinboard.domain import decision_models, work_models
+from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.history import CheckpointAcceptanceOutcome
+from pinboard.domain.identifiers import AttemptId
 from tests.artifact_support import write_revision
 from tests.checkpoint_support import AcceptedPackageFixture, CheckpointFixture, CheckpointPackageSupport
 from tests.support import SQLITE_NOW, JsonObject, JsonValue
@@ -119,7 +119,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         action = self.project_action(fixture.common, "accept-checkpoint:work-a-1")
         before = fixture.store.validated_snapshot()
         with patch(
-            "pinboard.interfaces.transitions.ArtifactRepository.publish",
+            "pinboard.cli.transitions.ArtifactRepository.publish",
             side_effect=AssertionError("checkpoint rejection published immutable evidence"),
         ):
             result, stdout, stderr = self.run_cli(
@@ -747,7 +747,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         active_payload.write_text(json.dumps(covered_value), encoding="utf-8")
         before_active_rejection = fixture.store.validated_snapshot()
         with patch(
-            "pinboard.interfaces.transitions.ArtifactRepository.publish",
+            "pinboard.cli.transitions.ArtifactRepository.publish",
             side_effect=AssertionError("covered active-state cross-use published evidence"),
         ):
             active_result, _, _ = self.run_cli(
@@ -785,7 +785,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             with (
                 self.subTest(prepublication_rejection=suffix),
                 patch(
-                    "pinboard.interfaces.transitions.ArtifactRepository.publish",
+                    "pinboard.cli.transitions.ArtifactRepository.publish",
                     side_effect=AssertionError("publisher called before covered preflight completed"),
                 ),
             ):
@@ -805,7 +805,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         wrong_value["review_sha256"] = "0" * 64
         wrong_digest.write_text(json.dumps(wrong_value), encoding="utf-8")
         with patch(
-            "pinboard.interfaces.transitions.ArtifactRepository.publish",
+            "pinboard.cli.transitions.ArtifactRepository.publish",
             side_effect=AssertionError("publisher called before digest match"),
         ):
             wrong_args = self.project_transition_arguments(fixture, complete_action, wrong_digest)
@@ -815,7 +815,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         covered_args = [*self.project_transition_arguments(fixture, complete_action, payload), "--json"]
         before_publication_failure = fixture.store.validated_snapshot()
         with patch(
-            "pinboard.interfaces.transitions.ArtifactRepository.publish",
+            "pinboard.cli.transitions.ArtifactRepository.publish",
             side_effect=ArtifactError(ArtifactErrorCode.STORAGE_IO_ERROR, "injected first publication failure"),
         ):
             publish_result, publish_stdout, publish_stderr = self.run_cli(*covered_args)
@@ -827,7 +827,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
 
         before_store_failure = fixture.store.validated_snapshot()
         with patch(
-            "pinboard.interfaces.transitions.decide_and_commit_covered_completion",
+            "pinboard.cli.transitions.decide_and_commit_covered_completion",
             side_effect=StorageError(StorageErrorCode.OPERATION_FAILED, "injected covered commit failure"),
         ):
             store_result, store_stdout, store_stderr = self.run_cli(*covered_args)

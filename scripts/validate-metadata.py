@@ -51,7 +51,7 @@ EXPECTED_SKILL_DISPLAY_NAMES: Final = {
     "technical-writing": "Technical Writing",
 }
 EXPECTED_ENTRY_POINTS: Final = {
-    "pinboard": "pinboard.interfaces.cli:main",
+    "pinboard": "pinboard.cli.entrypoint:main",
 }
 
 type SkillName = Annotated[

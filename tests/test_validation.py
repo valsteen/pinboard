@@ -17,11 +17,11 @@ from pinboard.adapters.sqlite.models import InitReceipt
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.application.artifacts import NewArtifact
+from pinboard.cli.entrypoint import main
+from pinboard.cli.errors import InitializationAfterCommittedEffectsError, WorkBriefFailure, WorkBriefResult
+from pinboard.cli.work_briefs import canonical_work_brief_bytes, render_work_brief_markdown
+from pinboard.cli.work_state import initialize_work_state
 from pinboard.domain import work_models
-from pinboard.interfaces.cli import main
-from pinboard.interfaces.errors import InitializationAfterCommittedEffectsError, WorkBriefFailure, WorkBriefResult
-from pinboard.interfaces.work_briefs import canonical_work_brief_bytes, render_work_brief_markdown
-from pinboard.interfaces.work_state import initialize_work_state
 from tests.artifact_support import write_revision
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.work_brief_support import work_a_brief
@@ -253,7 +253,7 @@ class SQLiteValidationTest(unittest.TestCase):
         failure = StorageError(StorageErrorCode.IO_ERROR, "injected database publication failure")
 
         with (
-            patch("pinboard.interfaces.work_state.initialize_database", side_effect=failure),
+            patch("pinboard.cli.work_state.initialize_database", side_effect=failure),
             self.assertRaises(InitializationAfterCommittedEffectsError) as raised,
         ):
             self.initialize_work_state(project)
@@ -265,7 +265,7 @@ class SQLiteValidationTest(unittest.TestCase):
         self.assertFalse(database.exists())
 
         with patch(
-            "pinboard.interfaces.work_state.initialize_database",
+            "pinboard.cli.work_state.initialize_database",
             side_effect=SQLiteReadOnlyError(database),
         ):
             repeated_result, repeated_stdout, repeated_stderr = self.run_cli(
@@ -290,7 +290,7 @@ class SQLiteValidationTest(unittest.TestCase):
         database = project / ".codex" / "pinboard" / "state.sqlite3"
 
         with patch(
-            "pinboard.interfaces.work_state.initialize_database",
+            "pinboard.cli.work_state.initialize_database",
             side_effect=SQLiteReadOnlyError(database),
         ):
             result, stdout, stderr = self.run_cli("--project-root", str(project), "init", "--json")

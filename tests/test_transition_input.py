@@ -1,17 +1,17 @@
 import json
 import unittest
 
-from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CandidateId, ItemId, ProposalId
-from pinboard.interfaces import transition_models
-from pinboard.interfaces.errors import TransitionInputFailure
-from pinboard.interfaces.transition_input import (
+from pinboard.cli import transition_models
+from pinboard.cli.errors import TransitionInputFailure
+from pinboard.cli.transition_input import (
     INPUT_CONTRACT_ACTION_KINDS,
     ParsedTransitionInput,
     encoded_transition_input_schema,
     parse_transition_input,
 )
+from pinboard.domain import decision_models, work_models
+from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CandidateId, ItemId, ProposalId
 from tests.domain_support import action
 from tests.support import JsonObject, JsonValue
 

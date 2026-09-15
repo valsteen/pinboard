@@ -14,13 +14,13 @@ import msgspec
 
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import ports, service
+from pinboard.cli import cli_commands, proposal_models, proposals, work_views
+from pinboard.cli.cli_output import write_json
+from pinboard.cli.errors import ProposalFailure, ProposalResult
 from pinboard.domain import proposal_models as domain_proposal_models
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import ItemId, ProposalId, TaskId
-from pinboard.interfaces import cli_commands, proposal_models, proposals, work_views
-from pinboard.interfaces.cli_output import write_json
-from pinboard.interfaces.errors import ProposalFailure, ProposalResult
 
 
 class ProposalCreatedView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

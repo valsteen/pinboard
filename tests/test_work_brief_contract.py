@@ -2,10 +2,10 @@ import unittest
 
 import msgspec
 
-from pinboard.interfaces import work_brief_models
-from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
-from pinboard.interfaces.work_brief_contract import WorkBriefStructuralChoice, describe_work_brief_contract
-from pinboard.interfaces.work_briefs import decode_work_brief
+from pinboard.cli import work_brief_models
+from pinboard.cli.errors import WorkBriefFailure, WorkBriefResult
+from pinboard.cli.work_brief_contract import WorkBriefStructuralChoice, describe_work_brief_contract
+from pinboard.cli.work_briefs import decode_work_brief
 from tests.work_brief_support import example_work_brief, work_c_brief
 
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None

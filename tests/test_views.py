@@ -11,13 +11,13 @@ from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_fa
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.artifacts import NewArtifact
-from pinboard.domain import work_models
-from pinboard.interfaces.errors import WorkBriefErrorCode, WorkBriefFailure, WorkBriefResult
-from pinboard.interfaces.work_briefs import (
+from pinboard.cli.errors import WorkBriefErrorCode, WorkBriefFailure, WorkBriefResult
+from pinboard.cli.work_briefs import (
     build_attempt_brief_views,
     build_selected_attempt_brief_views,
     canonical_work_brief_bytes,
 )
+from pinboard.domain import work_models
 from tests.artifact_support import write_revision
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.work_brief_support import work_a_brief

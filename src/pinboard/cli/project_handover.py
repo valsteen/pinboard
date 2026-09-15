@@ -7,10 +7,10 @@ from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import handover, ports
+from pinboard.cli import cli_commands, work_state
+from pinboard.cli.cli_output import write_json
+from pinboard.cli.errors import WorkBriefFailure, WorkBriefResult
 from pinboard.domain.identifiers import ArtifactRefId
-from pinboard.interfaces import cli_commands, work_state
-from pinboard.interfaces.cli_output import write_json
-from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
 
 MEDIA_TYPE_BY_SUFFIX = {
     ".json": "application/json",

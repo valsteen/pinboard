@@ -9,6 +9,9 @@ from uuid import uuid4
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import ports, queries, query_models
 from pinboard.application.service import decide_and_commit_attempt_authority_change
+from pinboard.cli import cli_commands, work_views
+from pinboard.cli.cli_output import authority_status_fields, write_json
+from pinboard.cli.errors import CommandFailure, CommandResult
 from pinboard.domain import authority_models, work_models
 from pinboard.domain.errors import (
     DecisionFailure,
@@ -21,9 +24,6 @@ from pinboard.domain.errors import (
 )
 from pinboard.domain.identifiers import AttemptId, LeaseId
 from pinboard.domain.ledger import LedgerSnapshot
-from pinboard.interfaces import cli_commands, work_views
-from pinboard.interfaces.cli_output import authority_status_fields, write_json
-from pinboard.interfaces.errors import CommandFailure, CommandResult
 
 type AttemptAuthorityCommand = (
     cli_commands.AttemptAcquireCommand

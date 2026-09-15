@@ -9,6 +9,18 @@ import msgspec
 
 from pinboard import __version__
 from pinboard.application import dispatch_models
+from pinboard.cli import (
+    brief_source_models,
+    cli_commands,
+    cli_parser,
+    proposal_models,
+    transition_input,
+    transition_models,
+    work_brief_contract,
+    work_brief_models,
+)
+from pinboard.cli.cli_output import write_json
+from pinboard.cli.errors import CommandFailure, CommandResult
 from pinboard.domain import decision_models
 from pinboard.domain.errors import (
     DecisionFailureCode,
@@ -19,18 +31,6 @@ from pinboard.domain.errors import (
     RetryDisposition,
 )
 from pinboard.domain.ordering import OrderRequest
-from pinboard.interfaces import (
-    brief_source_models,
-    cli_commands,
-    cli_parser,
-    proposal_models,
-    transition_input,
-    transition_models,
-    work_brief_contract,
-    work_brief_models,
-)
-from pinboard.interfaces.cli_output import write_json
-from pinboard.interfaces.errors import CommandFailure, CommandResult
 
 type MutationClass = Literal[
     "read-only",

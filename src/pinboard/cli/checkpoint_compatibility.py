@@ -16,10 +16,10 @@ from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import artifact_publication, dispatch_models, ports, query_models, stored_state
 from pinboard.application.artifacts import NewArtifact
+from pinboard.cli import checkpoint_compatibility_models, cli_commands, errors, work_state
 from pinboard.domain import errors as domain_errors
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import HistoryId
-from pinboard.interfaces import checkpoint_compatibility_models, cli_commands, errors, work_state
 
 
 def _candidate_patch_path(command: cli_commands.ReviewJobCommand) -> Path | None:

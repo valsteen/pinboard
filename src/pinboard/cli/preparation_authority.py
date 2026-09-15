@@ -14,17 +14,17 @@ from uuid import uuid4
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import ports, queries, query_models, service
 from pinboard.application.service import decide_and_commit_preparation_authority_change
-from pinboard.domain import authority_models, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.domain.identifiers import ItemId, LeaseId
-from pinboard.domain.ledger import LedgerSnapshot
-from pinboard.interfaces import cli_commands, work_views
-from pinboard.interfaces.cli_output import (
+from pinboard.cli import cli_commands, work_views
+from pinboard.cli.cli_output import (
     authority_lease_fields,
     authority_status_fields,
     write_json,
 )
-from pinboard.interfaces.errors import CommandFailure, CommandResult
+from pinboard.cli.errors import CommandFailure, CommandResult
+from pinboard.domain import authority_models, work_models
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
+from pinboard.domain.identifiers import ItemId, LeaseId
+from pinboard.domain.ledger import LedgerSnapshot
 
 
 def _find_retained_preparation_claim(

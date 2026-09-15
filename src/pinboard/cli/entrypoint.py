@@ -2,7 +2,7 @@
 
 This module owns the single exhaustive command-family branch and final rendering
 of typed failures. Command grammar and use-case composition live with their
-thematic interface owners; this root performs no storage or domain work itself.
+thematic CLI owners; this root performs no storage or domain work itself.
 """
 
 import contextlib
@@ -20,17 +20,7 @@ from pinboard.adapters.files.errors import (
     RootError,
 )
 from pinboard.adapters.sqlite.errors import StorageError
-from pinboard.domain.errors import (
-    ArtifactAcceptanceAfterPublicationError,
-    ChangedSurface,
-    DecisionFailureCode,
-    EffectDisposition,
-    FailureDetails,
-    FailureFact,
-    FailureMismatch,
-    RetryDisposition,
-)
-from pinboard.interfaces import (
+from pinboard.cli import (
     attempt_authority,
     brief_source_commands,
     cli_commands,
@@ -47,7 +37,7 @@ from pinboard.interfaces import (
     work_inspection,
     work_state_commands,
 )
-from pinboard.interfaces.errors import (
+from pinboard.cli.errors import (
     BriefSourceFailure,
     CliResult,
     CommandFailure,
@@ -58,6 +48,16 @@ from pinboard.interfaces.errors import (
     WorkBriefFailure,
     initialization_failure_details,
     storage_failure_details,
+)
+from pinboard.domain.errors import (
+    ArtifactAcceptanceAfterPublicationError,
+    ChangedSurface,
+    DecisionFailureCode,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    FailureMismatch,
+    RetryDisposition,
 )
 
 build_parser = cli_parser.build_parser

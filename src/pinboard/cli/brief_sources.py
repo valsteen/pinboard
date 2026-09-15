@@ -12,7 +12,7 @@ from typing import Final
 
 import msgspec
 
-from pinboard.interfaces.brief_source_models import (
+from pinboard.cli.brief_source_models import (
     AuthoritySelector,
     BriefSourceBatch,
     BriefSourceLine,
@@ -26,7 +26,7 @@ from pinboard.interfaces.brief_source_models import (
     SelectedBriefSource,
     authority_selector,
 )
-from pinboard.interfaces.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
+from pinboard.cli.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
 
 MARKDOWN_HEADING: Final = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 

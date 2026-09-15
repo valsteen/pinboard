@@ -20,7 +20,7 @@ from pinboard.adapters.files.root import (
     resolve_shared_repository_root,
     resolve_source_checkout_root,
 )
-from pinboard.interfaces.cli import main
+from pinboard.cli.entrypoint import main
 
 
 class RootResolutionTest(unittest.TestCase):

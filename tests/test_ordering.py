@@ -15,10 +15,10 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import queries, service, stored_state
 from pinboard.application.mutation_models import CommittedEffect
+from pinboard.cli.entrypoint import main
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import HostId, ItemId, LeaseId, TaskId
-from pinboard.interfaces.cli import main
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 
 

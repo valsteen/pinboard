@@ -4,6 +4,8 @@ from typing import assert_never
 
 from pinboard.application import ports, query_models
 from pinboard.application.actions import action_subject_ids, discover_current_actions
+from pinboard.cli import cli_commands
+from pinboard.cli.errors import CommandErrorCode, CommandFailure, CommandResult
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
     DecisionFailure,
@@ -16,8 +18,6 @@ from pinboard.domain.errors import (
 )
 from pinboard.domain.identifiers import ActionId, AttemptId, ItemId, LedgerId, ProposalId, SubjectId
 from pinboard.domain.ledger import LedgerSnapshot
-from pinboard.interfaces import cli_commands
-from pinboard.interfaces.errors import CommandErrorCode, CommandFailure, CommandResult
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,11 +16,11 @@ from pinboard.application.artifact_publication import validate_transition_work_b
 from pinboard.application.artifacts import WorkBriefIdentity
 from pinboard.application.dispatch import publish_dispatch_review, recheck_dispatch_authority
 from pinboard.application.dispatch_models import DispatchFailure
+from pinboard.cli import action_selection, cli_commands
+from pinboard.cli.errors import CommandErrorCode, CommandFailure
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import ChangedSurface, EffectDisposition, RetryDisposition
 from pinboard.domain.identifiers import ActionId, ArtifactRefId, AttemptId, HostId, LeaseId, ReviewId, TaskId
-from pinboard.interfaces import action_selection, cli_commands
-from pinboard.interfaces.errors import CommandErrorCode, CommandFailure
 from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
 from tests.support import SQLITE_DIGEST, SQLITE_NOW, complete_sqlite_state, decision_facts, initialize_store
@@ -96,7 +96,7 @@ class OperationFailureTest(unittest.TestCase):
             worker_action,
             capability=replace(worker_action.capability, subject_revision="11"),
         )
-        with patch("pinboard.interfaces.action_selection.datetime") as clock:
+        with patch("pinboard.cli.action_selection.datetime") as clock:
             clock.now.return_value = SQLITE_NOW
             stale = action_selection.select_current_action(
                 store,
@@ -134,7 +134,7 @@ class OperationFailureTest(unittest.TestCase):
             worker_action,
             capability=replace(worker_action.capability, lease_id=LeaseId("wrong-lease")),
         )
-        with patch("pinboard.interfaces.action_selection.datetime") as clock:
+        with patch("pinboard.cli.action_selection.datetime") as clock:
             clock.now.return_value = SQLITE_NOW
             wrong = action_selection.select_current_action(
                 store,
@@ -161,7 +161,7 @@ class OperationFailureTest(unittest.TestCase):
             )
             status_store, _status_roots = self.initialized(state)
             before = status_store.validated_snapshot()
-            with patch("pinboard.interfaces.action_selection.datetime") as clock:
+            with patch("pinboard.cli.action_selection.datetime") as clock:
                 clock.now.return_value = SQLITE_NOW
                 rejected = action_selection.select_current_action(status_store, worker_receipt)
             self.assertIsInstance(rejected, CommandFailure)
@@ -193,7 +193,7 @@ class OperationFailureTest(unittest.TestCase):
             ),
         )
         lifecycle_store, _lifecycle_roots = self.initialized(state)
-        with patch("pinboard.interfaces.action_selection.datetime") as clock:
+        with patch("pinboard.cli.action_selection.datetime") as clock:
             clock.now.return_value = SQLITE_NOW
             unavailable = action_selection.select_current_action(
                 lifecycle_store,

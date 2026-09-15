@@ -29,6 +29,31 @@ from pinboard.application.dispatch_models import (
 )
 from pinboard.application.dispatch_models import DispatchFailure as ApplicationDispatchFailure
 from pinboard.application.ports import WorkStore, WorkStoreError
+from pinboard.cli import action_selection, cli_commands, work_brief_models, work_inspection
+from pinboard.cli.brief_source_models import authority_selector
+from pinboard.cli.brief_sources import select_brief_source
+from pinboard.cli.cli_output import write_json
+from pinboard.cli.errors import (
+    BriefSourceFailure,
+    CliResult,
+    CommandFailure,
+    DispatchErrorCode,
+    DispatchFailure,
+    DispatchFailureCode,
+    DispatchResult,
+    WorkBriefErrorCode,
+    WorkBriefFailure,
+)
+from pinboard.cli.work_briefs import (
+    canonical_checkpoint_bytes,
+    canonical_reviewed_authority_set_bytes,
+    canonical_work_brief_review_bytes,
+    decode_canonical_work_brief,
+    decode_canonical_work_brief_review,
+    decode_work_brief_review,
+    validate_reviewed_authority_digests,
+    validate_work_brief_review,
+)
 from pinboard.domain import decision_models
 from pinboard.domain.errors import (
     ArtifactAcceptanceAfterPublicationError,
@@ -42,31 +67,6 @@ from pinboard.domain.errors import (
     RetryDisposition,
 )
 from pinboard.domain.identifiers import AttemptId, HistoryId, ReviewId
-from pinboard.interfaces import action_selection, cli_commands, work_brief_models, work_inspection
-from pinboard.interfaces.brief_source_models import authority_selector
-from pinboard.interfaces.brief_sources import select_brief_source
-from pinboard.interfaces.cli_output import write_json
-from pinboard.interfaces.errors import (
-    BriefSourceFailure,
-    CliResult,
-    CommandFailure,
-    DispatchErrorCode,
-    DispatchFailure,
-    DispatchFailureCode,
-    DispatchResult,
-    WorkBriefErrorCode,
-    WorkBriefFailure,
-)
-from pinboard.interfaces.work_briefs import (
-    canonical_checkpoint_bytes,
-    canonical_reviewed_authority_set_bytes,
-    canonical_work_brief_review_bytes,
-    decode_canonical_work_brief,
-    decode_canonical_work_brief_review,
-    decode_work_brief_review,
-    validate_reviewed_authority_digests,
-    validate_work_brief_review,
-)
 
 
 @dataclass(frozen=True, slots=True)

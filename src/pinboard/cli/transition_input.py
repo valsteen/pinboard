@@ -2,6 +2,8 @@ from typing import Final, assert_never
 
 import msgspec
 
+from pinboard.cli import transition_models
+from pinboard.cli.errors import TransitionInputFailure, TransitionInputResult
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailureCode, EffectDisposition, FailureDetails, RetryDisposition
 from pinboard.domain.identifiers import (
@@ -13,8 +15,6 @@ from pinboard.domain.identifiers import (
     ItemId,
     TaskId,
 )
-from pinboard.interfaces import transition_models
-from pinboard.interfaces.errors import TransitionInputFailure, TransitionInputResult
 
 
 def _input_model_or_none(kind: decision_models.ActionKind) -> transition_models.InputModel | None:  # noqa: C901, PLR0912

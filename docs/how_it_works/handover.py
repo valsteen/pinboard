@@ -1,6 +1,6 @@
 from pinboard.application import handover as application_handover
 from pinboard.application import stored_state
-from pinboard.interfaces import cli_commands, project_handover
+from pinboard.cli import cli_commands, project_handover
 
 from .model import Box, Connector, Diagram, Guide, Note, Section
 

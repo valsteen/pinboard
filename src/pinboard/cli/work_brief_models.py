@@ -4,8 +4,8 @@ from typing import Annotated, Literal, assert_never
 
 import msgspec
 
-from pinboard.interfaces.brief_source_models import parse_authority_selector
-from pinboard.interfaces.errors import BriefSourceFailure
+from pinboard.cli.brief_source_models import parse_authority_selector
+from pinboard.cli.errors import BriefSourceFailure
 
 type NonEmptyText = Annotated[str, msgspec.Meta(min_length=1)]
 type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A\S(?:[^\n]*\S)?\z")]

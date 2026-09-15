@@ -4,6 +4,7 @@ from pathlib import Path
 
 from pinboard.adapters.files.errors import ArtifactError, FileIOError
 from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError, StorageError
+from pinboard.cli import cli_commands
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailureCode,
@@ -12,7 +13,6 @@ from pinboard.domain.errors import (
     FailureFact,
     RetryDisposition,
 )
-from pinboard.interfaces import cli_commands
 
 
 def storage_failure_details(

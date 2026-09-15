@@ -11,16 +11,15 @@ from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import ports
-from pinboard.domain.identifiers import AttemptId
-from pinboard.interfaces import cli_commands, work_views
-from pinboard.interfaces.cli_output import write_json
-from pinboard.interfaces.errors import CliResult, WorkBriefFailure
-from pinboard.interfaces.work_state import (
+from pinboard.cli import cli_commands, work_views
+from pinboard.cli.cli_output import write_json
+from pinboard.cli.errors import CliResult, WorkBriefFailure
+from pinboard.cli.work_state import (
     initialize_work_state,
     read_state_for_validation,
     validate_loaded_work_state,
 )
-from pinboard.interfaces.work_state_models import (
+from pinboard.cli.work_state_models import (
     Diagnostic,
     DiagnosticView,
     InitializationView,
@@ -29,6 +28,7 @@ from pinboard.interfaces.work_state_models import (
     ValidationReport,
     ValidationView,
 )
+from pinboard.domain.identifiers import AttemptId
 
 
 def resolve_roots(selection: cli_commands.RootSelection) -> cli_commands.ResolvedRoots:

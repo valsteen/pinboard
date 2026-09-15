@@ -1,7 +1,7 @@
 """Test-only MCP stdio and bounded-executor proof.
 
 This module is deliberately outside ``src`` and is not installed. It exercises a
-possible agent transport without changing Pinboard's production interfaces.
+possible agent transport without adding a production MCP boundary.
 """
 
 from __future__ import annotations
@@ -24,9 +24,9 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from pinboard.application import queries, query_models
+from pinboard.cli import cli_commands
+from pinboard.cli.work_state_commands import compose_store, resolve_durable_layout, resolve_roots
 from pinboard.domain.errors import DecisionFailure
-from pinboard.interfaces import cli_commands
-from pinboard.interfaces.work_state_commands import compose_store, resolve_durable_layout, resolve_roots
 
 TOOL_NAME = "pinboard_item_status"
 THREAD_NAME_PREFIX = "pinboard-mcp-worker"

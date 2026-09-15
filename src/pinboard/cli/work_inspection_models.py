@@ -5,7 +5,7 @@ from typing import Literal
 import msgspec
 
 from pinboard.application import dispatch_models, query_models
-from pinboard.interfaces import work_briefs
+from pinboard.cli import work_briefs
 
 
 class AttemptView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

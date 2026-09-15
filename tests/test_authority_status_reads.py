@@ -18,11 +18,11 @@ from pinboard.adapters.sqlite.database import initialize_database, open_database
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
+from pinboard.cli.entrypoint import main
+from pinboard.cli.work_briefs import canonical_work_brief_bytes
 from pinboard.domain import authority_models, work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
-from pinboard.interfaces.cli import main
-from pinboard.interfaces.work_briefs import canonical_work_brief_bytes
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.work_brief_support import work_a_brief
 
@@ -280,7 +280,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
-            patch("pinboard.interfaces.preparation_authority.datetime") as clock,
+            patch("pinboard.cli.preparation_authority.datetime") as clock,
             self.record_store_reads() as preparation_reads,
         ):
             clock.now.return_value = SQLITE_NOW + timedelta(minutes=1)
@@ -357,7 +357,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
                         "read_current_action_snapshot",
                         side_effect=AssertionError("current project read used"),
                     ),
-                    patch("pinboard.interfaces.work_inspection.datetime") as clock,
+                    patch("pinboard.cli.work_inspection.datetime") as clock,
                     self.record_store_reads() as selected_reads,
                 ):
                     clock.now.return_value = SQLITE_NOW + timedelta(minutes=1)
@@ -393,7 +393,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 "read_leased_action_snapshot",
                 side_effect=AssertionError("lease-wide read used"),
             ),
-            patch("pinboard.interfaces.work_inspection.datetime") as clock,
+            patch("pinboard.cli.work_inspection.datetime") as clock,
             self.record_store_reads() as selected_reads,
         ):
             clock.now.return_value = SQLITE_NOW + timedelta(minutes=1)
@@ -569,7 +569,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
-            patch("pinboard.interfaces.work_inspection.datetime") as clock,
+            patch("pinboard.cli.work_inspection.datetime") as clock,
             self.record_store_reads() as preview_reads,
         ):
             clock.now.return_value = SQLITE_NOW
@@ -1259,7 +1259,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         ):
             with (
                 self.subTest(preparation_observed_at=observed_at),
-                patch("pinboard.interfaces.preparation_authority.datetime") as clock,
+                patch("pinboard.cli.preparation_authority.datetime") as clock,
             ):
                 clock.now.return_value = observed_at
                 result, stdout, stderr = self.run_cli(*common, "preparation", "status", "--item-id", "work-c")
@@ -1274,7 +1274,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         project, work, _store = self.initialized_state(state)
         common = ("--project-root", str(project), "--work-root", str(work))
 
-        with patch("pinboard.interfaces.preparation_authority.datetime") as clock:
+        with patch("pinboard.cli.preparation_authority.datetime") as clock:
             clock.now.return_value = SQLITE_NOW + timedelta(days=1)
             result, stdout, stderr = self.run_cli(*common, "preparation", "status", "--item-id", "work-c")
         self.assertEqual(0, result, stderr)

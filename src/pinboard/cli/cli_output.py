@@ -7,8 +7,8 @@ from typing import Literal
 import msgspec
 
 from pinboard.application import query_models
+from pinboard.cli.errors import BriefSourceFailure, CliFailure, CommittedEffectFailure, WorkBriefFailure
 from pinboard.domain.errors import EffectDisposition, FailureDetails, FailureFactValue, RetryDisposition
-from pinboard.interfaces.errors import BriefSourceFailure, CliFailure, CommittedEffectFailure, WorkBriefFailure
 
 type AuthorityStatus = query_models.AttemptAuthorityStatus | query_models.PreparationAuthorityStatus
 

@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 
 import msgspec
 
-from pinboard.interfaces.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
+from pinboard.cli.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
 
 type BriefSourceManifestSchema = Literal["pinboard-brief-sources/v1"]
 type BriefSourcePlanSchema = Literal["pinboard-brief-source-plan/v1"]

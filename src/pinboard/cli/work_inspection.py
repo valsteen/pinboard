@@ -19,11 +19,7 @@ from pinboard.adapters.files.errors import ArtifactError
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import actions as action_queries
 from pinboard.application import dispatch_models, ports, queries, query_models, stored_state
-from pinboard.domain import decision_models, history, work_models
-from pinboard.domain import errors as domain_errors
-from pinboard.domain.identifiers import ActionId, ArtifactRefId, AttemptId, HistoryId, LeaseId, TaskId
-from pinboard.domain.ledger import LedgerSnapshot
-from pinboard.interfaces import (
+from pinboard.cli import (
     action_selection,
     checkpoint_compatibility,
     checkpoint_compatibility_models,
@@ -35,8 +31,12 @@ from pinboard.interfaces import (
     work_inspection_models,
     work_state,
 )
-from pinboard.interfaces.cli_output import write_json
-from pinboard.interfaces.work_briefs import decode_canonical_work_brief
+from pinboard.cli.cli_output import write_json
+from pinboard.cli.work_briefs import decode_canonical_work_brief
+from pinboard.domain import decision_models, history, work_models
+from pinboard.domain import errors as domain_errors
+from pinboard.domain.identifiers import ActionId, ArtifactRefId, AttemptId, HistoryId, LeaseId, TaskId
+from pinboard.domain.ledger import LedgerSnapshot
 
 
 def _read_attempt_brief(

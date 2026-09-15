@@ -8,12 +8,12 @@ import msgspec
 
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import ports, service
+from pinboard.cli import cli_commands, work_views
+from pinboard.cli.cli_output import write_json
+from pinboard.cli.errors import CommandFailure, CommandResult
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import ItemId
 from pinboard.domain.ordering import OrderRequest
-from pinboard.interfaces import cli_commands, work_views
-from pinboard.interfaces.cli_output import write_json
-from pinboard.interfaces.errors import CommandFailure, CommandResult
 
 
 class OrderedView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

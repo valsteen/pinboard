@@ -1,8 +1,8 @@
 import msgspec
 
+from pinboard.cli.errors import ProposalFailure, ProposalResult
+from pinboard.cli.proposal_models import Proposal
 from pinboard.domain.errors import DecisionFailureCode
-from pinboard.interfaces.errors import ProposalFailure, ProposalResult
-from pinboard.interfaces.proposal_models import Proposal
 
 
 def parse_proposal(data: bytes | str) -> ProposalResult[Proposal]:

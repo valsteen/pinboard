@@ -14,9 +14,9 @@ from pinboard.adapters.files.views import rebuild_facts as rebuild_file_views
 from pinboard.adapters.files.views import refresh_facts as refresh_file_views
 from pinboard.application import ports, stored_state
 from pinboard.application.mutation_models import CommittedEffect
+from pinboard.cli.errors import WorkBriefFailure, WorkBriefResult
+from pinboard.cli.work_briefs import build_attempt_brief_views, build_selected_attempt_brief_views
 from pinboard.domain.identifiers import AttemptId
-from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
-from pinboard.interfaces.work_briefs import build_attempt_brief_views, build_selected_attempt_brief_views
 
 
 def read_attempt_brief_views(

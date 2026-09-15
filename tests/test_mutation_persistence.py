@@ -17,6 +17,7 @@ from pinboard.application.mutation_models import (
     MutationReceipt,
 )
 from pinboard.application.mutations import project_transition_mutation
+from pinboard.cli.transition_input import parse_transition_input
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import available_actions as available_actions_outcome
 from pinboard.domain.decisions import decide as decision_outcome
@@ -34,7 +35,6 @@ from pinboard.domain.identifiers import (
     TaskId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
-from pinboard.interfaces.transition_input import parse_transition_input
 from tests.decision_support import project_decision_snapshot
 from tests.domain_support import expect_success, expect_transition_command
 from tests.support import (

@@ -3,6 +3,9 @@ from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime
 from typing import Any  # noqa: TID251 - fixture corruption intentionally crosses the typed boundary
 
+from pinboard.cli import transition_models
+from pinboard.cli.errors import TransitionInputFailure
+from pinboard.cli.transition_input import ParsedTransitionInput
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.identifiers import (
@@ -13,9 +16,6 @@ from pinboard.domain.identifiers import (
     SubjectId,
     TaskId,
 )
-from pinboard.interfaces import transition_models
-from pinboard.interfaces.errors import TransitionInputFailure
-from pinboard.interfaces.transition_input import ParsedTransitionInput
 
 
 def replace(instance: Any, **changes: Any) -> Any:  # noqa: ANN401

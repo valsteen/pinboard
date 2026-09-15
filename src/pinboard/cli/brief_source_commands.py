@@ -11,8 +11,8 @@ import sys
 from typing import assert_never
 
 from pinboard.adapters.files.file_io import create_immutable
-from pinboard.interfaces import brief_source_models, brief_sources, cli_commands, cli_output
-from pinboard.interfaces.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
+from pinboard.cli import brief_source_models, brief_sources, cli_commands, cli_output
+from pinboard.cli.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
 
 
 def _project_brief_source_segment(

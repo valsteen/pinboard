@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pinboard = "pinboard.interfaces.cli:main"
+pinboard = "pinboard.cli.entrypoint:main"
 
 [tool.uv]
 required-version = "==0.12.10"
@@ -41,9 +41,9 @@ banned-from = [
     "pinboard.domain.authority_models",
     "pinboard.domain.decision_models",
     "pinboard.domain.work_models",
-    "pinboard.interfaces.cli_commands",
-    "pinboard.interfaces.transition_models",
-    "pinboard.interfaces.work_brief_models",
+    "pinboard.cli.cli_commands",
+    "pinboard.cli.transition_models",
+    "pinboard.cli.work_brief_models",
 ]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]

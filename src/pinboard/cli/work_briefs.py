@@ -7,18 +7,18 @@ import msgspec
 from pinboard.application import query_models, stored_state
 from pinboard.application.artifact_publication import ArtifactReader
 from pinboard.application.artifacts import BriefArtifactRef, WorkBriefIdentity
-from pinboard.domain import work_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import AttemptId
-from pinboard.interfaces import checkpoint_compatibility_models, work_brief_models
-from pinboard.interfaces.brief_source_models import authority_selector
-from pinboard.interfaces.brief_sources import select_brief_source
-from pinboard.interfaces.errors import (
+from pinboard.cli import checkpoint_compatibility_models, work_brief_models
+from pinboard.cli.brief_source_models import authority_selector
+from pinboard.cli.brief_sources import select_brief_source
+from pinboard.cli.errors import (
     BriefSourceFailure,
     WorkBriefErrorCode,
     WorkBriefFailure,
     WorkBriefResult,
 )
+from pinboard.domain import work_models
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.identifiers import AttemptId
 
 type CheckpointPackage = (
     checkpoint_compatibility_models.CheckpointReviewPackage | work_brief_models.CheckpointReviewPackageV2

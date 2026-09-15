@@ -12,14 +12,14 @@ from unittest.mock import patch
 import msgspec
 
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
-from pinboard.interfaces.brief_source_models import BriefSourceManifest, BriefSourceRequest
-from pinboard.interfaces.brief_sources import (
+from pinboard.cli.brief_source_models import BriefSourceManifest, BriefSourceRequest
+from pinboard.cli.brief_sources import (
     decode_brief_source_manifest,
     plan_brief_sources,
     render_brief_source_batch,
 )
-from pinboard.interfaces.cli import main
-from pinboard.interfaces.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
+from pinboard.cli.entrypoint import main
+from pinboard.cli.errors import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
 
 
 def expect_brief_source_success[T](result: BriefSourceResult[T]) -> T:

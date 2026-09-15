@@ -38,6 +38,41 @@ from pinboard.application.service import (
     preflight_checkpoint_candidate,
     preflight_covered_completion,
 )
+from pinboard.cli import (
+    action_selection,
+    cli_commands,
+    transition_models,
+    work_brief_models,
+    work_inspection,
+    work_inspection_models,
+    work_state,
+    work_views,
+)
+from pinboard.cli.cli_output import write_json
+from pinboard.cli.errors import (
+    CommandFailure,
+    CommandResult,
+    CommittedEffectFailure,
+    TransitionInputFailure,
+    WorkBriefFailure,
+    storage_failure_details,
+)
+from pinboard.cli.transition_input import (
+    ParsedTransitionInput,
+    parse_item_revision_input,
+    parse_transition_input,
+)
+from pinboard.cli.work_briefs import (
+    canonical_checkpoint_bytes,
+    canonical_checkpoint_review_package_bytes,
+    canonical_completion_review_package_bytes,
+    canonical_reviewed_authority_set_bytes,
+    decode_canonical_work_brief,
+    decode_canonical_work_brief_review,
+    read_selected_work_brief_identity,
+    validate_reviewed_authority_digests,
+    validate_work_brief_review,
+)
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
     ArtifactAcceptanceAfterPublicationError,
@@ -52,41 +87,6 @@ from pinboard.domain.errors import (
 )
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import ActionId, ArtifactRefId, AttemptId, HostId, TaskId
-from pinboard.interfaces import (
-    action_selection,
-    cli_commands,
-    transition_models,
-    work_brief_models,
-    work_inspection,
-    work_inspection_models,
-    work_state,
-    work_views,
-)
-from pinboard.interfaces.cli_output import write_json
-from pinboard.interfaces.errors import (
-    CommandFailure,
-    CommandResult,
-    CommittedEffectFailure,
-    TransitionInputFailure,
-    WorkBriefFailure,
-    storage_failure_details,
-)
-from pinboard.interfaces.transition_input import (
-    ParsedTransitionInput,
-    parse_item_revision_input,
-    parse_transition_input,
-)
-from pinboard.interfaces.work_briefs import (
-    canonical_checkpoint_bytes,
-    canonical_checkpoint_review_package_bytes,
-    canonical_completion_review_package_bytes,
-    canonical_reviewed_authority_set_bytes,
-    decode_canonical_work_brief,
-    decode_canonical_work_brief_review,
-    read_selected_work_brief_identity,
-    validate_reviewed_authority_digests,
-    validate_work_brief_review,
-)
 
 
 @dataclass(frozen=True, slots=True)

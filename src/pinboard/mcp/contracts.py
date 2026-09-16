@@ -4,7 +4,8 @@ from typing import Annotated, Any, Literal, assert_never  # noqa: TID251 - valid
 
 import msgspec
 
-from pinboard.application import action_models, proposal_models, query_models, work_brief_models
+from pinboard.adapters import dispatch_operations, review_operations
+from pinboard.application import action_models, dispatch_models, proposal_models, query_models, work_brief_models
 from pinboard.domain import authority_models, decision_models
 from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
 
@@ -122,6 +123,77 @@ class ArtifactVerifyRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=T
 class TransitionActionIdentity[KindT](msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     kind: KindT
     subject: PathComponent
+
+
+class DispatchReceipt(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    action_id: TransitionActionIdentity[Literal["dispatch"]]
+    subject_revision: NonEmptyText
+
+
+class DispatchChoiceBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    receipt: DispatchReceipt
+    checkpoint_id: PathComponent
+    environment: dispatch_models.DispatchEnvironment
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+    prompt: str | None
+
+
+class OrdinaryDispatchChoice(DispatchChoiceBase, tag="ordinary", tag_field="kind", frozen=True):
+    pass
+
+
+class ReviewedDispatchChoice(DispatchChoiceBase, tag="reviewed", tag_field="kind", frozen=True):
+    brief_review: work_brief_models.WorkBriefReview
+    review_id: PathComponent
+
+
+class CorrectionDispatchChoice(DispatchChoiceBase, tag="correction", tag_field="kind", frozen=True):
+    brief_review: work_brief_models.WorkBriefReview
+    review_id: PathComponent
+    correction_history_id: PositiveInt
+
+
+type DispatchChoice = OrdinaryDispatchChoice | ReviewedDispatchChoice | CorrectionDispatchChoice
+
+
+class DispatchRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    dispatch: DispatchChoice
+
+
+class ReviewChoiceBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: PathComponent
+    candidate_revision: NonEmptyText
+
+
+class InitialReviewChoice(ReviewChoiceBase, tag="initial", tag_field="kind", frozen=True):
+    pass
+
+
+class PackageInitialReviewChoice(ReviewChoiceBase, tag="package-initial", tag_field="kind", frozen=True):
+    checkpoint_history_id: PositiveInt
+
+
+class CorrectionReviewChoice(ReviewChoiceBase, tag="correction", tag_field="kind", frozen=True):
+    correction_history_id: PositiveInt
+
+
+class PackageCorrectionReviewChoice(ReviewChoiceBase, tag="package-correction", tag_field="kind", frozen=True):
+    checkpoint_history_id: PositiveInt
+    correction_history_id: PositiveInt
+
+
+type ReviewChoice = (
+    InitialReviewChoice | PackageInitialReviewChoice | CorrectionReviewChoice | PackageCorrectionReviewChoice
+)
+
+
+class ReviewJobRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    review: ReviewChoice
 
 
 class TransitionReceipt[KindT](msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1495,6 +1567,164 @@ class BriefPublicationAcceptanceFailure(msgspec.Struct, frozen=True, forbid_unkn
         _require_state_changed(self.state_changed, True)
 
 
+type JobPublicationSurface = Literal["immutable-artifact", "accepted-artifact-reference", "ledger"]
+
+
+class PublishedJobReady(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    status: Literal["ready"]
+    prompt_reference: dispatch_models.PromptReferenceView
+    native_launch: dispatch_models.NativeLaunchEnvelope
+    state_changed: bool
+    effect: Literal["unchanged", "committed"]
+    retry: Literal["safe-to-repeat", "do-not-retry"]
+    changed_surfaces: tuple[JobPublicationSurface, ...]
+
+    def __post_init__(self) -> None:
+        surfaces = self.changed_surfaces
+        if surfaces not in (
+            (),
+            ("immutable-artifact",),
+            ("accepted-artifact-reference", "ledger"),
+            ("immutable-artifact", "accepted-artifact-reference", "ledger"),
+        ):
+            raise ValueError("Job publication must expose an exact immutable/reference/ledger surface set.")
+        changed = bool(surfaces)
+        _require_state_changed(self.state_changed, changed)
+        if self.effect != ("committed" if changed else "unchanged") or self.retry != (
+            "do-not-retry" if changed else "safe-to-repeat"
+        ):
+            raise ValueError("Job publication effect and retry must match its terminal surfaces.")
+        reference = self.prompt_reference
+        if reference.artifact_created and "immutable-artifact" not in surfaces:
+            raise ValueError("A newly created prompt must expose its immutable artifact effect.")
+        if reference.ledger_changed and ("accepted-artifact-reference" not in surfaces or "ledger" not in surfaces):
+            raise ValueError("A newly accepted prompt must expose reference and ledger effects.")
+
+
+class DispatchReady(PublishedJobReady, frozen=True):
+    schema: Literal["pinboard-mcp-dispatch-result/v1"]
+    attempt_id: PathComponent
+    checkpoint_id: PathComponent
+
+
+class ReviewJobReady(PublishedJobReady, frozen=True):
+    schema: Literal["pinboard-mcp-review-job-result/v1"]
+    attempt_id: PathComponent
+    candidate_revision: NonEmptyText
+    candidate_recovery: CandidateRecoveryPresent
+    owner_task_id: RuntimeIdentity
+    brief_path: NonEmptyText
+    brief_sha256: Sha256
+    accepted_scope_revision: PositiveInt
+    accepted_scope_digest: Sha256
+    result_path: NonEmptyText
+    result_sha256: Sha256
+    prior_checkpoint_package: review_operations.PriorCheckpointPackageSelection
+    review_round: review_operations.ReviewRound
+    return_contract: NonEmptyText
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.candidate_revision != self.candidate_recovery.candidate:
+            raise ValueError("Review job and protected snapshot must identify the same candidate.")
+
+
+class DispatchInvalid(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-dispatch-result/v1"]
+    code: Literal["DISPATCH_INVALID"]
+    retry: Literal["correct-input"]
+    observed: Empty
+    mismatches: Empty
+
+
+class ReviewJobInvalid(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-review-job-result/v1"]
+    code: Literal["REVIEW_JOB_INVALID"]
+    retry: Literal["correct-input"]
+    observed: Empty
+    mismatches: Empty
+
+
+class DispatchRejected(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-dispatch-result/v1"]
+    attempt_id: PathComponent
+    code: NonEmptyText
+    retry: RetryDisposition
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        try:
+            dispatch_operations.DispatchErrorCode(self.code)
+        except ValueError:
+            DecisionFailureCode(self.code)
+
+
+class ReviewJobRejected(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-review-job-result/v1"]
+    attempt_id: PathComponent
+    code: DecisionFailureCode
+    retry: RetryDisposition
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+
+class JobFailedAfterPublication(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    status: Literal["failed-after-publication"]
+    attempt_id: PathComponent
+    code: NonEmptyText
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["committed"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: Annotated[tuple[JobPublicationSurface, ...], msgspec.Meta(min_length=1)]
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, True)
+        if self.changed_surfaces not in (
+            ("immutable-artifact",),
+            ("accepted-artifact-reference", "ledger"),
+            ("immutable-artifact", "accepted-artifact-reference", "ledger"),
+        ):
+            raise ValueError("Failed publication must retain exact terminal publication surfaces.")
+
+
+class DispatchFailedAfterPublication(JobFailedAfterPublication, frozen=True):
+    schema: Literal["pinboard-mcp-dispatch-result/v1"]
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.code != "ARTIFACT_ACCEPTANCE_FAILED":
+            try:
+                dispatch_operations.DispatchErrorCode(self.code)
+            except ValueError:
+                DecisionFailureCode(self.code)
+
+
+class ReviewJobFailedAfterPublication(JobFailedAfterPublication, frozen=True):
+    schema: Literal["pinboard-mcp-review-job-result/v1"]
+    code: Literal["ARTIFACT_ACCEPTANCE_FAILED"]
+
+
+DISPATCH_RESULT_TYPES = (
+    DispatchReady,
+    DispatchInvalid,
+    DispatchRejected,
+    DispatchFailedAfterPublication,
+    ExecutorBusyResult,
+)
+REVIEW_JOB_RESULT_TYPES = (
+    ReviewJobReady,
+    ReviewJobInvalid,
+    ReviewJobRejected,
+    ReviewJobFailedAfterPublication,
+    ExecutorBusyResult,
+)
+
+
 ITEM_STATUS_RESULT_TYPES = (
     query_models.ItemStatus,
     ItemStatusInvalid,
@@ -1575,6 +1805,8 @@ type RequestBoundary = (
     | type[OverviewRequest]
     | type[AttemptInspectRequest]
     | type[ArtifactVerifyRequest]
+    | type[DispatchRequest]
+    | type[ReviewJobRequest]
 )
 type ResultBoundary = (
     type[query_models.ItemStatus]
@@ -1625,12 +1857,22 @@ type ResultBoundary = (
     | type[TransitionCommitted]
     | type[TransitionRejected]
     | type[TransitionFailedAfterPublication]
+    | type[DispatchReady]
+    | type[DispatchInvalid]
+    | type[DispatchRejected]
+    | type[DispatchFailedAfterPublication]
+    | type[ReviewJobReady]
+    | type[ReviewJobInvalid]
+    | type[ReviewJobRejected]
+    | type[ReviewJobFailedAfterPublication]
 )
 
 
 def schema_for(boundary_type: RequestBoundary) -> dict[str, JsonSchemaValue]:
     """Return the exact msgspec schema for one MCP request."""
-    schema: dict[str, JsonSchemaValue] = msgspec.json.schema(boundary_type)
+    schema: dict[str, JsonSchemaValue] = msgspec.json.schema(
+        boundary_type, schema_hook=dispatch_models.dispatch_environment_schema_hook
+    )
     reference = schema.pop("$ref")
     if not isinstance(reference, str) or not reference.startswith("#/$defs/"):
         raise ValueError("The MCP request schema must have one named root record.")
@@ -1681,6 +1923,8 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
         "AttemptAuthorityCommitted",
         "TransitionCommitted",
         "TransitionFailedAfterPublication",
+        "DispatchFailedAfterPublication",
+        "ReviewJobFailedAfterPublication",
     }
     unchanged_results = {
         "ItemStatusInvalid",
@@ -1715,6 +1959,10 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
         "AttemptAuthorityStatusAbsent",
         "AttemptAuthorityRejected",
         "TransitionRejected",
+        "DispatchInvalid",
+        "DispatchRejected",
+        "ReviewJobInvalid",
+        "ReviewJobRejected",
     }
     for name, definition in definitions.items():
         if name not in changed_results | unchanged_results:
@@ -1970,6 +2218,66 @@ def _apply_attempt_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
             properties["next_operation"] = {"anyOf": list(next_operations)}
 
 
+def _apply_job_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
+    publication_sets = (
+        (),
+        ("immutable-artifact",),
+        ("accepted-artifact-reference", "ledger"),
+        ("immutable-artifact", "accepted-artifact-reference", "ledger"),
+    )
+    for name in (
+        "DispatchReady",
+        "ReviewJobReady",
+        "DispatchFailedAfterPublication",
+        "ReviewJobFailedAfterPublication",
+    ):
+        definition = definitions.get(name)
+        if not isinstance(definition, dict):
+            continue
+        failed = name.endswith("FailedAfterPublication")
+        alternatives: list[JsonSchemaValue] = []
+        for surfaces in publication_sets:
+            if failed and not surfaces:
+                continue
+            surface_constraint: dict[str, JsonSchemaValue] = {
+                "type": "array",
+                "minItems": len(surfaces),
+                "maxItems": len(surfaces),
+            }
+            if surfaces:
+                surface_constraint["prefixItems"] = [{"const": surface} for surface in surfaces]
+            properties: dict[str, JsonSchemaValue] = {
+                "changed_surfaces": surface_constraint,
+                "state_changed": {"const": bool(surfaces)},
+                "effect": {"const": "committed" if surfaces else "unchanged"},
+                "retry": {"const": "do-not-retry" if surfaces else "safe-to-repeat"},
+            }
+            if not failed:
+                reference_properties: dict[str, JsonSchemaValue] = {}
+                if "immutable-artifact" not in surfaces:
+                    reference_properties["artifact_created"] = {"const": False}
+                if "ledger" not in surfaces:
+                    reference_properties["ledger_changed"] = {"const": False}
+                properties["prompt_reference"] = {"properties": reference_properties}
+            alternatives.append({"properties": properties})
+        definition["oneOf"] = alternatives
+    rejected = definitions.get("DispatchRejected")
+    if isinstance(rejected, dict):
+        rejected_properties = rejected.get("properties")
+        if isinstance(rejected_properties, dict):
+            rejected_properties["code"] = {
+                "type": "string",
+                "enum": list[JsonSchemaValue](
+                    sorted(
+                        {
+                            *(code.value for code in dispatch_operations.DispatchErrorCode),
+                            *(code.value for code in DecisionFailureCode),
+                        }
+                    )
+                ),
+            }
+
+
 def union_schema_for(boundary_types: tuple[ResultBoundary, ...]) -> dict[str, JsonSchemaValue]:
     """Return one closed MCP result schema from separate correlated records."""
     components = msgspec.json.schema_components(boundary_types)
@@ -1980,6 +2288,7 @@ def union_schema_for(boundary_types: tuple[ResultBoundary, ...]) -> dict[str, Js
     _apply_transition_constraints(definitions)
     _apply_relative_action_constraints(definitions)
     _apply_attempt_constraints(definitions)
+    _apply_job_constraints(definitions)
     return {"type": "object", "anyOf": list[JsonSchemaValue](schemas), "$defs": definitions}
 
 
@@ -1991,6 +2300,26 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     surfaces = content.get("changed_surfaces")
     if schema == "pinboard-mcp-execution-result/v1":
         msgspec.convert(content, type=ExecutorBusyResult, strict=True)
+    elif tool_name == "pinboard_dispatch":
+        if status == "ready":
+            result_type = DispatchReady
+        elif status == "failed-after-publication":
+            result_type = DispatchFailedAfterPublication
+        elif code == "DISPATCH_INVALID":
+            result_type = DispatchInvalid
+        else:
+            result_type = DispatchRejected
+        msgspec.convert(content, type=result_type, strict=True)
+    elif tool_name == "pinboard_review_job":
+        if status == "ready":
+            result_type = ReviewJobReady
+        elif status == "failed-after-publication":
+            result_type = ReviewJobFailedAfterPublication
+        elif code == "REVIEW_JOB_INVALID":
+            result_type = ReviewJobInvalid
+        else:
+            result_type = ReviewJobRejected
+        msgspec.convert(content, type=result_type, strict=True)
     elif tool_name == "pinboard_transition":
         if status in {"committed", "committed-with-warning"}:
             result_type = TransitionCommitted

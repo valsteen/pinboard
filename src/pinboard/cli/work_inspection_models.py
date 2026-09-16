@@ -4,7 +4,8 @@ from typing import Literal
 
 import msgspec
 
-from pinboard.application import dispatch_models, query_models, work_briefs
+from pinboard.adapters.review_operations import PriorCheckpointPackageSelection, ReviewRound
+from pinboard.application import dispatch_models, query_models
 from pinboard.application.action_models import ProjectedActionView as ActionView
 
 
@@ -55,42 +56,6 @@ class TransitionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     committed_revision: str
     history_id: int
     continuation: query_models.AttemptContinuation | None
-
-
-class NoPriorCheckpointPackage(msgspec.Struct, tag="absent", tag_field="kind", frozen=True, forbid_unknown_fields=True):
-    pass
-
-
-class PriorCheckpointPackage(msgspec.Struct, tag="present", tag_field="kind", frozen=True, forbid_unknown_fields=True):
-    history_id: int
-    artifact_ref_id: int
-    path: str
-    sha256: str
-    package: work_briefs.CheckpointPackage
-    candidate_artifact_ref_id: int
-    candidate_path: str
-    candidate_sha256: str
-    candidate_size_bytes: int
-
-
-type PriorCheckpointPackageSelection = NoPriorCheckpointPackage | PriorCheckpointPackage
-
-
-class InitialReviewRound(msgspec.Struct, tag="initial", tag_field="kind", frozen=True, forbid_unknown_fields=True):
-    pass
-
-
-class CorrectionReviewRound(
-    msgspec.Struct, tag="correction", tag_field="kind", frozen=True, forbid_unknown_fields=True
-):
-    history_id: int
-    candidate_revision: str
-    reason: str
-    review_path: str
-    review_sha256: str
-
-
-type ReviewRound = InitialReviewRound | CorrectionReviewRound
 
 
 class ReviewJobView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

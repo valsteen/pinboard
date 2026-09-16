@@ -20,7 +20,7 @@ from unittest.mock import patch
 import msgspec
 from msgspec.structs import replace as replace_struct
 
-from pinboard.adapters import lifecycle_operations
+from pinboard.adapters import dispatch_operations, lifecycle_operations
 from pinboard.adapters.files import artifacts as artifact_files
 from pinboard.adapters.files import views as file_views
 from pinboard.adapters.files.artifacts import ArtifactRepository
@@ -5830,7 +5830,7 @@ Not launchable:
             [
                 {
                     "kind": "command",
-                    "command": dispatch_brief.FRESH_REVIEW_PREPARATION_COMMAND,
+                    "command": dispatch_brief.agent_launch.FRESH_REVIEW_PREPARATION_COMMAND,
                 }
             ],
             ordinary["next_actions"],
@@ -6114,7 +6114,7 @@ Not launchable:
             arguments[arguments.index("--correction-history-id") + 1]: str(history_id),
         }
         race_arguments = [replacements.get(value, value) for value in race_arguments]
-        original_validate = dispatch_brief.validate_reviewed_authority_digests
+        original_validate = dispatch_operations.validate_reviewed_authority_digests
         before_race = store.validated_snapshot()
 
         def change_source_then_validate(
@@ -6128,7 +6128,7 @@ Not launchable:
             return original_validate(select_source, authorities)
 
         with patch.object(
-            dispatch_brief,
+            dispatch_operations,
             "validate_reviewed_authority_digests",
             side_effect=change_source_then_validate,
         ):
@@ -7009,7 +7009,8 @@ Not launchable:
                 "select_current_action",
                 wraps=action_selection.select_current_action,
             ) as select_action,
-            patch.object(dispatch_brief, "prepare_dispatch", return_value="prepared prompt\n") as prepare,
+            patch.object(dispatch_operations, "prepare_dispatch", return_value="prepared prompt\n") as prepare,
+            patch.object(dispatch_brief.agent_launch, "launch_envelope"),
             patch.object(dispatch_brief, "_present_dispatch_ready"),
         ):
             result, _stdout, stderr = self.run_cli(

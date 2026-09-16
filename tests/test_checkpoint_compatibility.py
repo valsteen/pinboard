@@ -203,7 +203,7 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
                     )
                 else:
                     selected_patch = patch.object(
-                        work_inspection.dispatch_models,
+                        work_inspection.review_operations.dispatch_models,
                         "publish_agent_prompt",
                         side_effect=failure,
                     )

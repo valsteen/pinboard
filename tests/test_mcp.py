@@ -2740,11 +2740,15 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.PREPARATION_AUTHORITY_TOOL,
                 mcp_server.ATTEMPT_AUTHORITY_TOOL,
                 mcp_server.TRANSITION_TOOL,
+                mcp_server.DISPATCH_TOOL,
+                mcp_server.REVIEW_JOB_TOOL,
             },
             {tool.name for tool in tools},
         )
         tools_by_name = {tool.name: tool for tool in tools}
         expected_required = {
+            mcp_server.DISPATCH_TOOL: {"project_root", "work_root", "dispatch"},
+            mcp_server.REVIEW_JOB_TOOL: {"project_root", "work_root", "review"},
             mcp_server.ITEM_STATUS_TOOL: {"project_root", "work_root", "item_id"},
             mcp_server.PROPOSAL_CREATE_TOOL: {
                 "project_root",

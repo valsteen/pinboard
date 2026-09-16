@@ -1,12 +1,12 @@
 # Coding-agent runtime adapters
 
-Pinboard has one CLI, SQLite authority, action vocabulary, brief schema, and skill tree. Use this reference only to translate shared workflow operations into the current coding agent's native outer capabilities. The surrounding skill remains the semantic owner.
+Pinboard has sibling CLI and local stdio MCP interfaces over one SQLite authority, action vocabulary, brief schema, and skill tree. Use this reference only to translate shared workflow operations into the current coding agent's native outer capabilities. The surrounding skill remains the semantic owner.
 
 `<launcher-root>` is the resolved directory containing `scripts/pinboard`. Every integration invokes `<launcher-root>/scripts/pinboard`; only launcher discovery differs. When `<launcher-root>` is a prepared `<pinboard-source>` checkout, the launcher uses `<pinboard-source>/.venv`. When it is an installed plugin version, the launcher uses `<launcher-root>/.pinboard-runtime/environment`. `<managed-project>` is selected separately with `--project-root` and never supplies Pinboard's environment or dependencies. Runtime selection follows the resolved launcher root, not the human or agent audience.
 
 | Operation | Codex (primary, stress-tested) | Claude Code (experimental) |
 | --- | --- | --- |
-| Run Pinboard | Resolve `../../scripts/pinboard` relative to the active skill. Its directory two levels above is `<launcher-root>`, and the resulting executable is `<launcher-root>/scripts/pinboard`. | Treat the substituted absolute `${CLAUDE_PLUGIN_ROOT}` as `<launcher-root>`, then run `PINBOARD_RUNTIME=claude "${CLAUDE_PLUGIN_ROOT}/scripts/pinboard" ...`. |
+| Run Pinboard | Discover the connected Pinboard MCP tools and pass exact roots. For CLI-only operations, resolve `../../scripts/pinboard` relative to the active skill; its directory two levels above is `<launcher-root>`. | Discover the same connected Pinboard MCP tools and pass exact roots. For CLI-only operations, use the substituted absolute `${CLAUDE_PLUGIN_ROOT}` as `<launcher-root>` and run `PINBOARD_RUNTIME=claude "${CLAUDE_PLUGIN_ROOT}/scripts/pinboard" ...`. |
 | Task and host identity | Use trusted task and host values exposed by the runtime. | Use trusted session, agent, and host values when exposed. If an exact required identity is unavailable, ask the human for it; never invent one. |
 | Checkout isolation | Use the assigned checkout or Codex worktree selected by the owning task. | Use the assigned checkout, `EnterWorktree`, or a worktree-isolated subagent selected by the owning session. Pinboard validates the declared checkout but creates or switches none. |
 | Workers and reviewers | Check the native collaboration surface directly, then launch a bounded subagent whose result returns to the owning task. | Check the native subagent surface directly, then launch a subagent whose result returns to the owning session. Use a fresh, candidate-read-only subagent for review in either runtime. |
@@ -17,6 +17,12 @@ Pinboard has one CLI, SQLite authority, action vocabulary, brief schema, and ski
 Do not enable Claude agent teams, open another session, create another worktree, or widen permissions merely to mimic a Codex transport. Messaging reduces latency; it never gates persistence, ownership, review, or completion.
 
 Do not infer that subagents are unavailable because an unrelated, nested, shell, MCP, or dynamically listed tool surface omits their controls. Report a missing subagent capability only after the runtime's native launch surface is actually absent or unsupported, or an actual required native launch returns an unavailable or unsupported result.
+
+## Prompt verification and worker startup
+
+Pass only the fixed `pinboard-native-agent-launch/v1` envelope to the native fresh-context worker or reviewer. Follow that interface's exact verifier before reading the immutable prompt. MCP-origin envelopes name `pinboard_artifact_verify`; CLI-origin envelopes name an exact rooted CLI verifier. Require the accepted identity, verification schema, selector, size, digest, and bytes to agree before acting. Prompt identity and execution semantics are shared; the envelope owns verifier and startup presentation.
+
+After verification, read the complete canonical brief, including any bootstrap, before acquiring worker authority. Use the launched worker's trusted `CODEX_THREAD_ID`, not `CODEX_SESSION_ID` or a pre-launch identity, and preserve the returned lease and generation together. A canonical brief may explicitly authorize an already-prepared source-development CLI disposition for a disconnected development host; that exact contract does not create a generic fallback. Otherwise, a missing covered MCP tool stops its operation. Never manufacture identity, temporary payload files, or substitute shell calls for a missing connection.
 
 ## Source-worktree setup recovery
 

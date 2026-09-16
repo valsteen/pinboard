@@ -17,14 +17,13 @@ from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import (
     artifact_publication,
     checkpoint_compatibility_models,
-    dispatch_models,
     ports,
     query_models,
     stored_state,
     work_brief_models,
 )
 from pinboard.application.artifacts import NewArtifact
-from pinboard.cli import cli_commands, errors, work_state
+from pinboard.cli import agent_launch, cli_commands, errors, work_state
 from pinboard.domain import errors as domain_errors
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import HistoryId
@@ -215,7 +214,7 @@ def require_candidate_reference(
         candidate_patch = "CANDIDATE_PATCH"
         recovery_command = shlex.join(
             (
-                *dispatch_models.pinboard_launcher_command(),
+                *agent_launch.pinboard_launcher_command(),
                 "--project-root",
                 str(roots.source_checkout),
                 "--work-root",

@@ -5,7 +5,7 @@ from collections.abc import Mapping
 
 import msgspec
 
-from pinboard.application import stored_state, work_brief_models, work_briefs
+from pinboard.application import action_models, stored_state, work_brief_models, work_briefs
 from pinboard.application.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_reviewed_authority_set_bytes,
@@ -15,6 +15,7 @@ from pinboard.application.work_briefs import (
     validate_work_brief_review,
 )
 from pinboard.domain import decision_models, history, work_models
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId
 
 
@@ -194,3 +195,52 @@ def validate_checkpoint_package_closure(
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return brief
     return _review_basis(package, brief, references, artifact_bytes)
+
+
+def _correction_failure(message: str) -> DecisionFailure:
+    return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, message, None)
+
+
+def decode_correction_outcome(
+    receipt: stored_state.StoredTransitionReceipt,
+    attempt_id: str,
+) -> DecisionResult[history.TransitionReceiptOutcome]:
+    if (
+        receipt.action_kind != decision_models.ActionKind.RETURN_FOR_CORRECTION
+        or receipt.authorization != decision_models.AuthorizationKind.PROJECT
+        or str(receipt.action_id) != f"return-for-correction:{attempt_id}"
+        or str(receipt.subject_id) != attempt_id
+        or receipt.artifact_ref_id is not None
+        or receipt.input_schema != "return-for-correction/v1"
+        or receipt.outcome_schema != "transition-receipt/v1"
+    ):
+        return _correction_failure("Selected correction history does not match this attempt's review return.")
+    try:
+        correction_input = msgspec.json.decode(
+            bytes(receipt.input_payload),
+            type=action_models.ReasonInputPayload,
+            strict=True,
+        )
+    except msgspec.DecodeError as error:
+        return _correction_failure(f"Selected correction history has an invalid input: {error}")
+    if msgspec.json.encode(correction_input, order="sorted") != bytes(receipt.input_payload):
+        return _correction_failure("Selected correction history has a noncanonical input.")
+    try:
+        outcome = msgspec.json.decode(
+            bytes(receipt.outcome_payload),
+            type=history.TransitionReceiptOutcome,
+            strict=True,
+        )
+    except msgspec.DecodeError as error:
+        return _correction_failure(f"Selected correction history has an invalid outcome: {error}")
+    if msgspec.json.encode(outcome, order="sorted") != bytes(receipt.outcome_payload):
+        return _correction_failure("Selected correction history has a noncanonical outcome.")
+    if (
+        outcome.outcome != decision_models.ActionKind.RETURN_FOR_CORRECTION.value
+        or outcome.evidence is None
+        or outcome.candidate is None
+        or outcome.checkpoint is not None
+        or correction_input.reason != outcome.evidence
+    ):
+        return _correction_failure("Selected correction history does not preserve its candidate and reason.")
+    return outcome

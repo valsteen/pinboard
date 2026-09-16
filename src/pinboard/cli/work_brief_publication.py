@@ -21,13 +21,12 @@ from pinboard.adapters.files.models import AffectedViews
 from pinboard.application import (
     artifact_publication,
     artifacts,
-    dispatch_models,
     ports,
     stored_state,
     work_brief_models,
     work_briefs,
 )
-from pinboard.cli import cli_commands, work_views
+from pinboard.cli import agent_launch, cli_commands, work_views
 from pinboard.cli.cli_output import write_json
 from pinboard.cli.errors import (
     CommandFailure,
@@ -207,7 +206,7 @@ def _review_recovery(
     brief_artifact_ref_id: int,
 ) -> tuple[str, str, str, str]:
     prefix = (
-        *dispatch_models.pinboard_launcher_command(),
+        *agent_launch.pinboard_launcher_command(),
         "--project-root",
         str(roots.source_checkout),
         "--work-root",

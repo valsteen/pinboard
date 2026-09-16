@@ -1,3 +1,4 @@
+from pinboard.adapters import review_operations
 from pinboard.application import work_brief_models
 from pinboard.cli import work_inspection_models
 from pinboard.domain import decision_models
@@ -18,8 +19,8 @@ SOURCE_SYMBOL_NAMES: dict[str, str] = {
     "WorkBrief": work_brief_models.WorkBrief.__name__,
     "WorkBriefReview": work_brief_models.WorkBriefReview.__name__,
     "ReviewJobView": work_inspection_models.ReviewJobView.__name__,
-    "PriorCheckpointPackage": work_inspection_models.PriorCheckpointPackage.__name__,
-    "CorrectionReviewRound": work_inspection_models.CorrectionReviewRound.__name__,
+    "PriorCheckpointPackage": review_operations.PriorCheckpointPackage.__name__,
+    "CorrectionReviewRound": review_operations.CorrectionReviewRound.__name__,
     "CompletionReviewPackage": work_brief_models.CompletionReviewPackage.__name__,
 }
 
@@ -149,7 +150,7 @@ DIAGRAM = Diagram(
             "Read-only review job",
             "Current + prior evidence",
             ("exact revision + result digest", "selected package + correction"),
-            ("pinboard-review-job/v2",),
+            ("pinboard-review-job/v4",),
             1050,
             290,
             300,

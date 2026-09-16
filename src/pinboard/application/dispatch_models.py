@@ -1,10 +1,7 @@
 import hashlib
-import shlex
-import sys
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from pathlib import Path
 from typing import Annotated, Literal, Protocol, Self
 
 import msgspec
@@ -97,14 +94,14 @@ class DispatchArtifactPort(ArtifactPublisher, ArtifactReader, Protocol):
 
 class PromptReferenceView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-agent-prompt-reference/v1"]
-    accepted_artifact_reference_id: int
+    accepted_artifact_reference_id: PositiveInt
     kind: Literal["evidence"]
-    key: str
-    revision: int
-    selector: str
-    sha256: str
-    size_bytes: int
-    accepted_revision: int
+    key: Annotated[str, msgspec.Meta(min_length=1)]
+    revision: PositiveInt
+    selector: Annotated[str, msgspec.Meta(min_length=1)]
+    sha256: Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
+    size_bytes: PositiveInt
+    accepted_revision: PositiveInt
     artifact_created: bool
     ledger_changed: bool
 
@@ -112,32 +109,23 @@ class PromptReferenceView(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 class NativeLaunchEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-native-agent-launch/v1"]
     runtime: Literal["native-subagent"]
-    message: str
+    message: Annotated[str, msgspec.Meta(min_length=1)]
 
 
 class PublishedAgentPrompt(str):
     reference: PromptReferenceView
-    native_launch: NativeLaunchEnvelope
     changed_surfaces: tuple[ChangedSurface, ...]
 
     def __new__(
         cls,
         prompt: str,
         reference: PromptReferenceView,
-        native_launch: NativeLaunchEnvelope,
         changed_surfaces: tuple[ChangedSurface, ...],
     ) -> Self:
         value = super().__new__(cls, prompt)
         value.reference = reference
-        value.native_launch = native_launch
         value.changed_surfaces = changed_surfaces
         return value
-
-
-def pinboard_launcher_command() -> tuple[str, ...]:
-    """Use the installed console script without relying on the launched agent's PATH."""
-
-    return (str(Path(sys.executable).with_name("pinboard")),)
 
 
 def _reference_view(publication: AcceptedArtifactPublication) -> PromptReferenceView:
@@ -161,7 +149,6 @@ def publish_agent_prompt(
     store: WorkStore,
     artifacts: DispatchArtifactPort,
     *,
-    project_root: Path,
     prompt_role: Literal["worker", "reviewer"],
     attempt_id: str,
     prompt: str,
@@ -188,38 +175,8 @@ def publish_agent_prompt(
         *((ChangedSurface.IMMUTABLE_ARTIFACT,) if accepted.artifact_created else ()),
         *((ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE, ChangedSurface.LEDGER) if accepted.ledger_changed else ()),
     )
-    prompt_path = artifacts.work_root / reference.selector
-    verification_command = shlex.join(
-        (
-            *pinboard_launcher_command(),
-            "--project-root",
-            str(project_root),
-            "--work-root",
-            str(artifacts.work_root),
-            "artifact",
-            "verify",
-            "--artifact-ref-id",
-            str(reference.accepted_artifact_reference_id),
-            "--selector",
-            reference.selector,
-            "--sha256",
-            reference.sha256,
-            "--size-bytes",
-            str(reference.size_bytes),
-            "--json",
-        )
-    )
-    message = (
-        f"Use accepted artifact reference {reference.accepted_artifact_reference_id}, the immutable {prompt_role} "
-        f"prompt at '{prompt_path}'. Before any acquisition, implementation, or review, run exactly: "
-        f"{verification_command}. Require `pinboard-verified-artifact-reference/v1`, then read exactly "
-        f"{reference.size_bytes} bytes from that path. Stop before acting if the accepted identity, selector, size, "
-        "digest, verification result, or bytes differ. After verification, follow those exact bytes as the complete "
-        "task prompt."
-    )
     return PublishedAgentPrompt(
         prompt,
         reference,
-        NativeLaunchEnvelope("pinboard-native-agent-launch/v1", "native-subagent", message),
         changed_surfaces,
     )

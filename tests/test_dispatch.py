@@ -15,6 +15,16 @@ from unittest.mock import patch
 import msgspec
 from msgspec.structs import replace
 
+from pinboard.adapters import dispatch_operations as dispatch_brief
+from pinboard.adapters.dispatch_operations import (
+    DispatchErrorCode,
+    DispatchFailure,
+    DispatchResult,
+    ReviewedDispatch,
+    _read_dispatch_brief,
+    _render_dispatch_prompt,
+    prepare_dispatch,
+)
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
@@ -30,17 +40,14 @@ from pinboard.application.dispatch_models import (
     FreshContextRequired,
 )
 from pinboard.application.ports import ArtifactReferenceAcceptance
-from pinboard.application.work_briefs import canonical_work_brief_bytes, canonical_work_brief_review_bytes
-from pinboard.cli import dispatch_brief
-from pinboard.cli.dispatch_brief import (
-    SuppliedDispatchReview,
-    _read_dispatch_brief,
-    _render_dispatch_prompt,
-    prepare_dispatch,
-    read_dispatch_environment,
+from pinboard.application.work_briefs import (
+    canonical_work_brief_bytes,
+    canonical_work_brief_review_bytes,
+    decode_work_brief_review,
 )
+from pinboard.cli import agent_launch
+from pinboard.cli.dispatch_brief import read_dispatch_environment
 from pinboard.cli.entrypoint import main
-from pinboard.cli.errors import DispatchErrorCode, DispatchFailure, DispatchResult
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import HostId, ReviewId
@@ -61,6 +68,13 @@ def expect_dispatch_success[T](result: DispatchResult[T]) -> T:
     if isinstance(result, DispatchFailure):
         raise AssertionError(str(result))
     return result
+
+
+def supplied_review(content: bytes, review_id: ReviewId) -> ReviewedDispatch:
+    review = decode_work_brief_review(content)
+    if isinstance(review, work_brief_models.WorkBriefFailure):
+        raise AssertionError(review.message)
+    return ReviewedDispatch(review, review_id)
 
 
 def expect_dispatch_failure[T](result: DispatchResult[T], code: DispatchErrorCode) -> DispatchFailure:
@@ -92,7 +106,6 @@ def prepare_dispatch_from_artifact(
         attempt_branch,
         attempt_base_revision,
         source_checkout_root,
-        attempt_path.parent,
         checkpoint,
         environment,
         accepted_item_id,
@@ -276,7 +289,7 @@ class DispatchTest(unittest.TestCase):
         first = datetime.now(UTC)
         samples = tuple(first + timedelta(microseconds=index) for index in range(4))
 
-        with patch("pinboard.cli.dispatch_brief.datetime") as clock:
+        with patch("pinboard.adapters.dispatch_operations.datetime") as clock:
             clock.now.side_effect = samples
             prompt = expect_dispatch_success(
                 prepare_dispatch(
@@ -287,8 +300,7 @@ class DispatchTest(unittest.TestCase):
                     CHECKPOINT_ID,
                     environment,
                     supplied_prompt=None,
-                    supplied_review=SuppliedDispatchReview(ready_review(brief), ReviewId("timed-review")),
-                    correction_history_id=None,
+                    choice=supplied_review(ready_review(brief), ReviewId("timed-review")),
                 )
             )
 
@@ -358,11 +370,8 @@ class DispatchTest(unittest.TestCase):
                     self.assertTrue(failure.details.mismatches)
                     observed = {fact.field: fact.value for fact in failure.details.observed}
                     self.assertEqual(value.base_revision, observed["brief_base_revision"])
-                    self.assertIn("tool-contract --operation dispatch --json", str(observed["tool_contract_command"]))
-                    self.assertIn(
-                        "actions --role project --action-id dispatch:work-a-1 --json",
-                        str(observed["current_dispatch_action_command"]),
-                    )
+                    self.assertNotIn("tool_contract_command", observed)
+                    self.assertNotIn("current_dispatch_action_command", observed)
 
         negative = prepare_dispatch_from_artifact(
             path,
@@ -429,6 +438,8 @@ class DispatchTest(unittest.TestCase):
             {"brief_base_revision", "environment_base_revision"},
             {mismatch.field for mismatch in failure.details.mismatches},
         )
+        failure = agent_launch.dispatch_diagnostics(project, path.parent, f"dispatch:{value.attempt_id}", failure)
+        assert failure.details is not None
         observed = {fact.field: fact.value for fact in failure.details.observed}
         self.assertEqual("attempt-base", observed["attempt_base_revision"])
         self.assertEqual(value.base_revision, observed["brief_base_revision"])
@@ -534,8 +545,7 @@ class DispatchTest(unittest.TestCase):
                     CHECKPOINT_ID,
                     environment,
                     supplied_prompt=None,
-                    supplied_review=SuppliedDispatchReview(first_review, ReviewId("first-review")),
-                    correction_history_id=None,
+                    choice=supplied_review(first_review, ReviewId("first-review")),
                 )
             )
         self.assertIs(store, select.call_args.args[0])
@@ -561,8 +571,7 @@ class DispatchTest(unittest.TestCase):
                 CHECKPOINT_ID,
                 environment,
                 supplied_prompt=None,
-                supplied_review=None,
-                correction_history_id=None,
+                choice=dispatch_brief.OrdinaryDispatch(),
             )
         )
         self.assertEqual(prompt, reused)
@@ -577,8 +586,7 @@ class DispatchTest(unittest.TestCase):
                 CHECKPOINT_ID,
                 environment,
                 supplied_prompt=None,
-                supplied_review=SuppliedDispatchReview(first_review, ReviewId("identical-review")),
-                correction_history_id=None,
+                choice=supplied_review(first_review, ReviewId("identical-review")),
             )
         )
         self.assertEqual(prompt, identical_retry)
@@ -592,11 +600,10 @@ class DispatchTest(unittest.TestCase):
             CHECKPOINT_ID,
             environment,
             supplied_prompt=None,
-            supplied_review=SuppliedDispatchReview(
+            choice=supplied_review(
                 ready_review(value, result="Different complete result."),
                 ReviewId("later-review"),
             ),
-            correction_history_id=None,
         )
         expect_dispatch_failure(collision, DispatchErrorCode.DISPATCH_BRIEF_REVIEW_COLLISION)
         self.assertTrue(
@@ -613,11 +620,10 @@ class DispatchTest(unittest.TestCase):
             CHECKPOINT_ID,
             environment,
             supplied_prompt=None,
-            supplied_review=SuppliedDispatchReview(
+            choice=supplied_review(
                 ready_review(value, result="Different complete result."),
                 ReviewId("later-review"),
             ),
-            correction_history_id=None,
         )
         repeated_collision = expect_dispatch_failure(
             identical_retry,
@@ -708,8 +714,7 @@ class DispatchTest(unittest.TestCase):
                 CHECKPOINT_ID,
                 environment,
                 supplied_prompt=None,
-                supplied_review=SuppliedDispatchReview(ready_review(value), ReviewId("accepted-ready")),
-                correction_history_id=None,
+                choice=supplied_review(ready_review(value), ReviewId("accepted-ready")),
             )
         )
         self.assertIn(f"Checkpoint: {CHECKPOINT_ID}", accepted)
@@ -826,7 +831,7 @@ class DispatchTest(unittest.TestCase):
             return rendered
 
         with patch(
-            "pinboard.cli.dispatch_brief._render_dispatch_prompt",
+            "pinboard.adapters.dispatch_operations._render_dispatch_prompt",
             side_effect=render_then_accept_unrelated_revision,
         ):
             result = prepare_dispatch(
@@ -837,8 +842,7 @@ class DispatchTest(unittest.TestCase):
                 CHECKPOINT_ID,
                 environment,
                 supplied_prompt=None,
-                supplied_review=SuppliedDispatchReview(ready_review(value), ReviewId("raced-review")),
-                correction_history_id=None,
+                choice=supplied_review(ready_review(value), ReviewId("raced-review")),
             )
 
         self.assertIsInstance(result, str)
@@ -881,8 +885,7 @@ class DispatchTest(unittest.TestCase):
                 CHECKPOINT_ID,
                 environment,
                 supplied_prompt=None,
-                supplied_review=SuppliedDispatchReview(ready_review(value), ReviewId("prepublication-race")),
-                correction_history_id=None,
+                choice=supplied_review(ready_review(value), ReviewId("prepublication-race")),
             )
 
         self.assertEqual(15, store.validated_snapshot().lifecycle.project.revision)
@@ -903,8 +906,7 @@ class DispatchTest(unittest.TestCase):
             CHECKPOINT_ID,
             environment,
             supplied_prompt=None,
-            supplied_review=SuppliedDispatchReview(ready_review(value), ReviewId("review-id")),
-            correction_history_id=None,
+            choice=supplied_review(ready_review(value), ReviewId("review-id")),
         )
         expect_dispatch_failure(stale, DispatchErrorCode.STALE_ACTION)
 
@@ -1101,8 +1103,7 @@ class DispatchTest(unittest.TestCase):
                 CHECKPOINT_ID,
                 environment,
                 supplied_prompt=None,
-                supplied_review=SuppliedDispatchReview(ready_review(value), ReviewId("prior-review-effect")),
-                correction_history_id=None,
+                choice=supplied_review(ready_review(value), ReviewId("prior-review-effect")),
             )
 
         failure = expect_dispatch_failure(failed, DispatchErrorCode.STALE_ACTION)
@@ -1325,7 +1326,7 @@ class DispatchTest(unittest.TestCase):
 
         before = store.validated_snapshot()
         before_files = {path.relative_to(roots.work_root) for path in roots.artifacts_root.rglob("*") if path.is_file()}
-        with patch("pinboard.cli.dispatch_brief.recheck_dispatch_authority", side_effect=authority_failure):
+        with patch("pinboard.adapters.dispatch_operations.recheck_dispatch_authority", side_effect=authority_failure):
             result, stdout, stderr = self.run_cli(
                 *arguments(action(), publish_review=True, review_id="authority-recheck-failure")
             )
@@ -1343,7 +1344,7 @@ class DispatchTest(unittest.TestCase):
         after_files = {path.relative_to(roots.work_root) for path in roots.artifacts_root.rglob("*") if path.is_file()}
         self.assertEqual(len(before_files) + 2, len(after_files))
 
-        with patch("pinboard.cli.dispatch_brief.recheck_dispatch_authority", side_effect=authority_failure):
+        with patch("pinboard.adapters.dispatch_operations.recheck_dispatch_authority", side_effect=authority_failure):
             result, stdout, stderr = self.run_cli(*arguments(action(), publish_review=False))
         self.assertEqual(12, result, stderr)
         without_prior_effect = msgspec.json.decode(stdout.encode())

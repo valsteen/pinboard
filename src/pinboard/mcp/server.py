@@ -10,7 +10,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from functools import partial
@@ -24,7 +24,12 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from pinboard import __version__
-from pinboard.adapters import lifecycle_artifacts, lifecycle_operations
+from pinboard.adapters import (
+    dispatch_operations,
+    lifecycle_artifacts,
+    lifecycle_operations,
+    review_operations,
+)
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.errors import ArtifactError
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
@@ -37,6 +42,7 @@ from pinboard.application import (
     actions,
     authority_operations,
     candidate_snapshots,
+    dispatch_models,
     proposal_models,
     proposals,
     queries,
@@ -61,7 +67,17 @@ from pinboard.domain.errors import (
     FailureMismatch,
     RetryDisposition,
 )
-from pinboard.domain.identifiers import ActionId, ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import (
+    ActionId,
+    ArtifactRefId,
+    AttemptId,
+    HistoryId,
+    HostId,
+    ItemId,
+    LeaseId,
+    ReviewId,
+    TaskId,
+)
 from pinboard.mcp import contracts
 
 ITEM_STATUS_TOOL = "pinboard_item_status"
@@ -74,6 +90,8 @@ ARTIFACT_VERIFY_TOOL = "pinboard_artifact_verify"
 PREPARATION_AUTHORITY_TOOL = "pinboard_preparation_authority"
 ATTEMPT_AUTHORITY_TOOL = "pinboard_attempt_authority"
 TRANSITION_TOOL = "pinboard_transition"
+DISPATCH_TOOL = "pinboard_dispatch"
+REVIEW_JOB_TOOL = "pinboard_review_job"
 THREAD_NAME_PREFIX = "pinboard-mcp-worker"
 
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
@@ -730,6 +748,13 @@ def _mcp_candidate_recovery(
                 alternatives=(),
             ),
         )
+    return _candidate_recovery_view(durable, evidence)
+
+
+def _candidate_recovery_view(
+    durable: DurableRoots,
+    evidence: candidate_snapshots.CandidateSnapshotEvidence,
+) -> contracts.CandidateRecoveryPresent:
     snapshot = evidence.snapshot
     return contracts.CandidateRecoveryPresent(
         "working-tree" if isinstance(snapshot, candidate_snapshots.WorkingTreeCandidateSnapshot) else "commit",
@@ -749,7 +774,7 @@ def _mcp_candidate_recovery(
             "candidate",
             "restore",
             "--attempt-id",
-            attempt_id,
+            snapshot.attempt_id,
             "--json",
         ),
     )
@@ -1926,6 +1951,295 @@ def _attempt_authority(
     )
 
 
+def _mcp_launch_envelope(
+    project_root: Path,
+    work_root: Path,
+    prompt_role: str,
+    attempt_id: str,
+    publication: dispatch_models.PublishedAgentPrompt,
+    environment: dispatch_models.DispatchEnvironment | None,
+) -> dispatch_models.NativeLaunchEnvelope:
+    reference = publication.reference
+    verification = {
+        "project_root": str(project_root),
+        "work_root": str(work_root),
+        "artifact_ref_id": reference.accepted_artifact_reference_id,
+        "selector": reference.selector,
+        "sha256": reference.sha256,
+        "size_bytes": reference.size_bytes,
+    }
+    message = (
+        f"Use accepted artifact reference {reference.accepted_artifact_reference_id}, the immutable {prompt_role} "
+        f"prompt at '{work_root / reference.selector}'. Before any acquisition, implementation, or review, call "
+        f"`pinboard_artifact_verify` with exactly {msgspec.json.encode(verification, order='sorted').decode()}. "
+        "Require `pinboard-verified-artifact-reference/v1`, then read exactly "
+        f"{reference.size_bytes} bytes from that path. Stop before acting if the accepted identity, selector, size, "
+        "digest, verification result, or bytes differ. After verification, follow those exact bytes as the complete task prompt."
+    )
+    if environment is not None:
+        acquisition = {
+            "project_root": str(project_root),
+            "work_root": str(work_root),
+            "operation": "acquire",
+            "attempt_id": attempt_id,
+            "task_id": "<post-launch CODEX_THREAD_ID>",
+            "host_id": str(environment.host_id),
+            "ttl_seconds": environment.lease_ttl_seconds,
+        }
+        continuation = {
+            "project_root": str(project_root),
+            "work_root": str(work_root),
+            "role": "worker",
+            "lease_id": "<returned lease_id>",
+            "generation": "<returned generation>",
+            "action_id": {"kind": "continue", "subject": attempt_id},
+        }
+        message += (
+            " After reading the complete canonical brief/bootstrap, read CODEX_THREAD_ID after native launch; "
+            f"call `pinboard_attempt_authority` with {msgspec.json.encode(acquisition, order='sorted').decode()}, "
+            f"then `pinboard_actions` with {msgspec.json.encode(continuation, order='sorted').decode()}. "
+            "Substitute only the trusted post-launch identity and returned lease facts. Missing connected tools or identity "
+            "stops that operation; never invent a shell command, payload file, or disconnected-client fallback."
+        )
+    return dispatch_models.NativeLaunchEnvelope("pinboard-native-agent-launch/v1", "native-subagent", message)
+
+
+def _job_failure(
+    schema: str,
+    attempt_id: str,
+    code: str,
+    message: str,
+    details: FailureDetails | None,
+) -> OperationResult:
+    rendered = _details_json(details)
+    if details is not None:
+        rendered["changed_surfaces"] = list[JsonValue](_job_publication_surfaces(details.changed_surfaces))
+    committed = details is not None and details.effect == EffectDisposition.COMMITTED
+    return OperationResult(
+        {
+            "schema": schema,
+            "status": "failed-after-publication" if committed else "rejected",
+            "attempt_id": attempt_id,
+            "code": code,
+            "message": message,
+            "state_changed": committed,
+            **rendered,
+        },
+        "committed-failure" if committed else "rejected",
+        None,
+    )
+
+
+def _job_publication_exception(
+    schema: str, attempt_id: str, error: ArtifactAcceptanceAfterPublicationError
+) -> OperationResult:
+    return _job_failure(
+        schema,
+        attempt_id,
+        "ARTIFACT_ACCEPTANCE_FAILED",
+        str(error),
+        FailureDetails(
+            observed=(FailureFact("published_artifact_selector", error.selector),),
+            mismatches=(),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.COMMITTED,
+            changed_surfaces=error.changed_surfaces,
+            alternatives=(),
+        ),
+    )
+
+
+def _job_publication_surface(surface: ChangedSurface) -> contracts.JobPublicationSurface:
+    match surface:
+        case ChangedSurface.IMMUTABLE_ARTIFACT:
+            return "immutable-artifact"
+        case ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE:
+            return "accepted-artifact-reference"
+        case ChangedSurface.LEDGER:
+            return "ledger"
+        case ChangedSurface.REPOSITORY_GIT_EXCLUDE | ChangedSurface.SELECTED_OUTPUT | ChangedSurface.SOURCE_CHECKOUT:
+            raise AssertionError("Job publication changed an unsupported surface.")
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _job_publication_surfaces(surfaces: tuple[ChangedSurface, ...]) -> tuple[contracts.JobPublicationSurface, ...]:
+    converted = tuple(_job_publication_surface(surface) for surface in surfaces)
+    return tuple(
+        surface for surface in ("immutable-artifact", "accepted-artifact-reference", "ledger") if surface in converted
+    )
+
+
+def _dispatch_job(
+    project_root: str, work_root: str, dispatch: dict[str, JsonValue], token: CancellationToken
+) -> OperationResult:
+    token.checkpoint()
+    schema = "pinboard-mcp-dispatch-result/v1"
+    try:
+        request = msgspec.convert(
+            {"project_root": project_root, "work_root": work_root, "dispatch": dispatch},
+            type=contracts.DispatchRequest,
+            strict=True,
+            dec_hook=dispatch_models.dispatch_environment_dec_hook,
+        )
+        source_checkout = resolve_source_checkout_root(Path(request.project_root))
+        durable = resolve_durable_roots(resolve_shared_repository_root(source_checkout), Path(request.work_root))
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        return _read_failure(schema, "DISPATCH_INVALID", f"Cannot decode dispatch request: {error}", None)
+    choice = request.dispatch
+    attempt_id = choice.receipt.action_id.subject
+    match choice:
+        case contracts.OrdinaryDispatchChoice():
+            preparation_choice = dispatch_operations.OrdinaryDispatch()
+        case contracts.ReviewedDispatchChoice():
+            preparation_choice = dispatch_operations.ReviewedDispatch(choice.brief_review, ReviewId(choice.review_id))
+        case contracts.CorrectionDispatchChoice():
+            preparation_choice = dispatch_operations.CorrectionDispatch(
+                choice.brief_review, ReviewId(choice.review_id), HistoryId(choice.correction_history_id)
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    store = compose_store(durable)
+    token.checkpoint()
+    selected = actions.select_current_actions(
+        store,
+        decision_models.Role.PROJECT,
+        observed_at=datetime.now(UTC),
+        lease_id=None,
+        generation=None,
+        action_id=ActionId(f"dispatch:{attempt_id}"),
+    )
+    if isinstance(selected, DecisionFailure):
+        return _job_failure(schema, attempt_id, selected.code.value, selected.message, selected.details)
+    action = selected[0]
+    if not isinstance(action, decision_models.DispatchAction):
+        raise AssertionError("Exact dispatch discovery returned a different action.")
+    supplied_action = replace(
+        action, capability=replace(action.capability, subject_revision=choice.receipt.subject_revision)
+    )
+    token.checkpoint()
+    # Publication has entered its commit section: finish terminal effects before honoring cancellation.
+    try:
+        publication = dispatch_operations.prepare_dispatch(
+            store,
+            ArtifactRepository(durable),
+            source_checkout,
+            supplied_action,
+            choice.checkpoint_id,
+            choice.environment,
+            None if choice.prompt is None else choice.prompt.encode(),
+            preparation_choice,
+        )
+    except ArtifactAcceptanceAfterPublicationError as error:
+        return _job_publication_exception(schema, attempt_id, error)
+    if isinstance(publication, dispatch_operations.DispatchFailure):
+        return _job_failure(schema, attempt_id, publication.code.value, publication.message, publication.details)
+    surfaces = _job_publication_surfaces(publication.changed_surfaces)
+    content = msgspec.to_builtins(
+        contracts.DispatchReady(
+            "ready",
+            publication.reference,
+            _mcp_launch_envelope(
+                source_checkout, durable.work_root, "worker", attempt_id, publication, choice.environment
+            ),
+            bool(surfaces),
+            "committed" if surfaces else "unchanged",
+            "do-not-retry" if surfaces else "safe-to-repeat",
+            surfaces,
+            schema,
+            attempt_id,
+            choice.checkpoint_id,
+        )
+    )
+    assert isinstance(content, dict)
+    return OperationResult(
+        content, "committed" if surfaces else "unchanged", str(publication.reference.accepted_revision)
+    )
+
+
+def _review_job(
+    project_root: str, work_root: str, review: dict[str, JsonValue], token: CancellationToken
+) -> OperationResult:
+    token.checkpoint()
+    schema = "pinboard-mcp-review-job-result/v1"
+    try:
+        request = msgspec.convert(
+            {"project_root": project_root, "work_root": work_root, "review": review},
+            type=contracts.ReviewJobRequest,
+            strict=True,
+        )
+        source_checkout = resolve_source_checkout_root(Path(request.project_root))
+        durable = resolve_durable_roots(resolve_shared_repository_root(source_checkout), Path(request.work_root))
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        return _read_failure(schema, "REVIEW_JOB_INVALID", f"Cannot decode review-job request: {error}", None)
+    choice = request.review
+    match choice:
+        case contracts.InitialReviewChoice():
+            checkpoint_history_id, correction_history_id = None, None
+        case contracts.PackageInitialReviewChoice():
+            checkpoint_history_id, correction_history_id = HistoryId(choice.checkpoint_history_id), None
+        case contracts.CorrectionReviewChoice():
+            checkpoint_history_id, correction_history_id = None, HistoryId(choice.correction_history_id)
+        case contracts.PackageCorrectionReviewChoice():
+            checkpoint_history_id, correction_history_id = (
+                HistoryId(choice.checkpoint_history_id),
+                HistoryId(choice.correction_history_id),
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    store = compose_store(durable)
+    token.checkpoint()
+    # Cancellation cannot turn an entered publication into an unchanged/replayable result.
+    try:
+        prepared = review_operations.prepare_review_job(
+            durable.work_root,
+            store,
+            ArtifactRepository(durable),
+            AttemptId(choice.attempt_id),
+            choice.candidate_revision,
+            checkpoint_history_id,
+            correction_history_id,
+        )
+    except ArtifactAcceptanceAfterPublicationError as error:
+        return _job_publication_exception(schema, choice.attempt_id, error)
+    if isinstance(prepared, DecisionFailure):
+        return _job_failure(schema, choice.attempt_id, prepared.code.value, prepared.message, prepared.details)
+    publication = prepared.published_prompt
+    recovery = _candidate_recovery_view(durable, prepared.candidate_evidence)
+    reference = prepared.brief_reference
+    brief = prepared.brief
+    surfaces = _job_publication_surfaces(publication.changed_surfaces)
+    content = msgspec.to_builtins(
+        contracts.ReviewJobReady(
+            "ready",
+            publication.reference,
+            _mcp_launch_envelope(source_checkout, durable.work_root, "reviewer", choice.attempt_id, publication, None),
+            bool(surfaces),
+            "committed" if surfaces else "unchanged",
+            "do-not-retry" if surfaces else "safe-to-repeat",
+            surfaces,
+            schema,
+            choice.attempt_id,
+            choice.candidate_revision,
+            recovery,
+            brief.owner_task_id,
+            str(durable.work_root / reference.selector),
+            reference.content_sha256,
+            brief.accepted_scope.revision,
+            brief.accepted_scope.digest,
+            str(prepared.result_path),
+            prepared.result_sha256,
+            prepared.prior_checkpoint_package,
+            prepared.review_round,
+            prepared.return_contract,
+        )
+    )
+    assert isinstance(content, dict)
+    return OperationResult(
+        content, "committed" if surfaces else "unchanged", str(publication.reference.accepted_revision)
+    )
+
+
 async def _run_request(
     executor: BoundedExecutor,
     diagnostics: Diagnostics,
@@ -1983,7 +2297,7 @@ async def _run_request(
     return contracts.validate_result(operation, result.content)
 
 
-def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPServer:
+def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPServer:  # noqa: C901 - explicit installed SDK tool registration
     server = MCPServer("pinboard", version=__version__, log_level="ERROR")
     request_ids = itertools.count(1)
 
@@ -2230,6 +2544,34 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
             ),
         )
 
+    @server.tool(
+        name=DISPATCH_TOOL,
+        description="Publish one exact Pinboard worker launch from structured environment and independent review inputs.",
+    )
+    async def dispatch_job(project_root: str, work_root: str, dispatch: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            DISPATCH_TOOL,
+            project_root,
+            partial(_dispatch_job, project_root, work_root, dispatch),
+        )
+
+    @server.tool(
+        name=REVIEW_JOB_TOOL,
+        description="Publish one candidate-bound reviewer launch with exact caller-selected historical evidence; run separate full CLI validation before package reuse.",
+    )
+    async def review_job(project_root: str, work_root: str, review: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            REVIEW_JOB_TOOL,
+            project_root,
+            partial(_review_job, project_root, work_root, review),
+        )
+
     _install_boundary_contracts(server)
     return server
 
@@ -2286,6 +2628,16 @@ def _install_boundary_contracts(server: MCPServer) -> None:
             TRANSITION_TOOL,
             contracts.transition_request_schema(),
             contracts.union_schema_for(contracts.TRANSITION_RESULT_TYPES),
+        ),
+        (
+            DISPATCH_TOOL,
+            contracts.schema_for(contracts.DispatchRequest),
+            contracts.union_schema_for(contracts.DISPATCH_RESULT_TYPES),
+        ),
+        (
+            REVIEW_JOB_TOOL,
+            contracts.schema_for(contracts.ReviewJobRequest),
+            contracts.union_schema_for(contracts.REVIEW_JOB_RESULT_TYPES),
         ),
     )
     for name, input_schema, output_schema in definitions:

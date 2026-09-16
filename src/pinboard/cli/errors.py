@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from pinboard.adapters.dispatch_operations import DispatchFailure
 from pinboard.adapters.files.errors import ArtifactError, FileIOError
 from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError, StorageError
 from pinboard.application import work_brief_models
@@ -108,49 +109,6 @@ class CommandFailure:
 
 
 type CommandResult[T] = T | CommandFailure
-
-
-class DispatchErrorCode(Enum):
-    DISPATCH_ACTION_INVALID = "DISPATCH_ACTION_INVALID"
-    DISPATCH_ACTION_UNAVAILABLE = "DISPATCH_ACTION_UNAVAILABLE"
-    DISPATCH_ATTEMPT_NOT_ACTIVE = "DISPATCH_ATTEMPT_NOT_ACTIVE"
-    DISPATCH_AUTHORITY_STALE = "DISPATCH_AUTHORITY_STALE"
-    DISPATCH_AUTHORITY_UNREADABLE = "DISPATCH_AUTHORITY_UNREADABLE"
-    DISPATCH_BASE_REVISION_MISMATCH = "DISPATCH_BASE_REVISION_MISMATCH"
-    DISPATCH_BRANCH_MISMATCH = "DISPATCH_BRANCH_MISMATCH"
-    DISPATCH_BRIEF_INVALID = "DISPATCH_BRIEF_INVALID"
-    DISPATCH_BRIEF_MISSING = "DISPATCH_BRIEF_MISSING"
-    DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID = "DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID"
-    DISPATCH_BRIEF_REVIEW_COLLISION = "DISPATCH_BRIEF_REVIEW_COLLISION"
-    DISPATCH_BRIEF_REVIEW_INVALID = "DISPATCH_BRIEF_REVIEW_INVALID"
-    DISPATCH_BRIEF_REVIEW_MISSING = "DISPATCH_BRIEF_REVIEW_MISSING"
-    DISPATCH_BRIEF_REVIEW_NOT_INDEPENDENT = "DISPATCH_BRIEF_REVIEW_NOT_INDEPENDENT"
-    DISPATCH_BRIEF_REVIEW_NOT_READY = "DISPATCH_BRIEF_REVIEW_NOT_READY"
-    DISPATCH_BRIEF_REVIEW_STALE = "DISPATCH_BRIEF_REVIEW_STALE"
-    DISPATCH_CHECKOUT_MISSING = "DISPATCH_CHECKOUT_MISSING"
-    DISPATCH_CHECKOUT_MISMATCH = "DISPATCH_CHECKOUT_MISMATCH"
-    DISPATCH_CHECKPOINT_MISSING = "DISPATCH_CHECKPOINT_MISSING"
-    DISPATCH_ENVIRONMENT_INVALID = "DISPATCH_ENVIRONMENT_INVALID"
-    DISPATCH_ENVIRONMENT_UNREADABLE = "DISPATCH_ENVIRONMENT_UNREADABLE"
-    DISPATCH_PROMPT_NOT_CANONICAL = "DISPATCH_PROMPT_NOT_CANONICAL"
-    DISPATCH_PROMPT_UNREADABLE = "DISPATCH_PROMPT_UNREADABLE"
-    STALE_ACTION = "STALE_ACTION"
-
-
-type DispatchFailureCode = DispatchErrorCode | DecisionFailureCode
-
-
-@dataclass(frozen=True, slots=True)
-class DispatchFailure:
-    code: DispatchFailureCode
-    message: str
-    details: FailureDetails | None
-
-    def __str__(self) -> str:
-        return f"{self.code.value}: {self.message}"
-
-
-type DispatchResult[T] = T | DispatchFailure
 
 
 type InitializationFailure = StorageError | ArtifactError | FileIOError | work_brief_models.WorkBriefFailure

@@ -627,52 +627,54 @@ def _transition_decision_scope(
 
 
 @overload
-def _validate_supplied_transition_and_decide(
-    facts: query_models.DecisionFacts,
+def _read_authorize_and_decide(
+    reader: WorkStore | WorkTransaction,
     command: decision_models.AcceptCheckpointCommand,
     now: datetime,
     transition_brief_identity: WorkBriefIdentity | None,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
-    authority_observed_at: datetime,
+    read_authorization_time: Callable[[], datetime],
 ) -> DecisionResult[decision_models.CheckpointAcceptanceDecision]: ...
 
 
 @overload
-def _validate_supplied_transition_and_decide(
-    facts: query_models.DecisionFacts,
+def _read_authorize_and_decide(
+    reader: WorkStore | WorkTransaction,
     command: decision_models.NonCheckpointTransitionCommand,
     now: datetime,
     transition_brief_identity: WorkBriefIdentity | None,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
-    authority_observed_at: datetime,
+    read_authorization_time: Callable[[], datetime],
 ) -> DecisionResult[decision_models.TransitionDecision]: ...
 
 
 @overload
-def _validate_supplied_transition_and_decide(
-    facts: query_models.DecisionFacts,
+def _read_authorize_and_decide(
+    reader: WorkStore | WorkTransaction,
     command: decision_models.CoveredCompleteCommand,
     now: datetime,
     transition_brief_identity: WorkBriefIdentity | None,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
-    authority_observed_at: datetime,
+    read_authorization_time: Callable[[], datetime],
 ) -> DecisionResult[decision_models.CompletionAcceptanceDecision]: ...
 
 
-def _validate_supplied_transition_and_decide(
-    facts: query_models.DecisionFacts,
+def _read_authorize_and_decide(
+    reader: WorkStore | WorkTransaction,
     command: decision_models.TransitionCommand,
     now: datetime,
     transition_brief_identity: WorkBriefIdentity | None,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
-    authority_observed_at: datetime,
+    read_authorization_time: Callable[[], datetime],
 ) -> DecisionResult[decision_models.Decision]:
-    """Resolve supplied authority and reject stale context before deciding."""
+    """Read exact facts, sample fresh authority validity, and decide without committing."""
 
+    facts = reader.read_decision_facts(_transition_decision_scope(command), read_authorization_time())
+    authority_observed_at = read_authorization_time()
     decision_context = facts.snapshot
     if command.action.capability.authorization == decision_models.AuthorizationKind.PROJECT and (
         actor_task_id is None or actor_host_id is None
@@ -705,9 +707,8 @@ def decide_and_commit_transition(
     """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
 
     with store.write() as transaction:
-        facts = transaction.read_decision_facts(_transition_decision_scope(command), read_authorization_time())
-        decision_result = _validate_supplied_transition_and_decide(
-            facts, command, now, transition_brief_identity, actor_task_id, actor_host_id, read_authorization_time()
+        decision_result = _read_authorize_and_decide(
+            transaction, command, now, transition_brief_identity, actor_task_id, actor_host_id, read_authorization_time
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result
@@ -728,9 +729,8 @@ def decide_and_commit_review_submission(
     """Authorize with the supplied clock under lock; retain snapshot-time receipt provenance."""
 
     with store.write() as transaction:
-        facts = transaction.read_decision_facts(_transition_decision_scope(command), read_authorization_time())
-        decision_result = _validate_supplied_transition_and_decide(
-            facts, command, now, None, None, None, read_authorization_time()
+        decision_result = _read_authorize_and_decide(
+            transaction, command, now, None, None, None, read_authorization_time
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result
@@ -765,8 +765,7 @@ def preflight_covered_completion(
 ) -> DecisionFailure | None:
     """Reject stale authority, wrong lifecycle, candidate, or checkpoint coverage before publication."""
 
-    facts = store.read_decision_facts(_transition_decision_scope(command), now)
-    result = _validate_supplied_transition_and_decide(facts, command, now, None, actor_task_id, actor_host_id, now)
+    result = _read_authorize_and_decide(store, command, now, None, actor_task_id, actor_host_id, lambda: now)
     if isinstance(result, DecisionFailure):
         return result
     return None
@@ -786,9 +785,8 @@ def decide_and_commit_checkpoint_acceptance(
     """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
 
     with store.write() as transaction:
-        facts = transaction.read_decision_facts(_transition_decision_scope(command), read_authorization_time())
-        decision_result = _validate_supplied_transition_and_decide(
-            facts, command, now, transition_brief_identity, actor_task_id, actor_host_id, read_authorization_time()
+        decision_result = _read_authorize_and_decide(
+            transaction, command, now, transition_brief_identity, actor_task_id, actor_host_id, read_authorization_time
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result
@@ -820,9 +818,8 @@ def decide_and_commit_covered_completion(
     """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
 
     with store.write() as transaction:
-        facts = transaction.read_decision_facts(_transition_decision_scope(command), read_authorization_time())
-        decision_result = _validate_supplied_transition_and_decide(
-            facts, command, now, None, actor_task_id, actor_host_id, read_authorization_time()
+        decision_result = _read_authorize_and_decide(
+            transaction, command, now, None, actor_task_id, actor_host_id, read_authorization_time
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result

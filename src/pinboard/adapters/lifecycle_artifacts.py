@@ -21,7 +21,7 @@ from pinboard.adapters.files.root import (
     read_current_head_candidate,
     read_working_tree_candidate,
 )
-from pinboard.adapters.lifecycle_operations import SelectedTransition, transition_brief_identity
+from pinboard.adapters.lifecycle_operations import SelectedTransition
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.application import (
     candidate_snapshots,
@@ -143,6 +143,36 @@ def _committed_decision_failure(
     )
 
 
+def _publication_failure(
+    error: ArtifactAcceptanceAfterPublicationError | ArtifactError,
+    created: tuple[str, ...],
+) -> PublishedTransitionFailure:
+    """Account for only new publication; rethrow infrastructure failure before effects."""
+
+    if isinstance(error, ArtifactAcceptanceAfterPublicationError):
+        if not isinstance(error.cause, FileIOError):
+            raise error
+        return _published_failure(error.cause.code.value, str(error.cause), (*created, error.selector))
+    if not created:
+        raise error
+    return _published_failure(error.code.value, str(error), created)
+
+
+def _publication_terminal_result(
+    result: DecisionResult[CommittedEffect] | StorageError,
+    created: tuple[str, ...],
+) -> ArtifactTransitionResult:
+    """Classify the terminal commit against this invocation's exact new selectors."""
+
+    if isinstance(result, StorageError):
+        if not created:
+            raise result
+        return _published_failure(result.code.value, str(result), created, storage_error=result)
+    if isinstance(result, DecisionFailure):
+        return _committed_decision_failure(result, created) if created else result
+    return ArtifactTransitionSuccess(result, created)
+
+
 def _observe_review_candidate(
     source_checkout: Path,
     store: ports.WorkStore,
@@ -223,9 +253,7 @@ def _submit_review(
     try:
         publication = artifacts.publish(artifact)
     except ArtifactAcceptanceAfterPublicationError as error:
-        if not isinstance(error.cause, FileIOError):
-            raise
-        return _published_failure(error.cause.code.value, str(error.cause), (error.selector,))
+        return _publication_failure(error, ())
     reference = EvidenceArtifactRef(
         publication.reference.key,
         publication.reference.revision,
@@ -238,19 +266,8 @@ def _submit_review(
             store, command, operation_time, reference, read_authorization_time=read_authorization_time
         )
     except StorageError as error:
-        if publication.created:
-            return _published_failure(
-                error.code.value,
-                str(error),
-                (reference.selector,),
-                storage_error=error,
-            )
-        raise
-    if isinstance(result, DecisionFailure) and publication.created:
-        return _committed_decision_failure(result, (reference.selector,))
-    if isinstance(result, DecisionFailure):
-        return result
-    return ArtifactTransitionSuccess(result, (reference.selector,) if publication.created else ())
+        return _publication_terminal_result(error, (reference.selector,) if publication.created else ())
+    return _publication_terminal_result(result, (reference.selector,) if publication.created else ())
 
 
 def _evidence_reference(reference: stored_state.ArtifactReference | ArtifactRef) -> EvidenceArtifactRef:
@@ -341,7 +358,7 @@ def _checkpoint_context(
     return _CheckpointContext(brief, context.brief_reference, review_reference)
 
 
-def _publish_checkpoint(  # noqa: C901, PLR0912 - one ordered immutable publication boundary
+def _publish_checkpoint(
     work_root: Path,
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
@@ -463,18 +480,8 @@ def _publish_checkpoint(  # noqa: C901, PLR0912 - one ordered immutable publicat
         )
         if package_publication.created:
             created.append(package_publication.reference.selector)
-    except ArtifactAcceptanceAfterPublicationError as error:
-        if not isinstance(error.cause, FileIOError):
-            raise
-        return _published_failure(
-            error.cause.code.value,
-            str(error.cause),
-            (*created, error.selector),
-        )
-    except ArtifactError as error:
-        if created:
-            return _published_failure(error.code.value, str(error), tuple(created))
-        raise
+    except (ArtifactAcceptanceAfterPublicationError, ArtifactError) as error:
+        return _publication_failure(error, tuple(created))
     return (
         CheckpointArtifacts(
             candidate,
@@ -504,9 +511,6 @@ def _accept_checkpoint(
     if isinstance(published, (DecisionFailure, PublishedTransitionFailure)):
         return published
     checkpoint_artifacts, created = published
-    brief_identity = transition_brief_identity(store, command, artifacts)
-    if isinstance(brief_identity, DecisionFailure):
-        return brief_identity
     try:
         result = service.decide_and_commit_checkpoint_acceptance(
             store,
@@ -516,17 +520,11 @@ def _accept_checkpoint(
             read_authorization_time=read_authorization_time,
             actor_task_id=selected.actor_task_id,
             actor_host_id=selected.actor_host_id,
-            transition_brief_identity=brief_identity,
+            transition_brief_identity=None,
         )
     except StorageError as error:
-        if created:
-            return _published_failure(error.code.value, str(error), created, storage_error=error)
-        raise
-    if isinstance(result, DecisionFailure) and created:
-        return _committed_decision_failure(result, created)
-    if isinstance(result, DecisionFailure):
-        return result
-    return ArtifactTransitionSuccess(result, created)
+        return _publication_terminal_result(error, created)
+    return _publication_terminal_result(result, created)
 
 
 @dataclass(frozen=True, slots=True)
@@ -713,18 +711,8 @@ def _publish_completion(
         )
         if package_publication.created:
             created.append(package_publication.reference.selector)
-    except ArtifactAcceptanceAfterPublicationError as error:
-        if not isinstance(error.cause, FileIOError):
-            raise
-        return _published_failure(
-            error.cause.code.value,
-            str(error.cause),
-            (*created, error.selector),
-        )
-    except ArtifactError as error:
-        if created:
-            return _published_failure(error.code.value, str(error), tuple(created))
-        raise
+    except (ArtifactAcceptanceAfterPublicationError, ArtifactError) as error:
+        return _publication_failure(error, tuple(created))
     return (
         CompletionArtifacts(result, review, _evidence_reference(package_publication.reference)),
         tuple(created),
@@ -772,14 +760,8 @@ def _complete(
             actor_host_id=selected.actor_host_id,
         )
     except StorageError as error:
-        if created:
-            return _published_failure(error.code.value, str(error), created, storage_error=error)
-        raise
-    if isinstance(result, DecisionFailure) and created:
-        return _committed_decision_failure(result, created)
-    if isinstance(result, DecisionFailure):
-        return result
-    return ArtifactTransitionSuccess(result, created)
+        return _publication_terminal_result(error, created)
+    return _publication_terminal_result(result, created)
 
 
 def execute_artifact_transition(

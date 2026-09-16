@@ -1,28 +1,17 @@
 """Compose direct attempt-authority commands from observation through presentation."""
 
 import sys
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import assert_never
 from uuid import uuid4
 
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.application import authority_operations, ports, queries, query_models
+from pinboard.application import authority_operations, ports, queries
 from pinboard.cli import cli_commands, work_views
 from pinboard.cli.cli_output import authority_status_fields, write_json
 from pinboard.cli.errors import CommandFailure, CommandResult
-from pinboard.domain import authority_models, work_models
-from pinboard.domain.errors import (
-    DecisionFailure,
-    DecisionFailureCode,
-    EffectDisposition,
-    FailureDetails,
-    FailureFact,
-    FailureMismatch,
-    RetryDisposition,
-)
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import AttemptId, LeaseId
-from pinboard.domain.ledger import LedgerSnapshot
 
 type AttemptAuthorityCommand = (
     cli_commands.AttemptAcquireCommand
@@ -67,132 +56,6 @@ def show_attempt_authority_status(
     else:
         print("OK " + " ".join(f"{key}={value}" for key, value in values.items()))
     return 0
-
-
-def _find_attempt_record(snapshot: LedgerSnapshot, attempt_id: AttemptId) -> CommandResult[work_models.AttemptRecord]:
-    attempt = snapshot.attempt(attempt_id)
-    if attempt is None:
-        return CommandFailure(
-            DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, f"Attempt '{attempt_id}' is not current.", None
-        )
-    return attempt
-
-
-def _resolve_requested_attempt_acquisition(
-    snapshot: LedgerSnapshot,
-    attempt_record: work_models.AttemptRecord,
-    retained: query_models.AttemptAuthorityStatus | None,
-    command: cli_commands.AttemptAcquireCommand,
-    requested_at: datetime,
-) -> CommandResult[authority_models.AttemptAuthorityOperation]:
-    attempt_id = command.attempt_id
-    lease_id = LeaseId(uuid4().hex)
-    if retained is None:
-        return authority_models.AcquireInitialAttemptAuthority(
-            snapshot.host_epoch,
-            attempt_id,
-            attempt_record.item,
-            command.task_id,
-            command.host_id,
-            lease_id,
-            requested_at,
-            requested_at + timedelta(seconds=command.ttl_seconds),
-        )
-    state = retained.status
-    if state == authority_models.AttemptLeaseStatus.ACTIVE:
-        if retained.expires_at > requested_at:
-            return CommandFailure(
-                DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
-                "Attempt authority remains live.",
-                FailureDetails(
-                    observed=(
-                        FailureFact("attempt_id", str(attempt_id)),
-                        FailureFact("holder_task_id", str(retained.task_id)),
-                        FailureFact("holder_host_id", str(retained.host_id)),
-                        FailureFact("generation", retained.generation),
-                        FailureFact("expires_at", retained.expires_at.isoformat()),
-                        FailureFact("authority_status", retained.status.value),
-                    ),
-                    mismatches=(FailureMismatch("authority_availability", "available", "live-holder"),),
-                    retry=RetryDisposition.DO_NOT_RETRY,
-                    effect=EffectDisposition.UNCHANGED,
-                    changed_surfaces=(),
-                    alternatives=(),
-                ),
-            )
-        state = authority_models.AttemptLeaseStatus.EXPIRED
-    inactive = authority_models.InactiveAttemptAuthority(
-        snapshot.host_epoch,
-        attempt_id,
-        attempt_record.item,
-        retained.task_id,
-        retained.host_id,
-        retained.lease_id,
-        retained.generation,
-        retained.expires_at,
-        state,
-    )
-    return authority_models.TransferAttemptAuthority(
-        inactive,
-        command.task_id,
-        command.host_id,
-        lease_id,
-        requested_at,
-        requested_at + timedelta(seconds=command.ttl_seconds),
-    )
-
-
-def _resolve_supplied_attempt_authority(
-    snapshot: LedgerSnapshot,
-    attempt_id: AttemptId,
-) -> CommandResult[work_models.CommandAttemptAuthority]:
-    observed_authority = next(
-        (value for value in snapshot.command_attempt_authorities if value.attempt == attempt_id),
-        None,
-    )
-    if observed_authority is None:
-        return CommandFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority is not active.", None)
-    return observed_authority
-
-
-def _resolve_requested_attempt_change(
-    snapshot: LedgerSnapshot,
-    attempt_record: work_models.AttemptRecord,
-    retained: query_models.AttemptAuthorityStatus | None,
-    command: AttemptAuthorityCommand,
-    requested_at: datetime,
-) -> CommandResult[authority_models.AttemptAuthorityOperation]:
-    match command:
-        case cli_commands.AttemptAcquireCommand():
-            return _resolve_requested_attempt_acquisition(snapshot, attempt_record, retained, command, requested_at)
-        case cli_commands.AttemptRenewCommand():
-            supplied_authority = _resolve_supplied_attempt_authority(snapshot, command.attempt_id)
-            if isinstance(supplied_authority, CommandFailure):
-                return supplied_authority
-            return authority_models.RenewAttemptAuthority(
-                replace(supplied_authority, lease_id=command.lease_id, generation=command.generation),
-                requested_at,
-                requested_at + timedelta(seconds=command.ttl_seconds),
-            )
-        case cli_commands.AttemptReleaseCommand():
-            supplied_authority = _resolve_supplied_attempt_authority(snapshot, command.attempt_id)
-            if isinstance(supplied_authority, CommandFailure):
-                return supplied_authority
-            return authority_models.ReleaseAttemptAuthority(
-                replace(supplied_authority, lease_id=command.lease_id, generation=command.generation),
-                requested_at,
-            )
-        case cli_commands.AttemptRevokeCommand():
-            return authority_models.RevokeAttemptAuthority(
-                command.attempt_id,
-                command.lease_id,
-                command.generation,
-                command.task_id,
-                command.host_id,
-                requested_at,
-            )
-        case _ as unreachable:
-            assert_never(unreachable)
 
 
 def change_attempt_authority(

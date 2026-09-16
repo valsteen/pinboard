@@ -1063,12 +1063,9 @@ class TransitionRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True
         _require_state_changed(self.state_changed, False)
 
 
-class TransitionFailedAfterPublication(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-transition-result/v1"]
-    status: Literal["failed-after-publication"]
-    action_id: ActionIdentity
-    code: NonEmptyText
-    message: NonEmptyText
+class PublishedFailureResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Publication already changed durable bytes; exact result leaves own identity and code."""
+
     state_changed: bool
     effect: Literal["committed"]
     retry: Literal["do-not-retry"]
@@ -1078,6 +1075,14 @@ class TransitionFailedAfterPublication(msgspec.Struct, frozen=True, forbid_unkno
 
     def __post_init__(self) -> None:
         _require_state_changed(self.state_changed, True)
+
+
+class TransitionFailedAfterPublication(PublishedFailureResult, frozen=True):
+    schema: Literal["pinboard-mcp-transition-result/v1"]
+    status: Literal["failed-after-publication"]
+    action_id: ActionIdentity
+    code: NonEmptyText
+    message: NonEmptyText
 
 
 class PreparationAuthorityConflict(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1133,19 +1138,17 @@ class PreparationAuthorityStatusAbsent(msgspec.Struct, frozen=True, forbid_unkno
         _require_state_changed(self.state_changed, False)
 
 
-class PreparationAuthorityCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
+class AuthorityCommittedResult[StatusT](msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Reloaded committed authority and its optional replaceable-view warning."""
+
     status: Literal["committed", "committed-with-warning"]
-    item_id: PathComponent
-    definition_revision: PositiveInt
-    definition_digest: Sha256
     task_id: RuntimeIdentity
     host_id: RuntimeIdentity
     lease_id: RuntimeIdentity
     generation: PositiveInt
     acquired_at: NonEmptyText
     expires_at: NonEmptyText
-    authority_status: authority_models.PreparationLeaseStatus
+    authority_status: StatusT
     committed_revision: PositiveInt
     history_id: PositiveInt
     state_changed: bool
@@ -1158,6 +1161,13 @@ class PreparationAuthorityCommitted(msgspec.Struct, frozen=True, forbid_unknown_
         _require_state_changed(self.state_changed, True)
         if (self.status == "committed-with-warning") != (self.warning is not None):
             raise ValueError("committed-with-warning must carry one warning")
+
+
+class PreparationAuthorityCommitted(AuthorityCommittedResult[authority_models.PreparationLeaseStatus], frozen=True):
+    schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
+    item_id: PathComponent
+    definition_revision: PositiveInt
+    definition_digest: Sha256
 
 
 class PreparationAuthorityRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1211,30 +1221,10 @@ class AttemptAuthorityStatusAbsent(msgspec.Struct, frozen=True, forbid_unknown_f
         _require_state_changed(self.state_changed, False)
 
 
-class AttemptAuthorityCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class AttemptAuthorityCommitted(AuthorityCommittedResult[authority_models.AttemptLeaseStatus], frozen=True):
     schema: Literal["pinboard-mcp-attempt-authority-result/v1"]
-    status: Literal["committed", "committed-with-warning"]
     attempt_id: PathComponent
     item_id: PathComponent
-    task_id: RuntimeIdentity
-    host_id: RuntimeIdentity
-    lease_id: RuntimeIdentity
-    generation: PositiveInt
-    acquired_at: NonEmptyText
-    expires_at: NonEmptyText
-    authority_status: authority_models.AttemptLeaseStatus
-    committed_revision: PositiveInt
-    history_id: PositiveInt
-    state_changed: bool
-    effect: Literal["committed"]
-    retry: Literal["do-not-retry"]
-    changed_surfaces: LedgerSurface
-    warning: WarningResult | None
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
-        if (self.status == "committed-with-warning") != (self.warning is not None):
-            raise ValueError("committed-with-warning must carry one warning")
 
 
 class AttemptAuthorityRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1480,20 +1470,11 @@ class BriefRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
         _require_state_changed(self.state_changed, False)
 
 
-class BriefPublishedRejection(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefPublishedRejection(PublishedFailureResult, frozen=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["rejected"]
     code: Literal["ACTION_NOT_AVAILABLE"]
     message: NonEmptyText
-    state_changed: bool
-    effect: Literal["committed"]
-    retry: Literal["do-not-retry"]
-    changed_surfaces: ArtifactSurface
-    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
-    mismatches: tuple[FailureMismatch, ...]
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
 
 
 class BriefPublicationAcceptanceFailure(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

@@ -46,6 +46,7 @@ from pinboard.application import (
     work_briefs,
 )
 from pinboard.application.artifact_publication import AcceptedArtifactPublication
+from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.ports import GeneratedViewReader
 from pinboard.domain import decision_models
 from pinboard.domain.errors import (
@@ -1567,11 +1568,10 @@ def _authority_rejection_details(failure: DecisionFailure) -> dict[str, JsonValu
     }
 
 
-def _preparation_conflict(
-    retained: query_models.PreparationAuthorityStatus | None,
-) -> dict[str, JsonValue] | None:
-    if retained is None:
-        return None
+def _authority_identity(
+    retained: query_models.PreparationAuthorityStatus | query_models.AttemptAuthorityStatus,
+) -> dict[str, JsonValue]:
+    """Render shared authority claims without erasing the family's scope or status enum."""
     return {
         "task_id": retained.task_id,
         "host_id": retained.host_id,
@@ -1582,16 +1582,23 @@ def _preparation_conflict(
     }
 
 
-def _attempt_conflict(retained: query_models.AttemptAuthorityStatus | None) -> dict[str, JsonValue] | None:
-    if retained is None:
-        return None
+def _authority_conflict(
+    retained: query_models.PreparationAuthorityStatus | query_models.AttemptAuthorityStatus | None,
+) -> dict[str, JsonValue] | None:
+    return None if retained is None else _authority_identity(retained)
+
+
+def _committed_authority_fields(effect: CommittedEffect, warning: ViewWarning | None) -> dict[str, JsonValue]:
+    """Render the durable receipt and optional warning; callers refresh views explicitly."""
     return {
-        "task_id": retained.task_id,
-        "host_id": retained.host_id,
-        "lease_id": retained.lease_id,
-        "generation": retained.generation,
-        "expires_at": retained.expires_at.isoformat(),
-        "authority_status": retained.status.value,
+        "status": "committed" if warning is None else "committed-with-warning",
+        "committed_revision": effect.receipt.project_revision,
+        "history_id": int(effect.receipt.history_id),
+        "state_changed": True,
+        "effect": EffectDisposition.COMMITTED.value,
+        "retry": RetryDisposition.DO_NOT_RETRY.value,
+        "changed_surfaces": [ChangedSurface.LEDGER.value],
+        "warning": None if warning is None else {"message": warning.message, "recovery": warning.repair},
     }
 
 
@@ -1671,13 +1678,8 @@ def _preparation_authority(
                 "item_id": selected.item_id,
                 "definition_revision": selected.definition_revision,
                 "definition_digest": selected.definition_digest,
-                "task_id": selected.task_id,
-                "host_id": selected.host_id,
-                "lease_id": selected.lease_id,
-                "generation": selected.generation,
+                **_authority_identity(selected),
                 "acquired_at": selected.acquired_at.isoformat(),
-                "expires_at": selected.expires_at.isoformat(),
-                "authority_status": selected.status.value,
                 "state_changed": False,
                 "effect": EffectDisposition.UNCHANGED.value,
                 "retry": "safe-to-repeat",
@@ -1744,7 +1746,7 @@ def _preparation_authority(
                 "item_id": request.item_id,
                 "code": result.code.value,
                 "message": result.message,
-                "conflict": _preparation_conflict(
+                "conflict": _authority_conflict(
                     authority_operations.preparation_authority_status(store, ItemId(request.item_id), now)
                 ),
                 "state_changed": False,
@@ -1764,24 +1766,12 @@ def _preparation_authority(
     return OperationResult(
         {
             "schema": "pinboard-mcp-preparation-authority-result/v1",
-            "status": "committed" if warning is None else "committed-with-warning",
             "item_id": retained.item_id,
             "definition_revision": retained.definition_revision,
             "definition_digest": retained.definition_digest,
-            "task_id": retained.task_id,
-            "host_id": retained.host_id,
-            "lease_id": retained.lease_id,
-            "generation": retained.generation,
+            **_authority_identity(retained),
             "acquired_at": retained.acquired_at.isoformat(),
-            "expires_at": retained.expires_at.isoformat(),
-            "authority_status": retained.status.value,
-            "committed_revision": result.effect.receipt.project_revision,
-            "history_id": int(result.effect.receipt.history_id),
-            "state_changed": True,
-            "effect": EffectDisposition.COMMITTED.value,
-            "retry": RetryDisposition.DO_NOT_RETRY.value,
-            "changed_surfaces": [ChangedSurface.LEDGER.value],
-            "warning": None if warning is None else {"message": warning.message, "recovery": warning.repair},
+            **_committed_authority_fields(result.effect, warning),
         },
         "committed" if warning is None else "committed-warning",
         str(result.effect.receipt.project_revision),
@@ -1862,13 +1852,8 @@ def _attempt_authority(
                 "schema": "pinboard-mcp-attempt-authority-result/v1",
                 "status": "present",
                 "attempt_id": selected.attempt_id,
-                "task_id": selected.task_id,
-                "host_id": selected.host_id,
-                "lease_id": selected.lease_id,
-                "generation": selected.generation,
+                **_authority_identity(selected),
                 "acquired_at": selected.acquired_at.isoformat(),
-                "expires_at": selected.expires_at.isoformat(),
-                "authority_status": selected.status.value,
                 "state_changed": False,
                 "effect": EffectDisposition.UNCHANGED.value,
                 "retry": "safe-to-repeat",
@@ -1935,7 +1920,7 @@ def _attempt_authority(
                 "attempt_id": request.attempt_id,
                 "code": result.code.value,
                 "message": result.message,
-                "conflict": _attempt_conflict(
+                "conflict": _authority_conflict(
                     authority_operations.attempt_authority_status(store, AttemptId(request.attempt_id), now)
                 ),
                 "state_changed": False,
@@ -1958,23 +1943,11 @@ def _attempt_authority(
     return OperationResult(
         {
             "schema": "pinboard-mcp-attempt-authority-result/v1",
-            "status": "committed" if warning is None else "committed-with-warning",
             "attempt_id": retained.attempt_id,
             "item_id": item_id,
-            "task_id": retained.task_id,
-            "host_id": retained.host_id,
-            "lease_id": retained.lease_id,
-            "generation": retained.generation,
+            **_authority_identity(retained),
             "acquired_at": retained.acquired_at.isoformat(),
-            "expires_at": retained.expires_at.isoformat(),
-            "authority_status": retained.status.value,
-            "committed_revision": result.effect.receipt.project_revision,
-            "history_id": int(result.effect.receipt.history_id),
-            "state_changed": True,
-            "effect": EffectDisposition.COMMITTED.value,
-            "retry": RetryDisposition.DO_NOT_RETRY.value,
-            "changed_surfaces": [ChangedSurface.LEDGER.value],
-            "warning": None if warning is None else {"message": warning.message, "recovery": warning.repair},
+            **_committed_authority_fields(result.effect, warning),
         },
         "committed" if warning is None else "committed-warning",
         str(result.effect.receipt.project_revision),

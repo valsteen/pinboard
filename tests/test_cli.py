@@ -20,6 +20,7 @@ from unittest.mock import patch
 import msgspec
 from msgspec.structs import replace as replace_struct
 
+from pinboard.adapters import lifecycle_operations
 from pinboard.adapters.files import artifacts as artifact_files
 from pinboard.adapters.files import views as file_views
 from pinboard.adapters.files.artifacts import ArtifactRepository
@@ -299,7 +300,7 @@ class CliTest(unittest.TestCase):
             patch("pinboard.cli.action_selection.select_current_action", return_value=wrong_action),
             patch("pinboard.adapters.sqlite.store.read_selected_decision_facts", return_value=wrong_facts),
             patch(
-                "pinboard.cli.transitions.observe_checkout_identity",
+                "pinboard.adapters.lifecycle_operations.observe_checkout_identity",
                 return_value=("codex/work-c", "candidate-base"),
             ),
         ):
@@ -382,7 +383,7 @@ class CliTest(unittest.TestCase):
             )
             before = store.validated_snapshot()
             with patch(
-                "pinboard.cli.transitions.observe_checkout_identity",
+                "pinboard.adapters.lifecycle_operations.observe_checkout_identity",
                 return_value=("codex/work-c", "candidate-base"),
             ):
                 rejected, _stdout, rejected_stderr = self.run_transition(
@@ -2189,7 +2190,7 @@ class CliTest(unittest.TestCase):
             patch("pinboard.cli.action_selection.datetime") as selection_clock,
             patch("pinboard.cli.transitions.datetime") as transition_clock,
             patch(
-                "pinboard.cli.transitions.observe_checkout_identity",
+                "pinboard.adapters.lifecycle_operations.observe_checkout_identity",
                 return_value=("codex/work-c", "candidate-base"),
             ),
         ):
@@ -2371,7 +2372,7 @@ class CliTest(unittest.TestCase):
                 checkout_patch = contextlib.nullcontext()
                 if name == "unreadable-checkout":
                     checkout_patch = patch(
-                        "pinboard.cli.transitions.observe_checkout_identity",
+                        "pinboard.adapters.lifecycle_operations.observe_checkout_identity",
                         side_effect=RootError(
                             RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
                             "checkout unavailable",
@@ -6302,7 +6303,7 @@ Not launchable:
             ),
             encoding="utf-8",
         )
-        commit_transition = transition_interface.decide_and_commit_transition
+        commit_transition = lifecycle_operations.service.decide_and_commit_transition
 
         def commit_then_create_disjoint_proposal(
             selected_store: WorkStore,
@@ -6337,7 +6338,7 @@ Not launchable:
             return commit_result
 
         with patch(
-            "pinboard.cli.transitions.decide_and_commit_transition",
+            "pinboard.adapters.lifecycle_operations.service.decide_and_commit_transition",
             side_effect=commit_then_create_disjoint_proposal,
         ):
             result, stdout, stderr = self.run_transition(common, action, payload, json_output=False)
@@ -6361,7 +6362,7 @@ Not launchable:
         action = self.project_action(common, "pause:work-a-1")
         payload = project / "pause-after-race.json"
         payload.write_text('{"reason":"Pause after current work."}\n', encoding="utf-8")
-        commit_transition = transition_interface.decide_and_commit_transition
+        commit_transition = lifecycle_operations.service.decide_and_commit_transition
 
         def commit_disjoint_change_then_recheck(
             selected_store: WorkStore,
@@ -6405,7 +6406,7 @@ Not launchable:
             )
 
         with patch(
-            "pinboard.cli.transitions.decide_and_commit_transition",
+            "pinboard.adapters.lifecycle_operations.service.decide_and_commit_transition",
             side_effect=commit_disjoint_change_then_recheck,
         ):
             result, stdout, stderr = self.run_transition(common, action, payload, json_output=True)

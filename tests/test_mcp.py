@@ -25,13 +25,21 @@ from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import queries, query_models, stored_state
+from pinboard.application import authority_operations, queries, query_models, stored_state
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.ports import WorkStoreError
 from pinboard.application.work_briefs import canonical_work_brief_bytes
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailure
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, ItemId
+from pinboard.domain.errors import (
+    ChangedSurface,
+    DecisionFailure,
+    DecisionFailureCode,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    RetryDisposition,
+)
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
 from pinboard.mcp import contracts
 from pinboard.mcp import server as mcp_server
 from tests.domain_support import action
@@ -187,6 +195,600 @@ class McpTransportTest(unittest.TestCase):
             ),
         )
         return temporary, project, roots
+
+    def test_stdio_authority_and_transition_tools_persist_exact_lifecycle_results(self) -> None:
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        parameters = StdioServerParameters(command=sys.executable, args=("-m", "pinboard.mcp"))
+
+        async def scenario() -> tuple[CallToolResult, ...]:
+            async with (
+                stdio_client(parameters) as streams,
+                ClientSession(*streams) as session,
+            ):
+                await session.initialize()
+                preparation_status = await session.call_tool(
+                    mcp_server.PREPARATION_AUTHORITY_TOOL,
+                    {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "operation": "status",
+                        "item_id": "work-c",
+                    },
+                )
+                preparation_start = await session.call_tool(
+                    mcp_server.PREPARATION_AUTHORITY_TOOL,
+                    {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "operation": "start",
+                        "item_id": "work-c",
+                        "task_id": "preparer-task",
+                        "host_id": "local",
+                        "ttl_seconds": 600,
+                    },
+                )
+                started = preparation_start.structured_content
+                if not isinstance(started, dict):
+                    raise AssertionError("Preparation start did not return structured content.")
+                preparation_renew = await session.call_tool(
+                    mcp_server.PREPARATION_AUTHORITY_TOOL,
+                    {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "operation": "renew",
+                        "item_id": "work-c",
+                        "lease_id": started["lease_id"],
+                        "generation": started["generation"],
+                        "ttl_seconds": 1200,
+                    },
+                )
+                renewed = preparation_renew.structured_content
+                if not isinstance(renewed, dict):
+                    raise AssertionError("Preparation renewal did not return structured content.")
+                preparation_release = await session.call_tool(
+                    mcp_server.PREPARATION_AUTHORITY_TOOL,
+                    {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "operation": "release",
+                        "item_id": "work-c",
+                        "lease_id": renewed["lease_id"],
+                        "generation": renewed["generation"],
+                    },
+                )
+                attempt_status = await session.call_tool(
+                    mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                    {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "operation": "status",
+                        "attempt_id": "work-a-1",
+                    },
+                )
+                invalid_payload = await session.call_tool(
+                    mcp_server.TRANSITION_TOOL,
+                    {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "role": "project",
+                        "receipt": {
+                            "action_id": {"kind": "pause", "subject": "work-a-1"},
+                            "subject_revision": "8",
+                        },
+                        "payload": {"reason": "Invalid leaf.", "unknown": True},
+                        "actor_task_id": "project-task",
+                        "actor_host_id": "local",
+                    },
+                )
+                transition = await session.call_tool(
+                    mcp_server.TRANSITION_TOOL,
+                    {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "role": "project",
+                        "receipt": {
+                            "action_id": {"kind": "pause", "subject": "work-a-1"},
+                            "subject_revision": "8",
+                        },
+                        "payload": {"reason": "Pause through the MCP lifecycle boundary."},
+                        "actor_task_id": "project-task",
+                        "actor_host_id": "local",
+                    },
+                )
+                stale = await session.call_tool(
+                    mcp_server.TRANSITION_TOOL,
+                    {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "role": "project",
+                        "receipt": {
+                            "action_id": {"kind": "pause", "subject": "work-a-1"},
+                            "subject_revision": "8",
+                        },
+                        "payload": {"reason": "This stale receipt must not commit."},
+                        "actor_task_id": "project-task",
+                        "actor_host_id": "local",
+                    },
+                )
+                return (
+                    preparation_status,
+                    preparation_start,
+                    preparation_renew,
+                    preparation_release,
+                    attempt_status,
+                    invalid_payload,
+                    transition,
+                    stale,
+                )
+
+        results = _run_async(scenario())
+        for result in results:
+            self.assertFalse(result.is_error)
+            self.assertIsInstance(result.structured_content, dict)
+        contents = tuple(result.structured_content for result in results)
+        self.assertEqual("absent", contents[0]["status"])
+        self.assertEqual(("committed", "committed", "committed"), tuple(value["status"] for value in contents[1:4]))
+        self.assertEqual((1, 1, 2), tuple(value["generation"] for value in contents[1:4]))
+        self.assertEqual("released", contents[3]["authority_status"])
+        self.assertEqual("present", contents[4]["status"])
+        self.assertEqual("rejected", contents[5]["status"])
+        self.assertEqual("TRANSITION_INPUT_INVALID", contents[5]["code"])
+        self.assertIn(contents[6]["status"], {"committed", "committed-with-warning"})
+        self.assertEqual("rejected", contents[7]["status"])
+        self.assertFalse(contents[7]["state_changed"])
+
+        reopened = SQLiteWorkStore(roots.database_path)
+        preparation = reopened.read_preparation_authority_status(ItemId("work-c"))
+        self.assertIsNotNone(preparation)
+        assert preparation is not None
+        self.assertEqual("released", preparation.status.value)
+        attempt = reopened.read_attempt_context(AttemptId("work-a-1"))
+        self.assertIsInstance(attempt, query_models.NonterminalAttemptContextFacts)
+        assert isinstance(attempt, query_models.NonterminalAttemptContextFacts)
+        self.assertEqual("paused", attempt.state.value)
+
+    def test_in_process_authority_and_transition_handlers_cover_exact_mutations(  # noqa: C901, PLR0915 - one complete authority matrix
+        self,
+    ) -> None:
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=4)
+        server = mcp_server.create_server(
+            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
+        )
+        common: dict[str, contracts.JsonValue] = {
+            "project_root": str(project),
+            "work_root": str(roots.work_root),
+        }
+
+        async def call(tool_name: str, arguments: dict[str, contracts.JsonValue]) -> CallToolResult:
+            result = await server.call_tool(tool_name, arguments)
+            if not isinstance(result, CallToolResult):
+                raise AssertionError("The lifecycle tool requested additional input.")
+            return result
+
+        def selected_action(result: CallToolResult) -> dict[str, contracts.JsonValue]:
+            content = result.structured_content
+            if not isinstance(content, dict):
+                raise AssertionError("Action discovery did not return structured content.")
+            actions = content.get("actions")
+            if not isinstance(actions, list) or len(actions) != 1 or not isinstance(actions[0], dict):
+                raise AssertionError("Action discovery did not return one exact action.")
+            return actions[0]
+
+        async def scenario() -> tuple[CallToolResult, ...]:  # noqa: PLR0915 - one complete authority matrix
+            preparation_status = await call(
+                mcp_server.PREPARATION_AUTHORITY_TOOL,
+                common | {"operation": "status", "item_id": "work-c"},
+            )
+            preparation_start = await call(
+                mcp_server.PREPARATION_AUTHORITY_TOOL,
+                common
+                | {
+                    "operation": "start",
+                    "item_id": "work-c",
+                    "task_id": "preparer-task",
+                    "host_id": "local",
+                    "ttl_seconds": 600,
+                },
+            )
+            started = preparation_start.structured_content
+            if not isinstance(started, dict):
+                raise AssertionError("Preparation start did not return structured content.")
+            preparation_present = await call(
+                mcp_server.PREPARATION_AUTHORITY_TOOL,
+                common | {"operation": "status", "item_id": "work-c"},
+            )
+            preparation_conflict = await call(
+                mcp_server.PREPARATION_AUTHORITY_TOOL,
+                common
+                | {
+                    "operation": "start",
+                    "item_id": "work-c",
+                    "task_id": "competing-preparer",
+                    "host_id": "local",
+                    "ttl_seconds": 600,
+                },
+            )
+            preparation_invalid = await call(
+                mcp_server.PREPARATION_AUTHORITY_TOOL,
+                common | {"operation": "unsupported", "item_id": "work-c"},
+            )
+            preparation_renew = await call(
+                mcp_server.PREPARATION_AUTHORITY_TOOL,
+                common
+                | {
+                    "operation": "renew",
+                    "item_id": "work-c",
+                    "lease_id": started["lease_id"],
+                    "generation": started["generation"],
+                    "ttl_seconds": 1200,
+                },
+            )
+            renewed = preparation_renew.structured_content
+            if not isinstance(renewed, dict):
+                raise AssertionError("Preparation renewal did not return structured content.")
+            preparation_action_arguments: dict[str, contracts.JsonValue] = {
+                **common,
+                "role": "preparer",
+                "lease_id": renewed["lease_id"],
+                "generation": renewed["generation"],
+                "action_id": {"kind": "activate", "subject": "work-c"},
+            }
+            preparation_actions = await call(mcp_server.ACTIONS_TOOL, preparation_action_arguments)
+            activation_action = selected_action(preparation_actions)
+            activation_arguments: dict[str, contracts.JsonValue] = {
+                **common,
+                "role": "preparer",
+                "receipt": {
+                    "action_id": activation_action["action_id"],
+                    "subject_revision": activation_action["subject_revision"],
+                },
+                "payload": {"brief_artifact_ref_id": 999},
+                "lease_id": renewed["lease_id"],
+                "generation": renewed["generation"],
+            }
+            activation_rejected = await call(mcp_server.TRANSITION_TOOL, activation_arguments)
+            preparation_release = await call(
+                mcp_server.PREPARATION_AUTHORITY_TOOL,
+                common
+                | {
+                    "operation": "release",
+                    "item_id": "work-c",
+                    "lease_id": renewed["lease_id"],
+                    "generation": renewed["generation"],
+                },
+            )
+            preparation_restart = await call(
+                mcp_server.PREPARATION_AUTHORITY_TOOL,
+                common
+                | {
+                    "operation": "start",
+                    "item_id": "work-c",
+                    "task_id": "replacement-preparer",
+                    "host_id": "local",
+                    "ttl_seconds": 600,
+                },
+            )
+            restarted = preparation_restart.structured_content
+            if not isinstance(restarted, dict):
+                raise AssertionError("Preparation restart did not return structured content.")
+            preparation_revoke = await call(
+                mcp_server.PREPARATION_AUTHORITY_TOOL,
+                common
+                | {
+                    "operation": "revoke",
+                    "item_id": "work-c",
+                    "lease_id": restarted["lease_id"],
+                    "generation": restarted["generation"],
+                    "actor_task_id": "project-task",
+                    "actor_host_id": "local",
+                },
+            )
+            attempt_status = await call(
+                mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                common | {"operation": "status", "attempt_id": "work-a-1"},
+            )
+            attempt_absent = await call(
+                mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                common | {"operation": "status", "attempt_id": "missing-attempt"},
+            )
+            attempt_invalid = await call(
+                mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                common | {"operation": "unsupported", "attempt_id": "work-a-1"},
+            )
+            held = attempt_status.structured_content
+            if not isinstance(held, dict):
+                raise AssertionError("Attempt status did not return structured content.")
+            attempt_conflict = await call(
+                mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                common
+                | {
+                    "operation": "acquire",
+                    "attempt_id": "work-a-1",
+                    "task_id": "competing-worker",
+                    "host_id": "local",
+                    "ttl_seconds": 600,
+                },
+            )
+            worker_action_arguments: dict[str, contracts.JsonValue] = {
+                **common,
+                "role": "worker",
+                "lease_id": held["lease_id"],
+                "generation": held["generation"],
+                "action_id": {"kind": "submit-review", "subject": "work-a-1"},
+            }
+            worker_actions = await call(mcp_server.ACTIONS_TOOL, worker_action_arguments)
+            submit_action = selected_action(worker_actions)
+            submit_arguments: dict[str, contracts.JsonValue] = {
+                **common,
+                "role": "worker",
+                "receipt": {
+                    "action_id": submit_action["action_id"],
+                    "subject_revision": submit_action["subject_revision"],
+                },
+                "payload": {"candidate": "candidate"},
+                "lease_id": held["lease_id"],
+                "generation": held["generation"],
+            }
+            publication_details = FailureDetails(
+                observed=(FailureFact("published_artifact_selector", "artifacts/evidence/candidate/1.json"),),
+                mismatches=(),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.COMMITTED,
+                changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+                alternatives=(),
+            )
+            with patch.object(
+                mcp_server.lifecycle_artifacts,
+                "execute_artifact_transition",
+                return_value=mcp_server.lifecycle_artifacts.PublishedTransitionFailure(
+                    "FILE_PUBLISH_FAILED", "publication failed", publication_details, None
+                ),
+            ):
+                publication_failed = await call(mcp_server.TRANSITION_TOOL, submit_arguments)
+            with patch.object(
+                mcp_server.lifecycle_artifacts,
+                "execute_artifact_transition",
+                return_value=DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    "candidate changed after publication",
+                    publication_details,
+                ),
+            ):
+                decision_failed = await call(mcp_server.TRANSITION_TOOL, submit_arguments)
+            attempt_renew = await call(
+                mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                common
+                | {
+                    "operation": "renew",
+                    "attempt_id": "work-a-1",
+                    "lease_id": held["lease_id"],
+                    "generation": held["generation"],
+                    "ttl_seconds": 1200,
+                },
+            )
+            attempt_renewed = attempt_renew.structured_content
+            if not isinstance(attempt_renewed, dict):
+                raise AssertionError("Attempt renewal did not return structured content.")
+            attempt_release = await call(
+                mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                common
+                | {
+                    "operation": "release",
+                    "attempt_id": "work-a-1",
+                    "lease_id": attempt_renewed["lease_id"],
+                    "generation": attempt_renewed["generation"],
+                },
+            )
+            attempt_acquire = await call(
+                mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                common
+                | {
+                    "operation": "acquire",
+                    "attempt_id": "work-a-1",
+                    "task_id": "replacement-worker",
+                    "host_id": "local",
+                    "ttl_seconds": 600,
+                },
+            )
+            acquired = attempt_acquire.structured_content
+            if not isinstance(acquired, dict):
+                raise AssertionError("Attempt acquisition did not return structured content.")
+            attempt_revoke = await call(
+                mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                common
+                | {
+                    "operation": "revoke",
+                    "attempt_id": "work-a-1",
+                    "lease_id": acquired["lease_id"],
+                    "generation": acquired["generation"],
+                    "actor_task_id": "project-task",
+                    "actor_host_id": "local",
+                },
+            )
+            stale_attempt_renew = await call(
+                mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                common
+                | {
+                    "operation": "renew",
+                    "attempt_id": "work-a-1",
+                    "lease_id": acquired["lease_id"],
+                    "generation": acquired["generation"],
+                    "ttl_seconds": 600,
+                },
+            )
+            invalid_arguments: dict[str, contracts.JsonValue] = {
+                **common,
+                "role": "project",
+                "receipt": {
+                    "action_id": {"kind": "pause", "subject": "work-a-1"},
+                    "subject_revision": "8",
+                },
+                "payload": {"reason": "Invalid leaf.", "unknown": True},
+                "actor_task_id": "project-task",
+                "actor_host_id": "local",
+            }
+            invalid = await call(mcp_server.TRANSITION_TOOL, invalid_arguments)
+            committed_arguments: dict[str, contracts.JsonValue] = {
+                **common,
+                "role": "project",
+                "receipt": {
+                    "action_id": {"kind": "pause", "subject": "work-a-1"},
+                    "subject_revision": "8",
+                },
+                "payload": {"reason": "Pause through the direct MCP handler."},
+                "actor_task_id": "project-task",
+                "actor_host_id": "local",
+            }
+            committed = await call(mcp_server.TRANSITION_TOOL, committed_arguments)
+            return (
+                preparation_status,
+                preparation_start,
+                preparation_present,
+                preparation_conflict,
+                preparation_invalid,
+                preparation_renew,
+                preparation_actions,
+                activation_rejected,
+                preparation_release,
+                preparation_restart,
+                preparation_revoke,
+                attempt_status,
+                attempt_absent,
+                attempt_invalid,
+                attempt_conflict,
+                worker_actions,
+                publication_failed,
+                decision_failed,
+                attempt_renew,
+                attempt_release,
+                attempt_acquire,
+                attempt_revoke,
+                stale_attempt_renew,
+                invalid,
+                committed,
+            )
+
+        try:
+            results = _run_async(scenario())
+        finally:
+            executor.shutdown()
+        contents = tuple(result.structured_content for result in results)
+        for result, content in zip(results, contents, strict=True):
+            self.assertIsInstance(result, CallToolResult)
+            self.assertIsInstance(content, dict)
+        self.assertEqual("absent", contents[0]["status"])
+        self.assertEqual("present", contents[2]["status"])
+        self.assertEqual("rejected", contents[3]["status"])
+        self.assertIsNotNone(contents[3]["conflict"])
+        self.assertEqual("TRANSITION_INPUT_INVALID", contents[4]["code"])
+        self.assertEqual("TRANSITION_INPUT_INVALID", contents[7]["code"])
+        self.assertEqual("released", contents[8]["authority_status"])
+        self.assertEqual("revoked", contents[10]["authority_status"])
+        self.assertEqual("absent", contents[12]["status"])
+        self.assertEqual("TRANSITION_INPUT_INVALID", contents[13]["code"])
+        self.assertIsNotNone(contents[14]["conflict"])
+        self.assertEqual("failed-after-publication", contents[16]["status"])
+        self.assertEqual("failed-after-publication", contents[17]["status"])
+        self.assertEqual("released", contents[19]["authority_status"])
+        self.assertEqual("active", contents[20]["authority_status"])
+        self.assertEqual("revoked", contents[21]["authority_status"])
+        self.assertEqual("rejected", contents[22]["status"])
+        self.assertEqual("TRANSITION_INPUT_INVALID", contents[23]["code"])
+        self.assertIn(contents[24]["status"], {"committed", "committed-with-warning"})
+
+    def test_shared_authority_operations_reject_invalid_internal_requests(self) -> None:
+        temporary, _project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        store = SQLiteWorkStore(roots.database_path)
+        now = datetime.now(UTC)
+        later = now + timedelta(days=365)
+
+        expired_attempt = authority_operations.attempt_authority_status(store, AttemptId("work-a-1"), later)
+        self.assertIsNotNone(expired_attempt)
+        assert expired_attempt is not None
+        self.assertEqual("expired", expired_attempt.status.value)
+        missing = authority_operations.acquire_attempt_authority(
+            store,
+            attempt_id=AttemptId("missing-attempt"),
+            task_id=TaskId("worker"),
+            host_id=HostId("local"),
+            lease_id=LeaseId("missing-lease"),
+            acquired_at=now,
+            expires_at=now + timedelta(minutes=5),
+        )
+        self.assertIsInstance(missing, DecisionFailure)
+        missing_change = authority_operations.change_attempt_authority(
+            store,
+            operation="release",
+            attempt_id=AttemptId("missing-attempt"),
+            lease_id=LeaseId("missing-lease"),
+            generation=1,
+            operation_time=now,
+            expires_at=None,
+            actor_task_id=None,
+            actor_host_id=None,
+        )
+        self.assertIsInstance(missing_change, DecisionFailure)
+        for operation, expires_at, actor_task_id, actor_host_id in (
+            ("renew", None, None, None),
+            ("revoke", None, None, None),
+            ("unsupported", None, None, None),
+        ):
+            with self.subTest(operation=operation), self.assertRaises(ValueError):
+                authority_operations.change_attempt_authority(
+                    store,
+                    operation=operation,
+                    attempt_id=AttemptId("work-a-1"),
+                    lease_id=LeaseId("attempt-lease-a"),
+                    generation=3,
+                    operation_time=now,
+                    expires_at=expires_at,
+                    actor_task_id=actor_task_id,
+                    actor_host_id=actor_host_id,
+                )
+
+        started = authority_operations.start_preparation_authority(
+            store,
+            item_id=ItemId("work-c"),
+            task_id=TaskId("preparer"),
+            host_id=HostId("local"),
+            lease_id=LeaseId("preparation-lease"),
+            acquired_at=now,
+            expires_at=now + timedelta(minutes=5),
+        )
+        self.assertNotIsInstance(started, DecisionFailure)
+        expired_preparation = authority_operations.preparation_authority_status(store, ItemId("work-c"), later)
+        self.assertIsNotNone(expired_preparation)
+        assert expired_preparation is not None
+        self.assertEqual("expired", expired_preparation.status.value)
+        missing_preparation = authority_operations.change_preparation_authority(
+            store,
+            operation="release",
+            item_id=ItemId("work-b"),
+            lease_id=LeaseId("missing-lease"),
+            generation=1,
+            operation_time=now,
+            expires_at=None,
+            actor_task_id=None,
+            actor_host_id=None,
+        )
+        self.assertIsInstance(missing_preparation, DecisionFailure)
+        for operation, expires_at in (("renew", None), ("revoke", None), ("unsupported", None)):
+            with self.subTest(preparation_operation=operation), self.assertRaises(ValueError):
+                authority_operations.change_preparation_authority(
+                    store,
+                    operation=operation,
+                    item_id=ItemId("work-c"),
+                    lease_id=LeaseId("preparation-lease"),
+                    generation=1,
+                    operation_time=now,
+                    expires_at=expires_at,
+                    actor_task_id=None,
+                    actor_host_id=None,
+                )
 
     def _expected_bytes(self, roots: DurableRoots, item_id: str) -> bytes:
         projected = queries.project_item_status(
@@ -1492,6 +2094,9 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.ACTIONS_TOOL,
                 mcp_server.ATTEMPT_INSPECT_TOOL,
                 mcp_server.ARTIFACT_VERIFY_TOOL,
+                mcp_server.PREPARATION_AUTHORITY_TOOL,
+                mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                mcp_server.TRANSITION_TOOL,
             },
             {tool.name for tool in tools},
         )

@@ -12,7 +12,7 @@ from typing import assert_never
 from uuid import uuid4
 
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.application import ports, queries, query_models, service
+from pinboard.application import authority_operations, ports, queries, query_models
 from pinboard.application.service import decide_and_commit_preparation_authority_change
 from pinboard.cli import cli_commands, work_views
 from pinboard.cli.cli_output import (
@@ -90,7 +90,7 @@ def start_preparation(
     command: cli_commands.PreparationStartCommand,
 ) -> CommandResult[int]:
     requested_at = datetime.now(UTC)
-    committed = service.start_preparation(
+    committed = authority_operations.start_preparation_authority(
         store,
         item_id=command.item_id,
         task_id=command.task_id,
@@ -105,7 +105,7 @@ def start_preparation(
     if refreshed.warning is not None:
         print(refreshed.warning.message, file=sys.stderr)
     values = {
-        "item_id": committed.authority.item,
+        "item_id": committed.authority.item_id,
         "definition_revision": committed.authority.definition_revision,
         "definition_digest": committed.authority.definition_digest,
         **authority_lease_fields(
@@ -115,7 +115,7 @@ def start_preparation(
             generation=committed.authority.generation,
             acquired_at=committed.authority.acquired_at,
             expires_at=committed.authority.expires_at,
-            status=committed.authority.state.value,
+            status=committed.authority.status.value,
         ),
     }
     if command.json:

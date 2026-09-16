@@ -1,11 +1,12 @@
 """Strict request and correlated result contracts for the MCP transport."""
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal  # noqa: TID251 - validated against the selected action leaf
 
 import msgspec
 
 from pinboard.application import action_models, proposal_models, query_models, work_brief_models
-from pinboard.domain import decision_models
+from pinboard.domain import authority_models, decision_models
+from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
 
 type JsonScalar = bool | int | float | str | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
@@ -116,6 +117,152 @@ class ArtifactVerifyRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     selector: NonEmptyText
     sha256: Sha256
     size_bytes: PositiveInt
+
+
+class TransitionReceipt(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    action_id: ActionIdentity
+    subject_revision: NonEmptyText
+
+
+class ProjectTransitionRequest(
+    msgspec.Struct, tag="project", tag_field="role", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    receipt: TransitionReceipt
+    payload: dict[str, Any]
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+
+
+class WorkerTransitionRequest(msgspec.Struct, tag="worker", tag_field="role", frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    receipt: TransitionReceipt
+    payload: dict[str, Any]
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+
+
+class PreparerTransitionRequest(
+    msgspec.Struct, tag="preparer", tag_field="role", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    receipt: TransitionReceipt
+    payload: dict[str, Any]
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+
+
+type TransitionRequest = ProjectTransitionRequest | WorkerTransitionRequest | PreparerTransitionRequest
+
+
+class AuthorityRequestBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+
+
+class PreparationAuthorityStatusRequest(
+    AuthorityRequestBase, tag="status", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    item_id: PathComponent
+
+
+class PreparationAuthorityStartRequest(
+    AuthorityRequestBase, tag="start", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    item_id: PathComponent
+    task_id: RuntimeIdentity
+    host_id: RuntimeIdentity
+    ttl_seconds: PositiveInt
+
+
+class PreparationAuthorityRenewRequest(
+    AuthorityRequestBase, tag="renew", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    item_id: PathComponent
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+    ttl_seconds: PositiveInt
+
+
+class PreparationAuthorityReleaseRequest(
+    AuthorityRequestBase, tag="release", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    item_id: PathComponent
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+
+
+class PreparationAuthorityRevokeRequest(
+    AuthorityRequestBase, tag="revoke", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    item_id: PathComponent
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+
+
+type PreparationAuthorityRequest = (
+    PreparationAuthorityStatusRequest
+    | PreparationAuthorityStartRequest
+    | PreparationAuthorityRenewRequest
+    | PreparationAuthorityReleaseRequest
+    | PreparationAuthorityRevokeRequest
+)
+
+
+class AttemptAuthorityStatusRequest(
+    AuthorityRequestBase, tag="status", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: PathComponent
+
+
+class AttemptAuthorityAcquireRequest(
+    AuthorityRequestBase, tag="acquire", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: PathComponent
+    task_id: RuntimeIdentity
+    host_id: RuntimeIdentity
+    ttl_seconds: PositiveInt
+
+
+class AttemptAuthorityRenewRequest(
+    AuthorityRequestBase, tag="renew", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: PathComponent
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+    ttl_seconds: PositiveInt
+
+
+class AttemptAuthorityReleaseRequest(
+    AuthorityRequestBase, tag="release", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: PathComponent
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+
+
+class AttemptAuthorityRevokeRequest(
+    AuthorityRequestBase, tag="revoke", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: PathComponent
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+
+
+type AttemptAuthorityRequest = (
+    AttemptAuthorityStatusRequest
+    | AttemptAuthorityAcquireRequest
+    | AttemptAuthorityRenewRequest
+    | AttemptAuthorityReleaseRequest
+    | AttemptAuthorityRevokeRequest
+)
 
 
 class FailureObservation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -652,6 +799,236 @@ class WarningResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     recovery: NonEmptyText
 
 
+class TransitionCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-transition-result/v1"]
+    status: Literal["committed", "committed-with-warning"]
+    action_id: ActionIdentity
+    committed_revision: PositiveInt
+    history_id: PositiveInt
+    state_changed: bool
+    effect: Literal["committed"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: Annotated[
+        tuple[Literal["immutable-artifact", "accepted-artifact-reference", "ledger"], ...],
+        msgspec.Meta(min_length=1),
+    ]
+    warning: WarningResult | None
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, True)
+        if (self.status == "committed-with-warning") != (self.warning is not None):
+            raise ValueError("committed-with-warning must carry one warning")
+
+
+class TransitionRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-transition-result/v1"]
+    status: Literal["rejected"]
+    action_id: ActionIdentity
+    code: DecisionFailureCode
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: RetryDisposition
+    changed_surfaces: Empty
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class TransitionFailedAfterPublication(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-transition-result/v1"]
+    status: Literal["failed-after-publication"]
+    action_id: ActionIdentity
+    code: NonEmptyText
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["committed"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: ArtifactSurface
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
+    mismatches: tuple[FailureMismatch, ...]
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, True)
+
+
+class PreparationAuthorityConflict(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    task_id: RuntimeIdentity
+    host_id: RuntimeIdentity
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+    expires_at: NonEmptyText
+    authority_status: authority_models.PreparationLeaseStatus
+
+
+class AttemptAuthorityConflict(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    task_id: RuntimeIdentity
+    host_id: RuntimeIdentity
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+    expires_at: NonEmptyText
+    authority_status: authority_models.AttemptLeaseStatus
+
+
+class PreparationAuthorityStatusPresent(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
+    status: Literal["present"]
+    item_id: PathComponent
+    definition_revision: PositiveInt
+    definition_digest: Sha256
+    task_id: RuntimeIdentity
+    host_id: RuntimeIdentity
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+    acquired_at: NonEmptyText
+    expires_at: NonEmptyText
+    authority_status: authority_models.PreparationLeaseStatus
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class PreparationAuthorityStatusAbsent(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
+    status: Literal["absent"]
+    item_id: PathComponent
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class PreparationAuthorityCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
+    status: Literal["committed", "committed-with-warning"]
+    item_id: PathComponent
+    definition_revision: PositiveInt
+    definition_digest: Sha256
+    task_id: RuntimeIdentity
+    host_id: RuntimeIdentity
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+    acquired_at: NonEmptyText
+    expires_at: NonEmptyText
+    authority_status: authority_models.PreparationLeaseStatus
+    committed_revision: PositiveInt
+    history_id: PositiveInt
+    state_changed: bool
+    effect: Literal["committed"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: LedgerSurface
+    warning: WarningResult | None
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, True)
+        if (self.status == "committed-with-warning") != (self.warning is not None):
+            raise ValueError("committed-with-warning must carry one warning")
+
+
+class PreparationAuthorityRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
+    status: Literal["rejected"]
+    item_id: PathComponent
+    code: DecisionFailureCode
+    message: NonEmptyText
+    conflict: PreparationAuthorityConflict | None
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: RetryDisposition
+    changed_surfaces: Empty
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class AttemptAuthorityStatusPresent(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-attempt-authority-result/v1"]
+    status: Literal["present"]
+    attempt_id: PathComponent
+    task_id: RuntimeIdentity
+    host_id: RuntimeIdentity
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+    acquired_at: NonEmptyText
+    expires_at: NonEmptyText
+    authority_status: authority_models.AttemptLeaseStatus
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class AttemptAuthorityStatusAbsent(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-attempt-authority-result/v1"]
+    status: Literal["absent"]
+    attempt_id: PathComponent
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class AttemptAuthorityCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-attempt-authority-result/v1"]
+    status: Literal["committed", "committed-with-warning"]
+    attempt_id: PathComponent
+    item_id: PathComponent
+    task_id: RuntimeIdentity
+    host_id: RuntimeIdentity
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+    acquired_at: NonEmptyText
+    expires_at: NonEmptyText
+    authority_status: authority_models.AttemptLeaseStatus
+    committed_revision: PositiveInt
+    history_id: PositiveInt
+    state_changed: bool
+    effect: Literal["committed"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: LedgerSurface
+    warning: WarningResult | None
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, True)
+        if (self.status == "committed-with-warning") != (self.warning is not None):
+            raise ValueError("committed-with-warning must carry one warning")
+
+
+class AttemptAuthorityRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-attempt-authority-result/v1"]
+    status: Literal["rejected"]
+    attempt_id: PathComponent
+    code: DecisionFailureCode
+    message: NonEmptyText
+    conflict: AttemptAuthorityConflict | None
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: RetryDisposition
+    changed_surfaces: Empty
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
 class ProposalCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-proposal-result/v1"]
     status: Literal["committed"]
@@ -957,6 +1334,26 @@ BRIEF_PUBLICATION_RESULT_TYPES = (
     BriefPublicationAcceptanceFailure,
     ExecutorBusyResult,
 )
+PREPARATION_AUTHORITY_RESULT_TYPES = (
+    PreparationAuthorityStatusPresent,
+    PreparationAuthorityStatusAbsent,
+    PreparationAuthorityCommitted,
+    PreparationAuthorityRejected,
+    ExecutorBusyResult,
+)
+ATTEMPT_AUTHORITY_RESULT_TYPES = (
+    AttemptAuthorityStatusPresent,
+    AttemptAuthorityStatusAbsent,
+    AttemptAuthorityCommitted,
+    AttemptAuthorityRejected,
+    ExecutorBusyResult,
+)
+TRANSITION_RESULT_TYPES = (
+    TransitionCommitted,
+    TransitionRejected,
+    TransitionFailedAfterPublication,
+    ExecutorBusyResult,
+)
 type RequestBoundary = (
     type[ItemStatusRequest]
     | type[ProposalCreateRequest]
@@ -1002,6 +1399,17 @@ type ResultBoundary = (
     | type[TerminalAttemptInspectionSuccess]
     | type[NonterminalAttemptInspectionSuccess]
     | type[ArtifactVerified]
+    | type[PreparationAuthorityStatusPresent]
+    | type[PreparationAuthorityStatusAbsent]
+    | type[PreparationAuthorityCommitted]
+    | type[PreparationAuthorityRejected]
+    | type[AttemptAuthorityStatusPresent]
+    | type[AttemptAuthorityStatusAbsent]
+    | type[AttemptAuthorityCommitted]
+    | type[AttemptAuthorityRejected]
+    | type[TransitionCommitted]
+    | type[TransitionRejected]
+    | type[TransitionFailedAfterPublication]
 )
 
 
@@ -1027,6 +1435,21 @@ def actions_request_schema() -> dict[str, JsonSchemaValue]:
     return {"type": "object", **schema}
 
 
+def preparation_authority_request_schema() -> dict[str, JsonSchemaValue]:
+    schema: dict[str, JsonSchemaValue] = msgspec.json.schema(PreparationAuthorityRequest)
+    return {"type": "object", **schema}
+
+
+def attempt_authority_request_schema() -> dict[str, JsonSchemaValue]:
+    schema: dict[str, JsonSchemaValue] = msgspec.json.schema(AttemptAuthorityRequest)
+    return {"type": "object", **schema}
+
+
+def transition_request_schema() -> dict[str, JsonSchemaValue]:
+    schema: dict[str, JsonSchemaValue] = msgspec.json.schema(TransitionRequest)
+    return {"type": "object", **schema}
+
+
 def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
     changed_results = {
         "ProposalCommitted",
@@ -1039,6 +1462,10 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
         "BriefArtifactCommittedWithWarning",
         "BriefPublishedRejection",
         "BriefPublicationAcceptanceFailure",
+        "PreparationAuthorityCommitted",
+        "AttemptAuthorityCommitted",
+        "TransitionCommitted",
+        "TransitionFailedAfterPublication",
     }
     unchanged_results = {
         "ItemStatusInvalid",
@@ -1065,6 +1492,13 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
         "TerminalAttemptInspectionSuccess",
         "NonterminalAttemptInspectionSuccess",
         "ArtifactVerified",
+        "PreparationAuthorityStatusPresent",
+        "PreparationAuthorityStatusAbsent",
+        "PreparationAuthorityRejected",
+        "AttemptAuthorityStatusPresent",
+        "AttemptAuthorityStatusAbsent",
+        "AttemptAuthorityRejected",
+        "TransitionRejected",
     }
     for name, definition in definitions.items():
         if name not in changed_results | unchanged_results:
@@ -1319,6 +1753,34 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     surfaces = content.get("changed_surfaces")
     if schema == "pinboard-mcp-execution-result/v1":
         msgspec.convert(content, type=ExecutorBusyResult, strict=True)
+    elif tool_name == "pinboard_transition":
+        if status in {"committed", "committed-with-warning"}:
+            result_type = TransitionCommitted
+        elif status == "failed-after-publication":
+            result_type = TransitionFailedAfterPublication
+        else:
+            result_type = TransitionRejected
+        msgspec.convert(content, type=result_type, strict=True)
+    elif tool_name == "pinboard_preparation_authority":
+        if status == "present":
+            result_type = PreparationAuthorityStatusPresent
+        elif status == "absent":
+            result_type = PreparationAuthorityStatusAbsent
+        elif status in {"committed", "committed-with-warning"}:
+            result_type = PreparationAuthorityCommitted
+        else:
+            result_type = PreparationAuthorityRejected
+        msgspec.convert(content, type=result_type, strict=True)
+    elif tool_name == "pinboard_attempt_authority":
+        if status == "present":
+            result_type = AttemptAuthorityStatusPresent
+        elif status == "absent":
+            result_type = AttemptAuthorityStatusAbsent
+        elif status in {"committed", "committed-with-warning"}:
+            result_type = AttemptAuthorityCommitted
+        else:
+            result_type = AttemptAuthorityRejected
+        msgspec.convert(content, type=result_type, strict=True)
     elif schema == "pinboard-overview/v5" and tool_name == "pinboard_overview":
         msgspec.convert(content, type=query_models.WorkOverview, strict=True)
     elif tool_name == "pinboard_actions" and status == "ok":

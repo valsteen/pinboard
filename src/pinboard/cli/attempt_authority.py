@@ -7,8 +7,7 @@ from typing import assert_never
 from uuid import uuid4
 
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.application import ports, queries, query_models
-from pinboard.application.service import decide_and_commit_attempt_authority_change
+from pinboard.application import authority_operations, ports, queries, query_models
 from pinboard.cli import cli_commands, work_views
 from pinboard.cli.cli_output import authority_status_fields, write_json
 from pinboard.cli.errors import CommandFailure, CommandResult
@@ -202,21 +201,58 @@ def change_attempt_authority(
     command: AttemptAuthorityCommand,
 ) -> CommandResult[int]:
     requested_at = datetime.now(UTC)
-    snapshot = store.read_decision_facts(
-        query_models.DecisionScope((), (), (), (), (command.attempt_id,), (), (), ()), requested_at
-    ).snapshot
-    attempt_record = _find_attempt_record(snapshot, command.attempt_id)
-    if isinstance(attempt_record, CommandFailure):
-        return attempt_record
-    requested_change = _resolve_requested_attempt_change(
-        snapshot, attempt_record, store.read_attempt_authority_status(command.attempt_id), command, requested_at
-    )
-    if isinstance(requested_change, CommandFailure):
-        return requested_change
-    commit_result = decide_and_commit_attempt_authority_change(store, requested_change)
-    if isinstance(commit_result, DecisionFailure):
-        return CommandFailure(commit_result.code, commit_result.message, commit_result.details)
-    refresh_result = work_views.refresh_effect(durable, store, commit_result, datetime.now(UTC))
+    match command:
+        case cli_commands.AttemptAcquireCommand():
+            committed = authority_operations.acquire_attempt_authority(
+                store,
+                attempt_id=command.attempt_id,
+                task_id=command.task_id,
+                host_id=command.host_id,
+                lease_id=LeaseId(uuid4().hex),
+                acquired_at=requested_at,
+                expires_at=requested_at + timedelta(seconds=command.ttl_seconds),
+            )
+        case cli_commands.AttemptRenewCommand():
+            committed = authority_operations.change_attempt_authority(
+                store,
+                operation="renew",
+                attempt_id=command.attempt_id,
+                lease_id=command.lease_id,
+                generation=command.generation,
+                operation_time=requested_at,
+                expires_at=requested_at + timedelta(seconds=command.ttl_seconds),
+                actor_task_id=None,
+                actor_host_id=None,
+            )
+        case cli_commands.AttemptReleaseCommand():
+            committed = authority_operations.change_attempt_authority(
+                store,
+                operation="release",
+                attempt_id=command.attempt_id,
+                lease_id=command.lease_id,
+                generation=command.generation,
+                operation_time=requested_at,
+                expires_at=None,
+                actor_task_id=None,
+                actor_host_id=None,
+            )
+        case cli_commands.AttemptRevokeCommand():
+            committed = authority_operations.change_attempt_authority(
+                store,
+                operation="revoke",
+                attempt_id=command.attempt_id,
+                lease_id=command.lease_id,
+                generation=command.generation,
+                operation_time=requested_at,
+                expires_at=None,
+                actor_task_id=command.task_id,
+                actor_host_id=command.host_id,
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    if isinstance(committed, DecisionFailure):
+        return CommandFailure(committed.code, committed.message, committed.details)
+    refresh_result = work_views.refresh_effect(durable, store, committed.effect, datetime.now(UTC))
     if refresh_result.warning is not None:
         print(refresh_result.warning.message, file=sys.stderr)
     return _present_latest_attempt_authority(store, command.attempt_id, json=command.json)

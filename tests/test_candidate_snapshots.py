@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import msgspec
 
+from pinboard.adapters import lifecycle_artifacts
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, RootError, RootErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
@@ -43,7 +44,7 @@ from pinboard.application.candidate_snapshots import (
     validate_candidate_snapshot_history,
     verify_candidate_snapshot_context,
 )
-from pinboard.cli import candidate_recovery, cli_commands, transitions
+from pinboard.cli import candidate_recovery, cli_commands
 from pinboard.cli.errors import CommandFailure, CommittedEffectFailure
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import (
@@ -565,7 +566,10 @@ class CandidateSnapshotTest(unittest.TestCase):
             action(decision_models.SubmitReviewAction, AttemptId("missing")),
             work_models.SubmitReviewInput(CandidateId("commit")),
         )
-        self.assertIsInstance(transitions._observe_review_candidate(roots, store, missing, SQLITE_NOW), CommandFailure)
+        self.assertIsInstance(
+            lifecycle_artifacts._observe_review_candidate(roots.source_checkout, store, missing, SQLITE_NOW),
+            DecisionFailure,
+        )
 
         working_candidate = "working-tree-sha256:" + hashlib.sha256(b"diff").hexdigest()
         working = decision_models.SubmitReviewCommand(
@@ -577,64 +581,71 @@ class CandidateSnapshotTest(unittest.TestCase):
             work_models.SubmitReviewInput(CandidateId("commit")),
         )
 
-        with patch.object(transitions, "observe_checkout_identity", side_effect=root_error):
+        with patch.object(lifecycle_artifacts, "observe_checkout_identity", side_effect=root_error):
             self.assertIsInstance(
-                transitions._observe_review_candidate(roots, store, committed, SQLITE_NOW), CommandFailure
+                lifecycle_artifacts._observe_review_candidate(roots.source_checkout, store, committed, SQLITE_NOW),
+                DecisionFailure,
             )
-        with patch.object(transitions, "observe_checkout_identity", return_value=("wrong", "head")):
+        with patch.object(lifecycle_artifacts, "observe_checkout_identity", return_value=("wrong", "head")):
             self.assertIsInstance(
-                transitions._observe_review_candidate(roots, store, committed, SQLITE_NOW), CommandFailure
+                lifecycle_artifacts._observe_review_candidate(roots.source_checkout, store, committed, SQLITE_NOW),
+                DecisionFailure,
             )
 
         observed_identity = ("codex/work-a", "head")
         with (
-            patch.object(transitions, "observe_checkout_identity", return_value=observed_identity),
-            patch.object(transitions, "read_working_tree_candidate", side_effect=root_error),
+            patch.object(lifecycle_artifacts, "observe_checkout_identity", return_value=observed_identity),
+            patch.object(lifecycle_artifacts, "read_working_tree_candidate", side_effect=root_error),
         ):
             self.assertIsInstance(
-                transitions._observe_review_candidate(roots, store, working, SQLITE_NOW), CommandFailure
+                lifecycle_artifacts._observe_review_candidate(roots.source_checkout, store, working, SQLITE_NOW),
+                DecisionFailure,
             )
         with (
-            patch.object(transitions, "observe_checkout_identity", return_value=observed_identity),
+            patch.object(lifecycle_artifacts, "observe_checkout_identity", return_value=observed_identity),
             patch.object(
-                transitions,
+                lifecycle_artifacts,
                 "read_working_tree_candidate",
                 return_value=WorkingTreeCandidate("working-tree-sha256:" + "1" * 64, b"diff"),
             ),
         ):
             self.assertIsInstance(
-                transitions._observe_review_candidate(roots, store, working, SQLITE_NOW), CommandFailure
+                lifecycle_artifacts._observe_review_candidate(roots.source_checkout, store, working, SQLITE_NOW),
+                DecisionFailure,
             )
         with (
-            patch.object(transitions, "observe_checkout_identity", return_value=observed_identity),
+            patch.object(lifecycle_artifacts, "observe_checkout_identity", return_value=observed_identity),
             patch.object(
-                transitions,
+                lifecycle_artifacts,
                 "read_working_tree_candidate",
                 return_value=WorkingTreeCandidate(working_candidate, b"diff"),
             ),
         ):
-            snapshot = transitions._observe_review_candidate(roots, store, working, SQLITE_NOW)
+            snapshot = lifecycle_artifacts._observe_review_candidate(roots.source_checkout, store, working, SQLITE_NOW)
         self.assertIsInstance(snapshot, WorkingTreeCandidateSnapshot)
 
         commit_observations = (
             (CurrentHeadCandidate("commit", b"diff"), CommitCandidateSnapshot),
-            (DifferentHeadCandidate("commit", "other"), CommandFailure),
-            (DirtyHeadCandidate("commit"), CommandFailure),
+            (DifferentHeadCandidate("commit", "other"), DecisionFailure),
+            (DirtyHeadCandidate("commit"), DecisionFailure),
         )
         for observation, expected_type in commit_observations:
             with (
                 self.subTest(observation=observation),
-                patch.object(transitions, "observe_checkout_identity", return_value=observed_identity),
-                patch.object(transitions, "read_current_head_candidate", return_value=observation),
+                patch.object(lifecycle_artifacts, "observe_checkout_identity", return_value=observed_identity),
+                patch.object(lifecycle_artifacts, "read_current_head_candidate", return_value=observation),
             ):
-                result = transitions._observe_review_candidate(roots, store, committed, SQLITE_NOW)
+                result = lifecycle_artifacts._observe_review_candidate(
+                    roots.source_checkout, store, committed, SQLITE_NOW
+                )
                 self.assertIsInstance(result, expected_type)
         with (
-            patch.object(transitions, "observe_checkout_identity", return_value=observed_identity),
-            patch.object(transitions, "read_current_head_candidate", side_effect=root_error),
+            patch.object(lifecycle_artifacts, "observe_checkout_identity", return_value=observed_identity),
+            patch.object(lifecycle_artifacts, "read_current_head_candidate", side_effect=root_error),
         ):
             self.assertIsInstance(
-                transitions._observe_review_candidate(roots, store, committed, SQLITE_NOW), CommandFailure
+                lifecycle_artifacts._observe_review_candidate(roots.source_checkout, store, committed, SQLITE_NOW),
+                DecisionFailure,
             )
 
     def test_candidate_restore_reports_every_supported_outcome(self) -> None:
@@ -705,7 +716,6 @@ class CandidateSnapshotTest(unittest.TestCase):
     def test_review_snapshot_publication_preserves_partial_effects(self) -> None:
         store = self.initialized_store()
         checkout = Path(tempfile.mkdtemp()).resolve()
-        roots = cli_commands.ResolvedRoots(checkout, checkout, checkout, False)
         artifacts = ArtifactRepository(resolve_durable_roots(checkout))
         command = decision_models.SubmitReviewCommand(
             action(decision_models.SubmitReviewAction, AttemptId("work-a-1")),
@@ -724,55 +734,74 @@ class CandidateSnapshotTest(unittest.TestCase):
         file_error = FileIOError(FileIOErrorCode.DIRECTORY_SYNC_FAILED, "failed")
 
         with patch.object(
-            transitions,
+            lifecycle_artifacts,
             "_observe_review_candidate",
-            return_value=CommandFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, "invalid", None),
+            return_value=decision_failure,
         ):
             self.assertIsInstance(
-                transitions._submit_review_with_snapshot(roots, store, artifacts, command), CommandFailure
+                lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW),
+                DecisionFailure,
             )
 
         publication_error = ArtifactAcceptanceAfterPublicationError(
             reference.selector, file_error, (ChangedSurface.IMMUTABLE_ARTIFACT,)
         )
         with (
-            patch.object(transitions, "_observe_review_candidate", return_value=snapshot),
+            patch.object(lifecycle_artifacts, "_observe_review_candidate", return_value=snapshot),
             patch.object(ArtifactRepository, "publish", side_effect=publication_error),
         ):
             self.assertIsInstance(
-                transitions._submit_review_with_snapshot(roots, store, artifacts, command), CommittedEffectFailure
+                lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW),
+                lifecycle_artifacts.PublishedTransitionFailure,
             )
         unexpected = ArtifactAcceptanceAfterPublicationError(reference.selector, RuntimeError("failed"), ())
         with (
-            patch.object(transitions, "_observe_review_candidate", return_value=snapshot),
+            patch.object(lifecycle_artifacts, "_observe_review_candidate", return_value=snapshot),
             patch.object(ArtifactRepository, "publish", side_effect=unexpected),
             self.assertRaises(RuntimeError),
         ):
-            transitions._submit_review_with_snapshot(roots, store, artifacts, command)
+            lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW)
 
-        for created, expected_type in ((False, CommandFailure), (True, CommittedEffectFailure)):
+        for created in (False, True):
             with (
                 self.subTest(created=created),
-                patch.object(transitions, "_observe_review_candidate", return_value=snapshot),
+                patch.object(lifecycle_artifacts, "_observe_review_candidate", return_value=snapshot),
                 patch.object(ArtifactRepository, "publish", return_value=ArtifactPublication(reference, created)),
-                patch.object(transitions, "decide_and_commit_review_submission", return_value=decision_failure),
+                patch.object(
+                    lifecycle_artifacts.service,
+                    "decide_and_commit_review_submission",
+                    return_value=decision_failure,
+                ),
             ):
-                result = transitions._submit_review_with_snapshot(roots, store, artifacts, command)
-                self.assertIsInstance(result, expected_type)
+                result = lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW)
+                self.assertIsInstance(result, DecisionFailure)
+                self.assertEqual(
+                    EffectDisposition.COMMITTED if created else EffectDisposition.UNCHANGED,
+                    result.details.effect if result.details is not None else EffectDisposition.UNCHANGED,
+                )
 
         storage_error = StorageError(StorageErrorCode.OPERATION_FAILED, "failed")
         with (
-            patch.object(transitions, "_observe_review_candidate", return_value=snapshot),
+            patch.object(lifecycle_artifacts, "_observe_review_candidate", return_value=snapshot),
             patch.object(ArtifactRepository, "publish", return_value=ArtifactPublication(reference, True)),
-            patch.object(transitions, "decide_and_commit_review_submission", side_effect=storage_error),
+            patch.object(
+                lifecycle_artifacts.service,
+                "decide_and_commit_review_submission",
+                side_effect=storage_error,
+            ),
         ):
             self.assertIsInstance(
-                transitions._submit_review_with_snapshot(roots, store, artifacts, command), CommittedEffectFailure
+                lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW),
+                lifecycle_artifacts.PublishedTransitionFailure,
             )
         with (
-            patch.object(transitions, "_observe_review_candidate", return_value=snapshot),
+            patch.object(lifecycle_artifacts, "_observe_review_candidate", return_value=snapshot),
             patch.object(ArtifactRepository, "publish", return_value=ArtifactPublication(reference, False)),
-            patch.object(transitions, "decide_and_commit_review_submission", side_effect=storage_error),
+            patch.object(
+                lifecycle_artifacts.service,
+                "decide_and_commit_review_submission",
+                side_effect=storage_error,
+            ),
             self.assertRaises(StorageError),
         ):
-            transitions._submit_review_with_snapshot(roots, store, artifacts, command)
+            lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW)

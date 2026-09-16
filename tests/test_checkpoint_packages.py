@@ -769,7 +769,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
 
         before_store_failure = fixture.store.validated_snapshot()
         with patch(
-            "pinboard.cli.transitions.decide_and_commit_covered_completion",
+            "pinboard.adapters.lifecycle_artifacts.service.decide_and_commit_covered_completion",
             side_effect=StorageError(StorageErrorCode.OPERATION_FAILED, "injected covered commit failure"),
         ):
             store_result, store_stdout, store_stderr = self.run_cli(*covered_args)

@@ -34,7 +34,16 @@ from pinboard.domain.authority_decisions import (
     decide_preparation_authority,
 )
 from pinboard.domain.decisions import decide, validate_checkpoint_candidate, validate_supplied_action
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.errors import (
+    DecisionFailure,
+    DecisionFailureCode,
+    DecisionResult,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    FailureMismatch,
+    RetryDisposition,
+)
 from pinboard.domain.identifiers import (
     ActionId,
     ArtifactRefId,
@@ -81,6 +90,98 @@ def decide_and_commit_attempt_authority_change(
 ) -> DecisionResult[CommittedEffect]:
     """Reread locked state, decide, and commit one attempt-authority change."""
 
+    with store.write() as transaction:
+        return _commit_attempt_authority_change(transaction, requested_change)
+
+
+def acquire_attempt_authority(
+    store: WorkStore,
+    *,
+    attempt_id: AttemptId,
+    task_id: TaskId,
+    host_id: HostId,
+    lease_id: LeaseId,
+    acquired_at: datetime,
+    expires_at: datetime,
+) -> DecisionResult[CommittedEffect]:
+    """Select initial acquisition or inactive transfer under one write lock."""
+
+    with store.write() as transaction:
+        snapshot = transaction.read_decision_facts(
+            query_models.DecisionScope((), (), (), (), (attempt_id,), (), (), ()), acquired_at
+        ).snapshot
+        attempt = snapshot.attempt(attempt_id)
+        if attempt is None:
+            return DecisionFailure(
+                DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+                f"Attempt '{attempt_id}' is not current.",
+                None,
+            )
+        retained = transaction.read_attempt_authority_status(attempt_id)
+        if retained is None:
+            requested_change: authority_models.AttemptAuthorityOperation = (
+                authority_models.AcquireInitialAttemptAuthority(
+                    snapshot.host_epoch,
+                    attempt_id,
+                    attempt.item,
+                    task_id,
+                    host_id,
+                    lease_id,
+                    acquired_at,
+                    expires_at,
+                )
+            )
+        else:
+            state = retained.status
+            if state == authority_models.AttemptLeaseStatus.ACTIVE and retained.expires_at <= acquired_at:
+                state = authority_models.AttemptLeaseStatus.EXPIRED
+            if state == authority_models.AttemptLeaseStatus.ACTIVE:
+                return DecisionFailure(
+                    DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
+                    "Attempt authority remains live.",
+                    FailureDetails(
+                        observed=(
+                            FailureFact("attempt_id", str(attempt_id)),
+                            FailureFact("holder_task_id", str(retained.task_id)),
+                            FailureFact("holder_host_id", str(retained.host_id)),
+                            FailureFact("generation", retained.generation),
+                            FailureFact("expires_at", retained.expires_at.isoformat()),
+                            FailureFact("authority_status", retained.status.value),
+                        ),
+                        mismatches=(FailureMismatch("authority_availability", "available", "live-holder"),),
+                        retry=RetryDisposition.DO_NOT_RETRY,
+                        effect=EffectDisposition.UNCHANGED,
+                        changed_surfaces=(),
+                        alternatives=(),
+                    ),
+                )
+            requested_change = authority_models.TransferAttemptAuthority(
+                authority_models.InactiveAttemptAuthority(
+                    snapshot.host_epoch,
+                    attempt_id,
+                    attempt.item,
+                    retained.task_id,
+                    retained.host_id,
+                    retained.lease_id,
+                    retained.generation,
+                    retained.expires_at,
+                    state,
+                ),
+                task_id,
+                host_id,
+                lease_id,
+                acquired_at,
+                expires_at,
+            )
+        return _commit_attempt_authority_change(transaction, requested_change)
+
+
+def _commit_attempt_authority_change(
+    transaction: WorkTransaction,
+    requested_change: authority_models.AttemptAuthorityOperation,
+) -> DecisionResult[CommittedEffect]:
+    """Decide and persist inside the caller's existing transaction."""
+
     match requested_change:
         case authority_models.AcquireInitialAttemptAuthority(
             attempt=attempt_id, task_id=actor_task_id, host_id=actor_host_id, acquired_at=decided_at
@@ -105,60 +206,59 @@ def decide_and_commit_attempt_authority_change(
             history_outcome = "revoke-attempt-authority"
         case _ as unreachable:
             assert_never(unreachable)
-    with store.write() as transaction:
-        decision_context = transaction.read_decision_facts(
-            query_models.DecisionScope((), (), (), (), (attempt_id,), (), (), ()), decided_at
-        ).snapshot
-        retained = transaction.read_attempt_authority_status(attempt_id)
-        generation_before = transaction.read_attempt_generation(attempt_id)
-        decision_result = decide_attempt_authority(
-            retained=_project_retained_attempt_authority(decision_context, retained, attempt_id),
-            counter=generation_before,
-            operation=requested_change,
-            live_attempt=(
-                (attempt_id, attempt.item)
-                if (attempt := decision_context.attempt(attempt_id)) is not None
-                and attempt.state == work_models.AttemptState.ACTIVE
-                else None
-            ),
-            transferable_attempt=(
-                (attempt_id, attempt.item)
-                if (attempt := decision_context.attempt(attempt_id)) is not None
-                and attempt.state != work_models.AttemptState.DONE
-                else None
-            ),
-            project_host_epoch=decision_context.host_epoch,
-        )
-        if isinstance(decision_result, DecisionFailure):
-            return decision_result
-        accepted_decision = decision_result
-        proposed_replacement = accepted_decision.proposed_replacement
-        transition_receipt = decision_models.TransitionReceipt(
-            action_id=ActionId(f"continue:attempt-authority:{attempt_id}:{proposed_replacement.generation}"),
-            item=proposed_replacement.item,
-            outcome=history_outcome,
-            evidence=None,
-            decided_at=decided_at,
-        )
-        allocation = transaction.read_mutation_allocation()
-        mutation_receipt = MutationReceipt(
-            transition=transition_receipt,
-            history_id=allocation.next_history_id,
-            project_revision=allocation.project_revision + 1,
-            action_kind=decision_models.ActionKind.CONTINUE,
-            subject_id=HistorySubjectId(attempt_id),
-            artifact_ref_id=None,
-            authorization=decision_models.AuthorizationKind.ATTEMPT,
-            actor_task_id=actor_task_id,
-            actor_host_id=actor_host_id,
-            input_schema="attempt-authority/v1",
-            input_payload=work_models.CanonicalJson(b"{}"),
-        )
-        mutation = AttemptAuthorityMutation(
-            receipt=mutation_receipt,
-            decision=accepted_decision,
-        )
-        return transaction.commit(mutation)
+    decision_context = transaction.read_decision_facts(
+        query_models.DecisionScope((), (), (), (), (attempt_id,), (), (), ()), decided_at
+    ).snapshot
+    retained = transaction.read_attempt_authority_status(attempt_id)
+    generation_before = transaction.read_attempt_generation(attempt_id)
+    decision_result = decide_attempt_authority(
+        retained=_project_retained_attempt_authority(decision_context, retained, attempt_id),
+        counter=generation_before,
+        operation=requested_change,
+        live_attempt=(
+            (attempt_id, attempt.item)
+            if (attempt := decision_context.attempt(attempt_id)) is not None
+            and attempt.state == work_models.AttemptState.ACTIVE
+            else None
+        ),
+        transferable_attempt=(
+            (attempt_id, attempt.item)
+            if (attempt := decision_context.attempt(attempt_id)) is not None
+            and attempt.state != work_models.AttemptState.DONE
+            else None
+        ),
+        project_host_epoch=decision_context.host_epoch,
+    )
+    if isinstance(decision_result, DecisionFailure):
+        return decision_result
+    accepted_decision = decision_result
+    proposed_replacement = accepted_decision.proposed_replacement
+    transition_receipt = decision_models.TransitionReceipt(
+        action_id=ActionId(f"continue:attempt-authority:{attempt_id}:{proposed_replacement.generation}"),
+        item=proposed_replacement.item,
+        outcome=history_outcome,
+        evidence=None,
+        decided_at=decided_at,
+    )
+    allocation = transaction.read_mutation_allocation()
+    mutation_receipt = MutationReceipt(
+        transition=transition_receipt,
+        history_id=allocation.next_history_id,
+        project_revision=allocation.project_revision + 1,
+        action_kind=decision_models.ActionKind.CONTINUE,
+        subject_id=HistorySubjectId(attempt_id),
+        artifact_ref_id=None,
+        authorization=decision_models.AuthorizationKind.ATTEMPT,
+        actor_task_id=actor_task_id,
+        actor_host_id=actor_host_id,
+        input_schema="attempt-authority/v1",
+        input_payload=work_models.CanonicalJson(b"{}"),
+    )
+    mutation = AttemptAuthorityMutation(
+        receipt=mutation_receipt,
+        decision=accepted_decision,
+    )
+    return transaction.commit(mutation)
 
 
 def _project_retained_preparation_authority(

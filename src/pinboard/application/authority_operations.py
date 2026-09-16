@@ -14,11 +14,6 @@ from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
     DecisionResult,
-    EffectDisposition,
-    FailureDetails,
-    FailureFact,
-    FailureMismatch,
-    RetryDisposition,
 )
 from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
 
@@ -84,71 +79,18 @@ def acquire_attempt_authority(
     acquired_at: datetime,
     expires_at: datetime,
 ) -> DecisionResult[AttemptAuthorityMutationResult]:
-    snapshot = store.read_decision_facts(
-        query_models.DecisionScope((), (), (), (), (attempt_id,), (), (), ()), acquired_at
-    ).snapshot
-    attempt = snapshot.attempt(attempt_id)
-    if attempt is None:
-        return DecisionFailure(
-            DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
-            f"Attempt '{attempt_id}' is not current.",
-            None,
-        )
-    retained = attempt_authority_status(store, attempt_id, acquired_at)
-    if retained is None:
-        operation: authority_models.AttemptAuthorityOperation = authority_models.AcquireInitialAttemptAuthority(
-            snapshot.host_epoch,
-            attempt_id,
-            attempt.item,
-            task_id,
-            host_id,
-            lease_id,
-            acquired_at,
-            expires_at,
-        )
-    else:
-        if retained.status == authority_models.AttemptLeaseStatus.ACTIVE:
-            return DecisionFailure(
-                DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
-                "Attempt authority remains live.",
-                FailureDetails(
-                    observed=(
-                        FailureFact("attempt_id", str(attempt_id)),
-                        FailureFact("holder_task_id", str(retained.task_id)),
-                        FailureFact("holder_host_id", str(retained.host_id)),
-                        FailureFact("generation", retained.generation),
-                        FailureFact("expires_at", retained.expires_at.isoformat()),
-                        FailureFact("authority_status", retained.status.value),
-                    ),
-                    mismatches=(FailureMismatch("authority_availability", "available", "live-holder"),),
-                    retry=RetryDisposition.DO_NOT_RETRY,
-                    effect=EffectDisposition.UNCHANGED,
-                    changed_surfaces=(),
-                    alternatives=(),
-                ),
-            )
-        operation = authority_models.TransferAttemptAuthority(
-            authority_models.InactiveAttemptAuthority(
-                snapshot.host_epoch,
-                attempt_id,
-                attempt.item,
-                retained.task_id,
-                retained.host_id,
-                retained.lease_id,
-                retained.generation,
-                retained.expires_at,
-                retained.status,
-            ),
-            task_id,
-            host_id,
-            lease_id,
-            acquired_at,
-            expires_at,
-        )
     return _committed_attempt_result(
         store,
         attempt_id,
-        service.decide_and_commit_attempt_authority_change(store, operation),
+        service.acquire_attempt_authority(
+            store,
+            attempt_id=attempt_id,
+            task_id=task_id,
+            host_id=host_id,
+            lease_id=lease_id,
+            acquired_at=acquired_at,
+            expires_at=expires_at,
+        ),
     )
 
 

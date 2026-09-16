@@ -275,6 +275,38 @@ class InputContractView(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
             raise ValueError("payload schema must match its action kind")
 
 
+class CompletionPackageView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: PositiveInt
+    package_sha256: Sha256
+    artifact_ref_id: PositiveInt
+    selector: NonEmptyLine
+    size_bytes: PositiveInt
+
+
+class CompletionInputContractView(InputContractView, frozen=True, forbid_unknown_fields=True):
+    candidate: str | None
+    checkpoint_packages: tuple[CompletionPackageView, ...]
+
+    def __post_init__(self) -> None:
+        if self.action_kind != decision_models.ActionKind.COMPLETE:
+            raise ValueError("completion input contracts require the complete action kind")
+        expected = decision_models.action_semantics(self.action_kind)
+        if self.semantics != ActionSemanticsView(
+            expected.use_case,
+            expected.lifecycle_effect,
+            expected.permitted_roles,
+            expected.subject_kind,
+            expected.lifecycle_precondition,
+            expected.practical_result,
+        ):
+            raise ValueError("completion input contract semantics must match complete")
+        expected_model = CoveredCompleteInputPayload if self.checkpoint_packages else EvidenceInputPayload
+        if msgspec.json.encode(self.payload_schema, order="sorted") != msgspec.json.encode(
+            msgspec.json.schema(expected_model), order="sorted"
+        ):
+            raise ValueError("completion payload schema must be one exact complete-action leaf")
+
+
 def _validate_action_view(
     action_id: str,
     kind: decision_models.ActionKind,

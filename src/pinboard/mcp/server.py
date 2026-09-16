@@ -53,6 +53,7 @@ from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
+    DecisionResult,
     EffectDisposition,
     FailureDetails,
     FailureFact,
@@ -455,8 +456,9 @@ def _read_actions(
         if selected_action_id is None
         else ActionId(f"{selected_action_id.kind.value}:{selected_action_id.subject}")
     )
+    store = compose_store(durable)
     selected = actions.select_current_actions(
-        compose_store(durable),
+        store,
         selected_role,
         observed_at=datetime.now(UTC),
         lease_id=selected_lease,
@@ -471,10 +473,18 @@ def _read_actions(
             _action_failure_details(selected, selected_role, selected_lease, selected_generation, selected_action),
         )
     token.checkpoint()
+    projected_actions: list[JsonValue] = []
+    for action in selected:
+        projected = _mcp_action(action, store, focused=selected_action is not None)
+        if isinstance(projected, DecisionFailure):
+            return _read_failure(
+                "pinboard-mcp-actions-result/v1", projected.code.value, projected.message, projected.details
+            )
+        projected_actions.append(projected)
     content: dict[str, JsonValue] = {
         "schema": "pinboard-mcp-actions-result/v1",
         "status": "ok",
-        "actions": [_mcp_action(action) for action in selected],
+        "actions": projected_actions,
         "state_changed": False,
         "effect": EffectDisposition.UNCHANGED.value,
         "retry": "safe-to-repeat",
@@ -483,12 +493,23 @@ def _read_actions(
     return OperationResult(content, "ok", None)
 
 
-def _mcp_action(action: decision_models.Action) -> dict[str, JsonValue]:
+def _mcp_action(
+    action: decision_models.Action,
+    store: SQLiteWorkStore,
+    *,
+    focused: bool,
+) -> DecisionResult[dict[str, JsonValue]]:
+    """Project a legal action, reading final evidence only for focused completion."""
     projected = actions.project_action(action, include_input_contract=True)
     if not isinstance(projected, action_models.ActionView):
         raise RuntimeError("MCP action discovery requires an inline input contract.")
-    content = msgspec.to_builtins(
-        contracts.ActionView(
+    input_contract = projected.input_contract
+    if isinstance(action, decision_models.CompleteAction) and focused:
+        completion = actions.completion_input_contract(store, action, projected.semantics)
+        if isinstance(completion, DecisionFailure):
+            return completion
+        input_contract = completion
+        record = contracts.CompletionActionView(
             contracts.ActionIdentity(projected.kind, projected.subject),
             projected.label,
             projected.subject_revision,
@@ -496,9 +517,20 @@ def _mcp_action(action: decision_models.Action) -> dict[str, JsonValue]:
             projected.lease_id,
             projected.generation,
             projected.semantics,
-            projected.input_contract,
+            completion,
         )
-    )
+    else:
+        record = contracts.ActionView(
+            contracts.ActionIdentity(projected.kind, projected.subject),
+            projected.label,
+            projected.subject_revision,
+            projected.authorization,
+            projected.lease_id,
+            projected.generation,
+            projected.semantics,
+            input_contract,
+        )
+    content = msgspec.to_builtins(record)
     assert isinstance(content, dict)
     return content
 
@@ -1354,7 +1386,7 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
         }
     )
     try:
-        request: contracts.TransitionRequest = msgspec.convert(raw, type=contracts.TransitionRequest, strict=True)
+        request = contracts.decode_transition_request(raw)
         durable = _resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
         raw_identity = receipt.get("action_id")
@@ -1389,7 +1421,9 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
             selected_host = None
         case _ as unreachable:
             assert_never(unreachable)
-    identity = request.receipt.action_id
+    identity = contracts.ActionIdentity(
+        decision_models.ActionKind(request.receipt.action_id.kind), request.receipt.action_id.subject
+    )
     action_id = ActionId(f"{identity.kind.value}:{identity.subject}")
     store = compose_store(durable)
     artifacts = ArtifactRepository(durable)
@@ -1407,7 +1441,7 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
             selected_task,
             selected_host,
         ),
-        msgspec.json.encode(request.payload, order="sorted"),
+        request.payload,
         operation_time,
     )
     if isinstance(selected, DecisionFailure):

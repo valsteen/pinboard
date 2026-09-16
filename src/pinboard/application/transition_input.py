@@ -36,12 +36,16 @@ type TransitionInputResult[T] = T | TransitionInputFailure
 
 
 def _decode[PayloadT: transition_models.InputPayload](
-    data: bytes | str,
+    data: bytes | str | transition_models.InputPayload,
     model: type[PayloadT],
 ) -> TransitionInputResult[PayloadT]:
     try:
+        if isinstance(data, model):
+            return data
+        if isinstance(data, msgspec.Struct):
+            raise ValueError(f"Expected {model.__name__}, not {type(data).__name__}.")
         return msgspec.json.decode(data, type=model)
-    except msgspec.DecodeError as error:
+    except (msgspec.DecodeError, ValueError) as error:
         return TransitionInputFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             f"Cannot decode transition JSON: {error}",
@@ -90,7 +94,7 @@ type ParsedTransitionInput = decision_models.TransitionCommand | transition_mode
 
 def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaustive action-to-input boundary
     action: decision_models.Action,
-    data: bytes | str,
+    data: bytes | str | transition_models.InputPayload,
 ) -> TransitionInputResult[ParsedTransitionInput]:
     match action:
         case decision_models.AcceptCheckpointAction():
@@ -147,11 +151,15 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
                 return payload
             return decision_models.CloseCommand(action, work_models.CloseInput(payload.outcome, payload.reason))
         case decision_models.CompleteAction():
-            try:
-                fields = msgspec.json.decode(data, type=dict[str, msgspec.Raw])
-            except msgspec.DecodeError:
-                fields: dict[str, msgspec.Raw] = {}
-            if "schema" in fields:
+            if isinstance(data, msgspec.Struct):
+                covered = isinstance(data, transition_models.CoveredCompleteInputPayload)
+            else:
+                try:
+                    fields = msgspec.json.decode(data, type=dict[str, msgspec.Raw])
+                except msgspec.DecodeError:
+                    fields: dict[str, msgspec.Raw] = {}
+                covered = "schema" in fields
+            if covered:
                 if isinstance(
                     payload := _decode(data, transition_models.CoveredCompleteInputPayload), TransitionInputFailure
                 ):

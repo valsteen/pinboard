@@ -4,10 +4,8 @@ from typing import Literal
 
 import msgspec
 
-from pinboard.application import action_models, dispatch_models, query_models, work_briefs
-from pinboard.application.action_models import InputContractView
+from pinboard.application import dispatch_models, query_models, work_briefs
 from pinboard.application.action_models import ProjectedActionView as ActionView
-from pinboard.domain import decision_models
 
 
 class NoCandidateRecovery(msgspec.Struct, tag="absent", tag_field="kind", frozen=True, forbid_unknown_fields=True):
@@ -125,42 +123,6 @@ class StatusView(msgspec.Struct, frozen=True):
     counts: dict[str, int]
     intake_item_count: int
     authority: str = "v2"
-
-
-class CompletionPackageView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    history_id: int
-    package_sha256: str
-    artifact_ref_id: int
-    selector: str
-    size_bytes: int
-
-
-class CompletionInputContractView(InputContractView, frozen=True, forbid_unknown_fields=True):
-    candidate: str | None
-    checkpoint_packages: tuple[CompletionPackageView, ...]
-
-    def __post_init__(self) -> None:
-        if self.action_kind != decision_models.ActionKind.COMPLETE:
-            raise ValueError("completion input contracts require the complete action kind")
-        expected = decision_models.action_semantics(self.action_kind)
-        if self.semantics != action_models.ActionSemanticsView(
-            expected.use_case,
-            expected.lifecycle_effect,
-            expected.permitted_roles,
-            expected.subject_kind,
-            expected.lifecycle_precondition,
-            expected.practical_result,
-        ):
-            raise ValueError("completion input contract semantics must match complete")
-        expected_model = (
-            action_models.CoveredCompleteInputPayload
-            if self.checkpoint_packages
-            else action_models.EvidenceInputPayload
-        )
-        if msgspec.json.encode(self.payload_schema, order="sorted") != msgspec.json.encode(
-            msgspec.json.schema(expected_model), order="sorted"
-        ):
-            raise ValueError("completion payload schema must be one exact complete-action leaf")
 
 
 class CompletionInspectionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

@@ -314,11 +314,6 @@ def _canonical_prompt(
     environment: DispatchEnvironment,
 ) -> str:
     permissions = ", ".join(sorted(permission.value for permission in environment.permissions)) or "none"
-    project_root = shlex.quote(environment.checkout)
-    work_root_argument = shlex.quote(str(work_root))
-    attempt = shlex.quote(attempt_id)
-    host = shlex.quote(str(environment.host_id))
-    launcher = shlex.join(pinboard_launcher_command())
     result_path = work_root / "attempts" / attempt_id / "result.md"
     blocker_path = work_root / "attempts" / attempt_id / "blocker.md"
     return (
@@ -340,14 +335,14 @@ def _canonical_prompt(
         "Worker startup after native launch:\n"
         "1. Worker task identity: read `CODEX_THREAD_ID` after launch. Do not use `CODEX_SESSION_ID` or a "
         "pre-launch identity.\n"
-        "2. Acquire attempt authority with the generated command:\n"
-        f"   {launcher} --project-root {project_root} --work-root {work_root_argument} "
-        f"attempt acquire --attempt-id {attempt} "
-        f'--task-id "$CODEX_THREAD_ID" --host-id {host} --ttl-seconds {environment.lease_ttl_seconds} --json\n'
-        "3. Select the leased continuation with the returned authority:\n"
-        f"   {launcher} --project-root {project_root} --work-root {work_root_argument} actions --role worker "
-        "--lease-id <returned-lease-id> --generation <returned-generation> "
-        f"--action-id continue:{attempt} --json\n\n"
+        "2. Call `pinboard_attempt_authority` with the exact startup values:\n"
+        f"   project_root={environment.checkout}; work_root={work_root}; operation=acquire; "
+        f"attempt_id={attempt_id}; task_id=<post-launch CODEX_THREAD_ID>; "
+        f"host_id={environment.host_id}; ttl_seconds={environment.lease_ttl_seconds}.\n"
+        "3. Call `pinboard_actions` with the same explicit roots, role=worker, the returned lease_id "
+        "and generation, and action_id="
+        f'{{"kind":"continue","subject":"{attempt_id}"}}. '
+        "Follow that leased continuation; do not manufacture a shell command or temporary payload file.\n\n"
         "Attempt evidence locations:\n"
         f"- Result: {result_path}\n"
         f"- Blocker: {blocker_path}\n"

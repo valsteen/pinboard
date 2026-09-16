@@ -2,11 +2,12 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import assert_never
 
+from pinboard.application import actions as action_queries
 from pinboard.application import ports, query_models
 from pinboard.application.actions import action_subject_ids, discover_current_actions
 from pinboard.cli import cli_commands
 from pinboard.cli.errors import CommandErrorCode, CommandFailure, CommandResult
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models
 from pinboard.domain.errors import (
     DecisionFailure,
     EffectDisposition,
@@ -27,49 +28,11 @@ class ParsedActionReceipt:
     generation: int
 
 
-def completion_candidate_recovery(
-    selected: query_models.CompletionContextFacts,
-) -> CommandFailure | None:
-    """Withhold checkpointed completion until the existing submission route protects a candidate."""
-    attempt = selected.attempt
-    if not selected.checkpoints or (
-        isinstance(attempt, query_models.NonterminalAttemptContextFacts)
-        and attempt.state == work_models.AttemptState.REVIEW
-        and attempt.candidate_revision is not None
-    ):
+def completion_candidate_recovery(selected: query_models.CompletionContextFacts) -> CommandFailure | None:
+    recovery = action_queries.completion_candidate_recovery(selected)
+    if recovery is None:
         return None
-    attempt_id = attempt.attempt_id
-    return CommandFailure(
-        CommandErrorCode.ACTION_LIFECYCLE_UNAVAILABLE,
-        "Checkpointed completion requires a protected review candidate. Use these commands with the same project and work roots; acquire only when authority status permits it, then submit the exact candidate and reinspect completion.",
-        FailureDetails(
-            observed=(
-                FailureFact("authority_status_command", f"attempt status --attempt-id {attempt_id} --json"),
-                FailureFact(
-                    "authority_acquisition_command",
-                    f"attempt acquire --attempt-id {attempt_id} --task-id <worker-task-id> --host-id <host-id> --ttl-seconds 3600 --json",
-                ),
-                FailureFact(
-                    "candidate_submission_action_command",
-                    f"actions --role worker --lease-id <returned-lease-id> --generation <returned-generation> --action-id submit-review:{attempt_id} --json",
-                ),
-                FailureFact(
-                    "candidate_submission_command",
-                    f"transition --action-id submit-review:{attempt_id} --subject-revision <returned-subject-revision> --authorization attempt --lease-id <returned-lease-id> --generation <returned-generation> --payload <candidate-payload-file> --json",
-                ),
-                FailureFact("candidate_payload", '{"candidate":"<exact-candidate-revision>"}'),
-                FailureFact(
-                    "completion_reinspection_command",
-                    f"actions --role project --action-id complete:{attempt_id} --json",
-                ),
-            ),
-            mismatches=(),
-            retry=RetryDisposition.REFRESH_ACTION,
-            effect=EffectDisposition.UNCHANGED,
-            changed_surfaces=(),
-            alternatives=(),
-        ),
-    )
+    return CommandFailure(CommandErrorCode.ACTION_LIFECYCLE_UNAVAILABLE, recovery.message, recovery.details)
 
 
 def _failure_alternatives(
@@ -608,13 +571,17 @@ def with_completion_reinspection(
             changed_surfaces=(),
             alternatives=(),
         )
-    if any(fact.field == "completion_reinspection_command" for fact in details.observed):
+    if any(fact.field == "completion_reinspection_tool" for fact in details.observed):
         return failure
     observation = FailureFact(
-        "completion_reinspection_command",
-        f"actions --role project --action-id {decision_models.action_id(supplied.action)} --json",
+        "completion_reinspection_tool",
+        "pinboard_actions",
     )
-    return replace(failure, details=replace(details, observed=(*details.observed, observation)))
+    input_observation = FailureFact(
+        "completion_reinspection_input",
+        f'{{"role":"project","action_id":{{"kind":"complete","subject":"{supplied.action.capability.subject}"}}}}',
+    )
+    return replace(failure, details=replace(details, observed=(*details.observed, observation, input_observation)))
 
 
 def select_current_action(

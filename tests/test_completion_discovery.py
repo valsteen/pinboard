@@ -1,11 +1,17 @@
+import asyncio
 import contextlib
+import hashlib
 import json
-import shlex
 import sqlite3
+import sys
 from unittest.mock import patch
+
+from mcp.client.session import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.mcp.contracts import JsonValue
 from tests.checkpoint_support import CheckpointPackageSupport
 
 
@@ -77,7 +83,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
             completion["inspection_arguments"],
         )
 
-    def test_discovery_and_transition_share_executable_recovery(self) -> None:
+    def test_discovery_and_transition_share_executable_recovery(self) -> None:  # noqa: PLR0915 - one recovery and terminal client journey
 
         fixture, _, _ = self.review_job_fixture()
         self.return_for_correction(fixture, "Protect the final candidate again.", "recovery")
@@ -96,48 +102,135 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
             str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
             for row in self.json_array(rejected["observed"])
         }
-        self.run_json_cli(*fixture.common, *shlex.split(observations["authority_status_command"])[:-1])
-        acquisition = (
-            observations["authority_acquisition_command"]
-            .replace("<worker-task-id>", "recovery-worker")
-            .replace("<host-id>", "local")
-        )
-        lease = self.run_json_cli(*fixture.common, *shlex.split(acquisition)[:-1])
-        replacements = {
-            "<returned-lease-id>": str(lease["lease_id"]),
-            "<returned-generation>": str(lease["generation"]),
-        }
-        selection = observations["candidate_submission_action_command"]
-        for old, new in replacements.items():
-            selection = selection.replace(old, new)
-        selected = self.run_json_cli(*fixture.common, *shlex.split(selection)[:-1])
-        action = self.json_object(self.json_array(selected["actions"])[0])
         candidate = fixture.candidate_revision
-        payload.write_text(
-            observations["candidate_payload"].replace("<exact-candidate-revision>", candidate),
-            encoding="utf-8",
-        )
-        submission = observations["candidate_submission_command"]
-        replacements["<returned-subject-revision>"] = str(action["subject_revision"])
-        replacements["<candidate-payload-file>"] = str(payload)
-        for old, new in replacements.items():
-            submission = submission.replace(old, new)
-        self.run_json_cli(*fixture.common, *shlex.split(submission)[:-1])
-        reinspected = self.run_json_cli(
-            *fixture.common, *shlex.split(observations["completion_reinspection_command"])[:-1]
-        )
+
+        async def recover() -> dict[str, JsonValue]:
+            parameters = StdioServerParameters(command=sys.executable, args=("-m", "pinboard.mcp"))
+            async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
+                await session.initialize()
+
+                async def call(prefix: str, replacements: dict[str, str]) -> dict[str, JsonValue]:
+                    encoded = observations[prefix + "_input"]
+                    for old, new in replacements.items():
+                        encoded = encoded.replace(old, new)
+                    arguments = self.json_object(json.loads(encoded))
+                    result = await session.call_tool(
+                        observations[prefix + "_tool"],
+                        {
+                            "project_root": str(fixture.project),
+                            "work_root": str(fixture.work),
+                            **arguments,
+                        },
+                    )
+                    self.assertFalse(result.is_error)
+                    content = result.structured_content
+                    assert isinstance(content, dict)
+                    self.assertNotEqual("rejected", content["status"], content)
+                    return content
+
+                await call("authority_status", {})
+                lease = await call(
+                    "authority_acquisition", {"<worker-task-id>": "recovery-worker", "<host-id>": "local"}
+                )
+                replacements = {
+                    "<current-lease-id>": str(lease["lease_id"]),
+                    '"<current-generation>"': str(lease["generation"]),
+                }
+                selected = await call("candidate_submission_action", replacements)
+                actions = selected["actions"]
+                assert isinstance(actions, list) and isinstance(actions[0], dict)
+                replacements["<current-subject-revision>"] = str(actions[0]["subject_revision"])
+                replacements["<exact-candidate-revision>"] = candidate
+                await call("candidate_submission", replacements)
+                return await call("completion_reinspection", {})
+
+        reinspected = asyncio.run(recover())
         contract = self.json_object(self.json_object(self.json_array(reinspected["actions"])[0])["input_contract"])
         self.assertEqual(candidate, contract["candidate"])
-        complete_action = self.json_object(self.json_array(reinspected["actions"])[0])
+        complete_action = self.project_action(fixture.common, "complete:work-a-1")
         payload.write_text('{"unexpected":true}', encoding="utf-8")
         invalid, stdout, _ = self.run_cli(
             *self.project_transition_arguments(fixture, complete_action, payload), "--json"
         )
         self.assertEqual(11, invalid)
         self.assertIn(
-            {"field": "completion_reinspection_command", "value": observations["completion_reinspection_command"]},
+            {"field": "completion_reinspection_tool", "value": observations["completion_reinspection_tool"]},
             self.json_array(self.json_object(json.loads(stdout))["observed"]),
         )
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        result_bytes = b"Current terminal result\n"
+        review_bytes = b"Current independent terminal review\n"
+        (attempt_root / "result.md").write_bytes(result_bytes)
+        (attempt_root / "review.md").write_bytes(review_bytes)
+
+        async def complete() -> None:
+            parameters = StdioServerParameters(command=sys.executable, args=("-m", "pinboard.mcp"))
+            common: dict[str, JsonValue] = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
+            async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
+                await session.initialize()
+                discovery = await session.call_tool(
+                    "pinboard_actions",
+                    common
+                    | {
+                        "role": "project",
+                        "action_id": {"kind": "complete", "subject": "work-a-1"},
+                    },
+                )
+                assert isinstance(discovery.structured_content, dict)
+                actions = discovery.structured_content["actions"]
+                assert isinstance(actions, list) and len(actions) == 1 and isinstance(actions[0], dict)
+                selected = actions[0]
+                contract = selected["input_contract"]
+                assert isinstance(contract, dict)
+                packages = contract["checkpoint_packages"]
+                assert isinstance(packages, list)
+                package_evidence: list[JsonValue] = []
+                for package in packages:
+                    assert isinstance(package, dict)
+                    package_evidence.append(
+                        {
+                            "history_id": package["history_id"],
+                            "package_sha256": package["package_sha256"],
+                            "disposition": "revalidated",
+                            "evidence": "Independent reviewer rechecked the current relationship.",
+                        }
+                    )
+                self.assertEqual(
+                    [int(fixture.package_reference.artifact_ref_id)],
+                    [package["artifact_ref_id"] for package in packages if isinstance(package, dict)],
+                )
+                result = await session.call_tool(
+                    "pinboard_transition",
+                    common
+                    | {
+                        "role": "project",
+                        "actor_task_id": "coordinator",
+                        "actor_host_id": "local",
+                        "receipt": {
+                            "action_id": selected["action_id"],
+                            "subject_revision": selected["subject_revision"],
+                        },
+                        "payload": {
+                            "schema": "pinboard-covered-completion/v1",
+                            "candidate": contract["candidate"],
+                            "evidence": "All returned checkpoint evidence is covered.",
+                            "reviewer_task_id": "terminal-reviewer",
+                            "result_sha256": hashlib.sha256(result_bytes).hexdigest(),
+                            "review_sha256": hashlib.sha256(review_bytes).hexdigest(),
+                            "packages": package_evidence,
+                        },
+                    },
+                )
+                self.assertFalse(result.is_error)
+                assert isinstance(result.structured_content, dict)
+                self.assertIn(result.structured_content["status"], {"committed", "committed-with-warning"})
+
+        asyncio.run(complete())
+        terminal = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        item = next(row for row in terminal.lifecycle.work_items if str(row.item_id) == "work-a")
+        self.assertEqual("done", item.state.value)
+        receipt = next(row for row in terminal.transition_receipts if row.outcome_schema == "completion-acceptance/v2")
+        self.assertIsNotNone(receipt.artifact_ref_id)
 
     def test_focused_completion_enumerates_only_ordered_same_attempt_packages(self) -> None:
         fixture, history_id, _ = self.review_job_fixture()

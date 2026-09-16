@@ -142,7 +142,7 @@ def select_transition(
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
     receipt: TransitionReceipt,
-    payload: bytes,
+    payload: bytes | action_models.InputPayload,
     observed_at: datetime,
 ) -> DecisionResult[SelectedTransition]:
     """Select one exact current receipt and decode its exact leaf payload."""

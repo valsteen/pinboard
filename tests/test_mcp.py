@@ -19,13 +19,14 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.mcpserver.exceptions import UnexpectedToolError
 from mcp.shared.message import SessionMessage
 from mcp_types import CallToolResult, TextContent, Tool
+from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import authority_operations, queries, query_models, stored_state
+from pinboard.application import authority_operations, queries, query_models, stored_state, work_brief_models
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.ports import WorkStoreError
 from pinboard.application.work_briefs import canonical_work_brief_bytes
@@ -45,7 +46,7 @@ from pinboard.mcp import server as mcp_server
 from tests.domain_support import action
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.test_proposals import proposal as proposal_input
-from tests.work_brief_support import example_work_brief, work_a_brief
+from tests.work_brief_support import example_work_brief, work_a_brief, work_c_brief
 
 
 def _run_async[Result](operation: Coroutine[None, None, Result]) -> Result:
@@ -347,6 +348,469 @@ class McpTransportTest(unittest.TestCase):
         self.assertIsInstance(attempt, query_models.NonterminalAttemptContextFacts)
         assert isinstance(attempt, query_models.NonterminalAttemptContextFacts)
         self.assertEqual("paused", attempt.state.value)
+
+    def test_transition_request_contract_has_only_exact_mutating_leaves(self) -> None:
+        schema = contracts.transition_request_schema()
+        encoded_schema = msgspec.json.encode(schema)
+        leaves = schema["oneOf"]
+        assert isinstance(leaves, list)
+        self.assertEqual(23, len(leaves))
+        for advisory_kind in (b'"continue"', b'"dispatch"', b'"inspect"', b'"report-blocker"'):
+            self.assertNotIn(advisory_kind, encoded_schema)
+
+    def test_stdio_ordinary_lifecycle_reloads_proposal_activation_submission_and_correction(self) -> None:  # noqa: PLR0915 - one installed lifecycle journey
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+
+        def git(*arguments: str) -> str:
+            return subprocess.run(
+                (
+                    "git",
+                    "-C",
+                    str(project),
+                    "-c",
+                    "user.name=MCP test",
+                    "-c",
+                    "user.email=mcp@example.invalid",
+                    *arguments,
+                ),
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+        (project / ".git" / "info" / "exclude").write_text(".codex/\n", encoding="utf-8")
+        (project / "product.txt").write_text("Accepted base\n", encoding="utf-8")
+        git("add", "product.txt", "architecture.md")
+        git("commit", "-m", "Accepted base")
+        base = git("rev-parse", "HEAD")
+        branch = git("branch", "--show-current")
+        common: dict[str, contracts.JsonValue] = {"project_root": str(project), "work_root": str(roots.work_root)}
+        actor: dict[str, contracts.JsonValue] = {"actor_task_id": "coordinator", "actor_host_id": "local"}
+
+        def reloaded_state(expected: str) -> stored_state.StoredWorkState:
+            snapshot = SQLiteWorkStore(roots.database_path).validated_snapshot()
+            item = next(row for row in snapshot.lifecycle.work_items if row.item_id == ItemId("proposal-1"))
+            self.assertEqual(expected, item.state.value)
+            return snapshot
+
+        async def scenario() -> None:  # noqa: PLR0915 - ordered real client effects
+            parameters = StdioServerParameters(command=sys.executable, args=("-m", "pinboard.mcp"))
+            async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
+                await session.initialize()
+
+                async def call(tool: str, arguments: dict[str, contracts.JsonValue]) -> dict[str, contracts.JsonValue]:
+                    result = await session.call_tool(tool, common | arguments)
+                    if result.is_error or not isinstance(result.structured_content, dict):
+                        raise AssertionError(f"{tool} returned {result}")
+                    content = result.structured_content
+                    if content.get("status") == "rejected":
+                        raise AssertionError(f"{tool} rejected {content}")
+                    return content
+
+                async def transition(
+                    kind: str,
+                    subject: str,
+                    role: str,
+                    authority: dict[str, contracts.JsonValue],
+                    payload: dict[str, contracts.JsonValue],
+                ) -> dict[str, contracts.JsonValue]:
+                    discovered = await call(
+                        mcp_server.ACTIONS_TOOL,
+                        {
+                            "role": role,
+                            "action_id": {"kind": kind, "subject": subject},
+                            **({} if role == "project" else authority),
+                        },
+                    )
+                    actions = discovered["actions"]
+                    if not isinstance(actions, list) or len(actions) != 1 or not isinstance(actions[0], dict):
+                        raise AssertionError(f"Missing exact {kind} action: {discovered}")
+                    selected = actions[0]
+                    return await call(
+                        mcp_server.TRANSITION_TOOL,
+                        {
+                            "role": role,
+                            "receipt": {
+                                "action_id": selected["action_id"],
+                                "subject_revision": selected["subject_revision"],
+                            },
+                            "payload": payload,
+                            **authority,
+                        },
+                    )
+
+                await call(mcp_server.PROPOSAL_CREATE_TOOL, {"proposal": proposal_input(), **actor})
+                reloaded_state("intake")
+                await transition(
+                    "accept-proposal",
+                    "proposal-1",
+                    "project",
+                    actor,
+                    {"item": "proposal-1", "state": "ready", "next_action": "Implement accepted effect."},
+                )
+                reloaded_state("ready")
+                prepared = await call(
+                    mcp_server.PREPARATION_AUTHORITY_TOOL,
+                    {
+                        "operation": "start",
+                        "item_id": "proposal-1",
+                        "task_id": "coordinator",
+                        "host_id": "local",
+                        "ttl_seconds": 600,
+                    },
+                )
+                preparation: dict[str, contracts.JsonValue] = {
+                    "lease_id": prepared["lease_id"],
+                    "generation": prepared["generation"],
+                }
+                await call(
+                    mcp_server.PREPARATION_AUTHORITY_TOOL,
+                    {
+                        "operation": "renew",
+                        "item_id": "proposal-1",
+                        "ttl_seconds": 1200,
+                        **preparation,
+                    },
+                )
+                template = work_c_brief()
+                checkpoint = template.checkpoint
+                assert isinstance(checkpoint, work_brief_models.LocalCheckpoint)
+                revision = prepared["definition_revision"]
+                digest = prepared["definition_digest"]
+                assert isinstance(revision, int) and isinstance(digest, str)
+                brief = replace_struct(
+                    template,
+                    item_id="proposal-1",
+                    attempt_id="proposal-1-1",
+                    owner_task_id="coordinator",
+                    branch=branch,
+                    base_revision=base,
+                    accepted_scope=work_brief_models.AcceptedScope(revision, digest),
+                    checkpoint=replace_struct(
+                        checkpoint,
+                        architecture_impact=work_brief_models.NoArchitectureImpact(
+                            "One local consumer keeps its ownership."
+                        ),
+                        verification=(
+                            replace_struct(
+                                checkpoint.verification[0],
+                                authorization_basis=work_brief_models.AcceptedScopeAuthorization(
+                                    "proposal-1", revision
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+                publication = await call(mcp_server.BRIEF_PUBLISH_TOOL, {"brief": msgspec.to_builtins(brief)})
+                reference = publication["reference"]
+                assert isinstance(reference, dict)
+                await call(
+                    mcp_server.ARTIFACT_VERIFY_TOOL,
+                    {
+                        "artifact_ref_id": reference["artifact_ref_id"],
+                        "selector": reference["selector"],
+                        "sha256": reference["sha256"],
+                        "size_bytes": reference["size_bytes"],
+                    },
+                )
+                await transition(
+                    "activate",
+                    "proposal-1",
+                    "preparer",
+                    preparation,
+                    {"brief_artifact_ref_id": reference["artifact_ref_id"]},
+                )
+                reloaded_state("active")
+                acquired = await call(
+                    mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                    {
+                        "operation": "acquire",
+                        "attempt_id": "proposal-1-1",
+                        "task_id": "worker",
+                        "host_id": "local",
+                        "ttl_seconds": 600,
+                    },
+                )
+                worker: dict[str, contracts.JsonValue] = {
+                    "lease_id": acquired["lease_id"],
+                    "generation": acquired["generation"],
+                }
+                await call(
+                    mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                    {
+                        "operation": "renew",
+                        "attempt_id": "proposal-1-1",
+                        "ttl_seconds": 1200,
+                        **worker,
+                    },
+                )
+                (project / "product.txt").write_text("Observable candidate\n", encoding="utf-8")
+                git("add", "product.txt")
+                git("commit", "-m", "Observable candidate")
+                candidate = git("rev-parse", "HEAD")
+                self.assertEqual("", git("status", "--porcelain"))
+                await transition("submit-review", "proposal-1-1", "worker", worker, {"candidate": candidate})
+                snapshot = reloaded_state("review")
+                attempt = next(
+                    row for row in snapshot.lifecycle.attempts if row.attempt_id == AttemptId("proposal-1-1")
+                )
+                self.assertEqual(candidate, attempt.candidate_revision)
+                inspected = await call(mcp_server.ATTEMPT_INSPECT_TOOL, {"attempt_id": "proposal-1-1"})
+                continuation = inspected["continuation"]
+                assert isinstance(continuation, dict)
+                self.assertEqual("review", continuation["state"])
+                await call(
+                    mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                    {
+                        "operation": "release",
+                        "attempt_id": "proposal-1-1",
+                        **worker,
+                    },
+                )
+                corrected = await transition(
+                    "return-for-correction",
+                    "proposal-1-1",
+                    "project",
+                    actor,
+                    {"reason": "Correct the reviewed candidate."},
+                )
+                snapshot = reloaded_state("active")
+                retained = SQLiteWorkStore(roots.database_path).read_attempt_authority_status(AttemptId("proposal-1-1"))
+                assert retained is not None and isinstance(acquired["generation"], int)
+                self.assertGreater(retained.generation, acquired["generation"])
+                self.assertIsNone(
+                    next(
+                        row for row in snapshot.lifecycle.attempts if row.attempt_id == AttemptId("proposal-1-1")
+                    ).candidate_revision
+                )
+                self.assertIsNotNone(corrected["history_id"])
+                reacquired = await call(
+                    mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                    {
+                        "operation": "acquire",
+                        "attempt_id": "proposal-1-1",
+                        "task_id": "correction-worker",
+                        "host_id": "local",
+                        "ttl_seconds": 600,
+                    },
+                )
+                assert isinstance(reacquired["generation"], int)
+                self.assertGreater(reacquired["generation"], retained.generation)
+
+        _run_async(scenario())
+
+    def test_transition_decoder_rejects_mismatched_role_and_payload_before_effect(self) -> None:
+        raw: dict[str, contracts.JsonValue] = {
+            "project_root": "/project",
+            "work_root": "/work",
+            "role": "project",
+            "receipt": {
+                "action_id": {"kind": "pause", "subject": "attempt-1"},
+                "subject_revision": "7",
+            },
+            "payload": {"reason": "Pause for correction."},
+            "actor_task_id": "project-task",
+            "actor_host_id": "local",
+        }
+        request = contracts.decode_transition_request(raw)
+        self.assertIsInstance(request, contracts.ProjectTransitionRequest)
+        self.assertIsInstance(request.payload, contracts.action_models.ReasonInputPayload)
+
+        wrong_role: dict[str, contracts.JsonValue] = {**raw, "role": "worker"}
+        unknown_payload: dict[str, contracts.JsonValue] = {
+            **raw,
+            "payload": {"reason": "Pause for correction.", "unknown": True},
+        }
+        advisory: dict[str, contracts.JsonValue] = {
+            **raw,
+            "receipt": {
+                "action_id": {"kind": "continue", "subject": "attempt-1"},
+                "subject_revision": "7",
+            },
+        }
+        for invalid in (wrong_role, unknown_payload, advisory):
+            with self.subTest(invalid=invalid), self.assertRaises((msgspec.ValidationError, ValueError)):
+                contracts.decode_transition_request(invalid)
+        with patch.object(mcp_server, "_resolve_durable") as resolve:
+            rejected = mcp_server._transition(
+                "/project",
+                "/work",
+                "project",
+                {"action_id": {"kind": "pause", "subject": "attempt-1"}, "subject_revision": "7"},
+                {"reason": "Pause for correction.", "unknown": True},
+                mcp_server._OmittedAuthorityField.VALUE,
+                mcp_server._OmittedAuthorityField.VALUE,
+                "project-task",
+                "local",
+                mcp_server.CancellationToken(),
+            )
+            self.assertEqual("rejected", rejected.content["status"])
+            resolve.assert_not_called()
+
+    def test_transition_decoder_covers_each_advertised_leaf_with_positive_and_negative_payloads(self) -> None:
+        reason: dict[str, contracts.JsonValue] = {"reason": "Accepted reason."}
+        evidence: dict[str, contracts.JsonValue] = {"evidence": "Independent review evidence."}
+        definition: dict[str, contracts.JsonValue] = {
+            "schema": "pinboard-work-item-definition/v1",
+            "title": "Item",
+            "objective": "Change one consumer.",
+            "hypothesis": "It remains observable.",
+            "evidence": [],
+            "scope": ["One consumer."],
+            "non_scope": [],
+            "acceptance_criteria": ["The change persists."],
+            "dependencies": [],
+            "effect": "Changed consumer.",
+            "unlock": "Use the consumer.",
+        }
+        cases: tuple[tuple[str, str, dict[str, contracts.JsonValue]], ...] = (
+            ("accept-checkpoint", "project", {"checkpoint": "checkpoint-1", "candidate": "candidate", **evidence}),
+            ("accept-review-and-continue", "project", {"candidate": "candidate", **evidence}),
+            (
+                "accept-proposal",
+                "project",
+                {"item": "item-1", "state": "ready", "next_action": "Prepare accepted work."},
+            ),
+            ("activate", "preparer", {"brief_artifact_ref_id": 1}),
+            ("block", "project", reason),
+            ("block-item", "project", reason),
+            ("complete", "project", evidence),
+            (
+                "complete",
+                "project",
+                {
+                    "schema": "pinboard-covered-completion/v1",
+                    "candidate": "candidate",
+                    **evidence,
+                    "reviewer_task_id": "reviewer",
+                    "result_sha256": "a" * 64,
+                    "review_sha256": "b" * 64,
+                    "packages": [
+                        {"history_id": 1, "package_sha256": "c" * 64, "disposition": "revalidated", **evidence}
+                    ],
+                },
+            ),
+            ("close", "project", {"outcome": "done", **reason}),
+            ("defer", "project", {"timing": "safe-to-defer", "reopen_condition": "A supported consumer needs it."}),
+            ("mark-ready", "project", reason),
+            ("merge-proposal", "project", {"target": "item-2"}),
+            ("pause", "project", reason),
+            ("reject-proposal", "project", reason),
+            ("reopen", "project", evidence),
+            (
+                "record-replacement",
+                "project",
+                {
+                    "schema": "pinboard-planned-replacement/v1",
+                    "affected_item": "item-1",
+                    "expected_relation_revision": 0,
+                    "replacement_item": "item-2",
+                    "replacement_cost": "One retained owner.",
+                    "status": "current",
+                    "recorded_by": "coordinator",
+                },
+            ),
+            (
+                "rebind-attempt",
+                "project",
+                {
+                    "attempt": "attempt-1",
+                    "branch": "codex/candidate",
+                    "base_revision": "base",
+                    "brief_artifact_ref_id": 1,
+                },
+            ),
+            ("resume", "project", {}),
+            ("return-for-correction", "project", reason),
+            ("return-proposal", "project", reason),
+            (
+                "retain-temporarily",
+                "project",
+                {
+                    "schema": "pinboard-replacement-disposition/v1",
+                    "affected_item": "item-1",
+                    "relation_revision": 1,
+                    "rationale": "Current consumer remains necessary.",
+                    "accepted_cost": "One owner.",
+                    "recorded_by": "coordinator",
+                },
+            ),
+            (
+                "revise-item",
+                "project",
+                {
+                    "schema": "pinboard-item-revision/v1",
+                    "item_id": "item-1",
+                    "expected_revision": 1,
+                    "expected_digest": "a" * 64,
+                    "source_task": "coordinator",
+                    **reason,
+                    "definition": definition,
+                },
+            ),
+            ("submit-review", "worker", {"candidate": "candidate"}),
+        )
+        self.assertEqual(len(contracts.TRANSITION_REQUEST_TYPES), len(cases))
+        for kind, role, payload in cases:
+            authority: dict[str, contracts.JsonValue] = (
+                {"actor_task_id": "coordinator", "actor_host_id": "local"}
+                if role == "project"
+                else {"lease_id": "lease", "generation": 1}
+            )
+            raw: dict[str, contracts.JsonValue] = {
+                "project_root": "/project",
+                "work_root": "/work",
+                "role": role,
+                "receipt": {"action_id": {"kind": kind, "subject": "item-1"}, "subject_revision": "1"},
+                "payload": payload,
+                **authority,
+            }
+            with self.subTest(kind=kind, payload=payload):
+                decoded = contracts.decode_transition_request(raw)
+                self.assertIsInstance(decoded.payload, msgspec.Struct)
+                with self.assertRaises((msgspec.ValidationError, ValueError)):
+                    contracts.decode_transition_request({**raw, "payload": {**payload, "unexpected": True}})
+                with self.assertRaises((msgspec.ValidationError, ValueError)):
+                    contracts.decode_transition_request({**raw, "role": "observer"})
+
+    def test_attempt_acquisition_selects_initial_or_transfer_only_under_the_write_lock(self) -> None:
+        temporary, _project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        store = SQLiteWorkStore(roots.database_path)
+        now = datetime.now(UTC)
+        retained = store.read_attempt_authority_status(AttemptId("work-a-1"))
+        self.assertIsNotNone(retained)
+        assert retained is not None
+        released = authority_operations.change_attempt_authority(
+            store,
+            operation="release",
+            attempt_id=AttemptId("work-a-1"),
+            lease_id=retained.lease_id,
+            generation=retained.generation,
+            operation_time=now,
+            expires_at=None,
+            actor_task_id=None,
+            actor_host_id=None,
+        )
+        self.assertNotIsInstance(released, DecisionFailure)
+
+        with patch.object(
+            SQLiteWorkStore,
+            "read_decision_facts",
+            side_effect=AssertionError("attempt acquisition selected outside the write lock"),
+        ):
+            acquired = authority_operations.acquire_attempt_authority(
+                store,
+                attempt_id=AttemptId("work-a-1"),
+                task_id=TaskId("replacement-worker"),
+                host_id=HostId("local"),
+                lease_id=LeaseId("replacement-lease"),
+                acquired_at=now + timedelta(seconds=1),
+                expires_at=now + timedelta(minutes=5),
+            )
+
+        self.assertNotIsInstance(acquired, DecisionFailure)
 
     def test_in_process_authority_and_transition_handlers_cover_exact_mutations(  # noqa: C901, PLR0915 - one complete authority matrix
         self,
@@ -798,14 +1262,20 @@ class McpTransportTest(unittest.TestCase):
             raise AssertionError(projected.message)
         return msgspec.json.encode(projected)
 
-    def test_action_and_continuation_results_reject_cross_correlated_content(self) -> None:
+    def test_action_and_continuation_results_reject_cross_correlated_content(self) -> None:  # noqa: PLR0915 - one correlated contract matrix
+        temporary, _project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
         action_result = msgspec.json.decode(
             msgspec.json.encode(
                 {
                     "schema": "pinboard-mcp-actions-result/v1",
                     "status": "ok",
                     "actions": [
-                        mcp_server._mcp_action(action(decision_models.AcceptCheckpointAction, AttemptId("attempt-1")))
+                        mcp_server._mcp_action(
+                            action(decision_models.AcceptCheckpointAction, AttemptId("attempt-1")),
+                            SQLiteWorkStore(roots.database_path),
+                            focused=False,
+                        )
                     ],
                     "state_changed": False,
                     "effect": "unchanged",

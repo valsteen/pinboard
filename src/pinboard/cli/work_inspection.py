@@ -32,7 +32,6 @@ from pinboard.application import (
 )
 from pinboard.application.work_briefs import decode_canonical_work_brief
 from pinboard.cli import (
-    action_selection,
     candidate_recovery,
     checkpoint_compatibility,
     cli_commands,
@@ -637,10 +636,10 @@ def show_review_job(  # noqa: C901, PLR0912, PLR0915 - one ordered selected-cont
 
 def describe_input_contract(
     kind: decision_models.ActionKind,
-) -> errors.TransitionInputResult[work_inspection_models.InputContractView]:
+) -> errors.TransitionInputResult[action_models.InputContractView]:
     semantics = decision_models.action_semantics(kind)
     encoded_schema = action_queries.encoded_action_input_schema(kind)
-    return work_inspection_models.InputContractView(
+    return action_models.InputContractView(
         kind,
         action_queries.project_action_semantics(semantics),
         None if encoded_schema is None else msgspec.json.decode(encoded_schema, type=action_models.JsonSchema),
@@ -925,46 +924,11 @@ def _completion_action_view(
     action: decision_models.CompleteAction,
     projected: work_inspection_models.ActionView,
 ) -> errors.CommandResult[work_inspection_models.ActionView]:
-    completion = store.read_completion_context(action.capability.subject)
-    if completion is None:
-        return errors.CommandFailure(
-            domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            "Completion attempt disappeared; reinspect the focused action.",
-            None,
-        )
-    if (recovery := action_selection.completion_candidate_recovery(completion)) is not None:
-        return recovery
-    packages: list[work_inspection_models.CompletionPackageView] = []
-    for checkpoint in completion.checkpoints:
-        reference = checkpoint.package_reference
-        if reference is None:
-            return errors.CommandFailure(
-                domain_errors.DecisionFailureCode.ACTION_NOT_AVAILABLE,
-                "An accepted checkpoint package reference is missing.",
-                None,
-            )
-        packages.append(
-            work_inspection_models.CompletionPackageView(
-                int(checkpoint.receipt.history_id),
-                reference.content_sha256,
-                int(reference.artifact_ref_id),
-                reference.selector,
-                reference.size_bytes,
-            )
-        )
-    model = action_models.CoveredCompleteInputPayload if packages else action_models.EvidenceInputPayload
-    attempt = completion.attempt
-    candidate = attempt.candidate_revision if isinstance(attempt, query_models.NonterminalAttemptContextFacts) else None
-    return msgspec.structs.replace(
-        projected,
-        input_contract=work_inspection_models.CompletionInputContractView(
-            action.kind,
-            projected.semantics,
-            msgspec.json.schema(model),
-            candidate,
-            tuple(packages),
-        ),
-    )
+    contract = action_queries.completion_input_contract(store, action, projected.semantics)
+    if isinstance(contract, domain_errors.DecisionFailure):
+        code = errors.CommandErrorCode.ACTION_LIFECYCLE_UNAVAILABLE if contract.details is not None else contract.code
+        return errors.CommandFailure(code, contract.message, contract.details)
+    return msgspec.structs.replace(projected, input_contract=contract)
 
 
 def _discovered_action_view(

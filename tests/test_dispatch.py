@@ -231,18 +231,6 @@ class DispatchTest(unittest.TestCase):
         self.assertIn("Do not use `CODEX_SESSION_ID`", prompt)
         self.assertIn(f"- Result: {project / 'attempts' / value.attempt_id / 'result.md'}", prompt)
         self.assertIn(f"- Blocker: {project / 'attempts' / value.attempt_id / 'blocker.md'}", prompt)
-        self.assertIn(
-            f"pinboard --project-root {project} --work-root {project} attempt acquire --attempt-id {value.attempt_id} "
-            '--task-id "$CODEX_THREAD_ID" --host-id local --ttl-seconds 3600 --json',
-            prompt,
-        )
-        self.assertIn(
-            "pinboard --project-root "
-            f"{project} --work-root {project} actions --role worker --lease-id <returned-lease-id> "
-            "--generation <returned-generation> "
-            f"--action-id continue:{value.attempt_id} --json",
-            prompt,
-        )
         self.assertIn("- Declared permissions: repository-read", prompt)
         altered_prompt = expect_dispatch_failure(
             prepare_dispatch_from_artifact(

@@ -119,43 +119,212 @@ class ArtifactVerifyRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     size_bytes: PositiveInt
 
 
-class TransitionReceipt(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    action_id: ActionIdentity
+class TransitionActionIdentity[KindT](msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    kind: KindT
+    subject: PathComponent
+
+
+class TransitionReceipt[KindT](msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    action_id: TransitionActionIdentity[KindT]
     subject_revision: NonEmptyText
 
 
-class ProjectTransitionRequest(
+class ProjectTransitionRequest[KindT, PayloadT](
     msgspec.Struct, tag="project", tag_field="role", frozen=True, forbid_unknown_fields=True
 ):
     project_root: RootPath
     work_root: RootPath
-    receipt: TransitionReceipt
-    payload: dict[str, Any]
+    receipt: TransitionReceipt[KindT]
+    payload: PayloadT
     actor_task_id: RuntimeIdentity
     actor_host_id: RuntimeIdentity
 
 
-class WorkerTransitionRequest(msgspec.Struct, tag="worker", tag_field="role", frozen=True, forbid_unknown_fields=True):
+class WorkerTransitionRequest[KindT, PayloadT](
+    msgspec.Struct, tag="worker", tag_field="role", frozen=True, forbid_unknown_fields=True
+):
     project_root: RootPath
     work_root: RootPath
-    receipt: TransitionReceipt
-    payload: dict[str, Any]
+    receipt: TransitionReceipt[KindT]
+    payload: PayloadT
     lease_id: RuntimeIdentity
     generation: PositiveInt
 
 
-class PreparerTransitionRequest(
+class PreparerTransitionRequest[KindT, PayloadT](
     msgspec.Struct, tag="preparer", tag_field="role", frozen=True, forbid_unknown_fields=True
 ):
     project_root: RootPath
     work_root: RootPath
-    receipt: TransitionReceipt
-    payload: dict[str, Any]
+    receipt: TransitionReceipt[KindT]
+    payload: PayloadT
     lease_id: RuntimeIdentity
     generation: PositiveInt
 
 
-type TransitionRequest = ProjectTransitionRequest | WorkerTransitionRequest | PreparerTransitionRequest
+type AcceptCheckpointTransitionRequest = ProjectTransitionRequest[
+    Literal["accept-checkpoint"], action_models.AcceptCheckpointInputPayload
+]
+type AcceptReviewAndContinueTransitionRequest = ProjectTransitionRequest[
+    Literal["accept-review-and-continue"], action_models.AcceptReviewAndContinueInputPayload
+]
+type AcceptProposalTransitionRequest = ProjectTransitionRequest[
+    Literal["accept-proposal"], action_models.AcceptProposalInputPayload
+]
+type ActivateTransitionRequest = PreparerTransitionRequest[Literal["activate"], action_models.ActivateInputPayload]
+type BlockTransitionRequest = ProjectTransitionRequest[Literal["block"], action_models.BlockInputPayload]
+type BlockItemTransitionRequest = ProjectTransitionRequest[Literal["block-item"], action_models.BlockInputPayload]
+type DirectCompleteTransitionRequest = ProjectTransitionRequest[Literal["complete"], action_models.EvidenceInputPayload]
+type CoveredCompleteTransitionRequest = ProjectTransitionRequest[
+    Literal["complete"], action_models.CoveredCompleteInputPayload
+]
+type CloseTransitionRequest = ProjectTransitionRequest[Literal["close"], action_models.CloseInputPayload]
+type DeferTransitionRequest = ProjectTransitionRequest[Literal["defer"], action_models.DeferInputPayload]
+type MarkReadyTransitionRequest = ProjectTransitionRequest[Literal["mark-ready"], action_models.ReasonInputPayload]
+type MergeProposalTransitionRequest = ProjectTransitionRequest[
+    Literal["merge-proposal"], action_models.MergeProposalInputPayload
+]
+type PauseTransitionRequest = ProjectTransitionRequest[Literal["pause"], action_models.ReasonInputPayload]
+type RejectProposalTransitionRequest = ProjectTransitionRequest[
+    Literal["reject-proposal"], action_models.ReasonInputPayload
+]
+type ReopenTransitionRequest = ProjectTransitionRequest[Literal["reopen"], action_models.EvidenceInputPayload]
+type RecordReplacementTransitionRequest = ProjectTransitionRequest[
+    Literal["record-replacement"], action_models.RecordPlannedReplacementInputPayload
+]
+type RebindAttemptTransitionRequest = ProjectTransitionRequest[
+    Literal["rebind-attempt"], action_models.RebindAttemptInputPayload
+]
+type ResumeTransitionRequest = ProjectTransitionRequest[Literal["resume"], action_models.ResumeInputPayload]
+type ReturnForCorrectionTransitionRequest = ProjectTransitionRequest[
+    Literal["return-for-correction"], action_models.ReasonInputPayload
+]
+type ReturnProposalTransitionRequest = ProjectTransitionRequest[
+    Literal["return-proposal"], action_models.ReasonInputPayload
+]
+type RetainTemporarilyTransitionRequest = ProjectTransitionRequest[
+    Literal["retain-temporarily"], action_models.RetainTemporarilyInputPayload
+]
+type ReviseItemTransitionRequest = ProjectTransitionRequest[
+    Literal["revise-item"], action_models.ReviseItemInputPayload
+]
+type SubmitReviewTransitionRequest = WorkerTransitionRequest[
+    Literal["submit-review"], action_models.SubmitReviewInputPayload
+]
+
+type TransitionRequest = (
+    AcceptCheckpointTransitionRequest
+    | AcceptReviewAndContinueTransitionRequest
+    | AcceptProposalTransitionRequest
+    | ActivateTransitionRequest
+    | BlockTransitionRequest
+    | BlockItemTransitionRequest
+    | DirectCompleteTransitionRequest
+    | CoveredCompleteTransitionRequest
+    | CloseTransitionRequest
+    | DeferTransitionRequest
+    | MarkReadyTransitionRequest
+    | MergeProposalTransitionRequest
+    | PauseTransitionRequest
+    | RejectProposalTransitionRequest
+    | ReopenTransitionRequest
+    | RecordReplacementTransitionRequest
+    | RebindAttemptTransitionRequest
+    | ResumeTransitionRequest
+    | ReturnForCorrectionTransitionRequest
+    | ReturnProposalTransitionRequest
+    | RetainTemporarilyTransitionRequest
+    | ReviseItemTransitionRequest
+    | SubmitReviewTransitionRequest
+)
+
+
+def decode_transition_request(raw: dict[str, JsonValue]) -> TransitionRequest:  # noqa: C901, PLR0912, PLR0915 - exhaustive exact wire leaves
+    """Decode one exact action leaf before any stateful work begins."""
+
+    receipt = raw.get("receipt")
+    action_id = receipt.get("action_id") if isinstance(receipt, dict) else None
+    kind = action_id.get("kind") if isinstance(action_id, dict) else None
+    request: TransitionRequest
+    match kind:
+        case "accept-checkpoint":
+            request = msgspec.convert(raw, type=AcceptCheckpointTransitionRequest, strict=True)
+        case "accept-review-and-continue":
+            request = msgspec.convert(raw, type=AcceptReviewAndContinueTransitionRequest, strict=True)
+        case "accept-proposal":
+            request = msgspec.convert(raw, type=AcceptProposalTransitionRequest, strict=True)
+        case "activate":
+            request = msgspec.convert(raw, type=ActivateTransitionRequest, strict=True)
+        case "block":
+            request = msgspec.convert(raw, type=BlockTransitionRequest, strict=True)
+        case "block-item":
+            request = msgspec.convert(raw, type=BlockItemTransitionRequest, strict=True)
+        case "complete":
+            payload = raw.get("payload")
+            if isinstance(payload, dict) and "schema" in payload:
+                request = msgspec.convert(raw, type=CoveredCompleteTransitionRequest, strict=True)
+            else:
+                request = msgspec.convert(raw, type=DirectCompleteTransitionRequest, strict=True)
+        case "close":
+            request = msgspec.convert(raw, type=CloseTransitionRequest, strict=True)
+        case "defer":
+            request = msgspec.convert(raw, type=DeferTransitionRequest, strict=True)
+        case "mark-ready":
+            request = msgspec.convert(raw, type=MarkReadyTransitionRequest, strict=True)
+        case "merge-proposal":
+            request = msgspec.convert(raw, type=MergeProposalTransitionRequest, strict=True)
+        case "pause":
+            request = msgspec.convert(raw, type=PauseTransitionRequest, strict=True)
+        case "reject-proposal":
+            request = msgspec.convert(raw, type=RejectProposalTransitionRequest, strict=True)
+        case "reopen":
+            request = msgspec.convert(raw, type=ReopenTransitionRequest, strict=True)
+        case "record-replacement":
+            request = msgspec.convert(raw, type=RecordReplacementTransitionRequest, strict=True)
+        case "rebind-attempt":
+            request = msgspec.convert(raw, type=RebindAttemptTransitionRequest, strict=True)
+        case "resume":
+            request = msgspec.convert(raw, type=ResumeTransitionRequest, strict=True)
+        case "return-for-correction":
+            request = msgspec.convert(raw, type=ReturnForCorrectionTransitionRequest, strict=True)
+        case "return-proposal":
+            request = msgspec.convert(raw, type=ReturnProposalTransitionRequest, strict=True)
+        case "retain-temporarily":
+            request = msgspec.convert(raw, type=RetainTemporarilyTransitionRequest, strict=True)
+        case "revise-item":
+            request = msgspec.convert(raw, type=ReviseItemTransitionRequest, strict=True)
+        case "submit-review":
+            request = msgspec.convert(raw, type=SubmitReviewTransitionRequest, strict=True)
+        case _:
+            raise ValueError(f"Action '{kind}' is not a supported MCP transition.")
+    return request
+
+
+TRANSITION_REQUEST_TYPES: tuple[Any, ...] = (
+    AcceptCheckpointTransitionRequest,
+    AcceptReviewAndContinueTransitionRequest,
+    AcceptProposalTransitionRequest,
+    ActivateTransitionRequest,
+    BlockTransitionRequest,
+    BlockItemTransitionRequest,
+    DirectCompleteTransitionRequest,
+    CoveredCompleteTransitionRequest,
+    CloseTransitionRequest,
+    DeferTransitionRequest,
+    MarkReadyTransitionRequest,
+    MergeProposalTransitionRequest,
+    PauseTransitionRequest,
+    RejectProposalTransitionRequest,
+    ReopenTransitionRequest,
+    RecordReplacementTransitionRequest,
+    RebindAttemptTransitionRequest,
+    ResumeTransitionRequest,
+    ReturnForCorrectionTransitionRequest,
+    ReturnProposalTransitionRequest,
+    RetainTemporarilyTransitionRequest,
+    ReviseItemTransitionRequest,
+    SubmitReviewTransitionRequest,
+)
 
 
 class AuthorityRequestBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -468,6 +637,14 @@ class ActionsSuccess(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
     def __post_init__(self) -> None:
         _require_state_changed(self.state_changed, False)
+
+
+class CompletionActionView(ActionView, frozen=True, forbid_unknown_fields=True):
+    input_contract: action_models.CompletionInputContractView
+
+
+class CompletionActionsSuccess(ActionsSuccess, frozen=True, forbid_unknown_fields=True):
+    actions: Annotated[tuple[CompletionActionView, ...], msgspec.Meta(min_length=1, max_length=1)]
 
 
 class AcceptedBriefIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1296,7 +1473,14 @@ ITEM_STATUS_RESULT_TYPES = (
     ExecutorBusyResult,
 )
 OVERVIEW_RESULT_TYPES = (query_models.WorkOverview, OverviewRejected, ExecutorBusyResult)
-ACTIONS_RESULT_TYPES = (ActionsSuccess, ActionsInvalid, ActionUnavailable, AttemptLeaseRequired, ExecutorBusyResult)
+ACTIONS_RESULT_TYPES = (
+    ActionsSuccess,
+    CompletionActionsSuccess,
+    ActionsInvalid,
+    ActionUnavailable,
+    AttemptLeaseRequired,
+    ExecutorBusyResult,
+)
 ATTEMPT_INSPECTION_RESULT_TYPES = (
     TerminalAttemptInspectionSuccess,
     NonterminalAttemptInspectionSuccess,
@@ -1396,6 +1580,7 @@ type ResultBoundary = (
     | type[ArtifactReferenceMismatch]
     | type[ArtifactBytesInvalid]
     | type[ActionsSuccess]
+    | type[CompletionActionsSuccess]
     | type[TerminalAttemptInspectionSuccess]
     | type[NonterminalAttemptInspectionSuccess]
     | type[ArtifactVerified]
@@ -1446,8 +1631,8 @@ def attempt_authority_request_schema() -> dict[str, JsonSchemaValue]:
 
 
 def transition_request_schema() -> dict[str, JsonSchemaValue]:
-    schema: dict[str, JsonSchemaValue] = msgspec.json.schema(TransitionRequest)
-    return {"type": "object", **schema}
+    schemas, definitions = msgspec.json.schema_components(TRANSITION_REQUEST_TYPES)
+    return {"type": "object", "oneOf": list[JsonSchemaValue](schemas), "$defs": definitions}
 
 
 def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
@@ -1489,6 +1674,7 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
         "ArtifactReferenceMismatch",
         "ArtifactBytesInvalid",
         "ActionsSuccess",
+        "CompletionActionsSuccess",
         "TerminalAttemptInspectionSuccess",
         "NonterminalAttemptInspectionSuccess",
         "ArtifactVerified",
@@ -1784,7 +1970,18 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     elif schema == "pinboard-overview/v5" and tool_name == "pinboard_overview":
         msgspec.convert(content, type=query_models.WorkOverview, strict=True)
     elif tool_name == "pinboard_actions" and status == "ok":
-        msgspec.convert(content, type=ActionsSuccess, strict=True)
+        action_values = content.get("actions")
+        focused_completion = (
+            isinstance(action_values, list)
+            and len(action_values) == 1
+            and isinstance(action_values[0], dict)
+            and isinstance(action_values[0].get("input_contract"), dict)
+            and "checkpoint_packages" in action_values[0]["input_contract"]
+        )
+        if focused_completion:
+            msgspec.convert(content, type=CompletionActionsSuccess, strict=True)
+        else:
+            msgspec.convert(content, type=ActionsSuccess, strict=True)
     elif tool_name == "pinboard_attempt_inspect" and status == "ok":
         continuation = content.get("continuation")
         state = continuation.get("state") if isinstance(continuation, dict) else None

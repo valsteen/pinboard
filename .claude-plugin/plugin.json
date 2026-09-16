@@ -9,6 +9,7 @@
   "homepage": "https://github.com/valsteen/pinboard#readme",
   "repository": "https://github.com/valsteen/pinboard",
   "license": "MIT",
+  "mcpServers": "./mcp-claude.json",
   "keywords": [
     "coding-agent",
     "project-coordination",

@@ -52,7 +52,9 @@ The method used to preserve these boundaries, expose effects, and stop decomposi
 
 ### Launcher
 
-The `scripts/pinboard` launcher resolves runtime state only below its own plugin-version or source root. A source checkout prepared by `scripts/prepare-worktree` uses its development `.venv`. Otherwise, ordinary launch requires both `.pinboard-runtime/.pinboard-ready` and the private `bin/pinboard`; when either is absent, the launcher returns one strict `pinboard-launcher-result/v1` preparation requirement without invoking uv or starting Pinboard. Explicit `scripts/pinboard --prepare-runtime` is the only launcher path that invokes uv: it synchronizes locked production dependencies into `.pinboard-runtime`, verifies the real entry point, and writes the ready marker last. Packaged code, skill assets, and a ready private runtime are immutable inputs during ordinary commands. Project-owned SQLite, artifacts, and views remain below the selected work root, separate from both Pinboard runtime environments.
+The `scripts/pinboard` launcher resolves runtime state only below its own plugin-version or source root. Ordinary CLI arguments select `pinboard`; exactly `--mcp` selects `pinboard-mcp` without forwarding startup arguments. A source checkout prepared by `scripts/prepare-worktree` uses its development `.venv` when the selected executable is available. Otherwise, ordinary launch requires `.pinboard-runtime/.pinboard-ready` and the selected private executable. Missing readiness returns one strict `pinboard-launcher-result/v1` preparation requirement without invoking uv or starting Pinboard. CLI prestart recovery uses stdout; MCP prestart recovery uses stderr and leaves protocol stdout empty.
+
+Explicit `scripts/pinboard --prepare-runtime` is the only launcher path that invokes uv: it synchronizes locked production dependencies into `.pinboard-runtime`, verifies the real CLI entry and availability of the MCP executable, and writes the ready marker last. It does not run `pinboard-mcp --version`, because the server's entry has no version-argument contract. Packaged code, skill assets, and a ready private runtime are immutable inputs during ordinary commands. Project-owned SQLite, artifacts, and views remain below the selected work root, separate from both Pinboard runtime environments.
 
 ### Package root
 
@@ -134,6 +136,8 @@ Adapters own concrete persistence and filesystem mechanics without deciding prod
 | `errors.py` | Closed command, proposal, work-brief, brief-source, and committed-effect result families plus the shared dispatch result and outer presentation facts for exact storage recovery; infrastructure exception families remain with their concrete adapter or application owner |
 
 ### MCP
+
+The Codex and experimental Claude manifests explicitly select separate root configuration files, `mcp-codex.json` and `mcp-claude.json`. Codex resolves the configured relative `cwd` under the plugin root and invokes `sh ./scripts/pinboard --mcp`; Claude expands `${CLAUDE_PLUGIN_ROOT}` in its absolute launcher command. Neither declaration depends on default `.mcp.json` discovery or shared-file precedence. Both select the same launcher/runtime owner and existing server entry. Runtime preparation remains manual; a client reconnect or reload follows successful preparation. Package negotiation tests establish configured process startup, not enabled native-plugin ingestion or model usability.
 
 Exact attempt inspection includes the same verified candidate snapshot identity and future-clean-checkout recovery command as CLI inspection when retained evidence exists. MCP remains read-only for candidate recovery.
 

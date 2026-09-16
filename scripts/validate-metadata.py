@@ -1,6 +1,6 @@
 import tomllib
 from pathlib import Path
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 
 import msgspec
 import yaml
@@ -92,6 +92,7 @@ class PluginManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     license: str
     keywords: tuple[str, ...]
     skills: str
+    mcp_servers: Literal["./mcp-codex.json"] = msgspec.field(name="mcpServers")
     interface: PluginInterface
 
 
@@ -104,6 +105,42 @@ class ClaudePluginManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     repository: str
     license: str
     keywords: tuple[str, ...]
+    mcp_servers: Literal["./mcp-claude.json"] = msgspec.field(name="mcpServers")
+
+
+class CodexMcpServer(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    command: Literal["sh"]
+    args: tuple[str, ...]
+    cwd: Literal["."]
+
+    def __post_init__(self) -> None:
+        if self.args != ("./scripts/pinboard", "--mcp"):
+            raise ValueError("Codex MCP must select the root launcher with only --mcp")
+
+
+class ClaudeMcpServer(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    command: Literal["${CLAUDE_PLUGIN_ROOT}/scripts/pinboard"]
+    args: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.args != ("--mcp",):
+            raise ValueError("Claude MCP must select the root launcher with only --mcp")
+
+
+class CodexMcpServers(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    pinboard: CodexMcpServer
+
+
+class ClaudeMcpServers(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    pinboard: ClaudeMcpServer
+
+
+class CodexMcpConfiguration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    mcp_servers: CodexMcpServers = msgspec.field(name="mcpServers")
+
+
+class ClaudeMcpConfiguration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    mcp_servers: ClaudeMcpServers = msgspec.field(name="mcpServers")
 
 
 class ProjectMetadata(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -233,6 +270,14 @@ def validate_claude_plugin() -> None:
         raise ValueError("Claude plugin must use the shared repository-root skills directory")
 
 
+def validate_mcp_configuration() -> None:
+    msgspec.json.decode((ROOT / "mcp-codex.json").read_bytes(), type=CodexMcpConfiguration)
+    msgspec.json.decode((ROOT / "mcp-claude.json").read_bytes(), type=ClaudeMcpConfiguration)
+    launcher = ROOT / "scripts" / "pinboard"
+    if not launcher.is_file() or not launcher.stat().st_mode & 0o111:
+        raise ValueError("configured MCP launcher must exist and be executable")
+
+
 def validate_project_metadata() -> None:
     path = ROOT / "pyproject.toml"
     value = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -312,6 +357,7 @@ def main() -> None:
         raise ValueError("repository license must exactly match the canonical MIT license text")
     validate_plugin()
     validate_claude_plugin()
+    validate_mcp_configuration()
     validate_project_metadata()
     validate_codex_marketplace()
     validate_claude_marketplace()

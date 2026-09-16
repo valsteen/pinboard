@@ -77,6 +77,88 @@ class LauncherTest(unittest.TestCase):
         uv.chmod(0o755)
         return uv
 
+    def test_mcp_selects_requested_source_or_private_entry_without_uv(self) -> None:
+        for runtime in (".venv", ".pinboard-runtime/environment"):
+            with self.subTest(runtime=runtime), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                launcher = self.copy_launcher(root)
+                executable = root / runtime / "bin" / "pinboard-mcp"
+                executable.parent.mkdir(parents=True)
+                executable.write_text('#!/bin/sh\nprintf "mcp:%s\\n" "$*"\n', encoding="utf-8")
+                executable.chmod(0o755)
+                if runtime != ".venv":
+                    (root / ".pinboard-runtime" / ".pinboard-ready").touch()
+                result = self.run_launcher(launcher, "--mcp", path="/usr/bin:/bin")
+                self.assertEqual(0, result.returncode)
+                self.assertEqual("mcp:\n", result.stdout)
+                self.assertEqual("", result.stderr)
+
+    def test_mcp_missing_or_partial_entry_keeps_protocol_stdout_empty(self) -> None:
+        for state in ("missing", "cli-only", "marker-only", "entry-only"):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                launcher = self.copy_launcher(root)
+                private = root / ".pinboard-runtime"
+                private.mkdir()
+                if state in ("cli-only", "marker-only"):
+                    (private / ".pinboard-ready").touch()
+                if state in ("cli-only", "entry-only"):
+                    executable = (
+                        private / "environment" / "bin" / ("pinboard" if state == "cli-only" else "pinboard-mcp")
+                    )
+                    executable.parent.mkdir(parents=True)
+                    executable.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+                    executable.chmod(0o755)
+                before = tuple(private.rglob("*"))
+                sentinel = root / "uv-was-called"
+                self.write_uv(root, f'touch "{sentinel}"\n')
+                result = self.run_launcher(launcher, "--mcp", path=f"{root}:/usr/bin:/bin")
+                self.assertEqual("", result.stdout)
+                self.assertLess(len(result.stderr), 2048)
+                self.assert_result(
+                    subprocess.CompletedProcess(result.args, result.returncode, result.stderr, ""),
+                    status="runtime-preparation-required",
+                    retry="run-preparation",
+                    effect="unchanged",
+                    changed_surfaces=[],
+                    upstream_exit_code=None,
+                    next_action_requires=["uv and write access to launcher-root .pinboard-runtime"],
+                )
+                self.assertFalse(sentinel.exists())
+                self.assertEqual(before, tuple(private.rglob("*")))
+
+    def test_mcp_rejects_every_additional_startup_argument_before_effect(self) -> None:
+        for argument in ("--version", "--prepare-runtime", "status", "--project-root", "--mcp", ""):
+            with self.subTest(argument=argument), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                launcher = self.copy_launcher(root)
+                result = self.run_launcher(launcher, "--mcp", argument, path="/usr/bin:/bin")
+                self.assertEqual(64, result.returncode)
+                self.assertEqual("", result.stdout)
+                payload = json.loads(result.stderr)
+                self.assertEqual("invalid-startup-arguments", payload["status"])
+                self.assertEqual("unchanged", payload["effect_disposition"])
+                self.assertEqual([], payload["changed_surfaces"])
+                self.assertFalse(payload["pinboard_started"])
+                self.assertFalse((root / ".pinboard-runtime").exists())
+
+    def test_preparation_does_not_mark_cli_only_runtime_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launcher = self.copy_launcher(root)
+            self.write_uv(
+                root,
+                'mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"\n'
+                "printf '#!/bin/sh\\nexit 0\\n' > \"$UV_PROJECT_ENVIRONMENT/bin/pinboard\"\n"
+                'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n',
+            )
+            result = self.run_launcher(launcher, "--prepare-runtime", path=f"{root}:/usr/bin:/bin")
+            self.assertEqual(78, result.returncode)
+            payload = json.loads(result.stdout)
+            self.assertEqual("runtime-entrypoint-invalid", payload["status"])
+            self.assertIn("pinboard-mcp", result.stderr)
+            self.assertFalse((root / ".pinboard-runtime" / ".pinboard-ready").exists())
+
     def test_ready_source_environment_bypasses_uv(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -187,7 +269,8 @@ class LauncherTest(unittest.TestCase):
                 root,
                 'mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"\n'
                 "printf '#!/bin/sh\\nexit 0\\n' > \"$UV_PROJECT_ENVIRONMENT/bin/pinboard\"\n"
-                'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n',
+                'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n'
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp"\n',
             )
 
             result = self.run_launcher(launcher, "--prepare-runtime", path=f"{root}:/usr/bin:/bin")
@@ -214,7 +297,8 @@ class LauncherTest(unittest.TestCase):
                 'mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"\n'
                 'mkdir "$READY_MARKER"\n'
                 "printf '#!/bin/sh\\nexit 0\\n' > \"$UV_PROJECT_ENVIRONMENT/bin/pinboard\"\n"
-                'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n',
+                'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n'
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp"\n',
             )
 
             result = self.run_launcher(
@@ -321,7 +405,9 @@ class LauncherTest(unittest.TestCase):
                 'mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"\n'
                 'printf \'#!/bin/sh\\nif [ "$1" = "--version" ]; then printf "pinboard 0.1.0\\n"; exit 0; fi\\n'
                 'printf "private:%%s\\n" "$*"\\n\' > "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n'
-                'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n',
+                'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n'
+                "printf '#!/bin/sh\\nexit 99\\n' > \"$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp\"\n"
+                'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp"\n',
             )
             environment = {"TRACE_FILE": str(trace)}
 

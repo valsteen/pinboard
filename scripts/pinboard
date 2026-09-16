@@ -4,15 +4,30 @@ set -eu
 plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 runtime_root="$plugin_root/.pinboard-runtime"
 runtime_environment="$runtime_root/environment"
-runtime_executable="$runtime_environment/bin/pinboard"
+entry_name=pinboard
+result_output_fd=1
 ready_marker="$runtime_root/.pinboard-ready"
 diagnostics="$runtime_root/.preparation-output"
 preparation_action='{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["uv and write access to launcher-root .pinboard-runtime"]}'
 
 launcher_result() {
     printf '{"schema":"pinboard-launcher-result/v1","status":"%s","pinboard_started":false,"runtime_location":{"base":"launcher-root","relative":".pinboard-runtime"},"observations":%s,"upstream_exit_code":%s,"retry_disposition":"%s","effect_disposition":"%s","changed_surfaces":%s,"next_action":%s}\n' \
-        "$1" "$2" "$3" "$4" "$5" "$6" "$7"
+        "$1" "$2" "$3" "$4" "$5" "$6" "$7" >&"$result_output_fd"
 }
+
+if [ "$#" -ge 1 ] && [ "$1" = "--mcp" ]; then
+    entry_name=pinboard-mcp
+    result_output_fd=2
+    shift
+    if [ "$#" -ne 0 ]; then
+        launcher_result \
+            "invalid-startup-arguments" \
+            '["MCP startup accepts only scripts/pinboard --mcp; project and work roots belong to tool requests."]' \
+            "null" "correct-environment" "unchanged" '[]' "null"
+        exit 64
+    fi
+fi
+runtime_executable="$runtime_environment/bin/$entry_name"
 
 runtime_write_failure() {
     launcher_result \
@@ -27,7 +42,7 @@ runtime_write_failure() {
 }
 
 if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
-    if [ -f "$ready_marker" ] && [ -x "$runtime_executable" ]; then
+    if [ -f "$ready_marker" ] && [ -x "$runtime_executable" ] && [ -x "$runtime_environment/bin/pinboard-mcp" ]; then
         launcher_result \
             "runtime-already-ready" \
             '["The launcher-root private runtime is already ready."]' \
@@ -101,6 +116,16 @@ if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
             '{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["a valid locked runtime"]}'
         exit 78
     fi
+    if [ ! -x "$runtime_environment/bin/pinboard-mcp" ]; then
+        printf 'prepared MCP entry point is not executable: %s\n' "$runtime_environment/bin/pinboard-mcp" >&2
+        rm -f "$diagnostics"
+        launcher_result \
+            "runtime-entrypoint-invalid" \
+            '["The locked private runtime MCP entry point is missing or not executable."]' \
+            "1" "correct-environment" "potentially-changed" '[".pinboard-runtime"]' \
+            '{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["a valid locked runtime"]}'
+        exit 78
+    fi
     if rm -f "$diagnostics" && (: > "$ready_marker"); then
         launcher_result \
             "runtime-ready" \
@@ -118,8 +143,8 @@ if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
 fi
 
 export PYTHONDONTWRITEBYTECODE=1
-if [ -x "$plugin_root/.venv/bin/pinboard" ]; then
-    exec "$plugin_root/.venv/bin/pinboard" "$@"
+if [ -x "$plugin_root/.venv/bin/$entry_name" ]; then
+    exec "$plugin_root/.venv/bin/$entry_name" "$@"
 fi
 if [ -f "$ready_marker" ] && [ -x "$runtime_executable" ]; then
     exec "$runtime_executable" "$@"

@@ -2,7 +2,13 @@
 
 Pinboard has sibling CLI and local stdio MCP interfaces over one SQLite authority, action vocabulary, brief schema, and skill tree. Use this reference only to translate shared workflow operations into the current coding agent's native outer capabilities. The surrounding skill remains the semantic owner.
 
-`<launcher-root>` is the resolved directory containing `scripts/pinboard`. Every integration invokes `<launcher-root>/scripts/pinboard`; only launcher discovery differs. When `<launcher-root>` is a prepared `<pinboard-source>` checkout, the launcher uses `<pinboard-source>/.venv`. When it is an installed plugin version, the launcher uses `<launcher-root>/.pinboard-runtime/environment`. `<managed-project>` is selected separately with `--project-root` and never supplies Pinboard's environment or dependencies. Runtime selection follows the resolved launcher root, not the human or agent audience.
+`<launcher-root>` is the resolved directory containing `scripts/pinboard`. Plugin declarations invoke that launcher with exactly `--mcp`; direct CLI operations invoke it with CLI arguments. When `<launcher-root>` is a prepared `<pinboard-source>` checkout, the launcher uses `<pinboard-source>/.venv`. When it is an installed plugin version, the launcher uses `<launcher-root>/.pinboard-runtime/environment`. `<managed-project>` and its exact work root are request data, never runtime or dependency locations. Runtime selection follows the resolved launcher root, not the human or agent audience.
+
+## Packaged connection and first setup
+
+Codex's explicit root `mcp-codex.json` declares `sh ./scripts/pinboard --mcp` with `cwd: "."`, resolved under the plugin root. Claude's separate root `mcp-claude.json` declares `${CLAUDE_PLUGIN_ROOT}/scripts/pinboard --mcp`; the client expands that root in the command. Both start the existing `pinboard-mcp` entry through the same runtime owner. No additional MCP startup arguments are supported; every tool call carries exact project and work roots.
+
+If a version is unprepared, MCP startup exits before the server starts and puts its strict same-launcher preparation action on stderr, never protocol stdout. Deliberate CLI setup may run `<launcher-root>/scripts/pinboard --prepare-runtime` with uv and write access only to that version's `.pinboard-runtime`. Follow the exact preparation result, then use the client's supported MCP reconnect or plugin reload mechanism before attempting a covered tool. Setup and CLI-only operations retain their direct launcher route. A missing covered MCP tool does not authorize a generic shell fallback; only an exact accepted source-development bootstrap can select that temporary route.
 
 | Operation | Codex (primary, stress-tested) | Claude Code (experimental) |
 | --- | --- | --- |

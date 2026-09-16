@@ -16,6 +16,7 @@
     "technical-writing"
   ],
   "skills": "./skills/",
+  "mcpServers": "./mcp-codex.json",
   "interface": {
     "displayName": "Pinboard",
     "shortDescription": "Coordinate one validated repository work ledger.",

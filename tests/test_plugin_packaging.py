@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import os
@@ -7,7 +8,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import chdir
 from pathlib import Path
+
+from mcp.client.session import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -49,6 +54,103 @@ def tree_fingerprint(root: Path) -> tuple[tuple[str, str, int, str, str], ...]:
 
 
 class PluginPackagingTests(unittest.TestCase):
+    def assert_configured_mcp_reads(
+        self, sandbox: Path, plugin_root: Path, project: Path, environment: dict[str, str]
+    ) -> None:
+        async def scenario() -> None:
+            for manifest_path in (".codex-plugin/plugin.json", ".claude-plugin/plugin.json"):
+                manifest = json.loads((plugin_root / manifest_path).read_bytes())
+                config_path = plugin_root / manifest["mcpServers"]
+                self.assertEqual((ROOT / config_path.relative_to(plugin_root)).read_bytes(), config_path.read_bytes())
+                config = json.loads(config_path.read_bytes())["mcpServers"]["pinboard"]
+                command = config["command"].replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root))
+                cwd = plugin_root / config["cwd"] if "cwd" in config else None
+                parameters = StdioServerParameters(command=command, args=config["args"], cwd=cwd, env=environment)
+                with chdir(sandbox):
+                    async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
+                        initialized = await session.initialize()
+                        self.assertEqual("pinboard", initialized.server_info.name)
+                        result = await session.call_tool(
+                            "pinboard_item_status",
+                            {
+                                "project_root": str(project),
+                                "work_root": str(project / ".codex" / "pinboard"),
+                                "item_id": "packaged-proposal",
+                            },
+                        )
+                        self.assertFalse(result.is_error)
+                        self.assertIsNotNone(result.structured_content)
+                        assert result.structured_content is not None
+                        self.assertEqual("intake", result.structured_content["state"])
+
+        asyncio.run(scenario())
+        origin = subprocess.run(
+            [
+                str(plugin_root / ".pinboard-runtime" / "environment" / "bin" / "python"),
+                "-c",
+                "import importlib.metadata, pinboard; print(pinboard.__file__); "
+                "print(importlib.metadata.distribution('pinboard').locate_file(''))",
+            ],
+            env={**environment, "PYTHONDONTWRITEBYTECODE": "1"},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        module_origin, installation_origin = map(Path, origin.stdout.splitlines())
+        self.assertTrue(module_origin.is_relative_to(plugin_root / "src"))
+        self.assertTrue(installation_origin.is_relative_to(plugin_root / ".pinboard-runtime" / "environment"))
+        self.assertEqual(
+            (ROOT / "scripts" / "pinboard").read_bytes(), (plugin_root / "scripts" / "pinboard").read_bytes()
+        )
+
+    def test_metadata_rejects_invalid_mcp_configuration_and_missing_assets(self) -> None:
+        changes = (
+            ("mcp-codex.json", '{"mcpServers":{"pinboard":{"command":"sh","args":["--mcp"],"cwd":"."}}}'),
+            (
+                "mcp-codex.json",
+                '{"mcpServers":{"pinboard":{"command":"sh","args":["./scripts/pinboard","--mcp"],"cwd":".","unknown":true}}}',
+            ),
+            (
+                "mcp-codex.json",
+                '{"mcpServers":{"pinboard":{"command":"sh","args":["./scripts/pinboard","--mcp"],"cwd":".."}}}',
+            ),
+            (
+                "mcp-codex.json",
+                '{"mcpServers":{"pinboard":{"command":"sh","args":["./scripts/pinboard","--mcp"],"cwd":"."},"extra":{}}}',
+            ),
+            ("mcp-claude.json", '{"mcpServers":{"pinboard":{"command":"scripts/pinboard","args":["--mcp"]}}}'),
+            (
+                "mcp-claude.json",
+                '{"mcpServers":{"pinboard":{"command":"${CLAUDE_PLUGIN_ROOT}/scripts/pinboard","args":["--mcp","--version"]}}}',
+            ),
+            (
+                "mcp-claude.json",
+                '{"mcpServers":{"pinboard":{"command":"${CLAUDE_PLUGIN_ROOT}/scripts/pinboard","args":["--mcp"],"cwd":"."}}}',
+            ),
+            ("mcp-claude.json", "[]"),
+            ("mcp-codex.json", "{"),
+            ("mcp-codex.json", None),
+            ("mcp-claude.json", None),
+            ("scripts/pinboard", None),
+        )
+        for relative, content in changes:
+            with self.subTest(relative=relative, content=content), tempfile.TemporaryDirectory() as directory:
+                plugin = Path(directory)
+                copied_repository_payload(ROOT, plugin)
+                target = plugin / relative
+                if content is None:
+                    target.unlink()
+                else:
+                    target.write_text(content, encoding="utf-8")
+                result = subprocess.run(
+                    [sys.executable, str(plugin / "scripts" / "validate-metadata.py")],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual("", result.stdout)
+
     def test_copy_and_fingerprint_cover_only_tracked_payload_entry_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             sandbox = Path(directory)
@@ -226,6 +328,7 @@ class PluginPackagingTests(unittest.TestCase):
             item = json.loads(run("item", "status", "--item-id", "packaged-proposal", "--json").stdout)
             validation = json.loads(run("validate", "--json").stdout)
             reopened = run("init")
+            self.assert_configured_mcp_reads(sandbox, plugin_root, project, environment)
 
             self.assertEqual("intake", item["state"])
             self.assertTrue(validation["valid"])

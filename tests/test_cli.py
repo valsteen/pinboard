@@ -1156,9 +1156,7 @@ class CliTest(unittest.TestCase):
             "accept-checkpoint:work-a-1": json.dumps(
                 {"checkpoint": "checkpoint-a", "candidate": candidate, "evidence": "accepted"}
             ),
-            "accept-review-and-continue:work-a-1": json.dumps(
-                {"candidate": candidate, "evidence": "accepted"}
-            ),
+            "accept-review-and-continue:work-a-1": json.dumps({"candidate": candidate, "evidence": "accepted"}),
             "complete:work-a-1": '{"evidence":"accepted"}',
         }
         for action_id, action in before_actions.items():

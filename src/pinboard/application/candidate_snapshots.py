@@ -2,6 +2,7 @@
 
 import hashlib
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Annotated, Literal, Protocol
 
 import msgspec
@@ -112,6 +113,23 @@ def candidate_snapshot_artifact_key(attempt_id: str, candidate: str, recorded_at
     return f"{attempt_id}-candidate-snapshot-{hashlib.sha256(identity).hexdigest()}"
 
 
+def legacy_review_candidate(receipt: stored_state.StoredTransitionReceipt) -> str | None:
+    """Return the exact candidate from a canonical pre-snapshot review receipt."""
+
+    if receipt.action_kind != decision_models.ActionKind.SUBMIT_REVIEW or receipt.input_schema != "decision/v1":
+        return None
+    outcome = msgspec.json.Decoder(history.TransitionReceiptOutcome, strict=True).decode(bytes(receipt.outcome_payload))
+    if (
+        bytes(receipt.input_payload) != b"{}"
+        or receipt.outcome_schema != "transition-receipt/v1"
+        or msgspec.json.encode(outcome, order="sorted") != bytes(receipt.outcome_payload)
+        or outcome.outcome != decision_models.ActionKind.SUBMIT_REVIEW.value
+        or outcome.candidate is None
+    ):
+        raise ValueError("The legacy review submission is not canonical or correlated.")
+    return outcome.candidate
+
+
 def verify_candidate_snapshot_context(
     context: query_models.CandidateSnapshotContextFacts,
     candidate: str | None,
@@ -177,8 +195,12 @@ def validate_candidate_snapshot_history(
     attempts = {value.attempt_id: value for value in state.lifecycle.attempts}
     references = {value.artifact_ref_id: value for value in state.artifact_references}
     verified: list[CandidateSnapshotEvidence] = []
+    legacy_review_candidates: set[tuple[AttemptId, datetime, str]] = set()
     for receipt in state.transition_receipts:
         if receipt.action_kind != decision_models.ActionKind.SUBMIT_REVIEW:
+            continue
+        if (legacy_candidate := legacy_review_candidate(receipt)) is not None:
+            legacy_review_candidates.add((AttemptId(str(receipt.subject_id)), receipt.committed_at, legacy_candidate))
             continue
         if receipt.input_schema != "pinboard-candidate-snapshot/v1" or receipt.artifact_ref_id is None:
             raise ValueError("Every review submission must retain one accepted candidate snapshot.")
@@ -202,11 +224,20 @@ def validate_candidate_snapshot_history(
         )
         verified.append(verify_candidate_snapshot_context(context, None, encoded))
     for attempt in state.lifecycle.attempts:
-        if attempt.state == work_models.AttemptState.REVIEW and not any(
-            evidence.snapshot.attempt_id == str(attempt.attempt_id)
-            and evidence.receipt.committed_at == attempt.candidate_recorded_at
-            and evidence.snapshot.candidate == attempt.candidate_revision
-            for evidence in verified
+        if (
+            attempt.state == work_models.AttemptState.REVIEW
+            and (
+                attempt.attempt_id,
+                attempt.candidate_recorded_at,
+                attempt.candidate_revision,
+            )
+            not in legacy_review_candidates
+            and not any(
+                evidence.snapshot.attempt_id == str(attempt.attempt_id)
+                and evidence.receipt.committed_at == attempt.candidate_recorded_at
+                and evidence.snapshot.candidate == attempt.candidate_revision
+                for evidence in verified
+            )
         ):
             raise ValueError("A live review attempt lacks its exact accepted candidate snapshot.")
     linked = {evidence.reference.artifact_ref_id for evidence in verified}

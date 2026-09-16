@@ -20,9 +20,9 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.application.work_briefs import canonical_work_brief_bytes
 from pinboard.cli.entrypoint import main
-from pinboard.domain import authority_models, work_models
+from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.history import work_item_definition_digest
-from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import ActionId, AttemptId, HostId, ItemId, LeaseId, TaskId
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.work_brief_support import work_a_brief
 
@@ -711,8 +711,61 @@ class AuthorityStatusReadTest(unittest.TestCase):
         self.assertEqual(before_review, after_review)
         self.assertEqual(unrelated_before, (unrelated_view.read_bytes(), unrelated_view.stat().st_mtime_ns))
         review_tables, review_statements = review_reads
-        self.assertEqual(read_tables, review_tables)
+        self.assertEqual(read_tables | {"transition_history"}, review_tables)
         self.assert_keyed_status_queries(database, review_statements)
+
+    def test_attempt_inspection_preserves_live_legacy_review_without_snapshot_recovery(self) -> None:
+        state = complete_sqlite_state()
+        candidate = "working-tree-sha256:" + "0" * 64
+        items = tuple(
+            replace(item, state=stored_state.StoredWorkItemState.REVIEW) if item.item_id == ItemId("work-a") else item
+            for item in state.lifecycle.work_items
+        )
+        attempt = replace(
+            state.lifecycle.attempts[0],
+            state=work_models.AttemptState.REVIEW,
+            candidate_revision=candidate,
+            candidate_recorded_at=SQLITE_NOW,
+            subject_revision=state.transition_receipts[0].project_revision,
+        )
+        receipt = replace(
+            state.transition_receipts[0],
+            action_id=ActionId("submit-review:work-a-1"),
+            action_kind=decision_models.ActionKind.SUBMIT_REVIEW,
+            artifact_ref_id=None,
+            input_schema="decision/v1",
+            input_payload=work_models.CanonicalJson(b"{}"),
+            outcome_schema="transition-receipt/v1",
+            outcome_payload=work_models.CanonicalJson(
+                history.encode_transition_receipt_outcome(
+                    evidence=None,
+                    outcome="submit-review",
+                    candidate=candidate,
+                )
+            ),
+        )
+        legacy = replace(
+            state,
+            lifecycle=replace(state.lifecycle, work_items=items, attempts=(attempt,)),
+            transition_receipts=(receipt,),
+        )
+        project, work, store = self.initialized_attempt_context(legacy)
+
+        result, stdout, stderr = self.run_cli(
+            "--project-root",
+            str(project),
+            "--work-root",
+            str(work),
+            "attempt",
+            "inspect",
+            "--attempt-id",
+            "work-a-1",
+            "--json",
+        )
+
+        self.assertEqual(0, result, f"{stderr}\n{stdout}")
+        self.assertEqual("absent", json.loads(stdout)["candidate_recovery"]["kind"])
+        self.assertIsNone(store.read_candidate_snapshot_context(AttemptId("work-a-1")))
 
     def test_terminal_attempt_inspection_stops_before_related_rows_and_artifacts(self) -> None:
         state = self.state_with_unrelated_attempt_authority()

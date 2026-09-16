@@ -161,6 +161,7 @@ class _CandidateSnapshotAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_f
     base_revision: str
     candidate_revision: str | None
     candidate_recorded_at: datetime | None
+    subject_revision: int
 
 
 def _read_generated_view_facts(
@@ -1381,7 +1382,7 @@ def _read_candidate_snapshot_context_facts(
     attempt_row = connection.execute(
         """
         SELECT attempt_id, item_id, state, branch, base_revision,
-               candidate_revision, candidate_recorded_at
+               candidate_revision, candidate_recorded_at, subject_revision
         FROM attempts WHERE attempt_id = ?
         """,
         (attempt_id,),
@@ -1402,6 +1403,25 @@ def _read_candidate_snapshot_context_facts(
         artifact_key,
     )
     if reference is None:
+        history_row = connection.execute(
+            "SELECT history_id FROM transition_history WHERE project_revision = ?",
+            (attempt.subject_revision,),
+        ).fetchone()
+        receipt = (
+            None
+            if history_row is None
+            else sqlite_state.read_history_receipt(connection, decode_row(history_row, _HistoryIdRow).history_id)
+        )
+        try:
+            legacy_candidate = None if receipt is None else candidate_snapshots.legacy_review_candidate(receipt)
+        except ValueError as error:
+            raise StorageError(StorageErrorCode.INVALID_STATE, str(error)) from error
+        if (
+            receipt is not None
+            and receipt.committed_at == attempt.candidate_recorded_at
+            and legacy_candidate == attempt.candidate_revision
+        ):
+            return None
         raise StorageError(
             StorageErrorCode.INVALID_STATE,
             "The protected candidate has no accepted snapshot artifact.",

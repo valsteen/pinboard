@@ -422,6 +422,13 @@ class CompletionContextFacts:
     checkpoints: tuple[CompletionCheckpointFacts, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class CompletionCandidateRequired:
+    """Checkpointed completion needs the existing protected review candidate."""
+
+    attempt_id: AttemptId
+
+
 type ItemStatusSchema = Literal["pinboard-item-status/v1"]
 type ItemStatusAuthority = Literal["sqlite-v6"]
 

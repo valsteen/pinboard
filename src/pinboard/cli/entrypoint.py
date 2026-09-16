@@ -10,6 +10,7 @@ import io
 import shlex
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import assert_never
 
 from pinboard.adapters.files.errors import (
@@ -306,6 +307,23 @@ def _present_expected_result(
     exit_code = _failure_exit_code(result)
     if isinstance(result, int):
         return exit_code
+    if (
+        isinstance(result, CommandFailure)
+        and result.details is not None
+        and roots is not None
+        and any(fact.field == "completion_reinspection_subject" for fact in result.details.observed)
+    ):
+        result = replace(
+            result,
+            details=replace(
+                result.details,
+                observed=(
+                    *result.details.observed,
+                    FailureFact("completion_reinspection_project_root", str(roots.source_checkout)),
+                    FailureFact("completion_reinspection_work_root", str(roots.work)),
+                ),
+            ),
+        )
     if json_requested:
         if isinstance(result, CommittedEffectFailure):
             cli_output.write_operation_rejection(operation, result.code, result.message, result.details, ())

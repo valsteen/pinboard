@@ -24,11 +24,19 @@ Do not enable Claude agent teams, open another session, create another worktree,
 
 Do not infer that subagents are unavailable because an unrelated, nested, shell, MCP, or dynamically listed tool surface omits their controls. Report a missing subagent capability only after the runtime's native launch surface is actually absent or unsupported, or an actual required native launch returns an unavailable or unsupported result.
 
+## Current MCP request shapes
+
+The twelve tool identities share one installed surface. Four tools carry their exact selected leaf inside one strict `request` object: `pinboard_actions`, `pinboard_preparation_authority`, `pinboard_attempt_authority`, and `pinboard_transition`. For attempt status, use `{"request": {"project_root": "<exact checkout>", "work_root": "<exact work root>", "operation": "status", "attempt_id": "<exact attempt>"}}`. The roots, role or operation, and selected leaf fields all belong inside `request`. Unknown outer or inner fields and flat calls are rejected unchanged. The other eight tools retain their advertised ordinary object arguments. Discover and follow each current negotiated schema rather than copying a historical call.
+
+Focused project `pinboard_actions` discovery for the exact `complete` action supplies the current completion contract. If an active checkpointed attempt needs candidate protection, that focused MCP result supplies the executable authority, submission, and rediscovery recipe using these request shapes and the caller's exact roots. CLI recovery names the same focused tool, action, project role, roots, and absence of a lease; make that one additional read to obtain the recipe. Neither interface acquires authority, submits evidence, or completes automatically.
+
 ## Prompt verification and worker startup
 
 Pass only the fixed `pinboard-native-agent-launch/v1` envelope to the native fresh-context worker or reviewer. Follow that interface's exact verifier before reading the immutable prompt. MCP-origin envelopes name `pinboard_artifact_verify`; CLI-origin envelopes name an exact rooted CLI verifier. Require the accepted identity, verification schema, selector, size, digest, and bytes to agree before acting. Prompt identity and execution semantics are shared; the envelope owns verifier and startup presentation.
 
 After verification, read the complete canonical brief, including any bootstrap, before acquiring worker authority. Use the launched worker's trusted `CODEX_THREAD_ID`, not `CODEX_SESSION_ID` or a pre-launch identity, and preserve the returned lease and generation together. A canonical brief may explicitly authorize an already-prepared source-development CLI disposition for a disconnected development host; that exact contract does not create a generic fallback. Otherwise, a missing covered MCP tool stops its operation. Never manufacture identity, temporary payload files, or substitute shell calls for a missing connection.
+
+Newly generated MCP launch envelopes carry wrapped acquisition and continuation inputs under the [current request contract](#current-mcp-request-shapes); artifact verification keeps its ordinary arguments. Immutable historical prompts remain evidence, not a flat-call compatibility route.
 
 ## Source-worktree setup recovery
 

@@ -1,5 +1,7 @@
 import asyncio
 import io
+import json
+import re
 import sys
 import tempfile
 import threading
@@ -107,6 +109,31 @@ class McpJobsTest(CheckpointPackageSupport):
         second = mcp_server._dispatch_job(str(project), str(work), ordinary, mcp_server.CancellationToken())
         self.assertEqual("unchanged", second.content["effect"])
         self.assertEqual(reference["sha256"], self.json_object(second.content["prompt_reference"])["sha256"])
+
+    def test_current_native_worker_launch_inputs_decode_exact_wrapped_leaves(self) -> None:
+        project, work, choice = self.dispatch_fixture()
+        outcome = mcp_server._dispatch_job(str(project), str(work), choice, mcp_server.CancellationToken())
+        self.assertEqual("ready", outcome.content["status"])
+        launch = self.json_object(outcome.content["native_launch"])
+        message = launch["message"]
+        assert isinstance(message, str)
+        matched = re.search(
+            r"call `pinboard_attempt_authority` with (.*?), then `pinboard_actions` with (.*?)\. ", message
+        )
+        assert matched is not None
+        acquisition = json.loads(matched[1])
+        acquisition["request"]["task_id"] = "native-worker"
+        decoded = msgspec.convert(acquisition, type=contracts.AttemptAuthorityEnvelope, strict=True).request
+        self.assertIsInstance(decoded, contracts.AttemptAuthorityAcquireRequest)
+        self.assertEqual(str(project), decoded.project_root)
+        self.assertEqual(str(work), decoded.work_root)
+        continuation = json.loads(matched[2])
+        continuation["request"]["lease_id"] = "returned-lease"
+        continuation["request"]["generation"] = 1
+        selected = msgspec.convert(continuation, type=contracts.ActionsEnvelope, strict=True).request
+        self.assertIsInstance(selected, contracts.WorkerActionsRequest)
+        self.assertEqual(str(project), selected.project_root)
+        self.assertEqual(str(work), selected.work_root)
 
     def test_review_jobs_select_four_rounds_and_keep_mutable_review_digest_separate(self) -> None:
         fixture, package_id, correction_id = self.review_job_fixture()

@@ -15,6 +15,8 @@ Direct human invocation to start a named Pinboard item is not an attempt-establi
 
 ## Establish the attempt
 
+Follow the [current MCP request contract](../pinboard/references/runtime-adapters.md#current-mcp-request-shapes) when executing native launch acquisition and continuation inputs. Do not reuse historical flat inputs as a current call shape.
+
 Before a first default initialization or after `SQLITE_READONLY`, follow the shared runtime adapter's [Codex protected project writes](../pinboard/references/runtime-adapters.md#codex-protected-project-writes) rule. A normal checkout uses relative `.codex/pinboard`; a linked worktree or explicit root uses only the exact absolute effective work root reported by recovery. Do not substitute the whole shared repository. A denied attempt-authority write does not establish or renew a lease.
 
 Use the connected Pinboard MCP tools for item status, action discovery, attempt inspection, artifact verification, attempt authority, and lifecycle transition. Preparation authority, overview, proposal creation, brief publication, dispatch, and review-job serve the owning coordination task through the same surface. Every call carries exact project and work roots; dispatch carries its exact project receipt and structured environment, and transitions carry their fresh receipt and exact leaf payload. Follow the runtime adapter's exact prompt-verification and startup contract. A missing required covered tool stops that operation rather than authorizing shell commands or temporary payload files. Static contract discovery, source planning, full validation, view repair, and candidate restoration remain CLI-only.

@@ -11,6 +11,8 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.application import actions, query_models
+from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp.contracts import JsonValue
 from tests.checkpoint_support import CheckpointPackageSupport
 
@@ -20,6 +22,12 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         fixture, _, _ = self.review_job_fixture()
         self.return_for_correction(fixture, "Protect the final candidate again.", "completion")
         before = fixture.store.validated_snapshot()
+        context = fixture.store.read_completion_context(AttemptId("work-a-1"))
+        assert context is not None
+        self.assertEqual(
+            query_models.CompletionCandidateRequired(AttemptId("work-a-1")),
+            actions.completion_candidate_recovery(context),
+        )
 
         result, stdout, stderr = self.run_cli(
             *fixture.common, "actions", "--role", "project", "--action-id", "complete:work-a-1", "--json"
@@ -103,24 +111,45 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
             for row in self.json_array(rejected["observed"])
         }
         candidate = fixture.candidate_revision
+        before_recovery = fixture.store.validated_snapshot()
 
         async def recover() -> dict[str, JsonValue]:
             parameters = StdioServerParameters(command=sys.executable, args=("-m", "pinboard.mcp"))
             async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
                 await session.initialize()
 
+                focused = await session.call_tool(
+                    observations["completion_reinspection_tool"],
+                    {
+                        "request": {
+                            "project_root": observations["completion_reinspection_project_root"],
+                            "work_root": observations["completion_reinspection_work_root"],
+                            "role": observations["completion_reinspection_role"],
+                            "action_id": {
+                                "kind": observations["completion_reinspection_action_kind"],
+                                "subject": observations["completion_reinspection_subject"],
+                            },
+                        }
+                    },
+                )
+                self.assertFalse(focused.is_error)
+                assert isinstance(focused.structured_content, dict)
+                self.assertEqual("rejected", focused.structured_content["status"])
+                self.assertFalse(focused.structured_content["state_changed"])
+                self.assertEqual(before_recovery, fixture.store.validated_snapshot())
+                recipe = {
+                    str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
+                    for row in self.json_array(focused.structured_content["observed"])
+                }
+
                 async def call(prefix: str, replacements: dict[str, str]) -> dict[str, JsonValue]:
-                    encoded = observations[prefix + "_input"]
+                    encoded = recipe[prefix + "_input"]
                     for old, new in replacements.items():
                         encoded = encoded.replace(old, new)
                     arguments = self.json_object(json.loads(encoded))
                     result = await session.call_tool(
-                        observations[prefix + "_tool"],
-                        {
-                            "project_root": str(fixture.project),
-                            "work_root": str(fixture.work),
-                            **arguments,
-                        },
+                        recipe[prefix + "_tool"],
+                        arguments,
                     )
                     self.assertFalse(result.is_error)
                     content = result.structured_content
@@ -170,10 +199,12 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                 await session.initialize()
                 discovery = await session.call_tool(
                     "pinboard_actions",
-                    common
-                    | {
-                        "role": "project",
-                        "action_id": {"kind": "complete", "subject": "work-a-1"},
+                    {
+                        "request": common
+                        | {
+                            "role": "project",
+                            "action_id": {"kind": "complete", "subject": "work-a-1"},
+                        }
                     },
                 )
                 assert isinstance(discovery.structured_content, dict)
@@ -201,24 +232,26 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                 )
                 result = await session.call_tool(
                     "pinboard_transition",
-                    common
-                    | {
-                        "role": "project",
-                        "actor_task_id": "coordinator",
-                        "actor_host_id": "local",
-                        "receipt": {
-                            "action_id": selected["action_id"],
-                            "subject_revision": selected["subject_revision"],
-                        },
-                        "payload": {
-                            "schema": "pinboard-covered-completion/v1",
-                            "candidate": contract["candidate"],
-                            "evidence": "All returned checkpoint evidence is covered.",
-                            "reviewer_task_id": "terminal-reviewer",
-                            "result_sha256": hashlib.sha256(result_bytes).hexdigest(),
-                            "review_sha256": hashlib.sha256(review_bytes).hexdigest(),
-                            "packages": package_evidence,
-                        },
+                    {
+                        "request": common
+                        | {
+                            "role": "project",
+                            "actor_task_id": "coordinator",
+                            "actor_host_id": "local",
+                            "receipt": {
+                                "action_id": selected["action_id"],
+                                "subject_revision": selected["subject_revision"],
+                            },
+                            "payload": {
+                                "schema": "pinboard-covered-completion/v1",
+                                "candidate": contract["candidate"],
+                                "evidence": "All returned checkpoint evidence is covered.",
+                                "reviewer_task_id": "terminal-reviewer",
+                                "result_sha256": hashlib.sha256(result_bytes).hexdigest(),
+                                "review_sha256": hashlib.sha256(review_bytes).hexdigest(),
+                                "packages": package_evidence,
+                            },
+                        }
                     },
                 )
                 self.assertFalse(result.is_error)

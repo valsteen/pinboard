@@ -32,7 +32,18 @@ def completion_candidate_recovery(selected: query_models.CompletionContextFacts)
     recovery = action_queries.completion_candidate_recovery(selected)
     if recovery is None:
         return None
-    return CommandFailure(CommandErrorCode.ACTION_LIFECYCLE_UNAVAILABLE, recovery.message, recovery.details)
+    return completion_candidate_failure(recovery)
+
+
+def completion_candidate_failure(required: query_models.CompletionCandidateRequired) -> CommandFailure:
+    return with_completion_discovery(
+        required.attempt_id,
+        CommandFailure(
+            CommandErrorCode.ACTION_LIFECYCLE_UNAVAILABLE,
+            "Checkpointed completion requires a protected review candidate. Make one additional focused pinboard_actions read with the same explicit project and work roots, project role, complete action kind, this attempt as subject, and no lease. Follow its complete conditional candidate-protection recovery before rediscovering completion.",
+            None,
+        ),
+    )
 
 
 def _failure_alternatives(
@@ -561,6 +572,10 @@ def with_completion_reinspection(
 ) -> CommandFailure:
     if not isinstance(supplied.action, decision_models.CompleteAction):
         return failure
+    return with_completion_discovery(supplied.action.capability.subject, failure)
+
+
+def with_completion_discovery(attempt_id: AttemptId, failure: CommandFailure) -> CommandFailure:
     details = failure.details
     if details is None:
         details = FailureDetails(
@@ -577,11 +592,14 @@ def with_completion_reinspection(
         "completion_reinspection_tool",
         "pinboard_actions",
     )
-    input_observation = FailureFact(
-        "completion_reinspection_input",
-        f'{{"role":"project","action_id":{{"kind":"complete","subject":"{supplied.action.capability.subject}"}}}}',
+    observations = (
+        observation,
+        FailureFact("completion_reinspection_role", "project"),
+        FailureFact("completion_reinspection_action_kind", "complete"),
+        FailureFact("completion_reinspection_subject", attempt_id),
+        FailureFact("completion_reinspection_lease_id", None),
     )
-    return replace(failure, details=replace(details, observed=(*details.observed, observation, input_observation)))
+    return replace(failure, details=replace(details, observed=(*details.observed, *observations)))
 
 
 def select_current_action(

@@ -29,6 +29,7 @@ from pinboard.application import (
 )
 from pinboard.application.work_briefs import decode_canonical_work_brief
 from pinboard.cli import (
+    action_selection,
     agent_launch,
     candidate_recovery,
     checkpoint_compatibility,
@@ -628,6 +629,8 @@ def _completion_action_view(
     projected: work_inspection_models.ActionView,
 ) -> errors.CommandResult[work_inspection_models.ActionView]:
     contract = action_queries.completion_input_contract(store, action, projected.semantics)
+    if isinstance(contract, query_models.CompletionCandidateRequired):
+        return action_selection.completion_candidate_failure(contract)
     if isinstance(contract, domain_errors.DecisionFailure):
         code = errors.CommandErrorCode.ACTION_LIFECYCLE_UNAVAILABLE if contract.details is not None else contract.code
         return errors.CommandFailure(code, contract.message, contract.details)

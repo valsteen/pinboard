@@ -45,6 +45,8 @@ Use the current definition and canonical brief fields to preserve the decision a
 
 ## Start from executable state
 
+Use the [current MCP request contract](references/runtime-adapters.md#current-mcp-request-shapes) for connected tool calls. It owns the exact request-envelope placement; workflow authority and lifecycle decisions remain here.
+
 Classify the current request before entering delivery. When the human asks only to load named context, get oriented, or wait without requesting a revision or implementation, read only that bounded context and stop there. Do not inspect or mutate lifecycle state, validate worker authority, plan brief sources, dispatch work, or launch a reviewer until the human asks to change or execute the work.
 
 Use the connected Pinboard MCP tools for item status, proposal creation, brief publication, overview, action discovery, attempt inspection, artifact verification, preparation authority, attempt authority, lifecycle transition, dispatch, and review-job. Supply exact project and work roots on every call. Transitions carry a fresh exact receipt and structured leaf payload; dispatch carries its project receipt and a structured environment; review-job carries its exact candidate and caller-selected history identities. Follow returned effect, retry, and changed-surface accounting. A missing required tool stops that operation, not an invitation to shell commands or temporary payload files. Static contract discovery, source planning, full validation, initialization, handover, view repair, and candidate restoration remain CLI-only. Never infer an unadvertised tool from a neighboring name.

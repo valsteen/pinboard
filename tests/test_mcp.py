@@ -5,7 +5,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
@@ -52,6 +52,18 @@ from tests.work_brief_support import example_work_brief, work_a_brief, work_c_br
 
 def _run_async[Result](operation: Coroutine[None, None, Result]) -> Result:
     return asyncio.run(operation)
+
+
+def _mcp_arguments(tool: str, request: Mapping[str, contracts.JsonValue]) -> dict[str, contracts.JsonValue]:
+    """Encode current protocol envelopes for integration journeys."""
+    if tool in {
+        mcp_server.ACTIONS_TOOL,
+        mcp_server.PREPARATION_AUTHORITY_TOOL,
+        mcp_server.ATTEMPT_AUTHORITY_TOOL,
+        mcp_server.TRANSITION_TOOL,
+    }:
+        return {"request": dict(request)}
+    return dict(request)
 
 
 async def _wait_for(event: threading.Event) -> None:
@@ -155,6 +167,131 @@ class BoundedExecutorTest(unittest.TestCase):
 
 
 class McpTransportTest(unittest.TestCase):
+    def test_negotiated_tools_have_native_compatible_roots_and_wrapped_reads(self) -> None:
+        executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        server = mcp_server.create_server(
+            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+        )
+
+        async def scenario() -> None:
+            tools = await server.list_tools()
+            self.assertEqual(12, len(tools))
+            for tool in tools:
+                with self.subTest(tool=tool.name):
+                    self.assertEqual("object", tool.input_schema["type"])
+                    self.assertFalse({"anyOf", "oneOf", "allOf"} & tool.input_schema.keys())
+            temporary, project, roots = self._project()
+            self.addCleanup(temporary.cleanup)
+            result = await server.call_tool(
+                mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                {
+                    "request": {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "operation": "status",
+                        "attempt_id": "work-a-1",
+                    }
+                },
+            )
+            assert isinstance(result, CallToolResult) and isinstance(result.structured_content, dict)
+            self.assertEqual("present", result.structured_content["status"])
+            self.assertFalse(result.structured_content["state_changed"])
+
+        _run_async(scenario())
+
+    def test_request_envelopes_reject_mixed_fields_before_resources(self) -> None:
+        roots: dict[str, contracts.JsonValue] = {"project_root": "/project", "work_root": "/work"}
+        cases: tuple[
+            tuple[
+                Callable[[dict[str, contracts.JsonValue], mcp_server.CancellationToken], mcp_server.OperationResult],
+                dict[str, contracts.JsonValue],
+                tuple[dict[str, contracts.JsonValue], ...],
+            ],
+            ...,
+        ] = (
+            (
+                mcp_server._read_actions,
+                {**roots, "role": "project"},
+                (
+                    {"lease_id": None},
+                    {"lease_id": "worker", "generation": 1},
+                ),
+            ),
+            (
+                mcp_server._read_actions,
+                {**roots, "role": "worker", "lease_id": "worker", "generation": 1},
+                (
+                    {"generation": True},
+                    {"generation": "1"},
+                    {"generation": 0},
+                    {"lease_id": None},
+                ),
+            ),
+            (
+                mcp_server._preparation_authority,
+                {**roots, "operation": "release", "item_id": "item", "lease_id": "lease", "generation": 1},
+                (
+                    {"ttl_seconds": 60},
+                    {"actor_task_id": "project", "actor_host_id": "local"},
+                ),
+            ),
+            (
+                mcp_server._attempt_authority,
+                {
+                    **roots,
+                    "operation": "renew",
+                    "attempt_id": "attempt",
+                    "lease_id": "lease",
+                    "generation": 1,
+                    "ttl_seconds": 60,
+                },
+                (
+                    {"actor_task_id": "project", "actor_host_id": "local"},
+                    {"ttl_seconds": None},
+                    {"ttl_seconds": 0},
+                ),
+            ),
+            (
+                mcp_server._transition,
+                {
+                    **roots,
+                    "role": "project",
+                    "receipt": {"action_id": {"kind": "pause", "subject": "attempt"}, "subject_revision": "1"},
+                    "payload": {"reason": "Pause."},
+                    "actor_task_id": "project",
+                    "actor_host_id": "local",
+                },
+                (
+                    {"role": "observer"},
+                    {"lease_id": "worker", "generation": 1},
+                    {"actor_host_id": None},
+                ),
+            ),
+        )
+        for handler, request, changes in cases:
+            unknown_inner: dict[str, contracts.JsonValue] = {**request, "unknown": True}
+            invalid: list[dict[str, contracts.JsonValue]] = [
+                request,
+                {"request": request, "unknown": True},
+                {"request": unknown_inner},
+            ]
+            for change in changes:
+                inner: dict[str, contracts.JsonValue] = {**request, **change}
+                invalid.append({"request": inner})
+            for raw in invalid:
+                with (
+                    self.subTest(handler=handler.__name__, raw=raw),
+                    patch.object(mcp_server, "_resolve_durable") as resolve,
+                    patch.object(mcp_server, "resolve_source_checkout_root") as source,
+                ):
+                    result = handler(raw, mcp_server.CancellationToken())
+                    self.assertEqual("rejected", result.content["status"])
+                    self.assertFalse(result.content["state_changed"])
+                    self.assertEqual([], result.content["changed_surfaces"])
+                    resolve.assert_not_called()
+                    source.assert_not_called()
+
     def _project(self) -> tuple[tempfile.TemporaryDirectory[str], Path, DurableRoots]:
         temporary = tempfile.TemporaryDirectory()
         project = Path(temporary.name).resolve()
@@ -211,107 +348,131 @@ class McpTransportTest(unittest.TestCase):
                 await session.initialize()
                 preparation_status = await session.call_tool(
                     mcp_server.PREPARATION_AUTHORITY_TOOL,
-                    {
-                        "project_root": str(project),
-                        "work_root": str(roots.work_root),
-                        "operation": "status",
-                        "item_id": "work-c",
-                    },
+                    _mcp_arguments(
+                        mcp_server.PREPARATION_AUTHORITY_TOOL,
+                        {
+                            "project_root": str(project),
+                            "work_root": str(roots.work_root),
+                            "operation": "status",
+                            "item_id": "work-c",
+                        },
+                    ),
                 )
                 preparation_start = await session.call_tool(
                     mcp_server.PREPARATION_AUTHORITY_TOOL,
-                    {
-                        "project_root": str(project),
-                        "work_root": str(roots.work_root),
-                        "operation": "start",
-                        "item_id": "work-c",
-                        "task_id": "preparer-task",
-                        "host_id": "local",
-                        "ttl_seconds": 600,
-                    },
+                    _mcp_arguments(
+                        mcp_server.PREPARATION_AUTHORITY_TOOL,
+                        {
+                            "project_root": str(project),
+                            "work_root": str(roots.work_root),
+                            "operation": "start",
+                            "item_id": "work-c",
+                            "task_id": "preparer-task",
+                            "host_id": "local",
+                            "ttl_seconds": 600,
+                        },
+                    ),
                 )
                 started = preparation_start.structured_content
                 if not isinstance(started, dict):
                     raise AssertionError("Preparation start did not return structured content.")
                 preparation_renew = await session.call_tool(
                     mcp_server.PREPARATION_AUTHORITY_TOOL,
-                    {
-                        "project_root": str(project),
-                        "work_root": str(roots.work_root),
-                        "operation": "renew",
-                        "item_id": "work-c",
-                        "lease_id": started["lease_id"],
-                        "generation": started["generation"],
-                        "ttl_seconds": 1200,
-                    },
+                    _mcp_arguments(
+                        mcp_server.PREPARATION_AUTHORITY_TOOL,
+                        {
+                            "project_root": str(project),
+                            "work_root": str(roots.work_root),
+                            "operation": "renew",
+                            "item_id": "work-c",
+                            "lease_id": started["lease_id"],
+                            "generation": started["generation"],
+                            "ttl_seconds": 1200,
+                        },
+                    ),
                 )
                 renewed = preparation_renew.structured_content
                 if not isinstance(renewed, dict):
                     raise AssertionError("Preparation renewal did not return structured content.")
                 preparation_release = await session.call_tool(
                     mcp_server.PREPARATION_AUTHORITY_TOOL,
-                    {
-                        "project_root": str(project),
-                        "work_root": str(roots.work_root),
-                        "operation": "release",
-                        "item_id": "work-c",
-                        "lease_id": renewed["lease_id"],
-                        "generation": renewed["generation"],
-                    },
+                    _mcp_arguments(
+                        mcp_server.PREPARATION_AUTHORITY_TOOL,
+                        {
+                            "project_root": str(project),
+                            "work_root": str(roots.work_root),
+                            "operation": "release",
+                            "item_id": "work-c",
+                            "lease_id": renewed["lease_id"],
+                            "generation": renewed["generation"],
+                        },
+                    ),
                 )
                 attempt_status = await session.call_tool(
                     mcp_server.ATTEMPT_AUTHORITY_TOOL,
-                    {
-                        "project_root": str(project),
-                        "work_root": str(roots.work_root),
-                        "operation": "status",
-                        "attempt_id": "work-a-1",
-                    },
+                    _mcp_arguments(
+                        mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                        {
+                            "project_root": str(project),
+                            "work_root": str(roots.work_root),
+                            "operation": "status",
+                            "attempt_id": "work-a-1",
+                        },
+                    ),
                 )
                 invalid_payload = await session.call_tool(
                     mcp_server.TRANSITION_TOOL,
-                    {
-                        "project_root": str(project),
-                        "work_root": str(roots.work_root),
-                        "role": "project",
-                        "receipt": {
-                            "action_id": {"kind": "pause", "subject": "work-a-1"},
-                            "subject_revision": "8",
+                    _mcp_arguments(
+                        mcp_server.TRANSITION_TOOL,
+                        {
+                            "project_root": str(project),
+                            "work_root": str(roots.work_root),
+                            "role": "project",
+                            "receipt": {
+                                "action_id": {"kind": "pause", "subject": "work-a-1"},
+                                "subject_revision": "8",
+                            },
+                            "payload": {"reason": "Invalid leaf.", "unknown": True},
+                            "actor_task_id": "project-task",
+                            "actor_host_id": "local",
                         },
-                        "payload": {"reason": "Invalid leaf.", "unknown": True},
-                        "actor_task_id": "project-task",
-                        "actor_host_id": "local",
-                    },
+                    ),
                 )
                 transition = await session.call_tool(
                     mcp_server.TRANSITION_TOOL,
-                    {
-                        "project_root": str(project),
-                        "work_root": str(roots.work_root),
-                        "role": "project",
-                        "receipt": {
-                            "action_id": {"kind": "pause", "subject": "work-a-1"},
-                            "subject_revision": "8",
+                    _mcp_arguments(
+                        mcp_server.TRANSITION_TOOL,
+                        {
+                            "project_root": str(project),
+                            "work_root": str(roots.work_root),
+                            "role": "project",
+                            "receipt": {
+                                "action_id": {"kind": "pause", "subject": "work-a-1"},
+                                "subject_revision": "8",
+                            },
+                            "payload": {"reason": "Pause through the MCP lifecycle boundary."},
+                            "actor_task_id": "project-task",
+                            "actor_host_id": "local",
                         },
-                        "payload": {"reason": "Pause through the MCP lifecycle boundary."},
-                        "actor_task_id": "project-task",
-                        "actor_host_id": "local",
-                    },
+                    ),
                 )
                 stale = await session.call_tool(
                     mcp_server.TRANSITION_TOOL,
-                    {
-                        "project_root": str(project),
-                        "work_root": str(roots.work_root),
-                        "role": "project",
-                        "receipt": {
-                            "action_id": {"kind": "pause", "subject": "work-a-1"},
-                            "subject_revision": "8",
+                    _mcp_arguments(
+                        mcp_server.TRANSITION_TOOL,
+                        {
+                            "project_root": str(project),
+                            "work_root": str(roots.work_root),
+                            "role": "project",
+                            "receipt": {
+                                "action_id": {"kind": "pause", "subject": "work-a-1"},
+                                "subject_revision": "8",
+                            },
+                            "payload": {"reason": "This stale receipt must not commit."},
+                            "actor_task_id": "project-task",
+                            "actor_host_id": "local",
                         },
-                        "payload": {"reason": "This stale receipt must not commit."},
-                        "actor_task_id": "project-task",
-                        "actor_host_id": "local",
-                    },
+                    ),
                 )
                 return (
                     preparation_status,
@@ -353,7 +514,9 @@ class McpTransportTest(unittest.TestCase):
     def test_transition_request_contract_has_only_exact_mutating_leaves(self) -> None:
         schema = contracts.transition_request_schema()
         encoded_schema = msgspec.json.encode(schema)
-        leaves = schema["oneOf"]
+        properties = schema["properties"]
+        assert isinstance(properties, dict) and isinstance(properties["request"], dict)
+        leaves = properties["request"]["oneOf"]
         assert isinstance(leaves, list)
         self.assertEqual(23, len(leaves))
         for advisory_kind in (b'"continue"', b'"dispatch"', b'"inspect"', b'"report-blocker"'):
@@ -407,15 +570,20 @@ class McpTransportTest(unittest.TestCase):
         ):
             clock.now.side_effect = current_time
             result = mcp_server._transition(
-                str(project),
-                str(roots.work_root),
-                "worker",
-                {"action_id": {"kind": "submit-review", "subject": "work-a-1"}, "subject_revision": "8"},
-                {"candidate": candidate},
-                "attempt-lease-a",
-                3,
-                mcp_server._OmittedAuthorityField.VALUE,
-                mcp_server._OmittedAuthorityField.VALUE,
+                {
+                    "request": {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "role": "worker",
+                        "receipt": {
+                            "action_id": {"kind": "submit-review", "subject": "work-a-1"},
+                            "subject_revision": "8",
+                        },
+                        "payload": {"candidate": candidate},
+                        "lease_id": "attempt-lease-a",
+                        "generation": 3,
+                    }
+                },
                 mcp_server.CancellationToken(),
             )
         resolve_source.assert_called_once_with(project)
@@ -477,7 +645,7 @@ class McpTransportTest(unittest.TestCase):
                 await session.initialize()
 
                 async def call(tool: str, arguments: dict[str, contracts.JsonValue]) -> dict[str, contracts.JsonValue]:
-                    result = await session.call_tool(tool, common | arguments)
+                    result = await session.call_tool(tool, _mcp_arguments(tool, common | arguments))
                     if result.is_error or not isinstance(result.structured_content, dict):
                         raise AssertionError(f"{tool} returned {result}")
                     content = result.structured_content
@@ -690,7 +858,7 @@ class McpTransportTest(unittest.TestCase):
             "actor_task_id": "project-task",
             "actor_host_id": "local",
         }
-        request = contracts.decode_transition_request(raw)
+        request = contracts.decode_transition_request({"request": raw})
         self.assertIsInstance(request, contracts.ProjectTransitionRequest)
         self.assertIsInstance(request.payload, contracts.action_models.ReasonInputPayload)
 
@@ -708,18 +876,20 @@ class McpTransportTest(unittest.TestCase):
         }
         for invalid in (wrong_role, unknown_payload, advisory):
             with self.subTest(invalid=invalid), self.assertRaises((msgspec.ValidationError, ValueError)):
-                contracts.decode_transition_request(invalid)
+                contracts.decode_transition_request({"request": invalid})
         with patch.object(mcp_server, "_resolve_durable") as resolve:
             rejected = mcp_server._transition(
-                "/project",
-                "/work",
-                "project",
-                {"action_id": {"kind": "pause", "subject": "attempt-1"}, "subject_revision": "7"},
-                {"reason": "Pause for correction.", "unknown": True},
-                mcp_server._OmittedAuthorityField.VALUE,
-                mcp_server._OmittedAuthorityField.VALUE,
-                "project-task",
-                "local",
+                {
+                    "request": {
+                        "project_root": "/project",
+                        "work_root": "/work",
+                        "role": "project",
+                        "receipt": {"action_id": {"kind": "pause", "subject": "attempt-1"}, "subject_revision": "7"},
+                        "payload": {"reason": "Pause for correction.", "unknown": True},
+                        "actor_task_id": "project-task",
+                        "actor_host_id": "local",
+                    }
+                },
                 mcp_server.CancellationToken(),
             )
             self.assertEqual("rejected", rejected.content["status"])
@@ -844,12 +1014,14 @@ class McpTransportTest(unittest.TestCase):
                 **authority,
             }
             with self.subTest(kind=kind, payload=payload):
-                decoded = contracts.decode_transition_request(raw)
+                decoded = contracts.decode_transition_request({"request": raw})
                 self.assertIsInstance(decoded.payload, msgspec.Struct)
                 with self.assertRaises((msgspec.ValidationError, ValueError)):
-                    contracts.decode_transition_request({**raw, "payload": {**payload, "unexpected": True}})
+                    contracts.decode_transition_request(
+                        {"request": {**raw, "payload": {**payload, "unexpected": True}}}
+                    )
                 with self.assertRaises((msgspec.ValidationError, ValueError)):
-                    contracts.decode_transition_request({**raw, "role": "observer"})
+                    contracts.decode_transition_request({"request": {**raw, "role": "observer"}})
 
     def test_attempt_acquisition_selects_initial_or_transfer_only_under_the_write_lock(self) -> None:
         temporary, _project, roots = self._project()
@@ -900,7 +1072,7 @@ class McpTransportTest(unittest.TestCase):
         }
 
         async def call(tool_name: str, arguments: dict[str, contracts.JsonValue]) -> CallToolResult:
-            result = await server.call_tool(tool_name, arguments)
+            result = await server.call_tool(tool_name, _mcp_arguments(tool_name, arguments))
             if not isinstance(result, CallToolResult):
                 raise AssertionError("The lifecycle tool requested additional input.")
             return result
@@ -1288,12 +1460,14 @@ class McpTransportTest(unittest.TestCase):
                     operation_time = SQLITE_NOW + timedelta(seconds=1)
                     with patch.object(mcp_server, "datetime") as clock:
                         clock.now.return_value = operation_time
-                        rejected = _run_async(server.call_tool(tool, arguments | {"lease_id": "stale-lease"}))
+                        rejected = _run_async(
+                            server.call_tool(tool, _mcp_arguments(tool, arguments | {"lease_id": "stale-lease"}))
+                        )
                         assert isinstance(rejected, CallToolResult)
                         assert isinstance(rejected.structured_content, dict)
                         self.assertEqual("rejected", rejected.structured_content["status"])
                         self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
-                        result = _run_async(server.call_tool(tool, arguments))
+                        result = _run_async(server.call_tool(tool, _mcp_arguments(tool, arguments)))
                     assert isinstance(result, CallToolResult)
                     assert isinstance(result.structured_content, dict)
                     content = result.structured_content
@@ -1388,6 +1562,8 @@ class McpTransportTest(unittest.TestCase):
                         mcp_server._mcp_action(
                             action(decision_models.AcceptCheckpointAction, AttemptId("attempt-1")),
                             SQLiteWorkStore(roots.database_path),
+                            str(_project),
+                            str(roots.work_root),
                             focused=False,
                         )
                     ],
@@ -1578,15 +1754,18 @@ class McpTransportTest(unittest.TestCase):
                 ClientSession(*streams) as session,
             ):
                 await session.initialize()
-                common = {"project_root": str(project), "work_root": str(roots.work_root)}
+                common: dict[str, contracts.JsonValue] = {
+                    "project_root": str(project),
+                    "work_root": str(roots.work_root),
+                }
                 return (
                     await session.call_tool(
                         mcp_server.ACTIONS_TOOL,
-                        common | {"role": "project", "lease_id": None},
+                        _mcp_arguments(mcp_server.ACTIONS_TOOL, common | {"role": "project", "lease_id": None}),
                     ),
                     await session.call_tool(
                         mcp_server.ACTIONS_TOOL,
-                        common | {"role": "observer", "generation": None},
+                        _mcp_arguments(mcp_server.ACTIONS_TOOL, common | {"role": "observer", "generation": None}),
                     ),
                 )
 
@@ -1609,7 +1788,10 @@ class McpTransportTest(unittest.TestCase):
                 ClientSession(*streams) as session,
             ):
                 await session.initialize()
-                common = {"project_root": str(project), "work_root": str(roots.work_root)}
+                common: dict[str, contracts.JsonValue] = {
+                    "project_root": str(project),
+                    "work_root": str(roots.work_root),
+                }
                 artifact = {
                     "artifact_ref_id": int(brief_reference.artifact_ref_id),
                     "selector": brief_reference.selector,
@@ -1620,14 +1802,20 @@ class McpTransportTest(unittest.TestCase):
                     (
                         await session.call_tool(
                             mcp_server.ACTIONS_TOOL,
-                            common | {"role": "worker", "lease_id": "attempt-lease-a", "generation": "3"},
+                            _mcp_arguments(
+                                mcp_server.ACTIONS_TOOL,
+                                common | {"role": "worker", "lease_id": "attempt-lease-a", "generation": "3"},
+                            ),
                         ),
                         "ACTIONS_INVALID",
                     ),
                     (
                         await session.call_tool(
                             mcp_server.ACTIONS_TOOL,
-                            common | {"role": "worker", "lease_id": "attempt-lease-a", "generation": True},
+                            _mcp_arguments(
+                                mcp_server.ACTIONS_TOOL,
+                                common | {"role": "worker", "lease_id": "attempt-lease-a", "generation": True},
+                            ),
                         ),
                         "ACTIONS_INVALID",
                     ),
@@ -1677,11 +1865,14 @@ class McpTransportTest(unittest.TestCase):
         action_result = msgspec.json.decode(
             msgspec.json.encode(
                 mcp_server._read_actions(
-                    *common,
-                    "project",
-                    mcp_server._OmittedAuthorityField.VALUE,
-                    mcp_server._OmittedAuthorityField.VALUE,
-                    {"kind": "continue", "subject": "work-a-1"},
+                    {
+                        "request": {
+                            "project_root": common[0],
+                            "work_root": common[1],
+                            "role": "project",
+                            "action_id": {"kind": "continue", "subject": "work-a-1"},
+                        }
+                    },
                     token,
                 ).content
             )
@@ -1813,8 +2004,7 @@ class McpTransportTest(unittest.TestCase):
     def test_sdk_stdio_workflow_discovery_and_verification_are_read_only(self) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
-        store = SQLiteWorkStore(roots.database_path)
-        before = store.validated_snapshot()
+        before = SQLiteWorkStore(roots.database_path).validated_snapshot()
         brief_reference = before.artifact_references[0]
         brief_bytes = (roots.work_root / brief_reference.selector).read_bytes()
         view_files = tuple(
@@ -1830,35 +2020,54 @@ class McpTransportTest(unittest.TestCase):
                 ClientSession(*streams) as session,
             ):
                 await session.initialize()
-                common = {"project_root": str(project), "work_root": str(roots.work_root)}
+                common: dict[str, contracts.JsonValue] = {
+                    "project_root": str(project),
+                    "work_root": str(roots.work_root),
+                }
+                continue_id: dict[str, contracts.JsonValue] = {"kind": "continue", "subject": "work-a-1"}
                 return (
                     await session.call_tool(mcp_server.OVERVIEW_TOOL, common),
-                    await session.call_tool(mcp_server.ACTIONS_TOOL, common | {"role": "observer"}),
-                    await session.call_tool(mcp_server.ACTIONS_TOOL, common | {"role": "project"}),
                     await session.call_tool(
-                        mcp_server.ACTIONS_TOOL,
-                        common
-                        | {
-                            "role": "project",
-                            "action_id": {"kind": "continue", "subject": "work-a-1"},
-                        },
+                        mcp_server.ACTIONS_TOOL, _mcp_arguments(mcp_server.ACTIONS_TOOL, common | {"role": "observer"})
+                    ),
+                    await session.call_tool(
+                        mcp_server.ACTIONS_TOOL, _mcp_arguments(mcp_server.ACTIONS_TOOL, common | {"role": "project"})
                     ),
                     await session.call_tool(
                         mcp_server.ACTIONS_TOOL,
-                        common
-                        | {
-                            "role": "worker",
-                            "lease_id": "attempt-lease-a",
-                            "generation": 3,
-                        },
+                        _mcp_arguments(
+                            mcp_server.ACTIONS_TOOL,
+                            common
+                            | {
+                                "role": "project",
+                                "action_id": continue_id,
+                            },
+                        ),
                     ),
                     await session.call_tool(
                         mcp_server.ACTIONS_TOOL,
-                        common | {"role": "preparer", "lease_id": "missing-lease", "generation": 1},
+                        _mcp_arguments(
+                            mcp_server.ACTIONS_TOOL,
+                            common
+                            | {
+                                "role": "worker",
+                                "lease_id": "attempt-lease-a",
+                                "generation": 3,
+                            },
+                        ),
                     ),
                     await session.call_tool(
                         mcp_server.ACTIONS_TOOL,
-                        common | {"role": "worker", "lease_id": "attempt-lease-a"},
+                        _mcp_arguments(
+                            mcp_server.ACTIONS_TOOL,
+                            common | {"role": "preparer", "lease_id": "missing-lease", "generation": 1},
+                        ),
+                    ),
+                    await session.call_tool(
+                        mcp_server.ACTIONS_TOOL,
+                        _mcp_arguments(
+                            mcp_server.ACTIONS_TOOL, common | {"role": "worker", "lease_id": "attempt-lease-a"}
+                        ),
                     ),
                     await session.call_tool(
                         mcp_server.ATTEMPT_INSPECT_TOOL,
@@ -1964,28 +2173,77 @@ class McpTransportTest(unittest.TestCase):
         results = (
             (mcp_server.OVERVIEW_TOOL, mcp_server._read_overview(*common, token)),
             (mcp_server.OVERVIEW_TOOL, mcp_server._read_overview("", str(roots.work_root), token)),
-            (mcp_server.ACTIONS_TOOL, mcp_server._read_actions(*common, "observer", None, None, None, token)),
-            (mcp_server.ACTIONS_TOOL, mcp_server._read_actions(*common, "project", None, None, None, token)),
             (
                 mcp_server.ACTIONS_TOOL,
-                mcp_server._read_actions(*common, "worker", "attempt-lease-a", 3, None, token),
-            ),
-            (
-                mcp_server.ACTIONS_TOOL,
-                mcp_server._read_actions(*common, "preparer", "missing-lease", 1, None, token),
-            ),
-            (
-                mcp_server.ACTIONS_TOOL,
-                mcp_server._read_actions(*common, "worker", "attempt-lease-a", None, None, token),
+                mcp_server._read_actions(
+                    {"request": {"project_root": common[0], "work_root": common[1], "role": "observer"}}, token
+                ),
             ),
             (
                 mcp_server.ACTIONS_TOOL,
                 mcp_server._read_actions(
-                    *common,
-                    "project",
-                    None,
-                    None,
-                    {"kind": "continue", "subject": "missing"},
+                    {"request": {"project_root": common[0], "work_root": common[1], "role": "project"}}, token
+                ),
+            ),
+            (
+                mcp_server.ACTIONS_TOOL,
+                mcp_server._read_actions(
+                    {
+                        "request": {
+                            "project_root": common[0],
+                            "work_root": common[1],
+                            "role": "worker",
+                            "lease_id": "attempt-lease-a",
+                            "generation": 3,
+                            "action_id": None,
+                        }
+                    },
+                    token,
+                ),
+            ),
+            (
+                mcp_server.ACTIONS_TOOL,
+                mcp_server._read_actions(
+                    {
+                        "request": {
+                            "project_root": common[0],
+                            "work_root": common[1],
+                            "role": "preparer",
+                            "lease_id": "missing-lease",
+                            "generation": 1,
+                            "action_id": None,
+                        }
+                    },
+                    token,
+                ),
+            ),
+            (
+                mcp_server.ACTIONS_TOOL,
+                mcp_server._read_actions(
+                    {
+                        "request": {
+                            "project_root": common[0],
+                            "work_root": common[1],
+                            "role": "worker",
+                            "lease_id": "attempt-lease-a",
+                            "generation": None,
+                            "action_id": None,
+                        }
+                    },
+                    token,
+                ),
+            ),
+            (
+                mcp_server.ACTIONS_TOOL,
+                mcp_server._read_actions(
+                    {
+                        "request": {
+                            "project_root": common[0],
+                            "work_root": common[1],
+                            "role": "project",
+                            "action_id": {"kind": "continue", "subject": "missing"},
+                        }
+                    },
                     token,
                 ),
             ),
@@ -2354,7 +2612,10 @@ class McpTransportTest(unittest.TestCase):
         }
 
         async def scenario() -> tuple[CallToolResult, stored_state.StoredWorkState, CallToolResult, CallToolResult]:
-            rejected = await server.call_tool(mcp_server.PROPOSAL_CREATE_TOOL, {**arguments, "proposal": invalid})
+            rejected = await server.call_tool(
+                mcp_server.PROPOSAL_CREATE_TOOL,
+                {**arguments, "proposal": invalid},
+            )
             after_rejection = store.validated_snapshot()
             created = await server.call_tool(
                 mcp_server.PROPOSAL_CREATE_TOOL,
@@ -2472,7 +2733,9 @@ class McpTransportTest(unittest.TestCase):
             for tool_name, arguments, expected_code in requests:
                 for field in ("project_root", "work_root"):
                     for invalid_root in ("", "\x00", "/project/\x00child"):
-                        result = await server.call_tool(tool_name, {**arguments, field: invalid_root})
+                        result = await server.call_tool(
+                            tool_name, _mcp_arguments(tool_name, {**arguments, field: invalid_root})
+                        )
                         if not isinstance(result, CallToolResult):
                             raise AssertionError("The invalid request returned an unexpected MCP result.")
                         content = result.structured_content
@@ -2516,7 +2779,7 @@ class McpTransportTest(unittest.TestCase):
                     patch.object(mcp_server, "_refresh_affected_views", side_effect=RuntimeError("reply lost")),
                     self.assertRaises(UnexpectedToolError),
                 ):
-                    _run_async(server.call_tool(operation, arguments))
+                    _run_async(server.call_tool(operation, _mcp_arguments(operation, arguments)))
                 executor.shutdown()
 
                 reopened = SQLiteWorkStore(roots.database_path)

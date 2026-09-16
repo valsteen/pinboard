@@ -12,10 +12,6 @@ from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
     DecisionResult,
-    EffectDisposition,
-    FailureDetails,
-    FailureFact,
-    RetryDisposition,
 )
 from pinboard.domain.identifiers import ActionId, AttemptId, ItemId, LeaseId, ProposalId
 from pinboard.domain.ledger import LedgerSnapshot
@@ -185,7 +181,7 @@ def select_current_actions(
 
 def completion_candidate_recovery(
     selected: query_models.CompletionContextFacts,
-) -> DecisionFailure | None:
+) -> query_models.CompletionCandidateRequired | None:
     """Withhold checkpointed completion until the existing submission route protects a candidate."""
     attempt = selected.attempt
     if not selected.checkpoints or (
@@ -194,62 +190,14 @@ def completion_candidate_recovery(
         and attempt.candidate_revision is not None
     ):
         return None
-    attempt_id = attempt.attempt_id
-    return DecisionFailure(
-        DecisionFailureCode.ACTION_NOT_AVAILABLE,
-        "Checkpointed completion requires a protected review candidate. Use these MCP tools with the same explicit project and work roots; acquire only when authority status permits it, then submit the exact candidate and rediscover completion.",
-        FailureDetails(
-            observed=(
-                FailureFact("authority_status_tool", "pinboard_attempt_authority"),
-                FailureFact("authority_status_input", f'{{"operation":"status","attempt_id":"{attempt_id}"}}'),
-                FailureFact(
-                    "authority_acquisition_tool",
-                    "pinboard_attempt_authority",
-                ),
-                FailureFact(
-                    "authority_acquisition_input",
-                    f'{{"operation":"acquire","attempt_id":"{attempt_id}","task_id":"<worker-task-id>","host_id":"<host-id>","ttl_seconds":3600}}',
-                ),
-                FailureFact(
-                    "candidate_submission_action_tool",
-                    "pinboard_actions",
-                ),
-                FailureFact(
-                    "candidate_submission_action_input",
-                    f'{{"role":"worker","lease_id":"<current-lease-id>","generation":"<current-generation>","action_id":{{"kind":"submit-review","subject":"{attempt_id}"}}}}',
-                ),
-                FailureFact(
-                    "candidate_submission_tool",
-                    "pinboard_transition",
-                ),
-                FailureFact(
-                    "candidate_submission_input",
-                    f'{{"role":"worker","lease_id":"<current-lease-id>","generation":"<current-generation>","receipt":{{"action_id":{{"kind":"submit-review","subject":"{attempt_id}"}},"subject_revision":"<current-subject-revision>"}},"payload":{{"candidate":"<exact-candidate-revision>"}}}}',
-                ),
-                FailureFact("candidate_payload", '{"candidate":"<exact-candidate-revision>"}'),
-                FailureFact(
-                    "completion_reinspection_tool",
-                    "pinboard_actions",
-                ),
-                FailureFact(
-                    "completion_reinspection_input",
-                    f'{{"role":"project","action_id":{{"kind":"complete","subject":"{attempt_id}"}}}}',
-                ),
-            ),
-            mismatches=(),
-            retry=RetryDisposition.REFRESH_ACTION,
-            effect=EffectDisposition.UNCHANGED,
-            changed_surfaces=(),
-            alternatives=(),
-        ),
-    )
+    return query_models.CompletionCandidateRequired(attempt.attempt_id)
 
 
 def completion_input_contract(
     reader: ports.WorkStore,
     action: decision_models.CompleteAction,
     semantics: action_models.ActionSemanticsView,
-) -> DecisionResult[action_models.CompletionInputContractView]:
+) -> DecisionResult[action_models.CompletionInputContractView] | query_models.CompletionCandidateRequired:
     """Read only this attempt's final completion evidence and exact payload leaf."""
     completion = reader.read_completion_context(action.capability.subject)
     if completion is None:

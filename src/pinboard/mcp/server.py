@@ -12,7 +12,6 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import TextIO, assert_never
@@ -115,10 +114,6 @@ class ExecutorClosed(RuntimeError):
 
 class OperationCancelled(RuntimeError):
     """A running callback observed its request-local cancellation token."""
-
-
-class _OmittedAuthorityField(Enum):
-    VALUE = "omitted"
 
 
 class CancellationToken:
@@ -421,24 +416,12 @@ def _action_failure_details(
 
 
 def _read_actions(
-    project_root: str,
-    work_root: str,
-    role: str,
-    lease_id: str | _OmittedAuthorityField | None,
-    generation: IntegerBoundaryValue | _OmittedAuthorityField,
-    action_id: dict[str, JsonValue] | None,
+    raw: dict[str, JsonValue],
     token: CancellationToken,
 ) -> OperationResult:
     token.checkpoint()
-    raw: dict[str, JsonValue] = {"project_root": project_root, "work_root": work_root, "role": role}
-    if lease_id is not _OmittedAuthorityField.VALUE:
-        raw["lease_id"] = lease_id
-    if generation is not _OmittedAuthorityField.VALUE:
-        raw["generation"] = generation
-    if action_id is not None:
-        raw["action_id"] = action_id
     try:
-        request: contracts.ActionsRequest = msgspec.convert(raw, type=contracts.ActionsRequest, strict=True)
+        request = msgspec.convert(raw, type=contracts.ActionsEnvelope, strict=True).request
         durable = _resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return _read_failure(
@@ -494,7 +477,9 @@ def _read_actions(
     token.checkpoint()
     projected_actions: list[JsonValue] = []
     for action in selected:
-        projected = _mcp_action(action, store, focused=selected_action is not None)
+        projected = _mcp_action(
+            action, store, request.project_root, request.work_root, focused=selected_action is not None
+        )
         if isinstance(projected, DecisionFailure):
             return _read_failure(
                 "pinboard-mcp-actions-result/v1", projected.code.value, projected.message, projected.details
@@ -515,6 +500,8 @@ def _read_actions(
 def _mcp_action(
     action: decision_models.Action,
     store: SQLiteWorkStore,
+    project_root: str,
+    work_root: str,
     *,
     focused: bool,
 ) -> DecisionResult[dict[str, JsonValue]]:
@@ -525,6 +512,8 @@ def _mcp_action(
     input_contract = projected.input_contract
     if isinstance(action, decision_models.CompleteAction) and focused:
         completion = actions.completion_input_contract(store, action, projected.semantics)
+        if isinstance(completion, query_models.CompletionCandidateRequired):
+            return _completion_candidate_failure(completion, project_root, work_root)
         if isinstance(completion, DecisionFailure):
             return completion
         input_contract = completion
@@ -552,6 +541,73 @@ def _mcp_action(
     content = msgspec.to_builtins(record)
     assert isinstance(content, dict)
     return content
+
+
+def _completion_candidate_failure(
+    required: query_models.CompletionCandidateRequired,
+    project_root: str,
+    work_root: str,
+) -> DecisionFailure:
+    """Present the complete conditional recovery using current MCP requests."""
+    attempt_id = required.attempt_id
+    roots: dict[str, JsonValue] = {"project_root": project_root, "work_root": work_root}
+    claim: dict[str, JsonValue] = {"lease_id": "<current-lease-id>", "generation": "<current-generation>"}
+    submit: dict[str, JsonValue] = {"kind": "submit-review", "subject": attempt_id}
+    recipes: tuple[tuple[str, str, dict[str, JsonValue]], ...] = (
+        ("authority_status", ATTEMPT_AUTHORITY_TOOL, {"operation": "status", "attempt_id": attempt_id}),
+        (
+            "authority_acquisition",
+            ATTEMPT_AUTHORITY_TOOL,
+            {
+                "operation": "acquire",
+                "attempt_id": attempt_id,
+                "task_id": "<worker-task-id>",
+                "host_id": "<host-id>",
+                "ttl_seconds": 3600,
+            },
+        ),
+        ("candidate_submission_action", ACTIONS_TOOL, {"role": "worker", **claim, "action_id": submit}),
+        (
+            "candidate_submission",
+            TRANSITION_TOOL,
+            {
+                "role": "worker",
+                **claim,
+                "receipt": {"action_id": submit, "subject_revision": "<current-subject-revision>"},
+                "payload": {"candidate": "<exact-candidate-revision>"},
+            },
+        ),
+        (
+            "completion_reinspection",
+            ACTIONS_TOOL,
+            {
+                "role": "project",
+                "action_id": {"kind": "complete", "subject": attempt_id},
+            },
+        ),
+    )
+    observations = tuple(
+        fact
+        for prefix, tool, request in recipes
+        for fact in (
+            FailureFact(prefix + "_tool", tool),
+            FailureFact(
+                prefix + "_input", msgspec.json.encode({"request": {**roots, **request}}, order="sorted").decode()
+            ),
+        )
+    )
+    return DecisionFailure(
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        "Checkpointed completion requires a protected review candidate. Inspect authority status; acquire only when status permits it, using the worker's trusted task and host identity. Otherwise use only your own current lease. Discover and submit the exact candidate with the fresh receipt, then repeat focused completion discovery. These instructions do not acquire, submit, review, or complete automatically.",
+        FailureDetails(
+            observed=(*observations, FailureFact("candidate_payload", '{"candidate":"<exact-candidate-revision>"}')),
+            mismatches=(),
+            retry=RetryDisposition.REFRESH_ACTION,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
 
 
 def _evidence_reference(path: Path) -> contracts.EvidenceReference:
@@ -1331,24 +1387,6 @@ def _artifact_reference_json(publication: AcceptedArtifactPublication) -> dict[s
     }
 
 
-def _authority_request(
-    project_root: str,
-    work_root: str,
-    operation: str,
-    subject_field: str,
-    subject: str,
-    optional: tuple[tuple[str, JsonValue | _OmittedAuthorityField], ...],
-) -> dict[str, JsonValue]:
-    raw: dict[str, JsonValue] = {
-        "project_root": project_root,
-        "work_root": work_root,
-        "operation": operation,
-        subject_field: subject,
-        **{key: value for key, value in optional if value is not _OmittedAuthorityField.VALUE},
-    }
-    return raw
-
-
 def _transition_action_json(action_id: contracts.ActionIdentity) -> dict[str, JsonValue]:
     return {"kind": action_id.kind.value, "subject": action_id.subject}
 
@@ -1380,43 +1418,18 @@ def _transition_rejected(
 
 
 def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-result boundary
-    project_root: str,
-    work_root: str,
-    role: str,
-    receipt: dict[str, JsonValue],
-    payload: dict[str, JsonValue],
-    lease_id: str | _OmittedAuthorityField,
-    generation: IntegerBoundaryValue | _OmittedAuthorityField,
-    actor_task_id: str | _OmittedAuthorityField,
-    actor_host_id: str | _OmittedAuthorityField,
+    raw: dict[str, JsonValue],
     token: CancellationToken,
 ) -> OperationResult:
     token.checkpoint()
-    raw: dict[str, JsonValue] = {
-        "project_root": project_root,
-        "work_root": work_root,
-        "role": role,
-        "receipt": receipt,
-        "payload": payload,
-    }
-    raw.update(
-        {
-            key: value
-            for key, value in (
-                ("lease_id", lease_id),
-                ("generation", generation),
-                ("actor_task_id", actor_task_id),
-                ("actor_host_id", actor_host_id),
-            )
-            if value is not _OmittedAuthorityField.VALUE
-        }
-    )
     try:
         request = contracts.decode_transition_request(raw)
         source_checkout = resolve_source_checkout_root(Path(request.project_root))
         durable = resolve_durable_roots(resolve_shared_repository_root(source_checkout), Path(request.work_root))
     except (msgspec.ValidationError, ValueError, OSError) as error:
-        raw_identity = receipt.get("action_id")
+        inner = raw.get("request")
+        receipt = inner.get("receipt") if isinstance(inner, dict) else None
+        raw_identity = receipt.get("action_id") if isinstance(receipt, dict) else None
         try:
             identity = msgspec.convert(raw_identity, type=contracts.ActionIdentity, strict=True)
         except msgspec.ValidationError:
@@ -1646,47 +1659,21 @@ def _committed_authority_fields(effect: CommittedEffect, warning: ViewWarning | 
 
 
 def _preparation_authority(
-    project_root: str,
-    work_root: str,
-    operation: str,
-    item_id: str,
-    task_id: str | _OmittedAuthorityField,
-    host_id: str | _OmittedAuthorityField,
-    lease_id: str | _OmittedAuthorityField,
-    generation: IntegerBoundaryValue | _OmittedAuthorityField,
-    ttl_seconds: IntegerBoundaryValue | _OmittedAuthorityField,
-    actor_task_id: str | _OmittedAuthorityField,
-    actor_host_id: str | _OmittedAuthorityField,
+    raw: dict[str, JsonValue],
     token: CancellationToken,
 ) -> OperationResult:
     token.checkpoint()
-    raw = _authority_request(
-        project_root,
-        work_root,
-        operation,
-        "item_id",
-        item_id,
-        (
-            ("task_id", task_id),
-            ("host_id", host_id),
-            ("lease_id", lease_id),
-            ("generation", generation),
-            ("ttl_seconds", ttl_seconds),
-            ("actor_task_id", actor_task_id),
-            ("actor_host_id", actor_host_id),
-        ),
-    )
     try:
-        request: contracts.PreparationAuthorityRequest = msgspec.convert(
-            raw, type=contracts.PreparationAuthorityRequest, strict=True
-        )
+        request = msgspec.convert(raw, type=contracts.PreparationAuthorityEnvelope, strict=True).request
         durable = _resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
+        inner = raw.get("request")
+        subject = inner.get("item_id") if isinstance(inner, dict) else None
         return OperationResult(
             {
                 "schema": "pinboard-mcp-preparation-authority-result/v1",
                 "status": "rejected",
-                "item_id": item_id,
+                "item_id": subject if isinstance(subject, str) and subject else "invalid",
                 "code": DecisionFailureCode.TRANSITION_INPUT_INVALID.value,
                 "message": f"Cannot perform preparation authority operation: {error}",
                 "conflict": None,
@@ -1800,47 +1787,21 @@ def _preparation_authority(
 
 
 def _attempt_authority(
-    project_root: str,
-    work_root: str,
-    operation: str,
-    attempt_id: str,
-    task_id: str | _OmittedAuthorityField,
-    host_id: str | _OmittedAuthorityField,
-    lease_id: str | _OmittedAuthorityField,
-    generation: IntegerBoundaryValue | _OmittedAuthorityField,
-    ttl_seconds: IntegerBoundaryValue | _OmittedAuthorityField,
-    actor_task_id: str | _OmittedAuthorityField,
-    actor_host_id: str | _OmittedAuthorityField,
+    raw: dict[str, JsonValue],
     token: CancellationToken,
 ) -> OperationResult:
     token.checkpoint()
-    raw = _authority_request(
-        project_root,
-        work_root,
-        operation,
-        "attempt_id",
-        attempt_id,
-        (
-            ("task_id", task_id),
-            ("host_id", host_id),
-            ("lease_id", lease_id),
-            ("generation", generation),
-            ("ttl_seconds", ttl_seconds),
-            ("actor_task_id", actor_task_id),
-            ("actor_host_id", actor_host_id),
-        ),
-    )
     try:
-        request: contracts.AttemptAuthorityRequest = msgspec.convert(
-            raw, type=contracts.AttemptAuthorityRequest, strict=True
-        )
+        request = msgspec.convert(raw, type=contracts.AttemptAuthorityEnvelope, strict=True).request
         durable = _resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
+        inner = raw.get("request")
+        subject = inner.get("attempt_id") if isinstance(inner, dict) else None
         return OperationResult(
             {
                 "schema": "pinboard-mcp-attempt-authority-result/v1",
                 "status": "rejected",
-                "attempt_id": attempt_id,
+                "attempt_id": subject if isinstance(subject, str) and subject else "invalid",
                 "code": DecisionFailureCode.TRANSITION_INPUT_INVALID.value,
                 "message": f"Cannot perform attempt authority operation: {error}",
                 "conflict": None,
@@ -1996,8 +1957,8 @@ def _mcp_launch_envelope(
         }
         message += (
             " After reading the complete canonical brief/bootstrap, read CODEX_THREAD_ID after native launch; "
-            f"call `pinboard_attempt_authority` with {msgspec.json.encode(acquisition, order='sorted').decode()}, "
-            f"then `pinboard_actions` with {msgspec.json.encode(continuation, order='sorted').decode()}. "
+            f"call `pinboard_attempt_authority` with {msgspec.json.encode({'request': acquisition}, order='sorted').decode()}, "
+            f"then `pinboard_actions` with {msgspec.json.encode({'request': continuation}, order='sorted').decode()}. "
             "Substitute only the trusted post-launch identity and returned lease facts. Missing connected tools or identity "
             "stops that operation; never invent a shell command, payload file, or disconnected-client fallback."
         )
@@ -2372,20 +2333,15 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
         description="Discover exact current legal Pinboard actions and their strict payload contracts.",
     )
     async def action_discovery(
-        project_root: str,
-        work_root: str,
-        role: str,
-        lease_id: str | _OmittedAuthorityField | None = _OmittedAuthorityField.VALUE,
-        generation: IntegerBoundaryValue | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        action_id: dict[str, JsonValue] | None = None,
+        request: dict[str, JsonValue],
     ) -> dict[str, JsonValue]:
         return await _run_request(
             executor,
             diagnostics,
             next(request_ids),
             ACTIONS_TOOL,
-            project_root,
-            partial(_read_actions, project_root, work_root, role, lease_id, generation, action_id),
+            str(request.get("project_root", "")),
+            partial(_read_actions, {"request": request}),
         )
 
     @server.tool(
@@ -2436,38 +2392,15 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
         description="Read or change one exact Pinboard preparation authority.",
     )
     async def preparation_authority(
-        project_root: str,
-        work_root: str,
-        operation: str,
-        item_id: str,
-        task_id: str | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        host_id: str | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        lease_id: str | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        generation: IntegerBoundaryValue | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        ttl_seconds: IntegerBoundaryValue | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        actor_task_id: str | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        actor_host_id: str | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
+        request: dict[str, JsonValue],
     ) -> dict[str, JsonValue]:
         return await _run_request(
             executor,
             diagnostics,
             next(request_ids),
             PREPARATION_AUTHORITY_TOOL,
-            project_root,
-            partial(
-                _preparation_authority,
-                project_root,
-                work_root,
-                operation,
-                item_id,
-                task_id,
-                host_id,
-                lease_id,
-                generation,
-                ttl_seconds,
-                actor_task_id,
-                actor_host_id,
-            ),
+            str(request.get("project_root", "")),
+            partial(_preparation_authority, {"request": request}),
         )
 
     @server.tool(
@@ -2475,38 +2408,15 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
         description="Read or change one exact Pinboard attempt authority.",
     )
     async def attempt_authority(
-        project_root: str,
-        work_root: str,
-        operation: str,
-        attempt_id: str,
-        task_id: str | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        host_id: str | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        lease_id: str | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        generation: IntegerBoundaryValue | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        ttl_seconds: IntegerBoundaryValue | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        actor_task_id: str | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        actor_host_id: str | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
+        request: dict[str, JsonValue],
     ) -> dict[str, JsonValue]:
         return await _run_request(
             executor,
             diagnostics,
             next(request_ids),
             ATTEMPT_AUTHORITY_TOOL,
-            project_root,
-            partial(
-                _attempt_authority,
-                project_root,
-                work_root,
-                operation,
-                attempt_id,
-                task_id,
-                host_id,
-                lease_id,
-                generation,
-                ttl_seconds,
-                actor_task_id,
-                actor_host_id,
-            ),
+            str(request.get("project_root", "")),
+            partial(_attempt_authority, {"request": request}),
         )
 
     @server.tool(
@@ -2514,34 +2424,15 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
         description="Apply one exact current Pinboard lifecycle action and its strict leaf payload.",
     )
     async def lifecycle_transition(
-        project_root: str,
-        work_root: str,
-        role: str,
-        receipt: dict[str, JsonValue],
-        payload: dict[str, JsonValue],
-        lease_id: str | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        generation: IntegerBoundaryValue | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        actor_task_id: str | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
-        actor_host_id: str | _OmittedAuthorityField = _OmittedAuthorityField.VALUE,
+        request: dict[str, JsonValue],
     ) -> dict[str, JsonValue]:
         return await _run_request(
             executor,
             diagnostics,
             next(request_ids),
             TRANSITION_TOOL,
-            project_root,
-            partial(
-                _transition,
-                project_root,
-                work_root,
-                role,
-                receipt,
-                payload,
-                lease_id,
-                generation,
-                actor_task_id,
-                actor_host_id,
-            ),
+            str(request.get("project_root", "")),
+            partial(_transition, {"request": request}),
         )
 
     @server.tool(

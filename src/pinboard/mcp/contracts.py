@@ -105,6 +105,10 @@ class PreparerActionsRequest(msgspec.Struct, tag="preparer", tag_field="role", f
 type ActionsRequest = ObserverActionsRequest | ProjectActionsRequest | WorkerActionsRequest | PreparerActionsRequest
 
 
+class ActionsEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: ActionsRequest
+
+
 class AttemptInspectRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     project_root: RootPath
     work_root: RootPath
@@ -309,62 +313,92 @@ type TransitionRequest = (
 )
 
 
-def decode_transition_request(raw: dict[str, JsonValue]) -> TransitionRequest:  # noqa: C901, PLR0912, PLR0915 - exhaustive exact wire leaves
-    """Decode one exact action leaf before any stateful work begins."""
+class TransitionEnvelope[RequestT](msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: RequestT
 
-    receipt = raw.get("receipt")
+
+def decode_transition_request(raw: dict[str, JsonValue]) -> TransitionRequest:  # noqa: C901, PLR0912, PLR0915 - exhaustive exact wire leaves
+    """Decode one strict envelope and exact leaf before resources or effects.
+
+    Transition leaves share role tags, so receipt action identity selects the
+    leaf. Complete additionally distinguishes its independently required payload
+    shapes. These relational choices cannot be an ordinary tagged union.
+    """
+
+    inner = raw.get("request")
+    receipt = inner.get("receipt") if isinstance(inner, dict) else None
     action_id = receipt.get("action_id") if isinstance(receipt, dict) else None
     kind = action_id.get("kind") if isinstance(action_id, dict) else None
     request: TransitionRequest
     match kind:
         case "accept-checkpoint":
-            request = msgspec.convert(raw, type=AcceptCheckpointTransitionRequest, strict=True)
+            request = msgspec.convert(
+                raw, type=TransitionEnvelope[AcceptCheckpointTransitionRequest], strict=True
+            ).request
         case "accept-review-and-continue":
-            request = msgspec.convert(raw, type=AcceptReviewAndContinueTransitionRequest, strict=True)
+            request = msgspec.convert(
+                raw, type=TransitionEnvelope[AcceptReviewAndContinueTransitionRequest], strict=True
+            ).request
         case "accept-proposal":
-            request = msgspec.convert(raw, type=AcceptProposalTransitionRequest, strict=True)
+            request = msgspec.convert(
+                raw, type=TransitionEnvelope[AcceptProposalTransitionRequest], strict=True
+            ).request
         case "activate":
-            request = msgspec.convert(raw, type=ActivateTransitionRequest, strict=True)
+            request = msgspec.convert(raw, type=TransitionEnvelope[ActivateTransitionRequest], strict=True).request
         case "block":
-            request = msgspec.convert(raw, type=BlockTransitionRequest, strict=True)
+            request = msgspec.convert(raw, type=TransitionEnvelope[BlockTransitionRequest], strict=True).request
         case "block-item":
-            request = msgspec.convert(raw, type=BlockItemTransitionRequest, strict=True)
+            request = msgspec.convert(raw, type=TransitionEnvelope[BlockItemTransitionRequest], strict=True).request
         case "complete":
-            payload = raw.get("payload")
+            payload = inner.get("payload") if isinstance(inner, dict) else None
             if isinstance(payload, dict) and "schema" in payload:
-                request = msgspec.convert(raw, type=CoveredCompleteTransitionRequest, strict=True)
+                request = msgspec.convert(
+                    raw, type=TransitionEnvelope[CoveredCompleteTransitionRequest], strict=True
+                ).request
             else:
-                request = msgspec.convert(raw, type=DirectCompleteTransitionRequest, strict=True)
+                request = msgspec.convert(
+                    raw, type=TransitionEnvelope[DirectCompleteTransitionRequest], strict=True
+                ).request
         case "close":
-            request = msgspec.convert(raw, type=CloseTransitionRequest, strict=True)
+            request = msgspec.convert(raw, type=TransitionEnvelope[CloseTransitionRequest], strict=True).request
         case "defer":
-            request = msgspec.convert(raw, type=DeferTransitionRequest, strict=True)
+            request = msgspec.convert(raw, type=TransitionEnvelope[DeferTransitionRequest], strict=True).request
         case "mark-ready":
-            request = msgspec.convert(raw, type=MarkReadyTransitionRequest, strict=True)
+            request = msgspec.convert(raw, type=TransitionEnvelope[MarkReadyTransitionRequest], strict=True).request
         case "merge-proposal":
-            request = msgspec.convert(raw, type=MergeProposalTransitionRequest, strict=True)
+            request = msgspec.convert(raw, type=TransitionEnvelope[MergeProposalTransitionRequest], strict=True).request
         case "pause":
-            request = msgspec.convert(raw, type=PauseTransitionRequest, strict=True)
+            request = msgspec.convert(raw, type=TransitionEnvelope[PauseTransitionRequest], strict=True).request
         case "reject-proposal":
-            request = msgspec.convert(raw, type=RejectProposalTransitionRequest, strict=True)
+            request = msgspec.convert(
+                raw, type=TransitionEnvelope[RejectProposalTransitionRequest], strict=True
+            ).request
         case "reopen":
-            request = msgspec.convert(raw, type=ReopenTransitionRequest, strict=True)
+            request = msgspec.convert(raw, type=TransitionEnvelope[ReopenTransitionRequest], strict=True).request
         case "record-replacement":
-            request = msgspec.convert(raw, type=RecordReplacementTransitionRequest, strict=True)
+            request = msgspec.convert(
+                raw, type=TransitionEnvelope[RecordReplacementTransitionRequest], strict=True
+            ).request
         case "rebind-attempt":
-            request = msgspec.convert(raw, type=RebindAttemptTransitionRequest, strict=True)
+            request = msgspec.convert(raw, type=TransitionEnvelope[RebindAttemptTransitionRequest], strict=True).request
         case "resume":
-            request = msgspec.convert(raw, type=ResumeTransitionRequest, strict=True)
+            request = msgspec.convert(raw, type=TransitionEnvelope[ResumeTransitionRequest], strict=True).request
         case "return-for-correction":
-            request = msgspec.convert(raw, type=ReturnForCorrectionTransitionRequest, strict=True)
+            request = msgspec.convert(
+                raw, type=TransitionEnvelope[ReturnForCorrectionTransitionRequest], strict=True
+            ).request
         case "return-proposal":
-            request = msgspec.convert(raw, type=ReturnProposalTransitionRequest, strict=True)
+            request = msgspec.convert(
+                raw, type=TransitionEnvelope[ReturnProposalTransitionRequest], strict=True
+            ).request
         case "retain-temporarily":
-            request = msgspec.convert(raw, type=RetainTemporarilyTransitionRequest, strict=True)
+            request = msgspec.convert(
+                raw, type=TransitionEnvelope[RetainTemporarilyTransitionRequest], strict=True
+            ).request
         case "revise-item":
-            request = msgspec.convert(raw, type=ReviseItemTransitionRequest, strict=True)
+            request = msgspec.convert(raw, type=TransitionEnvelope[ReviseItemTransitionRequest], strict=True).request
         case "submit-review":
-            request = msgspec.convert(raw, type=SubmitReviewTransitionRequest, strict=True)
+            request = msgspec.convert(raw, type=TransitionEnvelope[SubmitReviewTransitionRequest], strict=True).request
         case _:
             raise ValueError(f"Action '{kind}' is not a supported MCP transition.")
     return request
@@ -502,6 +536,14 @@ type AttemptAuthorityRequest = (
     | AttemptAuthorityReleaseRequest
     | AttemptAuthorityRevokeRequest
 )
+
+
+class PreparationAuthorityEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: PreparationAuthorityRequest
+
+
+class AttemptAuthorityEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: AttemptAuthorityRequest
 
 
 class FailureObservation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1805,6 +1847,9 @@ type RequestBoundary = (
     | type[ArtifactVerifyRequest]
     | type[DispatchRequest]
     | type[ReviewJobRequest]
+    | type[ActionsEnvelope]
+    | type[PreparationAuthorityEnvelope]
+    | type[AttemptAuthorityEnvelope]
 )
 type ResultBoundary = (
     type[query_models.ItemStatus]
@@ -1886,23 +1931,26 @@ def schema_for(boundary_type: RequestBoundary) -> dict[str, JsonSchemaValue]:
 def actions_request_schema() -> dict[str, JsonSchemaValue]:
     """Return the exact role-discriminated action request schema."""
 
-    schema: dict[str, JsonSchemaValue] = msgspec.json.schema(ActionsRequest)
-    return {"type": "object", **schema}
+    return schema_for(ActionsEnvelope)
 
 
 def preparation_authority_request_schema() -> dict[str, JsonSchemaValue]:
-    schema: dict[str, JsonSchemaValue] = msgspec.json.schema(PreparationAuthorityRequest)
-    return {"type": "object", **schema}
+    return schema_for(PreparationAuthorityEnvelope)
 
 
 def attempt_authority_request_schema() -> dict[str, JsonSchemaValue]:
-    schema: dict[str, JsonSchemaValue] = msgspec.json.schema(AttemptAuthorityRequest)
-    return {"type": "object", **schema}
+    return schema_for(AttemptAuthorityEnvelope)
 
 
 def transition_request_schema() -> dict[str, JsonSchemaValue]:
     schemas, definitions = msgspec.json.schema_components(TRANSITION_REQUEST_TYPES)
-    return {"type": "object", "oneOf": list[JsonSchemaValue](schemas), "$defs": definitions}
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["request"],
+        "properties": {"request": {"oneOf": list[JsonSchemaValue](schemas)}},
+        "$defs": definitions,
+    }
 
 
 def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:

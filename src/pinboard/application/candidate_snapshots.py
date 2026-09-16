@@ -3,11 +3,12 @@
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal, Protocol, assert_never
 
 import msgspec
 
-from pinboard.application import query_models, stored_state
+from pinboard.application import candidate_snapshot_compatibility_models, query_models, stored_state
+from pinboard.application.candidate_identity import working_tree_identity
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId
 
@@ -22,19 +23,19 @@ class WorkingTreeCandidateSnapshot(
     frozen=True,
     forbid_unknown_fields=True,
 ):
-    schema: Literal["pinboard-candidate-snapshot/v1"]
+    schema: Literal["pinboard-candidate-snapshot/v2"]
     attempt_id: NonEmptyLine
     item_id: NonEmptyLine
-    candidate: Annotated[str, msgspec.Meta(pattern=r"\Aworking-tree-sha256:[0-9a-f]{64}\z")]
+    candidate: Annotated[str, msgspec.Meta(pattern=r"\Aworking-tree-state-sha256:[0-9a-f]{64}\z")]
     branch: NonEmptyLine
-    preimage_revision: NonEmptyLine
+    preimage_revision: Annotated[str, msgspec.Meta(pattern=r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z")]
     accepted_base_revision: NonEmptyLine
     recorded_at: NonEmptyLine
     diff: bytes
 
     def __post_init__(self) -> None:
-        if self.candidate != f"working-tree-sha256:{hashlib.sha256(self.diff).hexdigest()}":
-            raise ValueError("working-tree candidate identity must match the binary diff")
+        if self.candidate != working_tree_identity(self.preimage_revision, self.diff):
+            raise ValueError("working-tree candidate identity must match its actual preimage and binary diff")
 
 
 class CommitCandidateSnapshot(
@@ -55,7 +56,11 @@ class CommitCandidateSnapshot(
     diff: bytes
 
 
-type CandidateSnapshot = WorkingTreeCandidateSnapshot | CommitCandidateSnapshot
+type CandidateSnapshot = (
+    WorkingTreeCandidateSnapshot
+    | CommitCandidateSnapshot
+    | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot
+)
 
 
 class CandidateSnapshotReceiptInput(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -85,17 +90,26 @@ def canonical_candidate_snapshot_bytes(snapshot: CandidateSnapshot) -> bytes:
     return msgspec.json.encode(snapshot, order="sorted")
 
 
+def candidate_kind(snapshot: CandidateSnapshot) -> Literal["working-tree", "commit"]:
+    match snapshot:
+        case WorkingTreeCandidateSnapshot() | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot():
+            return "working-tree"
+        case CommitCandidateSnapshot():
+            return "commit"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def decode_candidate_snapshot(value: bytes) -> CandidateSnapshot:
-    decoded = msgspec.json.decode(value, type=CandidateSnapshot, strict=True)
-    if isinstance(decoded, WorkingTreeCandidateSnapshot):
-        snapshot: CandidateSnapshot = decoded
-    elif isinstance(decoded, CommitCandidateSnapshot):
-        snapshot = decoded
-    else:
-        raise TypeError("candidate snapshot decoder returned an unsupported value")
-    if canonical_candidate_snapshot_bytes(snapshot) != value:
+    try:
+        decoded = msgspec.json.decode(value, type=WorkingTreeCandidateSnapshot | CommitCandidateSnapshot, strict=True)
+    except msgspec.DecodeError:
+        decoded = msgspec.json.decode(
+            value, type=candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot, strict=True
+        )
+    if canonical_candidate_snapshot_bytes(decoded) != value:
         raise ValueError("candidate snapshot is not canonical")
-    return snapshot
+    return decoded
 
 
 def candidate_snapshot_key(snapshot: CandidateSnapshot) -> str:
@@ -145,7 +159,7 @@ def verify_candidate_snapshot_context(
         bytes(receipt.input_payload)
     )
     if (
-        receipt.input_schema != "pinboard-candidate-snapshot/v1"
+        receipt.input_schema not in {"pinboard-candidate-snapshot/v1", "pinboard-candidate-snapshot/v2"}
         or msgspec.json.encode(receipt_input, order="sorted") != bytes(receipt.input_payload)
         or receipt_input.snapshot_artifact_ref_id != int(reference.artifact_ref_id)
     ):
@@ -160,6 +174,8 @@ def verify_candidate_snapshot_context(
     ):
         raise ValueError("The candidate snapshot bytes differ from the accepted artifact reference.")
     snapshot = decode_candidate_snapshot(artifact_bytes)
+    if receipt.input_schema != snapshot.schema:
+        raise ValueError("The candidate snapshot receipt schema does not match its accepted bytes.")
     outcome = msgspec.json.Decoder(history.TransitionReceiptOutcome, strict=True).decode(bytes(receipt.outcome_payload))
     if (
         receipt.action_kind != decision_models.ActionKind.SUBMIT_REVIEW
@@ -202,7 +218,10 @@ def validate_candidate_snapshot_history(
         if (legacy_candidate := legacy_review_candidate(receipt)) is not None:
             legacy_review_candidates.add((AttemptId(str(receipt.subject_id)), receipt.committed_at, legacy_candidate))
             continue
-        if receipt.input_schema != "pinboard-candidate-snapshot/v1" or receipt.artifact_ref_id is None:
+        if (
+            receipt.input_schema not in {"pinboard-candidate-snapshot/v1", "pinboard-candidate-snapshot/v2"}
+            or receipt.artifact_ref_id is None
+        ):
             raise ValueError("Every review submission must retain one accepted candidate snapshot.")
         attempt_id = AttemptId(str(receipt.subject_id))
         attempt = attempts.get(attempt_id)

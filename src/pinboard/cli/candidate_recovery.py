@@ -2,7 +2,9 @@
 
 import sys
 from pathlib import Path
+from typing import assert_never
 
+from pinboard.adapters.files import candidate_compatibility
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.files.errors import ArtifactError, RootError
 from pinboard.adapters.files.root import (
@@ -12,7 +14,7 @@ from pinboard.adapters.files.root import (
     restore_commit_candidate,
     restore_working_tree_candidate,
 )
-from pinboard.application import candidate_snapshots, ports, query_models
+from pinboard.application import candidate_snapshot_compatibility_models, candidate_snapshots, ports, query_models
 from pinboard.cli import cli_commands, work_inspection_models
 from pinboard.cli.cli_output import write_json
 from pinboard.cli.errors import CommandErrorCode, CommandFailure, CommandResult, CommittedEffectFailure
@@ -76,10 +78,9 @@ def recovery_view(
     evidence: candidate_snapshots.CandidateSnapshotEvidence,
 ) -> work_inspection_models.CandidateRecovery:
     snapshot = evidence.snapshot
-    kind = "working-tree" if isinstance(snapshot, candidate_snapshots.WorkingTreeCandidateSnapshot) else "commit"
     executable = str(Path(sys.executable).with_name("pinboard"))
     return work_inspection_models.CandidateRecovery(
-        kind,
+        candidate_snapshots.candidate_kind(snapshot),
         snapshot.candidate,
         snapshot.branch,
         snapshot.preimage_revision,
@@ -144,7 +145,15 @@ def restore_candidate(
                 candidate=snapshot.candidate,
                 diff=snapshot.diff,
             )
-        else:
+        elif isinstance(snapshot, candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot):
+            restored = candidate_compatibility.restore_working_tree_candidate(
+                roots.source_checkout,
+                expected_branch=snapshot.branch,
+                preimage_revision=snapshot.preimage_revision,
+                candidate=snapshot.candidate,
+                diff=snapshot.diff,
+            )
+        elif isinstance(snapshot, candidate_snapshots.CommitCandidateSnapshot):
             restored = restore_commit_candidate(
                 roots.source_checkout,
                 expected_branch=snapshot.branch,
@@ -153,6 +162,8 @@ def restore_candidate(
                 candidate=snapshot.candidate,
                 diff=snapshot.diff,
             )
+        else:
+            assert_never(snapshot)
     except CandidateRestoreAfterMutationError as error:
         return CommittedEffectFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID.value,

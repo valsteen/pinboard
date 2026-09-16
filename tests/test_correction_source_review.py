@@ -1,5 +1,6 @@
 import hashlib
 import json
+import subprocess
 import tempfile
 from copy import deepcopy
 from pathlib import Path
@@ -164,6 +165,58 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         )
         self.assertIn(result, (0, 14), stderr)
         return self.json_object(json.loads(stdout))
+
+    def test_old_same_patch_snapshot_cannot_authorize_a_newer_returned_start(self) -> None:
+        fixture = self.correction_fixture()
+        first_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=fixture.project, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        _, first = self.submit_and_return(fixture, "same-test", committed=False)
+        first_candidate = root.read_working_tree_candidate(fixture.project)
+        test_file = fixture.project / "tests" / "test_only.py"
+        test_file.write_text("assert True\n", encoding="utf-8")
+        (fixture.project / "tracked.txt").write_text("another committed state\n", encoding="utf-8")
+        second_head = self.commit_all(fixture.project, "different starting code")
+        _, second = self.submit_and_return(fixture, "same-test", committed=False)
+        second_candidate = root.read_working_tree_candidate(fixture.project)
+        self.assertNotEqual(first_head, second_head)
+        self.assertEqual(first_candidate.diff, second_candidate.diff)
+        old_snapshot = deepcopy(second)
+        self.json_object(old_snapshot["brief_review"])["starting_candidate"] = self.json_object(first["brief_review"])[
+            "starting_candidate"
+        ]
+        test_file.write_text("assert True\n", encoding="utf-8")
+        subprocess.run(["git", "switch", "--detach", first_head], cwd=fixture.project, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "switch", "-C", fixture.brief.branch], cwd=fixture.project, check=True, capture_output=True
+        )
+        test_file.write_text("assert 'same-test'\n", encoding="utf-8")
+        before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        artifacts = {
+            path.relative_to(fixture.work): path.read_bytes()
+            for path in (fixture.work / "artifacts").rglob("*")
+            if path.is_file()
+        }
+        for transport in ("cli", "mcp"):
+            with self.subTest(transport=transport):
+                outcome = (
+                    self.dispatch_cli(fixture, old_snapshot)
+                    if transport == "cli"
+                    else server._dispatch_job(
+                        str(fixture.project), str(fixture.work), old_snapshot, server.CancellationToken()
+                    ).content
+                )
+                self.assertNotEqual("ready", outcome["status"], outcome)
+                self.assertFalse(outcome["state_changed"])
+                self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+                self.assertEqual(
+                    artifacts,
+                    {
+                        path.relative_to(fixture.work): path.read_bytes()
+                        for path in (fixture.work / "artifacts").rglob("*")
+                        if path.is_file()
+                    },
+                )
 
     def test_real_cli_mcp_two_test_only_candidates_reload_distinct_subjects_and_initial_proof(self) -> None:
         fixture = self.correction_fixture()

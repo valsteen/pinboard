@@ -350,6 +350,34 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             work_brief_models.WorkBriefErrorCode.REVIEW_NOT_CANONICAL,
         )
 
+    def assert_current_and_retained_role_bindings(
+        self,
+        portable: checkpoint_compatibility_models.CheckpointReviewPackageV2,
+    ) -> None:
+        for schema, candidate in (
+            ("pinboard-checkpoint-review-package/v2", portable.candidate),
+            ("pinboard-checkpoint-review-package/v3", "working-tree-state-sha256:" + "d" * 64),
+        ):
+            valid = msgspec.json.decode(canonical_checkpoint_review_package_bytes(portable))
+            assert isinstance(valid, dict)
+            valid["schema"] = schema
+            valid["candidate"] = candidate
+            encoded = msgspec.json.encode(valid, order="sorted") + b"\n"
+            decoded = expect_work_brief_success(decode_canonical_checkpoint_review_package(encoded))
+            self.assertEqual(encoded, canonical_checkpoint_review_package_bytes(decoded))
+            for field in ("candidate_snapshot", "accepted_brief", "result", "implementation_review"):
+                with self.subTest(schema=schema, malformed_binding=field):
+                    invalid = msgspec.json.decode(encoded)
+                    assert isinstance(invalid, dict)
+                    binding = invalid[field]
+                    assert isinstance(binding, dict)
+                    binding["role"] = "brief-review"
+                    rejected = expect_work_brief_failure(
+                        decode_checkpoint_review_package(msgspec.json.encode(invalid)),
+                        work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
+                    )
+                    self.assertIn("artifact roles and kinds do not match their bindings", rejected.message)
+
     def test_checkpoint_review_package_variants_are_strict_canonical_and_portable(self) -> None:
         value = example_work_brief()
         checkpoint = value.checkpoint
@@ -427,7 +455,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     work_brief_models.WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
                 )
 
-        portable = work_brief_models.CheckpointReviewPackageV2(
+        portable = checkpoint_compatibility_models.CheckpointReviewPackageV2(
             value.attempt_id,
             value.item_id,
             f"working-tree-sha256:{candidate_snapshot.content_sha256}",
@@ -451,6 +479,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 portable_package,
                 expect_work_brief_success(decode_canonical_checkpoint_review_package(encoded_portable)),
             )
+        self.assert_current_and_retained_role_bindings(portable)
         payload = msgspec.json.decode(canonical_checkpoint_review_package_bytes(cross))
         if not isinstance(payload, dict):
             self.fail("checkpoint review package JSON must be an object")

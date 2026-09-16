@@ -313,7 +313,7 @@ class CompatibilityHandoverCheckpointPackage(
     review_basis: HandoverReviewBasis
 
 
-class HandoverCheckpointPackageV2(
+class CompatibilityHandoverCheckpointPackageV2(
     msgspec.Struct,
     tag="pinboard-checkpoint-review-package/v2",
     tag_field="schema",
@@ -336,7 +336,32 @@ class HandoverCheckpointPackageV2(
     review_basis: HandoverReviewBasis
 
 
-type HandoverCheckpointPackageValue = CompatibilityHandoverCheckpointPackage | HandoverCheckpointPackageV2
+class HandoverCheckpointPackageV3(
+    msgspec.Struct,
+    tag="pinboard-checkpoint-review-package/v3",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    history_id: int
+    package_artifact_ref_id: int
+    attempt_id: str
+    item_id: str
+    candidate: str
+    acceptance_evidence: str
+    accepted_scope: HandoverAcceptedScope
+    checkpoint: HandoverCheckpointIdentity
+    candidate_snapshot: HandoverPortableArtifactIdentity
+    accepted_brief: HandoverPortableArtifactIdentity
+    result: HandoverPortableArtifactIdentity
+    implementation_review: HandoverPortableArtifactIdentity
+    verdict: Literal["ready"]
+    review_basis: HandoverReviewBasis
+
+
+type HandoverCheckpointPackageValue = (
+    CompatibilityHandoverCheckpointPackage | CompatibilityHandoverCheckpointPackageV2 | HandoverCheckpointPackageV3
+)
 
 
 class HandoverAcceptedBriefCompletionIdentity(

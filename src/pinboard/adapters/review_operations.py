@@ -105,6 +105,28 @@ def _read_required_evidence(path: Path, label: str) -> DecisionResult[tuple[str,
     return str(path), sha256(evidence_bytes).hexdigest()
 
 
+def _candidate_reconstruction(
+    package: work_briefs.CheckpointPackage,
+    candidate_bytes: bytes,
+) -> DecisionResult[str]:
+    if not isinstance(package, work_brief_models.CheckpointReviewPackageV3):
+        return (
+            "The retained candidate is a raw binary patch. Without independent evidence of its actual HEAD, "
+            "applying it to the brief base is only historical patch assurance, not complete original-state reconstruction. "
+        )
+    snapshot = candidate_snapshots.decode_candidate_snapshot(candidate_bytes)
+    if (snapshot.attempt_id, snapshot.item_id, snapshot.candidate) != (
+        package.attempt_id,
+        package.item_id,
+        package.candidate,
+    ):
+        return _review_job_failure("The complete portable snapshot does not match its selected checkpoint package.")
+    return (
+        f"Decode the canonical JSON candidate snapshot, use its actual preimage {snapshot.preimage_revision}, "
+        "and apply its exact binary diff to reconstruct the complete candidate. "
+    )
+
+
 def _select_prior_checkpoint_package(
     work_root: Path,
     facts: query_models.ReviewJobContextFacts,
@@ -131,7 +153,13 @@ def _select_prior_checkpoint_package(
     if isinstance(package, work_brief_models.WorkBriefFailure):
         return _review_job_failure(package.message)
     candidate_reference = facts.checkpoint_candidate_reference
-    if isinstance(package, work_brief_models.CheckpointReviewPackageV2) and candidate_reference is None:
+    if (
+        isinstance(
+            package,
+            (work_brief_models.CheckpointReviewPackageV3, checkpoint_compatibility_models.CheckpointReviewPackageV2),
+        )
+        and candidate_reference is None
+    ):
         return _review_job_failure("Current checkpoint package candidate evidence is incomplete.")
     if isinstance(package, checkpoint_compatibility_models.CheckpointReviewPackage) and (
         not package.candidate.startswith("working-tree-sha256:")
@@ -161,7 +189,10 @@ def _select_prior_checkpoint_package(
         )
     ):
         return _review_job_failure("Selected checkpoint candidate evidence does not match its accepted package.")
-    if isinstance(package, work_brief_models.CheckpointReviewPackageV2):
+    if isinstance(
+        package,
+        (work_brief_models.CheckpointReviewPackageV3, checkpoint_compatibility_models.CheckpointReviewPackageV2),
+    ):
         identity = package.candidate_snapshot
         if (
             identity.kind,
@@ -192,12 +223,14 @@ def _select_prior_checkpoint_package(
         candidate_reference.content_sha256,
         len(candidate_bytes),
     )
+    reconstruction = _candidate_reconstruction(package, candidate_bytes)
+    if isinstance(reconstruction, DecisionFailure):
+        return reconstruction
     prompt = (
         f"Prior checkpoint package: history {int(receipt.history_id)}, {package_path}, "
         f"SHA-256 {package_reference.content_sha256}, accepted candidate {package.candidate}. Candidate snapshot: "
         f"{candidate_path}, SHA-256 {candidate_reference.content_sha256}, size {candidate_reference.size_bytes}. "
-        "Verify both accepted artifacts, apply the binary patch to the package's recorded base, and compare that "
-        "reconstructed candidate with the current candidate. Stop without a verdict if either "
+        f"Verify both accepted artifacts. {reconstruction}Compare the available historical evidence with the current candidate. Stop without a verdict if either "
         "identity cannot be resolved, no comparison range can be established, or the histories diverge. Treat "
         "the package as historical assurance, never as authority over the current brief or candidate."
     )

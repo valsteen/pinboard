@@ -757,7 +757,7 @@ def _candidate_recovery_view(
 ) -> contracts.CandidateRecoveryPresent:
     snapshot = evidence.snapshot
     return contracts.CandidateRecoveryPresent(
-        "working-tree" if isinstance(snapshot, candidate_snapshots.WorkingTreeCandidateSnapshot) else "commit",
+        candidate_snapshots.candidate_kind(snapshot),
         snapshot.candidate,
         snapshot.branch,
         snapshot.preimage_revision,

@@ -551,15 +551,15 @@ class CliTest(unittest.TestCase):
             check=True,
             stdout=subprocess.PIPE,
         ).stdout
-        candidate = f"working-tree-sha256:{hashlib.sha256(candidate_bytes).hexdigest()}"
         preimage = subprocess.run(
             ("git", "-C", str(project), "rev-parse", "HEAD"),
             check=True,
             text=True,
             stdout=subprocess.PIPE,
         ).stdout.strip()
+        candidate = candidate_snapshots.working_tree_identity(preimage, candidate_bytes)
         snapshot = candidate_snapshots.WorkingTreeCandidateSnapshot(
-            "pinboard-candidate-snapshot/v1",
+            "pinboard-candidate-snapshot/v2",
             attempt_id,
             item_id,
             candidate,
@@ -609,7 +609,7 @@ class CliTest(unittest.TestCase):
                     f"submit-review:{attempt_id}",
                     attempt_id,
                     int(accepted.reference.artifact_ref_id),
-                    "pinboard-candidate-snapshot/v1",
+                    "pinboard-candidate-snapshot/v2",
                     msgspec.json.encode(
                         {
                             "candidate": candidate,
@@ -660,7 +660,10 @@ class CliTest(unittest.TestCase):
             check=True,
             stdout=subprocess.PIPE,
         ).stdout
-        return f"working-tree-sha256:{hashlib.sha256(candidate_bytes).hexdigest()}"
+        preimage = subprocess.run(
+            ("git", "-C", str(project), "rev-parse", "HEAD"), check=True, text=True, stdout=subprocess.PIPE
+        ).stdout.strip()
+        return candidate_snapshots.working_tree_identity(preimage, candidate_bytes)
 
     def prepared_state(self, expires_at: datetime) -> stored_state.StoredWorkState:
         state = complete_sqlite_state()
@@ -3341,7 +3344,7 @@ class CliTest(unittest.TestCase):
         original_publish = ArtifactRepository.publish
         original_create_immutable = artifact_files.create_immutable
         expected_publication_selectors = (
-            f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-candidate/1.patch",
+            f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-candidate/1.json",
             f"artifacts/results/work-a-1-{CHECKPOINT_ID}-result/1.md",
             f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review/1.md",
             f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review-package/1.json",
@@ -3422,7 +3425,7 @@ class CliTest(unittest.TestCase):
             [
                 {
                     "field": "published_artifact_selector",
-                    "value": f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-candidate/1.patch",
+                    "value": f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-candidate/1.json",
                 },
                 {
                     "field": "published_artifact_selector",
@@ -3587,7 +3590,7 @@ class CliTest(unittest.TestCase):
                 check=True,
                 stdout=subprocess.PIPE,
             ).stdout,
-            (work / candidate_reference.selector).read_bytes(),
+            candidate_snapshots.decode_candidate_snapshot((work / candidate_reference.selector).read_bytes()).diff,
         )
         self.assertEqual(package_path.read_bytes(), (work / package_reference.selector).read_bytes())
         self.assertEqual(before_missing.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
@@ -3651,7 +3654,7 @@ class CliTest(unittest.TestCase):
         action = self.project_action(common, "accept-checkpoint:work-a-1")
         before = store.validated_snapshot()
         selectors = (
-            f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-candidate/1.patch",
+            f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-candidate/1.json",
             f"artifacts/results/work-a-1-{CHECKPOINT_ID}-result/1.md",
             f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review/1.md",
         )
@@ -3937,7 +3940,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual("do-not-retry", failure["retry"])
         self.assertEqual(
             (
-                f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-candidate/1.patch",
+                f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-candidate/1.json",
                 f"artifacts/results/work-a-1-{CHECKPOINT_ID}-result/1.md",
                 f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review/1.md",
                 f"artifacts/evidence/work-a-1-{CHECKPOINT_ID}-review-package/1.json",

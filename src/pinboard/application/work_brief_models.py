@@ -597,9 +597,27 @@ def validate_checkpoint_review_basis(
         raise ValueError("Checkpoint package portable artifact identities must be unique.")
 
 
-class CheckpointReviewPackageV2(
+def validate_checkpoint_artifact_roles(
+    candidate_snapshot: PortableArtifactIdentity,
+    accepted_brief: PortableArtifactIdentity,
+    result: PortableArtifactIdentity,
+    implementation_review: PortableArtifactIdentity,
+) -> tuple[PortableArtifactIdentity, PortableArtifactIdentity, PortableArtifactIdentity, PortableArtifactIdentity]:
+    identities = (candidate_snapshot, accepted_brief, result, implementation_review)
+    expected = (
+        ("candidate", "evidence"),
+        ("accepted-brief", "brief"),
+        ("result", "result"),
+        ("implementation-review", "evidence"),
+    )
+    if tuple((value.role, value.kind) for value in identities) != expected:
+        raise ValueError("Checkpoint package artifact roles and kinds do not match their bindings.")
+    return identities
+
+
+class CheckpointReviewPackageV3(
     msgspec.Struct,
-    tag="pinboard-checkpoint-review-package/v2",
+    tag="pinboard-checkpoint-review-package/v3",
     tag_field="schema",
     frozen=True,
     forbid_unknown_fields=True,
@@ -618,20 +636,17 @@ class CheckpointReviewPackageV2(
     review_basis: ReviewBasis
 
     def __post_init__(self) -> None:
-        identities = (self.candidate_snapshot, self.accepted_brief, self.result, self.implementation_review)
-        expected = (
-            ("candidate", "evidence"),
-            ("accepted-brief", "brief"),
-            ("result", "result"),
-            ("implementation-review", "evidence"),
+        identities = validate_checkpoint_artifact_roles(
+            self.candidate_snapshot,
+            self.accepted_brief,
+            self.result,
+            self.implementation_review,
         )
-        if tuple((value.role, value.kind) for value in identities) != expected:
-            raise ValueError("Checkpoint package artifact roles and kinds do not match their bindings.")
-        if self.candidate.startswith("working-tree-sha256:"):
-            if self.candidate != f"working-tree-sha256:{self.candidate_snapshot.content_sha256}":
-                raise ValueError("Working-tree checkpoint candidate must match its portable snapshot digest.")
-        elif GIT_COMMIT_REVISION.fullmatch(self.candidate) is None:
-            raise ValueError("Checkpoint candidate must be a working-tree digest or full Git commit revision.")
+        if (
+            re.fullmatch(r"working-tree-state-sha256:[0-9a-f]{64}", self.candidate) is None
+            and GIT_COMMIT_REVISION.fullmatch(self.candidate) is None
+        ):
+            raise ValueError("Checkpoint candidate must be a complete working-tree state or full Git commit revision.")
         validate_checkpoint_review_basis(self.review_basis, self.checkpoint.sha256, identities)
 
 

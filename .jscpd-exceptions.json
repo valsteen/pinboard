@@ -115,10 +115,70 @@
       }
     },
     {
+      "certification": {
+        "evidence_sha256": "7b1828e2ee2d60772dc031436d80c6fbb056035b8a5d83b692b04e657b884562",
+        "reviewed_pair_sha256": "a7121a0de9614f84c40153d55af1a576c25e77d81aa094225b5f3b624285d8f2",
+        "reviewer_task_id": "01a0ac23-e40f-72f0-8c76-9f6a4d02890c"
+      },
       "identity": {
-        "id": "internal-authority-input-boundaries",
         "format": "python",
-        "tokens": 69,
+        "id": "handover-versioned-checkpoint-export-shapes",
+        "lines": 19,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 336,
+              "endLoc": {
+                "column": 37,
+                "line": 336,
+                "position": 8466
+              },
+              "name": "application/handover.py",
+              "start": 318,
+              "startLoc": {
+                "column": 47,
+                "line": 318,
+                "position": 7883
+              }
+            },
+            "sha256": "7f4c548c5fa0c3e5d9b95ae75a56b66405b8be1987ce268c1dbae84c0f481190"
+          },
+          {
+            "endpoint": {
+              "end": 359,
+              "endLoc": {
+                "column": 37,
+                "line": 359,
+                "position": 9154
+              },
+              "name": "application/handover.py",
+              "start": 341,
+              "startLoc": {
+                "column": 47,
+                "line": 341,
+                "position": 8571
+              }
+            },
+            "sha256": "7f4c548c5fa0c3e5d9b95ae75a56b66405b8be1987ce268c1dbae84c0f481190"
+          }
+        ],
+        "owners": [
+          "src/pinboard/application/handover.py#CompatibilityHandoverCheckpointPackageV2",
+          "src/pinboard/application/handover.py#HandoverCheckpointPackageV3"
+        ],
+        "rationale": "Retained patch-only v2 and current complete-state v3 are independently required exact tagged export records. The match repeats required frozen strict fields, not behavior; shared portable identities and the explicit tagged union already own common representation. An inherited field base would couple independent schema meanings without consolidating a decision or invariant, while precise validated version conversion must remain explicit.",
+        "tokens": 60
+      }
+    },
+    {
+      "certification": {
+        "evidence_sha256": "e70f56faa9ef4067413ff72d44a43ca17daffa6f73b1ee43710f602c952dda68",
+        "reviewed_pair_sha256": "8ded043eef4d85f57a38f4981ca7da2a00dad8b7fdef66f8b7b7a7697a984475",
+        "reviewer_task_id": "01a0ac23-e40f-72f0-8c76-9f6a4d02890c"
+      },
+      "identity": {
+        "format": "python",
+        "id": "internal-authority-input-boundaries",
         "lines": 15,
         "occurrences": [
           {
@@ -127,14 +187,14 @@
               "endLoc": {
                 "column": 18,
                 "line": 1666,
-                "position": 64484
+                "position": 64426
               },
               "name": "mcp/server.py",
               "start": 1652,
               "startLoc": {
                 "column": 11,
                 "line": 1652,
-                "position": 63958
+                "position": 63900
               }
             },
             "sha256": "2ee690cd50ee0b517ebc1c1cc101f92882c00a8d93156f8c7acdeb1e40ab855a"
@@ -145,14 +205,14 @@
               "endLoc": {
                 "column": 18,
                 "line": 1820,
-                "position": 70659
+                "position": 70601
               },
               "name": "mcp/server.py",
               "start": 1806,
               "startLoc": {
                 "column": 14,
                 "line": 1806,
-                "position": 70133
+                "position": 70075
               }
             },
             "sha256": "2ee690cd50ee0b517ebc1c1cc101f92882c00a8d93156f8c7acdeb1e40ab855a"
@@ -162,19 +222,19 @@
           "src/pinboard/mcp/server.py#_preparation_authority",
           "src/pinboard/mcp/server.py#_attempt_authority"
         ],
-        "rationale": "Each boundary decodes its own closed exact request union inside bounded admission, retaining item versus attempt scope and omitted-versus-null claims. A typed-handler pilot would leave these raw SDK-boundary wrappers in place and add a second callable per family without removing conversion; a shared decoder/dispatch would couple distinct unions and scope identities. Retain exact boundaries rather than a broad internal namespace."
-      },
-      "certification": {
-        "evidence_sha256": "2fed0eb9a5393a4bec04b486115c2298ed1f0f7a9369befb1ce5480f64e6b74a",
-        "reviewed_pair_sha256": "67ffe02244704ed0b12911936e86a24d6939d5af47028fb5e34c02e017b34954",
-        "reviewer_task_id": "01a0a9c3-151c-7ed3-9dba-1d95af7606ca"
+        "rationale": "Each boundary decodes its own closed exact request union inside bounded admission, retaining item versus attempt scope and omitted-versus-null claims. A typed-handler pilot would leave these raw SDK-boundary wrappers in place and add a second callable per family without removing conversion; a shared decoder/dispatch would couple distinct unions and scope identities. Retain exact boundaries rather than a broad internal namespace.",
+        "tokens": 69
       }
     },
     {
+      "certification": {
+        "evidence_sha256": "e70f56faa9ef4067413ff72d44a43ca17daffa6f73b1ee43710f602c952dda68",
+        "reviewed_pair_sha256": "205a81d7113f94b90bc26840f19dc166a232d5c4bf1a5edc23231fdcab3fc713",
+        "reviewer_task_id": "01a0ac23-e40f-72f0-8c76-9f6a4d02890c"
+      },
       "identity": {
-        "id": "authority-revocation-and-rejection",
         "format": "python",
-        "tokens": 69,
+        "id": "authority-revocation-and-rejection",
         "lines": 14,
         "occurrences": [
           {
@@ -183,14 +243,14 @@
               "endLoc": {
                 "column": 25,
                 "line": 1765,
-                "position": 68654
+                "position": 68596
               },
               "name": "mcp/server.py",
               "start": 1752,
               "startLoc": {
                 "column": 46,
                 "line": 1752,
-                "position": 68145
+                "position": 68087
               }
             },
             "sha256": "544027f2a1fd10aa6b80866ab5635f5ba698ecbd9447ce85750fadc0f7ede331"
@@ -201,14 +261,14 @@
               "endLoc": {
                 "column": 25,
                 "line": 1915,
-                "position": 74643
+                "position": 74585
               },
               "name": "mcp/server.py",
               "start": 1902,
               "startLoc": {
                 "column": 55,
                 "line": 1902,
-                "position": 74134
+                "position": 74076
               }
             },
             "sha256": "544027f2a1fd10aa6b80866ab5635f5ba698ecbd9447ce85750fadc0f7ede331"
@@ -218,19 +278,19 @@
           "src/pinboard/mcp/server.py#_preparation_authority",
           "src/pinboard/mcp/server.py#_attempt_authority"
         ],
-        "rationale": "Distinct exact request leaves invoke different application operations with nominal ItemId versus AttemptId scope, then render different schema/scope/conflict records. Shared claim and rejection-detail conversion already owns the repeated representation. Further folding requires a cross-family workflow callback or late reclassification of a selected leaf."
-      },
-      "certification": {
-        "evidence_sha256": "2fed0eb9a5393a4bec04b486115c2298ed1f0f7a9369befb1ce5480f64e6b74a",
-        "reviewed_pair_sha256": "314ae6c44f5d083f4777193f53e06119fac23af78566c0ab81e5a77a76e2546d",
-        "reviewer_task_id": "01a0a9c3-151c-7ed3-9dba-1d95af7606ca"
+        "rationale": "Distinct exact request leaves invoke different application operations with nominal ItemId versus AttemptId scope, then render different schema/scope/conflict records. Shared claim and rejection-detail conversion already owns the repeated representation. Further folding requires a cross-family workflow callback or late reclassification of a selected leaf.",
+        "tokens": 69
       }
     },
     {
+      "certification": {
+        "evidence_sha256": "e70f56faa9ef4067413ff72d44a43ca17daffa6f73b1ee43710f602c952dda68",
+        "reviewed_pair_sha256": "228ab3175318e2d2f30d425856d09adbea31690d37f70b8954e03c3e46afb819",
+        "reviewer_task_id": "01a0ac23-e40f-72f0-8c76-9f6a4d02890c"
+      },
       "identity": {
-        "id": "authority-rejection-and-view-effect",
         "format": "python",
-        "tokens": 68,
+        "id": "authority-rejection-and-view-effect",
         "lines": 16,
         "occurrences": [
           {
@@ -239,14 +299,14 @@
               "endLoc": {
                 "column": 31,
                 "line": 1786,
-                "position": 69446
+                "position": 69388
               },
               "name": "mcp/server.py",
               "start": 1771,
               "startLoc": {
                 "column": 99,
                 "line": 1771,
-                "position": 69019
+                "position": 68961
               }
             },
             "sha256": "f8dfc07a511f17dbd45418a675d7504b640244c1f56d8eb88f084b0bf0928f55"
@@ -257,14 +317,14 @@
               "endLoc": {
                 "column": 31,
                 "line": 1936,
-                "position": 75439
+                "position": 75381
               },
               "name": "mcp/server.py",
               "start": 1921,
               "startLoc": {
                 "column": 101,
                 "line": 1921,
-                "position": 75012
+                "position": 74954
               }
             },
             "sha256": "f8dfc07a511f17dbd45418a675d7504b640244c1f56d8eb88f084b0bf0928f55"
@@ -274,19 +334,19 @@
           "src/pinboard/mcp/server.py#_preparation_authority",
           "src/pinboard/mcp/server.py#_attempt_authority"
         ],
-        "rationale": "Each family reloads its distinct authority conflict after rejection. Successful operations explicitly refresh affected views before rendering the already-consolidated authority claims and committed receipt/warning. Hiding the remaining view effect inside a conversion would make a pure-looking renderer effectful; sharing the whole workflow would couple distinct scope and mutation-result types."
-      },
-      "certification": {
-        "evidence_sha256": "2fed0eb9a5393a4bec04b486115c2298ed1f0f7a9369befb1ce5480f64e6b74a",
-        "reviewed_pair_sha256": "f3c469549e31307b0ba8588bbd46898bd75d19029c6b83cf515aaa046228b112",
-        "reviewer_task_id": "01a0a9c3-151c-7ed3-9dba-1d95af7606ca"
+        "rationale": "Each family reloads its distinct authority conflict after rejection. Successful operations explicitly refresh affected views before rendering the already-consolidated authority claims and committed receipt/warning. Hiding the remaining view effect inside a conversion would make a pure-looking renderer effectful; sharing the whole workflow would couple distinct scope and mutation-result types.",
+        "tokens": 68
       }
     },
     {
+      "certification": {
+        "evidence_sha256": "e70f56faa9ef4067413ff72d44a43ca17daffa6f73b1ee43710f602c952dda68",
+        "reviewed_pair_sha256": "59f27c9291547ab890ac0f39d86cf2c57e09d915507d1aded98627f1a77c4a5f",
+        "reviewer_task_id": "01a0ac23-e40f-72f0-8c76-9f6a4d02890c"
+      },
       "identity": {
-        "id": "public-sdk-authority-signatures",
         "format": "python",
-        "tokens": 96,
+        "id": "public-sdk-authority-signatures",
         "lines": 13,
         "occurrences": [
           {
@@ -295,14 +355,14 @@
               "endLoc": {
                 "column": 30,
                 "line": 2454,
-                "position": 96540
+                "position": 96482
               },
               "name": "mcp/server.py",
               "start": 2442,
               "startLoc": {
                 "column": 15,
                 "line": 2442,
-                "position": 95790
+                "position": 95732
               }
             },
             "sha256": "f3fe9049c807a4d510c1b57ca9a52eaaa456683caa2a66f554419f492c8a37dc"
@@ -313,14 +373,14 @@
               "endLoc": {
                 "column": 30,
                 "line": 2493,
-                "position": 98011
+                "position": 97953
               },
               "name": "mcp/server.py",
               "start": 2481,
               "startLoc": {
                 "column": 18,
                 "line": 2481,
-                "position": 97261
+                "position": 97203
               }
             },
             "sha256": "f3fe9049c807a4d510c1b57ca9a52eaaa456683caa2a66f554419f492c8a37dc"
@@ -330,12 +390,8 @@
           "src/pinboard/mcp/server.py#create_server.preparation_authority",
           "src/pinboard/mcp/server.py#create_server.attempt_authority"
         ],
-        "rationale": "The SDK discovers named flat public arguments, including sentinel-based omitted-versus-null handling, from these signatures. Preparation and attempt tools negotiate separate strict unions and scope identities. Replacing signatures with a generic namespace or variadic wrapper changes SDK discovery/schema or adds custom signature machinery; both wrappers must keep bounded execution explicit."
-      },
-      "certification": {
-        "evidence_sha256": "2fed0eb9a5393a4bec04b486115c2298ed1f0f7a9369befb1ce5480f64e6b74a",
-        "reviewed_pair_sha256": "e806b024df4dd97dca026d9f4401a1a03bc4b1ff7d404a5459830076054b7d42",
-        "reviewer_task_id": "01a0a9c3-151c-7ed3-9dba-1d95af7606ca"
+        "rationale": "The SDK discovers named flat public arguments, including sentinel-based omitted-versus-null handling, from these signatures. Preparation and attempt tools negotiate separate strict unions and scope identities. Replacing signatures with a generic namespace or variadic wrapper changes SDK discovery/schema or adds custom signature machinery; both wrappers must keep bounded execution explicit.",
+        "tokens": 96
       }
     }
   ]

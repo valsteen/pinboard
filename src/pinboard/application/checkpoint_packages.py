@@ -5,7 +5,14 @@ from collections.abc import Mapping
 
 import msgspec
 
-from pinboard.application import action_models, stored_state, work_brief_models, work_briefs
+from pinboard.application import (
+    action_models,
+    candidate_snapshots,
+    checkpoint_compatibility_models,
+    stored_state,
+    work_brief_models,
+    work_briefs,
+)
 from pinboard.application.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_reviewed_authority_set_bytes,
@@ -56,7 +63,10 @@ def _artifact_identities(
     if isinstance(implementation_review, work_brief_models.WorkBriefFailure):
         return implementation_review
     checkpoint_id = package.checkpoint.id
-    if isinstance(package, work_brief_models.CheckpointReviewPackageV2):
+    if isinstance(
+        package,
+        (work_brief_models.CheckpointReviewPackageV3, checkpoint_compatibility_models.CheckpointReviewPackageV2),
+    ):
         candidate = _portable_reference(package.candidate_snapshot, references, artifact_bytes)
         if isinstance(candidate, work_brief_models.WorkBriefFailure):
             return candidate
@@ -194,6 +204,24 @@ def validate_checkpoint_package_closure(
     brief = _brief(package, accepted_brief, artifact_bytes)
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return brief
+    if isinstance(package, work_brief_models.CheckpointReviewPackageV3):
+        candidate_reference = _portable_reference(package.candidate_snapshot, references, artifact_bytes)
+        if isinstance(candidate_reference, work_brief_models.WorkBriefFailure):
+            return candidate_reference
+        try:
+            snapshot = candidate_snapshots.decode_candidate_snapshot(
+                artifact_bytes[candidate_reference.artifact_ref_id]
+            )
+        except (msgspec.DecodeError, ValueError) as error:
+            return _invalid(f"The current portable candidate snapshot is invalid: {error}")
+        if (
+            snapshot.attempt_id,
+            snapshot.item_id,
+            snapshot.candidate,
+            snapshot.branch,
+            snapshot.accepted_base_revision,
+        ) != (package.attempt_id, package.item_id, package.candidate, brief.branch, brief.base_revision):
+            return _invalid("The portable candidate snapshot does not match its package and accepted brief.")
     return _review_basis(package, brief, references, artifact_bytes)
 
 

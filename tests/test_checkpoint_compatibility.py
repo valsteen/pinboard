@@ -6,7 +6,7 @@ import sqlite3
 from unittest.mock import patch
 
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.application import checkpoint_compatibility_models, work_brief_models
+from pinboard.application import candidate_snapshots, checkpoint_compatibility_models, work_brief_models
 from pinboard.cli import work_inspection
 from pinboard.domain import work_models
 from tests.checkpoint_support import AcceptedPackageFixture, CheckpointPackageSupport
@@ -16,17 +16,20 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
     def compatibility_review_fixture(self) -> tuple[AcceptedPackageFixture, int, int, bytes]:
         fixture, history_id, correction_history_id = self.review_job_fixture()
         package = self.package(fixture)
-        assert isinstance(package, work_brief_models.CheckpointReviewPackageV2)
+        assert isinstance(package, work_brief_models.CheckpointReviewPackageV3)
         candidate_reference = next(
             value
             for value in fixture.store.validated_snapshot().artifact_references
             if value.key == package.candidate_snapshot.key
         )
-        candidate_bytes = (fixture.work / candidate_reference.selector).read_bytes()
+        candidate_bytes = candidate_snapshots.decode_candidate_snapshot(
+            (fixture.work / candidate_reference.selector).read_bytes()
+        ).diff
+        historical_candidate = f"working-tree-sha256:{hashlib.sha256(candidate_bytes).hexdigest()}"
         legacy = checkpoint_compatibility_models.CheckpointReviewPackage(
             package.attempt_id,
             package.item_id,
-            package.candidate,
+            historical_candidate,
             package.acceptance_evidence,
             package.accepted_scope,
             package.checkpoint,
@@ -39,6 +42,10 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
         self.replace_package(fixture, legacy)
         connection = sqlite3.connect(fixture.work / "state.sqlite3")
         try:
+            connection.execute(
+                "UPDATE transition_history SET outcome_json = json_set(outcome_json, '$.candidate', ?) WHERE history_id = ?",
+                (historical_candidate, history_id),
+            )
             connection.execute(
                 "DELETE FROM artifact_refs WHERE artifact_ref_id = ?", (int(candidate_reference.artifact_ref_id),)
             )

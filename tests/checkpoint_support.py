@@ -19,8 +19,15 @@ from msgspec.structs import replace as replace_struct
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import candidate_snapshots, stored_state, work_brief_models, work_briefs
+from pinboard.application import (
+    candidate_snapshots,
+    checkpoint_compatibility_models,
+    stored_state,
+    work_brief_models,
+    work_briefs,
+)
 from pinboard.application.artifacts import NewArtifact
+from pinboard.application.candidate_identity import working_tree_identity
 from pinboard.application.work_briefs import (
     canonical_checkpoint_review_package_bytes,
     canonical_work_brief_bytes,
@@ -167,7 +174,10 @@ class CheckpointPackageSupport(unittest.TestCase):
             check=True,
             capture_output=True,
         ).stdout
-        candidate = f"working-tree-sha256:{hashlib.sha256(candidate_diff).hexdigest()}"
+        preimage = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=fixture.project, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        candidate = working_tree_identity(preimage, candidate_diff)
         lease = self.run_json_cli(
             *fixture.common,
             "attempt",
@@ -273,22 +283,30 @@ class CheckpointPackageSupport(unittest.TestCase):
         accepted_base_revision: str,
         recorded_at: datetime,
     ) -> None:
-        snapshot_type = (
-            candidate_snapshots.WorkingTreeCandidateSnapshot
-            if candidate_form == "working-tree"
-            else candidate_snapshots.CommitCandidateSnapshot
-        )
-        snapshot = snapshot_type(
-            "pinboard-candidate-snapshot/v1",
-            str(attempt.attempt_id),
-            str(attempt.item_id),
-            candidate_revision,
-            attempt.branch,
-            preimage_revision,
-            accepted_base_revision,
-            recorded_at.isoformat(),
-            candidate_diff,
-        )
+        if candidate_form == "working-tree":
+            snapshot = candidate_snapshots.WorkingTreeCandidateSnapshot(
+                "pinboard-candidate-snapshot/v2",
+                str(attempt.attempt_id),
+                str(attempt.item_id),
+                candidate_revision,
+                attempt.branch,
+                preimage_revision,
+                accepted_base_revision,
+                recorded_at.isoformat(),
+                candidate_diff,
+            )
+        else:
+            snapshot = candidate_snapshots.CommitCandidateSnapshot(
+                "pinboard-candidate-snapshot/v1",
+                str(attempt.attempt_id),
+                str(attempt.item_id),
+                candidate_revision,
+                attempt.branch,
+                preimage_revision,
+                accepted_base_revision,
+                recorded_at.isoformat(),
+                candidate_diff,
+            )
         published = write_revision(
             roots,
             NewArtifact(
@@ -315,13 +333,14 @@ class CheckpointPackageSupport(unittest.TestCase):
                     artifact_ref_id, artifact_kind, authorization_kind, actor_task_id, actor_host_id,
                     input_schema, input_json, outcome_schema, outcome_json, committed_at
                 ) VALUES (?, ?, 'submit-review:work-a-1', 'submit-review', 'work-a-1', ?, 'evidence',
-                          'attempt', NULL, NULL, 'pinboard-candidate-snapshot/v1', ?,
+                          'attempt', NULL, NULL, ?, ?,
                           'transition-receipt/v1', ?, ?)
                 """,
                 (
                     history_id,
                     project_revision,
                     reference_id,
+                    snapshot.schema,
                     msgspec.json.encode(
                         {"candidate": candidate_revision, "snapshot_artifact_ref_id": reference_id},
                         order="sorted",
@@ -375,6 +394,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         local: bool = False,
         candidate_form: Literal["working-tree", "current-head"] = "working-tree",
         accepted_base: str | None = None,
+        committed_context: bool = False,
     ) -> CheckpointFixture:
         state = complete_sqlite_state()
         now = datetime.now(UTC)
@@ -416,6 +436,10 @@ class CheckpointPackageSupport(unittest.TestCase):
         tracked = project / "tracked.txt"
         tracked.write_text("base\n", encoding="utf-8")
         base_revision = self.commit_all(project, "base")
+        preimage_revision = base_revision
+        if committed_context:
+            (project / "context.txt").write_text("committed surrounding state\n", encoding="utf-8")
+            preimage_revision = self.commit_all(project, "context")
         tracked.write_text("candidate\n", encoding="utf-8")
         if candidate_form == "current-head":
             candidate_revision = self.commit_all(project, "candidate")
@@ -432,7 +456,7 @@ class CheckpointPackageSupport(unittest.TestCase):
                 check=True,
                 capture_output=True,
             ).stdout
-            candidate_revision = f"working-tree-sha256:{hashlib.sha256(candidate_diff).hexdigest()}"
+            candidate_revision = working_tree_identity(preimage_revision, candidate_diff)
         brief_base_revision = base_revision if accepted_base is None else accepted_base
         state = replace(
             state,
@@ -477,7 +501,7 @@ class CheckpointPackageSupport(unittest.TestCase):
             candidate_form,
             candidate_revision,
             candidate_diff,
-            base_revision if candidate_form == "working-tree" else brief_base_revision,
+            preimage_revision if candidate_form == "working-tree" else brief_base_revision,
             brief_base_revision,
             now,
         )
@@ -529,8 +553,11 @@ class CheckpointPackageSupport(unittest.TestCase):
         *,
         local: bool = False,
         candidate_form: Literal["working-tree", "current-head"] = "working-tree",
+        committed_context: bool = False,
     ) -> AcceptedPackageFixture:
-        fixture = self.checkpoint_fixture(local=local, candidate_form=candidate_form)
+        fixture = self.checkpoint_fixture(
+            local=local, candidate_form=candidate_form, committed_context=committed_context
+        )
         self.accept_checkpoint(
             fixture.common,
             self.project_action(fixture.common, "accept-checkpoint:work-a-1"),
@@ -634,6 +661,125 @@ class CheckpointPackageSupport(unittest.TestCase):
             connection.commit()
         finally:
             connection.close()
+
+    def retain_v2_checkpoint(self, fixture: AcceptedPackageFixture) -> bytes:
+        current = self.package(fixture)
+        assert isinstance(current, work_brief_models.CheckpointReviewPackageV3)
+        checkpoint = replace_struct(fixture.brief.checkpoint, checkpoint_id="historical-package")
+        brief = replace_struct(fixture.brief, artifact_revision=2, checkpoint=checkpoint)
+        roots = resolve_durable_roots(fixture.project)
+
+        def accepted(
+            role: Literal["accepted-brief", "candidate", "implementation-review", "result"],
+            kind: work_models.ArtifactKind,
+            key: str,
+            revision: int,
+            extension: str,
+            content: bytes,
+        ) -> work_brief_models.PortableArtifactIdentity:
+            published = write_revision(roots, NewArtifact(kind, key, revision, extension, content))
+            reference = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW)
+            if isinstance(reference, DecisionFailure):
+                self.fail(str(reference))
+            return msgspec.convert(
+                {
+                    "role": role,
+                    "kind": kind.value,
+                    "key": key,
+                    "revision": revision,
+                    "selector": published.selector,
+                    "content_sha256": published.content_sha256,
+                    "size_bytes": published.size_bytes,
+                },
+                type=work_brief_models.PortableArtifactIdentity,
+                strict=True,
+            )
+
+        brief_identity = accepted(
+            "accepted-brief",
+            work_models.ArtifactKind.BRIEF,
+            brief.attempt_id,
+            2,
+            ".json",
+            canonical_work_brief_bytes(brief),
+        )
+        prefix = f"{brief.attempt_id}-{checkpoint.checkpoint_id}"
+        candidate_identity = accepted(
+            "candidate", work_models.ArtifactKind.EVIDENCE, f"{prefix}-candidate", 1, ".patch", fixture.candidate_bytes
+        )
+        result_identity = accepted(
+            "result",
+            work_models.ArtifactKind.RESULT,
+            f"{prefix}-result",
+            1,
+            ".md",
+            (fixture.work / current.result.selector).read_bytes(),
+        )
+        review_identity = accepted(
+            "implementation-review",
+            work_models.ArtifactKind.EVIDENCE,
+            f"{prefix}-review",
+            1,
+            ".md",
+            (fixture.work / current.implementation_review.selector).read_bytes(),
+        )
+        checkpoint_identity = work_brief_models.CheckpointIdentity(
+            checkpoint.checkpoint_id, hashlib.sha256(msgspec.json.encode(checkpoint, order="sorted")).hexdigest()
+        )
+        legacy = checkpoint_compatibility_models.CheckpointReviewPackageV2(
+            brief.attempt_id,
+            brief.item_id,
+            current.candidate,
+            current.acceptance_evidence,
+            current.accepted_scope,
+            checkpoint_identity,
+            candidate_identity,
+            brief_identity,
+            result_identity,
+            review_identity,
+            "ready",
+            current.review_basis,
+        )
+        encoded = canonical_checkpoint_review_package_bytes(legacy)
+        published_package = write_revision(
+            roots, NewArtifact(work_models.ArtifactKind.EVIDENCE, f"{prefix}-review-package", 1, ".json", encoded)
+        )
+        accepted_package = fixture.store.accept_artifact_reference(fixture.work, published_package, SQLITE_NOW)
+        if isinstance(accepted_package, DecisionFailure):
+            self.fail(str(accepted_package))
+        package_reference = fixture.store.read_artifact_reference(
+            work_models.ArtifactKind.EVIDENCE, published_package.key, 1
+        )
+        assert package_reference is not None
+        with sqlite3.connect(fixture.work / "state.sqlite3") as connection:
+            revision = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()[0] + 1
+            connection.execute(
+                """INSERT INTO transition_history(history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id, artifact_kind, authorization_kind, actor_task_id, actor_host_id, input_schema, input_json, outcome_schema, outcome_json, committed_at)
+                SELECT (SELECT max(history_id) + 1 FROM transition_history), ?, action_id, action_kind, subject_id, ?, 'evidence', authorization_kind, actor_task_id, actor_host_id, input_schema, ?, outcome_schema, ?, committed_at FROM transition_history WHERE outcome_schema = 'checkpoint-acceptance/v2' LIMIT 1""",
+                (
+                    revision,
+                    int(package_reference.artifact_ref_id),
+                    msgspec.json.encode(
+                        {
+                            "candidate": legacy.candidate,
+                            "checkpoint": checkpoint.checkpoint_id,
+                            "evidence": legacy.acceptance_evidence,
+                        },
+                        order="sorted",
+                    ).decode(),
+                    msgspec.json.encode(
+                        history.CheckpointAcceptanceOutcome(
+                            legacy.candidate, checkpoint.checkpoint_id, legacy.acceptance_evidence, "accept-checkpoint"
+                        ),
+                        order="sorted",
+                    ).decode(),
+                ),
+            )
+            connection.execute(
+                "UPDATE project_meta SET revision = ?, updated_at = ? WHERE singleton = 1",
+                (revision, SQLITE_NOW.isoformat()),
+            )
+        return encoded
 
     def replace_package(
         self,

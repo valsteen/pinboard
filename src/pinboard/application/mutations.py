@@ -302,7 +302,9 @@ def project_review_submission_mutation(
             snapshot_id,
             None,
             None,
-            "pinboard-candidate-snapshot/v1",
+            "pinboard-candidate-snapshot/v2"
+            if str(decision.change.protected_candidate_after).startswith("working-tree-state-sha256:")
+            else "pinboard-candidate-snapshot/v1",
             work_models.CanonicalJson(
                 msgspec.json.encode(
                     {

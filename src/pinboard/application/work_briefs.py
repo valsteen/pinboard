@@ -20,7 +20,9 @@ from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, Decisio
 from pinboard.domain.identifiers import AttemptId
 
 type CheckpointPackage = (
-    checkpoint_compatibility_models.CheckpointReviewPackage | work_brief_models.CheckpointReviewPackageV2
+    checkpoint_compatibility_models.CheckpointReviewPackage
+    | checkpoint_compatibility_models.CheckpointReviewPackageV2
+    | work_brief_models.CheckpointReviewPackageV3
 )
 
 
@@ -261,7 +263,9 @@ def decode_checkpoint_review_package(data: bytes) -> work_brief_models.WorkBrief
     try:
         return msgspec.json.decode(
             data,
-            type=checkpoint_compatibility_models.CheckpointReviewPackage | work_brief_models.CheckpointReviewPackageV2,
+            type=checkpoint_compatibility_models.CheckpointReviewPackage
+            | checkpoint_compatibility_models.CheckpointReviewPackageV2
+            | work_brief_models.CheckpointReviewPackageV3,
         )
     except msgspec.DecodeError as error:
         return work_brief_models.WorkBriefFailure(

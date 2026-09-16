@@ -8,6 +8,7 @@ artifacts, and only classifies replaceable view drift; it never repairs state.
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import assert_never
 
 import msgspec
 
@@ -22,6 +23,7 @@ from pinboard.adapters.sqlite.models import InitReceipt, OpenMode
 from pinboard.application import (
     action_models,
     candidate_snapshots,
+    checkpoint_compatibility_models,
     checkpoint_packages,
     handover,
     ports,
@@ -177,9 +179,15 @@ def _validate_one_checkpoint_package(
         "package_artifact_ref_id": int(receipt.artifact_ref_id),
         **msgspec.to_builtins(package),
     }
-    if isinstance(package, work_brief_models.CheckpointReviewPackageV2):
-        return msgspec.convert(packaged, type=handover.HandoverCheckpointPackageV2, strict=True)
-    return msgspec.convert(packaged, type=handover.CompatibilityHandoverCheckpointPackage, strict=True)
+    match package:
+        case work_brief_models.CheckpointReviewPackageV3():
+            return msgspec.convert(packaged, type=handover.HandoverCheckpointPackageV3, strict=True)
+        case checkpoint_compatibility_models.CheckpointReviewPackageV2():
+            return msgspec.convert(packaged, type=handover.CompatibilityHandoverCheckpointPackageV2, strict=True)
+        case checkpoint_compatibility_models.CheckpointReviewPackage():
+            return msgspec.convert(packaged, type=handover.CompatibilityHandoverCheckpointPackage, strict=True)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def validate_checkpoint_review_packages(

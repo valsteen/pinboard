@@ -94,7 +94,7 @@ At that same boundary, compare the final diff with every accepted material-limit
 
 Before review:
 
-A stable candidate has one of two accepted forms. A working-tree candidate is the `working-tree-sha256:<digest>` identity of the exact binary diff from current `HEAD`. A committed candidate is the full current `HEAD` revision, accepted only while the working tree is clean; its immutable snapshot is the binary diff from the accepted brief base to that revision. Prepare the candidate before observing and submitting its identity. Candidate observation itself is read-only and must truthfully describe the resulting Git state.
+A stable candidate has one of two accepted forms. A working-tree candidate is the `working-tree-state-sha256:<digest>` identity of the actual full `HEAD` revision and exact binary diff from that revision. Its immutable snapshot preserves both inputs. A committed candidate is the full current `HEAD` revision, accepted only while the working tree is clean; its immutable snapshot is the binary diff from the accepted brief base to that revision. Retained `working-tree-sha256:<digest>` evidence identifies only historical patch bytes and cannot authorize a new correction start. Prepare the candidate before observing and submitting its identity. Candidate observation itself is read-only and must truthfully describe the resulting Git state.
 
 When acceptance requires CI on an exact pushed head, use one unchanged commit throughout:
 

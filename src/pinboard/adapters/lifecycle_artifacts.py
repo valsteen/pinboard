@@ -25,6 +25,7 @@ from pinboard.adapters.lifecycle_operations import SelectedTransition
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.application import (
     candidate_snapshots,
+    checkpoint_compatibility_models,
     checkpoint_packages,
     ports,
     query_models,
@@ -191,7 +192,7 @@ def _observe_review_candidate(
         return _unchanged(f"Cannot observe the review candidate checkout: {error}", candidate=candidate)
     if branch != context.branch:
         return _unchanged("Review submission requires the attempt's exact branch.", candidate=candidate)
-    if candidate.startswith("working-tree-sha256:"):
+    if candidate.startswith("working-tree-state-sha256:"):
         try:
             observed = read_working_tree_candidate(source_checkout)
         except RootError as error:
@@ -199,7 +200,7 @@ def _observe_review_candidate(
         if observed.identity != candidate:
             return _unchanged("Review submission requires the exact current binary HEAD diff.", candidate=candidate)
         return candidate_snapshots.WorkingTreeCandidateSnapshot(
-            "pinboard-candidate-snapshot/v1",
+            "pinboard-candidate-snapshot/v2",
             str(context.attempt_id),
             str(context.item_id),
             candidate,
@@ -402,8 +403,8 @@ def _publish_checkpoint(
             work_models.ArtifactKind.EVIDENCE,
             f"{attempt_id}-{checkpoint_id}-candidate",
             1,
-            ".patch",
-            selected.snapshot.diff,
+            ".json",
+            candidate_snapshots.canonical_candidate_snapshot_bytes(selected.snapshot),
         ),
         NewArtifact(
             work_models.ArtifactKind.RESULT,
@@ -468,7 +469,7 @@ def _publish_checkpoint(
                 assert_never(unreachable)
         package = msgspec.convert(
             {
-                "schema": "pinboard-checkpoint-review-package/v2",
+                "schema": "pinboard-checkpoint-review-package/v3",
                 "attempt_id": context.brief.attempt_id,
                 "item_id": context.brief.item_id,
                 "candidate": str(command.value.candidate),
@@ -482,7 +483,7 @@ def _publish_checkpoint(
                 "verdict": "ready",
                 "review_basis": msgspec.to_builtins(review_basis),
             },
-            type=work_brief_models.CheckpointReviewPackageV2,
+            type=work_brief_models.CheckpointReviewPackageV3,
             strict=True,
         )
         package_publication = artifacts.publish(
@@ -585,7 +586,10 @@ def _completion_context(  # noqa: C901 - one exact completion-closure validation
         if isinstance(package, work_brief_models.WorkBriefFailure):
             return _unchanged(package.message, candidate=None)
         identities = [package.accepted_brief, package.result, package.implementation_review]
-        if isinstance(package, work_brief_models.CheckpointReviewPackageV2):
+        if isinstance(
+            package,
+            (work_brief_models.CheckpointReviewPackageV3, checkpoint_compatibility_models.CheckpointReviewPackageV2),
+        ):
             identities.append(package.candidate_snapshot)
         if isinstance(package.review_basis, work_brief_models.CrossBoundaryReviewBasis):
             identities.append(package.review_basis.brief_review)

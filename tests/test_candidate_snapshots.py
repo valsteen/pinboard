@@ -12,6 +12,7 @@ from unittest.mock import patch
 import msgspec
 
 from pinboard.adapters import lifecycle_artifacts
+from pinboard.adapters.files import candidate_compatibility
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, RootError, RootErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
@@ -30,8 +31,9 @@ from pinboard.adapters.files.root import (
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import query_models
+from pinboard.application import candidate_snapshot_compatibility_models, query_models
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef
+from pinboard.application.candidate_identity import working_tree_identity
 from pinboard.application.candidate_snapshots import (
     CandidateSnapshotEvidence,
     CandidateSnapshotReceiptInput,
@@ -98,14 +100,15 @@ class CandidateSnapshotTest(unittest.TestCase):
     ]:
         state = complete_sqlite_state()
         attempt = state.lifecycle.attempts[0]
-        candidate = "working-tree-sha256:" + hashlib.sha256(b"").hexdigest()
+        preimage = "a" * 40
+        candidate = working_tree_identity(preimage, b"")
         snapshot = WorkingTreeCandidateSnapshot(
-            "pinboard-candidate-snapshot/v1",
+            "pinboard-candidate-snapshot/v2",
             str(attempt.attempt_id),
             str(attempt.item_id),
             candidate,
             attempt.branch,
-            attempt.base_revision,
+            preimage,
             attempt.base_revision,
             SQLITE_NOW.isoformat(),
             b"",
@@ -124,7 +127,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             action_id=ActionId("submit-review:work-a-1"),
             action_kind=decision_models.ActionKind.SUBMIT_REVIEW,
             artifact_ref_id=reference.artifact_ref_id,
-            input_schema="pinboard-candidate-snapshot/v1",
+            input_schema="pinboard-candidate-snapshot/v2",
             input_payload=work_models.CanonicalJson(msgspec.json.encode(receipt_input, order="sorted")),
             outcome_schema="transition-receipt/v1",
             outcome_payload=work_models.CanonicalJson(
@@ -147,6 +150,16 @@ class CandidateSnapshotTest(unittest.TestCase):
             reference,
         )
         return snapshot, context, encoded
+
+    def test_current_working_tree_snapshot_requires_full_actual_preimage_vocabulary(self) -> None:
+        snapshot, _context, _encoded = self.snapshot_context()
+        short_preimage = msgspec.structs.replace(
+            snapshot,
+            preimage_revision="short",
+            candidate=working_tree_identity("short", snapshot.diff),
+        )
+        with self.assertRaises(msgspec.DecodeError):
+            decode_candidate_snapshot(canonical_candidate_snapshot_bytes(short_preimage))
 
     def test_legacy_review_receipts_remain_valid_with_exact_live_correlation(self) -> None:
         state = complete_sqlite_state()
@@ -321,7 +334,7 @@ class CandidateSnapshotTest(unittest.TestCase):
         (source / "tracked.txt").write_text("candidate\n", encoding="utf-8")
         observed = read_working_tree_candidate(source)
         snapshot = WorkingTreeCandidateSnapshot(
-            "pinboard-candidate-snapshot/v1",
+            "pinboard-candidate-snapshot/v2",
             "attempt-1",
             "item-1",
             observed.identity,
@@ -370,6 +383,40 @@ class CandidateSnapshotTest(unittest.TestCase):
                 diff=snapshot.diff,
             ),
         )
+
+    def test_retained_patch_only_snapshot_restores_its_known_preimage_without_relabeling(self) -> None:
+        source, base = self.repository()
+        (source / "tracked.txt").write_text("historical candidate\n", encoding="utf-8")
+        diff = read_working_tree_candidate(source).diff
+        candidate = f"working-tree-sha256:{hashlib.sha256(diff).hexdigest()}"
+        snapshot = candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot(
+            "pinboard-candidate-snapshot/v1",
+            "attempt-1",
+            "item-1",
+            candidate,
+            "main",
+            base,
+            base,
+            SQLITE_NOW.isoformat(),
+            diff,
+        )
+        encoded = canonical_candidate_snapshot_bytes(snapshot)
+        decoded = decode_candidate_snapshot(encoded)
+        self.assertEqual(encoded, canonical_candidate_snapshot_bytes(decoded))
+        target = self.clone(source)
+
+        restored = candidate_compatibility.restore_working_tree_candidate(
+            target,
+            expected_branch="main",
+            preimage_revision=decoded.preimage_revision,
+            candidate=decoded.candidate,
+            diff=decoded.diff,
+        )
+
+        self.assertEqual(CandidateRestoreSuccess(True, candidate), restored)
+        self.assertEqual("historical candidate\n", (target / "tracked.txt").read_text())
+        self.assertEqual(base, self.git(target, "rev-parse", "HEAD"))
+        self.assertNotEqual(candidate, read_working_tree_candidate(target).identity)
 
     def test_working_tree_restore_rejects_each_unsafe_precondition_and_reports_changed_failure(self) -> None:
         source, base = self.repository()
@@ -571,7 +618,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             DecisionFailure,
         )
 
-        working_candidate = "working-tree-sha256:" + hashlib.sha256(b"diff").hexdigest()
+        working_candidate = working_tree_identity("head", b"diff")
         working = decision_models.SubmitReviewCommand(
             action(decision_models.SubmitReviewAction, attempt_id),
             work_models.SubmitReviewInput(CandidateId(working_candidate)),

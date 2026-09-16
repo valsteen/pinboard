@@ -12,6 +12,12 @@ Correct an incomplete or misleading representation at its owner. Change the rule
 
 Include the information needed for the decision—not everything indiscriminately. A checksum, label, or status is evidence about what it represents, not proof that the representation is sufficient.
 
+Before relying on an identity, summary, label, or status to authorize an effect or establish equivalence, name the decision it supports and the distinctions that decision requires.
+
+Challenge the representation with two valid situations that produce the same represented value but require different decisions. Vary relevant surrounding context, not only the information already included in the representation. If such a pair exists, correct the representation or make the missing relationship explicit at its owner before relying on it.
+
+For an enforceable invariant, retain the counterexample as a behavioral regression test. Derive the expected decision from the supported contract, independently of the representation being tested. Keep the challenge focused on the changed decision boundary; it does not require an exhaustive search of unrelated states.
+
 ### Optimize for visible decisions
 
 The primary reader must be able to answer what can happen, under which condition, and with which effect. Put those branches in one explicit owner. Move representation conversion and persistence mechanics aside only when their contract remains obvious at the call site.

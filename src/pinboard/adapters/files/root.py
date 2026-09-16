@@ -1,11 +1,11 @@
 import fcntl
-import hashlib
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
 from pinboard.adapters.files.errors import RootError, RootErrorCode
+from pinboard.application.candidate_identity import working_tree_identity
 
 PINBOARD_GIT_EXCLUDE = b"/.codex/pinboard/"
 _READ_CHUNK_BYTES = 64 * 1024
@@ -136,7 +136,7 @@ def observe_checkout_identity(cwd: Path) -> tuple[str, str]:
 
 
 def read_working_tree_candidate(cwd: Path) -> WorkingTreeCandidate:
-    """Read the binary HEAD diff without changing Git state."""
+    """Read actual full HEAD and its exact binary diff without changing Git state."""
 
     diff = _git_bytes(
         cwd,
@@ -146,8 +146,8 @@ def read_working_tree_candidate(cwd: Path) -> WorkingTreeCandidate:
         "--",
         unavailable_message=f"Cannot read the working-tree diff at '{cwd}'.",
     )
-    digest = hashlib.sha256(diff).hexdigest()
-    return WorkingTreeCandidate(f"working-tree-sha256:{digest}", diff)
+    head = _git_text(cwd, "rev-parse", "--verify", "HEAD")
+    return WorkingTreeCandidate(working_tree_identity(head, diff), diff)
 
 
 def read_current_head_candidate(

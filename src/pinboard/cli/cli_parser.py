@@ -16,7 +16,7 @@ from typing import Annotated, assert_never
 import msgspec
 
 from pinboard import __version__
-from pinboard.cli import cli_commands, transition_input
+from pinboard.cli import cli_commands
 from pinboard.domain import decision_models, work_models
 
 
@@ -571,7 +571,7 @@ def _add_inspection_parsers(commands: argparse._SubParsersAction[argparse.Argume
     input_contract = commands.add_parser(
         "input-contract", help="Show the canonical payload and semantics for one action kind."
     )
-    input_contract.add_argument("action_kind", choices=transition_input.INPUT_CONTRACT_ACTION_KINDS)
+    input_contract.add_argument("action_kind", choices=tuple(kind.value for kind in decision_models.ActionKind))
     input_contract.add_argument("--json", action="store_true")
     _select_command(input_contract, cli_commands.InputContractCommand)
     tool_contract = commands.add_parser(
@@ -579,7 +579,7 @@ def _add_inspection_parsers(commands: argparse._SubParsersAction[argparse.Argume
     )
     selection = tool_contract.add_mutually_exclusive_group()
     selection.add_argument("--operation", help="Installed operation ID, optionally followed by :variant.")
-    selection.add_argument("--action-kind", choices=transition_input.INPUT_CONTRACT_ACTION_KINDS)
+    selection.add_argument("--action-kind", choices=tuple(kind.value for kind in decision_models.ActionKind))
     selection.add_argument(
         "--brief-starter",
         choices=cli_commands.BRIEF_BOUNDARIES,

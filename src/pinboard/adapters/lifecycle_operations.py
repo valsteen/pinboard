@@ -10,10 +10,10 @@ from typing import assert_never
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.root import observe_checkout_identity
+from pinboard.adapters.transition_input import ParsedTransitionInput, TransitionInputFailure, parse_transition_input
 from pinboard.application import action_models, actions, ports, service, work_brief_models
 from pinboard.application.artifacts import WorkBriefIdentity
 from pinboard.application.mutation_models import CommittedEffect
-from pinboard.application.transition_input import ParsedTransitionInput, TransitionInputFailure, parse_transition_input
 from pinboard.application.work_briefs import (
     decode_canonical_work_brief,
     read_selected_work_brief_identity,
@@ -51,7 +51,7 @@ class SelectedTransition:
     actor_host_id: HostId | None
 
 
-def _input_failure(message: str, mismatches: tuple[FailureMismatch, ...] = ()) -> DecisionFailure:
+def _input_failure(message: str, mismatches: tuple[FailureMismatch, ...]) -> DecisionFailure:
     return DecisionFailure(
         DecisionFailureCode.TRANSITION_INPUT_INVALID,
         message,
@@ -78,13 +78,13 @@ def resolve_activation(
     artifact_ref_id = ArtifactRefId(decoded.brief_artifact_ref_id)
     reference = store.read_artifact_reference_by_id(artifact_ref_id)
     if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
-        return _input_failure("Activation requires one existing brief artifact reference.")
+        return _input_failure("Activation requires one existing brief artifact reference.", ())
     brief = decode_canonical_work_brief(artifacts.read(reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
-        return _input_failure(f"The selected brief artifact is invalid: {brief.message}")
+        return _input_failure(f"The selected brief artifact is invalid: {brief.message}", ())
     preparation = action.capability.preparation_authority
     if preparation is None:
-        return _input_failure("Activation requires exact live preparation authority.")
+        return _input_failure("Activation requires exact live preparation authority.", ())
     identity_mismatches = tuple(
         mismatch
         for mismatch in (
@@ -121,9 +121,9 @@ def resolve_activation(
             case None:
                 pass
             case work_brief_models.ReviewedAuthoritySelectionFailure(authority_id=authority_id, reason=reason):
-                return _input_failure(f"Cannot read reviewed authority '{authority_id}': {reason}")
+                return _input_failure(f"Cannot read reviewed authority '{authority_id}': {reason}", ())
             case work_brief_models.ReviewedAuthorityDigestMismatch(authority_id=authority_id):
-                return _input_failure(f"Reviewed authority '{authority_id}' changed after review.")
+                return _input_failure(f"Reviewed authority '{authority_id}' changed after review.", ())
             case _ as unreachable:
                 assert_never(unreachable)
     return decision_models.ActivateCommand(

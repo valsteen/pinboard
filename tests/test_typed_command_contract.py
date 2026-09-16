@@ -2,7 +2,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta
 
-from pinboard.cli.transition_input import parse_transition_input
+from pinboard.adapters.transition_input import parse_transition_input
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.decisions import available_actions as available_actions_outcome
 from pinboard.domain.decisions import decide as decision_outcome

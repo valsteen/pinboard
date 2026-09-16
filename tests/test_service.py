@@ -9,6 +9,7 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.adapters.transition_input import parse_transition_input
 from pinboard.application import stored_state
 from pinboard.application.artifacts import (
     CheckpointArtifacts,
@@ -25,7 +26,6 @@ from pinboard.application.service import (
     decide_and_commit_transition,
     preflight_checkpoint_candidate,
 )
-from pinboard.cli.transition_input import parse_transition_input
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import (
     available_actions,

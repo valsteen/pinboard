@@ -83,7 +83,7 @@ class ArtifactTransitionSuccess:
 type ArtifactTransitionResult = DecisionResult[ArtifactTransitionSuccess] | PublishedTransitionFailure
 
 
-def _unchanged(message: str, *, candidate: str | None = None) -> DecisionFailure:
+def _unchanged(message: str, *, candidate: str | None) -> DecisionFailure:
     return DecisionFailure(
         DecisionFailureCode.TRANSITION_INPUT_INVALID,
         message,
@@ -103,7 +103,7 @@ def _published_failure(
     message: str,
     selectors: tuple[str, ...],
     *,
-    storage_error: StorageError | None = None,
+    storage_error: StorageError | None,
 ) -> PublishedTransitionFailure:
     return PublishedTransitionFailure(
         code,
@@ -152,10 +152,12 @@ def _publication_failure(
     if isinstance(error, ArtifactAcceptanceAfterPublicationError):
         if not isinstance(error.cause, FileIOError):
             raise error
-        return _published_failure(error.cause.code.value, str(error.cause), (*created, error.selector))
+        return _published_failure(
+            error.cause.code.value, str(error.cause), (*created, error.selector), storage_error=None
+        )
     if not created:
         raise error
-    return _published_failure(error.code.value, str(error), created)
+    return _published_failure(error.code.value, str(error), created, storage_error=None)
 
 
 def _publication_terminal_result(
@@ -225,9 +227,11 @@ def _observe_review_candidate(
                 observed_commit.diff,
             )
         case DifferentHeadCandidate():
-            return _unchanged("Review submission requires a commit candidate to match the exact current HEAD.")
+            return _unchanged(
+                "Review submission requires a commit candidate to match the exact current HEAD.", candidate=None
+            )
         case DirtyHeadCandidate():
-            return _unchanged("Review submission requires a clean working tree for a commit candidate.")
+            return _unchanged("Review submission requires a clean working tree for a commit candidate.", candidate=None)
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -306,17 +310,15 @@ class _CheckpointContext:
     review_reference: EvidenceArtifactRef | None
 
 
-def _checkpoint_context(
-    store: ports.WorkStore,
+def _read_current_attempt_brief(
     artifacts: ArtifactRepository,
-    command: decision_models.AcceptCheckpointCommand,
-) -> DecisionResult[_CheckpointContext]:
-    context = store.read_attempt_context(command.action.capability.subject)
-    if not isinstance(context, query_models.NonterminalAttemptContextFacts):
-        return _unchanged("Checkpoint acceptance requires a current accepted brief.")
+    context: query_models.NonterminalAttemptContextFacts,
+) -> DecisionResult[work_brief_models.WorkBrief]:
+    """Read verified accepted bytes and compare the brief with current attempt facts."""
+
     brief = decode_canonical_work_brief(artifacts.read(context.brief_reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
-        return _unchanged(f"The accepted brief is invalid: {brief.message}")
+        return _unchanged(f"The accepted brief is invalid: {brief.message}", candidate=None)
     if (
         brief.attempt_id,
         brief.item_id,
@@ -332,9 +334,23 @@ def _checkpoint_context(
         context.accepted_scope_revision,
         context.accepted_scope_digest,
     ):
-        return _unchanged("The accepted brief identity does not match the current attempt.")
+        return _unchanged("The accepted brief identity does not match the current attempt.", candidate=None)
+    return brief
+
+
+def _checkpoint_context(
+    store: ports.WorkStore,
+    artifacts: ArtifactRepository,
+    command: decision_models.AcceptCheckpointCommand,
+) -> DecisionResult[_CheckpointContext]:
+    context = store.read_attempt_context(command.action.capability.subject)
+    if not isinstance(context, query_models.NonterminalAttemptContextFacts):
+        return _unchanged("Checkpoint acceptance requires a current accepted brief.", candidate=None)
+    brief = _read_current_attempt_brief(artifacts, context)
+    if isinstance(brief, DecisionFailure):
+        return brief
     if brief.checkpoint.checkpoint_id != command.value.checkpoint:
-        return _unchanged("Checkpoint acceptance requires the accepted brief checkpoint.")
+        return _unchanged("Checkpoint acceptance requires the accepted brief checkpoint.", candidate=None)
     match brief.checkpoint:
         case work_brief_models.LocalCheckpoint():
             review_reference = None
@@ -346,12 +362,12 @@ def _checkpoint_context(
                 1,
             )
             if stored_review is None:
-                return _unchanged("Checkpoint acceptance requires the exact ready brief review.")
+                return _unchanged("Checkpoint acceptance requires the exact ready brief review.", candidate=None)
             review = decode_canonical_work_brief_review(artifacts.read(stored_review))
             if isinstance(review, work_brief_models.WorkBriefFailure):
-                return _unchanged(f"The accepted ready brief review is invalid: {review.message}")
+                return _unchanged(f"The accepted ready brief review is invalid: {review.message}", candidate=None)
             if (failure := validate_work_brief_review(review, brief)) is not None:
-                return _unchanged(f"The accepted ready brief review is invalid: {failure.message}")
+                return _unchanged(f"The accepted ready brief review is invalid: {failure.message}", candidate=None)
             review_reference = _evidence_reference(stored_review)
         case _ as unreachable:
             assert_never(unreachable)
@@ -380,7 +396,7 @@ def _publish_checkpoint(
         result_bytes = (attempt_root / "result.md").read_bytes()
         review_bytes = (attempt_root / "review.md").read_bytes()
     except OSError as error:
-        return _unchanged(f"Cannot read current checkpoint result.md and review.md: {error}")
+        return _unchanged(f"Cannot read current checkpoint result.md and review.md: {error}", candidate=None)
     publications = (
         NewArtifact(
             work_models.ArtifactKind.EVIDENCE,
@@ -534,38 +550,22 @@ class _CompletionContext:
     checkpoint_coverage: tuple[work_brief_models.CompletionCheckpointCoverage, ...]
 
 
-def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure validation boundary
+def _completion_context(  # noqa: C901 - one exact completion-closure validation boundary
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
     command: decision_models.CoveredCompleteCommand,
 ) -> DecisionResult[_CompletionContext]:
     selected = store.read_completion_context(command.action.capability.subject)
     if selected is None or not isinstance(selected.attempt, query_models.NonterminalAttemptContextFacts):
-        return _unchanged("Covered completion requires one current nonterminal attempt.")
+        return _unchanged("Covered completion requires one current nonterminal attempt.", candidate=None)
     attempt = selected.attempt
-    brief = decode_canonical_work_brief(artifacts.read(attempt.brief_reference))
-    if isinstance(brief, work_brief_models.WorkBriefFailure):
-        return _unchanged(f"The accepted brief is invalid: {brief.message}")
-    if (
-        brief.attempt_id,
-        brief.item_id,
-        brief.branch,
-        brief.base_revision,
-        brief.accepted_scope.revision,
-        brief.accepted_scope.digest,
-    ) != (
-        str(attempt.attempt_id),
-        str(attempt.item_id),
-        attempt.branch,
-        attempt.base_revision,
-        attempt.accepted_scope_revision,
-        attempt.accepted_scope_digest,
-    ):
-        return _unchanged("The accepted brief identity does not match the current attempt.")
+    brief = _read_current_attempt_brief(artifacts, attempt)
+    if isinstance(brief, DecisionFailure):
+        return brief
     if str(command.value.reviewer_task_id) == brief.owner_task_id:
-        return _unchanged("The completion reviewer must be independent from the attempt owner.")
+        return _unchanged("The completion reviewer must be independent from the attempt owner.", candidate=None)
     if len(selected.checkpoints) != len(command.value.packages):
-        return _unchanged("Covered completion must name the complete authoritative checkpoint set.")
+        return _unchanged("Covered completion must name the complete authoritative checkpoint set.", candidate=None)
     coverage: list[work_brief_models.CompletionCheckpointCoverage] = []
     for facts, supplied in zip(selected.checkpoints, command.value.packages, strict=True):
         reference = facts.package_reference
@@ -574,7 +574,7 @@ def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure v
             or reference is None
             or reference.content_sha256 != supplied.package_sha256
         ):
-            return _unchanged("Covered completion checkpoint identities do not match current history.")
+            return _unchanged("Covered completion checkpoint identities do not match current history.", candidate=None)
         package = checkpoint_packages.validate_selected_checkpoint_review_package(
             facts.receipt,
             reference,
@@ -583,7 +583,7 @@ def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure v
             item_id=str(attempt.item_id),
         )
         if isinstance(package, work_brief_models.WorkBriefFailure):
-            return _unchanged(package.message)
+            return _unchanged(package.message, candidate=None)
         identities = [package.accepted_brief, package.result, package.implementation_review]
         if isinstance(package, work_brief_models.CheckpointReviewPackageV2):
             identities.append(package.candidate_snapshot)
@@ -598,7 +598,7 @@ def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure v
                 identity.revision,
             )
             if accepted is None:
-                return _unchanged("A covered checkpoint artifact identity is no longer accepted.")
+                return _unchanged("A covered checkpoint artifact identity is no longer accepted.", candidate=None)
             references.append(accepted)
             artifact_bytes[accepted.artifact_ref_id] = artifacts.read(accepted)
         if (
@@ -608,7 +608,7 @@ def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure v
                 artifact_bytes,
             )
         ) is not None:
-            return _unchanged(failure.message)
+            return _unchanged(failure.message, candidate=None)
         coverage.append(
             work_brief_models.CompletionCheckpointCoverage(
                 int(facts.receipt.history_id),
@@ -641,11 +641,11 @@ def _publish_completion(
         result_bytes = (attempt_root / "result.md").read_bytes()
         review_bytes = (attempt_root / "review.md").read_bytes()
     except OSError as error:
-        return _unchanged(f"Cannot read current completion result.md and review.md: {error}")
+        return _unchanged(f"Cannot read current completion result.md and review.md: {error}", candidate=None)
     if hashlib.sha256(result_bytes).hexdigest() != command.value.result_sha256:
-        return _unchanged("Current result.md does not match result_sha256.")
+        return _unchanged("Current result.md does not match result_sha256.", candidate=None)
     if hashlib.sha256(review_bytes).hexdigest() != command.value.review_sha256:
-        return _unchanged("Current review.md does not match review_sha256.")
+        return _unchanged("Current review.md does not match review_sha256.", candidate=None)
     created: list[str] = []
     try:
         result_publication = artifacts.publish(
@@ -729,9 +729,9 @@ def _complete(
     read_authorization_time: Callable[[], datetime],
 ) -> ArtifactTransitionResult:
     if selected.actor_task_id is None or selected.actor_host_id is None:
-        return _unchanged("Covered completion requires project task and host attribution.")
+        return _unchanged("Covered completion requires project task and host attribution.", candidate=None)
     if command.value.reviewer_task_id == selected.actor_task_id:
-        return _unchanged("The completion reviewer must differ from the invoking task.")
+        return _unchanged("The completion reviewer must differ from the invoking task.", candidate=None)
     if (
         failure := service.preflight_covered_completion(
             store,

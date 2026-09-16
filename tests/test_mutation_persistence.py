@@ -11,13 +11,13 @@ from pinboard.adapters.sqlite.database import initialize_database, open_database
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.adapters.transition_input import parse_transition_input
 from pinboard.application import stored_state
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     MutationReceipt,
 )
 from pinboard.application.mutations import project_transition_mutation
-from pinboard.cli.transition_input import parse_transition_input
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import available_actions as available_actions_outcome
 from pinboard.domain.decisions import decide as decision_outcome

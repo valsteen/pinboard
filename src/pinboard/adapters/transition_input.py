@@ -1,12 +1,15 @@
-"""Decode one selected lifecycle action directly into its exact domain command."""
+"""Decode raw lifecycle payloads or convert typed payloads into exact commands.
+
+CLI and MCP share this representation boundary; it performs no resource work,
+authority selection, legality decision, or persistence effect.
+"""
 
 from dataclasses import dataclass
-from typing import Final, assert_never
+from typing import assert_never
 
 import msgspec
 
 from pinboard.application import action_models as transition_models
-from pinboard.application import actions
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailureCode, EffectDisposition, FailureDetails, RetryDisposition
 from pinboard.domain.identifiers import (
@@ -18,8 +21,6 @@ from pinboard.domain.identifiers import (
     ItemId,
     TaskId,
 )
-
-INPUT_CONTRACT_ACTION_KINDS: Final = tuple(kind.value for kind in decision_models.ActionKind)
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,14 +304,3 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
             )
         case _ as unreachable:
             assert_never(unreachable)
-
-
-def encoded_transition_input_schema(kind: decision_models.ActionKind) -> TransitionInputResult[bytes]:
-    encoded = actions.encoded_action_input_schema(kind)
-    if encoded is not None:
-        return encoded
-    return TransitionInputFailure(
-        DecisionFailureCode.ACTION_NOT_MUTATING,
-        f"Action '{kind.value}' is not a canonical transition.",
-        None,
-    )

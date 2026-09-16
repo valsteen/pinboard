@@ -7,12 +7,6 @@ from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError, StorageError
 from pinboard.application import work_brief_models
 from pinboard.application.brief_source_models import BriefSourceFailure
 from pinboard.application.proposal_models import ProposalFailure
-from pinboard.application.transition_input import (
-    TransitionInputFailure as TransitionInputFailure,
-)
-from pinboard.application.transition_input import (
-    TransitionInputResult as TransitionInputResult,
-)
 from pinboard.application.work_brief_models import WorkBriefFailure  # noqa: ICN003
 from pinboard.cli import cli_commands
 from pinboard.domain.errors import (

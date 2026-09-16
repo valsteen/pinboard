@@ -636,22 +636,13 @@ def show_review_job(  # noqa: C901, PLR0912, PLR0915 - one ordered selected-cont
 
 def describe_input_contract(
     kind: decision_models.ActionKind,
-) -> errors.TransitionInputResult[action_models.InputContractView]:
+) -> action_models.InputContractView:
     semantics = decision_models.action_semantics(kind)
-    encoded_schema = action_queries.encoded_action_input_schema(kind)
     return action_models.InputContractView(
         kind,
         action_queries.project_action_semantics(semantics),
-        None if encoded_schema is None else msgspec.json.decode(encoded_schema, type=action_models.JsonSchema),
+        action_models.action_payload_schema(kind),
     )
-
-
-def project_action(
-    action: decision_models.Action,
-    *,
-    include_input_contract: bool = False,
-) -> errors.TransitionInputResult[work_inspection_models.ActionView]:
-    return action_queries.project_action(action, include_input_contract=include_input_contract)
 
 
 def project_parallel_preview(
@@ -945,9 +936,7 @@ def _discovered_action_view(
             "advisory",
             ("actions", "--role", "project", "--action-id", decision_models.action_id(action), "--json"),
         )
-    projected = project_action(action, include_input_contract=focused)
-    if isinstance(projected, errors.TransitionInputFailure):
-        return errors.CommandFailure(projected.code, projected.message, projected.details)
+    projected = action_queries.project_action(action, include_input_contract=focused)
     if isinstance(action, decision_models.CompleteAction):
         return _completion_action_view(store, action, projected)
     return projected
@@ -1012,10 +1001,8 @@ def show_actions(
 
 def show_input_contract(
     command: cli_commands.InputContractCommand,
-) -> errors.CommandResult[int]:
+) -> int:
     contract = describe_input_contract(command.action_kind)
-    if isinstance(contract, errors.TransitionInputFailure):
-        return errors.CommandFailure(contract.code, contract.message, contract.details)
     if command.json:
         write_json(contract)
     else:

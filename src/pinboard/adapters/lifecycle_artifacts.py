@@ -1,6 +1,7 @@
 """Artifact-sensitive lifecycle execution shared by command boundaries."""
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -126,7 +127,8 @@ def _committed_decision_failure(
     details = failure.details
     return DecisionFailure(
         failure.code,
-        failure.message,
+        f"{failure.message} Preserve the published artifacts and do not replay this transition. "
+        "Inspect current item, attempt, action, and artifact identities before selecting a fresh capability.",
         FailureDetails(
             observed=(
                 *tuple(FailureFact("published_artifact_selector", value) for value in selectors),
@@ -206,6 +208,7 @@ def _submit_review(
     artifacts: ArtifactRepository,
     command: decision_models.SubmitReviewCommand,
     operation_time: datetime,
+    read_authorization_time: Callable[[], datetime],
 ) -> ArtifactTransitionResult:
     snapshot = _observe_review_candidate(source_checkout, store, command, operation_time)
     if isinstance(snapshot, DecisionFailure):
@@ -231,7 +234,9 @@ def _submit_review(
         publication.reference.size_bytes,
     )
     try:
-        result = service.decide_and_commit_review_submission(store, command, operation_time, reference)
+        result = service.decide_and_commit_review_submission(
+            store, command, operation_time, reference, read_authorization_time=read_authorization_time
+        )
     except StorageError as error:
         if publication.created:
             return _published_failure(
@@ -488,6 +493,7 @@ def _accept_checkpoint(
     selected: SelectedTransition,
     command: decision_models.AcceptCheckpointCommand,
     operation_time: datetime,
+    read_authorization_time: Callable[[], datetime],
 ) -> ArtifactTransitionResult:
     if (failure := service.preflight_checkpoint_candidate(store, command, operation_time)) is not None:
         return failure
@@ -507,6 +513,7 @@ def _accept_checkpoint(
             command,
             operation_time,
             checkpoint_artifacts,
+            read_authorization_time=read_authorization_time,
             actor_task_id=selected.actor_task_id,
             actor_host_id=selected.actor_host_id,
             transition_brief_identity=brief_identity,
@@ -731,6 +738,7 @@ def _complete(
     selected: SelectedTransition,
     command: decision_models.CoveredCompleteCommand,
     operation_time: datetime,
+    read_authorization_time: Callable[[], datetime],
 ) -> ArtifactTransitionResult:
     if selected.actor_task_id is None or selected.actor_host_id is None:
         return _unchanged("Covered completion requires project task and host attribution.")
@@ -759,6 +767,7 @@ def _complete(
             command,
             operation_time,
             completion_artifacts,
+            read_authorization_time=read_authorization_time,
             actor_task_id=selected.actor_task_id,
             actor_host_id=selected.actor_host_id,
         )
@@ -780,13 +789,16 @@ def execute_artifact_transition(
     artifacts: ArtifactRepository,
     selected: SelectedTransition,
     operation_time: datetime,
+    read_authorization_time: Callable[[], datetime],
 ) -> ArtifactTransitionResult:
     match selected.command:
         case decision_models.SubmitReviewCommand() as command:
-            return _submit_review(source_checkout, store, artifacts, command, operation_time)
+            return _submit_review(source_checkout, store, artifacts, command, operation_time, read_authorization_time)
         case decision_models.AcceptCheckpointCommand() as command:
-            return _accept_checkpoint(work_root, store, artifacts, selected, command, operation_time)
+            return _accept_checkpoint(
+                work_root, store, artifacts, selected, command, operation_time, read_authorization_time
+            )
         case decision_models.CoveredCompleteCommand() as command:
-            return _complete(work_root, store, artifacts, selected, command, operation_time)
+            return _complete(work_root, store, artifacts, selected, command, operation_time, read_authorization_time)
         case _:
             raise ValueError("The selected transition is not artifact-sensitive.")

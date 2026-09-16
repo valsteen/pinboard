@@ -131,6 +131,7 @@ class ServiceTest(unittest.TestCase):
             store,
             command,
             now,
+            read_authorization_time=lambda: now,
             actor_task_id=TaskId("project-task") if is_project else None,
             actor_host_id=HostId("host-a") if is_project else None,
             transition_brief_identity=transition_brief_identity,
@@ -390,6 +391,32 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(ActionId("submit-review:work-a-1"), committed_mutation.receipt.transition.action_id)
         self.assertEqual("review", store.validated_snapshot().lifecycle.attempts[0].state.value)
 
+    def test_final_authorization_rechecks_expiry_after_locked_facts_are_read(self) -> None:
+        store, database_path = self._store_with_state(complete_sqlite_state())
+        before = store.validated_snapshot()
+        selected = self._worker_action(store, decision_models.SubmitReviewAction)
+        authority = selected.capability.command_authority
+        assert authority is not None
+        times = iter((SQLITE_NOW, authority.expires_at + timedelta(seconds=1)))
+
+        def read_authorization_time() -> datetime:
+            return next(times)
+
+        result = decide_and_commit_transition(
+            store,
+            decision_models.SubmitReviewCommand(
+                selected, work_models.SubmitReviewInput(CandidateId("candidate-review"))
+            ),
+            SQLITE_NOW,
+            read_authorization_time=read_authorization_time,
+            actor_task_id=None,
+            actor_host_id=None,
+        )
+        self.assertIsInstance(result, DecisionFailure)
+        assert isinstance(result, DecisionFailure)
+        self.assertEqual(DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED, result.code)
+        self.assertEqual(before, SQLiteWorkStore(database_path).validated_snapshot())
+
     def test_positive_item_state_variants_reload_from_fresh_stores(self) -> None:
         for action_type, initial, payload, expected in (
             (
@@ -574,6 +601,7 @@ class ServiceTest(unittest.TestCase):
             mismatch,
             SQLITE_NOW + timedelta(seconds=2),
             checkpoint_artifacts,
+            read_authorization_time=lambda: SQLITE_NOW + timedelta(seconds=2),
             actor_task_id=TaskId("project-task"),
             actor_host_id=HostId("host-a"),
         )
@@ -611,6 +639,7 @@ class ServiceTest(unittest.TestCase):
                 accept,
                 SQLITE_NOW + timedelta(seconds=2),
                 checkpoint_artifacts,
+                read_authorization_time=lambda: SQLITE_NOW + timedelta(seconds=2),
                 actor_task_id=TaskId("project-task"),
                 actor_host_id=HostId("host-a"),
             )
@@ -623,6 +652,7 @@ class ServiceTest(unittest.TestCase):
                 accept,
                 SQLITE_NOW + timedelta(seconds=2),
                 checkpoint_artifacts,
+                read_authorization_time=lambda: SQLITE_NOW + timedelta(seconds=2),
                 actor_task_id=TaskId("project-task"),
                 actor_host_id=HostId("host-a"),
             )

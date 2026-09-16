@@ -1387,7 +1387,8 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
     )
     try:
         request = contracts.decode_transition_request(raw)
-        durable = _resolve_durable(request.project_root, request.work_root)
+        source_checkout = resolve_source_checkout_root(Path(request.project_root))
+        durable = resolve_durable_roots(resolve_shared_repository_root(source_checkout), Path(request.work_root))
     except (msgspec.ValidationError, ValueError, OSError) as error:
         raw_identity = receipt.get("action_id")
         try:
@@ -1429,7 +1430,7 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
     artifacts = ArtifactRepository(durable)
     operation_time = datetime.now(UTC)
     selected = lifecycle_operations.select_transition(
-        resolve_source_checkout_root(Path(request.project_root)),
+        source_checkout,
         store,
         artifacts,
         lifecycle_operations.TransitionReceipt(
@@ -1456,15 +1457,18 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
         ),
     ):
         committed = lifecycle_artifacts.execute_artifact_transition(
-            resolve_source_checkout_root(Path(request.project_root)),
+            source_checkout,
             durable.work_root,
             store,
             artifacts,
             selected,
             operation_time,
+            lambda: datetime.now(UTC),
         )
     else:
-        committed = lifecycle_operations.commit_direct_transition(store, artifacts, selected, operation_time)
+        committed = lifecycle_operations.commit_direct_transition(
+            store, artifacts, selected, operation_time, lambda: datetime.now(UTC)
+        )
     if isinstance(committed, lifecycle_artifacts.PublishedTransitionFailure):
         details = _details_json(committed.details)
         return OperationResult(

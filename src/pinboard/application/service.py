@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import datetime
 from typing import assert_never, overload
 
@@ -633,6 +634,7 @@ def _validate_supplied_transition_and_decide(
     transition_brief_identity: WorkBriefIdentity | None,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
+    authority_observed_at: datetime,
 ) -> DecisionResult[decision_models.CheckpointAcceptanceDecision]: ...
 
 
@@ -644,6 +646,7 @@ def _validate_supplied_transition_and_decide(
     transition_brief_identity: WorkBriefIdentity | None,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
+    authority_observed_at: datetime,
 ) -> DecisionResult[decision_models.TransitionDecision]: ...
 
 
@@ -655,6 +658,7 @@ def _validate_supplied_transition_and_decide(
     transition_brief_identity: WorkBriefIdentity | None,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
+    authority_observed_at: datetime,
 ) -> DecisionResult[decision_models.CompletionAcceptanceDecision]: ...
 
 
@@ -665,6 +669,7 @@ def _validate_supplied_transition_and_decide(
     transition_brief_identity: WorkBriefIdentity | None,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
+    authority_observed_at: datetime,
 ) -> DecisionResult[decision_models.Decision]:
     """Resolve supplied authority and reject stale context before deciding."""
 
@@ -677,7 +682,7 @@ def _validate_supplied_transition_and_decide(
             "Project actions require the invoking task and host identity.",
             None,
         )
-    actor_authority = _resolve_actor_authority(decision_context, command.action, now)
+    actor_authority = _resolve_actor_authority(decision_context, command.action, authority_observed_at)
     if isinstance(actor_authority, DecisionFailure):
         return actor_authority
     if (failure := validate_supplied_action(decision_context, actor_authority, command.action)) is not None:
@@ -692,16 +697,17 @@ def decide_and_commit_transition(
     command: decision_models.NonCheckpointTransitionCommand,
     now: datetime,
     *,
+    read_authorization_time: Callable[[], datetime],
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
     transition_brief_identity: WorkBriefIdentity | None = None,
 ) -> DecisionResult[CommittedEffect]:
-    """Validate, decide, and commit one lifecycle mutation under one write lock."""
+    """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
 
     with store.write() as transaction:
-        facts = transaction.read_decision_facts(_transition_decision_scope(command), now)
+        facts = transaction.read_decision_facts(_transition_decision_scope(command), read_authorization_time())
         decision_result = _validate_supplied_transition_and_decide(
-            facts, command, now, transition_brief_identity, actor_task_id, actor_host_id
+            facts, command, now, transition_brief_identity, actor_task_id, actor_host_id, read_authorization_time()
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result
@@ -716,12 +722,16 @@ def decide_and_commit_review_submission(
     command: decision_models.SubmitReviewCommand,
     now: datetime,
     candidate_snapshot: EvidenceArtifactRef,
+    *,
+    read_authorization_time: Callable[[], datetime],
 ) -> DecisionResult[CommittedEffect]:
-    """Atomically accept one candidate snapshot with its review transition."""
+    """Authorize with the supplied clock under lock; retain snapshot-time receipt provenance."""
 
     with store.write() as transaction:
-        facts = transaction.read_decision_facts(_transition_decision_scope(command), now)
-        decision_result = _validate_supplied_transition_and_decide(facts, command, now, None, None, None)
+        facts = transaction.read_decision_facts(_transition_decision_scope(command), read_authorization_time())
+        decision_result = _validate_supplied_transition_and_decide(
+            facts, command, now, None, None, None, read_authorization_time()
+        )
         if isinstance(decision_result, DecisionFailure):
             return decision_result
         allocation = transaction.read_checkpoint_mutation_allocation((candidate_snapshot,))
@@ -756,7 +766,7 @@ def preflight_covered_completion(
     """Reject stale authority, wrong lifecycle, candidate, or checkpoint coverage before publication."""
 
     facts = store.read_decision_facts(_transition_decision_scope(command), now)
-    result = _validate_supplied_transition_and_decide(facts, command, now, None, actor_task_id, actor_host_id)
+    result = _validate_supplied_transition_and_decide(facts, command, now, None, actor_task_id, actor_host_id, now)
     if isinstance(result, DecisionFailure):
         return result
     return None
@@ -768,16 +778,17 @@ def decide_and_commit_checkpoint_acceptance(
     now: datetime,
     checkpoint_artifacts: CheckpointArtifacts,
     *,
+    read_authorization_time: Callable[[], datetime],
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
     transition_brief_identity: WorkBriefIdentity | None = None,
 ) -> DecisionResult[CommittedEffect]:
-    """Validate, decide, and commit checkpoint acceptance with its required artifacts."""
+    """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
 
     with store.write() as transaction:
-        facts = transaction.read_decision_facts(_transition_decision_scope(command), now)
+        facts = transaction.read_decision_facts(_transition_decision_scope(command), read_authorization_time())
         decision_result = _validate_supplied_transition_and_decide(
-            facts, command, now, transition_brief_identity, actor_task_id, actor_host_id
+            facts, command, now, transition_brief_identity, actor_task_id, actor_host_id, read_authorization_time()
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result
@@ -802,15 +813,16 @@ def decide_and_commit_covered_completion(
     now: datetime,
     completion_artifacts: CompletionArtifacts,
     *,
+    read_authorization_time: Callable[[], datetime],
     actor_task_id: TaskId,
     actor_host_id: HostId,
 ) -> DecisionResult[CommittedEffect]:
-    """Revalidate the authoritative checkpoint set and atomically accept terminal evidence."""
+    """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
 
     with store.write() as transaction:
-        facts = transaction.read_decision_facts(_transition_decision_scope(command), now)
+        facts = transaction.read_decision_facts(_transition_decision_scope(command), read_authorization_time())
         decision_result = _validate_supplied_transition_and_decide(
-            facts, command, now, None, actor_task_id, actor_host_id
+            facts, command, now, None, actor_task_id, actor_host_id, read_authorization_time()
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result

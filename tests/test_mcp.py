@@ -8,7 +8,7 @@ import unittest
 from collections.abc import Callable, Coroutine
 from copy import deepcopy
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +27,7 @@ from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import authority_operations, queries, query_models, stored_state, work_brief_models
+from pinboard.application.artifact_publication import ArtifactPublication
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.ports import WorkStoreError
 from pinboard.application.work_briefs import canonical_work_brief_bytes
@@ -357,6 +358,82 @@ class McpTransportTest(unittest.TestCase):
         self.assertEqual(23, len(leaves))
         for advisory_kind in (b'"continue"', b'"dispatch"', b'"inspect"', b'"report-blocker"'):
             self.assertNotIn(advisory_kind, encoded_schema)
+
+    def test_review_submission_expired_during_publication_preserves_artifact_without_ledger_commit(self) -> None:
+        with patch("tests.test_mcp.datetime") as fixture_clock:
+            fixture_clock.now.return_value = SQLITE_NOW
+            temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        subprocess.run(("git", "-C", str(project), "checkout", "-b", "codex/work-a"), check=True, capture_output=True)
+        subprocess.run(
+            (
+                "git",
+                "-C",
+                str(project),
+                "-c",
+                "user.name=MCP test",
+                "-c",
+                "user.email=mcp@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Accepted base",
+            ),
+            check=True,
+            capture_output=True,
+        )
+        candidate = mcp_server.lifecycle_artifacts.read_working_tree_candidate(project).identity
+        store = SQLiteWorkStore(roots.database_path)
+        before = store.validated_snapshot()
+        original_publish = ArtifactRepository.publish
+        publication: ArtifactPublication | None = None
+        decision_time = SQLITE_NOW
+
+        def publish_then_expire(repository: ArtifactRepository, artifact: NewArtifact) -> ArtifactPublication:
+            nonlocal publication, decision_time
+            publication = original_publish(repository, artifact)
+            decision_time = SQLITE_NOW + timedelta(minutes=5, seconds=1)
+            return publication
+
+        def current_time(_timezone: timezone) -> datetime:
+            return decision_time
+
+        with (
+            patch.object(mcp_server, "datetime") as clock,
+            patch.object(ArtifactRepository, "publish", publish_then_expire),
+            patch.object(
+                mcp_server, "resolve_source_checkout_root", wraps=mcp_server.resolve_source_checkout_root
+            ) as resolve_source,
+        ):
+            clock.now.side_effect = current_time
+            result = mcp_server._transition(
+                str(project),
+                str(roots.work_root),
+                "worker",
+                {"action_id": {"kind": "submit-review", "subject": "work-a-1"}, "subject_revision": "8"},
+                {"candidate": candidate},
+                "attempt-lease-a",
+                3,
+                mcp_server._OmittedAuthorityField.VALUE,
+                mcp_server._OmittedAuthorityField.VALUE,
+                mcp_server.CancellationToken(),
+            )
+        resolve_source.assert_called_once_with(project)
+        content = contracts.validate_result(mcp_server.TRANSITION_TOOL, result.content)
+        self.assertEqual("failed-after-publication", content["status"], content)
+        self.assertEqual("committed", content["effect"])
+        self.assertEqual("do-not-retry", content["retry"])
+        self.assertEqual(["immutable-artifact"], content["changed_surfaces"])
+        self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
+        assert publication is not None
+        self.assertTrue(publication.created)
+        self.assertEqual(
+            [{"field": "published_artifact_selector", "value": publication.reference.selector}],
+            content["observed"],
+        )
+        self.assertEqual(
+            publication.reference.size_bytes, len((roots.work_root / publication.reference.selector).read_bytes())
+        )
 
     def test_stdio_ordinary_lifecycle_reloads_proposal_activation_submission_and_correction(self) -> None:  # noqa: PLR0915 - one installed lifecycle journey
         temporary, project, roots = self._project()
@@ -1390,6 +1467,65 @@ class McpTransportTest(unittest.TestCase):
                         await session.validate_tool_result(
                             tool_name,
                             CallToolResult(content=[], structured_content=invalid),
+                        )
+
+        _run_async(advertised_schema_scenario())
+
+    def test_committed_transition_results_correlate_mutating_actions_and_exact_surfaces(self) -> None:
+        def committed(kind: str, surfaces: list[str]) -> dict[str, contracts.JsonValue]:
+            return {
+                "schema": "pinboard-mcp-transition-result/v1",
+                "status": "committed",
+                "action_id": {"kind": kind, "subject": "work-a-1"},
+                "committed_revision": 13,
+                "history_id": 2,
+                "state_changed": True,
+                "effect": "committed",
+                "retry": "do-not-retry",
+                "changed_surfaces": list[contracts.JsonValue](surfaces),
+                "warning": None,
+            }
+
+        ledger = ["ledger"]
+        references = ["accepted-artifact-reference", "ledger"]
+        publication = ["immutable-artifact", *references]
+        valid = (
+            committed("pause", ledger),
+            committed("submit-review", references),
+            committed("accept-checkpoint", publication),
+            committed("complete", ledger),
+            committed("complete", references),
+            committed("complete", publication),
+        )
+        invalid = (
+            *(committed(kind, ledger) for kind in ("continue", "dispatch", "inspect", "report-blocker")),
+            committed("pause", ["immutable-artifact"]),
+            committed("pause", publication),
+            committed("pause", ["ledger", "ledger"]),
+            committed("submit-review", ledger),
+            committed("accept-checkpoint", ledger),
+            committed("complete", ["immutable-artifact"]),
+            committed("complete", ["accepted-artifact-reference"]),
+            committed("complete", ["ledger", "accepted-artifact-reference"]),
+        )
+        for content in valid:
+            contracts.validate_result(mcp_server.TRANSITION_TOOL, content)
+        for content in invalid:
+            with self.subTest(content=content), self.assertRaises((msgspec.ValidationError, ValueError)):
+                contracts.validate_result(mcp_server.TRANSITION_TOOL, content)
+
+        async def advertised_schema_scenario() -> None:
+            parameters = StdioServerParameters(command=sys.executable, args=["-m", "pinboard.mcp"])
+            async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
+                await session.initialize()
+                for content in valid:
+                    await session.validate_tool_result(
+                        mcp_server.TRANSITION_TOOL, CallToolResult(content=[], structured_content=content)
+                    )
+                for content in invalid:
+                    with self.subTest(content=content), self.assertRaises(RuntimeError):
+                        await session.validate_tool_result(
+                            mcp_server.TRANSITION_TOOL, CallToolResult(content=[], structured_content=content)
                         )
 
         _run_async(advertised_schema_scenario())

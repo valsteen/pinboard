@@ -739,7 +739,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             return_value=decision_failure,
         ):
             self.assertIsInstance(
-                lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW),
+                lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW, lambda: SQLITE_NOW),
                 DecisionFailure,
             )
 
@@ -751,7 +751,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             patch.object(ArtifactRepository, "publish", side_effect=publication_error),
         ):
             self.assertIsInstance(
-                lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW),
+                lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW, lambda: SQLITE_NOW),
                 lifecycle_artifacts.PublishedTransitionFailure,
             )
         unexpected = ArtifactAcceptanceAfterPublicationError(reference.selector, RuntimeError("failed"), ())
@@ -760,7 +760,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             patch.object(ArtifactRepository, "publish", side_effect=unexpected),
             self.assertRaises(RuntimeError),
         ):
-            lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW)
+            lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW, lambda: SQLITE_NOW)
 
         for created in (False, True):
             with (
@@ -773,7 +773,9 @@ class CandidateSnapshotTest(unittest.TestCase):
                     return_value=decision_failure,
                 ),
             ):
-                result = lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW)
+                result = lifecycle_artifacts._submit_review(
+                    checkout, store, artifacts, command, SQLITE_NOW, lambda: SQLITE_NOW
+                )
                 self.assertIsInstance(result, DecisionFailure)
                 self.assertEqual(
                     EffectDisposition.COMMITTED if created else EffectDisposition.UNCHANGED,
@@ -791,7 +793,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             ),
         ):
             self.assertIsInstance(
-                lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW),
+                lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW, lambda: SQLITE_NOW),
                 lifecycle_artifacts.PublishedTransitionFailure,
             )
         with (
@@ -804,4 +806,4 @@ class CandidateSnapshotTest(unittest.TestCase):
             ),
             self.assertRaises(StorageError),
         ):
-            lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW)
+            lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW, lambda: SQLITE_NOW)

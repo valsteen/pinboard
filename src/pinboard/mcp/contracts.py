@@ -1,6 +1,6 @@
 """Strict request and correlated result contracts for the MCP transport."""
 
-from typing import Annotated, Any, Literal  # noqa: TID251 - validated against the selected action leaf
+from typing import Annotated, Any, Literal, assert_never  # noqa: TID251 - validated against the selected action leaf
 
 import msgspec
 
@@ -976,6 +976,53 @@ class WarningResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     recovery: NonEmptyText
 
 
+def _committed_transition_surfaces(kind: decision_models.ActionKind) -> tuple[tuple[str, ...], ...]:
+    """Own the supported action/effect combinations at the MCP result boundary."""
+    match kind:
+        case (
+            decision_models.ActionKind.CONTINUE
+            | decision_models.ActionKind.DISPATCH
+            | decision_models.ActionKind.INSPECT
+            | decision_models.ActionKind.REPORT_BLOCKER
+        ):
+            return ()
+        case decision_models.ActionKind.ACCEPT_CHECKPOINT | decision_models.ActionKind.SUBMIT_REVIEW:
+            return (
+                ("accepted-artifact-reference", "ledger"),
+                ("immutable-artifact", "accepted-artifact-reference", "ledger"),
+            )
+        case decision_models.ActionKind.COMPLETE:
+            return (
+                ("ledger",),
+                ("accepted-artifact-reference", "ledger"),
+                ("immutable-artifact", "accepted-artifact-reference", "ledger"),
+            )
+        case (
+            decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
+            | decision_models.ActionKind.ACCEPT_PROPOSAL
+            | decision_models.ActionKind.ACTIVATE
+            | decision_models.ActionKind.BLOCK
+            | decision_models.ActionKind.BLOCK_ITEM
+            | decision_models.ActionKind.CLOSE
+            | decision_models.ActionKind.DEFER
+            | decision_models.ActionKind.MARK_READY
+            | decision_models.ActionKind.MERGE_PROPOSAL
+            | decision_models.ActionKind.PAUSE
+            | decision_models.ActionKind.REJECT_PROPOSAL
+            | decision_models.ActionKind.REOPEN
+            | decision_models.ActionKind.RECORD_REPLACEMENT
+            | decision_models.ActionKind.REBIND_ATTEMPT
+            | decision_models.ActionKind.RESUME
+            | decision_models.ActionKind.RETURN_FOR_CORRECTION
+            | decision_models.ActionKind.RETURN_PROPOSAL
+            | decision_models.ActionKind.RETAIN_TEMPORARILY
+            | decision_models.ActionKind.REVISE_ITEM
+        ):
+            return (("ledger",),)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 class TransitionCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-transition-result/v1"]
     status: Literal["committed", "committed-with-warning"]
@@ -995,6 +1042,8 @@ class TransitionCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
         _require_state_changed(self.state_changed, True)
         if (self.status == "committed-with-warning") != (self.warning is not None):
             raise ValueError("committed-with-warning must carry one warning")
+        if self.changed_surfaces not in _committed_transition_surfaces(self.action_id.kind):
+            raise ValueError("committed transition must pair a mutating action with its exact supported surfaces")
 
 
 class TransitionRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1795,6 +1844,27 @@ def _apply_action_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
     definition["allOf"] = correlations
 
 
+def _apply_transition_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
+    definition = definitions.get("TransitionCommitted")
+    if not isinstance(definition, dict):
+        return
+    definition["oneOf"] = [
+        {
+            "properties": {
+                "action_id": {"properties": {"kind": {"const": kind.value}}},
+                "changed_surfaces": {
+                    "type": "array",
+                    "prefixItems": [{"const": surface} for surface in surfaces],
+                    "minItems": len(surfaces),
+                    "maxItems": len(surfaces),
+                },
+            }
+        }
+        for kind in decision_models.ActionKind
+        for surfaces in _committed_transition_surfaces(kind)
+    ]
+
+
 def _relative_action(kind: decision_models.ActionKind) -> dict[str, JsonSchemaValue]:
     target = decision_models.action_semantics(kind).subject_kind.value
     if target not in {"attempt", "item"}:
@@ -1926,6 +1996,7 @@ def union_schema_for(boundary_types: tuple[ResultBoundary, ...]) -> dict[str, Js
     definitions: dict[str, JsonSchemaValue] = components[1]
     _apply_boolean_constants(definitions)
     _apply_action_constraints(definitions)
+    _apply_transition_constraints(definitions)
     _apply_relative_action_constraints(definitions)
     _apply_attempt_constraints(definitions)
     return {"type": "object", "anyOf": list[JsonSchemaValue](schemas), "$defs": definitions}

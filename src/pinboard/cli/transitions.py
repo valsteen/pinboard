@@ -186,9 +186,12 @@ def _commit_selected_transition(
             artifacts,
             selected,
             operation_time,
+            lambda: datetime.now(UTC),
         )
     else:
-        committed = lifecycle_operations.commit_direct_transition(store, artifacts, selected, operation_time)
+        committed = lifecycle_operations.commit_direct_transition(
+            store, artifacts, selected, operation_time, lambda: datetime.now(UTC)
+        )
     if isinstance(committed, lifecycle_artifacts.PublishedTransitionFailure):
         if committed.storage_error is not None:
             selectors = tuple(

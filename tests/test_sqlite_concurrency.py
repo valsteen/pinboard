@@ -350,6 +350,7 @@ def _activate_same_prepared_item(
         store,
         selected_command,
         SQLITE_NOW + timedelta(seconds=1),
+        read_authorization_time=lambda: SQLITE_NOW + timedelta(seconds=1),
         actor_task_id=None,
         actor_host_id=None,
         transition_brief_identity=identity,

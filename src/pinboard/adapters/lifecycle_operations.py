@@ -1,5 +1,6 @@
 """Compose shared lifecycle selection with checkout and artifact adapters."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
@@ -215,6 +216,7 @@ def commit_direct_transition(
     artifacts: ArtifactRepository,
     selected: SelectedTransition,
     operation_time: datetime,
+    read_authorization_time: Callable[[], datetime],
 ) -> DecisionResult[CommittedEffect]:
     """Commit a transition whose contract has no candidate or evidence publication phase."""
 
@@ -235,6 +237,7 @@ def commit_direct_transition(
         store,
         command,
         operation_time,
+        read_authorization_time=read_authorization_time,
         actor_task_id=selected.actor_task_id,
         actor_host_id=selected.actor_host_id,
         transition_brief_identity=brief_identity,

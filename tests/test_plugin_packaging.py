@@ -88,8 +88,9 @@ class PluginPackagingTests(unittest.TestCase):
             [
                 str(plugin_root / ".pinboard-runtime" / "environment" / "bin" / "python"),
                 "-c",
-                "import importlib.metadata, pinboard; print(pinboard.__file__); "
-                "print(importlib.metadata.distribution('pinboard').locate_file(''))",
+                "import importlib.metadata, pinboard, sys; print(pinboard.__file__); "
+                "print(importlib.metadata.distribution('pinboard').locate_file('')); "
+                "print(f'prefix={sys.prefix!r} executable={sys.executable!r} sys.path={sys.path!r}', file=sys.stderr)",
             ],
             env={**environment, "PYTHONDONTWRITEBYTECODE": "1"},
             check=True,
@@ -97,8 +98,15 @@ class PluginPackagingTests(unittest.TestCase):
             text=True,
         )
         module_origin, installation_origin = map(Path, origin.stdout.splitlines())
-        self.assertTrue(module_origin.is_relative_to(plugin_root / "src"))
-        self.assertTrue(installation_origin.is_relative_to(plugin_root / ".pinboard-runtime" / "environment"))
+        provenance = (
+            f"module_origin={module_origin!s} installation_origin={installation_origin!s} "
+            f"expected_module_root={plugin_root / 'src'!s} "
+            f"expected_runtime_root={plugin_root / '.pinboard-runtime' / 'environment'!s}; stderr={origin.stderr!r}"
+        )
+        self.assertTrue(module_origin.is_relative_to(plugin_root / "src"), provenance)
+        self.assertTrue(
+            installation_origin.is_relative_to(plugin_root / ".pinboard-runtime" / "environment"), provenance
+        )
         self.assertEqual(
             (ROOT / "scripts" / "pinboard").read_bytes(), (plugin_root / "scripts" / "pinboard").read_bytes()
         )

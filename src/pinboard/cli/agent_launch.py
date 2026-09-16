@@ -16,7 +16,7 @@ def pinboard_launcher_command() -> tuple[str, ...]:
     return (str(Path(sys.executable).with_name("pinboard")),)
 
 
-FRESH_REVIEW_PREPARATION_COMMAND = shlex.join(
+FRESH_REVIEW_PREPARATION_COMMAND: str = shlex.join(
     (*pinboard_launcher_command(), "tool-contract", "--operation", "brief-sources:plan", "--json")
 )
 

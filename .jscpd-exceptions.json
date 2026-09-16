@@ -85,18 +85,18 @@
           },
           {
             "endpoint": {
-              "end": 1091,
+              "end": 1089,
               "endLoc": {
                 "column": 52,
-                "line": 1091,
-                "position": 40661
+                "line": 1089,
+                "position": 40591
               },
               "name": "mcp/contracts.py",
-              "start": 1078,
+              "start": 1076,
               "startLoc": {
                 "column": 12,
-                "line": 1078,
-                "position": 39923
+                "line": 1076,
+                "position": 39853
               }
             },
             "sha256": "18c9aad898f049e0948b63c418b608e0889b4a43b03541922626d7100c12e958"
@@ -109,8 +109,8 @@
         "rationale": "CLI classifies the execution route; MCP validates successful action/surface correlation. Complete and checkpoint actions deliberately have different effect sets while they share one CLI route. Sharing this action inventory would couple independent questions or place transport-specific classification in domain/application."
       },
       "certification": {
-        "evidence_sha256": "2fed0eb9a5393a4bec04b486115c2298ed1f0f7a9369befb1ce5480f64e6b74a",
-        "reviewed_pair_sha256": "096f663527ead8a3d3dc36a1030129109a7bf312b34304857c1aed47d9555605",
+        "evidence_sha256": "888aadfbc646e69096e35776bbf10d66fd66c51112137d9b48d47eaffbcd79e1",
+        "reviewed_pair_sha256": "da1fb313bc6416ba0d7e4c2933905ac88601c60f88ae67f1e57e1453f44e9ec5",
         "reviewer_task_id": "01a0a9c3-151c-7ed3-9dba-1d95af7606ca"
       }
     },

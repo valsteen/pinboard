@@ -134,8 +134,6 @@ class DispatchChoiceBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     receipt: DispatchReceipt
     checkpoint_id: PathComponent
     environment: dispatch_models.DispatchEnvironment
-    actor_task_id: RuntimeIdentity
-    actor_host_id: RuntimeIdentity
     prompt: str | None
 
 

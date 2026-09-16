@@ -56,8 +56,6 @@ class McpJobsTest(CheckpointPackageSupport):
                 },
                 "checkpoint_id": CHECKPOINT_ID,
                 "environment": environment,
-                "actor_task_id": "coordinator",
-                "actor_host_id": "local",
                 "prompt": None,
                 "brief_review": msgspec.json.decode(ready_review(brief)),
                 "review_id": "ready-review",
@@ -70,6 +68,8 @@ class McpJobsTest(CheckpointPackageSupport):
     def test_dispatch_rejects_sibling_options_before_roots_or_store(self) -> None:
         project, work, choice = self.dispatch_fixture()
         invalid_changes: tuple[dict[str, contracts.JsonValue], ...] = (
+            {"actor_task_id": "coordinator"},
+            {"actor_host_id": "local"},
             {"correction_history_id": 1},
             {"environment": {"schema": "unknown"}},
             {"receipt": {"action_id": {"kind": "submit", "subject": "work-a-1"}, "subject_revision": 1}},
@@ -181,8 +181,6 @@ class McpJobsTest(CheckpointPackageSupport):
                 },
                 "checkpoint_id": CHECKPOINT_ID,
                 "environment": environment,
-                "actor_task_id": "coordinator",
-                "actor_host_id": "local",
                 "prompt": None,
                 "brief_review": msgspec.json.decode(ready_review(effective_brief)),
                 "review_id": "correction-review",

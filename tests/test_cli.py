@@ -2587,6 +2587,67 @@ class CliTest(unittest.TestCase):
         self.assertEqual((operation_time + timedelta(seconds=60)).isoformat(), renewed["expires_at"])
         self.assertEqual(3, preparation_clock.now.call_count)
 
+    def test_authority_leaves_preserve_fixed_time_commit_reload_and_stale_rejection(self) -> None:
+        operation_time = SQLITE_NOW + timedelta(seconds=1)
+        for family in ("attempt", "preparation"):
+            for operation in ("renew", "release", "revoke"):
+                with self.subTest(family=family, operation=operation):
+                    state = self.prepared_state(SQLITE_NOW + timedelta(minutes=1))
+                    project, work, store = self.initialized_state(state)
+                    common = ("--project-root", str(project), "--work-root", str(work))
+                    subject = ("--attempt-id", "work-a-1") if family == "attempt" else ("--item-id", "work-c")
+                    lease = "attempt-lease-a" if family == "attempt" else "preparation-c"
+                    generation = "3" if family == "attempt" else "1"
+                    options = ("--ttl-seconds", "600") if operation == "renew" else ()
+                    if operation == "revoke":
+                        options = ("--task-id", "project-owner", "--host-id", "project-host")
+                    before = store.validated_snapshot()
+                    with patch(f"pinboard.cli.{family}_authority.datetime") as clock:
+                        clock.now.return_value = operation_time
+                        rejected, _stdout, _stderr = self.run_cli(
+                            *common,
+                            family,
+                            operation,
+                            *subject,
+                            "--lease-id",
+                            "stale-lease",
+                            "--generation",
+                            generation,
+                            *options,
+                            "--json",
+                        )
+                        self.assertNotEqual(0, rejected)
+                        self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
+                        committed = self.run_json_cli(
+                            *common,
+                            family,
+                            operation,
+                            *subject,
+                            "--lease-id",
+                            lease,
+                            "--generation",
+                            generation,
+                            *options,
+                        )
+                    reopened = SQLiteWorkStore(work / "state.sqlite3")
+                    retained = (
+                        reopened.read_attempt_authority_status(AttemptId("work-a-1"))
+                        if family == "attempt"
+                        else reopened.read_preparation_authority_status(ItemId("work-c"))
+                    )
+                    assert retained is not None
+                    self.assertEqual(committed["status"], retained.status.value)
+                    self.assertEqual(committed["generation"], retained.generation)
+                    expected_expiry = (
+                        operation_time + timedelta(seconds=600) if operation == "renew" else operation_time
+                    )
+                    self.assertEqual(expected_expiry, retained.expires_at)
+                    after = reopened.validated_snapshot()
+                    self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
+                    if operation == "revoke":
+                        self.assertEqual(TaskId("project-owner"), after.transition_receipts[-1].actor_task_id)
+                        self.assertEqual(HostId("project-host"), after.transition_receipts[-1].actor_host_id)
+
     def test_project_task_never_advertises_claimless_activation(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))

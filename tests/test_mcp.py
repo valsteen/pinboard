@@ -859,16 +859,12 @@ class McpTransportTest(unittest.TestCase):
         retained = store.read_attempt_authority_status(AttemptId("work-a-1"))
         self.assertIsNotNone(retained)
         assert retained is not None
-        released = authority_operations.change_attempt_authority(
+        released = authority_operations.release_attempt_authority(
             store,
-            operation="release",
             attempt_id=AttemptId("work-a-1"),
             lease_id=retained.lease_id,
             generation=retained.generation,
-            operation_time=now,
-            expires_at=None,
-            actor_task_id=None,
-            actor_host_id=None,
+            released_at=now,
         )
         self.assertNotIsInstance(released, DecisionFailure)
 
@@ -1240,7 +1236,86 @@ class McpTransportTest(unittest.TestCase):
         self.assertEqual("TRANSITION_INPUT_INVALID", contents[23]["code"])
         self.assertIn(contents[24]["status"], {"committed", "committed-with-warning"})
 
-    def test_shared_authority_operations_reject_invalid_internal_requests(self) -> None:
+    def test_authority_tools_preserve_fixed_time_commit_reload_and_stale_rejection(self) -> None:
+        executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=4)
+        self.addCleanup(executor.shutdown)
+        server = mcp_server.create_server(
+            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=1, line_limit=256)
+        )
+        for family in ("attempt", "preparation"):
+            for operation in ("renew", "release", "revoke"):
+                with (
+                    self.subTest(family=family, operation=operation),
+                    patch("tests.test_mcp.datetime") as fixture_clock,
+                ):
+                    fixture_clock.now.return_value = SQLITE_NOW
+                    temporary, project, roots = self._project()
+                    self.addCleanup(temporary.cleanup)
+                    store = SQLiteWorkStore(roots.database_path)
+                    if family == "preparation":
+                        started = authority_operations.start_preparation_authority(
+                            store,
+                            item_id=ItemId("work-c"),
+                            task_id=TaskId("preparer"),
+                            host_id=HostId("local"),
+                            lease_id=LeaseId("preparation-lease"),
+                            acquired_at=SQLITE_NOW,
+                            expires_at=SQLITE_NOW + timedelta(minutes=5),
+                        )
+                        assert not isinstance(started, DecisionFailure)
+                        retained = started.authority
+                        subject: dict[str, contracts.JsonValue] = {"item_id": "work-c"}
+                        tool = mcp_server.PREPARATION_AUTHORITY_TOOL
+                    else:
+                        retained_attempt = store.read_attempt_authority_status(AttemptId("work-a-1"))
+                        assert retained_attempt is not None
+                        retained = retained_attempt
+                        subject = {"attempt_id": "work-a-1"}
+                        tool = mcp_server.ATTEMPT_AUTHORITY_TOOL
+                    arguments: dict[str, contracts.JsonValue] = {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "operation": operation,
+                        "lease_id": str(retained.lease_id),
+                        "generation": retained.generation,
+                        **subject,
+                    }
+                    if operation == "renew":
+                        arguments["ttl_seconds"] = 600
+                    elif operation == "revoke":
+                        arguments.update(actor_task_id="project-owner", actor_host_id="project-host")
+                    before = store.validated_snapshot()
+                    operation_time = SQLITE_NOW + timedelta(seconds=1)
+                    with patch.object(mcp_server, "datetime") as clock:
+                        clock.now.return_value = operation_time
+                        rejected = _run_async(server.call_tool(tool, arguments | {"lease_id": "stale-lease"}))
+                        assert isinstance(rejected, CallToolResult)
+                        assert isinstance(rejected.structured_content, dict)
+                        self.assertEqual("rejected", rejected.structured_content["status"])
+                        self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
+                        result = _run_async(server.call_tool(tool, arguments))
+                    assert isinstance(result, CallToolResult)
+                    assert isinstance(result.structured_content, dict)
+                    content = result.structured_content
+                    self.assertIn(content["status"], {"committed", "committed-with-warning"})
+                    reopened = SQLiteWorkStore(roots.database_path)
+                    latest = (
+                        reopened.read_attempt_authority_status(AttemptId("work-a-1"))
+                        if family == "attempt"
+                        else reopened.read_preparation_authority_status(ItemId("work-c"))
+                    )
+                    assert latest is not None
+                    self.assertEqual(content["authority_status"], latest.status.value)
+                    self.assertEqual(content["generation"], latest.generation)
+                    expected_expiry = (
+                        operation_time + timedelta(seconds=600) if operation == "renew" else operation_time
+                    )
+                    self.assertEqual(expected_expiry, latest.expires_at)
+                    self.assertEqual(
+                        before.lifecycle.project.revision + 1, reopened.validated_snapshot().lifecycle.project.revision
+                    )
+
+    def test_shared_authority_operations_preserve_missing_state_and_expired_status(self) -> None:
         temporary, _project, roots = self._project()
         self.addCleanup(temporary.cleanup)
         store = SQLiteWorkStore(roots.database_path)
@@ -1261,35 +1336,14 @@ class McpTransportTest(unittest.TestCase):
             expires_at=now + timedelta(minutes=5),
         )
         self.assertIsInstance(missing, DecisionFailure)
-        missing_change = authority_operations.change_attempt_authority(
+        missing_change = authority_operations.release_attempt_authority(
             store,
-            operation="release",
             attempt_id=AttemptId("missing-attempt"),
             lease_id=LeaseId("missing-lease"),
             generation=1,
-            operation_time=now,
-            expires_at=None,
-            actor_task_id=None,
-            actor_host_id=None,
+            released_at=now,
         )
         self.assertIsInstance(missing_change, DecisionFailure)
-        for operation, expires_at, actor_task_id, actor_host_id in (
-            ("renew", None, None, None),
-            ("revoke", None, None, None),
-            ("unsupported", None, None, None),
-        ):
-            with self.subTest(operation=operation), self.assertRaises(ValueError):
-                authority_operations.change_attempt_authority(
-                    store,
-                    operation=operation,
-                    attempt_id=AttemptId("work-a-1"),
-                    lease_id=LeaseId("attempt-lease-a"),
-                    generation=3,
-                    operation_time=now,
-                    expires_at=expires_at,
-                    actor_task_id=actor_task_id,
-                    actor_host_id=actor_host_id,
-                )
 
         started = authority_operations.start_preparation_authority(
             store,
@@ -1305,31 +1359,14 @@ class McpTransportTest(unittest.TestCase):
         self.assertIsNotNone(expired_preparation)
         assert expired_preparation is not None
         self.assertEqual("expired", expired_preparation.status.value)
-        missing_preparation = authority_operations.change_preparation_authority(
+        missing_preparation = authority_operations.release_preparation_authority(
             store,
-            operation="release",
             item_id=ItemId("work-b"),
             lease_id=LeaseId("missing-lease"),
             generation=1,
-            operation_time=now,
-            expires_at=None,
-            actor_task_id=None,
-            actor_host_id=None,
+            released_at=now,
         )
         self.assertIsInstance(missing_preparation, DecisionFailure)
-        for operation, expires_at in (("renew", None), ("revoke", None), ("unsupported", None)):
-            with self.subTest(preparation_operation=operation), self.assertRaises(ValueError):
-                authority_operations.change_preparation_authority(
-                    store,
-                    operation=operation,
-                    item_id=ItemId("work-c"),
-                    lease_id=LeaseId("preparation-lease"),
-                    generation=1,
-                    operation_time=now,
-                    expires_at=expires_at,
-                    actor_task_id=None,
-                    actor_host_id=None,
-                )
 
     def _expected_bytes(self, roots: DurableRoots, item_id: str) -> bytes:
         projected = queries.project_item_status(

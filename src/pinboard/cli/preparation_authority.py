@@ -21,7 +21,7 @@ from pinboard.cli.cli_output import (
     write_json,
 )
 from pinboard.cli.errors import CommandFailure, CommandResult
-from pinboard.domain import authority_models, work_models
+from pinboard.domain import authority_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import ItemId, LeaseId
 from pinboard.domain.ledger import LedgerSnapshot
@@ -125,33 +125,12 @@ def start_preparation(
     return 0
 
 
-def _resolve_supplied_preparation_authority(
-    snapshot: LedgerSnapshot,
-    item_id: ItemId,
-    lease_id: LeaseId,
-    generation: int,
-) -> CommandResult[work_models.PreparationCommandAuthority]:
-    observed_authority = next(
-        (value for value in snapshot.command_preparation_authorities if value.item == item_id),
-        None,
-    )
-    if observed_authority is None:
-        return CommandFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority is not active.", None)
-    return replace(observed_authority, lease_id=lease_id, generation=generation)
-
-
 def _resolve_requested_preparation_change(
     store: ports.WorkStore,
     snapshot: LedgerSnapshot,
-    command: (
-        cli_commands.PreparationAcquireCommand
-        | cli_commands.PreparationTransferCommand
-        | cli_commands.PreparationRenewCommand
-        | cli_commands.PreparationReleaseCommand
-        | cli_commands.PreparationRevokeCommand
-    ),
+    command: (cli_commands.PreparationAcquireCommand | cli_commands.PreparationTransferCommand),
     requested_at: datetime,
-) -> CommandResult[authority_models.PreparationAuthorityOperation]:
+) -> CommandResult[authority_models.AcquireInitialPreparationAuthority | authority_models.TransferPreparationAuthority]:
     match command:
         case cli_commands.PreparationAcquireCommand():
             return authority_models.AcquireInitialPreparationAuthority(
@@ -194,33 +173,6 @@ def _resolve_requested_preparation_change(
                 acquired_at=requested_at,
                 expires_at=requested_at + timedelta(seconds=command.ttl_seconds),
             )
-        case cli_commands.PreparationRenewCommand():
-            supplied_authority = _resolve_supplied_preparation_authority(
-                snapshot, command.item_id, command.lease_id, command.generation
-            )
-            if isinstance(supplied_authority, CommandFailure):
-                return supplied_authority
-            return authority_models.RenewPreparationAuthority(
-                current=supplied_authority,
-                renewed_at=requested_at,
-                expires_at=requested_at + timedelta(seconds=command.ttl_seconds),
-            )
-        case cli_commands.PreparationReleaseCommand():
-            supplied_authority = _resolve_supplied_preparation_authority(
-                snapshot, command.item_id, command.lease_id, command.generation
-            )
-            if isinstance(supplied_authority, CommandFailure):
-                return supplied_authority
-            return authority_models.ReleasePreparationAuthority(current=supplied_authority, released_at=requested_at)
-        case cli_commands.PreparationRevokeCommand():
-            return authority_models.RevokePreparationAuthority(
-                item=command.item_id,
-                lease_id=command.lease_id,
-                generation=command.generation,
-                task_id=command.task_id,
-                host_id=command.host_id,
-                revoked_at=requested_at,
-            )
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -237,13 +189,53 @@ def change_preparation_authority(
     ),
 ) -> CommandResult[int]:
     requested_at = datetime.now(UTC)
-    snapshot = store.read_decision_facts(
-        query_models.DecisionScope((command.item_id,), (), (), (), (), (), (), ()), requested_at
-    ).snapshot
-    requested_change = _resolve_requested_preparation_change(store, snapshot, command, requested_at)
-    if isinstance(requested_change, CommandFailure):
-        return requested_change
-    commit_result = decide_and_commit_preparation_authority_change(store, requested_change)
+    match command:
+        case cli_commands.PreparationAcquireCommand() | cli_commands.PreparationTransferCommand():
+            snapshot = store.read_decision_facts(
+                query_models.DecisionScope((command.item_id,), (), (), (), (), (), (), ()), requested_at
+            ).snapshot
+            requested_change = _resolve_requested_preparation_change(store, snapshot, command, requested_at)
+            if isinstance(requested_change, CommandFailure):
+                return requested_change
+            commit_result = decide_and_commit_preparation_authority_change(store, requested_change)
+        case cli_commands.PreparationRenewCommand():
+            committed = authority_operations.renew_preparation_authority(
+                store,
+                item_id=command.item_id,
+                lease_id=command.lease_id,
+                generation=command.generation,
+                renewed_at=requested_at,
+                expires_at=requested_at + timedelta(seconds=command.ttl_seconds),
+            )
+            if isinstance(committed, DecisionFailure):
+                return CommandFailure(committed.code, committed.message, committed.details)
+            commit_result = committed.effect
+        case cli_commands.PreparationReleaseCommand():
+            committed = authority_operations.release_preparation_authority(
+                store,
+                item_id=command.item_id,
+                lease_id=command.lease_id,
+                generation=command.generation,
+                released_at=requested_at,
+            )
+            if isinstance(committed, DecisionFailure):
+                return CommandFailure(committed.code, committed.message, committed.details)
+            commit_result = committed.effect
+        case cli_commands.PreparationRevokeCommand():
+            committed = authority_operations.revoke_preparation_authority(
+                store,
+                item_id=command.item_id,
+                lease_id=command.lease_id,
+                generation=command.generation,
+                actor_task_id=command.task_id,
+                actor_host_id=command.host_id,
+                revoked_at=requested_at,
+            )
+            if isinstance(committed, DecisionFailure):
+                return CommandFailure(committed.code, committed.message, committed.details)
+            commit_result = committed.effect
+        case _ as unreachable:
+            assert_never(unreachable)
     if isinstance(commit_result, DecisionFailure):
         return CommandFailure(commit_result.code, commit_result.message, commit_result.details)
     refresh_result = work_views.refresh_effect(durable, store, commit_result, datetime.now(UTC))

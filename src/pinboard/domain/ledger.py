@@ -65,6 +65,12 @@ class LedgerSnapshot:
             None,
         )
 
+    def command_attempt_authority(self, attempt_id: AttemptId) -> work_models.CommandAttemptAuthority | None:
+        return next((value for value in self.command_attempt_authorities if value.attempt == attempt_id), None)
+
+    def command_preparation_authority(self, item_id: ItemId) -> work_models.PreparationCommandAuthority | None:
+        return next((value for value in self.command_preparation_authorities if value.item == item_id), None)
+
     def preparation_for(
         self, item: ItemId, lease_id: LeaseId | None, generation: int
     ) -> work_models.PreparationAuthority | None:

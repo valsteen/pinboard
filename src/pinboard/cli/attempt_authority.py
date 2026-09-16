@@ -76,38 +76,29 @@ def change_attempt_authority(
                 expires_at=requested_at + timedelta(seconds=command.ttl_seconds),
             )
         case cli_commands.AttemptRenewCommand():
-            committed = authority_operations.change_attempt_authority(
+            committed = authority_operations.renew_attempt_authority(
                 store,
-                operation="renew",
                 attempt_id=command.attempt_id,
                 lease_id=command.lease_id,
                 generation=command.generation,
-                operation_time=requested_at,
+                renewed_at=requested_at,
                 expires_at=requested_at + timedelta(seconds=command.ttl_seconds),
-                actor_task_id=None,
-                actor_host_id=None,
             )
         case cli_commands.AttemptReleaseCommand():
-            committed = authority_operations.change_attempt_authority(
+            committed = authority_operations.release_attempt_authority(
                 store,
-                operation="release",
                 attempt_id=command.attempt_id,
                 lease_id=command.lease_id,
                 generation=command.generation,
-                operation_time=requested_at,
-                expires_at=None,
-                actor_task_id=None,
-                actor_host_id=None,
+                released_at=requested_at,
             )
         case cli_commands.AttemptRevokeCommand():
-            committed = authority_operations.change_attempt_authority(
+            committed = authority_operations.revoke_attempt_authority(
                 store,
-                operation="revoke",
                 attempt_id=command.attempt_id,
                 lease_id=command.lease_id,
                 generation=command.generation,
-                operation_time=requested_at,
-                expires_at=None,
+                revoked_at=requested_at,
                 actor_task_id=command.task_id,
                 actor_host_id=command.host_id,
             )

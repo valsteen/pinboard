@@ -1,7 +1,7 @@
 """Shared preparation- and attempt-authority use cases.
 
-CLI and MCP supply exact boundary values. This module owns operation selection,
-locked application mutation, and the authoritative post-commit reload.
+CLI and MCP select exact use cases. This module enriches supplied lease tokens
+from current facts, invokes locked application mutation, and reloads authority.
 """
 
 from dataclasses import dataclass, replace
@@ -9,7 +9,7 @@ from datetime import datetime
 
 from pinboard.application import ports, query_models, service
 from pinboard.application.mutation_models import CommittedEffect
-from pinboard.domain import authority_models
+from pinboard.domain import authority_models, work_models
 from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
@@ -94,54 +94,79 @@ def acquire_attempt_authority(
     )
 
 
-def change_attempt_authority(
+def _supplied_attempt_authority(
     store: ports.WorkStore,
-    *,
-    operation: str,
     attempt_id: AttemptId,
     lease_id: LeaseId,
     generation: int,
     operation_time: datetime,
-    expires_at: datetime | None,
-    actor_task_id: TaskId | None,
-    actor_host_id: HostId | None,
-) -> DecisionResult[AttemptAuthorityMutationResult]:
+) -> work_models.CommandAttemptAuthority | None:
     snapshot = store.read_decision_facts(
         query_models.DecisionScope((), (), (), (), (attempt_id,), (), (), ()), operation_time
     ).snapshot
-    current = next(
-        (value for value in snapshot.command_attempt_authorities if value.attempt == attempt_id),
-        None,
+    current = snapshot.command_attempt_authority(attempt_id)
+    return None if current is None else replace(current, lease_id=lease_id, generation=generation)
+
+
+def renew_attempt_authority(
+    store: ports.WorkStore,
+    *,
+    attempt_id: AttemptId,
+    lease_id: LeaseId,
+    generation: int,
+    renewed_at: datetime,
+    expires_at: datetime,
+) -> DecisionResult[AttemptAuthorityMutationResult]:
+    supplied = _supplied_attempt_authority(store, attempt_id, lease_id, generation, renewed_at)
+    if supplied is None:
+        return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority is not active.", None)
+    return _committed_attempt_result(
+        store,
+        attempt_id,
+        service.decide_and_commit_attempt_authority_change(
+            store, authority_models.RenewAttemptAuthority(supplied, renewed_at, expires_at)
+        ),
     )
-    if operation in {"renew", "release"}:
-        if current is None:
-            return DecisionFailure(
-                DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
-                "Attempt authority is not active.",
-                None,
-            )
-        supplied = replace(current, lease_id=lease_id, generation=generation)
-        if operation == "renew":
-            if expires_at is None:
-                raise ValueError("Attempt renewal requires an expiry.")
-            requested: authority_models.AttemptAuthorityOperation = authority_models.RenewAttemptAuthority(
-                supplied, operation_time, expires_at
-            )
-        else:
-            requested = authority_models.ReleaseAttemptAuthority(supplied, operation_time)
-    elif operation == "revoke":
-        if actor_task_id is None or actor_host_id is None:
-            raise ValueError("Attempt revocation requires project actor attribution.")
-        requested = authority_models.RevokeAttemptAuthority(
-            attempt_id,
-            lease_id,
-            generation,
-            actor_task_id,
-            actor_host_id,
-            operation_time,
-        )
-    else:
-        raise ValueError(f"Unsupported attempt authority operation '{operation}'.")
+
+
+def release_attempt_authority(
+    store: ports.WorkStore,
+    *,
+    attempt_id: AttemptId,
+    lease_id: LeaseId,
+    generation: int,
+    released_at: datetime,
+) -> DecisionResult[AttemptAuthorityMutationResult]:
+    supplied = _supplied_attempt_authority(store, attempt_id, lease_id, generation, released_at)
+    if supplied is None:
+        return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority is not active.", None)
+    return _committed_attempt_result(
+        store,
+        attempt_id,
+        service.decide_and_commit_attempt_authority_change(
+            store, authority_models.ReleaseAttemptAuthority(supplied, released_at)
+        ),
+    )
+
+
+def revoke_attempt_authority(
+    store: ports.WorkStore,
+    *,
+    attempt_id: AttemptId,
+    lease_id: LeaseId,
+    generation: int,
+    actor_task_id: TaskId,
+    actor_host_id: HostId,
+    revoked_at: datetime,
+) -> DecisionResult[AttemptAuthorityMutationResult]:
+    requested = authority_models.RevokeAttemptAuthority(
+        attempt_id,
+        lease_id,
+        generation,
+        actor_task_id,
+        actor_host_id,
+        revoked_at,
+    )
     return _committed_attempt_result(
         store,
         attempt_id,
@@ -189,54 +214,79 @@ def start_preparation_authority(
     return PreparationAuthorityMutationResult(result.effect, retained)
 
 
-def change_preparation_authority(
+def _supplied_preparation_authority(
     store: ports.WorkStore,
-    *,
-    operation: str,
     item_id: ItemId,
     lease_id: LeaseId,
     generation: int,
     operation_time: datetime,
-    expires_at: datetime | None,
-    actor_task_id: TaskId | None,
-    actor_host_id: HostId | None,
-) -> DecisionResult[PreparationAuthorityMutationResult]:
+) -> work_models.PreparationCommandAuthority | None:
     snapshot = store.read_decision_facts(
         query_models.DecisionScope((item_id,), (), (), (), (), (), (), ()), operation_time
     ).snapshot
-    current = next(
-        (value for value in snapshot.command_preparation_authorities if value.item == item_id),
-        None,
+    current = snapshot.command_preparation_authority(item_id)
+    return None if current is None else replace(current, lease_id=lease_id, generation=generation)
+
+
+def renew_preparation_authority(
+    store: ports.WorkStore,
+    *,
+    item_id: ItemId,
+    lease_id: LeaseId,
+    generation: int,
+    renewed_at: datetime,
+    expires_at: datetime,
+) -> DecisionResult[PreparationAuthorityMutationResult]:
+    supplied = _supplied_preparation_authority(store, item_id, lease_id, generation, renewed_at)
+    if supplied is None:
+        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority is not active.", None)
+    return _committed_preparation_result(
+        store,
+        item_id,
+        service.decide_and_commit_preparation_authority_change(
+            store, authority_models.RenewPreparationAuthority(supplied, renewed_at, expires_at)
+        ),
     )
-    if operation in {"renew", "release"}:
-        if current is None:
-            return DecisionFailure(
-                DecisionFailureCode.ACTION_NOT_AVAILABLE,
-                "Preparation authority is not active.",
-                None,
-            )
-        supplied = replace(current, lease_id=lease_id, generation=generation)
-        if operation == "renew":
-            if expires_at is None:
-                raise ValueError("Preparation renewal requires an expiry.")
-            requested: authority_models.PreparationAuthorityOperation = authority_models.RenewPreparationAuthority(
-                supplied, operation_time, expires_at
-            )
-        else:
-            requested = authority_models.ReleasePreparationAuthority(supplied, operation_time)
-    elif operation == "revoke":
-        if actor_task_id is None or actor_host_id is None:
-            raise ValueError("Preparation revocation requires project actor attribution.")
-        requested = authority_models.RevokePreparationAuthority(
-            item_id,
-            lease_id,
-            generation,
-            actor_task_id,
-            actor_host_id,
-            operation_time,
-        )
-    else:
-        raise ValueError(f"Unsupported preparation authority operation '{operation}'.")
+
+
+def release_preparation_authority(
+    store: ports.WorkStore,
+    *,
+    item_id: ItemId,
+    lease_id: LeaseId,
+    generation: int,
+    released_at: datetime,
+) -> DecisionResult[PreparationAuthorityMutationResult]:
+    supplied = _supplied_preparation_authority(store, item_id, lease_id, generation, released_at)
+    if supplied is None:
+        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority is not active.", None)
+    return _committed_preparation_result(
+        store,
+        item_id,
+        service.decide_and_commit_preparation_authority_change(
+            store, authority_models.ReleasePreparationAuthority(supplied, released_at)
+        ),
+    )
+
+
+def revoke_preparation_authority(
+    store: ports.WorkStore,
+    *,
+    item_id: ItemId,
+    lease_id: LeaseId,
+    generation: int,
+    actor_task_id: TaskId,
+    actor_host_id: HostId,
+    revoked_at: datetime,
+) -> DecisionResult[PreparationAuthorityMutationResult]:
+    requested = authority_models.RevokePreparationAuthority(
+        item_id,
+        lease_id,
+        generation,
+        actor_task_id,
+        actor_host_id,
+        revoked_at,
+    )
     return _committed_preparation_result(
         store,
         item_id,

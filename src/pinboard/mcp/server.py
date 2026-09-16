@@ -1705,38 +1705,29 @@ def _preparation_authority(
                 expires_at=now + timedelta(seconds=request.ttl_seconds),
             )
         case contracts.PreparationAuthorityRenewRequest():
-            result = authority_operations.change_preparation_authority(
+            result = authority_operations.renew_preparation_authority(
                 store,
-                operation="renew",
                 item_id=ItemId(request.item_id),
                 lease_id=LeaseId(request.lease_id),
                 generation=request.generation,
-                operation_time=now,
+                renewed_at=now,
                 expires_at=now + timedelta(seconds=request.ttl_seconds),
-                actor_task_id=None,
-                actor_host_id=None,
             )
         case contracts.PreparationAuthorityReleaseRequest():
-            result = authority_operations.change_preparation_authority(
+            result = authority_operations.release_preparation_authority(
                 store,
-                operation="release",
                 item_id=ItemId(request.item_id),
                 lease_id=LeaseId(request.lease_id),
                 generation=request.generation,
-                operation_time=now,
-                expires_at=None,
-                actor_task_id=None,
-                actor_host_id=None,
+                released_at=now,
             )
         case contracts.PreparationAuthorityRevokeRequest():
-            result = authority_operations.change_preparation_authority(
+            result = authority_operations.revoke_preparation_authority(
                 store,
-                operation="revoke",
                 item_id=ItemId(request.item_id),
                 lease_id=LeaseId(request.lease_id),
                 generation=request.generation,
-                operation_time=now,
-                expires_at=None,
+                revoked_at=now,
                 actor_task_id=TaskId(request.actor_task_id),
                 actor_host_id=HostId(request.actor_host_id),
             )
@@ -1864,38 +1855,29 @@ def _attempt_authority(
                 expires_at=now + timedelta(seconds=request.ttl_seconds),
             )
         case contracts.AttemptAuthorityRenewRequest():
-            result = authority_operations.change_attempt_authority(
+            result = authority_operations.renew_attempt_authority(
                 store,
-                operation="renew",
                 attempt_id=AttemptId(request.attempt_id),
                 lease_id=LeaseId(request.lease_id),
                 generation=request.generation,
-                operation_time=now,
+                renewed_at=now,
                 expires_at=now + timedelta(seconds=request.ttl_seconds),
-                actor_task_id=None,
-                actor_host_id=None,
             )
         case contracts.AttemptAuthorityReleaseRequest():
-            result = authority_operations.change_attempt_authority(
+            result = authority_operations.release_attempt_authority(
                 store,
-                operation="release",
                 attempt_id=AttemptId(request.attempt_id),
                 lease_id=LeaseId(request.lease_id),
                 generation=request.generation,
-                operation_time=now,
-                expires_at=None,
-                actor_task_id=None,
-                actor_host_id=None,
+                released_at=now,
             )
         case contracts.AttemptAuthorityRevokeRequest():
-            result = authority_operations.change_attempt_authority(
+            result = authority_operations.revoke_attempt_authority(
                 store,
-                operation="revoke",
                 attempt_id=AttemptId(request.attempt_id),
                 lease_id=LeaseId(request.lease_id),
                 generation=request.generation,
-                operation_time=now,
-                expires_at=None,
+                revoked_at=now,
                 actor_task_id=TaskId(request.actor_task_id),
                 actor_host_id=HostId(request.actor_host_id),
             )

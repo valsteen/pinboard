@@ -1588,6 +1588,24 @@ def _authority_conflict(
     return None if retained is None else _authority_identity(retained)
 
 
+def _authority_status_fields(
+    retained: query_models.PreparationAuthorityStatus | query_models.AttemptAuthorityStatus | None,
+) -> dict[str, JsonValue]:
+    """Render read-only authority presence; callers retain exact family-specific identity."""
+    return {
+        "status": "absent" if retained is None else "present",
+        **(
+            {}
+            if retained is None
+            else {**_authority_identity(retained), "acquired_at": retained.acquired_at.isoformat()}
+        ),
+        "state_changed": False,
+        "effect": EffectDisposition.UNCHANGED.value,
+        "retry": "safe-to-repeat",
+        "changed_surfaces": [],
+    }
+
+
 def _committed_authority_fields(effect: CommittedEffect, warning: ViewWarning | None) -> dict[str, JsonValue]:
     """Render the durable receipt and optional warning; callers refresh views explicitly."""
     return {
@@ -1648,11 +1666,13 @@ def _preparation_authority(
                 "message": f"Cannot perform preparation authority operation: {error}",
                 "conflict": None,
                 "state_changed": False,
-                "effect": EffectDisposition.UNCHANGED.value,
-                "retry": RetryDisposition.CORRECT_INPUT.value,
-                "changed_surfaces": [],
-                "observed": [],
-                "mismatches": [],
+                **_authority_rejection_details(
+                    DecisionFailure(
+                        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                        f"Cannot perform preparation authority operation: {error}",
+                        None,
+                    )
+                ),
             },
             "rejected",
             None,
@@ -1661,30 +1681,15 @@ def _preparation_authority(
     now = datetime.now(UTC)
     if isinstance(request, contracts.PreparationAuthorityStatusRequest):
         selected = authority_operations.preparation_authority_status(store, ItemId(request.item_id), now)
-        if selected is None:
-            content: dict[str, JsonValue] = {
-                "schema": "pinboard-mcp-preparation-authority-result/v1",
-                "status": "absent",
-                "item_id": request.item_id,
-                "state_changed": False,
-                "effect": EffectDisposition.UNCHANGED.value,
-                "retry": "safe-to-repeat",
-                "changed_surfaces": [],
-            }
-        else:
-            content = {
-                "schema": "pinboard-mcp-preparation-authority-result/v1",
-                "status": "present",
-                "item_id": selected.item_id,
-                "definition_revision": selected.definition_revision,
-                "definition_digest": selected.definition_digest,
-                **_authority_identity(selected),
-                "acquired_at": selected.acquired_at.isoformat(),
-                "state_changed": False,
-                "effect": EffectDisposition.UNCHANGED.value,
-                "retry": "safe-to-repeat",
-                "changed_surfaces": [],
-            }
+        content: dict[str, JsonValue] = {
+            "schema": "pinboard-mcp-preparation-authority-result/v1",
+            "item_id": request.item_id,
+            **_authority_status_fields(selected),
+        }
+        if selected is not None:
+            content.update(
+                definition_revision=selected.definition_revision, definition_digest=selected.definition_digest
+            )
         token.checkpoint()
         return OperationResult(content, "ok", None)
     token.checkpoint()
@@ -1824,11 +1829,13 @@ def _attempt_authority(
                 "message": f"Cannot perform attempt authority operation: {error}",
                 "conflict": None,
                 "state_changed": False,
-                "effect": EffectDisposition.UNCHANGED.value,
-                "retry": RetryDisposition.CORRECT_INPUT.value,
-                "changed_surfaces": [],
-                "observed": [],
-                "mismatches": [],
+                **_authority_rejection_details(
+                    DecisionFailure(
+                        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                        f"Cannot perform attempt authority operation: {error}",
+                        None,
+                    )
+                ),
             },
             "rejected",
             None,
@@ -1837,28 +1844,11 @@ def _attempt_authority(
     now = datetime.now(UTC)
     if isinstance(request, contracts.AttemptAuthorityStatusRequest):
         selected = authority_operations.attempt_authority_status(store, AttemptId(request.attempt_id), now)
-        if selected is None:
-            content: dict[str, JsonValue] = {
-                "schema": "pinboard-mcp-attempt-authority-result/v1",
-                "status": "absent",
-                "attempt_id": request.attempt_id,
-                "state_changed": False,
-                "effect": EffectDisposition.UNCHANGED.value,
-                "retry": "safe-to-repeat",
-                "changed_surfaces": [],
-            }
-        else:
-            content = {
-                "schema": "pinboard-mcp-attempt-authority-result/v1",
-                "status": "present",
-                "attempt_id": selected.attempt_id,
-                **_authority_identity(selected),
-                "acquired_at": selected.acquired_at.isoformat(),
-                "state_changed": False,
-                "effect": EffectDisposition.UNCHANGED.value,
-                "retry": "safe-to-repeat",
-                "changed_surfaces": [],
-            }
+        content: dict[str, JsonValue] = {
+            "schema": "pinboard-mcp-attempt-authority-result/v1",
+            "attempt_id": request.attempt_id,
+            **_authority_status_fields(selected),
+        }
         token.checkpoint()
         return OperationResult(content, "ok", None)
     token.checkpoint()

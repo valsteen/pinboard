@@ -63,7 +63,7 @@ known-first-party = ["pinboard", "tests"]
 
 [tool.pyrefly]
 python-version = "3.14"
-project-includes = ["src", "tests", "docs/how_it_works"]
+project-includes = ["src", "tests", "docs/how_it_works", "scripts/check_duplication.py"]
 search-path = ["."]
 preset = "strict"
 min-severity = "warn"

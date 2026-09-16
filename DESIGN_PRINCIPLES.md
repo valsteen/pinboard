@@ -229,6 +229,8 @@ Use a reversible pilot before applying a new decomposition broadly:
 
 Stop when another fold would erase a product distinction, scatter one exhaustive decision, create a generic dumping ground, or add more conversion machinery than repeated ownership it removes.
 
+Duplication matches prompt an ownership review, not automatic consolidation. Share repeated behavior only when a reversible pilot gives a real decision, invariant or conversion one clearer owner. Retain an exact independently reviewed occurrence when sharing would weaken a required boundary shape or couple independent decisions. Name the concrete owners, required distinction and falsifying evidence; recompute the matched occurrences and direct residue after the last fold. Byte certification preserves that reviewed occurrence identity, not the truth of the semantic judgment.
+
 ### Evaluate the result on independent axes
 
 Do not use one metric as a proxy for architecture quality. Report at least:

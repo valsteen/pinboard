@@ -1,0 +1,342 @@
+{
+  "schema": "pinboard-duplication-exceptions/v1",
+  "detector_version": "5.1.2",
+  "records": [
+    {
+      "identity": {
+        "id": "application-transition-and-checkpoint",
+        "format": "python",
+        "tokens": 88,
+        "lines": 17,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 716,
+              "endLoc": {
+                "column": 33,
+                "line": 716,
+                "position": 29564
+              },
+              "name": "application/service.py",
+              "start": 700,
+              "startLoc": {
+                "column": 17,
+                "line": 700,
+                "position": 28843
+              }
+            },
+            "sha256": "daa21b54a0936382e0160d5d302ccfdd48ac2eda0e9555a222d070b927555775"
+          },
+          {
+            "endpoint": {
+              "end": 794,
+              "endLoc": {
+                "column": 33,
+                "line": 794,
+                "position": 32744
+              },
+              "name": "application/service.py",
+              "start": 778,
+              "startLoc": {
+                "column": 45,
+                "line": 778,
+                "position": 32023
+              }
+            },
+            "sha256": "daa21b54a0936382e0160d5d302ccfdd48ac2eda0e9555a222d070b927555775"
+          }
+        ],
+        "owners": [
+          "src/pinboard/application/service.py#decide_and_commit_transition",
+          "src/pinboard/application/service.py#decide_and_commit_checkpoint_acceptance"
+        ],
+        "rationale": "Both entry points visibly own their distinct transaction, allocation and mutation projection. Final fact reread and fresh clock authorization are already consolidated in _read_authorize_and_decide. Folding the remaining typed signatures and transaction-to-projection sequence would require callback-driven allocation/projection or lose checkpoint-specific artifact allocation; those are independently required use-case contracts."
+      },
+      "certification": {
+        "reviewer_task_id": "01a0a970-0a0d-7ba2-a214-20f5c5ac50e5",
+        "reviewed_pair_sha256": "c22daa37635e0eb157da4e4daa7009df00bcb774b7a79bb3ca026b06059341ca",
+        "evidence_sha256": "68886019993d298a909eab5da730270a03c0cedf8a27a25ecde6cfde7e03e947"
+      }
+    },
+    {
+      "identity": {
+        "id": "cli-route-and-mcp-effect",
+        "format": "python",
+        "tokens": 84,
+        "lines": 14,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 712,
+              "endLoc": {
+                "column": 52,
+                "line": 712,
+                "position": 30581
+              },
+              "name": "cli/tool_contract.py",
+              "start": 699,
+              "startLoc": {
+                "column": 12,
+                "line": 699,
+                "position": 29843
+              }
+            },
+            "sha256": "18c9aad898f049e0948b63c418b608e0889b4a43b03541922626d7100c12e958"
+          },
+          {
+            "endpoint": {
+              "end": 1019,
+              "endLoc": {
+                "column": 52,
+                "line": 1019,
+                "position": 38308
+              },
+              "name": "mcp/contracts.py",
+              "start": 1006,
+              "startLoc": {
+                "column": 12,
+                "line": 1006,
+                "position": 37570
+              }
+            },
+            "sha256": "18c9aad898f049e0948b63c418b608e0889b4a43b03541922626d7100c12e958"
+          }
+        ],
+        "owners": [
+          "src/pinboard/cli/tool_contract.py#_action_execution_route",
+          "src/pinboard/mcp/contracts.py#_committed_transition_surfaces"
+        ],
+        "rationale": "CLI classifies the execution route; MCP validates successful action/surface correlation. Complete and checkpoint actions deliberately have different effect sets while they share one CLI route. Sharing this action inventory would couple independent questions or place transport-specific classification in domain/application."
+      },
+      "certification": {
+        "reviewer_task_id": "01a0a970-0a0d-7ba2-a214-20f5c5ac50e5",
+        "reviewed_pair_sha256": "e2325db7e67a064e01770cde1ca8826b516cb33e14c5929f179f970410773cf3",
+        "evidence_sha256": "68886019993d298a909eab5da730270a03c0cedf8a27a25ecde6cfde7e03e947"
+      }
+    },
+    {
+      "identity": {
+        "id": "internal-authority-input-boundaries",
+        "format": "python",
+        "tokens": 69,
+        "lines": 15,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 1641,
+              "endLoc": {
+                "column": 18,
+                "line": 1641,
+                "position": 64030
+              },
+              "name": "mcp/server.py",
+              "start": 1627,
+              "startLoc": {
+                "column": 11,
+                "line": 1627,
+                "position": 63504
+              }
+            },
+            "sha256": "2ee690cd50ee0b517ebc1c1cc101f92882c00a8d93156f8c7acdeb1e40ab855a"
+          },
+          {
+            "endpoint": {
+              "end": 1804,
+              "endLoc": {
+                "column": 18,
+                "line": 1804,
+                "position": 70534
+              },
+              "name": "mcp/server.py",
+              "start": 1790,
+              "startLoc": {
+                "column": 14,
+                "line": 1790,
+                "position": 70008
+              }
+            },
+            "sha256": "2ee690cd50ee0b517ebc1c1cc101f92882c00a8d93156f8c7acdeb1e40ab855a"
+          }
+        ],
+        "owners": [
+          "src/pinboard/mcp/server.py#_preparation_authority",
+          "src/pinboard/mcp/server.py#_attempt_authority"
+        ],
+        "rationale": "Each boundary decodes its own closed exact request union inside bounded admission, retaining item versus attempt scope and omitted-versus-null claims. A typed-handler pilot would leave these raw SDK-boundary wrappers in place and add a second callable per family without removing conversion; a shared decoder/dispatch would couple distinct unions and scope identities. Retain exact boundaries rather than a broad internal namespace."
+      },
+      "certification": {
+        "reviewer_task_id": "01a0a970-0a0d-7ba2-a214-20f5c5ac50e5",
+        "reviewed_pair_sha256": "aab4cf777dc8e7750e1b1cef4868f16f555df9455dfecfd0d5acb4d0dd8f2506",
+        "evidence_sha256": "68886019993d298a909eab5da730270a03c0cedf8a27a25ecde6cfde7e03e947"
+      }
+    },
+    {
+      "identity": {
+        "id": "authority-revocation-and-rejection",
+        "format": "python",
+        "tokens": 73,
+        "lines": 15,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 1749,
+              "endLoc": {
+                "column": 25,
+                "line": 1749,
+                "position": 68529
+              },
+              "name": "mcp/server.py",
+              "start": 1735,
+              "startLoc": {
+                "column": 46,
+                "line": 1735,
+                "position": 67983
+              }
+            },
+            "sha256": "2e077a55be4619031225a6460885cd0e9c7d9148eeab6562e18780331290f4d4"
+          },
+          {
+            "endpoint": {
+              "end": 1908,
+              "endLoc": {
+                "column": 25,
+                "line": 1908,
+                "position": 74847
+              },
+              "name": "mcp/server.py",
+              "start": 1894,
+              "startLoc": {
+                "column": 55,
+                "line": 1894,
+                "position": 74301
+              }
+            },
+            "sha256": "2e077a55be4619031225a6460885cd0e9c7d9148eeab6562e18780331290f4d4"
+          }
+        ],
+        "owners": [
+          "src/pinboard/mcp/server.py#_preparation_authority",
+          "src/pinboard/mcp/server.py#_attempt_authority"
+        ],
+        "rationale": "Distinct exact request leaves invoke different application operations with nominal ItemId versus AttemptId scope, then render different schema/scope/conflict records. Shared claim and rejection-detail conversion already owns the repeated representation. Further folding requires a cross-family workflow callback or late reclassification of a selected leaf."
+      },
+      "certification": {
+        "reviewer_task_id": "01a0a970-0a0d-7ba2-a214-20f5c5ac50e5",
+        "reviewed_pair_sha256": "ff14885f87ad6ced92410e9362c07a21ff8c8db8bda539348f3d2893f1dbb9fa",
+        "evidence_sha256": "68886019993d298a909eab5da730270a03c0cedf8a27a25ecde6cfde7e03e947"
+      }
+    },
+    {
+      "identity": {
+        "id": "authority-rejection-and-view-effect",
+        "format": "python",
+        "tokens": 68,
+        "lines": 16,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 1770,
+              "endLoc": {
+                "column": 31,
+                "line": 1770,
+                "position": 69321
+              },
+              "name": "mcp/server.py",
+              "start": 1755,
+              "startLoc": {
+                "column": 99,
+                "line": 1755,
+                "position": 68894
+              }
+            },
+            "sha256": "f8dfc07a511f17dbd45418a675d7504b640244c1f56d8eb88f084b0bf0928f55"
+          },
+          {
+            "endpoint": {
+              "end": 1929,
+              "endLoc": {
+                "column": 31,
+                "line": 1929,
+                "position": 75643
+              },
+              "name": "mcp/server.py",
+              "start": 1914,
+              "startLoc": {
+                "column": 101,
+                "line": 1914,
+                "position": 75216
+              }
+            },
+            "sha256": "f8dfc07a511f17dbd45418a675d7504b640244c1f56d8eb88f084b0bf0928f55"
+          }
+        ],
+        "owners": [
+          "src/pinboard/mcp/server.py#_preparation_authority",
+          "src/pinboard/mcp/server.py#_attempt_authority"
+        ],
+        "rationale": "Each family reloads its distinct authority conflict after rejection. Successful operations explicitly refresh affected views before rendering the already-consolidated authority claims and committed receipt/warning. Hiding the remaining view effect inside a conversion would make a pure-looking renderer effectful; sharing the whole workflow would couple distinct scope and mutation-result types."
+      },
+      "certification": {
+        "reviewer_task_id": "01a0a970-0a0d-7ba2-a214-20f5c5ac50e5",
+        "reviewed_pair_sha256": "7e1ec7e548c0d002f72ad2d1080e22e39cfce000b82e785f5917569e1e11d2f8",
+        "evidence_sha256": "68886019993d298a909eab5da730270a03c0cedf8a27a25ecde6cfde7e03e947"
+      }
+    },
+    {
+      "identity": {
+        "id": "public-sdk-authority-signatures",
+        "format": "python",
+        "tokens": 96,
+        "lines": 13,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 2158,
+              "endLoc": {
+                "column": 30,
+                "line": 2158,
+                "position": 83934
+              },
+              "name": "mcp/server.py",
+              "start": 2146,
+              "startLoc": {
+                "column": 15,
+                "line": 2146,
+                "position": 83184
+              }
+            },
+            "sha256": "f3fe9049c807a4d510c1b57ca9a52eaaa456683caa2a66f554419f492c8a37dc"
+          },
+          {
+            "endpoint": {
+              "end": 2197,
+              "endLoc": {
+                "column": 30,
+                "line": 2197,
+                "position": 85405
+              },
+              "name": "mcp/server.py",
+              "start": 2185,
+              "startLoc": {
+                "column": 18,
+                "line": 2185,
+                "position": 84655
+              }
+            },
+            "sha256": "f3fe9049c807a4d510c1b57ca9a52eaaa456683caa2a66f554419f492c8a37dc"
+          }
+        ],
+        "owners": [
+          "src/pinboard/mcp/server.py#create_server.preparation_authority",
+          "src/pinboard/mcp/server.py#create_server.attempt_authority"
+        ],
+        "rationale": "The SDK discovers named flat public arguments, including sentinel-based omitted-versus-null handling, from these signatures. Preparation and attempt tools negotiate separate strict unions and scope identities. Replacing signatures with a generic namespace or variadic wrapper changes SDK discovery/schema or adds custom signature machinery; both wrappers must keep bounded execution explicit."
+      },
+      "certification": {
+        "reviewer_task_id": "01a0a970-0a0d-7ba2-a214-20f5c5ac50e5",
+        "reviewed_pair_sha256": "665467f6a2bc91565efc1239cec8991aaa98e96f5986eb1208e650953f25f2ca",
+        "evidence_sha256": "68886019993d298a909eab5da730270a03c0cedf8a27a25ecde6cfde7e03e947"
+      }
+    }
+  ]
+}

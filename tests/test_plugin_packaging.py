@@ -264,7 +264,7 @@ class PluginPackagingTests(unittest.TestCase):
 
     def test_copied_plugin_launcher_runs_complete_no_model_workflow_without_mutating_plugin_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            sandbox = Path(directory)
+            sandbox = Path(directory).resolve()
             plugin_root = sandbox / "copied-plugin"
             plugin_root.mkdir()
             copied_repository_payload(ROOT, plugin_root)

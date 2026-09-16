@@ -121,11 +121,20 @@ Canonical encoding uses the application JSON codec with sorted object keys. The 
 - `reviewed_authority_set_sha256` is SHA-256 of the canonical encoded ordered tuple of reviewed-authority records;
 - each `reviewed_sha256` remains the digest of the selected source bytes.
 
-Prepare strict `pinboard-work-brief-review/v2` JSON with `attempt_id`, stable `checkpoint_id`, both digests, independent `reviewer_task_id`, `status: complete`, `verdict: ready`, and one coverage result per brief coverage record. Each result repeats the exact `authority_id`, `family`, and tagged owner, records `verdict: covered`, and states the concrete `counterexample_result`.
+For initial dispatch, prepare strict `pinboard-work-brief-review/v2` JSON with `attempt_id`, stable `checkpoint_id`, both digests, independent `reviewer_task_id`, `status: complete`, `verdict: ready`, and one coverage result per brief coverage record. Each result repeats the exact `authority_id`, `family`, and tagged owner, records `verdict: covered`, and states the concrete `counterexample_result`.
 
-Pass the candidate to `pinboard dispatch` with `--brief-review <candidate-file> --review-id <kebab-case-review-id>`. Dispatch validates and canonicalizes it before application-owned publication. It creates the immutable artifact once, reuses byte-identical evidence, and preserves differing collisions as rejected evidence. Omit both publication arguments when exact accepted ready evidence already exists. Publication arguments are cross-boundary-only and never change the canonical prompt.
+For a returned candidate, prepare strict `pinboard-correction-source-review/v1` JSON before implementation changes the checkout. Its required fields are:
 
-Dispatch reselects the current action and accepted brief, verifies the stable checkpoint ID, canonical checkpoint and ordered-authority digests, selected-source digests, reviewer independence, exact coverage, and immutable evidence before returning the launch prompt.
+- `contract_review`: the same complete v2 review, bound to the effective checkpoint after recomputing only selected authority digests;
+- `starting_candidate`: the caller-selected accepted portable candidate snapshot identity, with `role: candidate`, `kind: evidence`, `key`, `revision`, `selector`, `content_sha256`, and `size_bytes`;
+- `correction_input`: the exact canonical `return-for-correction/v1` reason input;
+- `assessment`: the independent reviewer's concrete assessment of that complete starting candidate and proposed correction.
+
+Verify the selected accepted bytes and compare the checkout with the snapshot. A commit requires the exact clean HEAD and accepted-base binary diff; a working-tree candidate requires the exact branch, HEAD preimage and binary diff. Test-only changes belong to this complete candidate even when selected authority digests do not change. The correction dispatch leaf requires this richer record and the exact current correction history identity; retained corrective v2 evidence cannot authorize it. Initial v2 review and historical checkpoint proof remain unchanged.
+
+Pass the candidate to `pinboard dispatch` with `--brief-review <candidate-file> --review-id <kebab-case-review-id>`. Dispatch validates and canonicalizes it before application-owned publication. It creates the immutable artifact once, reuses byte-identical evidence, and preserves differing collisions as rejected evidence. Initial dispatch may omit both publication arguments when exact accepted ready evidence already exists; correction dispatch always supplies its richer record and selected return identity. Publication arguments are cross-boundary-only and never change the canonical prompt.
+
+Dispatch reselects the current action and accepted brief, verifies the stable checkpoint ID, canonical checkpoint and ordered-authority digests, selected-source digests, reviewer independence, exact coverage, and immutable evidence before returning the launch prompt. Correction publication additionally binds the complete semantic candidate state and exact correction reason, and rechecks the checkout before returning launch. Receipt IDs, reviewer identities and recording timestamps do not create new subjects. Byte-identical evidence is reusable; differing evidence about an actually identical subject retains the existing collision contract.
 
 ## Reuse during implementation review
 

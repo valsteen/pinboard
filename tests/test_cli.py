@@ -22,6 +22,7 @@ from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters import dispatch_operations, lifecycle_operations
 from pinboard.adapters.files import artifacts as artifact_files
+from pinboard.adapters.files import root as file_root
 from pinboard.adapters.files import views as file_views
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import (
@@ -63,7 +64,9 @@ from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.history import encode_transition_receipt_outcome, work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, HistoryId, HostId, ItemId, LeaseId, TaskId
+from tests import test_correction_source_review
 from tests.artifact_support import write_revision
+from tests.checkpoint_support import CheckpointFixture
 from tests.decision_support import discover_actions
 
 from .domain_support import expect_success
@@ -5728,6 +5731,12 @@ Not launchable:
             effective_brief = replace_struct(brief, checkpoint=refreshed_checkpoint)
             review_path = project / "correction-review.json"
             review_path.write_bytes(ready_review(effective_brief, reviewer="correction-source-reviewer"))
+            candidate = self.create_working_tree_candidate(project, work)
+            (project / "tests").mkdir()
+            support = test_correction_source_review.CorrectionSourceReviewTest()
+            fixture = CheckpointFixture(project, work, store, brief, candidate, b"", review_path)
+            history_id, choice = support.submit_and_return(fixture, "actual-correction-worker", committed=False)
+            review_path.write_bytes(msgspec.json.encode(choice["brief_review"], order="sorted") + b"\n")
             environment_path = project / "correction-environment.json"
             environment_path.write_bytes(
                 msgspec.json.encode(
@@ -5782,6 +5791,10 @@ Not launchable:
             "--host-id",
             "studio",
         )
+        correction_review = msgspec.json.decode(review_path.read_bytes(), type=work_brief_models.CorrectionSourceReview)
+        review_path.with_name("initial-source-review.json").write_bytes(
+            canonical_work_brief_review_bytes(correction_review.contract_review)
+        )
         ordinary_result, ordinary_stdout, ordinary_stderr = self.run_cli(
             *common,
             "dispatch",
@@ -5798,7 +5811,7 @@ Not launchable:
             "--environment",
             str(environment_path),
             "--brief-review",
-            str(review_path),
+            str(review_path.with_name("initial-source-review.json")),
             "--review-id",
             "ordinary-review",
             "--json",
@@ -5836,16 +5849,21 @@ Not launchable:
             ordinary["next_actions"],
         )
 
-        valid_review = msgspec.json.decode(review_path.read_bytes(), type=work_brief_models.WorkBriefReview)
+        valid_review = correction_review.contract_review
         stale_review_path = project / "stale-correction-review.json"
         stale_review_path.write_bytes(
-            canonical_work_brief_review_bytes(
+            msgspec.json.encode(
                 replace_struct(
-                    valid_review,
-                    checkpoint_sha256="e" * 64,
-                    reviewed_authority_set_sha256="d" * 64,
-                )
+                    correction_review,
+                    contract_review=replace_struct(
+                        valid_review,
+                        checkpoint_sha256="e" * 64,
+                        reviewed_authority_set_sha256="d" * 64,
+                    ),
+                ),
+                order="sorted",
             )
+            + b"\n"
         )
         stale_arguments = (
             *common,
@@ -6001,7 +6019,8 @@ Not launchable:
                 )["actions"]
             )[0]
         )
-        candidate = self.create_working_tree_candidate(project, _work)
+        (project / "candidate.txt").write_text("later correction candidate\n", encoding="utf-8")
+        candidate = file_root.read_working_tree_candidate(project).identity
         submit_payload = project / "later-round-submit.json"
         submit_payload.write_text(json.dumps({"candidate": candidate}) + "\n", encoding="utf-8")
         submit_result, _submit_stdout, submit_stderr = self.run_transition(

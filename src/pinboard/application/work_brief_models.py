@@ -5,6 +5,7 @@ from typing import Annotated, Literal, assert_never
 
 import msgspec
 
+from pinboard.application import action_models
 from pinboard.application.brief_source_models import BriefSourceFailure, parse_authority_selector
 
 
@@ -534,6 +535,20 @@ class PortableArtifactIdentity(msgspec.Struct, frozen=True, forbid_unknown_field
     selector: NonEmptyLine
     content_sha256: Sha256
     size_bytes: NonNegativeInt
+
+
+class CorrectionSourceReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Independent assessment of an exact accepted starting candidate and proposed fix."""
+
+    schema: Literal["pinboard-correction-source-review/v1"]
+    contract_review: WorkBriefReview
+    starting_candidate: PortableArtifactIdentity
+    correction_input: action_models.ReasonInputPayload
+    assessment: NonEmptyText
+
+    def __post_init__(self) -> None:
+        if (self.starting_candidate.role, self.starting_candidate.kind) != ("candidate", "evidence"):
+            raise ValueError("Correction review requires one accepted candidate Evidence identity.")
 
 
 class LocalReviewBasis(

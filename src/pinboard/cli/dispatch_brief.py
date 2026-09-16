@@ -87,6 +87,23 @@ def read_dispatch_environment(path: Path) -> DispatchResult[DispatchEnvironment]
         )
 
 
+def _decode_review_choice(
+    command: cli_commands.ProjectReviewedDispatchCommand | cli_commands.ProjectCorrectionDispatchCommand,
+    review_bytes: bytes,
+) -> DispatchResult[dispatch_operations.ReviewedDispatch | dispatch_operations.CorrectionDispatch]:
+    if isinstance(command, cli_commands.ProjectCorrectionDispatchCommand):
+        correction_review = work_briefs.decode_correction_source_review(review_bytes)
+        if isinstance(correction_review, work_brief_models.WorkBriefFailure):
+            return dispatch_operations.review_failure(correction_review)
+        return dispatch_operations.CorrectionDispatch(
+            correction_review, command.review_id, HistoryId(command.correction_history_id)
+        )
+    decoded_review = work_briefs.decode_work_brief_review(review_bytes)
+    if isinstance(decoded_review, work_brief_models.WorkBriefFailure):
+        return dispatch_operations.review_failure(decoded_review)
+    return dispatch_operations.ReviewedDispatch(decoded_review, command.review_id)
+
+
 def prepare_dispatch_command(
     roots: cli_commands.ResolvedRoots,
     durable: DurableRoots,
@@ -110,26 +127,21 @@ def prepare_dispatch_command(
             )
     match command:
         case (
-            cli_commands.ProjectReviewedDispatchCommand(brief_review=brief_review_path, review_id=review_id)
-            | cli_commands.ProjectCorrectionDispatchCommand(brief_review=brief_review_path, review_id=review_id)
+            cli_commands.ProjectReviewedDispatchCommand(brief_review=brief_review_path)
+            | cli_commands.ProjectCorrectionDispatchCommand(brief_review=brief_review_path)
         ):
             try:
-                decoded_review = work_briefs.decode_work_brief_review(brief_review_path.read_bytes())
+                review_bytes = brief_review_path.read_bytes()
             except OSError as error:
                 return DispatchFailure(
                     DispatchErrorCode.DISPATCH_BRIEF_REVIEW_INVALID,
                     f"Cannot read '{brief_review_path}': {error}",
                     None,
                 )
-            if isinstance(decoded_review, work_brief_models.WorkBriefFailure):
-                return dispatch_operations.review_failure(decoded_review)
-            choice = (
-                dispatch_operations.CorrectionDispatch(
-                    decoded_review, review_id, HistoryId(command.correction_history_id)
-                )
-                if isinstance(command, cli_commands.ProjectCorrectionDispatchCommand)
-                else dispatch_operations.ReviewedDispatch(decoded_review, review_id)
-            )
+            decoded_choice = _decode_review_choice(command, review_bytes)
+            if isinstance(decoded_choice, DispatchFailure):
+                return decoded_choice
+            choice = decoded_choice
         case cli_commands.ProjectDispatchCommand():
             choice = dispatch_operations.OrdinaryDispatch()
         case _ as unreachable:

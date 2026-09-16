@@ -20,7 +20,7 @@ from pinboard.application import work_brief_models, work_briefs
 from pinboard.application.brief_source_models import BriefSourceFailure, authority_selector
 from pinboard.mcp import contracts
 from pinboard.mcp import server as mcp_server
-from tests import test_dispatch
+from tests import test_correction_source_review, test_dispatch
 from tests.checkpoint_support import CheckpointPackageSupport
 from tests.work_brief_support import CHECKPOINT_ID, ready_review
 
@@ -157,6 +157,12 @@ class McpJobsTest(CheckpointPackageSupport):
         correction_history_id = receipt["history_id"]
         source = fixture.project / "architecture.md"
         source.write_text("# Architecture\n\n## Contract\n\nThe changed source remains exact.\n", encoding="utf-8")
+        (fixture.project / "tests").mkdir()
+        correction_history_id, actual_choice = (
+            test_correction_source_review.CorrectionSourceReviewTest().submit_and_return(
+                fixture, "actual-mcp-correction", committed=False
+            )
+        )
         checkpoint = fixture.brief.checkpoint
         assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
         reviewed_authorities: list[work_brief_models.ReviewedAuthority] = []
@@ -168,6 +174,10 @@ class McpJobsTest(CheckpointPackageSupport):
             )
         refreshed = msgspec.structs.replace(checkpoint, reviewed_authorities=tuple(reviewed_authorities))
         effective_brief = msgspec.structs.replace(fixture.brief, checkpoint=refreshed)
+        self.assertEqual(
+            sha256(work_briefs.canonical_checkpoint_bytes(effective_brief.checkpoint)).hexdigest(),
+            self.json_object(self.json_object(actual_choice["brief_review"])["contract_review"])["checkpoint_sha256"],
+        )
         action = self.project_action(fixture.common, "dispatch:work-a-1")
         environment = msgspec.structs.replace(
             test_dispatch.DispatchTest().environment(fixture.project), starting_revision=fixture.brief.base_revision
@@ -182,14 +192,16 @@ class McpJobsTest(CheckpointPackageSupport):
                 "checkpoint_id": CHECKPOINT_ID,
                 "environment": environment,
                 "prompt": None,
-                "brief_review": msgspec.json.decode(ready_review(effective_brief)),
+                "brief_review": actual_choice["brief_review"],
                 "review_id": "correction-review",
                 "correction_history_id": correction_history_id,
             },
             enc_hook=test_dispatch.dispatch_environment_enc_hook,
         )
         assert isinstance(choice, dict)
-        stale_choice = choice | {"brief_review": msgspec.json.decode(ready_review(fixture.brief))}
+        stale_review = self.json_object(deepcopy(choice["brief_review"]))
+        stale_review["contract_review"] = msgspec.json.decode(ready_review(fixture.brief))
+        stale_choice = choice | {"brief_review": stale_review}
         before = fixture.store.validated_snapshot()
         stale = mcp_server._dispatch_job(
             str(fixture.project), str(fixture.work), stale_choice, mcp_server.CancellationToken()

@@ -147,7 +147,7 @@ class ReviewedDispatchChoice(DispatchChoiceBase, tag="reviewed", tag_field="kind
 
 
 class CorrectionDispatchChoice(DispatchChoiceBase, tag="correction", tag_field="kind", frozen=True):
-    brief_review: work_brief_models.WorkBriefReview
+    brief_review: work_brief_models.CorrectionSourceReview
     review_id: PathComponent
     correction_history_id: PositiveInt
 

@@ -4,6 +4,14 @@ This is the reusable design method for maintainers and coding agents evolving Pi
 
 ## Decisions and evidence
 
+### Validate the premise before changing the rule
+
+When a rule blocks apparently valid work, first verify that the information reaching it accurately represents the situation. Trace what changed, what the decision considers, and what relevant information was omitted or lost.
+
+Correct an incomplete or misleading representation at its owner. Change the rule only when the accurately represented situation demonstrates that the rule itself is wrong.
+
+Include the information needed for the decision—not everything indiscriminately. A checksum, label, or status is evidence about what it represents, not proof that the representation is sufficient.
+
 ### Optimize for visible decisions
 
 The primary reader must be able to answer what can happen, under which condition, and with which effect. Put those branches in one explicit owner. Move representation conversion and persistence mechanics aside only when their contract remains obvious at the call site.

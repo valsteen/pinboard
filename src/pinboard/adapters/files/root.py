@@ -212,6 +212,8 @@ def restore_working_tree_candidate(
         return CandidateRestoreRejection("wrong-head", branch, head)
     current = read_working_tree_candidate(cwd)
     if current.identity == candidate and current.diff == diff:
+        if any(record.startswith(b"?? ") for record in _working_tree_status(cwd).split(b"\0")):
+            return CandidateRestoreRejection("dirty-working-tree", branch, head)
         return CandidateRestoreSuccess(False, candidate)
     if _working_tree_status(cwd):
         return CandidateRestoreRejection("dirty-working-tree", branch, head)
@@ -224,9 +226,15 @@ def restore_working_tree_candidate(
     )
     if applied.returncode != 0:
         return CandidateRestoreRejection("patch-rejected", branch, head)
-    restored = read_working_tree_candidate(cwd)
+    try:
+        restored = read_working_tree_candidate(cwd)
+    except RootError as error:
+        raise CandidateRestoreAfterMutationError(
+            error.code,
+            "Candidate restoration changed the checkout before exact snapshot verification failed.",
+        ) from error
     if restored.identity != candidate or restored.diff != diff:
-        raise RootError(
+        raise CandidateRestoreAfterMutationError(
             RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
             "Candidate restoration changed the checkout but did not produce the exact snapshot.",
         )
@@ -280,9 +288,16 @@ def restore_commit_candidate(
     advanced = subprocess.run(["git", "merge", "--ff-only", candidate], cwd=cwd, capture_output=True, check=False)
     if advanced.returncode != 0:
         return CandidateRestoreRejection("fast-forward-rejected", branch, head)
-    restored_branch, restored_head = observe_checkout_identity(cwd)
-    if restored_branch != expected_branch or restored_head != candidate or _working_tree_status(cwd):
-        raise RootError(
+    try:
+        restored_branch, restored_head = observe_checkout_identity(cwd)
+        restored_status = _working_tree_status(cwd)
+    except RootError as error:
+        raise CandidateRestoreAfterMutationError(
+            error.code,
+            "Candidate restoration changed the checkout before exact commit verification failed.",
+        ) from error
+    if restored_branch != expected_branch or restored_head != candidate or restored_status:
+        raise CandidateRestoreAfterMutationError(
             RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
             "Candidate restoration changed the checkout but did not produce the exact clean commit.",
         )

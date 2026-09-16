@@ -51,6 +51,7 @@ from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
+    EffectDisposition,
 )
 from pinboard.domain.identifiers import ActionId, AttemptId, CandidateId
 from tests.domain_support import action
@@ -344,6 +345,20 @@ class CandidateSnapshotTest(unittest.TestCase):
         )
         self.assertEqual(CandidateRestoreSuccess(True, snapshot.candidate), restored)
         self.assertIn("M  tracked.txt", self.git(target, "status", "--short"))
+        (target / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+        self.assertEqual(
+            "dirty-working-tree",
+            self.rejection(
+                restore_working_tree_candidate(
+                    target,
+                    expected_branch="main",
+                    preimage_revision=base,
+                    candidate=snapshot.candidate,
+                    diff=snapshot.diff,
+                )
+            ).reason,
+        )
+        (target / "untracked.txt").unlink()
         self.assertEqual(
             CandidateRestoreSuccess(False, snapshot.candidate),
             restore_working_tree_candidate(
@@ -424,7 +439,7 @@ class CandidateSnapshotTest(unittest.TestCase):
                 "pinboard.adapters.files.root.subprocess.run",
                 return_value=subprocess.CompletedProcess(["git", "apply"], 0, b"", b""),
             ),
-            self.assertRaises(RootError),
+            self.assertRaises(CandidateRestoreAfterMutationError),
         ):
             restore_working_tree_candidate(
                 target,
@@ -529,6 +544,15 @@ class CandidateSnapshotTest(unittest.TestCase):
         observed = restore()
         self.assertEqual(CandidateRestoreSuccess(True, candidate), observed)
         self.assertEqual(CandidateRestoreSuccess(False, candidate), restore())
+        self.git(target, "reset", "--hard", base)
+        with (
+            patch(
+                "pinboard.adapters.files.root.observe_checkout_identity",
+                side_effect=(("restore-matrix", base), ("restore-matrix", base)),
+            ),
+            self.assertRaises(CandidateRestoreAfterMutationError),
+        ):
+            restore()
 
     def test_review_candidate_observation_covers_supported_candidate_shapes(self) -> None:
         store = self.initialized_store()
@@ -650,6 +674,9 @@ class CandidateSnapshotTest(unittest.TestCase):
             ):
                 result = candidate_recovery.restore_candidate(roots, store, command)
                 self.assertIsInstance(result, expected_type)
+                if isinstance(result, CommittedEffectFailure):
+                    self.assertEqual(EffectDisposition.COMMITTED, result.details.effect)
+                    self.assertEqual((ChangedSurface.SOURCE_CHECKOUT,), result.details.changed_surfaces)
 
         commit = CommitCandidateSnapshot(
             "pinboard-candidate-snapshot/v1",

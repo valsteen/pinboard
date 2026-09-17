@@ -107,7 +107,7 @@ DIAGRAM = Diagram(
     connectors=(
         Connector(((270, 155), (430, 155)), "proposals", "work-items", "relation / target", (350, 143)),
         Connector(((640, 155), (570, 155)), "attempts", "work-items", "executes", (605, 143)),
-        Connector(((780, 155), (830, 155)), "attempts", "definitions", "definition", (805, 143)),
+        Connector(((780, 155), (830, 155)), "attempts", "definitions", "definition", (805, 100)),
         Connector(((500, 110), (500, 80), (1100, 80), (1100, 110)), "work-items", "dependencies"),
         Connector(
             ((105, 260), (105, 230), (140, 230), (140, 200)), "proposal-evidence", "proposals", "supports", (72, 226)

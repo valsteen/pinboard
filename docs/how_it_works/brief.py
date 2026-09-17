@@ -93,7 +93,12 @@ DIAGRAM = Diagram(
     sections=(
         Section("Canonical work brief", "one strict hierarchy travels with implementation, review, and resume", 28, 42),
         Section("Anchor the whole job", "identity, accepted scope, and the complete work definition", 28, 192),
-        Section("Checkpoint", "one reviewable boundary expands into explicit reasoning obligations", 28, 390),
+        Section(
+            "Cross-boundary checkpoint",
+            "local work keeps the common criteria, architecture, verification, and deferrals",
+            28,
+            390,
+        ),
         Section(
             "The schema disciplines attention",
             "the structure is enforced; the meaning still requires judgment",
@@ -104,7 +109,7 @@ DIAGRAM = Diagram(
     guides=(
         Guide((255, 38), (1172, 38)),
         Guide((214, 188), (1172, 188)),
-        Guide((132, 386), (1172, 386)),
+        Guide((285, 386), (1172, 386)),
         Guide((300, 864), (1172, 864)),
     ),
     connectors=(),

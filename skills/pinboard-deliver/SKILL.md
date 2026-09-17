@@ -35,6 +35,8 @@ Confirm the attempt identity, current definition revision and digest, stable che
 
 When reacquiring an attempt returned from review, require the correction-dispatch prompt produced from the exact selected return receipt and current independently reviewed source bytes. Follow its interface-owned acquisition and continuation inputs, then read the durable correction reason and `review.md` before editing. Keep the same accepted brief, branch, evidence, and attempt identity. Treat the earlier `result.md` as preserved history, not a current readiness claim; refresh it only after the corrected candidate is stable and all required checks pass.
 
+If a replacement brief superseded an outstanding correction, follow the coordination skill's [replacement-brief review recovery](../pinboard/SKILL.md#coordinate-review-responsibility-and-checkout-use). A worker launched by its completed correction dispatch does not replay the coordinator's pre-edit recovery.
+
 ## Stay inside the attempt
 
 - Edit only what the attempt requires.

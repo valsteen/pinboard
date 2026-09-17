@@ -39,8 +39,10 @@ DIAGRAM = Diagram(
     description=(
         "On the left, an ordinary coding harness repeatedly interprets a prose request, repository code, and review "
         "feedback. On the right, Pinboard preserves accepted semantics and stable authorities, derives concrete impact "
-        "from the candidate, and binds that candidate plus caller-selected historical evidence into a read-only review "
-        "job. The independent reviewer reuses unchanged evidence, revalidates changed or unclassified relationships, "
+        "from the candidate, and publishes a review job bound to that candidate plus caller-selected historical "
+        "evidence. Publication may change prompt artifacts, accepted references, and the ledger, but leaves lifecycle, "
+        "candidate, and authority unchanged. The candidate-read-only reviewer reuses unchanged evidence, "
+        "revalidates changed or unclassified relationships, "
         "and widens on concrete escalation conditions. Covered completion preserves accepted checkpoint dispositions."
     ),
     width=1400,
@@ -147,7 +149,7 @@ DIAGRAM = Diagram(
         ),
         Box(
             "candidate",
-            "Read-only review job",
+            "Publish bound review job",
             "Current + prior evidence",
             ("exact revision + result digest", "selected package + correction"),
             ("pinboard-mcp-review-job-result/v1",),
@@ -158,7 +160,7 @@ DIAGRAM = Diagram(
         ),
         Box(
             "reviewer",
-            "Independent reviewer",
+            "Candidate-read-only reviewer",
             "Classify, reuse, or widen",
             ("changed + unclassified surfaces", "reuse unchanged · widen on trigger"),
             ("completion package when covered",),

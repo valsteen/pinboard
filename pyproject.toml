@@ -44,7 +44,6 @@ banned-from = [
     "pinboard.domain.decision_models",
     "pinboard.domain.work_models",
     "pinboard.cli.cli_commands",
-    "pinboard.cli.transition_models",
     "pinboard.application.work_brief_models",
 ]
 

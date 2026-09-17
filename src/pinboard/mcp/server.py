@@ -47,10 +47,10 @@ from pinboard.application import (
     queries,
     query_models,
     service,
+    stored_state,
     work_brief_models,
     work_briefs,
 )
-from pinboard.application.artifact_publication import AcceptedArtifactPublication
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.ports import GeneratedViewReader
 from pinboard.domain import decision_models
@@ -91,6 +91,8 @@ ATTEMPT_AUTHORITY_TOOL = "pinboard_attempt_authority"
 TRANSITION_TOOL = "pinboard_transition"
 DISPATCH_TOOL = "pinboard_dispatch"
 REVIEW_JOB_TOOL = "pinboard_review_job"
+ITEM_DEFINITION_TOOL = "pinboard_item_definition"
+BRIEF_REVIEW_TOOL = "pinboard_brief_review"
 THREAD_NAME_PREFIX = "pinboard-mcp-worker"
 
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
@@ -350,6 +352,169 @@ def _resolve_durable(project_root: str, work_root: str) -> DurableRoots:
 
 def compose_store(durable: DurableRoots) -> SQLiteWorkStore:
     return SQLiteWorkStore(durable.database_path)
+
+
+def _read_item_definition(raw: dict[str, JsonValue], token: CancellationToken) -> OperationResult:
+    token.checkpoint()
+    try:
+        request = msgspec.convert(raw, type=contracts.ItemDefinitionEnvelope, strict=True).request
+        durable = _resolve_durable(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        return _read_failure(
+            "pinboard-mcp-item-definition-result/v1", "ITEM_DEFINITION_REQUEST_INVALID", str(error), None
+        )
+    token.checkpoint()
+    store = compose_store(durable)
+    match request:
+        case contracts.ItemDefinitionCurrentRequest():
+            selected = queries.select_item_definition(store, ItemId(request.item_id))
+        case contracts.ItemDefinitionHistoryRequest():
+            selected = queries.select_item_definition_history(
+                store, ItemId(request.item_id), limit=request.limit, before_revision=request.before_revision
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    if isinstance(selected, DecisionFailure):
+        return _read_failure(
+            "pinboard-mcp-item-definition-result/v1", selected.code.value, selected.message, selected.details
+        )
+    token.checkpoint()
+    content = msgspec.to_builtins(selected)
+    assert isinstance(content, dict)
+    return OperationResult(content, "ok", str(selected.project_revision))
+
+
+def _brief_review_correction(project_root: str, work_root: str, brief_artifact_ref_id: int) -> dict[str, JsonValue]:
+    return {
+        "status_request": {
+            "operation": "status",
+            "project_root": project_root,
+            "work_root": work_root,
+            "brief_artifact_ref_id": brief_artifact_ref_id,
+        },
+        "corrected_brief_publication": {
+            "tool": BRIEF_PUBLISH_TOOL,
+            "project_root": project_root,
+            "work_root": work_root,
+        },
+        "negative_review_tool": BRIEF_REVIEW_TOOL,
+        "instruction": (
+            "Correct the returned accepted brief using verified findings, then add the corrected brief as the "
+            "brief argument to pinboard_brief_publish at the returned roots with a new artifact revision. "
+            "Independently reassess the corrected accepted brief under the bounded-correction review policy; "
+            "retain the same independent reviewer unless widening requires a fresh reviewer. "
+            "Use pinboard_brief_review publish with the new accepted brief reference and an exact bound "
+            "needs-correction review only if blocking findings remain. Ready review remains dispatch-only; "
+            "absence or publication of negative evidence grants no readiness, lifecycle change or authority."
+        ),
+    }
+
+
+def _brief_review(raw: dict[str, JsonValue], token: CancellationToken) -> OperationResult:
+    token.checkpoint()
+    schema = "pinboard-mcp-brief-review-result/v1"
+    try:
+        request = msgspec.convert(raw, type=contracts.BriefReviewEnvelope, strict=True).request
+        durable = _resolve_durable(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        return _read_failure(schema, "BRIEF_REVIEW_REQUEST_INVALID", str(error), None)
+    token.checkpoint()
+    store = compose_store(durable)
+    repository = ArtifactRepository(durable)
+    correction = _brief_review_correction(request.project_root, request.work_root, request.brief_artifact_ref_id)
+    match request:
+        case contracts.BriefReviewStatusRequest():
+            selected = work_briefs.read_brief_review_status(
+                store, repository, ArtifactRefId(request.brief_artifact_ref_id)
+            )
+            if isinstance(selected, work_brief_models.WorkBriefFailure):
+                return _read_failure(schema, selected.code.value, selected.message, None)
+            token.checkpoint()
+            content: dict[str, JsonValue] = {
+                "schema": schema,
+                "accepted_brief": _artifact_reference_json(selected.accepted_brief.reference),
+                "brief": msgspec.to_builtins(selected.accepted_brief.brief),
+                "correction": correction,
+                "state_changed": False,
+                "effect": "unchanged",
+                "retry": "safe-to-repeat",
+                "changed_surfaces": [],
+            }
+            match selected:
+                case work_brief_models.NoNeedsCorrectionEvidence():
+                    content["status"] = "no-needs-correction-evidence"
+                case work_brief_models.NeedsCorrectionEvidence(reference=reference, review=review):
+                    content["status"] = "needs-correction"
+                    content["reference"] = _artifact_reference_json(reference)
+                    content["review"] = msgspec.to_builtins(review)
+                case _ as unreachable:
+                    assert_never(unreachable)
+            return OperationResult(content, "ok", None)
+        case contracts.BriefReviewPublishRequest():
+            try:
+                publication = work_briefs.publish_brief_review_needs_correction(
+                    store,
+                    repository,
+                    repository,
+                    ArtifactRefId(request.brief_artifact_ref_id),
+                    request.review,
+                    datetime.now(UTC),
+                )
+            except ArtifactAcceptanceAfterPublicationError as error:
+                return OperationResult(
+                    {
+                        "schema": schema,
+                        "status": "failed-after-publication",
+                        "code": "ARTIFACT_ACCEPTANCE_FAILED",
+                        "message": "The review was published, but its accepted reference could not be committed.",
+                        "state_changed": True,
+                        "effect": "committed",
+                        "retry": "do-not-retry",
+                        "changed_surfaces": [surface.value for surface in error.changed_surfaces],
+                        "observed": [],
+                        "mismatches": [],
+                        "published_selector": error.selector,
+                        "recovery": "Preserve the published selector and repair artifact-reference acceptance before continuing.",
+                    },
+                    "infrastructure-failure",
+                    error.selector,
+                )
+            if isinstance(publication, work_brief_models.WorkBriefFailure):
+                return _read_failure(schema, publication.code.value, publication.message, None)
+            if isinstance(publication, DecisionFailure):
+                details = _details_json(publication.details)
+                return OperationResult(
+                    {
+                        "schema": schema,
+                        "status": "rejected",
+                        "code": publication.code.value,
+                        "message": publication.message,
+                        "state_changed": details["effect"] == "committed",
+                        **details,
+                    },
+                    "rejected",
+                    None,
+                )
+            surfaces: list[JsonValue] = [
+                *(["immutable-artifact"] if publication.artifact_created else []),
+                *(["accepted-artifact-reference", "ledger"] if publication.ledger_changed else []),
+            ]
+            return OperationResult(
+                {
+                    "schema": schema,
+                    "status": "committed" if surfaces else "unchanged",
+                    "reference": _artifact_reference_json(publication.reference),
+                    "correction": correction,
+                    "state_changed": bool(surfaces),
+                    "effect": "committed" if surfaces else "unchanged",
+                    "retry": "do-not-retry" if surfaces else "retry-same-input",
+                    "changed_surfaces": surfaces,
+                },
+                "committed" if surfaces else "unchanged",
+                str(publication.reference.artifact_ref_id),
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _read_overview(project_root: str, work_root: str, token: CancellationToken) -> OperationResult:
@@ -1358,7 +1523,7 @@ def _brief_published(
     content: dict[str, JsonValue] = {
         "schema": "pinboard-mcp-brief-publication-result/v1",
         "status": status,
-        "reference": _artifact_reference_json(publication),
+        "reference": _artifact_reference_json(publication.reference),
         "state_changed": state_changed,
         "effect": (EffectDisposition.COMMITTED.value if state_changed else EffectDisposition.UNCHANGED.value),
         "retry": (RetryDisposition.DO_NOT_RETRY.value if state_changed else RetryDisposition.RETRY_SAME_INPUT.value),
@@ -1373,8 +1538,7 @@ def _brief_published(
     )
 
 
-def _artifact_reference_json(publication: AcceptedArtifactPublication) -> dict[str, JsonValue]:
-    reference = publication.reference
+def _artifact_reference_json(reference: stored_state.ArtifactReference) -> dict[str, JsonValue]:
     return {
         "artifact_ref_id": int(reference.artifact_ref_id),
         "kind": reference.kind.value,
@@ -2263,6 +2427,34 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
     request_ids = itertools.count(1)
 
     @server.tool(
+        name=ITEM_DEFINITION_TOOL,
+        description="Read one full accepted Pinboard item definition or bounded descending definition history.",
+    )
+    async def item_definition(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            ITEM_DEFINITION_TOOL,
+            str(request.get("project_root", "")),
+            partial(_read_item_definition, {"request": request}),
+        )
+
+    @server.tool(
+        name=BRIEF_REVIEW_TOOL,
+        description="Publish an independent needs-correction brief review or read exact verified findings; neither grants dispatch readiness or authority.",
+    )
+    async def brief_review(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            BRIEF_REVIEW_TOOL,
+            str(request.get("project_root", "")),
+            partial(_brief_review, {"request": request}),
+        )
+
+    @server.tool(
         name=ITEM_STATUS_TOOL,
         description="Read one current Pinboard item status from an explicit local project and work root.",
     )
@@ -2470,6 +2662,16 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
 def _install_boundary_contracts(server: MCPServer) -> None:
     """Install exact schemas through the pinned SDK's mutable tool metadata seam."""
     definitions = (
+        (
+            ITEM_DEFINITION_TOOL,
+            contracts.schema_for(contracts.ItemDefinitionEnvelope),
+            contracts.union_schema_for(contracts.ITEM_DEFINITION_RESULT_TYPES),
+        ),
+        (
+            BRIEF_REVIEW_TOOL,
+            contracts.schema_for(contracts.BriefReviewEnvelope),
+            contracts.union_schema_for(contracts.BRIEF_REVIEW_RESULT_TYPES),
+        ),
         (
             ITEM_STATUS_TOOL,
             contracts.schema_for(contracts.ItemStatusRequest),

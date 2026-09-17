@@ -5,7 +5,7 @@ from typing import Annotated, Literal, assert_never
 
 import msgspec
 
-from pinboard.application import action_models
+from pinboard.application import action_models, stored_state
 from pinboard.application.brief_source_models import BriefSourceFailure, parse_authority_selector
 
 
@@ -520,6 +520,27 @@ class WorkBriefReviewNeedsCorrection(msgspec.Struct, frozen=True, forbid_unknown
         finding_ids = tuple(finding.finding_id for finding in self.findings)
         if len(set(finding_ids)) != len(finding_ids):
             raise ValueError("Blocking finding identities must be unique.")
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedWorkBrief:
+    reference: stored_state.ArtifactReference
+    brief: WorkBrief
+
+
+@dataclass(frozen=True, slots=True)
+class NoNeedsCorrectionEvidence:
+    accepted_brief: AcceptedWorkBrief
+
+
+@dataclass(frozen=True, slots=True)
+class NeedsCorrectionEvidence:
+    accepted_brief: AcceptedWorkBrief
+    reference: stored_state.ArtifactReference
+    review: WorkBriefReviewNeedsCorrection
+
+
+type BriefReviewStatus = NoNeedsCorrectionEvidence | NeedsCorrectionEvidence
 
 
 class CheckpointIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

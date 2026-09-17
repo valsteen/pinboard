@@ -37,11 +37,21 @@ type PublicationSurfaces = tuple[
     Literal["accepted-artifact-reference"],
     Literal["ledger"],
 ]
+type JobPublicationSurface = Literal["immutable-artifact", "accepted-artifact-reference", "ledger"]
 
 
 def _require_state_changed(actual: bool, expected: bool) -> None:
     if actual is not expected:
         raise ValueError(f"state_changed must be {str(expected).lower()} for this result.")
+
+
+def _require_publication_surfaces(surfaces: tuple[JobPublicationSurface, ...]) -> None:
+    if surfaces not in (
+        ("immutable-artifact",),
+        ("accepted-artifact-reference", "ledger"),
+        ("immutable-artifact", "accepted-artifact-reference", "ledger"),
+    ):
+        raise ValueError("Publication must retain exact terminal publication surfaces.")
 
 
 class ItemStatusRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -67,6 +77,49 @@ class BriefPublishRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 class OverviewRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     project_root: RootPath
     work_root: RootPath
+
+
+class ItemDefinitionCurrentRequest(
+    msgspec.Struct, tag="current", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: PathComponent
+
+
+class ItemDefinitionHistoryRequest(
+    msgspec.Struct, tag="history", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: PathComponent
+    limit: Annotated[int, msgspec.Meta(ge=1, le=100)]
+    before_revision: PositiveInt | None
+
+
+class ItemDefinitionEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: ItemDefinitionCurrentRequest | ItemDefinitionHistoryRequest
+
+
+class BriefReviewPublishRequest(
+    msgspec.Struct, tag="publish", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    brief_artifact_ref_id: PositiveInt
+    review: work_brief_models.WorkBriefReviewNeedsCorrection
+
+
+class BriefReviewStatusRequest(
+    msgspec.Struct, tag="status", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    brief_artifact_ref_id: PositiveInt
+
+
+class BriefReviewEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: BriefReviewPublishRequest | BriefReviewStatusRequest
 
 
 class ActionIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -635,6 +688,14 @@ class RejectedReadResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True
 class ActionsInvalid(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-actions-result/v1"]
     code: Literal["ACTIONS_INVALID"]
+    retry: Literal["correct-input"]
+    observed: Empty
+    mismatches: Empty
+
+
+class ItemDefinitionRejected(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-item-definition-result/v1"]
+    code: Literal["ITEM_DEFINITION_REQUEST_INVALID", "ITEM_NOT_FOUND", "ITEM_DEFINITION_INVALID"]
     retry: Literal["correct-input"]
     observed: Empty
     mismatches: Empty
@@ -1589,8 +1650,7 @@ class BriefPublishedRejection(PublishedFailureResult, frozen=True):
     message: NonEmptyText
 
 
-class BriefPublicationAcceptanceFailure(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-brief-publication-result/v1"]
+class PublicationAcceptanceFailureResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     status: Literal["failed-after-publication"]
     code: Literal["ARTIFACT_ACCEPTANCE_FAILED"]
     message: NonEmptyText
@@ -1607,7 +1667,113 @@ class BriefPublicationAcceptanceFailure(msgspec.Struct, frozen=True, forbid_unkn
         _require_state_changed(self.state_changed, True)
 
 
-type JobPublicationSurface = Literal["immutable-artifact", "accepted-artifact-reference", "ledger"]
+class BriefPublicationAcceptanceFailure(PublicationAcceptanceFailureResult, frozen=True):
+    schema: Literal["pinboard-mcp-brief-publication-result/v1"]
+
+
+class ReviewEvidenceReference(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    artifact_ref_id: PositiveInt
+    kind: Literal["evidence"]
+    key: NonEmptyText
+    revision: PositiveInt
+    selector: NonEmptyText
+    sha256: Sha256
+    size_bytes: PositiveInt
+    accepted_revision: PositiveInt
+
+
+class CorrectedBriefPublicationTarget(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    tool: Literal["pinboard_brief_publish"]
+    project_root: RootPath
+    work_root: RootPath
+
+
+class BriefReviewCorrection(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    status_request: BriefReviewStatusRequest
+    corrected_brief_publication: CorrectedBriefPublicationTarget
+    negative_review_tool: Literal["pinboard_brief_review"]
+    instruction: NonEmptyText
+
+
+class BriefReviewStatusResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-brief-review-result/v1"]
+    accepted_brief: ArtifactReferenceResult
+    brief: work_brief_models.WorkBrief
+    correction: BriefReviewCorrection
+    retry: Literal["safe-to-repeat"]
+    state_changed: bool
+    effect: Literal["unchanged"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class BriefReviewNoEvidence(BriefReviewStatusResult, frozen=True):
+    status: Literal["no-needs-correction-evidence"]
+
+
+class BriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
+    status: Literal["needs-correction"]
+    reference: ReviewEvidenceReference
+    review: work_brief_models.WorkBriefReviewNeedsCorrection
+
+
+class BriefReviewCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-brief-review-result/v1"]
+    status: Literal["committed"]
+    reference: ReviewEvidenceReference
+    state_changed: bool
+    effect: Literal["committed"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: Annotated[tuple[JobPublicationSurface, ...], msgspec.Meta(min_length=1)]
+    correction: BriefReviewCorrection
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, True)
+        _require_publication_surfaces(self.changed_surfaces)
+
+
+class BriefReviewUnchanged(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-brief-review-result/v1"]
+    status: Literal["unchanged"]
+    reference: ReviewEvidenceReference
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["retry-same-input"]
+    changed_surfaces: Empty
+    correction: BriefReviewCorrection
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class BriefReviewRejected(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-brief-review-result/v1"]
+    code: Literal[
+        "BRIEF_REVIEW_REQUEST_INVALID",
+        "WORK_BRIEF_INVALID",
+        "WORK_BRIEF_NOT_CANONICAL",
+        "WORK_BRIEF_REVIEW_INVALID",
+        "WORK_BRIEF_REVIEW_NOT_CANONICAL",
+        "WORK_BRIEF_REVIEW_NOT_INDEPENDENT",
+        "WORK_BRIEF_REVIEW_STALE",
+        "ACTION_NOT_AVAILABLE",
+    ]
+    retry: Literal["correct-input"]
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+
+class BriefReviewPublishedRejection(PublishedFailureResult, frozen=True):
+    schema: Literal["pinboard-mcp-brief-review-result/v1"]
+    status: Literal["rejected"]
+    code: Literal["ACTION_NOT_AVAILABLE"]
+    message: NonEmptyText
+
+
+class BriefReviewAcceptanceFailure(PublicationAcceptanceFailureResult, frozen=True):
+    schema: Literal["pinboard-mcp-brief-review-result/v1"]
 
 
 class PublishedJobReady(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1724,12 +1890,7 @@ class JobFailedAfterPublication(msgspec.Struct, frozen=True, forbid_unknown_fiel
 
     def __post_init__(self) -> None:
         _require_state_changed(self.state_changed, True)
-        if self.changed_surfaces not in (
-            ("immutable-artifact",),
-            ("accepted-artifact-reference", "ledger"),
-            ("immutable-artifact", "accepted-artifact-reference", "ledger"),
-        ):
-            raise ValueError("Failed publication must retain exact terminal publication surfaces.")
+        _require_publication_surfaces(self.changed_surfaces)
 
 
 class DispatchFailedAfterPublication(JobFailedAfterPublication, frozen=True):
@@ -1761,6 +1922,23 @@ REVIEW_JOB_RESULT_TYPES = (
     ReviewJobInvalid,
     ReviewJobRejected,
     ReviewJobFailedAfterPublication,
+    ExecutorBusyResult,
+)
+
+ITEM_DEFINITION_RESULT_TYPES = (
+    query_models.ItemDefinition,
+    query_models.ItemDefinitionHistory,
+    ItemDefinitionRejected,
+    ExecutorBusyResult,
+)
+BRIEF_REVIEW_RESULT_TYPES = (
+    BriefReviewNoEvidence,
+    BriefReviewNeedsCorrection,
+    BriefReviewCommitted,
+    BriefReviewUnchanged,
+    BriefReviewRejected,
+    BriefReviewPublishedRejection,
+    BriefReviewAcceptanceFailure,
     ExecutorBusyResult,
 )
 
@@ -1850,6 +2028,8 @@ type RequestBoundary = (
     | type[ActionsEnvelope]
     | type[PreparationAuthorityEnvelope]
     | type[AttemptAuthorityEnvelope]
+    | type[ItemDefinitionEnvelope]
+    | type[BriefReviewEnvelope]
 )
 type ResultBoundary = (
     type[query_models.ItemStatus]
@@ -1908,6 +2088,16 @@ type ResultBoundary = (
     | type[ReviewJobInvalid]
     | type[ReviewJobRejected]
     | type[ReviewJobFailedAfterPublication]
+    | type[query_models.ItemDefinition]
+    | type[query_models.ItemDefinitionHistory]
+    | type[ItemDefinitionRejected]
+    | type[BriefReviewNoEvidence]
+    | type[BriefReviewNeedsCorrection]
+    | type[BriefReviewCommitted]
+    | type[BriefReviewUnchanged]
+    | type[BriefReviewRejected]
+    | type[BriefReviewPublishedRejection]
+    | type[BriefReviewAcceptanceFailure]
 )
 
 
@@ -1955,6 +2145,9 @@ def transition_request_schema() -> dict[str, JsonSchemaValue]:
 
 def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
     changed_results = {
+        "BriefReviewCommitted",
+        "BriefReviewPublishedRejection",
+        "BriefReviewAcceptanceFailure",
         "ProposalCommitted",
         "ProposalCommittedWithWarning",
         "BriefCommitted",
@@ -1973,6 +2166,11 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
         "ReviewJobFailedAfterPublication",
     }
     unchanged_results = {
+        "ItemDefinitionRejected",
+        "BriefReviewNoEvidence",
+        "BriefReviewNeedsCorrection",
+        "BriefReviewUnchanged",
+        "BriefReviewRejected",
         "ItemStatusInvalid",
         "ItemStatusUnavailable",
         "ItemStatusInconsistent",
@@ -2019,6 +2217,14 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
         if not isinstance(properties, dict):
             raise TypeError(f"MCP result definition '{name}' must declare properties.")
         properties["state_changed"] = {"type": "boolean", "const": name in changed_results}
+        if name == "BriefReviewCommitted":
+            properties["changed_surfaces"] = {
+                "enum": [
+                    ["immutable-artifact"],
+                    ["accepted-artifact-reference", "ledger"],
+                    ["immutable-artifact", "accepted-artifact-reference", "ledger"],
+                ],
+            }
         if name == "ArtifactVerified":
             properties["verified"] = {"type": "boolean", "const": True}
 
@@ -2346,6 +2552,28 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     surfaces = content.get("changed_surfaces")
     if schema == "pinboard-mcp-execution-result/v1":
         msgspec.convert(content, type=ExecutorBusyResult, strict=True)
+    elif tool_name == "pinboard_item_definition":
+        if schema == "pinboard-item-definition/v1":
+            msgspec.convert(content, type=query_models.ItemDefinition, strict=True)
+        elif schema == "pinboard-item-definition-history/v1":
+            msgspec.convert(content, type=query_models.ItemDefinitionHistory, strict=True)
+        else:
+            msgspec.convert(content, type=ItemDefinitionRejected, strict=True)
+    elif tool_name == "pinboard_brief_review":
+        if status == "no-needs-correction-evidence":
+            msgspec.convert(content, type=BriefReviewNoEvidence, strict=True)
+        elif status == "needs-correction":
+            msgspec.convert(content, type=BriefReviewNeedsCorrection, strict=True)
+        elif status == "committed":
+            msgspec.convert(content, type=BriefReviewCommitted, strict=True)
+        elif status == "unchanged":
+            msgspec.convert(content, type=BriefReviewUnchanged, strict=True)
+        elif status == "failed-after-publication":
+            msgspec.convert(content, type=BriefReviewAcceptanceFailure, strict=True)
+        elif surfaces == ["immutable-artifact"]:
+            msgspec.convert(content, type=BriefReviewPublishedRejection, strict=True)
+        else:
+            msgspec.convert(content, type=BriefReviewRejected, strict=True)
     elif tool_name == "pinboard_dispatch":
         if status == "ready":
             result_type = DispatchReady

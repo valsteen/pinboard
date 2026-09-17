@@ -26,7 +26,14 @@ from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import authority_operations, queries, query_models, stored_state, work_brief_models
+from pinboard.application import (
+    authority_operations,
+    queries,
+    query_models,
+    stored_state,
+    work_brief_models,
+    work_briefs,
+)
 from pinboard.application.artifact_publication import ArtifactPublication
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.ports import WorkStoreError
@@ -47,7 +54,7 @@ from pinboard.mcp import server as mcp_server
 from tests.domain_support import action
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.test_proposals import proposal as proposal_input
-from tests.work_brief_support import example_work_brief, work_a_brief, work_c_brief
+from tests.work_brief_support import example_work_brief, needs_correction_review, work_a_brief, work_c_brief
 
 
 def _run_async[Result](operation: Coroutine[None, None, Result]) -> Result:
@@ -176,7 +183,7 @@ class McpTransportTest(unittest.TestCase):
 
         async def scenario() -> None:
             tools = await server.list_tools()
-            self.assertEqual(12, len(tools))
+            self.assertEqual(14, len(tools))
             for tool in tools:
                 with self.subTest(tool=tool.name):
                     self.assertEqual("object", tool.input_schema["type"])
@@ -199,6 +206,331 @@ class McpTransportTest(unittest.TestCase):
             self.assertFalse(result.structured_content["state_changed"])
 
         _run_async(scenario())
+
+    def test_definition_and_negative_review_tools_persist_and_reload_exact_facts(self) -> None:  # noqa: PLR0915 - complete persisted query and review journey
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        server = mcp_server.create_server(
+            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+        )
+        explicit_roots = {"project_root": str(project), "work_root": str(roots.work_root)}
+        brief = work_a_brief(project)
+        review = msgspec.json.decode(
+            needs_correction_review(brief), type=work_brief_models.WorkBriefReviewNeedsCorrection
+        )
+
+        async def call(tool: str, request: dict[str, contracts.JsonValue]) -> dict[str, contracts.JsonValue]:
+            result = await server.call_tool(tool, {"request": {**explicit_roots, **request}})
+            assert isinstance(result, CallToolResult) and isinstance(result.structured_content, dict)
+            self.assertFalse(result.is_error)
+            return result.structured_content
+
+        async def scenario() -> None:  # noqa: PLR0915 - accepted full definition/history and review boundary journey
+            current = await call(mcp_server.ITEM_DEFINITION_TOOL, {"operation": "current", "item_id": "work-c"})
+            for number in (2, 3):
+                definition = current["definition"]
+                assert isinstance(definition, dict)
+                revised = await call(
+                    mcp_server.TRANSITION_TOOL,
+                    {
+                        "role": "project",
+                        "actor_task_id": "revision-owner",
+                        "actor_host_id": "local",
+                        "receipt": {
+                            "action_id": {"kind": "revise-item", "subject": "work-c"},
+                            "subject_revision": str(current["item_subject_revision"]),
+                        },
+                        "payload": {
+                            "schema": "pinboard-item-revision/v1",
+                            "item_id": "work-c",
+                            "expected_revision": current["definition_revision"],
+                            "expected_digest": current["definition_digest"],
+                            "source_task": "revision-owner",
+                            "reason": f"Clarify outcome {number}.",
+                            "definition": {**definition, "objective": f"Observable outcome {number}."},
+                        },
+                    },
+                )
+                self.assertEqual("committed", revised["status"])
+                current = await call(mcp_server.ITEM_DEFINITION_TOOL, {"operation": "current", "item_id": "work-c"})
+            reopened = SQLiteWorkStore(roots.database_path)
+            expected = queries.select_item_definition(reopened, ItemId("work-c"))
+            self.assertEqual(msgspec.json.decode(msgspec.json.encode(expected)), current)
+            first = await call(
+                mcp_server.ITEM_DEFINITION_TOOL,
+                {
+                    "operation": "history",
+                    "item_id": "work-c",
+                    "limit": 2,
+                    "before_revision": None,
+                },
+            )
+            second = await call(
+                mcp_server.ITEM_DEFINITION_TOOL,
+                {
+                    "operation": "history",
+                    "item_id": "work-c",
+                    "limit": 2,
+                    "before_revision": first["next_before_revision"],
+                },
+            )
+            first_rows = msgspec.convert(first, type=query_models.ItemDefinitionHistory).revisions
+            second_rows = msgspec.convert(second, type=query_models.ItemDefinitionHistory).revisions
+            self.assertEqual([3, 2], [row.revision for row in first_rows])
+            self.assertEqual([1], [row.revision for row in second_rows])
+            self.assertIsNone(second["next_before_revision"])
+            self.assertEqual(first_rows[0].before_digest, first_rows[1].after_digest)
+            self.assertEqual(first_rows[1].before_digest, second_rows[0].digest)
+            self.assertEqual("revision-owner", first_rows[0].source_task)
+            for page, cursor in ((first, None), (second, 2)):
+                self.assertEqual(
+                    msgspec.json.decode(
+                        msgspec.json.encode(
+                            queries.select_item_definition_history(
+                                reopened,
+                                ItemId("work-c"),
+                                limit=2,
+                                before_revision=cursor,
+                            )
+                        )
+                    ),
+                    page,
+                )
+            self.assertEqual(
+                "ITEM_NOT_FOUND",
+                (
+                    await call(
+                        mcp_server.ITEM_DEFINITION_TOOL,
+                        {
+                            "operation": "current",
+                            "item_id": "missing",
+                        },
+                    )
+                )["code"],
+            )
+            status_request: dict[str, contracts.JsonValue] = {"operation": "status", "brief_artifact_ref_id": 1}
+            absent = await call(mcp_server.BRIEF_REVIEW_TOOL, status_request)
+            self.assertEqual("no-needs-correction-evidence", absent["status"])
+            self.assertEqual(msgspec.json.decode(canonical_work_brief_bytes(brief)), absent["brief"])
+            before = reopened.validated_snapshot()
+            publication_request: dict[str, contracts.JsonValue] = {
+                "operation": "publish",
+                "brief_artifact_ref_id": 1,
+                "review": msgspec.to_builtins(review),
+            }
+            published = await call(mcp_server.BRIEF_REVIEW_TOOL, publication_request)
+            self.assertEqual("committed", published["status"])
+            self.assertEqual(
+                ["immutable-artifact", "accepted-artifact-reference", "ledger"], published["changed_surfaces"]
+            )
+            found = await call(mcp_server.BRIEF_REVIEW_TOOL, status_request)
+            self.assertEqual("needs-correction", found["status"])
+            self.assertEqual(msgspec.json.decode(needs_correction_review(brief)), found["review"])
+            self.assertEqual(published["reference"], found["reference"])
+            after = SQLiteWorkStore(roots.database_path).validated_snapshot()
+            self.assertEqual(before.lifecycle.work_items, after.lifecycle.work_items)
+            self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
+            self.assertEqual(before.authority, after.authority)
+            self.assertEqual("unchanged", (await call(mcp_server.BRIEF_REVIEW_TOOL, publication_request))["status"])
+            self.assertEqual(after, SQLiteWorkStore(roots.database_path).validated_snapshot())
+            latest = replace_struct(review, artifact_revision=2)
+            publication_request["review"] = msgspec.to_builtins(latest)
+            await call(mcp_server.BRIEF_REVIEW_TOOL, publication_request)
+            latest_status = await call(mcp_server.BRIEF_REVIEW_TOOL, status_request)
+            self.assertEqual(
+                msgspec.json.decode(work_briefs.canonical_work_brief_review_needs_correction_bytes(latest)),
+                latest_status["review"],
+            )
+            corrected = replace_struct(brief, artifact_revision=2, title="Corrected accepted brief")
+            accepted_corrected = work_briefs.publish_work_brief(
+                reopened, ArtifactRepository(roots), corrected, SQLITE_NOW
+            )
+            assert not isinstance(accepted_corrected, DecisionFailure)
+            corrected_status = await call(
+                mcp_server.BRIEF_REVIEW_TOOL,
+                {
+                    "operation": "status",
+                    "brief_artifact_ref_id": int(accepted_corrected.reference.artifact_ref_id),
+                },
+            )
+            self.assertEqual("no-needs-correction-evidence", corrected_status["status"])
+            self.assertEqual(
+                "WORK_BRIEF_INVALID",
+                (
+                    await call(
+                        mcp_server.BRIEF_REVIEW_TOOL,
+                        {
+                            "operation": "status",
+                            "brief_artifact_ref_id": 999,
+                        },
+                    )
+                )["code"],
+            )
+
+        _run_async(scenario())
+
+    def test_new_request_leaves_reject_before_roots_or_storage(self) -> None:
+        roots: dict[str, contracts.JsonValue] = {"project_root": "/project", "work_root": "/work"}
+        requests: tuple[
+            tuple[
+                str,
+                Callable[[dict[str, contracts.JsonValue], mcp_server.CancellationToken], mcp_server.OperationResult],
+                dict[str, contracts.JsonValue],
+                tuple[dict[str, contracts.JsonValue], ...],
+            ],
+            ...,
+        ] = (
+            (
+                mcp_server.ITEM_DEFINITION_TOOL,
+                mcp_server._read_item_definition,
+                {**roots, "operation": "current", "item_id": "item"},
+                ({"limit": 1}, {"before_revision": None}),
+            ),
+            (
+                mcp_server.ITEM_DEFINITION_TOOL,
+                mcp_server._read_item_definition,
+                {**roots, "operation": "history", "item_id": "item", "limit": 1, "before_revision": None},
+                (
+                    {"limit": 0},
+                    {"limit": 101},
+                    {"limit": True},
+                    {"limit": "1"},
+                    {"before_revision": 0},
+                    {"before_revision": True},
+                ),
+            ),
+            (
+                mcp_server.BRIEF_REVIEW_TOOL,
+                mcp_server._brief_review,
+                {**roots, "operation": "status", "brief_artifact_ref_id": 1},
+                ({"review": {}}, {"brief_artifact_ref_id": True}),
+            ),
+            (
+                mcp_server.BRIEF_REVIEW_TOOL,
+                mcp_server._brief_review,
+                {**roots, "operation": "publish", "brief_artifact_ref_id": 1, "review": {}},
+                ({},),
+            ),
+        )
+        for tool, handler, request, changes in requests:
+            invalid: list[dict[str, contracts.JsonValue]] = [
+                request,
+                {"request": request, "unknown": True},
+                {"request": {**request, "unknown": True}},
+            ]
+            invalid.extend({"request": {**request, **change}} for change in changes)
+            for raw in invalid:
+                with self.subTest(raw=raw), patch.object(mcp_server, "_resolve_durable") as resolve:
+                    result = handler(raw, mcp_server.CancellationToken())
+                    self.assertEqual("rejected", result.content["status"])
+                    self.assertEqual([], result.content["changed_surfaces"])
+                    contracts.validate_result(tool, result.content)
+                    resolve.assert_not_called()
+
+    def test_negative_review_rejections_and_irreversible_publication_aftermath(self) -> None:  # noqa: PLR0915 - rejection and immutable-publication fault matrix
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        store = SQLiteWorkStore(roots.database_path)
+        brief = work_a_brief(project)
+        review = msgspec.json.decode(
+            needs_correction_review(brief), type=work_brief_models.WorkBriefReviewNeedsCorrection
+        )
+        base: dict[str, contracts.JsonValue] = {
+            "project_root": str(project),
+            "work_root": str(roots.work_root),
+            "operation": "publish",
+            "brief_artifact_ref_id": 1,
+        }
+        before = store.validated_snapshot()
+        for changed, expected in (
+            (replace_struct(review, reviewer_task_id=brief.owner_task_id), "WORK_BRIEF_REVIEW_NOT_INDEPENDENT"),
+            (replace_struct(review, accepted_brief_sha256="f" * 64), "WORK_BRIEF_REVIEW_STALE"),
+            (replace_struct(review, checkpoint_sha256="f" * 64), "WORK_BRIEF_REVIEW_STALE"),
+            (replace_struct(review, reviewed_authority_set_sha256="f" * 64), "WORK_BRIEF_REVIEW_STALE"),
+            (replace_struct(review, checkpoint_id="other-checkpoint"), "WORK_BRIEF_REVIEW_INVALID"),
+        ):
+            result = mcp_server._brief_review(
+                {"request": {**base, "review": msgspec.to_builtins(changed)}}, mcp_server.CancellationToken()
+            )
+            self.assertEqual(expected, result.content["code"])
+            contracts.validate_result(mcp_server.BRIEF_REVIEW_TOOL, result.content)
+            self.assertEqual(before, store.validated_snapshot())
+        local = replace_struct(
+            brief,
+            artifact_revision=2,
+            checkpoint=work_brief_models.LocalCheckpoint(
+                brief.checkpoint.checkpoint_id,
+                brief.checkpoint.title,
+                brief.checkpoint.architecture_impact,
+                brief.checkpoint.outcome_description,
+                brief.checkpoint.acceptance_criteria,
+                brief.checkpoint.verification,
+                brief.checkpoint.deferrals,
+            ),
+        )
+        published_local = work_briefs.publish_work_brief(store, ArtifactRepository(roots), local, SQLITE_NOW)
+        assert not isinstance(published_local, DecisionFailure)
+        for operation in ("status", "publish"):
+            request: dict[str, contracts.JsonValue] = {
+                **base,
+                "operation": operation,
+                "brief_artifact_ref_id": int(published_local.reference.artifact_ref_id),
+            }
+            if operation == "publish":
+                request["review"] = msgspec.to_builtins(review)
+            result = mcp_server._brief_review({"request": request}, mcp_server.CancellationToken())
+            self.assertEqual("WORK_BRIEF_REVIEW_INVALID", result.content["code"])
+        raw: dict[str, contracts.JsonValue] = {"request": {**base, "review": msgspec.to_builtins(review)}}
+        with patch.object(
+            SQLiteWorkStore, "accept_artifact_reference", side_effect=WorkStoreError("acceptance unavailable")
+        ):
+            failed = mcp_server._brief_review(raw, mcp_server.CancellationToken())
+        self.assertEqual("failed-after-publication", failed.content["status"])
+        self.assertEqual(["immutable-artifact"], failed.content["changed_surfaces"])
+        self.assertEqual("do-not-retry", failed.content["retry"])
+        contracts.validate_result(mcp_server.BRIEF_REVIEW_TOOL, failed.content)
+        second = replace_struct(review, artifact_revision=2)
+        second_raw: dict[str, contracts.JsonValue] = {"request": {**base, "review": msgspec.to_builtins(second)}}
+        with patch.object(
+            SQLiteWorkStore,
+            "accept_artifact_reference",
+            return_value=DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                "Acceptance rejected.",
+                None,
+            ),
+        ):
+            rejected = mcp_server._brief_review(second_raw, mcp_server.CancellationToken())
+        self.assertEqual("rejected", rejected.content["status"])
+        self.assertTrue(rejected.content["state_changed"])
+        self.assertEqual(["immutable-artifact"], rejected.content["changed_surfaces"])
+        contracts.validate_result(mcp_server.BRIEF_REVIEW_TOOL, rejected.content)
+        adopted = mcp_server._brief_review(raw, mcp_server.CancellationToken())
+        self.assertEqual(["accepted-artifact-reference", "ledger"], adopted.content["changed_surfaces"])
+        contracts.validate_result(mcp_server.BRIEF_REVIEW_TOOL, adopted.content)
+        stable = store.validated_snapshot()
+        different = replace_struct(review, reviewer_task_id="another-independent-reviewer")
+        with self.assertRaises(UnexpectedToolError):
+            executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+            self.addCleanup(executor.shutdown)
+            server = mcp_server.create_server(
+                executor, mcp_server.Diagnostics(io.StringIO(), event_limit=2, line_limit=256)
+            )
+            _run_async(
+                server.call_tool(
+                    mcp_server.BRIEF_REVIEW_TOOL, {"request": {**base, "review": msgspec.to_builtins(different)}}
+                )
+            )
+        self.assertEqual(stable, store.validated_snapshot())
+        status = mcp_server._brief_review({"request": {**base, "operation": "status"}}, mcp_server.CancellationToken())
+        self.assertEqual("needs-correction", status.content["status"])
+        selector = failed.content["published_selector"]
+        assert isinstance(selector, str)
+        (roots.work_root / selector).write_bytes(b"{}\n")
+        with self.assertRaises(mcp_server.ArtifactError):
+            mcp_server._brief_review({"request": {**base, "operation": "status"}}, mcp_server.CancellationToken())
 
     def test_request_envelopes_reject_mixed_fields_before_resources(self) -> None:
         roots: dict[str, contracts.JsonValue] = {"project_root": "/project", "work_root": "/work"}
@@ -3005,6 +3337,8 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.TRANSITION_TOOL,
                 mcp_server.DISPATCH_TOOL,
                 mcp_server.REVIEW_JOB_TOOL,
+                mcp_server.ITEM_DEFINITION_TOOL,
+                mcp_server.BRIEF_REVIEW_TOOL,
             },
             {tool.name for tool in tools},
         )

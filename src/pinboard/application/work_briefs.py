@@ -17,7 +17,7 @@ from pinboard.application.brief_sources import BriefSourceSelector
 from pinboard.application.ports import WorkStore
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import AttemptId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId
 
 type CheckpointPackage = (
     checkpoint_compatibility_models.CheckpointReviewPackage
@@ -212,6 +212,81 @@ def needs_correction_review_key(brief: work_brief_models.WorkBrief) -> str:
         _canonical_bytes((brief.attempt_id, checkpoint.checkpoint_id, brief_sha256, checkpoint_sha256))
     ).hexdigest()
     return f"brief-review-needs-correction-{identity_sha256}"
+
+
+def read_accepted_work_brief(
+    store: WorkStore,
+    reader: ArtifactReader,
+    brief_artifact_ref_id: ArtifactRefId,
+) -> work_brief_models.WorkBriefResult[work_brief_models.AcceptedWorkBrief]:
+    """Resolve the exact accepted reference and decode its verified canonical bytes."""
+    reference = store.read_artifact_reference_by_id(brief_artifact_ref_id)
+    if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
+            "The selected accepted brief reference does not exist or is not a brief.",
+        )
+    brief = decode_canonical_work_brief(reader.read(reference))
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
+        return brief
+    return work_brief_models.AcceptedWorkBrief(reference, brief)
+
+
+def publish_brief_review_needs_correction(
+    store: WorkStore,
+    reader: ArtifactReader,
+    publisher: ArtifactPublisher,
+    brief_artifact_ref_id: ArtifactRefId,
+    review: work_brief_models.WorkBriefReviewNeedsCorrection,
+    accepted_at: datetime,
+) -> AcceptedArtifactPublication | DecisionFailure | work_brief_models.WorkBriefFailure:
+    """Validate an independent negative review, publish bytes, then accept their reference.
+
+    Artifact acceptance retains its irreversible-publication failure contract. This operation
+    does not acquire authority, change lifecycle, or establish dispatch readiness.
+    """
+    selected = read_accepted_work_brief(store, reader, brief_artifact_ref_id)
+    if isinstance(selected, work_brief_models.WorkBriefFailure):
+        return selected
+    if (failure := validate_work_brief_review_needs_correction(review, selected.brief)) is not None:
+        return failure
+    return publish_accepted_artifact(
+        store,
+        publisher,
+        NewArtifact(
+            work_models.ArtifactKind.EVIDENCE,
+            needs_correction_review_key(selected.brief),
+            review.artifact_revision,
+            ".json",
+            canonical_work_brief_review_needs_correction_bytes(review),
+        ),
+        accepted_at,
+    )
+
+
+def read_brief_review_status(
+    store: WorkStore,
+    reader: ArtifactReader,
+    brief_artifact_ref_id: ArtifactRefId,
+) -> work_brief_models.WorkBriefResult[work_brief_models.BriefReviewStatus]:
+    """Read exact accepted brief and latest verified negative evidence without mutation."""
+    selected = read_accepted_work_brief(store, reader, brief_artifact_ref_id)
+    if isinstance(selected, work_brief_models.WorkBriefFailure):
+        return selected
+    checkpoint = _review_checkpoint(selected.brief)
+    if isinstance(checkpoint, work_brief_models.WorkBriefFailure):
+        return checkpoint
+    reference = store.read_latest_artifact_reference(
+        work_models.ArtifactKind.EVIDENCE, needs_correction_review_key(selected.brief)
+    )
+    if reference is None:
+        return work_brief_models.NoNeedsCorrectionEvidence(selected)
+    review = decode_canonical_work_brief_review_needs_correction(reader.read(reference))
+    if isinstance(review, work_brief_models.WorkBriefFailure):
+        return review
+    if (failure := validate_work_brief_review_needs_correction(review, selected.brief)) is not None:
+        return failure
+    return work_brief_models.NeedsCorrectionEvidence(selected, reference, review)
 
 
 def _review_checkpoint(

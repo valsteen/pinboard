@@ -67,36 +67,36 @@
         "occurrences": [
           {
             "endpoint": {
-              "end": 712,
-              "endLoc": {
-                "column": 52,
-                "line": 712,
-                "position": 30581
-              },
               "name": "cli/tool_contract.py",
               "start": 699,
+              "end": 712,
               "startLoc": {
-                "column": 12,
                 "line": 699,
+                "column": 12,
                 "position": 29843
+              },
+              "endLoc": {
+                "line": 712,
+                "column": 52,
+                "position": 30581
               }
             },
             "sha256": "18c9aad898f049e0948b63c418b608e0889b4a43b03541922626d7100c12e958"
           },
           {
             "endpoint": {
-              "end": 1131,
-              "endLoc": {
-                "column": 52,
-                "line": 1131,
-                "position": 42405
-              },
               "name": "mcp/contracts.py",
-              "start": 1118,
+              "start": 1179,
+              "end": 1192,
               "startLoc": {
+                "line": 1179,
                 "column": 12,
-                "line": 1118,
-                "position": 41667
+                "position": 43791
+              },
+              "endLoc": {
+                "line": 1192,
+                "column": 52,
+                "position": 44529
               }
             },
             "sha256": "18c9aad898f049e0948b63c418b608e0889b4a43b03541922626d7100c12e958"
@@ -110,8 +110,8 @@
       },
       "certification": {
         "reviewer_task_id": "01a0a1e6-dfa6-77b2-a8d1-e09b4f13e42f",
-        "reviewed_pair_sha256": "80fec3950c5a831b3757511c8e701a2658decea0565ab0cf8b659c0ecf1a84da",
-        "evidence_sha256": "f4b0437fd63762f9e9647e6aa671feff7d0f6bac1e7a00ecc11bfbfd45c6cfae"
+        "reviewed_pair_sha256": "5f1d478624964dc9b626183a794d6ba76b2cb13946f17260c570580ea62873b1",
+        "evidence_sha256": "2d428431efca0e114ac3eabcc74f15d2be964d05260c358da9565a867e4969dd"
       }
     },
     {
@@ -171,48 +171,44 @@
       }
     },
     {
-      "certification": {
-        "reviewer_task_id": "01a0a1e6-dfa6-77b2-a8d1-e09b4f13e42f",
-        "reviewed_pair_sha256": "9a6ee9ac7f7e17cd06598cb928f27b89e472a45b9952b4fbec24647cb2753692",
-        "evidence_sha256": "f4b0437fd63762f9e9647e6aa671feff7d0f6bac1e7a00ecc11bfbfd45c6cfae"
-      },
       "identity": {
-        "format": "python",
         "id": "authority-revocation-and-rejection",
+        "format": "python",
+        "tokens": 69,
         "lines": 14,
         "occurrences": [
           {
             "endpoint": {
-              "end": 1752,
-              "endLoc": {
-                "column": 25,
-                "line": 1752,
-                "position": 69203
-              },
               "name": "mcp/server.py",
-              "start": 1739,
+              "start": 1903,
+              "end": 1916,
               "startLoc": {
+                "line": 1903,
                 "column": 46,
-                "line": 1739,
-                "position": 68694
+                "position": 76922
+              },
+              "endLoc": {
+                "line": 1916,
+                "column": 25,
+                "position": 77431
               }
             },
             "sha256": "544027f2a1fd10aa6b80866ab5635f5ba698ecbd9447ce85750fadc0f7ede331"
           },
           {
             "endpoint": {
-              "end": 1876,
-              "endLoc": {
-                "column": 25,
-                "line": 1876,
-                "position": 74465
-              },
               "name": "mcp/server.py",
-              "start": 1863,
+              "start": 2027,
+              "end": 2040,
               "startLoc": {
+                "line": 2027,
                 "column": 55,
-                "line": 1863,
-                "position": 73956
+                "position": 82184
+              },
+              "endLoc": {
+                "line": 2040,
+                "column": 25,
+                "position": 82693
               }
             },
             "sha256": "544027f2a1fd10aa6b80866ab5635f5ba698ecbd9447ce85750fadc0f7ede331"
@@ -222,53 +218,53 @@
           "src/pinboard/mcp/server.py#_preparation_authority",
           "src/pinboard/mcp/server.py#_attempt_authority"
         ],
-        "rationale": "Distinct exact request leaves invoke different application operations with nominal ItemId versus AttemptId scope, then render different schema/scope/conflict records. Shared claim and rejection-detail conversion already owns the repeated representation. Further folding requires a cross-family workflow callback or late reclassification of a selected leaf.",
-        "tokens": 69
+        "rationale": "Distinct exact request leaves invoke different application operations with nominal ItemId versus AttemptId scope, then render different schema/scope/conflict records. Shared claim and rejection-detail conversion already owns the repeated representation. Further folding requires a cross-family workflow callback or late reclassification of a selected leaf."
+      },
+      "certification": {
+        "reviewer_task_id": "01a0a1e6-dfa6-77b2-a8d1-e09b4f13e42f",
+        "reviewed_pair_sha256": "67d8541cc7f3d0d2895860d8e793dc5866a17c3bf30fe160af18f31f0ed645e0",
+        "evidence_sha256": "2d428431efca0e114ac3eabcc74f15d2be964d05260c358da9565a867e4969dd"
       }
     },
     {
-      "certification": {
-        "reviewer_task_id": "01a0a1e6-dfa6-77b2-a8d1-e09b4f13e42f",
-        "reviewed_pair_sha256": "16f0c669b4f3a52f8b563becb45702c1b89658448c8da424ebd530b42d0277d6",
-        "evidence_sha256": "f4b0437fd63762f9e9647e6aa671feff7d0f6bac1e7a00ecc11bfbfd45c6cfae"
-      },
       "identity": {
-        "format": "python",
         "id": "authority-rejection-and-view-effect",
+        "format": "python",
+        "tokens": 68,
         "lines": 16,
         "occurrences": [
           {
             "endpoint": {
-              "end": 1773,
-              "endLoc": {
-                "column": 31,
-                "line": 1773,
-                "position": 69995
-              },
               "name": "mcp/server.py",
-              "start": 1758,
+              "start": 1922,
+              "end": 1937,
               "startLoc": {
+                "line": 1922,
                 "column": 99,
-                "line": 1758,
-                "position": 69568
+                "position": 77796
+              },
+              "endLoc": {
+                "line": 1937,
+                "column": 31,
+                "position": 78223
               }
             },
             "sha256": "f8dfc07a511f17dbd45418a675d7504b640244c1f56d8eb88f084b0bf0928f55"
           },
           {
             "endpoint": {
-              "end": 1897,
-              "endLoc": {
-                "column": 31,
-                "line": 1897,
-                "position": 75261
-              },
               "name": "mcp/server.py",
-              "start": 1882,
+              "start": 2046,
+              "end": 2061,
               "startLoc": {
+                "line": 2046,
                 "column": 101,
-                "line": 1882,
-                "position": 74834
+                "position": 83062
+              },
+              "endLoc": {
+                "line": 2061,
+                "column": 31,
+                "position": 83489
               }
             },
             "sha256": "f8dfc07a511f17dbd45418a675d7504b640244c1f56d8eb88f084b0bf0928f55"
@@ -278,8 +274,12 @@
           "src/pinboard/mcp/server.py#_preparation_authority",
           "src/pinboard/mcp/server.py#_attempt_authority"
         ],
-        "rationale": "Each family reloads its distinct authority conflict after rejection. Successful operations explicitly refresh affected views before rendering the already-consolidated authority claims and committed receipt/warning. Hiding the remaining view effect inside a conversion would make a pure-looking renderer effectful; sharing the whole workflow would couple distinct scope and mutation-result types.",
-        "tokens": 68
+        "rationale": "Each family reloads its distinct authority conflict after rejection. Successful operations explicitly refresh affected views before rendering the already-consolidated authority claims and committed receipt/warning. Hiding the remaining view effect inside a conversion would make a pure-looking renderer effectful; sharing the whole workflow would couple distinct scope and mutation-result types."
+      },
+      "certification": {
+        "reviewer_task_id": "01a0a1e6-dfa6-77b2-a8d1-e09b4f13e42f",
+        "reviewed_pair_sha256": "35c0b0ffe1e1f81b64e31879b661ace7dbd949090bd708aa48862d024efeb264",
+        "evidence_sha256": "2d428431efca0e114ac3eabcc74f15d2be964d05260c358da9565a867e4969dd"
       }
     }
   ]

@@ -7,11 +7,10 @@ stable reference. It returns advertised decision failures and lets filesystem,
 storage, and malformed boundary data remain exact exceptions.
 """
 
-import hashlib
 import shlex
 import sys
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -19,8 +18,6 @@ from pinboard.adapters.files import artifacts as artifact_files
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews
 from pinboard.application import (
-    artifact_publication,
-    artifacts,
     ports,
     stored_state,
     work_brief_models,
@@ -32,7 +29,6 @@ from pinboard.cli.errors import (
     CommandFailure,
     CommandResult,
 )
-from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import ArtifactRefId
 
@@ -103,17 +99,7 @@ def publish_brief(
     view_result = work_views.refresh(durable, store, AffectedViews((), (), ()), operation_time)
     if view_result.warning is not None:
         print(view_result.warning.message, file=sys.stderr)
-    reference = accepted_reference.reference
-    publication_view = BriefPublicationView(
-        int(reference.artifact_ref_id),
-        reference.kind.value,
-        reference.key,
-        reference.revision,
-        reference.selector,
-        reference.content_sha256,
-        reference.size_bytes,
-        reference.accepted_revision,
-    )
+    publication_view = _publication_view(accepted_reference.reference)
     if command.json:
         write_json(publication_view)
     else:
@@ -137,33 +123,11 @@ def _publication_view(reference: stored_state.ArtifactReference) -> BriefPublica
     )
 
 
-def _read_accepted_brief(
-    durable: DurableRoots,
-    store: ports.WorkStore,
-    brief_artifact_ref_id: int,
-) -> work_brief_models.WorkBriefFailure | tuple[work_brief_models.WorkBrief, bytes]:
-    reference = store.read_artifact_reference_by_id(ArtifactRefId(brief_artifact_ref_id))
-    if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
-        return work_brief_models.WorkBriefFailure(
-            work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
-            "The selected accepted brief reference does not exist or is not a brief.",
-        )
-    content = artifact_files.read_reference(durable.work_root, reference)
-    brief = work_briefs.decode_canonical_work_brief(content)
-    if isinstance(brief, work_brief_models.WorkBriefFailure):
-        return brief
-    return brief, content
-
-
 def publish_brief_review_needs_correction(
     durable: DurableRoots,
     store: ports.WorkStore,
     command: cli_commands.BriefReviewNeedsCorrectionCommand,
 ) -> CommandResult[int] | work_brief_models.WorkBriefFailure:
-    selected = _read_accepted_brief(durable, store, command.brief_artifact_ref_id)
-    if isinstance(selected, work_brief_models.WorkBriefFailure):
-        return selected
-    brief, _brief_bytes = selected
     try:
         candidate = command.file.read_bytes()
     except OSError as error:
@@ -174,20 +138,17 @@ def publish_brief_review_needs_correction(
     review = work_briefs.decode_canonical_work_brief_review_needs_correction(candidate)
     if isinstance(review, work_brief_models.WorkBriefFailure):
         return review
-    if (failure := work_briefs.validate_work_brief_review_needs_correction(review, brief)) is not None:
-        return failure
-    accepted = artifact_publication.publish_accepted_artifact(
+    repository = artifact_files.ArtifactRepository(durable)
+    accepted = work_briefs.publish_brief_review_needs_correction(
         store,
-        artifact_files.ArtifactRepository(durable),
-        artifacts.NewArtifact(
-            work_models.ArtifactKind.EVIDENCE,
-            work_briefs.needs_correction_review_key(brief),
-            review.artifact_revision,
-            ".json",
-            candidate,
-        ),
+        repository,
+        repository,
+        ArtifactRefId(command.brief_artifact_ref_id),
+        review,
         datetime.now(UTC),
     )
+    if isinstance(accepted, work_brief_models.WorkBriefFailure):
+        return accepted
     if isinstance(accepted, DecisionFailure):
         return CommandFailure(accepted.code, accepted.message, accepted.details)
     view = _publication_view(accepted.reference)
@@ -219,7 +180,8 @@ def _review_recovery(
         shlex.join((*prefix, "tool-contract", "--operation", "brief/publish", "--json")),
         shlex.join((*prefix, "brief", "publish", "--file", "<corrected-brief.json>", "--json")),
         (
-            "Commission a fresh independent brief reviewer for the corrected accepted brief. "
+            "Independently reassess the corrected accepted brief under the bounded-correction review policy; "
+            "retain the same independent reviewer unless widening requires a fresh reviewer. "
             "Publish another needs-correction record only if blocking findings remain; ready evidence remains dispatch-only."
         ),
     )
@@ -231,57 +193,49 @@ def show_brief_review_status(
     store: ports.WorkStore,
     command: cli_commands.BriefReviewStatusCommand,
 ) -> CommandResult[int] | work_brief_models.WorkBriefFailure:
-    selected = _read_accepted_brief(durable, store, command.brief_artifact_ref_id)
+    selected = work_briefs.read_brief_review_status(
+        store, artifact_files.ArtifactRepository(durable), ArtifactRefId(command.brief_artifact_ref_id)
+    )
     if isinstance(selected, work_brief_models.WorkBriefFailure):
         return selected
-    brief, brief_bytes = selected
+    brief = selected.accepted_brief.brief
     checkpoint = brief.checkpoint
-    if not isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
-        return work_brief_models.WorkBriefFailure(
-            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID, "Local checkpoints do not use brief reviews."
-        )
-    brief_sha256 = hashlib.sha256(brief_bytes).hexdigest()
+    assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+    brief_sha256 = selected.accepted_brief.reference.content_sha256
     status_command, correction_command, republication_command, rereview_instruction = _review_recovery(
         roots, command.brief_artifact_ref_id
     )
-    reference = store.read_latest_artifact_reference(
-        work_models.ArtifactKind.EVIDENCE,
-        work_briefs.needs_correction_review_key(brief),
-    )
-    if reference is None:
-        view = NoNeedsCorrectionEvidenceView(
-            "pinboard-work-brief-review-status/v1",
-            "no-needs-correction-evidence",
-            brief.attempt_id,
-            checkpoint.checkpoint_id,
-            brief_sha256,
-            status_command,
-            correction_command,
-            republication_command,
-            rereview_instruction,
-        )
-    else:
-        review_bytes = artifact_files.read_reference(durable.work_root, reference)
-        review = work_briefs.decode_canonical_work_brief_review_needs_correction(review_bytes)
-        if isinstance(review, work_brief_models.WorkBriefFailure):
-            return review
-        if (failure := work_briefs.validate_work_brief_review_needs_correction(review, brief)) is not None:
-            return failure
-        view = NeedsCorrectionEvidenceView(
-            "pinboard-work-brief-review-status/v1",
-            "needs-correction",
-            brief.attempt_id,
-            checkpoint.checkpoint_id,
-            brief_sha256,
-            review.artifact_revision,
-            _publication_view(reference),
-            review.reviewer_task_id,
-            review.findings,
-            status_command,
-            correction_command,
-            republication_command,
-            rereview_instruction,
-        )
+    match selected:
+        case work_brief_models.NoNeedsCorrectionEvidence():
+            view = NoNeedsCorrectionEvidenceView(
+                "pinboard-work-brief-review-status/v1",
+                "no-needs-correction-evidence",
+                brief.attempt_id,
+                checkpoint.checkpoint_id,
+                brief_sha256,
+                status_command,
+                correction_command,
+                republication_command,
+                rereview_instruction,
+            )
+        case work_brief_models.NeedsCorrectionEvidence(reference=reference, review=review):
+            view = NeedsCorrectionEvidenceView(
+                "pinboard-work-brief-review-status/v1",
+                "needs-correction",
+                brief.attempt_id,
+                checkpoint.checkpoint_id,
+                brief_sha256,
+                review.artifact_revision,
+                _publication_view(reference),
+                review.reviewer_task_id,
+                review.findings,
+                status_command,
+                correction_command,
+                republication_command,
+                rereview_instruction,
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
     if command.json:
         write_json(view)
     else:

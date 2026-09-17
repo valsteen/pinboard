@@ -114,7 +114,7 @@ DIAGRAM = Diagram(
     ),
     notes=(
         Note(
-            "Runtime data flow appears in the next view. The interface root only routes; thematic interface modules own concrete composition.",
+            "The preparation example shows runtime flow. The interface root routes; thematic interface modules own concrete composition.",
             28,
             690,
             12,

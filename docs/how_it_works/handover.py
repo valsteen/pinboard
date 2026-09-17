@@ -85,7 +85,7 @@ DIAGRAM = Diagram(
             "Portable output",
             "One JSON package",
             ("revision-stamped", "typed accepted evidence"),
-            ("pinboard-project-handover/v5",),
+            ("pinboard-project-handover/v6",),
             740,
             170,
             230,

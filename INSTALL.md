@@ -9,7 +9,7 @@ Pinboard uses these terms consistently:
 - `<launcher-root>` is the directory that contains `scripts/pinboard`. Direct CLI commands invoke this launcher; the plugin's MCP declaration invokes the same launcher with `--mcp`.
 - `<launcher-root>/.pinboard-runtime/environment` is the installed private runtime. One explicit `--prepare-runtime` command uses uv to create it for an installed plugin version; ordinary installed commands use neither uv nor its cache.
 - `<pinboard-source>/.venv` is the development environment for a prepared Pinboard source checkout. Repository-owned `uv sync` and `uv run` commands create or use this environment only for Pinboard development; `uv build` may use uv's isolated build environment.
-- `<managed-project>` is the repository whose work Pinboard coordinates. Callers select it with `--project-root <managed-project>`; Pinboard never uses its Python environment, `.venv`, or dependency files.
+- `<managed-project>` is the repository whose work Pinboard coordinates. CLI callers select it with `--project-root <managed-project>`; native tool requests carry explicit `project_root` and `work_root` fields. Pinboard never uses the managed project's Python environment, `.venv`, or dependency files.
 
 The launcher root may be a prepared Pinboard source checkout or an installed plugin version. A prepared source launcher uses `<pinboard-source>/.venv`; an installed launcher uses its private runtime. That runtime choice follows the resolved launcher root, not whether the caller is a human or an agent.
 
@@ -100,6 +100,8 @@ scripts/prepare-worktree
 
 The source-development environment at `<pinboard-source>/.venv` contains Pinboard development dependencies. It is distinct from an installed plugin's `<launcher-root>/.pinboard-runtime/environment` and from any environment or dependency files under `<managed-project>`.
 
+Direct CLI use covers root discovery, initialization, summary status, validation, generated-view repair, portable human export, direct closure, and the CLI's own `tool-contract` diagnostics. Agent workflow tools are available through the connected MCP server, not through alternate CLI routes. A missing connection needs the supported reconnect or reload, not a CLI fallback.
+
 ## After setup
 
 After the first successful setup, Pinboard may point to the optional Repository Readiness, Slop Cleanup, and Maintaining Agent Guidance skills. It does not run them, create work, or change configuration.
@@ -110,9 +112,9 @@ Pinboard may also recommend the `model_auto_compact_token_limit_scope` setting f
 
 ### Pinboard cannot write its project data
 
-When a routine Codex operation lacks the required permission, Pinboard reports `SQLITE_READONLY`, the affected location and operation, whether anything changed, and the exact recovery path.
+For retained CLI mutations, a denied SQLite write reports `SQLITE_READONLY`, the affected location and operation, whether anything changed, and narrow permission recovery. Native tools report their own correlated failure, retry, and changed-surface facts rather than CLI-specific diagnostic prose. A native brief acceptance failure after immutable publication reports `ARTIFACT_ACCEPTANCE_FAILED` and its exact published selector; it does not claim the underlying failure is necessarily a permission error.
 
-For a normal primary checkout, grant only relative `.codex/pinboard`. For a linked worktree or explicit data location, grant only the exact absolute location reported by Pinboard. If the failure says an immutable artifact was already published, inspect current state before retrying rather than replaying the operation.
+For a normal primary checkout, grant only relative `.codex/pinboard`. For a linked worktree or explicit data location, grant only the exact absolute location resolved by Pinboard. If an immutable artifact was already published, preserve it and inspect current state and artifact identity before selecting supported recovery; do not blindly replay the operation.
 
 ### The launcher says runtime preparation is required
 

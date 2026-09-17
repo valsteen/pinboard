@@ -30,7 +30,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         fixture = self.checkpoint_fixture()
         payload = fixture.work / "bootstrap-return.json"
         payload.write_text('{"reason":"Prepare the real correction scenario."}', encoding="utf-8")
-        self.transition_json(fixture, self.project_action(fixture.common, "return-for-correction:work-a-1"), payload)
+        self.transition_json(fixture, self.project_action(fixture, "return-for-correction:work-a-1"), payload)
         (fixture.project / "tracked.txt").write_text("base\n", encoding="utf-8")
         tests = fixture.project / "tests"
         tests.mkdir()
@@ -45,41 +45,16 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             if committed
             else root.read_working_tree_candidate(fixture.project).identity
         )
-        lease = self.run_json_cli(
-            *fixture.common,
-            "attempt",
-            "acquire",
-            "--attempt-id",
-            "work-a-1",
-            "--task-id",
-            label,
-            "--host-id",
-            "local",
-            "--ttl-seconds",
-            "300",
-        )
-        actions = self.run_json_cli(
-            *fixture.common,
-            "actions",
-            "--role",
-            "worker",
-            "--lease-id",
-            str(lease["lease_id"]),
-            "--generation",
-            str(lease["generation"]),
-            "--action-id",
-            "submit-review:work-a-1",
-        )
+        lease = self.native_attempt_acquire(fixture, label)
+        action = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
         payload = fixture.work / "submit.json"
         payload.write_text(json.dumps({"candidate": candidate}), encoding="utf-8")
-        self.transition_json(fixture, self.json_object(self.json_array(actions["actions"])[0]), payload)
+        self.transition_json(fixture, action, payload)
         context = SQLiteWorkStore(fixture.work / "state.sqlite3").read_candidate_snapshot_context(AttemptId("work-a-1"))
         assert context is not None
         reference = context.reference
         payload.write_text('{"reason":"Repair the test-only candidate."}', encoding="utf-8")
-        receipt = self.transition_json(
-            fixture, self.project_action(fixture.common, "return-for-correction:work-a-1"), payload
-        )
+        receipt = self.transition_json(fixture, self.project_action(fixture, "return-for-correction:work-a-1"), payload)
         checkpoint = fixture.brief.checkpoint
         assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
         authorities: list[work_brief_models.ReviewedAuthority] = []
@@ -107,7 +82,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             action_models.ReasonInputPayload("Repair the test-only candidate."),
             "The complete accepted starting snapshot includes the changed test; the proposed repair preserves the reviewed contracts.",
         )
-        action = self.project_action(fixture.common, "dispatch:work-a-1")
+        action = self.project_action(fixture, "dispatch:work-a-1")
         environment = msgspec.structs.replace(
             test_dispatch.DispatchTest().environment(fixture.project),
             branch=fixture.brief.branch,
@@ -134,37 +109,8 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         assert isinstance(history_id, int)
         return history_id, choice
 
-    def dispatch_cli(self, fixture: CheckpointFixture, choice: JsonObject) -> JsonObject:
-        environment = fixture.work / "environment.json"
-        review = fixture.work / "correction-review.json"
-        environment.write_bytes(msgspec.json.encode(choice["environment"]))
-        review.write_bytes(msgspec.json.encode(choice["brief_review"]))
-        receipt = self.json_object(choice["receipt"])
-        result, stdout, stderr = self.run_cli(
-            *fixture.common,
-            "dispatch",
-            "--action-id",
-            "dispatch:work-a-1",
-            "--subject-revision",
-            str(receipt["subject_revision"]),
-            "--task-id",
-            "review-owner",
-            "--host-id",
-            "local",
-            "--checkpoint",
-            str(choice["checkpoint_id"]),
-            "--environment",
-            str(environment),
-            "--brief-review",
-            str(review),
-            "--review-id",
-            str(choice["review_id"]),
-            "--correction-history-id",
-            str(choice["correction_history_id"]),
-            "--json",
-        )
-        self.assertIn(result, (0, 14), stderr)
-        return self.json_object(json.loads(stdout))
+    def dispatch_native(self, fixture: CheckpointFixture, choice: JsonObject) -> JsonObject:
+        return server._dispatch_job(str(fixture.project), str(fixture.work), choice, server.CancellationToken()).content
 
     def test_old_same_patch_snapshot_cannot_authorize_a_newer_returned_start(self) -> None:
         fixture = self.correction_fixture()
@@ -200,7 +146,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         for transport in ("cli", "mcp"):
             with self.subTest(transport=transport):
                 outcome = (
-                    self.dispatch_cli(fixture, old_snapshot)
+                    self.dispatch_native(fixture, old_snapshot)
                     if transport == "cli"
                     else server._dispatch_job(
                         str(fixture.project), str(fixture.work), old_snapshot, server.CancellationToken()
@@ -218,7 +164,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                     },
                 )
 
-    def test_real_cli_mcp_two_test_only_candidates_reload_distinct_subjects_and_initial_proof(self) -> None:
+    def test_real_native_two_test_only_candidates_reload_distinct_subjects_and_initial_proof(self) -> None:
         fixture = self.correction_fixture()
         checkpoint = fixture.brief.checkpoint
         initial_key = (
@@ -228,7 +174,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         assert initial_reference is not None
         initial_bytes = (fixture.work / initial_reference.selector).read_bytes()
         _, first = self.submit_and_return(fixture, "first-test", committed=False)
-        self.assertEqual("ready", self.dispatch_cli(fixture, first)["status"])
+        self.assertEqual("ready", self.dispatch_native(fixture, first)["status"])
         first_state = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         first_reviews = {value.key for value in first_state.artifact_references if "-brief-review-" in value.key}
         replay = server._dispatch_job(str(fixture.project), str(fixture.work), first, server.CancellationToken())
@@ -276,7 +222,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         for invalid in (changed_reason, changed_identity, wrong_candidate, stale_history):
             with self.subTest(invalid=invalid):
                 before = fixture.store.validated_snapshot()
-                outcome = self.dispatch_cli(fixture, invalid)
+                outcome = self.dispatch_native(fixture, invalid)
                 self.assertNotEqual("ready", outcome["status"], outcome)
                 self.assertFalse(outcome["state_changed"])
                 self.assertEqual(before, fixture.store.validated_snapshot())
@@ -293,7 +239,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         exact = test_file.read_bytes()
         test_file.write_bytes(b"assert 'dirty'\n")
         before = fixture.store.validated_snapshot()
-        rejected = self.dispatch_cli(fixture, choice)
+        rejected = self.dispatch_native(fixture, choice)
         self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", rejected["code"])
         self.assertEqual(before, fixture.store.validated_snapshot())
         test_file.write_bytes(exact)

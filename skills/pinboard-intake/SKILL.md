@@ -45,7 +45,7 @@ This conditional authority does not authorize a prerequisite relation, admission
 
 ## Prepare one proposal
 
-If any proposal field or relation shape is uncertain, read the advertised `pinboard_proposal_create` input schema. Do not infer the schema from an old example or inspect Pinboard source. The retained CLI `tool-contract --operation proposal --json` is available only for exact contract diagnosis.
+If any proposal field or relation shape is uncertain, read the advertised `pinboard_proposal_create` input schema. Do not infer the schema from an old example or inspect Pinboard source.
 
 Create a bounded JSON proposal containing:
 

@@ -3,6 +3,7 @@ import hashlib
 import io
 import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from dataclasses import replace as dataclass_replace
@@ -12,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import msgspec
+from mcp.server.mcpserver.exceptions import UnexpectedToolError
 from msgspec.structs import replace
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
@@ -45,8 +47,10 @@ from pinboard.cli.entrypoint import main
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.mcp import server
 from tests.artifact_support import write_revision
-from tests.support import SQLITE_NOW, complete_sqlite_state, decision_facts
+from tests.native_support import call_native_tool
+from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, decision_facts
 from tests.work_brief_support import example_work_brief, needs_correction_review, work_a_brief, work_c_brief
 
 
@@ -683,112 +687,133 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 assert failure is not None
                 self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, failure.code)
 
-    def test_installed_publication_is_canonical_scheduling_neutral_and_retryable(self) -> None:
-        project = Path(tempfile.mkdtemp()).resolve()
+    def initialized_publication(self) -> tuple[Path, Path]:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        project = Path(temporary.name).resolve()
+        subprocess.run(("git", "init", "--quiet", str(project)), check=True)
         work = project / ".codex" / "work"
-        common = ("--project-root", str(project), "--work-root", str(work))
-        result, _stdout, stderr = self.run_cli(*common, "init")
+        result, _, stderr = self.run_cli("--project-root", str(project), "--work-root", str(work), "init")
         self.assertEqual(0, result, stderr)
-        candidate = project / "brief.json"
-        candidate.write_bytes(msgspec.json.format(msgspec.json.encode(example_work_brief()), indent=2))
+        return project, work
+
+    def publish(self, project: Path, work: Path, brief: work_brief_models.WorkBrief) -> JsonObject:
+        payload: JsonObject = msgspec.to_builtins(brief)
+        return call_native_tool(
+            server.BRIEF_PUBLISH_TOOL, {"project_root": str(project), "work_root": str(work), "brief": payload}
+        )
+
+    def test_native_publication_is_canonical_scheduling_neutral_retryable_and_collision_safe(self) -> None:
+        project, work = self.initialized_publication()
+        brief = example_work_brief()
         before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
-
-        result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
-
-        self.assertEqual(0, result, stderr)
-        receipt = msgspec.json.decode(stdout.encode())
-        self.assertEqual("artifacts/briefs/make-canonical-briefs-typed-json-1/1.json", receipt["selector"])
+        result = self.publish(project, work, brief)
+        self.assertEqual("committed", result["status"])
+        reference = result["reference"]
+        assert isinstance(reference, dict) and isinstance(reference["selector"], str)
+        self.assertEqual("artifacts/briefs/make-canonical-briefs-typed-json-1/1.json", reference["selector"])
         after = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
         self.assertEqual(before.lifecycle.work_items, after.lifecycle.work_items)
         self.assertEqual(before.authority, after.authority)
         self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
-        artifact = work / receipt["selector"]
-        self.assertEqual(canonical_work_brief_bytes(example_work_brief()), artifact.read_bytes())
-
-        retry_result, retry_stdout, retry_stderr = self.run_cli(
-            *common, "brief", "publish", "--file", str(candidate), "--json"
+        artifact = work / reference["selector"]
+        self.assertEqual(canonical_work_brief_bytes(brief), artifact.read_bytes())
+        reused = self.publish(project, work, brief)
+        self.assertEqual(
+            ("unchanged", False, []), (reused["status"], reused["state_changed"], reused["changed_surfaces"])
         )
-        self.assertEqual(0, retry_result, retry_stderr)
-        self.assertEqual(receipt, msgspec.json.decode(retry_stdout.encode()))
+        self.assertEqual(reference, reused["reference"])
+        self.assertEqual(after, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
+        with self.assertRaises(UnexpectedToolError) as failure:
+            self.publish(project, work, replace(brief, title="Different title"))
+        self.assertIsInstance(failure.exception.__cause__, ArtifactError)
+        cause = failure.exception.__cause__
+        assert isinstance(cause, ArtifactError)
+        self.assertEqual(ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION, cause.code)
+        self.assertEqual(canonical_work_brief_bytes(brief), artifact.read_bytes())
         self.assertEqual(after, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
-        candidate.write_bytes(canonical_work_brief_bytes(replace(example_work_brief(), title="Different title")))
-        collision_result, _collision_stdout, collision_stderr = self.run_cli(
-            *common, "brief", "publish", "--file", str(candidate)
-        )
-        self.assertEqual(12, collision_result)
-        self.assertIn("STORAGE_INVARIANT_VIOLATION", collision_stderr)
-        self.assertEqual(canonical_work_brief_bytes(example_work_brief()), artifact.read_bytes())
-
-    def test_invalid_publication_is_a_stable_typed_cli_rejection(self) -> None:
-        project = Path(tempfile.mkdtemp()).resolve()
-        work = project / ".codex" / "work"
-        common = ("--project-root", str(project), "--work-root", str(work))
-        self.assertEqual(0, self.run_cli(*common, "init")[0])
-        candidate = project / "brief.json"
-        candidate.write_text("{}\n", encoding="utf-8")
+    def test_native_invalid_publication_rejects_before_effects(self) -> None:
+        project, work = self.initialized_publication()
         before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
-
-        result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
-
-        self.assertEqual(16, result)
-        self.assertEqual("", stderr)
-        failure = msgspec.json.decode(stdout.encode())
-        self.assertEqual("pinboard-rejected-operation/v1", failure["schema"])
-        self.assertEqual("rejected", failure["status"])
-        self.assertEqual(work_brief_models.WorkBriefErrorCode.BRIEF_INVALID.value, failure["code"])
-        self.assertFalse(failure["state_changed"])
-        self.assertEqual("correct-input", failure["retry"])
+        failure = call_native_tool(
+            server.BRIEF_PUBLISH_TOOL, {"project_root": str(project), "work_root": str(work), "brief": {}}
+        )
+        self.assertEqual(
+            ("rejected", work_brief_models.WorkBriefErrorCode.BRIEF_INVALID.value, False, "correct-input", []),
+            (
+                failure["status"],
+                failure["code"],
+                failure["state_changed"],
+                failure["retry"],
+                failure["changed_surfaces"],
+            ),
+        )
         self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
-    def test_publication_failure_leaves_reusable_verified_orphan(self) -> None:
-        project = Path(tempfile.mkdtemp()).resolve()
-        work = project / ".codex" / "work"
-        common = ("--project-root", str(project), "--work-root", str(work))
-        self.assertEqual(0, self.run_cli(*common, "init")[0])
-        candidate = project / "brief.json"
-        candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
-
+    def test_native_acceptance_fault_matrix_preserves_exact_orphan_and_fresh_store(self) -> None:
         database_failure = StorageError(StorageErrorCode.BUSY, "database failed", retryable=True)
-        with patch.object(SQLiteWorkStore, "accept_artifact_reference", side_effect=database_failure):
-            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
+        verification_failure = ArtifactError(ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION, "store verification failed")
+        readonly = translate_database_error(sqlite3.OperationalError("attempt to write a readonly database"))
+        for target, error in (
+            ("pinboard.adapters.sqlite.store.SQLiteWorkStore.accept_artifact_reference", database_failure),
+            ("pinboard.adapters.sqlite.artifacts.verify_reference", verification_failure),
+            ("pinboard.adapters.sqlite.store.SQLiteWorkStore.accept_artifact_reference", readonly),
+        ):
+            with self.subTest(target=target, code=error.code):
+                project, work = self.initialized_publication()
+                before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+                brief = example_work_brief()
+                selector = f"artifacts/briefs/{brief.attempt_id}/1.json"
+                with patch(target, side_effect=error):
+                    failure = self.publish(project, work, brief)
+                self.assertEqual(
+                    (
+                        "failed-after-publication",
+                        "ARTIFACT_ACCEPTANCE_FAILED",
+                        True,
+                        ["immutable-artifact"],
+                        "do-not-retry",
+                        selector,
+                    ),
+                    (
+                        failure["status"],
+                        failure["code"],
+                        failure["state_changed"],
+                        failure["changed_surfaces"],
+                        failure["retry"],
+                        failure["published_selector"],
+                    ),
+                )
+                self.assertEqual(canonical_work_brief_bytes(brief), (work / selector).read_bytes())
+                self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
+                # The caller explicitly selects the already verified orphan; no second publication is claimed.
+                with patch(target, side_effect=error), self.assertRaises(UnexpectedToolError) as retry_failure:
+                    self.publish(project, work, brief)
+                cause = retry_failure.exception.__cause__
+                if isinstance(error, ArtifactError):
+                    self.assertIsInstance(cause, StorageError)
+                    assert isinstance(cause, StorageError)
+                    self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, cause.code)
+                    self.assertIs(error, cause.__cause__)
+                else:
+                    self.assertIs(error, cause)
+                self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
+                recovered = self.publish(project, work, brief)
+                reference = recovered["reference"]
+                assert isinstance(reference, dict)
+                self.assertEqual(selector, reference["selector"])
+                self.assertEqual(["accepted-artifact-reference", "ledger"], recovered["changed_surfaces"])
+                reloaded = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+                self.assertEqual(before.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
+                self.assertEqual(before.lifecycle.work_items, reloaded.lifecycle.work_items)
+                self.assertEqual(before.authority, reloaded.authority)
+                self.assertEqual(1, len(reloaded.artifact_references))
 
-        self.assertEqual(12, result, stderr)
-        committed = msgspec.json.decode(stdout.encode())
-        self.assertEqual("committed-effect", committed["status"])
-        self.assertTrue(committed["state_changed"])
-        self.assertEqual(["immutable-artifact"], committed["changed_surfaces"])
-        self.assertEqual("do-not-retry", committed["retry"])
-        orphan = work / "artifacts" / "briefs" / example_work_brief().attempt_id / "1.json"
-        self.assertEqual(canonical_work_brief_bytes(example_work_brief()), orphan.read_bytes())
-        self.assertEqual((), SQLiteWorkStore(work / "state.sqlite3").validated_snapshot().artifact_references)
-
-        orphan = work / "artifacts" / "briefs" / example_work_brief().attempt_id / "1.json"
-        self.assertEqual(canonical_work_brief_bytes(example_work_brief()), orphan.read_bytes())
-
-        with patch.object(SQLiteWorkStore, "accept_artifact_reference", side_effect=database_failure):
-            retry_result, retry_stdout, retry_stderr = self.run_cli(
-                *common, "brief", "publish", "--file", str(candidate), "--json"
-            )
-        self.assertEqual(12, retry_result, retry_stderr)
-        unchanged = msgspec.json.decode(retry_stdout.encode())
-        self.assertEqual("rejected", unchanged["status"])
-        self.assertFalse(unchanged["state_changed"])
-        self.assertEqual([], unchanged["changed_surfaces"])
-        self.assertEqual("retry-same-input", unchanged["retry"])
-
-        result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate))
-        self.assertEqual(0, result, stderr)
-        self.assertIn("BRIEF_PUBLISHED", stdout)
-
-    def test_post_link_sync_failure_reports_and_reuses_the_published_brief(self) -> None:
-        project = Path(tempfile.mkdtemp()).resolve()
-        work = project / ".codex" / "work"
-        common = ("--project-root", str(project), "--work-root", str(work))
-        self.assertEqual(0, self.run_cli(*common, "init")[0])
-        candidate = project / "brief.json"
-        candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
-        selector = f"artifacts/briefs/{example_work_brief().attempt_id}/1.json"
+    def test_native_post_link_sync_failure_preserves_and_reuses_exact_publication(self) -> None:
+        project, work = self.initialized_publication()
+        brief = example_work_brief()
+        selector = f"artifacts/briefs/{brief.attempt_id}/1.json"
         publication = work / selector
         before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
         original_fsync = os.fsync
@@ -799,136 +824,65 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             original_fsync(descriptor)
 
         with patch("pinboard.adapters.files.file_io.os.fsync", side_effect=fail_after_link):
-            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
-
-        self.assertEqual(12, result, stderr)
-        failure = msgspec.json.decode(stdout.encode())
-        self.assertEqual("committed-effect", failure["status"])
-        self.assertEqual("DIRECTORY_SYNC_FAILED", failure["code"])
-        self.assertEqual(["immutable-artifact"], failure["changed_surfaces"])
-        self.assertEqual("do-not-retry", failure["retry"])
+            failure = self.publish(project, work, brief)
         self.assertEqual(
-            [selector],
-            [value["value"] for value in failure["observed"] if value["field"] == "published_artifact_selector"],
+            (
+                "failed-after-publication",
+                "ARTIFACT_ACCEPTANCE_FAILED",
+                ["immutable-artifact"],
+                "do-not-retry",
+                selector,
+            ),
+            (
+                failure["status"],
+                failure["code"],
+                failure["changed_surfaces"],
+                failure["retry"],
+                failure["published_selector"],
+            ),
         )
-        self.assertEqual(canonical_work_brief_bytes(example_work_brief()), publication.read_bytes())
+        self.assertEqual(canonical_work_brief_bytes(brief), publication.read_bytes())
         self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
-
-        retry_result, retry_stdout, retry_stderr = self.run_cli(
-            *common, "brief", "publish", "--file", str(candidate), "--json"
-        )
-        self.assertEqual(0, retry_result, retry_stderr)
-        self.assertEqual(selector, msgspec.json.decode(retry_stdout.encode())["selector"])
-
-    def test_readonly_publication_failure_preserves_artifact_and_database_diagnostics(self) -> None:
-        project = Path(tempfile.mkdtemp()).resolve()
-        work = project / ".codex" / "work"
-        common = ("--project-root", str(project), "--work-root", str(work))
-        self.assertEqual(0, self.run_cli(*common, "init")[0])
-        candidate = project / "brief.json"
-        candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
-        readonly = translate_database_error(sqlite3.OperationalError("attempt to write a readonly database"))
-        readonly = readonly.with_database_path(work / "state.sqlite3")
-
-        with patch.object(SQLiteWorkStore, "accept_artifact_reference", side_effect=readonly):
-            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
-
-        self.assertEqual(12, result, stderr)
-        failure = msgspec.json.decode(stdout.encode())
-        self.assertEqual("committed-effect", failure["status"])
-        self.assertEqual("SQLITE_READONLY", failure["code"])
-        self.assertTrue(failure["state_changed"])
-        self.assertEqual(["immutable-artifact"], failure["changed_surfaces"])
-        self.assertEqual("do-not-retry", failure["retry"])
-        observations = {value["field"]: value["value"] for value in failure["observed"]}
-        self.assertEqual(str(work / "state.sqlite3"), observations["database_path"])
-        self.assertEqual("brief/publish", observations["operation"])
-        self.assertEqual("SQLITE_READONLY", observations["sqlite_error_code"])
-        self.assertIn(str(work), observations["permission_recovery"])
-        self.assertEqual((), SQLiteWorkStore(work / "state.sqlite3").validated_snapshot().artifact_references)
-
-    def test_store_verification_failure_preserves_exact_publication_effect(self) -> None:
-        project = Path(tempfile.mkdtemp()).resolve()
-        work = project / ".codex" / "work"
-        common = ("--project-root", str(project), "--work-root", str(work))
-        self.assertEqual(0, self.run_cli(*common, "init")[0])
-        candidate = project / "brief.json"
-        candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
-        verification_failure = ArtifactError(
-            ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION,
-            "store verification failed",
+        recovered = self.publish(project, work, brief)
+        reference = recovered["reference"]
+        assert isinstance(reference, dict)
+        self.assertEqual(selector, reference["selector"])
+        self.assertEqual(["accepted-artifact-reference", "ledger"], recovered["changed_surfaces"])
+        self.assertEqual(
+            before.lifecycle.project.revision + 1,
+            SQLiteWorkStore(work / "state.sqlite3").validated_snapshot().lifecycle.project.revision,
         )
 
-        with patch(
-            "pinboard.adapters.sqlite.artifacts.verify_reference",
-            side_effect=verification_failure,
-        ):
-            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
-
-        self.assertEqual(12, result, stderr)
-        committed = msgspec.json.decode(stdout.encode())
-        self.assertEqual("committed-effect", committed["status"])
-        self.assertTrue(committed["state_changed"])
-        self.assertEqual(["immutable-artifact"], committed["changed_surfaces"])
-        self.assertEqual("do-not-retry", committed["retry"])
-
-        with patch(
-            "pinboard.adapters.sqlite.artifacts.verify_reference",
-            side_effect=verification_failure,
-        ):
-            retry_result, retry_stdout, retry_stderr = self.run_cli(
-                *common,
-                "brief",
-                "publish",
-                "--file",
-                str(candidate),
-                "--json",
-            )
-
-        self.assertEqual(12, retry_result, retry_stderr)
-        unchanged = msgspec.json.decode(retry_stdout.encode())
-        self.assertEqual("rejected", unchanged["status"])
-        self.assertFalse(unchanged["state_changed"])
-        self.assertEqual([], unchanged["changed_surfaces"])
-        self.assertEqual("do-not-retry", unchanged["retry"])
-        self.assertEqual((), SQLiteWorkStore(work / "state.sqlite3").validated_snapshot().artifact_references)
-
-    def test_store_programming_failures_propagate_after_publication(self) -> None:
-        for programming_failure in (AssertionError("assertion failed"), ValueError("value failed")):
-            with self.subTest(error=type(programming_failure).__name__):
-                project = Path(tempfile.mkdtemp()).resolve()
-                work = project / ".codex" / "work"
-                common = ("--project-root", str(project), "--work-root", str(work))
-                self.assertEqual(0, self.run_cli(*common, "init")[0])
-                candidate = project / "brief.json"
-                candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
-
+    def test_native_programming_failures_remain_exceptional_after_publication(self) -> None:
+        for error in (AssertionError("assertion failed"), ValueError("value failed")):
+            with self.subTest(error=type(error).__name__):
+                project, work = self.initialized_publication()
+                before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+                brief = example_work_brief()
                 with (
-                    patch(
-                        "pinboard.adapters.sqlite.artifacts.verify_reference",
-                        side_effect=programming_failure,
-                    ),
-                    self.assertRaises(type(programming_failure)),
+                    patch("pinboard.adapters.sqlite.artifacts.verify_reference", side_effect=error),
+                    self.assertRaises(UnexpectedToolError) as failure,
                 ):
-                    self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
+                    self.publish(project, work, brief)
+                self.assertIs(error, failure.exception.__cause__)
+                selector = f"artifacts/briefs/{brief.attempt_id}/1.json"
+                self.assertEqual(canonical_work_brief_bytes(brief), (work / selector).read_bytes())
+                self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
-    def test_returned_publication_rejection_reports_new_immutable_artifact(self) -> None:
-        project = Path(tempfile.mkdtemp()).resolve()
-        work = project / ".codex" / "work"
-        common = ("--project-root", str(project), "--work-root", str(work))
-        self.assertEqual(0, self.run_cli(*common, "init")[0])
-        candidate = project / "brief.json"
-        candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
+    def test_native_returned_rejection_reports_new_immutable_artifact(self) -> None:
+        project, work = self.initialized_publication()
+        before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+        brief = example_work_brief()
         rejected = DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "acceptance changed", None)
-
         with patch.object(SQLiteWorkStore, "accept_artifact_reference", return_value=rejected):
-            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
-
-        self.assertEqual(11, result, stderr)
-        failure = msgspec.json.decode(stdout.encode())
-        self.assertEqual("committed-effect", failure["status"])
-        self.assertEqual(["immutable-artifact"], failure["changed_surfaces"])
-        self.assertEqual("do-not-retry", failure["retry"])
+            failure = self.publish(project, work, brief)
+        self.assertEqual(
+            ("rejected", "ACTION_NOT_AVAILABLE", ["immutable-artifact"], "do-not-retry"),
+            (failure["status"], failure["code"], failure["changed_surfaces"], failure["retry"]),
+        )
+        selector = f"artifacts/briefs/{brief.attempt_id}/1.json"
+        self.assertEqual(canonical_work_brief_bytes(brief), (work / selector).read_bytes())
+        self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
 
 if __name__ == "__main__":

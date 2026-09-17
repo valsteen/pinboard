@@ -1,9 +1,7 @@
 import hashlib
-import io
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -46,8 +44,6 @@ from pinboard.application.candidate_snapshots import (
     validate_candidate_snapshot_history,
     verify_candidate_snapshot_context,
 )
-from pinboard.cli import candidate_recovery, cli_commands
-from pinboard.cli.errors import CommandFailure, CommittedEffectFailure
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import (
     ArtifactAcceptanceAfterPublicationError,
@@ -605,7 +601,6 @@ class CandidateSnapshotTest(unittest.TestCase):
     def test_review_candidate_observation_covers_supported_candidate_shapes(self) -> None:
         store = self.initialized_store()
         checkout = Path(tempfile.mkdtemp()).resolve()
-        roots = cli_commands.ResolvedRoots(checkout, checkout, checkout, False)
         attempt_id = AttemptId("work-a-1")
         root_error = RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "unavailable")
 
@@ -614,7 +609,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             work_models.SubmitReviewInput(CandidateId("commit")),
         )
         self.assertIsInstance(
-            lifecycle_artifacts._observe_review_candidate(roots.source_checkout, store, missing, SQLITE_NOW),
+            lifecycle_artifacts._observe_review_candidate(checkout, store, missing, SQLITE_NOW),
             DecisionFailure,
         )
 
@@ -630,12 +625,12 @@ class CandidateSnapshotTest(unittest.TestCase):
 
         with patch.object(lifecycle_artifacts, "observe_checkout_identity", side_effect=root_error):
             self.assertIsInstance(
-                lifecycle_artifacts._observe_review_candidate(roots.source_checkout, store, committed, SQLITE_NOW),
+                lifecycle_artifacts._observe_review_candidate(checkout, store, committed, SQLITE_NOW),
                 DecisionFailure,
             )
         with patch.object(lifecycle_artifacts, "observe_checkout_identity", return_value=("wrong", "head")):
             self.assertIsInstance(
-                lifecycle_artifacts._observe_review_candidate(roots.source_checkout, store, committed, SQLITE_NOW),
+                lifecycle_artifacts._observe_review_candidate(checkout, store, committed, SQLITE_NOW),
                 DecisionFailure,
             )
 
@@ -645,7 +640,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             patch.object(lifecycle_artifacts, "read_working_tree_candidate", side_effect=root_error),
         ):
             self.assertIsInstance(
-                lifecycle_artifacts._observe_review_candidate(roots.source_checkout, store, working, SQLITE_NOW),
+                lifecycle_artifacts._observe_review_candidate(checkout, store, working, SQLITE_NOW),
                 DecisionFailure,
             )
         with (
@@ -657,7 +652,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             ),
         ):
             self.assertIsInstance(
-                lifecycle_artifacts._observe_review_candidate(roots.source_checkout, store, working, SQLITE_NOW),
+                lifecycle_artifacts._observe_review_candidate(checkout, store, working, SQLITE_NOW),
                 DecisionFailure,
             )
         with (
@@ -668,7 +663,7 @@ class CandidateSnapshotTest(unittest.TestCase):
                 return_value=WorkingTreeCandidate(working_candidate, b"diff"),
             ),
         ):
-            snapshot = lifecycle_artifacts._observe_review_candidate(roots.source_checkout, store, working, SQLITE_NOW)
+            snapshot = lifecycle_artifacts._observe_review_candidate(checkout, store, working, SQLITE_NOW)
         self.assertIsInstance(snapshot, WorkingTreeCandidateSnapshot)
 
         commit_observations = (
@@ -682,28 +677,28 @@ class CandidateSnapshotTest(unittest.TestCase):
                 patch.object(lifecycle_artifacts, "observe_checkout_identity", return_value=observed_identity),
                 patch.object(lifecycle_artifacts, "read_current_head_candidate", return_value=observation),
             ):
-                result = lifecycle_artifacts._observe_review_candidate(
-                    roots.source_checkout, store, committed, SQLITE_NOW
-                )
+                result = lifecycle_artifacts._observe_review_candidate(checkout, store, committed, SQLITE_NOW)
                 self.assertIsInstance(result, expected_type)
         with (
             patch.object(lifecycle_artifacts, "observe_checkout_identity", return_value=observed_identity),
             patch.object(lifecycle_artifacts, "read_current_head_candidate", side_effect=root_error),
         ):
             self.assertIsInstance(
-                lifecycle_artifacts._observe_review_candidate(roots.source_checkout, store, committed, SQLITE_NOW),
+                lifecycle_artifacts._observe_review_candidate(checkout, store, committed, SQLITE_NOW),
                 DecisionFailure,
             )
 
     def test_candidate_restore_reports_every_supported_outcome(self) -> None:
         store = self.initialized_store()
         checkout = Path(tempfile.mkdtemp()).resolve()
-        roots = cli_commands.ResolvedRoots(checkout, checkout, checkout, False)
-        command = cli_commands.CandidateRestoreCommand(AttemptId("work-a-1"), True)
+        work_root = checkout
         snapshot, context, _encoded = self.snapshot_context()
         evidence = CandidateSnapshotEvidence(snapshot, context.reference, context.receipt)
 
-        self.assertIsInstance(candidate_recovery.restore_candidate(roots, store, command), CommandFailure)
+        self.assertIsInstance(
+            candidate_evidence.restore_candidate(checkout, work_root, store, AttemptId("work-a-1"), snapshot.candidate),
+            DecisionFailure,
+        )
         with patch.object(candidate_evidence, "read_reference", return_value=b"invalid"):
             self.assertIsInstance(
                 candidate_evidence.read_candidate_evidence_from_context(checkout, context, None), DecisionFailure
@@ -713,10 +708,10 @@ class CandidateSnapshotTest(unittest.TestCase):
         root_error = RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "unavailable")
         mutated = CandidateRestoreAfterMutationError(RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE, "changed")
         working_outcomes = (
-            (rejection, CommandFailure),
-            (root_error, CommandFailure),
-            (mutated, CommittedEffectFailure),
-            (CandidateRestoreSuccess(True, snapshot.candidate), int),
+            (rejection, DecisionFailure),
+            (root_error, DecisionFailure),
+            (mutated, DecisionFailure),
+            (CandidateRestoreSuccess(True, snapshot.candidate), CandidateRestoreSuccess),
         )
         for outcome, expected_type in working_outcomes:
             with (
@@ -728,11 +723,13 @@ class CandidateSnapshotTest(unittest.TestCase):
                     side_effect=outcome if isinstance(outcome, RootError) else None,
                     return_value=outcome if not isinstance(outcome, RootError) else None,
                 ),
-                redirect_stdout(io.StringIO()),
             ):
-                result = candidate_recovery.restore_candidate(roots, store, command)
+                result = candidate_evidence.restore_candidate(
+                    checkout, work_root, store, AttemptId("work-a-1"), snapshot.candidate
+                )
                 self.assertIsInstance(result, expected_type)
-                if isinstance(result, CommittedEffectFailure):
+                if outcome is mutated:
+                    assert isinstance(result, DecisionFailure) and result.details is not None
                     self.assertEqual(EffectDisposition.COMMITTED, result.details.effect)
                     self.assertEqual((ChangedSurface.SOURCE_CHECKOUT,), result.details.changed_surfaces)
 
@@ -755,9 +752,13 @@ class CandidateSnapshotTest(unittest.TestCase):
                 "restore_commit_candidate",
                 return_value=CandidateRestoreSuccess(False, commit.candidate),
             ) as restore,
-            redirect_stdout(io.StringIO()),
         ):
-            self.assertEqual(0, candidate_recovery.restore_candidate(roots, store, command))
+            self.assertEqual(
+                CandidateRestoreSuccess(False, commit.candidate),
+                candidate_evidence.restore_candidate(
+                    checkout, work_root, store, AttemptId("work-a-1"), commit.candidate
+                ),
+            )
             restore.assert_called_once()
 
     def test_review_snapshot_publication_preserves_partial_effects(self) -> None:

@@ -1,4 +1,5 @@
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
@@ -16,14 +17,14 @@ from pinboard.application.artifact_publication import validate_transition_work_b
 from pinboard.application.artifacts import WorkBriefIdentity
 from pinboard.application.dispatch import publish_dispatch_review, recheck_dispatch_authority
 from pinboard.application.dispatch_models import DispatchFailure
-from pinboard.cli import action_selection, cli_commands
-from pinboard.cli.errors import CommandErrorCode, CommandFailure
+from pinboard.cli import cli_commands
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import ChangedSurface, EffectDisposition, RetryDisposition
-from pinboard.domain.identifiers import ActionId, ArtifactRefId, AttemptId, HostId, LeaseId, ReviewId, TaskId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, ReviewId
+from pinboard.mcp import server as mcp_server
 from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
-from tests.support import SQLITE_DIGEST, SQLITE_NOW, complete_sqlite_state, decision_facts, initialize_store
+from tests.support import SQLITE_DIGEST, SQLITE_NOW, JsonObject, complete_sqlite_state, decision_facts, initialize_store
 
 
 class OperationFailureTest(unittest.TestCase):
@@ -32,6 +33,7 @@ class OperationFailureTest(unittest.TestCase):
         state: stored_state.StoredWorkState | None,
     ) -> tuple[SQLiteWorkStore, cli_commands.ResolvedRoots]:
         project = Path(tempfile.mkdtemp()).resolve()
+        subprocess.run(["git", "init", "-q"], cwd=project, check=True, capture_output=True)
         roots = resolve_durable_roots(project)
         initialize_database(roots, SQLITE_NOW)
         store = SQLiteWorkStore(roots.database_path)
@@ -39,28 +41,23 @@ class OperationFailureTest(unittest.TestCase):
         resolved = cli_commands.ResolvedRoots(project, project, roots.work_root, False)
         return store, resolved
 
-    def project_transition(self, action_id: str) -> cli_commands.ProjectTransitionCommand:
-        return cli_commands.ProjectTransitionCommand(
-            ActionId(action_id),
-            "12",
-            Path("payload.json"),
-            TaskId("task"),
-            HostId("host"),
-        )
-
-    def worker_action(self) -> decision_models.ContinueAction:
-        actions = expect_success(
-            discover_actions(
-                complete_sqlite_state(),
-                decision_models.Role.WORKER,
-                lease_id=LeaseId("attempt-lease-a"),
-                generation=3,
-                now=SQLITE_NOW,
-            )
-        )
-        selected = next(value for value in actions if decision_models.action_id(value) == "continue:work-a-1")
-        assert isinstance(selected, decision_models.ContinueAction)
-        return selected
+    def transition(self, roots: cli_commands.ResolvedRoots, receipt: JsonObject) -> JsonObject:
+        with patch("pinboard.mcp.server.datetime") as clock:
+            clock.now.return_value = SQLITE_NOW
+            return mcp_server._transition(
+                {
+                    "request": {
+                        "project_root": str(roots.source_checkout),
+                        "work_root": str(roots.work),
+                        "role": "project",
+                        "actor_task_id": "task",
+                        "actor_host_id": "host",
+                        "receipt": receipt,
+                        "payload": {"reason": "Pause for review."},
+                    }
+                },
+                mcp_server.CancellationToken(),
+            ).content
 
     def test_sqlite_readonly_is_classified_separately_from_generic_storage_io(self) -> None:
         error = sqlite3.OperationalError("attempt to write a readonly database")
@@ -71,113 +68,77 @@ class OperationFailureTest(unittest.TestCase):
 
         self.assertEqual("SQLITE_READONLY", translated.code.value)
 
-    def test_action_receipt_rejections_are_distinct_and_structured(self) -> None:
-        malformed = action_selection.parse_action_receipt(self.project_transition("invalid"))
-        self.assertIsInstance(malformed, CommandFailure)
-        assert isinstance(malformed, CommandFailure)
-        self.assertEqual(CommandErrorCode.ACTION_ID_MALFORMED, malformed.code)
-        assert malformed.details is not None
-        self.assertEqual(RetryDisposition.CORRECT_INPUT, malformed.details.retry)
-        self.assertEqual("invalid", malformed.details.observed[0].value)
-
-        unknown = action_selection.parse_action_receipt(self.project_transition("invented:work-a"))
-        self.assertIsInstance(unknown, CommandFailure)
-        assert isinstance(unknown, CommandFailure)
-        self.assertEqual(CommandErrorCode.ACTION_KIND_UNKNOWN, unknown.code)
-        assert unknown.details is not None
-        self.assertEqual("invented", unknown.details.mismatches[0].observed)
-
-    def test_action_selection_distinguishes_staleness_authority_and_lifecycle(self) -> None:  # noqa: PLR0915 - one rejection-family matrix
-        worker_action = self.worker_action()
-        worker_receipt = action_selection.ParsedActionReceipt(worker_action, decision_models.Role.WORKER, 3)
-
-        store, _roots = self.initialized(None)
-        stale_action = replace(
-            worker_action,
-            capability=replace(worker_action.capability, subject_revision="11"),
+    def test_native_receipt_rejections_are_structured_before_effect(self) -> None:
+        store, roots = self.initialized(None)
+        before = store.validated_snapshot()
+        identities: tuple[JsonObject, ...] = (
+            {"kind": "pause", "subject": ""},
+            {"kind": "invented", "subject": "work-a"},
         )
-        with patch("pinboard.cli.action_selection.datetime") as clock:
-            clock.now.return_value = SQLITE_NOW
-            stale = action_selection.select_current_action(
-                store,
-                action_selection.ParsedActionReceipt(stale_action, decision_models.Role.WORKER, 3),
-            )
-        self.assertIsInstance(stale, CommandFailure)
-        assert isinstance(stale, CommandFailure)
-        self.assertEqual(CommandErrorCode.ACTION_REVISION_STALE, stale.code)
-        assert stale.details is not None
+        for identity in identities:
+            with self.subTest(identity=identity):
+                rejected = self.transition(roots, {"action_id": identity, "subject_revision": "12"})
+                self.assertEqual("TRANSITION_INPUT_INVALID", rejected["code"])
+                self.assertEqual("rejected", rejected["status"])
+                self.assertFalse(rejected["state_changed"])
+                self.assertEqual("unchanged", rejected["effect"])
+                self.assertEqual(before, store.validated_snapshot())
+
+    def test_native_selection_preserves_staleness_authority_and_lifecycle_rejections(self) -> None:
+        state = complete_sqlite_state()
+        pause = next(
+            value
+            for value in expect_success(discover_actions(state, decision_models.Role.PROJECT, now=SQLITE_NOW))
+            if isinstance(value, decision_models.PauseAction)
+        )
+        store, roots = self.initialized(state)
+        before = store.validated_snapshot()
+        stale = self.transition(
+            roots,
+            {
+                "action_id": {"kind": "pause", "subject": str(pause.capability.subject)},
+                "subject_revision": "11",
+            },
+        )
+        self.assertEqual("ACTION_NOT_AVAILABLE", stale["code"])
+        self.assertEqual("refresh-action", stale["retry"])
         self.assertEqual(
-            (worker_action.capability.subject_revision, "11"),
-            (stale.details.mismatches[0].expected, stale.details.mismatches[0].observed),
+            [{"field": "subject_revision", "expected": pause.capability.subject_revision, "observed": "11"}],
+            stale["mismatches"],
         )
-        continuation = next(value for value in stale.details.alternatives if value.action_id == "continue:work-a-1")
-        self.assertEqual(
-            (
-                "continue:work-a-1",
-                "worker",
-                worker_action.capability.subject_revision,
-                "attempt",
-                "attempt-lease-a",
-                3,
-            ),
-            (
-                continuation.action_id,
-                continuation.role,
-                continuation.subject_revision,
-                continuation.authorization,
-                continuation.lease_id,
-                continuation.generation,
-            ),
-        )
+        self.assertEqual(before, store.validated_snapshot())
 
-        wrong_action = replace(
-            worker_action,
-            capability=replace(worker_action.capability, lease_id=LeaseId("wrong-lease")),
-        )
-        with patch("pinboard.cli.action_selection.datetime") as clock:
-            clock.now.return_value = SQLITE_NOW
-            wrong = action_selection.select_current_action(
-                store,
-                action_selection.ParsedActionReceipt(wrong_action, decision_models.Role.WORKER, 3),
-            )
-        self.assertIsInstance(wrong, CommandFailure)
-        assert isinstance(wrong, CommandFailure)
-        self.assertEqual(CommandErrorCode.ACTION_AUTHORITY_WRONG, wrong.code)
-        assert wrong.details is not None
-        self.assertEqual("attempt-lease-a", wrong.details.mismatches[0].expected)
-        self.assertEqual("wrong-lease", wrong.details.mismatches[0].observed)
-
-        for status, expected_code in (
-            (authority_models.AttemptLeaseStatus.RELEASED, CommandErrorCode.ACTION_AUTHORITY_RELEASED),
-            (authority_models.AttemptLeaseStatus.EXPIRED, CommandErrorCode.ACTION_AUTHORITY_EXPIRED),
-        ):
-            state = complete_sqlite_state()
-            state = replace(
+        for status in (authority_models.AttemptLeaseStatus.RELEASED, authority_models.AttemptLeaseStatus.EXPIRED):
+            inactive = replace(
                 state,
                 authority=replace(
                     state.authority,
                     attempt_leases=tuple(replace(value, state=status) for value in state.authority.attempt_leases),
                 ),
             )
-            status_store, _status_roots = self.initialized(state)
-            before = status_store.validated_snapshot()
-            with patch("pinboard.cli.action_selection.datetime") as clock:
+            status_store, status_roots = self.initialized(inactive)
+            unchanged = status_store.validated_snapshot()
+            with patch("pinboard.mcp.server.datetime") as clock:
                 clock.now.return_value = SQLITE_NOW
-                rejected = action_selection.select_current_action(status_store, worker_receipt)
-            self.assertIsInstance(rejected, CommandFailure)
-            assert isinstance(rejected, CommandFailure)
-            self.assertEqual(expected_code, rejected.code)
-            assert rejected.details is not None
-            self.assertEqual(status.value, rejected.details.observed[0].value)
-            self.assertEqual(before, status_store.validated_snapshot())
+                rejected = mcp_server._read_actions(
+                    {
+                        "request": {
+                            "project_root": str(status_roots.source_checkout),
+                            "work_root": str(status_roots.work),
+                            "role": "worker",
+                            "lease_id": "attempt-lease-a",
+                            "generation": 3,
+                            "action_id": {"kind": "continue", "subject": "work-a-1"},
+                        }
+                    },
+                    mcp_server.CancellationToken(),
+                ).content
+            self.assertEqual("ATTEMPT_LEASE_REQUIRED", rejected["code"])
+            self.assertEqual("reacquire-authority", rejected["retry"])
+            self.assertFalse(rejected["state_changed"])
+            self.assertEqual(unchanged, status_store.validated_snapshot())
 
-        state = complete_sqlite_state()
-        project_pause = next(
-            value
-            for value in expect_success(discover_actions(state, decision_models.Role.PROJECT, now=SQLITE_NOW))
-            if isinstance(value, decision_models.PauseAction)
-        )
-        state = replace(
+        paused = replace(
             state,
             lifecycle=replace(
                 state.lifecycle,
@@ -192,26 +153,18 @@ class OperationFailureTest(unittest.TestCase):
                 ),
             ),
         )
-        lifecycle_store, _lifecycle_roots = self.initialized(state)
-        with patch("pinboard.cli.action_selection.datetime") as clock:
-            clock.now.return_value = SQLITE_NOW
-            unavailable = action_selection.select_current_action(
-                lifecycle_store,
-                action_selection.ParsedActionReceipt(project_pause, decision_models.Role.PROJECT, 0),
-            )
-        self.assertIsInstance(unavailable, CommandFailure)
-        assert isinstance(unavailable, CommandFailure)
-        self.assertEqual(CommandErrorCode.ACTION_LIFECYCLE_UNAVAILABLE, unavailable.code)
-        assert unavailable.details is not None
-        self.assertEqual("active-attempt", unavailable.details.mismatches[0].expected)
-        self.assertEqual("paused", unavailable.details.mismatches[0].observed)
-        self.assertTrue(unavailable.details.alternatives)
-        self.assertTrue(
-            all(
-                value.subject_revision == project_pause.capability.subject_revision
-                for value in unavailable.details.alternatives
-            )
+        lifecycle_store, lifecycle_roots = self.initialized(paused)
+        before = lifecycle_store.validated_snapshot()
+        unavailable = self.transition(
+            lifecycle_roots,
+            {
+                "action_id": {"kind": "pause", "subject": str(pause.capability.subject)},
+                "subject_revision": pause.capability.subject_revision,
+            },
         )
+        self.assertEqual("ACTION_NOT_AVAILABLE", unavailable["code"])
+        self.assertFalse(unavailable["state_changed"])
+        self.assertEqual(before, lifecycle_store.validated_snapshot())
 
     def test_transition_brief_reports_every_identity_mismatch(self) -> None:
         state = complete_sqlite_state()

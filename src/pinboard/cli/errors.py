@@ -1,13 +1,9 @@
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 
-from pinboard.adapters.dispatch_operations import DispatchFailure
 from pinboard.adapters.files.errors import ArtifactError, FileIOError
 from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError, StorageError
 from pinboard.application import work_brief_models
-from pinboard.application.brief_source_models import BriefSourceFailure
-from pinboard.application.proposal_models import ProposalFailure
 from pinboard.application.work_brief_models import WorkBriefFailure  # noqa: ICN003
 from pinboard.cli import cli_commands
 from pinboard.domain.errors import (
@@ -69,38 +65,8 @@ def storage_failure_details(
 
 
 @dataclass(frozen=True, slots=True)
-class CommittedEffectFailure:
-    """A typed failure after one or more durable surfaces were already changed."""
-
-    code: str
-    message: str
-    details: FailureDetails
-
-    def __str__(self) -> str:
-        return f"{self.code}: {self.message}"
-
-
-class CommandErrorCode(Enum):
-    ACTION_ID_INVALID = "ACTION_ID_INVALID"
-    ACTION_ID_MALFORMED = "ACTION_ID_MALFORMED"
-    ACTION_KIND_UNKNOWN = "ACTION_KIND_UNKNOWN"
-    ACTION_REVISION_STALE = "ACTION_REVISION_STALE"
-    ACTION_AUTHORITY_WRONG = "ACTION_AUTHORITY_WRONG"
-    ACTION_AUTHORITY_EXPIRED = "ACTION_AUTHORITY_EXPIRED"
-    ACTION_AUTHORITY_RELEASED = "ACTION_AUTHORITY_RELEASED"
-    ACTION_LIFECYCLE_UNAVAILABLE = "ACTION_LIFECYCLE_UNAVAILABLE"
-    ARTIFACT_REFERENCE_MISMATCH = "ARTIFACT_REFERENCE_MISMATCH"
-    PARALLEL_SELECTION_INVALID = "PARALLEL_SELECTION_INVALID"
-    STALE_ACTION = "STALE_ACTION"
-    WORK_STATE_INVALID = "WORK_STATE_INVALID"
-
-
-type CommandFailureCode = CommandErrorCode | DecisionFailureCode
-
-
-@dataclass(frozen=True, slots=True)
 class CommandFailure:
-    code: CommandFailureCode
+    code: DecisionFailureCode
     message: str
     details: FailureDetails | None
 
@@ -178,7 +144,5 @@ def initialization_failure_details(
     )
 
 
-type CliFailure = (
-    CommandFailure | ProposalFailure | DispatchFailure | BriefSourceFailure | WorkBriefFailure | CommittedEffectFailure
-)
+type CliFailure = CommandFailure | WorkBriefFailure
 type CliResult[T] = T | CliFailure

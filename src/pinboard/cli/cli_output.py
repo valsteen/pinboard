@@ -1,17 +1,13 @@
 """Concrete stdout effects shared by installed command presenters."""
 
 import sys
-from datetime import datetime
 from typing import Literal
 
 import msgspec
 
-from pinboard.application import query_models, work_brief_models
-from pinboard.application.brief_source_models import BriefSourceFailure
-from pinboard.cli.errors import CliFailure, CommittedEffectFailure
+from pinboard.application import work_brief_models
+from pinboard.cli.errors import CliFailure
 from pinboard.domain.errors import EffectDisposition, FailureDetails, FailureFactValue, RetryDisposition
-
-type AuthorityStatus = query_models.AttemptAuthorityStatus | query_models.PreparationAuthorityStatus
 
 
 class FailureFactView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -67,43 +63,6 @@ class RejectedOperationView(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     next_actions: tuple[RecoveryView, ...]
 
 
-def authority_lease_fields(
-    *,
-    task_id: str,
-    host_id: str,
-    lease_id: str,
-    generation: int,
-    acquired_at: datetime,
-    expires_at: datetime,
-    status: str,
-) -> dict[str, str | int]:
-    """Project the common identity and timing fields of an authority lease."""
-
-    return {
-        "task_id": task_id,
-        "host_id": host_id,
-        "lease_id": lease_id,
-        "generation": generation,
-        "acquired_at": acquired_at.isoformat(),
-        "expires_at": expires_at.isoformat(),
-        "status": status,
-    }
-
-
-def authority_status_fields(status: AuthorityStatus) -> dict[str, str | int]:
-    """Project common output fields from one exact authority-status result."""
-
-    return authority_lease_fields(
-        task_id=status.task_id,
-        host_id=status.host_id,
-        lease_id=status.lease_id,
-        generation=status.generation,
-        acquired_at=status.acquired_at,
-        expires_at=status.expires_at,
-        status=status.status.value,
-    )
-
-
 def render_json[T](value: T) -> bytes:
     """Render one canonical, human-readable JSON value."""
     encoded = msgspec.json.encode(value, order="sorted")
@@ -118,11 +77,10 @@ def write_json[T](value: T) -> None:
 
 def write_rejected_operation(operation: str, failure: CliFailure) -> None:
     """Present one expected failure without reconstructing facts from its prose message."""
-    assert not isinstance(failure, CommittedEffectFailure)
-    details = None if isinstance(failure, (BriefSourceFailure, work_brief_models.WorkBriefFailure)) else failure.details
+    details = None if isinstance(failure, work_brief_models.WorkBriefFailure) else failure.details
     default_retry = (
         RetryDisposition.CORRECT_INPUT
-        if isinstance(failure, (BriefSourceFailure, work_brief_models.WorkBriefFailure))
+        if isinstance(failure, work_brief_models.WorkBriefFailure)
         else RetryDisposition.DO_NOT_RETRY
     )
     write_operation_rejection(

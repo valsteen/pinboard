@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import sqlite3
@@ -8,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import msgspec
+from mcp.server.mcpserver.exceptions import UnexpectedToolError
 from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
@@ -32,8 +34,10 @@ from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.history import CheckpointAcceptanceOutcome
 from pinboard.domain.identifiers import AttemptId
+from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.checkpoint_support import AcceptedPackageFixture, CheckpointFixture, CheckpointPackageSupport
+from tests.native_support import call_native_tool
 from tests.support import SQLITE_NOW, JsonObject, JsonValue
 
 
@@ -146,9 +150,8 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         self.assertEqual(fixture.candidate_revision, handover.checkpoint_packages[0].candidate)
 
     def accept_checkpoint_from_immutable_snapshot(self, fixture: CheckpointFixture) -> None:
-        action = self.project_action(fixture.common, "accept-checkpoint:work-a-1")
-        result, _stdout, stderr = self.run_cli(*self.project_transition_arguments(fixture, action, fixture.payload))
-        self.assertEqual(0, result, stderr)
+        action = self.project_action(fixture, "accept-checkpoint:work-a-1")
+        self.transition_json(fixture, action, fixture.payload)
         reference = next(
             value
             for value in fixture.store.validated_snapshot().artifact_references
@@ -196,27 +199,15 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 finally:
                     connection.close()
                 (fixture.work / candidate_reference.selector).unlink()
-                arguments = [
-                    *fixture.common,
-                    "review-job",
-                    "--attempt-id",
-                    "work-a-1",
-                    "--candidate-revision",
-                    "b" * 40,
-                    "--checkpoint-history-id",
-                    str(history_id),
-                ]
+                review: JsonObject = {"kind": "package-initial", "checkpoint_history_id": history_id}
                 if supply_patch:
-                    recovered = fixture.project / "candidate.patch"
-                    recovered.write_bytes(candidate_bytes)
-                    arguments.extend(("--candidate-patch", str(recovered)))
-                arguments.append("--json")
+                    review = {
+                        "kind": "package-initial-recovery",
+                        "checkpoint_history_id": history_id,
+                        "candidate_patch": base64.b64encode(candidate_bytes).decode(),
+                    }
                 before = fixture.store.validated_snapshot()
-
-                result, stdout, stderr = self.run_cli(*arguments)
-
-                self.assertEqual(11, result, stderr)
-                rejected = self.json_object(json.loads(stdout))
+                rejected = self.review_result(fixture, review)
                 self.assertEqual("rejected", rejected["status"])
                 self.assertFalse(rejected["state_changed"])
                 self.assertEqual([], rejected["changed_surfaces"])
@@ -232,72 +223,61 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 self.assertNotIn("recovery_command", observed)
                 self.assertEqual(before, fixture.store.validated_snapshot())
 
-    def test_review_job_v2_supports_independent_package_and_round_dimensions(self) -> None:
+    def test_native_review_supports_independent_package_and_round_dimensions(self) -> None:
         fixture, package_history_id, correction_history_id = self.review_job_fixture()
-        combinations = (
-            ((), "absent", "initial"),
-            (("--checkpoint-history-id", str(package_history_id)), "present", "initial"),
-            (("--correction-history-id", str(correction_history_id)), "absent", "correction"),
+        combinations: tuple[tuple[JsonObject, str, str], ...] = (
+            ({"kind": "initial"}, "absent", "initial"),
+            ({"kind": "package-initial", "checkpoint_history_id": package_history_id}, "present", "initial"),
+            ({"kind": "correction", "correction_history_id": correction_history_id}, "absent", "correction"),
             (
-                (
-                    "--checkpoint-history-id",
-                    str(package_history_id),
-                    "--correction-history-id",
-                    str(correction_history_id),
-                ),
+                {
+                    "kind": "package-correction",
+                    "checkpoint_history_id": package_history_id,
+                    "correction_history_id": correction_history_id,
+                },
                 "present",
                 "correction",
             ),
         )
         lifecycle_before = fixture.store.validated_snapshot().lifecycle
-        for arguments, package_kind, round_kind in combinations:
+        for review, package_kind, round_kind in combinations:
             with self.subTest(package=package_kind, round=round_kind):
-                job = self.run_json_cli(
-                    *fixture.common,
-                    "review-job",
-                    "--attempt-id",
-                    "work-a-1",
-                    "--candidate-revision",
-                    "b" * 40,
-                    *arguments,
-                )
-                self.assertEqual("pinboard-review-job/v4", job["schema"])
+                job = self.review_result(fixture, review)
+                self.assertEqual("ready", job["status"])
                 self.assertEqual(package_kind, self.json_object(job["prior_checkpoint_package"])["kind"])
                 self.assertEqual(round_kind, self.json_object(job["review_round"])["kind"])
-        lifecycle_after = fixture.store.validated_snapshot().lifecycle
+                reference = self.json_object(job["prompt_reference"])
+                self.assertTrue((fixture.work / str(reference["selector"])).is_file())
+        lifecycle_after = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot().lifecycle
         self.assertEqual(lifecycle_before.work_items, lifecycle_after.work_items)
         self.assertEqual(lifecycle_before.attempts, lifecycle_after.attempts)
 
-    def test_review_job_rejects_wrong_history_kinds_and_package_identity(self) -> None:
+    def test_native_review_rejects_wrong_history_kinds_and_package_identity(self) -> None:
         fixture, package_history_id, correction_history_id = self.review_job_fixture()
-        common = (
-            *fixture.common,
-            "review-job",
-            "--attempt-id",
-            "work-a-1",
-            "--candidate-revision",
-            "b" * 40,
+        before = fixture.store.validated_snapshot()
+        reviews: tuple[JsonObject, ...] = (
+            {"kind": "package-initial", "checkpoint_history_id": correction_history_id},
+            {"kind": "correction", "correction_history_id": package_history_id},
+            {"kind": "package-initial", "checkpoint_history_id": 999999},
+            {"kind": "correction", "correction_history_id": 999999},
         )
-        for arguments in (
-            ("--checkpoint-history-id", str(correction_history_id)),
-            ("--correction-history-id", str(package_history_id)),
-            ("--checkpoint-history-id", "999999"),
-            ("--correction-history-id", "999999"),
-        ):
-            with self.subTest(arguments=arguments):
-                result, stdout, _stderr = self.run_cli(*common, *arguments)
-                self.assertEqual(11, result)
-                self.assertEqual("", stdout)
-
+        for review in reviews:
+            with self.subTest(review=review):
+                rejected = self.review_result(fixture, review)
+                self.assertEqual("rejected", rejected["status"])
+                self.assertFalse(rejected["state_changed"])
+                self.assertEqual(before, fixture.store.validated_snapshot())
         package = self.package(fixture)
         self.replace_package(fixture, replace_struct(package, attempt_id="foreign-attempt"))
-        result, stdout, _stderr = self.run_cli(
-            *common,
-            "--checkpoint-history-id",
-            str(package_history_id),
+        rejected = self.review_result(
+            fixture,
+            {
+                "kind": "package-initial",
+                "checkpoint_history_id": package_history_id,
+            },
         )
-        self.assertEqual(11, result)
-        self.assertEqual("", stdout)
+        self.assertEqual("rejected", rejected["status"])
+        self.assertFalse(rejected["state_changed"])
 
     def test_review_job_rejects_v1_receipt_with_checkpoint_shaped_payload_without_writes(self) -> None:
         fixture, package_history_id, _correction_history_id = self.review_job_fixture()
@@ -316,19 +296,15 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             if path.is_file()
         }
 
-        result, stdout, _stderr = self.run_cli(
-            *fixture.common,
-            "review-job",
-            "--attempt-id",
-            "work-a-1",
-            "--candidate-revision",
-            "b" * 40,
-            "--checkpoint-history-id",
-            str(package_history_id),
+        rejected = self.review_result(
+            fixture,
+            {
+                "kind": "package-initial",
+                "checkpoint_history_id": package_history_id,
+            },
         )
-
-        self.assertEqual(11, result)
-        self.assertEqual("", stdout)
+        self.assertEqual("rejected", rejected["status"])
+        self.assertFalse(rejected["state_changed"])
         self.assertEqual(
             files_before,
             {
@@ -368,21 +344,16 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                     if path.is_file()
                 }
 
-                result, stdout, _stderr = self.run_cli(
-                    *fixture.common,
-                    "review-job",
-                    "--attempt-id",
-                    "work-a-1",
-                    "--candidate-revision",
-                    "b" * 40,
-                    "--checkpoint-history-id",
-                    str(package_history_id),
-                    "--correction-history-id",
-                    str(correction_history_id),
+                rejected = self.review_result(
+                    fixture,
+                    {
+                        "kind": "package-correction",
+                        "checkpoint_history_id": package_history_id,
+                        "correction_history_id": correction_history_id,
+                    },
                 )
-
-                self.assertEqual(11, result)
-                self.assertEqual("", stdout)
+                self.assertEqual("rejected", rejected["status"])
+                self.assertFalse(rejected["state_changed"])
                 self.assertEqual(
                     files_before,
                     {
@@ -435,21 +406,16 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         )
         self.assertEqual(b'{"reason":"Fix candidate B."}', bytes(selected_receipt.input_payload))
 
-        review_arguments = (
-            *fixture.common,
-            "review-job",
-            "--attempt-id",
-            "work-a-1",
-            "--candidate-revision",
-            candidate_c,
-            "--checkpoint-history-id",
-            str(int(package_receipt.history_id)),
-            "--correction-history-id",
-            str(older_history_id),
+        job = self.review_result(
+            fixture,
+            {
+                "kind": "package-correction",
+                "candidate_revision": candidate_c,
+                "checkpoint_history_id": int(package_receipt.history_id),
+                "correction_history_id": older_history_id,
+            },
         )
-        result, stdout, stderr = self.run_cli(*review_arguments, "--json")
-        self.assertEqual(0, result, f"{stdout}\n{stderr}")
-        job = self.json_object(json.loads(stdout))
+        self.assertEqual("ready", job["status"])
 
         self.assertLess(older_history_id, newer_history_id)
         round_view = self.json_object(job["review_round"])
@@ -475,35 +441,27 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 package_path.unlink()
             else:
                 package_path.write_bytes(b"corrupt\n")
-            result, stdout, _stderr = self.run_cli(
-                *fixture.common,
-                "review-job",
-                "--attempt-id",
-                "work-a-1",
-                "--candidate-revision",
-                "b" * 40,
-                "--checkpoint-history-id",
-                str(package_history_id),
-            )
-            with self.subTest(failure=failure):
-                self.assertEqual(12, result)
-                self.assertEqual("", stdout)
+            with self.subTest(failure=failure), self.assertRaises(UnexpectedToolError) as raised:
+                self.review_result(
+                    fixture,
+                    {
+                        "kind": "package-initial",
+                        "checkpoint_history_id": package_history_id,
+                    },
+                )
+            self.assertIsInstance(raised.exception.__cause__, ArtifactError)
 
     def test_review_job_keeps_selected_return_and_current_review_independent(self) -> None:
         fixture, package_history_id, older_correction_history_id = self.review_job_fixture()
         review_path = fixture.work / "attempts" / "work-a-1" / "review.md"
         review_path.write_text("Candidate: candidate-newer\nFinding: newer finding.\n", encoding="utf-8")
-        job = self.run_json_cli(
-            *fixture.common,
-            "review-job",
-            "--attempt-id",
-            "work-a-1",
-            "--candidate-revision",
-            "b" * 40,
-            "--checkpoint-history-id",
-            str(package_history_id),
-            "--correction-history-id",
-            str(older_correction_history_id),
+        job = self.review_result(
+            fixture,
+            {
+                "kind": "package-correction",
+                "checkpoint_history_id": package_history_id,
+                "correction_history_id": older_correction_history_id,
+            },
         )
         round_view = self.json_object(job["review_round"])
         self.assertEqual("candidate-a", round_view["candidate_revision"])
@@ -521,15 +479,12 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             if value.outcome_schema == "checkpoint-acceptance/v2"
         )
         self.record_review_candidate(fixture, "b" * 40)
-        job = self.run_json_cli(
-            *fixture.common,
-            "review-job",
-            "--attempt-id",
-            "work-a-1",
-            "--candidate-revision",
-            "b" * 40,
-            "--checkpoint-history-id",
-            str(int(package_receipt.history_id)),
+        job = self.review_result(
+            fixture,
+            {
+                "kind": "package-initial",
+                "checkpoint_history_id": int(package_receipt.history_id),
+            },
         )
         selected = self.json_object(job["prior_checkpoint_package"])
         self.assertEqual("present", selected["kind"])
@@ -588,19 +543,15 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             patch.object(sqlite_state, "read_history_receipt", wraps=original_receipt_read) as receipt_reads,
             patch("pinboard.adapters.files.root.subprocess.run", wraps=subprocess.run) as git_calls,
         ):
-            job = self.run_json_cli(
-                *fixture.common,
-                "review-job",
-                "--attempt-id",
-                "work-a-1",
-                "--candidate-revision",
-                "b" * 40,
-                "--checkpoint-history-id",
-                str(package_history_id),
-                "--correction-history-id",
-                str(correction_history_id),
+            job = self.review_result(
+                fixture,
+                {
+                    "kind": "package-correction",
+                    "checkpoint_history_id": package_history_id,
+                    "correction_history_id": correction_history_id,
+                },
             )
-        self.assertEqual("pinboard-review-job/v4", job["schema"])
+        self.assertEqual("ready", job["status"])
         self.assertEqual(1, transactions.call_count)
         self.assertEqual(3, receipt_reads.call_count)
         self.assertTrue(git_calls.call_args_list)
@@ -702,15 +653,13 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             value for value in state.transition_receipts if value.outcome_schema == "checkpoint-acceptance/v2"
         )
         for checkpoint in checkpoints:
-            job = self.run_json_cli(
-                *fixture.common,
-                "review-job",
-                "--attempt-id",
-                "work-a-1",
-                "--candidate-revision",
-                candidate,
-                "--checkpoint-history-id",
-                str(checkpoint.history_id),
+            job = self.review_result(
+                fixture,
+                {
+                    "kind": "package-initial",
+                    "candidate_revision": candidate,
+                    "checkpoint_history_id": int(checkpoint.history_id),
+                },
             )
             self.assertEqual(
                 int(checkpoint.history_id), self.json_object(job["prior_checkpoint_package"])["history_id"]
@@ -739,7 +688,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 }
             )
         )
-        self.transition_json(fixture, self.project_action(fixture.common, "complete:work-a-1"), payload)
+        self.transition_json(fixture, self.project_action(fixture, "complete:work-a-1"), payload)
         self.run_json_cli(*fixture.common, "validate")
         result, stdout, stderr = self.run_cli(*fixture.common, "handover", "--json")
         self.assertEqual(0, result, stderr)
@@ -791,31 +740,31 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 }
             ],
         }
-        active_action = self.project_action(fixture.common, "continue:work-a-1")
-        active_action["action_id"] = "complete:work-a-1"
+        active_action = self.project_action(fixture, "continue:work-a-1")
+        active_action["action_id"] = {"kind": "complete", "subject": "work-a-1"}
+        active_action["authorization"] = "project"
         active_payload = fixture.project / "covered-complete-active.json"
         active_payload.write_text(json.dumps(covered_value), encoding="utf-8")
         before_active_rejection = fixture.store.validated_snapshot()
         with patch(
-            "pinboard.cli.transitions.ArtifactRepository.publish",
+            "pinboard.adapters.lifecycle_artifacts.ArtifactRepository.publish",
             side_effect=AssertionError("covered active-state cross-use published evidence"),
         ):
-            active_result, _, _ = self.run_cli(
-                *self.project_transition_arguments(fixture, active_action, active_payload)
-            )
-        self.assertEqual(11, active_result)
+            active_result = self.transition_result(fixture, active_action, covered_value)
+        self.assertEqual("rejected", active_result["status"])
         self.assertEqual(before_active_rejection, fixture.store.validated_snapshot())
 
         terminal_candidate = self.submit_review(fixture, "terminal-candidate", "terminal-worker")
         covered_value["candidate"] = terminal_candidate
-        complete_action = self.project_action(fixture.common, "complete:work-a-1")
+        complete_action = self.project_action(fixture, "complete:work-a-1")
 
         direct_payload = fixture.project / "direct-complete.json"
         direct_payload.write_text('{"evidence":"must not bypass checkpoint evidence"}', encoding="utf-8")
         before_direct = fixture.store.validated_snapshot()
-        direct_args = self.project_transition_arguments(fixture, complete_action, direct_payload)
-        direct_result, _direct_stdout, _direct_stderr = self.run_cli(*direct_args)
-        self.assertEqual(11, direct_result)
+        direct_result = self.transition_result(
+            fixture, complete_action, {"evidence": "must not bypass checkpoint evidence"}
+        )
+        self.assertEqual("rejected", direct_result["status"])
         self.assertEqual(before_direct, fixture.store.validated_snapshot())
 
         payload = fixture.project / "covered-complete.json"
@@ -836,19 +785,15 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             with (
                 self.subTest(prepublication_rejection=suffix),
                 patch(
-                    "pinboard.cli.transitions.ArtifactRepository.publish",
+                    "pinboard.adapters.lifecycle_artifacts.ArtifactRepository.publish",
                     side_effect=AssertionError("publisher called before covered preflight completed"),
                 ),
             ):
-                rejected_result, _, _ = self.run_cli(
-                    *self.project_transition_arguments(
-                        fixture,
-                        complete_action,
-                        rejected_payload,
-                        task_id=task_id,
-                    )
+                request = self.native_transition_request(
+                    fixture, complete_action, covered_value | changes, task_id=task_id
                 )
-                self.assertEqual(11, rejected_result)
+                rejected_result = call_native_tool(mcp_server.TRANSITION_TOOL, request)
+                self.assertEqual("rejected", rejected_result["status"])
                 self.assertEqual(before_rejection, fixture.store.validated_snapshot())
 
         wrong_digest = fixture.project / "covered-complete-wrong-digest.json"
@@ -856,36 +801,32 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         wrong_value["review_sha256"] = "0" * 64
         wrong_digest.write_text(json.dumps(wrong_value), encoding="utf-8")
         with patch(
-            "pinboard.cli.transitions.ArtifactRepository.publish",
+            "pinboard.adapters.lifecycle_artifacts.ArtifactRepository.publish",
             side_effect=AssertionError("publisher called before digest match"),
         ):
-            wrong_args = self.project_transition_arguments(fixture, complete_action, wrong_digest)
-            wrong_result, _wrong_stdout, _wrong_stderr = self.run_cli(*wrong_args)
-        self.assertEqual(11, wrong_result)
+            wrong_result = self.transition_result(fixture, complete_action, wrong_value)
+        self.assertEqual("rejected", wrong_result["status"])
 
-        covered_args = [*self.project_transition_arguments(fixture, complete_action, payload), "--json"]
         before_publication_failure = fixture.store.validated_snapshot()
-        with patch(
-            "pinboard.cli.transitions.ArtifactRepository.publish",
-            side_effect=ArtifactError(ArtifactErrorCode.STORAGE_IO_ERROR, "injected first publication failure"),
+        with (
+            patch(
+                "pinboard.adapters.lifecycle_artifacts.ArtifactRepository.publish",
+                side_effect=ArtifactError(ArtifactErrorCode.STORAGE_IO_ERROR, "injected first publication failure"),
+            ),
+            self.assertRaises(UnexpectedToolError) as raised,
         ):
-            publish_result, publish_stdout, publish_stderr = self.run_cli(*covered_args)
-        self.assertEqual(12, publish_result, f"{publish_stdout}\n{publish_stderr}")
+            self.transition_result(fixture, complete_action, covered_value)
+        self.assertIsInstance(raised.exception.__cause__, ArtifactError)
         self.assertEqual(before_publication_failure, fixture.store.validated_snapshot())
-        publish_failure = self.json_object(json.loads(publish_stdout))
-        self.assertFalse(publish_failure["state_changed"])
-        self.assertEqual([], publish_failure["changed_surfaces"])
 
         before_store_failure = fixture.store.validated_snapshot()
         with patch(
             "pinboard.adapters.lifecycle_artifacts.service.decide_and_commit_covered_completion",
             side_effect=StorageError(StorageErrorCode.OPERATION_FAILED, "injected covered commit failure"),
         ):
-            store_result, store_stdout, store_stderr = self.run_cli(*covered_args)
-        self.assertEqual(12, store_result, store_stderr)
+            store_failure = self.transition_result(fixture, complete_action, covered_value)
         self.assertEqual(before_store_failure, fixture.store.validated_snapshot())
-        store_failure = self.json_object(json.loads(store_stdout))
-        self.assertEqual("committed-effect", store_failure["status"], store_failure)
+        self.assertEqual("failed-after-publication", store_failure["status"], store_failure)
         self.assertTrue(store_failure["state_changed"])
         self.assertEqual(["immutable-artifact"], store_failure["changed_surfaces"])
         observed = store_failure["observed"]

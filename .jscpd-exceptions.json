@@ -59,62 +59,6 @@
       }
     },
     {
-      "identity": {
-        "id": "cli-route-and-mcp-effect",
-        "format": "python",
-        "tokens": 84,
-        "lines": 14,
-        "occurrences": [
-          {
-            "endpoint": {
-              "name": "cli/tool_contract.py",
-              "start": 699,
-              "end": 712,
-              "startLoc": {
-                "line": 699,
-                "column": 12,
-                "position": 29843
-              },
-              "endLoc": {
-                "line": 712,
-                "column": 52,
-                "position": 30581
-              }
-            },
-            "sha256": "18c9aad898f049e0948b63c418b608e0889b4a43b03541922626d7100c12e958"
-          },
-          {
-            "endpoint": {
-              "name": "mcp/contracts.py",
-              "start": 1473,
-              "end": 1486,
-              "startLoc": {
-                "line": 1473,
-                "column": 12,
-                "position": 53571
-              },
-              "endLoc": {
-                "line": 1486,
-                "column": 52,
-                "position": 54309
-              }
-            },
-            "sha256": "18c9aad898f049e0948b63c418b608e0889b4a43b03541922626d7100c12e958"
-          }
-        ],
-        "owners": [
-          "src/pinboard/cli/tool_contract.py#_action_execution_route",
-          "src/pinboard/mcp/contracts.py#_committed_transition_surfaces"
-        ],
-        "rationale": "CLI classifies the execution route; MCP validates successful action/surface correlation. Complete and checkpoint actions deliberately have different effect sets while they share one CLI route. Sharing this action inventory would couple independent questions or place transport-specific classification in domain/application."
-      },
-      "certification": {
-        "reviewer_task_id": "01a0aeb6-0da1-7681-9ef2-45e524300c6c",
-        "reviewed_pair_sha256": "7f361614679ccf76274627056a7a02d6c79e895601dfc2e84c500714d3745364",
-        "evidence_sha256": "2f91a3da2872be65e5e5e6c58cff96d70b34be0d1838f1965c19e6b5a0e376a0"
-      }
-    },
-    {
       "certification": {
         "evidence_sha256": "7b1828e2ee2d60772dc031436d80c6fbb056035b8a5d83b692b04e657b884562",
         "reviewed_pair_sha256": "a7121a0de9614f84c40153d55af1a576c25e77d81aa094225b5f3b624285d8f2",

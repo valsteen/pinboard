@@ -58,7 +58,7 @@ def restore_candidate(
     work_root: Path,
     store: ports.WorkStore,
     attempt_id: AttemptId,
-    candidate: str | None,
+    candidate: str,
 ) -> DecisionResult[root.CandidateRestoreSuccess]:
     evidence = read_candidate_evidence(work_root, store, attempt_id, candidate)
     if isinstance(evidence, DecisionFailure):

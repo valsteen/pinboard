@@ -21,6 +21,8 @@ from pinboard.adapters.files.root import (
     resolve_source_checkout_root,
 )
 from pinboard.cli.entrypoint import main
+from pinboard.mcp import server
+from tests.native_support import call_native_tool
 
 
 class RootResolutionTest(unittest.TestCase):
@@ -188,12 +190,6 @@ class RootResolutionTest(unittest.TestCase):
         project = Path(tempfile.mkdtemp()).resolve()
         source = project / "source.txt"
         source.write_text("selected authority\n", encoding="utf-8")
-        manifest = project / "sources.json"
-        manifest.write_text(
-            '{"schema":"pinboard-brief-sources/v1","sources":['
-            '{"authority_id":"source","selector":"source.txt","families":["contract"]}]}\n',
-            encoding="utf-8",
-        )
         unused_work_root = project / "missing-parent" / "work"
 
         root_result, root_stdout, root_stderr = self.run_cli(
@@ -202,18 +198,24 @@ class RootResolutionTest(unittest.TestCase):
         self.assertEqual(0, root_result, root_stderr)
         self.assertEqual(str(unused_work_root), json.loads(root_stdout)["work_root"])
 
-        source_result, source_stdout, source_stderr = self.run_cli(
-            "--project-root",
-            str(project),
-            "--work-root",
-            str(unused_work_root),
-            "brief-sources",
-            "--file",
-            str(manifest),
-            "--json",
+        self.run_git(project, "init", "--quiet")
+        source_result = call_native_tool(
+            server.BRIEF_SOURCES_TOOL,
+            {
+                "request": {
+                    "project_root": str(project),
+                    "work_root": str(unused_work_root),
+                    "operation": "plan",
+                    "max_batch_bytes": 24_000,
+                    "manifest": {
+                        "schema": "pinboard-brief-sources/v1",
+                        "sources": [{"authority_id": "source", "selector": "source.txt", "families": ["contract"]}],
+                    },
+                }
+            },
         )
-        self.assertEqual(0, source_result, source_stderr)
-        self.assertIn('"schema": "pinboard-brief-source-plan/v1"', source_stdout)
+        self.assertEqual("pinboard-brief-source-plan/v1", source_result["schema"])
+        self.assertFalse(unused_work_root.exists())
 
 
 if __name__ == "__main__":

@@ -1,1 +1,1 @@
-"""Use-case orchestration contracts below the installed CLI boundary."""
+"""Use-case orchestration contracts below the installed CLI and MCP boundaries."""

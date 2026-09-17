@@ -52,7 +52,7 @@ Across those paths, four guarantees stay constant:
 
 ## One change moves from decision to evidence
 
-The ordinary journey has three parts: select the current accepted work, decide against current facts, then commit and present the result.
+The ordinary agent journey uses local MCP tools: select the current accepted work, decide against current facts, then commit and present the result. Preparation start selects the accepted definition and the permitted claim operation under the same lock that commits it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works/journey-dark.svg">
@@ -99,6 +99,8 @@ Pinboard keeps product decisions, operation sequencing, persistence, and externa
 </picture>
 
 Every arrow means “may depend on.” Interfaces make outside input exact and present results. Application code coordinates complete operations through explicit capabilities. The domain decides legality without reading files or issuing SQL. Adapters store and recover accepted facts without deciding workflow policy.
+
+MCP owns agent intake, brief preparation, authority, implementation transitions, dispatch, and review. The CLI serves human setup, summary status, validation, view repair, portable export, direct closure, and its own diagnostics. It does not provide a second agent workflow when MCP is unavailable.
 
 That separation is why a storage failure cannot redefine a product decision, a renderer cannot become the source of truth, and an interface cannot silently invent lifecycle policy.
 

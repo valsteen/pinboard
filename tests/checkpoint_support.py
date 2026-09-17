@@ -1,4 +1,4 @@
-"""Shared current and historical checkpoint fixtures through installed commands."""
+"""Shared checkpoint fixtures through native workflow boundaries and retained CLI checks."""
 
 import contextlib
 import hashlib
@@ -31,13 +31,16 @@ from pinboard.application.candidate_identity import working_tree_identity
 from pinboard.application.work_briefs import (
     canonical_checkpoint_review_package_bytes,
     canonical_work_brief_bytes,
+    canonical_work_brief_review_bytes,
     decode_canonical_checkpoint_review_package,
 )
 from pinboard.cli.entrypoint import main
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId, ItemId
+from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
+from tests.native_support import call_native_tool
 from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
 from tests.work_brief_support import ready_review, work_a_brief
 
@@ -106,12 +109,103 @@ class CheckpointPackageSupport(unittest.TestCase):
             ["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True, text=True
         ).stdout.strip()
 
-    def project_action(self, common: tuple[str, ...], action_id: str) -> JsonObject:
-        actions = self.run_json_cli(*common, "actions", "--role", "project", "--action-id", action_id)
-        values = actions["actions"]
+    def native_actions(
+        self,
+        fixture: CheckpointFixture,
+        kind: str,
+        subject: str,
+        *,
+        role: str = "project",
+        lease: JsonObject | None = None,
+    ) -> JsonObject:
+        request: JsonObject = {
+            "project_root": str(fixture.project),
+            "work_root": str(fixture.work),
+            "role": role,
+            "action_id": {"kind": kind, "subject": subject},
+        }
+        if lease is not None:
+            request.update(lease_id=lease["lease_id"], generation=lease["generation"])
+        result = call_native_tool(mcp_server.ACTIONS_TOOL, {"request": request})
+        self.assertEqual("ok", result["status"], result)
+        values = result["actions"]
         if not isinstance(values, list) or len(values) != 1:
-            self.fail("Expected one exact project action")
+            self.fail("Expected one exact native action")
         return self.json_object(values[0])
+
+    def actions_result(self, fixture: CheckpointFixture, query: JsonObject) -> JsonObject:
+        return call_native_tool(
+            mcp_server.ACTIONS_TOOL,
+            {
+                "request": {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    **query,
+                }
+            },
+        )
+
+    def review_result(self, fixture: CheckpointFixture, review: JsonObject) -> JsonObject:
+        return call_native_tool(
+            mcp_server.REVIEW_JOB_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "review": {"attempt_id": "work-a-1", "candidate_revision": "b" * 40, **review},
+            },
+        )
+
+    def transition_result(self, fixture: CheckpointFixture, action: JsonObject, payload: JsonObject) -> JsonObject:
+        return call_native_tool(
+            mcp_server.TRANSITION_TOOL,
+            self.native_transition_request(fixture, action, payload),
+        )
+
+    def project_action(self, fixture: CheckpointFixture, action_id: str) -> JsonObject:
+        kind, subject = action_id.split(":", 1)
+        return self.native_actions(fixture, kind, subject)
+
+    def native_attempt_acquire(self, fixture: CheckpointFixture, worker: str) -> JsonObject:
+        result = mcp_server._attempt_authority(
+            {
+                "request": {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "operation": "acquire",
+                    "attempt_id": "work-a-1",
+                    "task_id": worker,
+                    "host_id": "local",
+                    "ttl_seconds": 300,
+                }
+            },
+            mcp_server.CancellationToken(),
+        )
+        self.assertEqual("committed", result.content["status"], result.content)
+        return result.content
+
+    def native_transition_request(
+        self,
+        fixture: CheckpointFixture,
+        action: JsonObject,
+        payload: JsonObject,
+        *,
+        task_id: str = "review-owner",
+    ) -> JsonObject:
+        request: JsonObject = {
+            "project_root": str(fixture.project),
+            "work_root": str(fixture.work),
+            "role": "project" if action["authorization"] == "project" else "worker",
+            "receipt": {
+                "action_id": action["action_id"],
+                "subject_revision": action["subject_revision"],
+            },
+            "payload": payload,
+        }
+        if action["authorization"] == "project":
+            request.update(actor_task_id=task_id, actor_host_id="local")
+        else:
+            request.update(lease_id=action["lease_id"], generation=action["generation"])
+        return {"request": request}
 
     def transition_json(
         self,
@@ -119,51 +213,12 @@ class CheckpointPackageSupport(unittest.TestCase):
         action: JsonObject,
         payload: Path,
     ) -> JsonObject:
-        arguments = [
-            *fixture.common,
-            "transition",
-            "--action-id",
-            str(action["action_id"]),
-            "--subject-revision",
-            str(action["subject_revision"]),
-            "--authorization",
-            str(action["authorization"]),
-            "--payload",
-            str(payload),
-        ]
-        lease_id = action.get("lease_id")
-        if lease_id:
-            arguments.extend(("--lease-id", str(lease_id), "--generation", str(action["generation"])))
-        else:
-            arguments.extend(("--task-id", "review-owner", "--host-id", "local"))
-        result, stdout, stderr = self.run_cli(*arguments, "--json")
-        self.assertEqual(0, result, f"{stdout}\n{stderr}")
-        return self.json_object(json.loads(stdout))
-
-    def project_transition_arguments(
-        self,
-        fixture: CheckpointFixture,
-        action: JsonObject,
-        payload: Path,
-        *,
-        task_id: str = "review-owner",
-    ) -> list[str]:
-        return [
-            *fixture.common,
-            "transition",
-            "--action-id",
-            str(action["action_id"]),
-            "--subject-revision",
-            str(action["subject_revision"]),
-            "--authorization",
-            str(action["authorization"]),
-            "--payload",
-            str(payload),
-            "--task-id",
-            task_id,
-            "--host-id",
-            "local",
-        ]
+        result = mcp_server._transition(
+            self.native_transition_request(fixture, action, self.json_object(json.loads(payload.read_bytes()))),
+            mcp_server.CancellationToken(),
+        )
+        self.assertEqual("committed", result.content["status"], result.content)
+        return result.content
 
     def submit_review(self, fixture: AcceptedPackageFixture, label: str, worker: str) -> str:
         tracked = fixture.project / "tracked.txt"
@@ -178,37 +233,11 @@ class CheckpointPackageSupport(unittest.TestCase):
             ["git", "rev-parse", "HEAD"], cwd=fixture.project, check=True, capture_output=True, text=True
         ).stdout.strip()
         candidate = working_tree_identity(preimage, candidate_diff)
-        lease = self.run_json_cli(
-            *fixture.common,
-            "attempt",
-            "acquire",
-            "--attempt-id",
-            "work-a-1",
-            "--task-id",
-            worker,
-            "--host-id",
-            "local",
-            "--ttl-seconds",
-            "300",
-        )
-        selected = self.run_json_cli(
-            *fixture.common,
-            "actions",
-            "--role",
-            "worker",
-            "--lease-id",
-            str(lease["lease_id"]),
-            "--generation",
-            str(lease["generation"]),
-            "--action-id",
-            "submit-review:work-a-1",
-        )
-        actions = selected["actions"]
-        if not isinstance(actions, list) or len(actions) != 1:
-            self.fail("Expected one exact worker action")
+        lease = self.native_attempt_acquire(fixture, worker)
+        selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
         payload = fixture.project / f"submit-{candidate}.json"
         payload.write_text(json.dumps({"candidate": candidate}), encoding="utf-8")
-        self.transition_json(fixture, self.json_object(actions[0]), payload)
+        self.transition_json(fixture, selected, payload)
         return candidate
 
     def return_for_correction(self, fixture: AcceptedPackageFixture, reason: str, suffix: str) -> int:
@@ -216,7 +245,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         payload.write_text(json.dumps({"reason": reason}), encoding="utf-8")
         rendered = self.transition_json(
             fixture,
-            self.project_action(fixture.common, "return-for-correction:work-a-1"),
+            self.project_action(fixture, "return-for-correction:work-a-1"),
             payload,
         )
         history_id = rendered["history_id"]
@@ -226,28 +255,11 @@ class CheckpointPackageSupport(unittest.TestCase):
 
     def accept_checkpoint(
         self,
-        common: tuple[str, ...],
+        fixture: CheckpointFixture,
         action: JsonObject,
         payload: Path,
     ) -> None:
-        arguments = [
-            *common,
-            "transition",
-            "--action-id",
-            str(action["action_id"]),
-            "--subject-revision",
-            str(action["subject_revision"]),
-            "--authorization",
-            str(action["authorization"]),
-            "--task-id",
-            "package-test-owner",
-            "--host-id",
-            "local",
-            "--payload",
-            str(payload),
-        ]
-        result, _stdout, stderr = self.run_cli(*arguments)
-        self.assertEqual(0, result, stderr)
+        self.transition_json(fixture, action, payload)
 
     def local_brief(self, project: Path) -> work_brief_models.WorkBrief:
         candidate = work_a_brief(project)
@@ -388,13 +400,14 @@ class CheckpointPackageSupport(unittest.TestCase):
                 (candidate, SQLITE_NOW.isoformat()),
             )
 
-    def checkpoint_fixture(
+    def checkpoint_fixture(  # noqa: PLR0915 - one persisted candidate and review fixture
         self,
         *,
         local: bool = False,
         candidate_form: Literal["working-tree", "current-head"] = "working-tree",
         accepted_base: str | None = None,
         committed_context: bool = False,
+        review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner"] = "ready",
     ) -> CheckpointFixture:
         state = complete_sqlite_state()
         now = datetime.now(UTC)
@@ -505,10 +518,20 @@ class CheckpointPackageSupport(unittest.TestCase):
             brief_base_revision,
             now,
         )
-        if not local:
+        if not local and review_condition != "missing":
             checkpoint = brief.checkpoint
             assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
             checkpoint_sha256 = hashlib.sha256(msgspec.json.encode(checkpoint, order="sorted")).hexdigest()
+            review_bytes = ready_review(brief)
+            review = msgspec.json.decode(review_bytes, type=work_brief_models.WorkBriefReview)
+            if review_condition == "malformed":
+                review_bytes = b"not-json\n"
+            elif review_condition == "stale":
+                review_bytes = canonical_work_brief_review_bytes(replace_struct(review, checkpoint_sha256="f" * 64))
+            elif review_condition == "wrong-owner":
+                review_bytes = canonical_work_brief_review_bytes(
+                    replace_struct(review, reviewer_task_id=brief.owner_task_id)
+                )
             published_review = write_revision(
                 roots,
                 NewArtifact(
@@ -516,7 +539,7 @@ class CheckpointPackageSupport(unittest.TestCase):
                     f"work-a-1-brief-review-{checkpoint_sha256}",
                     1,
                     ".json",
-                    ready_review(brief),
+                    review_bytes,
                 ),
             )
             accepted_review = store.accept_artifact_reference(roots.work_root, published_review, now)
@@ -559,8 +582,8 @@ class CheckpointPackageSupport(unittest.TestCase):
             local=local, candidate_form=candidate_form, committed_context=committed_context
         )
         self.accept_checkpoint(
-            fixture.common,
-            self.project_action(fixture.common, "accept-checkpoint:work-a-1"),
+            fixture,
+            self.project_action(fixture, "accept-checkpoint:work-a-1"),
             fixture.payload,
         )
         reloaded = fixture.store.validated_snapshot()

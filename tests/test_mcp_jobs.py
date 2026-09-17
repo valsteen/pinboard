@@ -72,42 +72,17 @@ class McpJobsTest(CheckpointPackageSupport):
                 )
                 payload = fixture.work / "real-submission.json"
                 payload.write_text('{"reason":"Exercise fresh actual submission."}', encoding="utf-8")
-                self.transition_json(
-                    fixture, self.project_action(fixture.common, "return-for-correction:work-a-1"), payload
-                )
+                self.transition_json(fixture, self.project_action(fixture, "return-for-correction:work-a-1"), payload)
                 (fixture.project / "tracked.txt").write_text("fresh candidate\n", encoding="utf-8")
                 candidate = (
                     self.commit_all(fixture.project, "fresh candidate")
                     if form == "current-head"
                     else root.read_working_tree_candidate(fixture.project).identity
                 )
-                lease = self.run_json_cli(
-                    *fixture.common,
-                    "attempt",
-                    "acquire",
-                    "--attempt-id",
-                    "work-a-1",
-                    "--task-id",
-                    "native-restore",
-                    "--host-id",
-                    "local",
-                    "--ttl-seconds",
-                    "300",
-                )
-                selection = self.run_json_cli(
-                    *fixture.common,
-                    "actions",
-                    "--role",
-                    "worker",
-                    "--lease-id",
-                    str(lease["lease_id"]),
-                    "--generation",
-                    str(lease["generation"]),
-                    "--action-id",
-                    "submit-review:work-a-1",
-                )
+                lease = self.native_attempt_acquire(fixture, "native-restore")
+                selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
                 payload.write_text(json.dumps({"candidate": candidate}), encoding="utf-8")
-                self.transition_json(fixture, self.json_object(self.json_array(selection["actions"])[0]), payload)
+                self.transition_json(fixture, selected, payload)
                 if form == "retained-working-tree":
                     store = SQLiteWorkStore(fixture.work / "state.sqlite3")
                     context = store.read_candidate_snapshot_context(AttemptId("work-a-1"))
@@ -474,9 +449,7 @@ class McpJobsTest(CheckpointPackageSupport):
         fixture = self.checkpoint_fixture()
         payload = fixture.project / "return.json"
         payload.write_text('{"reason":"Revalidate the changed authority."}', encoding="utf-8")
-        receipt = self.transition_json(
-            fixture, self.project_action(fixture.common, "return-for-correction:work-a-1"), payload
-        )
+        receipt = self.transition_json(fixture, self.project_action(fixture, "return-for-correction:work-a-1"), payload)
         correction_history_id = receipt["history_id"]
         source = fixture.project / "architecture.md"
         source.write_text("# Architecture\n\n## Contract\n\nThe changed source remains exact.\n", encoding="utf-8")
@@ -501,7 +474,7 @@ class McpJobsTest(CheckpointPackageSupport):
             sha256(work_briefs.canonical_checkpoint_bytes(effective_brief.checkpoint)).hexdigest(),
             self.json_object(self.json_object(actual_choice["brief_review"])["contract_review"])["checkpoint_sha256"],
         )
-        action = self.project_action(fixture.common, "dispatch:work-a-1")
+        action = self.project_action(fixture, "dispatch:work-a-1")
         environment = msgspec.structs.replace(
             test_dispatch.DispatchTest().environment(fixture.project), starting_revision=fixture.brief.base_revision
         )

@@ -1,6 +1,6 @@
 """Shared preparation- and attempt-authority use cases.
 
-CLI and MCP select exact use cases. This module enriches supplied lease tokens
+Native authority tools select exact use cases. This module enriches supplied lease tokens
 from current facts, invokes locked application mutation, and reloads authority.
 """
 

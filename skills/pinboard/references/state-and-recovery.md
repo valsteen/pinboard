@@ -66,9 +66,9 @@ A missing chat receipt is not evidence that a transition failed or succeeded. Ne
 For a task interrupted around a mutation:
 
 1. Run `pinboard validate --json`.
-2. Run one `pinboard status --json` or `pinboard overview --json` read. If the intended item still has its prior state, no transition committed. If it has the intended next state, the SQLite transition committed completely even if the task stopped before reporting it.
+2. Call `pinboard_item_status` with exact project and work roots and the intended item. Compare its recorded state with the intended transition; absence from the live overview does not establish a terminal outcome. If the intended item still has its prior state, no transition committed. If it has the intended next state, the SQLite transition committed completely even if the task stopped before reporting it.
 3. For an interrupted project transition, select the exact action again from current state and continue only if its semantics and payload are unchanged.
-4. For interrupted preparation or attempt work, acquire or transfer the exact lease through its supported command. A higher generation fences actions retained by the interrupted task.
+4. For interrupted preparation or attempt work, acquire or transfer the exact lease through `pinboard_preparation_authority` or `pinboard_attempt_authority`, using the current negotiated leaf. A higher generation fences actions retained by the interrupted task.
 5. Use forced lease revocation only with explicit user authority when the recorded holder cannot release it or has demonstrably abandoned it.
 6. Resume from the authoritative item and attempt state. Never reconstruct ownership from the stopped task's prose, generated views, archived files, or temporary payloads.
 

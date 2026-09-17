@@ -40,7 +40,7 @@ Before creating anything, call `pinboard_parallel_preview` again with exact root
 {"request":{"project_root":"<exact checkout>","work_root":"<exact work root>","selection":"selected","item_ids":["<first>","<second>"]}}
 ```
 
-Proceed only when `safe` is true. Preserve its revision as the batch observation. If it is false, show the changed reason and ask only for the decision that the new state requires. Safe is structural evidence, not readiness or worker authority; the subsequent accepted brief, fresh authority and native creation checks still apply. The installed CLI preview route remains temporarily supported pending actual-consumer disposition.
+Proceed only when `safe` is true. Preserve its revision as the batch observation. If it is false, show the changed reason and ask only for the decision that the new state requires. Safe is structural evidence, not readiness or worker authority; the subsequent accepted brief, fresh authority and native creation checks still apply.
 
 ## Launch each outcome
 

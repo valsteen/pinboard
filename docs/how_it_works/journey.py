@@ -1,22 +1,22 @@
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import service
 from pinboard.application.mutation_models import PreparationAuthorityMutation
-from pinboard.cli import cli_commands, preparation_authority, work_views
 from pinboard.domain import authority_models
 from pinboard.domain.authority_decisions import decide_preparation_authority
+from pinboard.mcp import contracts, server
 
 from .model import Box, Connector, Diagram, Guide, Note, Section
 
 SOURCE_SYMBOL_NAMES: dict[str, str] = {
-    "PreparationStartCommand": cli_commands.PreparationStartCommand.__name__,
-    "start_preparation": preparation_authority.start_preparation.__name__,
+    "PreparationAuthorityStartRequest": contracts.PreparationAuthorityStartRequest.__name__,
+    "_preparation_authority": server._preparation_authority.__name__,
     "AcquireInitialPreparationAuthority": authority_models.AcquireInitialPreparationAuthority.__name__,
     "TransferPreparationAuthority": authority_models.TransferPreparationAuthority.__name__,
     "decide_preparation_authority": decide_preparation_authority.__name__,
     "PreparationAuthorityMutation": PreparationAuthorityMutation.__name__,
     "SQLiteWorkStore": SQLiteWorkStore.__name__,
     "write": SQLiteWorkStore.write.__name__,
-    "refresh": work_views.refresh.__name__,
+    "_refresh_affected_views": server._refresh_affected_views.__name__,
 }
 
 
@@ -73,13 +73,13 @@ DIAGRAM = Diagram(
         Connector(((1190, 130), (1210, 130)), "latest", "result", "present", (1200, 116)),
     ),
     boxes=(
-        Box("request", "Request", "start claim", (), ("CLI / JSON",), 170, 88, 150, 84, "muted"),
+        Box("request", "Request", "start claim", (), ("MCP request",), 170, 88, 150, 84, "muted"),
         Box(
             "command",
             "Exact command",
             "Decoded leaf",
             (),
-            ("exact CLI leaf",),
+            ("exact native leaf",),
             350,
             88,
             170,

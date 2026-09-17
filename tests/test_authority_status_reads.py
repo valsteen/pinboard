@@ -1,20 +1,27 @@
+import asyncio
 import contextlib
 import hashlib
 import io
 import json
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from collections.abc import Generator
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+from typing import override
 from unittest.mock import patch
+
+from mcp.server.mcpserver.exceptions import UnexpectedToolError
+from mcp_types import CallToolResult
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import database as sqlite_database
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.database import initialize_database, open_database
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
@@ -23,13 +30,22 @@ from pinboard.cli.entrypoint import main
 from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import ActionId, AttemptId, HostId, ItemId, LeaseId, TaskId
-from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
+from pinboard.mcp import server as mcp_server
+from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
 from tests.work_brief_support import work_a_brief
 
 
 class AuthorityStatusReadTest(unittest.TestCase):
+    @override
+    def setUp(self) -> None:
+        clock_patch = patch("pinboard.mcp.server.datetime")
+        clock = clock_patch.start()
+        self.addCleanup(clock_patch.stop)
+        clock.now.return_value = SQLITE_NOW
+
     def initialized_state(self, state: stored_state.StoredWorkState) -> tuple[Path, Path, SQLiteWorkStore]:
         project = Path(tempfile.mkdtemp()).resolve()
+        subprocess.run(["git", "init", "-q"], cwd=project, check=True, capture_output=True)
         roots = resolve_durable_roots(project)
         initialize_database(roots, SQLITE_NOW)
         store = SQLiteWorkStore(roots.database_path)
@@ -41,6 +57,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         state: stored_state.StoredWorkState,
     ) -> tuple[Path, Path, SQLiteWorkStore]:
         project = Path(tempfile.mkdtemp()).resolve()
+        subprocess.run(["git", "init", "-q"], cwd=project, check=True, capture_output=True)
         brief_bytes = canonical_work_brief_bytes(work_a_brief(project))
         selected_reference = replace(
             state.artifact_references[0],
@@ -63,6 +80,48 @@ class AuthorityStatusReadTest(unittest.TestCase):
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             result = main(arguments)
         return result, stdout.getvalue(), stderr.getvalue()
+
+    def native(self, tool: str, project: str, work: str, request: dict[str, JsonValue]) -> JsonObject:
+        executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        server = mcp_server.create_server(
+            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+        )
+        arguments = {"project_root": project, "work_root": work, **request}
+        if tool in {
+            mcp_server.ATTEMPT_AUTHORITY_TOOL,
+            mcp_server.PREPARATION_AUTHORITY_TOOL,
+            mcp_server.ITEM_DEFINITION_TOOL,
+            mcp_server.ACTIONS_TOOL,
+            mcp_server.PARALLEL_PREVIEW_TOOL,
+        }:
+            arguments = {"request": arguments}
+        try:
+            result = asyncio.run(server.call_tool(tool, arguments))
+            assert isinstance(result, CallToolResult) and isinstance(result.structured_content, dict)
+            self.assertFalse(result.is_error)
+            content: JsonObject = result.structured_content
+            return content
+        finally:
+            executor.shutdown()
+
+    def json_object(self, value: JsonValue) -> JsonObject:
+        if not isinstance(value, dict):
+            self.fail("Expected a native JSON object")
+        return value
+
+    def json_array(self, value: JsonValue) -> list[JsonValue]:
+        if not isinstance(value, list):
+            self.fail("Expected a native JSON array")
+        return value
+
+    @contextlib.contextmanager
+    def rejected_storage(self) -> Generator[None]:
+        with self.assertRaises(UnexpectedToolError) as failure:
+            yield
+        cause = failure.exception.__cause__
+        self.assertIsInstance(cause, StorageError)
+        assert isinstance(cause, StorageError)
+        self.assertEqual(StorageErrorCode.INVALID_STATE, cause.code)
 
     @contextlib.contextmanager
     def record_store_reads(self) -> Generator[tuple[set[str], list[str]]]:
@@ -264,15 +323,19 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
     def test_installed_status_reads_are_exact_with_unrelated_authority_growth(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_preparation(unrelated_count=64))
-        common = ("--project-root", str(project), "--work-root", str(work))
 
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
             self.record_store_reads() as attempt_reads,
         ):
-            result, stdout, stderr = self.run_cli(*common, "attempt", "status", "--attempt-id", "work-a-1")
-        self.assertEqual(0, result, stderr)
-        self.assertIn("status=active", stdout)
+            stdout = self.native(
+                mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                str(project),
+                str(work),
+                {"operation": "status", "attempt_id": "work-a-1"},
+            )
+        self.assertNotIn("code", stdout)
+        self.assertEqual("active", stdout["authority_status"])
         attempt_tables, attempt_statements = attempt_reads
         self.assertEqual(
             {"attempts", "attempt_lease_counters", "attempt_lease_generations", "attempt_leases"},
@@ -282,13 +345,18 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
-            patch("pinboard.cli.preparation_authority.datetime") as clock,
+            patch("pinboard.mcp.server.datetime") as clock,
             self.record_store_reads() as preparation_reads,
         ):
             clock.now.return_value = SQLITE_NOW + timedelta(minutes=1)
-            result, stdout, stderr = self.run_cli(*common, "preparation", "status", "--item-id", "work-c")
-        self.assertEqual(0, result, stderr)
-        self.assertIn("status=active", stdout)
+            stdout = self.native(
+                mcp_server.PREPARATION_AUTHORITY_TOOL,
+                str(project),
+                str(work),
+                {"operation": "status", "item_id": "work-c"},
+            )
+        self.assertNotIn("code", stdout)
+        self.assertEqual("active", stdout["authority_status"])
         self.assertEqual(1, clock.now.call_count)
         preparation_tables, preparation_statements = preparation_reads
         self.assertEqual(
@@ -306,7 +374,6 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
     def test_action_discovery_uses_no_state_without_a_selected_lease(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_unrelated_attempt_authority())
-        common = ("--project-root", str(project), "--work-root", str(work), "actions")
 
         with (
             patch.object(
@@ -316,9 +383,12 @@ class AuthorityStatusReadTest(unittest.TestCase):
             ),
             self.record_store_reads() as observer_reads,
         ):
-            result, stdout, stderr = self.run_cli(*common, "--role", "observer", "--json")
-        self.assertEqual(0, result, stderr)
-        self.assertEqual(["inspect:ledger"], [value["action_id"] for value in json.loads(stdout)["actions"]])
+            stdout = self.native(mcp_server.ACTIONS_TOOL, str(project), str(work), {"role": "observer"})
+        self.assertNotIn("code", stdout)
+        self.assertEqual(
+            [{"kind": "inspect", "subject": "ledger"}],
+            [self.json_object(value)["action_id"] for value in self.json_array(stdout["actions"])],
+        )
         self.assertEqual(set(), observer_reads[0])
 
         with (
@@ -329,9 +399,9 @@ class AuthorityStatusReadTest(unittest.TestCase):
             ),
             self.record_store_reads() as unleased_reads,
         ):
-            result, _stdout, stderr = self.run_cli(*common, "--role", "worker")
-        self.assertEqual(11, result)
-        self.assertIn("ATTEMPT_LEASE_REQUIRED", stderr)
+            _stdout = self.native(mcp_server.ACTIONS_TOOL, str(project), str(work), {"role": "worker"})
+        self.assertEqual("rejected", _stdout["status"])
+        self.assertEqual("ACTIONS_INVALID", _stdout["code"])
         self.assertEqual(set(), unleased_reads[0])
 
     def test_leased_action_discovery_uses_only_lease_selected_subjects(self) -> None:
@@ -352,29 +422,24 @@ class AuthorityStatusReadTest(unittest.TestCase):
         for role, state, lease_id, generation in cases:
             with self.subTest(role=role):
                 project, work, _store = self.initialized_state(state)
-                common = ("--project-root", str(project), "--work-root", str(work), "actions")
                 with (
                     patch.object(
                         SQLiteWorkStore,
                         "read_current_action_snapshot",
                         side_effect=AssertionError("current project read used"),
                     ),
-                    patch("pinboard.cli.work_inspection.datetime") as clock,
+                    patch("pinboard.mcp.server.datetime") as clock,
                     self.record_store_reads() as selected_reads,
                 ):
                     clock.now.return_value = SQLITE_NOW + timedelta(minutes=1)
-                    result, stdout, stderr = self.run_cli(
-                        *common,
-                        "--role",
-                        role,
-                        "--lease-id",
-                        lease_id,
-                        "--generation",
-                        generation,
-                        "--json",
+                    stdout = self.native(
+                        mcp_server.ACTIONS_TOOL,
+                        str(project),
+                        str(work),
+                        {"role": role, "lease_id": lease_id, "generation": int(generation)},
                     )
-                self.assertEqual(0, result, stderr)
-                self.assertTrue(json.loads(stdout)["actions"])
+                self.assertNotIn("code", stdout)
+                self.assertTrue(stdout["actions"])
                 read_tables, statements = selected_reads
                 self.assertNotIn("transition_history", read_tables)
                 self.assertNotIn("artifact_refs", read_tables)
@@ -383,7 +448,6 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
     def test_exact_action_discovery_reads_only_its_named_subject(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_unrelated_attempt_authority())
-        common = ("--project-root", str(project), "--work-root", str(work), "actions")
         with (
             patch.object(
                 SQLiteWorkStore,
@@ -395,25 +459,27 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 "read_leased_action_snapshot",
                 side_effect=AssertionError("lease-wide read used"),
             ),
-            patch("pinboard.cli.work_inspection.datetime") as clock,
+            patch("pinboard.mcp.server.datetime") as clock,
             self.record_store_reads() as selected_reads,
         ):
             clock.now.return_value = SQLITE_NOW + timedelta(minutes=1)
-            result, stdout, stderr = self.run_cli(
-                *common,
-                "--role",
-                "worker",
-                "--lease-id",
-                "attempt-lease-a",
-                "--generation",
-                "3",
-                "--action-id",
-                "continue:work-a-1",
-                "--json",
+            stdout = self.native(
+                mcp_server.ACTIONS_TOOL,
+                str(project),
+                str(work),
+                {
+                    "role": "worker",
+                    "action_id": {"kind": "continue", "subject": "work-a-1"},
+                    "lease_id": "attempt-lease-a",
+                    "generation": int("3"),
+                },
             )
 
-        self.assertEqual(0, result, stderr)
-        self.assertEqual(["continue:work-a-1"], [value["action_id"] for value in json.loads(stdout)["actions"]])
+        self.assertNotIn("code", stdout)
+        self.assertEqual(
+            [{"kind": "continue", "subject": "work-a-1"}],
+            [self.json_object(value)["action_id"] for value in self.json_array(stdout["actions"])],
+        )
         read_tables, statements = selected_reads
         self.assertNotIn("transition_history", read_tables)
         self.assertNotIn("proposals", read_tables)
@@ -423,16 +489,15 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
     def test_installed_item_status_reads_only_selected_item_facts(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_preparation(unrelated_count=64))
-        common = ("--project-root", str(project), "--work-root", str(work))
 
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
             self.record_store_reads() as item_reads,
         ):
-            result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", "work-c")
+            stdout = self.native(mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"item_id": "work-c"})
 
-        self.assertEqual(0, result, stderr)
-        self.assertIn("OK ITEM_STATUS item=work-c", stdout)
+        self.assertNotIn("code", stdout)
+        self.assertEqual("work-c", stdout["item_id"])
         read_tables, statements = item_reads
         self.assertEqual(
             {
@@ -491,20 +556,23 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 ),
             )
             project, work, _store = self.initialized_state(state)
-            common = ("--project-root", str(project), "--work-root", str(work))
 
             with self.subTest(item_state=item_state.value, attempt_state=attempt_state):
                 with self.record_store_reads() as selected_reads:
-                    status_result, status_stdout, status_stderr = self.run_cli(
-                        *common, "item", "status", "--item-id", "work-a", "--json"
+                    status_stdout = self.native(
+                        mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"item_id": "work-a"}
                     )
-                overview_result, overview_stdout, overview_stderr = self.run_cli(*common, "overview", "--json")
+                overview_stdout = self.native(mcp_server.OVERVIEW_TOOL, str(project), str(work), {})
 
-            self.assertEqual(0, status_result, status_stderr)
-            self.assertEqual(0, overview_result, overview_stderr)
-            status = json.loads(status_stdout)
-            overview = json.loads(overview_stdout)
-            overview_item = next(value for value in overview["items"] if value["item_id"] == "work-a")
+            self.assertNotIn("code", status_stdout)
+            self.assertNotIn("code", overview_stdout)
+            status = status_stdout
+            overview = overview_stdout
+            overview_item = next(
+                self.json_object(value)
+                for value in self.json_array(overview["items"])
+                if self.json_object(value)["item_id"] == "work-a"
+            )
             self.assertEqual(status["revision"], overview["revision"])
             for status_field, overview_field in (
                 ("item_id", "item_id"),
@@ -518,7 +586,8 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 ("preparation", "preparation"),
             ):
                 self.assertEqual(status[status_field], overview_item[overview_field], status_field)
-            current_attempt = None if not status["attempts"] else status["attempts"][0]["attempt_id"]
+            attempts = self.json_array(status["attempts"])
+            current_attempt = None if not attempts else self.json_object(attempts[0])["attempt_id"]
             self.assertEqual(current_attempt, overview_item["attempt_id"])
             self.assert_keyed_status_queries(work / "state.sqlite3", selected_reads[1])
 
@@ -538,14 +607,13 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 ),
             )
             project, work, _store = self.initialized_state(state)
-            common = ("--project-root", str(project), "--work-root", str(work))
 
             with self.subTest(state=terminal_state.value), self.record_store_reads() as item_reads:
-                result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", "work-b", "--json")
+                stdout = self.native(mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"item_id": "work-b"})
 
-            self.assertEqual(0, result, stderr)
-            self.assertEqual(terminal_state.value, json.loads(stdout)["state"])
-            self.assertEqual([], json.loads(stdout)["attempts"])
+            self.assertNotIn("code", stdout)
+            self.assertEqual(terminal_state.value, stdout["state"])
+            self.assertEqual([], stdout["attempts"])
             _read_tables, statements = item_reads
             self.assert_keyed_status_queries(work / "state.sqlite3", statements)
             attempt_selects = tuple(
@@ -567,32 +635,31 @@ class AuthorityStatusReadTest(unittest.TestCase):
             unrelated_view.stat().st_ino,
             unrelated_view.stat().st_mtime_ns,
         )
-        common = ("--project-root", str(project), "--work-root", str(work))
 
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
-            patch("pinboard.cli.work_inspection.datetime") as clock,
+            patch("pinboard.mcp.server.datetime") as clock,
             self.record_store_reads() as preview_reads,
         ):
             clock.now.return_value = SQLITE_NOW
-            result, stdout, stderr = self.run_cli(
-                *common,
-                "parallel",
-                "preview",
-                "--item",
-                "work-c",
-                "--item",
-                "work-a",
-                "--json",
+            stdout = self.native(
+                mcp_server.PARALLEL_PREVIEW_TOOL,
+                str(project),
+                str(work),
+                {"selection": "selected", "item_ids": ["work-c", "work-a"]},
             )
 
-        self.assertEqual(0, result, stderr)
-        payload = json.loads(stdout)
+        self.assertNotIn("code", stdout)
+        payload = stdout
         self.assertEqual("12", payload["revision"])
         self.assertEqual("selected", payload["selection"])
         self.assertFalse(payload["safe"])
-        self.assertEqual(["work-c"], [value["item_id"] for value in payload["launchable"]])
-        self.assertEqual(["work-a"], [value["item_id"] for value in payload["excluded"]])
+        self.assertEqual(
+            ["work-c"], [self.json_object(value)["item_id"] for value in self.json_array(payload["launchable"])]
+        )
+        self.assertEqual(
+            ["work-a"], [self.json_object(value)["item_id"] for value in self.json_array(payload["excluded"])]
+        )
         self.assertEqual(1, clock.now.call_count)
         self.assertEqual(
             before,
@@ -625,7 +692,6 @@ class AuthorityStatusReadTest(unittest.TestCase):
         state = self.state_with_unrelated_attempt_authority()
         project, work, store = self.initialized_attempt_context(state)
         database = work / "state.sqlite3"
-        common = ("--project-root", str(project), "--work-root", str(work))
         unrelated_view = work / "views" / "unrelated.md"
         unrelated_view.parent.mkdir(parents=True, exist_ok=True)
         unrelated_view.write_text("Unrelated projection.\n", encoding="utf-8")
@@ -638,12 +704,27 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
+            patch.object(
+                SQLiteWorkStore, "read_attempt_context", autospec=True, side_effect=SQLiteWorkStore.read_attempt_context
+            ) as contexts,
+            patch.object(
+                SQLiteWorkStore,
+                "read_artifact_reference_by_id",
+                autospec=True,
+                side_effect=SQLiteWorkStore.read_artifact_reference_by_id,
+            ) as references,
+            patch.object(
+                SQLiteWorkStore,
+                "read_candidate_snapshot_context",
+                autospec=True,
+                side_effect=SQLiteWorkStore.read_candidate_snapshot_context,
+            ) as snapshots,
             self.record_store_reads() as attempt_reads,
         ):
-            result, stdout, stderr = self.run_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1", "--json")
+            stdout = self.native(mcp_server.ATTEMPT_INSPECT_TOOL, str(project), str(work), {"attempt_id": "work-a-1"})
 
-        self.assertEqual(0, result, stderr)
-        self.assertIn('"attempt_id": "work-a-1"', stdout)
+        self.assertNotIn("code", stdout)
+        self.assertEqual("work-a-1", self.json_object(stdout["continuation"])["attempt_id"])
         self.assertEqual(
             before_inspection,
             (
@@ -667,7 +748,10 @@ class AuthorityStatusReadTest(unittest.TestCase):
             },
             read_tables,
         )
-        self.assert_keyed_status_queries(database, statements)
+        self.assertEqual(1, contexts.call_count)
+        self.assertEqual(1, references.call_count)
+        self.assertEqual(1, snapshots.call_count)
+        self.assert_keyed_status_queries(database, statements, expected_operations=3)
 
         raw = sqlite3.connect(database)
         try:
@@ -694,19 +778,15 @@ class AuthorityStatusReadTest(unittest.TestCase):
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
             self.record_store_reads() as review_reads,
+            self.rejected_storage(),
         ):
-            result, stdout, stderr = self.run_cli(
-                *common,
-                "review-job",
-                "--attempt-id",
-                "work-a-1",
-                "--candidate-revision",
-                "candidate-a",
-                "--json",
+            self.native(
+                mcp_server.REVIEW_JOB_TOOL,
+                str(project),
+                str(work),
+                {"review": {"kind": "initial", "attempt_id": "work-a-1", "candidate_revision": "candidate-a"}},
             )
 
-        self.assertEqual(12, result, stderr)
-        self.assertEqual("WORK_STATE_INVALID", json.loads(stdout)["code"])
         after_review = store.validated_snapshot()
         self.assertEqual(before_review, after_review)
         self.assertEqual(unrelated_before, (unrelated_view.read_bytes(), unrelated_view.stat().st_mtime_ns))
@@ -751,20 +831,10 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
         project, work, store = self.initialized_attempt_context(legacy)
 
-        result, stdout, stderr = self.run_cli(
-            "--project-root",
-            str(project),
-            "--work-root",
-            str(work),
-            "attempt",
-            "inspect",
-            "--attempt-id",
-            "work-a-1",
-            "--json",
-        )
+        stdout = self.native(mcp_server.ATTEMPT_INSPECT_TOOL, str(project), str(work), {"attempt_id": "work-a-1"})
 
-        self.assertEqual(0, result, f"{stderr}\n{stdout}")
-        self.assertEqual("absent", json.loads(stdout)["candidate_recovery"]["kind"])
+        self.assertNotIn("code", stdout)
+        self.assertEqual("absent", self.json_object(stdout["candidate_recovery"])["kind"])
         self.assertIsNone(store.read_candidate_snapshot_context(AttemptId("work-a-1")))
 
     def test_terminal_attempt_inspection_stops_before_related_rows_and_artifacts(self) -> None:
@@ -794,19 +864,18 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
         state = replace(state, lifecycle=replace(state.lifecycle, work_items=items, attempts=attempts))
         project, work, _store = self.initialized_state(state)
-        common = ("--project-root", str(project), "--work-root", str(work))
 
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
             self.record_store_reads() as reads,
         ):
-            result, stdout, stderr = self.run_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1")
+            stdout = self.native(mcp_server.ATTEMPT_INSPECT_TOOL, str(project), str(work), {"attempt_id": "work-a-1"})
 
-        self.assertEqual(0, result, stderr)
-        self.assertIn('"terminal": true', stdout)
+        self.assertNotIn("code", stdout)
+        self.assertTrue(self.json_object(stdout["continuation"])["terminal"])
         tables, statements = reads
         self.assertEqual({"attempts", "project_meta"}, tables)
-        self.assert_keyed_status_queries(work / "state.sqlite3", statements)
+        self.assert_keyed_status_queries(work / "state.sqlite3", statements, expected_operations=2)
 
     def test_attempt_inspection_rejects_selected_corruption_and_ignores_unrelated_corruption(self) -> None:
         state = self.state_with_unrelated_attempt_authority()
@@ -822,9 +891,9 @@ class AuthorityStatusReadTest(unittest.TestCase):
         finally:
             raw.close()
 
-        result, stdout, stderr = self.run_cli(*common, "attempt", "inspect", "--attempt-id", "work-a-1")
-        self.assertEqual(0, result, stderr)
-        self.assertIn('"attempt_id": "work-a-1"', stdout)
+        stdout = self.native(mcp_server.ATTEMPT_INSPECT_TOOL, str(project), str(work), {"attempt_id": "work-a-1"})
+        self.assertNotIn("code", stdout)
+        self.assertEqual("work-a-1", self.json_object(stdout["continuation"])["attempt_id"])
         validation, validation_stdout, _validation_stderr = self.run_cli(*common, "validate")
         self.assertEqual(10, validation)
         self.assertIn("WORK_STATE_INVALID", validation_stdout)
@@ -839,18 +908,10 @@ class AuthorityStatusReadTest(unittest.TestCase):
             raw.commit()
         finally:
             raw.close()
-        selected_result, _selected_stdout, selected_stderr = self.run_cli(
-            "--project-root",
-            str(selected_project),
-            "--work-root",
-            str(selected_work),
-            "attempt",
-            "inspect",
-            "--attempt-id",
-            "work-a-1",
-        )
-        self.assertEqual(12, selected_result)
-        self.assertIn("WORK_STATE_INVALID", selected_stderr)
+        with self.rejected_storage():
+            self.native(
+                mcp_server.ATTEMPT_INSPECT_TOOL, str(selected_project), str(selected_work), {"attempt_id": "work-a-1"}
+            )
 
         missing_project, missing_work, _missing_store = self.initialized_attempt_context(state)
         raw = sqlite3.connect(missing_work / "state.sqlite3")
@@ -860,18 +921,10 @@ class AuthorityStatusReadTest(unittest.TestCase):
             raw.commit()
         finally:
             raw.close()
-        missing_result, _missing_stdout, missing_stderr = self.run_cli(
-            "--project-root",
-            str(missing_project),
-            "--work-root",
-            str(missing_work),
-            "attempt",
-            "inspect",
-            "--attempt-id",
-            "work-a-1",
-        )
-        self.assertEqual(12, missing_result)
-        self.assertIn("WORK_STATE_INVALID", missing_stderr)
+        with self.rejected_storage():
+            self.native(
+                mcp_server.ATTEMPT_INSPECT_TOOL, str(missing_project), str(missing_work), {"attempt_id": "work-a-1"}
+            )
 
     def test_item_status_rejects_selected_corruption_and_ignores_unrelated_corruption(self) -> None:
         state = self.state_with_preparation(unrelated_count=1)
@@ -888,9 +941,9 @@ class AuthorityStatusReadTest(unittest.TestCase):
         finally:
             connection.close()
 
-        result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", "work-c")
-        self.assertEqual(0, result, stderr)
-        self.assertIn("OK ITEM_STATUS item=work-c", stdout)
+        stdout = self.native(mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"item_id": "work-c"})
+        self.assertNotIn("code", stdout)
+        self.assertEqual("work-c", stdout["item_id"])
         validation, validation_stdout, _validation_stderr = self.run_cli(*common, "validate")
         self.assertEqual(10, validation)
         self.assertIn("WORK_STATE_INVALID", validation_stdout)
@@ -905,18 +958,8 @@ class AuthorityStatusReadTest(unittest.TestCase):
             selected_connection.commit()
         finally:
             selected_connection.close()
-        selected_result, _selected_stdout, selected_stderr = self.run_cli(
-            "--project-root",
-            str(selected_project),
-            "--work-root",
-            str(selected_work),
-            "item",
-            "status",
-            "--item-id",
-            "work-c",
-        )
-        self.assertEqual(12, selected_result)
-        self.assertIn("WORK_STATE_INVALID", selected_stderr)
+        with self.rejected_storage():
+            self.native(mcp_server.ITEM_STATUS_TOOL, str(selected_project), str(selected_work), {"item_id": "work-c"})
 
         authority_project, authority_work, _authority_store = self.initialized_state(state)
         authority_connection = sqlite3.connect(authority_work / "state.sqlite3")
@@ -929,18 +972,8 @@ class AuthorityStatusReadTest(unittest.TestCase):
             authority_connection.commit()
         finally:
             authority_connection.close()
-        authority_result, _authority_stdout, authority_stderr = self.run_cli(
-            "--project-root",
-            str(authority_project),
-            "--work-root",
-            str(authority_work),
-            "item",
-            "status",
-            "--item-id",
-            "work-c",
-        )
-        self.assertEqual(12, authority_result)
-        self.assertIn("WORK_STATE_INVALID", authority_stderr)
+        with self.rejected_storage():
+            self.native(mcp_server.ITEM_STATUS_TOOL, str(authority_project), str(authority_work), {"item_id": "work-c"})
 
     def test_item_status_explains_both_inconsistency_directions_and_validation_does_not_repair(self) -> None:
         for item_id, mutation, expected_state, observed_attempt in (
@@ -959,18 +992,21 @@ class AuthorityStatusReadTest(unittest.TestCase):
             common = ("--project-root", str(project), "--work-root", str(work))
 
             with self.subTest(item_id=item_id), self.record_store_reads() as selected_reads:
-                result, stdout, stderr = self.run_cli(*common, "item", "status", "--item-id", item_id, "--json")
+                stdout = self.native(mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"item_id": item_id})
 
-            self.assertEqual(11, result, (stdout, stderr))
-            self.assertEqual("", stderr)
-            rejection = json.loads(stdout)
-            self.assertEqual("pinboard-rejected-operation/v1", rejection["schema"])
+            self.assertEqual("rejected", stdout["status"])
+
+            rejection = stdout
+            self.assertEqual("pinboard-mcp-item-status-result/v1", rejection["schema"])
             self.assertEqual("ITEM_STATUS_INCONSISTENT", rejection["code"])
             self.assertFalse(rejection["state_changed"])
             self.assertEqual([], rejection["changed_surfaces"])
             self.assertEqual("do-not-retry", rejection["retry"])
-            self.assertEqual([{"kind": "command", "command": "pinboard validate"}], rejection["next_actions"])
-            observed = {value["field"]: value["value"] for value in rejection["observed"]}
+            self.assertNotIn("next_actions", rejection)
+            observed = {
+                str(self.json_object(value)["field"]): self.json_object(value)["value"]
+                for value in self.json_array(rejection["observed"])
+            }
             self.assertEqual(
                 {
                     "item_id": item_id,
@@ -1018,9 +1054,11 @@ class AuthorityStatusReadTest(unittest.TestCase):
         finally:
             connection.close()
 
-        result, stdout, stderr = self.run_cli(*common, "parallel", "preview", "--item", "work-c")
-        self.assertEqual(0, result, stderr)
-        self.assertIn("OK PARALLEL_PREVIEW", stdout)
+        stdout = self.native(
+            mcp_server.PARALLEL_PREVIEW_TOOL, str(project), str(work), {"selection": "selected", "item_ids": ["work-c"]}
+        )
+        self.assertNotIn("code", stdout)
+        self.assertEqual("selected", stdout["selection"])
         validation, validation_stdout, _validation_stderr = self.run_cli(*common, "validate")
         self.assertEqual(10, validation)
         self.assertIn("WORK_STATE_INVALID", validation_stdout)
@@ -1035,18 +1073,13 @@ class AuthorityStatusReadTest(unittest.TestCase):
             selected_connection.commit()
         finally:
             selected_connection.close()
-        selected_result, _selected_stdout, selected_stderr = self.run_cli(
-            "--project-root",
-            str(selected_project),
-            "--work-root",
-            str(selected_work),
-            "parallel",
-            "preview",
-            "--item",
-            "work-c",
-        )
-        self.assertEqual(12, selected_result)
-        self.assertIn("WORK_STATE_INVALID", selected_stderr)
+        with self.rejected_storage():
+            self.native(
+                mcp_server.PARALLEL_PREVIEW_TOOL,
+                str(selected_project),
+                str(selected_work),
+                {"selection": "selected", "item_ids": ["work-c"]},
+            )
 
     def test_selected_parallel_preview_rejects_inconsistent_open_attempt_relationships(self) -> None:
         state = complete_sqlite_state()
@@ -1063,21 +1096,16 @@ class AuthorityStatusReadTest(unittest.TestCase):
             ),
         )
         blocked_project, blocked_work, _blocked_store = self.initialized_state(blocked_without_attempt)
-        blocked_result, blocked_stdout, blocked_stderr = self.run_cli(
-            "--project-root",
+        blocked_stdout = self.native(
+            mcp_server.PARALLEL_PREVIEW_TOOL,
             str(blocked_project),
-            "--work-root",
             str(blocked_work),
-            "parallel",
-            "preview",
-            "--item",
-            "work-c",
-            "--json",
+            {"selection": "selected", "item_ids": ["work-c"]},
         )
-        self.assertEqual(0, blocked_result, blocked_stderr)
-        blocked_payload = json.loads(blocked_stdout)
+        self.assertNotIn("code", blocked_stdout)
+        blocked_payload = blocked_stdout
         self.assertEqual([], blocked_payload["launchable"])
-        self.assertEqual("blocked", blocked_payload["excluded"][0]["state"])
+        self.assertEqual("blocked", self.json_object(self.json_array(blocked_payload["excluded"])[0])["state"])
 
         for item_id, state_after in (("work-a", "ready"), ("work-c", "active")):
             project, work, _store = self.initialized_state(state)
@@ -1091,19 +1119,13 @@ class AuthorityStatusReadTest(unittest.TestCase):
             finally:
                 connection.close()
 
-            with self.subTest(item_id=item_id, state=state_after):
-                result, _stdout, stderr = self.run_cli(
-                    "--project-root",
+            with self.subTest(item_id=item_id, state=state_after), self.rejected_storage():
+                self.native(
+                    mcp_server.PARALLEL_PREVIEW_TOOL,
                     str(project),
-                    "--work-root",
                     str(work),
-                    "parallel",
-                    "preview",
-                    "--item",
-                    item_id,
+                    {"selection": "selected", "item_ids": [item_id]},
                 )
-            self.assertEqual(12, result)
-            self.assertIn("WORK_STATE_INVALID", stderr)
 
     def test_installed_definition_reads_are_keyed_and_bounded_by_the_requested_page(self) -> None:
         project, work, _store = self.initialized_state(
@@ -1113,37 +1135,31 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 unrelated_count=64,
             )
         )
-        common = ("--project-root", str(project), "--work-root", str(work))
 
-        for arguments, expected_revision, expected_tables in (
+        cases: tuple[tuple[dict[str, JsonValue], set[str]], ...] = (
             (
-                ("item", "definition", "--item-id", "work-c"),
-                "definition_revision=2",
+                {"operation": "current", "item_id": "work-c"},
                 {"project_meta", "work_items", "work_item_definition_revisions", "item_dependencies"},
             ),
             (
-                (
-                    "item",
-                    "definition-history",
-                    "--item-id",
-                    "work-c",
-                    "--limit",
-                    "1",
-                ),
-                "revisions=1",
+                {"operation": "history", "item_id": "work-c", "limit": 1, "before_revision": None},
                 {"project_meta", "work_items", "work_item_definition_revisions"},
             ),
-        ):
+        )
+        for request, expected_tables in cases:
             with (
-                self.subTest(command=arguments[1]),
+                self.subTest(operation=request["operation"]),
                 patch.object(
                     SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")
                 ),
                 self.record_store_reads() as reads,
             ):
-                result, stdout, stderr = self.run_cli(*common, *arguments)
-            self.assertEqual(0, result, stderr)
-            self.assertIn(expected_revision, stdout)
+                payload = self.native(mcp_server.ITEM_DEFINITION_TOOL, str(project), str(work), request)
+            self.assertNotIn("code", payload)
+            if request["operation"] == "current":
+                self.assertEqual(2, payload["definition_revision"])
+            else:
+                self.assertEqual(1, len(self.json_array(payload["revisions"])))
             tables, statements = reads
             self.assertEqual(expected_tables, tables)
             self.assert_keyed_status_queries(work / "state.sqlite3", statements)
@@ -1166,18 +1182,11 @@ class AuthorityStatusReadTest(unittest.TestCase):
         finally:
             raw.close()
 
-        selected_result, selected_stdout, selected_stderr = self.run_cli(
-            "--project-root",
-            str(project),
-            "--work-root",
-            str(work),
-            "item",
-            "definition",
-            "--item-id",
-            "work-c",
+        selected_stdout = self.native(
+            mcp_server.ITEM_DEFINITION_TOOL, str(project), str(work), {"operation": "current", "item_id": "work-c"}
         )
-        self.assertEqual(0, selected_result, selected_stderr)
-        self.assertIn("definition_revision=2", selected_stdout)
+        self.assertNotIn("code", selected_stdout)
+        self.assertEqual(2, selected_stdout["definition_revision"])
         validation_result, validation_stdout, _validation_stderr = self.run_cli(
             "--project-root", str(project), "--work-root", str(work), "validate"
         )
@@ -1195,18 +1204,13 @@ class AuthorityStatusReadTest(unittest.TestCase):
             raw.commit()
         finally:
             raw.close()
-        corrupt_result, _corrupt_stdout, corrupt_stderr = self.run_cli(
-            "--project-root",
-            str(selected_project),
-            "--work-root",
-            str(selected_work),
-            "item",
-            "definition",
-            "--item-id",
-            "work-c",
-        )
-        self.assertEqual(12, corrupt_result)
-        self.assertIn("WORK_STATE_INVALID", corrupt_stderr)
+        with self.rejected_storage():
+            self.native(
+                mcp_server.ITEM_DEFINITION_TOOL,
+                str(selected_project),
+                str(selected_work),
+                {"operation": "current", "item_id": "work-c"},
+            )
 
         history_project, history_work, _history_store = self.initialized_state(state)
         raw = sqlite3.connect(history_work / "state.sqlite3")
@@ -1218,18 +1222,13 @@ class AuthorityStatusReadTest(unittest.TestCase):
             raw.commit()
         finally:
             raw.close()
-        history_result, _history_stdout, history_stderr = self.run_cli(
-            "--project-root",
-            str(history_project),
-            "--work-root",
-            str(history_work),
-            "item",
-            "definition-history",
-            "--item-id",
-            "work-c",
-        )
-        self.assertEqual(12, history_result)
-        self.assertIn("WORK_STATE_INVALID", history_stderr)
+        with self.rejected_storage():
+            self.native(
+                mcp_server.ITEM_DEFINITION_TOOL,
+                str(history_project),
+                str(history_work),
+                {"operation": "history", "item_id": "work-c", "limit": 20, "before_revision": None},
+            )
 
         dependency_project, dependency_work, _dependency_store = self.initialized_state(state)
         raw = sqlite3.connect(dependency_work / "state.sqlite3")
@@ -1241,18 +1240,13 @@ class AuthorityStatusReadTest(unittest.TestCase):
             raw.commit()
         finally:
             raw.close()
-        dependency_result, _dependency_stdout, dependency_stderr = self.run_cli(
-            "--project-root",
-            str(dependency_project),
-            "--work-root",
-            str(dependency_work),
-            "item",
-            "definition",
-            "--item-id",
-            "work-c",
-        )
-        self.assertEqual(12, dependency_result)
-        self.assertIn("WORK_STATE_INVALID", dependency_stderr)
+        with self.rejected_storage():
+            self.native(
+                mcp_server.ITEM_DEFINITION_TOOL,
+                str(dependency_project),
+                str(dependency_work),
+                {"operation": "current", "item_id": "work-c"},
+            )
 
     def test_definition_history_rejects_an_existing_item_without_definitions(self) -> None:
         project, work, _store = self.initialized_state(
@@ -1268,23 +1262,16 @@ class AuthorityStatusReadTest(unittest.TestCase):
         finally:
             raw.close()
 
-        result, _stdout, stderr = self.run_cli(
-            "--project-root",
-            str(project),
-            "--work-root",
-            str(work),
-            "item",
-            "definition-history",
-            "--item-id",
-            "work-c",
-        )
-
-        self.assertEqual(12, result)
-        self.assertIn("WORK_STATE_INVALID", stderr)
+        with self.rejected_storage():
+            self.native(
+                mcp_server.ITEM_DEFINITION_TOOL,
+                str(project),
+                str(work),
+                {"operation": "history", "item_id": "work-c", "limit": 20, "before_revision": None},
+            )
 
     def test_status_preserves_distinct_expiry_and_historical_pin_contracts(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_preparation())
-        common = ("--project-root", str(project), "--work-root", str(work))
         expires_at = SQLITE_NOW + timedelta(minutes=5)
         for observed_at, expected in (
             (expires_at - timedelta(microseconds=1), "active"),
@@ -1293,12 +1280,17 @@ class AuthorityStatusReadTest(unittest.TestCase):
         ):
             with (
                 self.subTest(preparation_observed_at=observed_at),
-                patch("pinboard.cli.preparation_authority.datetime") as clock,
+                patch("pinboard.mcp.server.datetime") as clock,
             ):
                 clock.now.return_value = observed_at
-                result, stdout, stderr = self.run_cli(*common, "preparation", "status", "--item-id", "work-c")
-            self.assertEqual(0, result, stderr)
-            self.assertIn(f"status={expected}", stdout)
+                stdout = self.native(
+                    mcp_server.PREPARATION_AUTHORITY_TOOL,
+                    str(project),
+                    str(work),
+                    {"operation": "status", "item_id": "work-c"},
+                )
+            self.assertNotIn("code", stdout)
+            self.assertEqual(expected, stdout["authority_status"])
             self.assertEqual(1, clock.now.call_count)
 
         state = self.state_with_preparation(
@@ -1306,19 +1298,28 @@ class AuthorityStatusReadTest(unittest.TestCase):
             historical=True,
         )
         project, work, _store = self.initialized_state(state)
-        common = ("--project-root", str(project), "--work-root", str(work))
 
-        with patch("pinboard.cli.preparation_authority.datetime") as clock:
+        with patch("pinboard.mcp.server.datetime") as clock:
             clock.now.return_value = SQLITE_NOW + timedelta(days=1)
-            result, stdout, stderr = self.run_cli(*common, "preparation", "status", "--item-id", "work-c")
-        self.assertEqual(0, result, stderr)
-        self.assertIn("definition_revision=1", stdout)
-        self.assertIn("status=released", stdout)
+            stdout = self.native(
+                mcp_server.PREPARATION_AUTHORITY_TOOL,
+                str(project),
+                str(work),
+                {"operation": "status", "item_id": "work-c"},
+            )
+        self.assertNotIn("code", stdout)
+        self.assertEqual(1, stdout["definition_revision"])
+        self.assertEqual("released", stdout["authority_status"])
         self.assertEqual(1, clock.now.call_count)
 
-        result, stdout, stderr = self.run_cli(*common, "attempt", "status", "--attempt-id", "work-a-1")
-        self.assertEqual(0, result, stderr)
-        self.assertIn("status=active", stdout)
+        stdout = self.native(
+            mcp_server.ATTEMPT_AUTHORITY_TOOL,
+            str(project),
+            str(work),
+            {"operation": "status", "attempt_id": "work-a-1"},
+        )
+        self.assertNotIn("code", stdout)
+        self.assertEqual("active", stdout["authority_status"])
 
         for retained_status in authority_models.AttemptLeaseStatus:
             retained = complete_sqlite_state()
@@ -1338,18 +1339,17 @@ class AuthorityStatusReadTest(unittest.TestCase):
             )
             retained_project, retained_work, _retained_store = self.initialized_state(retained)
             with self.subTest(attempt_retained_status=retained_status):
-                result, stdout, stderr = self.run_cli(
-                    "--project-root",
+                stdout = self.native(
+                    mcp_server.ATTEMPT_AUTHORITY_TOOL,
                     str(retained_project),
-                    "--work-root",
                     str(retained_work),
-                    "attempt",
-                    "status",
-                    "--attempt-id",
-                    "work-a-1",
+                    {"operation": "status", "attempt_id": "work-a-1"},
                 )
-            self.assertEqual(0, result, stderr)
-            self.assertIn(f"status={retained_status.value}", stdout)
+            self.assertNotIn("code", stdout)
+            self.assertEqual(
+                "expired" if retained_status == authority_models.AttemptLeaseStatus.ACTIVE else retained_status.value,
+                stdout["authority_status"],
+            )
 
     def test_selected_authority_corruption_remains_invalid(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_preparation())
@@ -1365,18 +1365,13 @@ class AuthorityStatusReadTest(unittest.TestCase):
         finally:
             raw.close()
 
-        result, _stdout, stderr = self.run_cli(
-            "--project-root",
-            str(project),
-            "--work-root",
-            str(work),
-            "attempt",
-            "status",
-            "--attempt-id",
-            "work-a-1",
-        )
-        self.assertEqual(12, result)
-        self.assertIn("WORK_STATE_INVALID", stderr)
+        with self.rejected_storage():
+            self.native(
+                mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                str(project),
+                str(work),
+                {"operation": "status", "attempt_id": "work-a-1"},
+            )
 
         stale_project, stale_work, _stale_store = self.initialized_state(
             self.state_with_preparation(
@@ -1395,18 +1390,13 @@ class AuthorityStatusReadTest(unittest.TestCase):
         finally:
             raw.close()
 
-        stale_result, _stale_stdout, stale_stderr = self.run_cli(
-            "--project-root",
-            str(stale_project),
-            "--work-root",
-            str(stale_work),
-            "preparation",
-            "status",
-            "--item-id",
-            "work-c",
-        )
-        self.assertEqual(12, stale_result)
-        self.assertIn("WORK_STATE_INVALID", stale_stderr)
+        with self.rejected_storage():
+            self.native(
+                mcp_server.PREPARATION_AUTHORITY_TOOL,
+                str(stale_project),
+                str(stale_work),
+                {"operation": "status", "item_id": "work-c"},
+            )
 
     def test_explicit_validation_owns_complete_integrity_checks(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_unrelated_attempt_authority())
@@ -1444,18 +1434,14 @@ class AuthorityStatusReadTest(unittest.TestCase):
         with patch.object(sqlite_database.sqlite3, "connect", traced_connect):
             connection = open_database(database, OpenMode.READ_ONLY)
             connection.close()
-            result, stdout, stderr = self.run_cli(
-                "--project-root",
+            stdout = self.native(
+                mcp_server.ATTEMPT_AUTHORITY_TOOL,
                 str(project),
-                "--work-root",
                 str(work),
-                "attempt",
-                "status",
-                "--attempt-id",
-                "work-a-1",
+                {"operation": "status", "attempt_id": "work-a-1"},
             )
-        self.assertEqual(0, result, stderr)
-        self.assertIn("status=active", stdout)
+        self.assertNotIn("code", stdout)
+        self.assertEqual("active", stdout["authority_status"])
         normalized_routine = {statement.strip().lower() for statement in routine_statements}
         self.assertNotIn("pragma quick_check", normalized_routine)
         self.assertNotIn("pragma foreign_key_check", normalized_routine)

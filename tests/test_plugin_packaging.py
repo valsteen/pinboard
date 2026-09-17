@@ -14,6 +14,8 @@ from pathlib import Path
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
+from tests.support import JsonObject
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -24,8 +26,16 @@ def copied_repository_payload(source_root: Path, destination: Path) -> None:
         check=True,
         capture_output=True,
     ).stdout
+    deleted = set(
+        subprocess.run(
+            ["git", "ls-files", "-z", "--deleted"],
+            cwd=source_root,
+            check=True,
+            capture_output=True,
+        ).stdout.split(b"\0")
+    )
     for raw_path in listed.split(b"\0"):
-        if not raw_path:
+        if not raw_path or raw_path in deleted:
             continue
         relative_path = Path(os.fsdecode(raw_path))
         source = source_root / relative_path
@@ -55,10 +65,10 @@ def tree_fingerprint(root: Path) -> tuple[tuple[str, str, int, str, str], ...]:
 
 class PluginPackagingTests(unittest.TestCase):
     def assert_configured_mcp_reads(
-        self, sandbox: Path, plugin_root: Path, project: Path, environment: dict[str, str]
+        self, sandbox: Path, plugin_root: Path, project: Path, environment: dict[str, str], proposal: JsonObject
     ) -> None:
         async def scenario() -> None:
-            for manifest_path in (".codex-plugin/plugin.json", ".claude-plugin/plugin.json"):
+            for manifest_index, manifest_path in enumerate((".codex-plugin/plugin.json", ".claude-plugin/plugin.json")):
                 manifest = json.loads((plugin_root / manifest_path).read_bytes())
                 config_path = plugin_root / manifest["mcpServers"]
                 self.assertEqual((ROOT / config_path.relative_to(plugin_root)).read_bytes(), config_path.read_bytes())
@@ -70,6 +80,22 @@ class PluginPackagingTests(unittest.TestCase):
                     async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
                         initialized = await session.initialize()
                         self.assertEqual("pinboard", initialized.server_info.name)
+                        discovered = await session.list_tools()
+                        self.assertEqual(19, len(discovered.tools))
+                        if manifest_index == 0:
+                            created = await session.call_tool(
+                                "pinboard_proposal_create",
+                                {
+                                    "project_root": str(project),
+                                    "work_root": str(project / ".codex" / "pinboard"),
+                                    "proposal": proposal,
+                                    "actor_task_id": "claude-session",
+                                    "actor_host_id": "local",
+                                },
+                            )
+                            self.assertFalse(created.is_error)
+                            assert created.structured_content is not None
+                            self.assertEqual("committed", created.structured_content["status"])
                         result = await session.call_tool(
                             "pinboard_item_status",
                             {
@@ -172,19 +198,23 @@ class PluginPackagingTests(unittest.TestCase):
             executable.chmod(0o755)
             link = source / "tracked-link"
             link.symlink_to(tracked.name)
+            removed = source / "removed.txt"
+            removed.write_text("retired tracked payload", encoding="utf-8")
             (source / "untracked.txt").write_text("untracked", encoding="utf-8")
             subprocess.run(
-                ["git", "add", tracked.name, executable.name, link.name],
+                ["git", "add", tracked.name, executable.name, link.name, removed.name],
                 cwd=source,
                 check=True,
                 capture_output=True,
                 text=True,
             )
+            removed.unlink()
 
             destination = sandbox / "destination"
             destination.mkdir()
             copied_repository_payload(source, destination)
             self.assertFalse((destination / "untracked.txt").exists())
+            self.assertFalse((destination / removed.name).exists())
             self.assertTrue((destination / link.name).is_symlink())
             self.assertEqual(Path(tracked.name), (destination / link.name).readlink())
 
@@ -287,27 +317,21 @@ class PluginPackagingTests(unittest.TestCase):
                 managed_pyproject.read_bytes(),
                 managed_lock.read_bytes(),
             )
-            proposal_path = sandbox / "proposal.json"
-            proposal_path.write_text(
-                json.dumps(
-                    {
-                        "schema": "pinboard-proposal/v1",
-                        "proposal_id": "packaged-proposal",
-                        "created_at": "2026-09-06T12:00:00Z",
-                        "source_task_id": "claude-session",
-                        "user_label": "Packaged proposal",
-                        "trigger": "Exercise the copied launcher through a persisted mutation.",
-                        "evidence": ["source:packaging-smoke"],
-                        "why_it_matters": "The packaged workflow must retain one shared SQLite authority.",
-                        "relation": {"kind": "independent", "item": None},
-                        "effect": "One intake item is stored by the existing engine.",
-                        "unlock": "The copied plugin can run the supported workflow.",
-                        "urgency_evidence": "This is the packaging compatibility boundary.",
-                        "freshness_assumptions": ["The disposable repository began empty."],
-                    }
-                ),
-                encoding="utf-8",
-            )
+            proposal: JsonObject = {
+                "schema": "pinboard-proposal/v1",
+                "proposal_id": "packaged-proposal",
+                "created_at": "2026-09-06T12:00:00Z",
+                "source_task_id": "claude-session",
+                "user_label": "Packaged proposal",
+                "trigger": "Exercise the copied launcher through a persisted mutation.",
+                "evidence": ["source:packaging-smoke"],
+                "why_it_matters": "The packaged workflow must retain one shared SQLite authority.",
+                "relation": {"kind": "independent", "item": None},
+                "effect": "One intake item is stored by the existing engine.",
+                "unlock": "The copied plugin can run the supported workflow.",
+                "urgency_evidence": "This is the packaging compatibility boundary.",
+                "freshness_assumptions": ["The disposable repository began empty."],
+            }
             launcher, environment, before = self.prepare_copied_launcher(sandbox, plugin_root, project)
 
             def run(*arguments: str) -> subprocess.CompletedProcess[str]:
@@ -324,21 +348,9 @@ class PluginPackagingTests(unittest.TestCase):
 
             initialized = run("init")
             self.assertNotIn("model_auto_compact_token_limit_scope", initialized.stdout)
-            run(
-                "proposal",
-                "--file",
-                str(proposal_path),
-                "--task-id",
-                "claude-session",
-                "--host-id",
-                "local",
-            )
-            item = json.loads(run("item", "status", "--item-id", "packaged-proposal", "--json").stdout)
+            self.assert_configured_mcp_reads(sandbox, plugin_root, project, environment, proposal)
             validation = json.loads(run("validate", "--json").stdout)
             reopened = run("init")
-            self.assert_configured_mcp_reads(sandbox, plugin_root, project, environment)
-
-            self.assertEqual("intake", item["state"])
             self.assertTrue(validation["valid"])
             self.assertNotIn("Optional next steps", reopened.stdout)
             self.assertTrue((project / ".codex" / "pinboard" / "state.sqlite3").is_file())

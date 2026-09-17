@@ -29,12 +29,13 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
             actions.completion_candidate_recovery(context),
         )
 
-        result, stdout, stderr = self.run_cli(
-            *fixture.common, "actions", "--role", "project", "--action-id", "complete:work-a-1", "--json"
+        rejected = self.actions_result(
+            fixture,
+            {
+                "role": "project",
+                "action_id": {"kind": "complete", "subject": "work-a-1"},
+            },
         )
-
-        self.assertEqual(11, result, stderr)
-        rejected = self.json_object(json.loads(stdout))
         self.assertEqual("rejected", rejected["status"])
         self.assertFalse(rejected["state_changed"])
         self.assertEqual(before, fixture.store.validated_snapshot())
@@ -44,7 +45,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
             with self.subTest(covered=covered):
                 fixture = self.review_job_fixture()[0] if covered else self.checkpoint_fixture()
                 before = fixture.store.validated_snapshot()
-                action = self.project_action(fixture.common, "complete:work-a-1")
+                action = self.project_action(fixture, "complete:work-a-1")
                 contract = self.json_object(action["input_contract"])
                 schema = self.json_object(contract["payload_schema"])
                 self.assertNotIn("oneOf", schema)
@@ -71,44 +72,44 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                     self.assertEqual(reference.selector, row["selector"])
                 self.assertEqual(before, fixture.store.validated_snapshot())
 
-    def test_broad_discovery_is_advisory_without_checkpoint_enumeration(self) -> None:
+    def test_broad_native_discovery_omits_checkpoint_package_enumeration(self) -> None:
 
         fixture, _, _ = self.review_job_fixture()
         with patch.object(
             SQLiteWorkStore, "read_completion_context", side_effect=AssertionError("broad checkpoint enumeration")
         ):
-            result = self.run_json_cli(*fixture.common, "actions", "--role", "project")
+            result = self.actions_result(fixture, {"role": "project"})
         completion = next(
             self.json_object(row)
             for row in self.json_array(result["actions"])
-            if self.json_object(row)["action_id"] == "complete:work-a-1"
+            if self.json_object(row)["action_id"] == {"kind": "complete", "subject": "work-a-1"}
         )
-        self.assertEqual("advisory", completion["effect"])
-        self.assertNotIn("authorization", completion)
-        self.assertNotIn("subject_revision", completion)
-        self.assertEqual(
-            ["actions", "--role", "project", "--action-id", "complete:work-a-1", "--json"],
-            completion["inspection_arguments"],
-        )
+        contract = self.json_object(completion["input_contract"])
+        self.assertNotIn("checkpoint_packages", contract)
+        self.assertFalse(result["state_changed"])
+        self.assertEqual("unchanged", result["effect"])
 
-    def test_discovery_and_transition_share_executable_recovery(self) -> None:  # noqa: PLR0915 - one recovery and terminal client journey
+    def test_native_discovery_executes_recovery_and_terminal_transition(self) -> None:  # noqa: PLR0915 - one recovery and terminal client journey
 
         fixture, _, _ = self.review_job_fixture()
         self.return_for_correction(fixture, "Protect the final candidate again.", "recovery")
-        current = self.project_action(fixture.common, "continue:work-a-1")
-        current["action_id"] = "complete:work-a-1"
-        payload = fixture.project / "completion.json"
-        payload.write_text('{"evidence":"cannot bypass checkpoints"}', encoding="utf-8")
-        result, stdout, _ = self.run_cli(*self.project_transition_arguments(fixture, current, payload), "--json")
-        self.assertEqual(11, result)
-        rejected = self.json_object(json.loads(stdout))
-        discovered = self.run_cli(
-            *fixture.common, "actions", "--role", "project", "--action-id", "complete:work-a-1", "--json"
+        current = self.project_action(fixture, "continue:work-a-1")
+        current["action_id"] = {"kind": "complete", "subject": "work-a-1"}
+        current["authorization"] = "project"
+        rejected = self.transition_result(fixture, current, {"evidence": "cannot bypass checkpoints"})
+        self.assertEqual("rejected", rejected["status"])
+        discovered = self.actions_result(
+            fixture,
+            {
+                "role": "project",
+                "action_id": {"kind": "complete", "subject": "work-a-1"},
+            },
         )
-        self.assertEqual(rejected["observed"], self.json_object(json.loads(discovered[1]))["observed"])
+        self.assertFalse(rejected["state_changed"])
+        self.assertEqual("unchanged", rejected["effect"])
         observations = {
             str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
-            for row in self.json_array(rejected["observed"])
+            for row in self.json_array(discovered["observed"])
         }
         candidate = fixture.candidate_revision
         before_recovery = fixture.store.validated_snapshot()
@@ -120,17 +121,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
 
                 focused = await session.call_tool(
                     observations["completion_reinspection_tool"],
-                    {
-                        "request": {
-                            "project_root": observations["completion_reinspection_project_root"],
-                            "work_root": observations["completion_reinspection_work_root"],
-                            "role": observations["completion_reinspection_role"],
-                            "action_id": {
-                                "kind": observations["completion_reinspection_action_kind"],
-                                "subject": observations["completion_reinspection_subject"],
-                            },
-                        }
-                    },
+                    self.json_object(json.loads(observations["completion_reinspection_input"])),
                 )
                 self.assertFalse(focused.is_error)
                 assert isinstance(focused.structured_content, dict)
@@ -176,16 +167,12 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         reinspected = asyncio.run(recover())
         contract = self.json_object(self.json_object(self.json_array(reinspected["actions"])[0])["input_contract"])
         self.assertEqual(candidate, contract["candidate"])
-        complete_action = self.project_action(fixture.common, "complete:work-a-1")
-        payload.write_text('{"unexpected":true}', encoding="utf-8")
-        invalid, stdout, _ = self.run_cli(
-            *self.project_transition_arguments(fixture, complete_action, payload), "--json"
-        )
-        self.assertEqual(11, invalid)
-        self.assertIn(
-            {"field": "completion_reinspection_tool", "value": observations["completion_reinspection_tool"]},
-            self.json_array(self.json_object(json.loads(stdout))["observed"]),
-        )
+        complete_action = self.project_action(fixture, "complete:work-a-1")
+        invalid = self.transition_result(fixture, complete_action, {"unexpected": True})
+        self.assertEqual("rejected", invalid["status"])
+        self.assertEqual("TRANSITION_INPUT_INVALID", invalid["code"])
+        self.assertFalse(invalid["state_changed"])
+        self.assertEqual("unchanged", invalid["effect"])
         attempt_root = fixture.work / "attempts" / "work-a-1"
         result_bytes = b"Current terminal result\n"
         review_bytes = b"Current independent terminal review\n"
@@ -292,7 +279,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
             patch.object(SQLiteWorkStore, "read_handover_batches", side_effect=AssertionError("handover read")),
             patch.object(sqlite_state, "read_history_receipt", wraps=sqlite_state.read_history_receipt) as reads,
         ):
-            action = self.project_action(fixture.common, "complete:work-a-1")
+            action = self.project_action(fixture, "complete:work-a-1")
         packages = self.json_array(self.json_object(action["input_contract"])["checkpoint_packages"])
         expected = [history_id, next_id + 100]
         self.assertEqual(expected, [self.json_object(row)["history_id"] for row in packages])

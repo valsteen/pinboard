@@ -1,6 +1,7 @@
 """Decode raw lifecycle payloads or convert typed payloads into exact commands.
 
-CLI and MCP share this representation boundary; it performs no resource work,
+Human CLI closure and native lifecycle tools share this representation boundary;
+it performs no resource work,
 authority selection, legality decision, or persistence effect.
 """
 

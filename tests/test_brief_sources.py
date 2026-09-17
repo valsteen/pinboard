@@ -1,11 +1,8 @@
-import contextlib
 import hashlib
-import io
-import json
 import subprocess
 import tempfile
 import unittest
-from contextlib import chdir
+from copy import deepcopy
 from functools import partial
 from pathlib import Path
 from unittest.mock import patch
@@ -30,7 +27,9 @@ from pinboard.application.brief_sources import (
     render_brief_source_batch,
     select_brief_source_bytes,
 )
-from pinboard.cli.entrypoint import main
+from pinboard.mcp import server
+from tests.native_support import call_native_tool
+from tests.support import JsonObject, JsonValue
 
 
 def expect_brief_source_success[T](result: BriefSourceResult[T]) -> T:
@@ -52,12 +51,27 @@ def source_selector(project: Path) -> BriefSourceSelector:
 
 
 class BriefSourcesTest(unittest.TestCase):
-    def run_cli(self, *arguments: str) -> tuple[int, str, str]:
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            result = main(arguments)
-        return result, stdout.getvalue(), stderr.getvalue()
+    def sources(self, project: Path, operation: str, **fields: JsonValue) -> JsonObject:
+        return call_native_tool(
+            server.BRIEF_SOURCES_TOOL,
+            {
+                "request": {
+                    "project_root": str(project.resolve()),
+                    "work_root": str(project.resolve() / "absent-state"),
+                    "operation": operation,
+                    **fields,
+                }
+            },
+        )
+
+    def manifest_value(self, *sources: BriefSourceRequest) -> JsonObject:
+        return {
+            "schema": "pinboard-brief-sources/v1",
+            "sources": [
+                {"authority_id": source.authority_id, "selector": source.selector, "families": list(source.families)}
+                for source in sources
+            ],
+        }
 
     def manifest(self, *sources: BriefSourceRequest) -> BriefSourceManifest:
         return BriefSourceManifest(schema="pinboard-brief-sources/v1", sources=sources)
@@ -186,201 +200,114 @@ class BriefSourcesTest(unittest.TestCase):
                 render_brief_source_batch(source_selector(project), plan, 0), BriefSourceErrorCode.SOURCE_CHANGED
             )
 
-    def test_cli_plans_and_emits_an_empty_selected_source(self) -> None:
+    def test_native_plans_and_emits_an_empty_selected_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
+            self.run_git(project, "init", "--quiet")
             (project / "empty.md").write_bytes(b"")
-            manifest_path = project / "manifest.json"
-            manifest_path.write_bytes(
-                msgspec.json.encode(
-                    self.manifest(BriefSourceRequest("empty", "empty.md", ("contract",))),
-                    order="sorted",
-                )
+            plan = self.sources(
+                project,
+                "plan",
+                manifest=self.manifest_value(BriefSourceRequest("empty", "empty.md", ("contract",))),
+                max_batch_bytes=24_000,
             )
+            sources = plan["sources"]
+            assert isinstance(sources, list) and isinstance(sources[0], dict)
+            self.assertEqual((0, 0), (sources[0]["start_line"], sources[0]["end_line"]))
+            emitted = self.sources(project, "emit", plan=plan, batch_index=0)
+            self.assertIn("authority=empty selector=empty.md lines=0-0 segment=0", str(emitted["text"]))
+            self.assertFalse((project / "absent-state").exists())
 
-            planned_result, planned_stdout, planned_stderr = self.run_cli(
-                "--project-root",
-                str(project),
-                "brief-sources",
-                "--file",
-                str(manifest_path),
-                "--json",
-            )
-
-            self.assertEqual((0, ""), (planned_result, planned_stderr))
-            plan = json.loads(planned_stdout)
-            self.assertEqual((0, 0), (plan["sources"][0]["start_line"], plan["sources"][0]["end_line"]))
-            plan_path = project / "plan.json"
-            plan_path.write_text(planned_stdout, encoding="utf-8")
-
-            emitted_result, emitted_stdout, emitted_stderr = self.run_cli(
-                "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "0"
-            )
-
-        self.assertEqual((0, ""), (emitted_result, emitted_stderr))
-        self.assertIn("authority=empty selector=empty.md lines=0-0 segment=0", emitted_stdout)
-
-    def test_installed_plan_to_file_preserves_canonical_bytes_and_emission_checks(self) -> None:
+    def test_native_plan_to_file_preserves_canonical_bytes_compact_receipt_and_emission(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
+            self.run_git(project, "init", "--quiet")
             requests: list[BriefSourceRequest] = []
             for index in range(16):
-                source_name = f"source-{index:02}.md"
-                source_size = 8_000 if index < 15 else 11_985
-                (project / source_name).write_bytes(b"x" * (source_size - 1) + b"\n")
-                requests.append(BriefSourceRequest(f"source-{index:02}", source_name, ("contract",)))
-            manifest_path = project / "manifest.json"
-            manifest_path.write_bytes(msgspec.json.encode(self.manifest(*requests), order="sorted"))
+                name = f"source-{index:02}.md"
+                size = 8_000 if index < 15 else 11_985
+                (project / name).write_bytes(b"x" * (size - 1) + b"\n")
+                requests.append(BriefSourceRequest(f"source-{index:02}", name, ("contract",)))
+            manifest = self.manifest_value(*requests)
+            plan = self.sources(project, "plan", manifest=manifest, max_batch_bytes=24_000)
             plan_path = project / "plan.json"
-            common = (
-                "--project-root",
-                str(project),
-                "brief-sources",
-                "--file",
-                str(manifest_path),
+            receipt = self.sources(
+                project, "plan-to-file", manifest=manifest, max_batch_bytes=24_000, destination=str(plan_path)
             )
-
-            stdout_result, complete_plan, stdout_stderr = self.run_cli(*common, "--json")
-            file_result, receipt_stdout, file_stderr = self.run_cli(
-                *common,
-                "--output-plan",
-                str(plan_path),
-                "--json",
-            )
-
-            self.assertEqual((0, ""), (stdout_result, stdout_stderr))
-            self.assertEqual((0, ""), (file_result, file_stderr))
-            self.assertEqual(complete_plan.encode(), plan_path.read_bytes())
-            self.assertGreater(len(complete_plan.encode()), 512)
-            self.assertLess(len(receipt_stdout.encode()), 512)
-            receipt = json.loads(receipt_stdout)
+            canonical = msgspec.json.format(msgspec.json.encode(plan, order="sorted"), indent=2) + b"\n"
+            self.assertEqual(canonical, plan_path.read_bytes())
+            self.assertGreater(len(canonical), 512)
+            self.assertLess(len(msgspec.json.encode(receipt)), 512)
             self.assertEqual("pinboard-brief-source-plan-output/v1", receipt["schema"])
             self.assertEqual(str(plan_path), receipt["destination"])
             self.assertTrue(receipt["created"])
-            self.assertEqual(len(complete_plan.encode()), receipt["plan_byte_count"])
-            self.assertEqual(hashlib.sha256(complete_plan.encode()).hexdigest(), receipt["plan_sha256"])
-            plan = json.loads(complete_plan)
-            self.assertEqual(16, len(plan["sources"]))
-            self.assertEqual(6, len(plan["batches"]))
-            self.assertEqual(131_985, sum(source["selected_byte_count"] for source in plan["sources"]))
-
-            repeated_result, repeated_stdout, repeated_stderr = self.run_cli(
-                *common,
-                "--output-plan",
-                str(plan_path),
-                "--json",
+            self.assertEqual(len(canonical), receipt["plan_byte_count"])
+            self.assertEqual(hashlib.sha256(canonical).hexdigest(), receipt["plan_sha256"])
+            sources, batches = plan["sources"], plan["batches"]
+            assert isinstance(sources, list) and isinstance(batches, list)
+            self.assertEqual((16, 6), (len(sources), len(batches)))
+            self.assertEqual(
+                131_985,
+                sum(
+                    source["selected_byte_count"]
+                    for source in sources
+                    if isinstance(source, dict) and isinstance(source["selected_byte_count"], int)
+                ),
             )
-            self.assertEqual((0, ""), (repeated_result, repeated_stderr))
-            self.assertFalse(json.loads(repeated_stdout)["created"])
-
-            emitted_result, emitted_stdout, emitted_stderr = self.run_cli(
-                "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "0"
+            reused = self.sources(
+                project, "plan-to-file", manifest=manifest, max_batch_bytes=24_000, destination=str(plan_path)
             )
-            self.assertEqual((0, ""), (emitted_result, emitted_stderr))
-            self.assertIn("authority=source-00", emitted_stdout)
-
+            self.assertEqual((False, "unchanged"), (reused["created"], reused["effect"]))
+            emitted = self.sources(project, "emit-file", plan_path=str(plan_path), batch_index=0)
+            self.assertIn("authority=source-00", str(emitted["text"]))
             (project / "source-00.md").write_bytes(b"changed\n")
-            changed_result, _, changed_stderr = self.run_cli(
-                "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "0"
-            )
-            self.assertEqual(15, changed_result)
-            self.assertIn(BriefSourceErrorCode.SOURCE_CHANGED.value, changed_stderr)
+            changed = self.sources(project, "emit-file", plan_path=str(plan_path), batch_index=0)
+            self.assertEqual(BriefSourceErrorCode.SOURCE_CHANGED.value, changed["code"])
+            self.assertFalse((project / "absent-state").exists())
 
-    def test_plan_to_file_preserves_a_differing_destination(self) -> None:
+    def test_native_selected_output_collision_and_post_visibility_sync_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
+            self.run_git(project, "init", "--quiet")
             (project / "source.md").write_bytes(b"source\n")
-            manifest_path = project / "manifest.json"
-            manifest_path.write_bytes(
-                msgspec.json.encode(
-                    self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
-                    order="sorted",
-                )
+            manifest = self.manifest_value(BriefSourceRequest("source", "source.md", ("contract",)))
+            occupied = project / "occupied.json"
+            occupied.write_bytes(b"existing\n")
+            collision = self.sources(
+                project, "plan-to-file", manifest=manifest, max_batch_bytes=24_000, destination=str(occupied)
             )
-            plan_path = project / "plan.json"
-            plan_path.write_bytes(b"existing\n")
-
-            result, stdout, stderr = self.run_cli(
-                "--project-root",
-                str(project),
-                "brief-sources",
-                "--file",
-                str(manifest_path),
-                "--output-plan",
-                str(plan_path),
-                "--json",
+            self.assertEqual(
+                ("FILE_ALREADY_EXISTS", "rejected", "correct-input", False, []),
+                (
+                    collision["code"],
+                    collision["status"],
+                    collision["retry"],
+                    collision["state_changed"],
+                    collision["changed_surfaces"],
+                ),
             )
-            preserved = plan_path.read_bytes()
-
-        self.assertEqual((12, ""), (result, stderr))
-        self.assertEqual(b"existing\n", preserved)
-        rejection = json.loads(stdout)
-        self.assertEqual("rejected", rejection["status"])
-        self.assertFalse(rejection["state_changed"])
-        self.assertEqual([], rejection["changed_surfaces"])
-        self.assertEqual("correct-input", rejection["retry"])
-        self.assertEqual([{"field": "selected_output_path", "value": str(plan_path)}], rejection["observed"])
-        self.assertEqual(
-            [{"field": "selected_output_path", "expected": "unoccupied", "observed": "occupied"}],
-            rejection["mismatches"],
-        )
-        self.assertEqual([{"kind": "command", "command": "mktemp -d"}], rejection["next_actions"])
-
-    def test_plan_to_file_reports_bytes_visible_before_sync_failure(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / "source.md").write_bytes(b"source\n")
-            manifest_path = project / "manifest.json"
-            manifest_path.write_bytes(
-                msgspec.json.encode(
-                    self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
-                    order="sorted",
-                )
-            )
-            plan_path = project / "plan.json"
-            sync_failure = FileIOError(FileIOErrorCode.DIRECTORY_SYNC_FAILED, "simulated sync failure")
-
+            self.assertEqual(b"existing\n", occupied.read_bytes())
+            visible = project / "visible.json"
             with patch(
                 "pinboard.adapters.files.file_io._sync_directory",
-                side_effect=(sync_failure, None),
+                side_effect=FileIOError(FileIOErrorCode.DIRECTORY_SYNC_FAILED, "controlled sync failure"),
             ):
-                result, stdout, stderr = self.run_cli(
-                    "--project-root",
-                    str(project),
-                    "brief-sources",
-                    "--file",
-                    str(manifest_path),
-                    "--output-plan",
-                    str(plan_path),
-                    "--json",
+                failure = self.sources(
+                    project, "plan-to-file", manifest=manifest, max_batch_bytes=24_000, destination=str(visible)
                 )
-
-            self.assertEqual((12, ""), (result, stderr))
-            self.assertTrue(plan_path.is_file())
-            rejection = json.loads(stdout)
-            self.assertEqual("committed-effect", rejection["status"])
-            self.assertTrue(rejection["state_changed"])
-            self.assertEqual(["selected-output"], rejection["changed_surfaces"])
-            self.assertEqual("do-not-retry", rejection["retry"])
-            self.assertIn(
-                {"field": "selected_output_path", "value": str(plan_path)},
-                rejection["observed"],
+            self.assertTrue(visible.is_file())
+            self.assertEqual(
+                ("DIRECTORY_SYNC_FAILED", "committed-effect", "do-not-retry", True, ["selected-output"], str(visible)),
+                (
+                    failure["code"],
+                    failure["status"],
+                    failure["retry"],
+                    failure["state_changed"],
+                    failure["changed_surfaces"],
+                    failure["destination"],
+                ),
             )
-
-    def test_tool_contract_exposes_plan_to_file_as_a_selected_output_effect(self) -> None:
-        result, stdout, stderr = self.run_cli(
-            "tool-contract",
-            "--operation",
-            "brief-sources:plan-to-file",
-            "--json",
-        )
-
-        self.assertEqual((0, ""), (result, stderr))
-        contract = json.loads(stdout)
-        self.assertEqual("plan-to-file", contract["variant"])
-        self.assertEqual("publishes-selected-output", contract["mutation_class"])
-        self.assertIn("--output-plan", contract["cli_usage"])
-        self.assertEqual("selected-output-path", contract["required_authority"])
+            self.assertFalse((project / "absent-state").exists())
 
     def test_render_reads_only_sources_represented_in_the_selected_batch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -413,311 +340,151 @@ class BriefSourcesTest(unittest.TestCase):
         self.assertNotIn(b"authority=second", rendered)
         self.assertEqual([first], read_paths)
 
-    def test_installed_emit_reads_the_plan_and_only_sources_in_the_selected_batch(self) -> None:
+    def test_native_saved_emit_reads_only_the_plan_and_selected_batch_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
-            first = project / "first.md"
-            second = project / "second.md"
+            self.run_git(project, "init", "--quiet")
+            first, second = project / "first.md", project / "second.md"
             first.write_bytes(b"first\n")
             second.write_bytes(b"second\n")
-            manifest_path = project / "manifest.json"
-            manifest_path.write_bytes(
-                msgspec.json.encode(
-                    self.manifest(
-                        BriefSourceRequest("first", first.name, ("contract",)),
-                        BriefSourceRequest("second", second.name, ("acceptance",)),
-                    ),
-                    order="sorted",
-                )
+            plan = self.sources(
+                project,
+                "plan",
+                manifest=self.manifest_value(
+                    BriefSourceRequest("first", first.name, ("contract",)),
+                    BriefSourceRequest("second", second.name, ("acceptance",)),
+                ),
+                max_batch_bytes=10,
             )
-            planned_result, planned_stdout, planned_stderr = self.run_cli(
-                "--project-root",
-                str(project),
-                "brief-sources",
-                "--file",
-                str(manifest_path),
-                "--max-batch-bytes",
-                "10",
-                "--json",
-            )
-            self.assertEqual((0, ""), (planned_result, planned_stderr))
             plan_path = project / "plan.json"
-            plan_path.write_text(planned_stdout, encoding="utf-8")
-            read_paths: list[Path] = []
-            original_read_bytes = Path.read_bytes
-
-            def tracked_read_bytes(path: Path) -> bytes:
-                read_paths.append(path)
-                return original_read_bytes(path)
-
-            with patch.object(Path, "read_bytes", autospec=True, side_effect=tracked_read_bytes):
-                emitted_result, emitted_stdout, emitted_stderr = self.run_cli(
-                    "--project-root",
-                    str(project),
-                    "brief-sources",
-                    "--plan",
-                    str(plan_path),
-                    "--emit-batch",
-                    "0",
-                )
-
-        self.assertEqual((0, ""), (emitted_result, emitted_stderr))
-        self.assertIn("authority=first", emitted_stdout)
-        self.assertNotIn("authority=second", emitted_stdout)
-        self.assertEqual([plan_path, first.resolve()], read_paths)
-
-    def test_cli_plans_and_emits_without_work_state_or_project_mutation(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / "source.md").write_text("# Source\n\nBody.\n", encoding="utf-8")
-            manifest_path = project / "manifest.json"
-            manifest_path.write_bytes(
-                msgspec.json.encode(
-                    self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
-                    order="sorted",
-                )
-            )
-            common = ("--project-root", str(project), "brief-sources", "--file", str(manifest_path))
-
-            planned_result, planned_stdout, planned_stderr = self.run_cli(*common, "--json")
-            plan_path = project / "plan.json"
-            plan_path.write_text(planned_stdout, encoding="utf-8")
+            plan_path.write_bytes(msgspec.json.encode(plan))
             before = {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()}
-            emitted_result, emitted_stdout, emitted_stderr = self.run_cli(
-                "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "0"
-            )
-            missing_result, _, missing_stderr = self.run_cli(
-                "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "1"
-            )
-            invalid_emit_stderr = io.StringIO()
-            with contextlib.redirect_stderr(invalid_emit_stderr), self.assertRaises(SystemExit) as invalid_emit:
-                main(
-                    (
-                        "--project-root",
-                        str(project),
-                        "brief-sources",
-                        "--plan",
-                        str(plan_path),
-                        "--max-batch-bytes",
-                        "10",
-                        "--emit-batch",
-                        "0",
-                    )
-                )
+            paths: list[Path] = []
+            original_read = Path.read_bytes
+
+            def tracked(path: Path) -> bytes:
+                paths.append(path)
+                return original_read(path)
+
+            with patch.object(Path, "read_bytes", autospec=True, side_effect=tracked):
+                emitted = self.sources(project, "emit-file", plan_path=str(plan_path), batch_index=0)
+            self.assertIn("authority=first", str(emitted["text"]))
+            self.assertNotIn("authority=second", str(emitted["text"]))
+            self.assertEqual([plan_path, first.resolve()], paths)
+            missing = self.sources(project, "emit-file", plan_path=str(plan_path), batch_index=100)
+            self.assertEqual(BriefSourceErrorCode.BATCH_NOT_FOUND.value, missing["code"])
             after = {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()}
+            self.assertEqual(before, after)
+            self.assertFalse((project / "absent-state").exists())
 
-        self.assertEqual((0, ""), (planned_result, planned_stderr))
-        plan = json.loads(planned_stdout)
-        self.assertEqual("pinboard-brief-source-plan/v1", plan["schema"])
-        self.assertEqual(24_000, plan["max_batch_bytes"])
-        self.assertEqual((0, ""), (emitted_result, emitted_stderr))
-        self.assertIn("BEGIN BRIEF SOURCE authority=source selector=source.md lines=1-3 segment=0", emitted_stdout)
-        self.assertEqual(15, missing_result)
-        self.assertIn(BriefSourceErrorCode.BATCH_NOT_FOUND.value, missing_stderr)
-        self.assertEqual(2, invalid_emit.exception.code)
-        self.assertIn(
-            "--max-batch-bytes is only valid while planning with --file",
-            invalid_emit_stderr.getvalue(),
-        )
-        self.assertEqual(before, after)
-
-    def test_cli_rejects_a_plan_whose_source_and_batch_segments_disagree(self) -> None:
+    def test_native_saved_plan_rejects_inconsistent_segments_flags_and_rendered_sizes(self) -> None:  # noqa: PLR0915 - one independent native plan-integrity matrix
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
-            (project / "source.md").write_bytes(b"source\n")
-            manifest_path = project / "manifest.json"
-            manifest_path.write_bytes(
-                msgspec.json.encode(
-                    self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
-                    order="sorted",
-                )
-            )
-            planned_result, planned_stdout, planned_stderr = self.run_cli(
-                "--project-root", str(project), "brief-sources", "--file", str(manifest_path), "--json"
-            )
-            self.assertEqual((0, ""), (planned_result, planned_stderr))
-            plan = json.loads(planned_stdout)
-            plan["batches"][0]["segments"][0]["selector"] = "other.md"
-            plan_path = project / "invalid-plan.json"
-            plan_path.write_text(json.dumps(plan), encoding="utf-8")
-
-            result, _stdout, stderr = self.run_cli(
-                "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "0"
-            )
-
-        self.assertEqual(15, result)
-        self.assertIn(BriefSourceErrorCode.PLAN_INVALID.value, stderr)
-
-    def test_cli_rejects_plan_segments_that_do_not_exactly_partition_the_source(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
+            self.run_git(project, "init", "--quiet")
             (project / "source.md").write_bytes(b"first\nother\nthird\n")
-            manifest_path = project / "manifest.json"
-            manifest_path.write_bytes(
-                msgspec.json.encode(
-                    self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
-                    order="sorted",
-                )
+            original = self.sources(
+                project,
+                "plan",
+                manifest=self.manifest_value(BriefSourceRequest("source", "source.md", ("contract",))),
+                max_batch_bytes=6,
             )
-            planned_result, planned_stdout, planned_stderr = self.run_cli(
-                "--project-root",
-                str(project),
-                "brief-sources",
-                "--file",
-                str(manifest_path),
-                "--max-batch-bytes",
-                "6",
-                "--json",
-            )
-            self.assertEqual((0, ""), (planned_result, planned_stderr))
-            original = json.loads(planned_stdout)
-            cases = {
-                "duplicate-and-gap": (1, 2),
-                "reordered": (0, 1),
-                "before-source": (0, None),
-            }
-            for name, (target_index, copied_index) in cases.items():
-                with self.subTest(name=name):
-                    plan = json.loads(json.dumps(original))
-                    target = plan["sources"][0]["segments"][target_index]
-                    batch_target = plan["batches"][target_index]["segments"][0]
-                    if copied_index is None:
-                        target["start_line"] = 0
-                        target["end_line"] = 0
-                        batch_target["start_line"] = 0
-                        batch_target["end_line"] = 0
-                    else:
-                        copied = plan["sources"][0]["segments"][copied_index]
-                        for field in (
-                            "start_line",
-                            "end_line",
-                            "content_byte_count",
-                            "content_sha256",
-                            "ends_with_newline",
-                        ):
-                            target[field] = copied[field]
-                            batch_target[field] = copied[field]
-                    plan_path = project / f"invalid-{name}.json"
-                    plan_path.write_text(json.dumps(plan), encoding="utf-8")
-
-                    result, _stdout, stderr = self.run_cli(
-                        "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "0"
-                    )
-
-                    self.assertEqual(15, result)
-                    self.assertIn(BriefSourceErrorCode.PLAN_INVALID.value, stderr)
-
-    def test_cli_rejects_whole_file_flags_that_disagree_with_the_selector(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / "source.md").write_text("# Source\n\n## Contract\n\nBody.\n", encoding="utf-8")
-            for name, selector, whole_file in (
-                ("heading-marked-whole", "source.md#Contract", True),
-                ("file-marked-section", "source.md", False),
+            cases: list[tuple[str, JsonObject]] = []
+            selector = deepcopy(original)
+            batches = selector["batches"]
+            assert isinstance(batches, list) and isinstance(batches[0], dict)
+            segments = batches[0]["segments"]
+            assert isinstance(segments, list) and isinstance(segments[0], dict)
+            segments[0]["selector"] = "other.md"
+            cases.append(("source-batch-disagreement", selector))
+            for name, target_index, copied_index in (
+                ("duplicate-and-gap", 1, 2),
+                ("reordered", 0, 1),
+                ("before-source", 0, None),
             ):
-                with self.subTest(name=name):
-                    manifest_path = project / f"{name}-manifest.json"
-                    manifest_path.write_bytes(
-                        msgspec.json.encode(
-                            self.manifest(BriefSourceRequest("source", selector, ("contract",))),
-                            order="sorted",
-                        )
-                    )
-                    planned_result, planned_stdout, planned_stderr = self.run_cli(
-                        "--project-root",
-                        str(project),
-                        "brief-sources",
-                        "--file",
-                        str(manifest_path),
-                        "--json",
-                    )
-                    self.assertEqual((0, ""), (planned_result, planned_stderr))
-                    plan = json.loads(planned_stdout)
-                    plan["sources"][0]["whole_file"] = whole_file
-                    plan_path = project / f"{name}-plan.json"
-                    plan_path.write_text(json.dumps(plan), encoding="utf-8")
-
-                    result, _stdout, stderr = self.run_cli(
-                        "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "0"
-                    )
-
-                    self.assertEqual(15, result)
-                    self.assertIn(BriefSourceErrorCode.PLAN_INVALID.value, stderr)
-
-    def test_cli_rejects_a_plan_whose_rendered_size_is_false(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            project = Path(directory)
-            (project / "source.md").write_bytes(b"source\n")
-            manifest_path = project / "manifest.json"
-            manifest_path.write_bytes(
-                msgspec.json.encode(
-                    self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
-                    order="sorted",
+                plan = deepcopy(original)
+                sources, batches = plan["sources"], plan["batches"]
+                assert isinstance(sources, list) and isinstance(sources[0], dict) and isinstance(batches, list)
+                source_segments = sources[0]["segments"]
+                batch = batches[target_index]
+                assert isinstance(source_segments, list) and isinstance(batch, dict)
+                batch_segments = batch["segments"]
+                assert isinstance(batch_segments, list)
+                target, batch_target = source_segments[target_index], batch_segments[0]
+                assert isinstance(target, dict) and isinstance(batch_target, dict)
+                if copied_index is None:
+                    target["start_line"] = target["end_line"] = 0
+                    batch_target["start_line"] = batch_target["end_line"] = 0
+                else:
+                    copied = source_segments[copied_index]
+                    assert isinstance(copied, dict)
+                    for field in (
+                        "start_line",
+                        "end_line",
+                        "content_byte_count",
+                        "content_sha256",
+                        "ends_with_newline",
+                    ):
+                        target[field] = batch_target[field] = copied[field]
+                cases.append((name, plan))
+            size = deepcopy(original)
+            batches = size["batches"]
+            assert isinstance(batches, list) and isinstance(batches[0], dict)
+            count = batches[0]["estimated_rendered_byte_count"]
+            assert isinstance(count, int)
+            batches[0]["estimated_rendered_byte_count"] = count + 1
+            cases.append(("false-rendered-size", size))
+            (project / "heading.md").write_bytes(b"# Source\n\n## Contract\n\nBody.\n")
+            for name, selector, whole_file in (
+                ("heading-marked-whole", "heading.md#Contract", True),
+                ("file-marked-section", "heading.md", False),
+            ):
+                plan = self.sources(
+                    project,
+                    "plan",
+                    manifest=self.manifest_value(BriefSourceRequest("source", selector, ("contract",))),
+                    max_batch_bytes=24_000,
                 )
-            )
-            planned_result, planned_stdout, planned_stderr = self.run_cli(
-                "--project-root", str(project), "brief-sources", "--file", str(manifest_path), "--json"
-            )
-            self.assertEqual((0, ""), (planned_result, planned_stderr))
-            plan = json.loads(planned_stdout)
-            plan["batches"][0]["estimated_rendered_byte_count"] += 1
-            plan_path = project / "invalid-plan.json"
-            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+                sources = plan["sources"]
+                assert isinstance(sources, list) and isinstance(sources[0], dict)
+                sources[0]["whole_file"] = whole_file
+                cases.append((name, plan))
+            for name, plan in cases:
+                with self.subTest(name=name):
+                    path = project / f"invalid-{name}.json"
+                    path.write_bytes(msgspec.json.encode(plan))
+                    failure = self.sources(project, "emit-file", plan_path=str(path), batch_index=0)
+                    self.assertEqual(BriefSourceErrorCode.PLAN_INVALID.value, failure["code"])
+                    self.assertEqual(
+                        ("rejected", False, []),
+                        (failure["status"], failure["state_changed"], failure["changed_surfaces"]),
+                    )
+            self.assertFalse((project / "absent-state").exists())
 
-            result, _stdout, stderr = self.run_cli(
-                "--project-root", str(project), "brief-sources", "--plan", str(plan_path), "--emit-batch", "0"
-            )
-
-        self.assertEqual(15, result)
-        self.assertIn(BriefSourceErrorCode.PLAN_INVALID.value, stderr)
-
-    def test_cli_reads_authority_bytes_from_the_selected_linked_worktree(self) -> None:
+    def test_native_reads_authority_bytes_from_the_selected_linked_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            repository = root / "repository"
-            linked = root / "linked"
+            repository, linked = root / "repository", root / "linked"
             repository.mkdir()
             self.run_git(repository, "init", "-b", "main")
-            (repository / "authority.md").write_text("linked authority\n", encoding="utf-8")
+            (repository / "authority.md").write_bytes(b"linked authority\n")
             self.run_git(repository, "add", "authority.md")
             self.run_git(
-                repository,
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "commit",
-                "-m",
-                "initial",
+                repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial"
             )
             self.run_git(repository, "worktree", "add", "-b", "linked", str(linked))
-            (repository / "authority.md").write_text("dirty primary authority\n", encoding="utf-8")
-            manifest_path = linked / "manifest.json"
-            manifest_path.write_bytes(
-                msgspec.json.encode(
-                    self.manifest(BriefSourceRequest("authority", "authority.md", ("contract",))),
-                    order="sorted",
-                )
+            (repository / "authority.md").write_bytes(b"dirty primary authority\n")
+            plan = self.sources(
+                linked,
+                "plan",
+                manifest=self.manifest_value(BriefSourceRequest("authority", "authority.md", ("contract",))),
+                max_batch_bytes=24_000,
             )
-
-            explicit_result, explicit_stdout, explicit_stderr = self.run_cli(
-                "--project-root",
-                str(linked),
-                "brief-sources",
-                "--file",
-                str(manifest_path),
-                "--json",
-            )
-            with chdir(linked):
-                default_result, default_stdout, default_stderr = self.run_cli(
-                    "brief-sources", "--file", str(manifest_path), "--json"
-                )
-
-        expected_digest = hashlib.sha256(b"linked authority\n").hexdigest()
-        self.assertEqual((0, ""), (explicit_result, explicit_stderr))
-        self.assertEqual((0, ""), (default_result, default_stderr))
-        self.assertEqual(expected_digest, json.loads(explicit_stdout)["sources"][0]["selected_sha256"])
-        self.assertEqual(expected_digest, json.loads(default_stdout)["sources"][0]["selected_sha256"])
+            sources = plan["sources"]
+            assert isinstance(sources, list) and isinstance(sources[0], dict)
+            self.assertEqual(hashlib.sha256(b"linked authority\n").hexdigest(), sources[0]["selected_sha256"])
+            emitted = self.sources(linked, "emit", plan=plan, batch_index=0)
+            self.assertIn("linked authority", str(emitted["text"]))
+            self.assertNotIn("dirty primary", str(emitted["text"]))
 
 
 if __name__ == "__main__":

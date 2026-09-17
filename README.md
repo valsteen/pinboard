@@ -108,7 +108,7 @@ The [installation guide](INSTALL.md) covers first setup, Codex permissions, link
 
 ## Local data
 
-By default, Pinboard keeps project decisions and evidence in ignored files inside the managed project, which is the repository whose work Pinboard coordinates. Agent workflows use local stdio MCP tools for intake, briefs, inspection, authority, lifecycle changes, worker dispatch, and candidate-bound review publication. The CLI remains available through `<launcher-root>/scripts/pinboard`, including dispatch, review publication, maintenance, and recovery. An installed plugin keeps its private Python environment at `<launcher-root>/.pinboard-runtime/environment`, while Pinboard source development uses `<pinboard-source>/.venv`. Neither environment is created in or borrowed from the managed project.
+By default, Pinboard keeps project decisions and evidence in ignored files inside the managed project, which is the repository whose work Pinboard coordinates. Agent workflows use local stdio MCP tools for intake, briefs, inspection, authority, lifecycle changes, worker dispatch, and candidate-bound review publication. The CLI remains available through `<launcher-root>/scripts/pinboard` for root discovery, setup, summary status, validation, view repair, portable human export, direct human closure, and its own diagnostics. It is not an agent-workflow fallback. An installed plugin keeps its private Python environment at `<launcher-root>/.pinboard-runtime/environment`, while Pinboard source development uses `<pinboard-source>/.venv`. Neither environment is created in or borrowed from the managed project.
 
 ## Learn more
 

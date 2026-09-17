@@ -18,6 +18,12 @@ Do not enable Claude agent teams, open another session, create another worktree,
 
 Do not infer that subagents are unavailable because an unrelated, nested, shell, MCP, or dynamically listed tool surface omits their controls. Report a missing subagent capability only after the runtime's native launch surface is actually absent or unsupported, or an actual required native launch returns an unavailable or unsupported result.
 
+## Native human questions
+
+Apply the main skill's [question policy](../SKILL.md#match-detail-to-the-question) through tools actually exposed in the current runtime. In Codex, prefer `request_user_input_async` when available and permitted for the question, so independent authorized work can continue while the answer is pending. Use `request_user_input` only when its current mode and purpose restrictions allow the question; a Plan-only tool is unavailable in Default mode, and a tool that excludes permission requests cannot collect them. Follow the selected tool's question and choice limits. If neither tool is exposed or permitted, use the main skill's ordinary-text fallback.
+
+In another coding agent, use its available native question capability only as permitted by that tool's current instructions; otherwise use the same text fallback. Native question support is not a desktop-only assumption or a promised capability of every host. Execution permission escalation remains in the host's actual approval mechanism, including the source-setup recovery below.
+
 ## Source-worktree setup recovery
 
 Run the repository's exact setup command in the selected checkout through normal runtime execution first. On failure, use its diagnostics or one cheapest additional observation to distinguish a sandbox permission restriction from a missing prerequisite, actual locked-install failure, network failure, or a defect in the tool being changed.

@@ -358,47 +358,6 @@ def describe_input_contract(
     )
 
 
-def project_parallel_preview(
-    preview: query_models.ParallelPreview,
-) -> work_inspection_models.ParallelPreviewView:
-    launchable: list[work_inspection_models.ParallelItemView] = []
-    excluded: list[work_inspection_models.ParallelItemView] = []
-    for item in preview.items:
-        match item:
-            case query_models.LaunchableParallelItem():
-                launchable.append(
-                    work_inspection_models.ParallelItemView(
-                        item.item_id,
-                        item.label,
-                        item.state.value,
-                        item.attempt_id,
-                        "launchable",
-                        (),
-                    )
-                )
-            case query_models.ExcludedParallelItem(reasons=reasons):
-                excluded.append(
-                    work_inspection_models.ParallelItemView(
-                        item.item_id,
-                        item.label,
-                        item.state.value,
-                        item.attempt_id,
-                        "excluded",
-                        reasons,
-                    )
-                )
-            case _ as unreachable:
-                assert_never(unreachable)
-    return work_inspection_models.ParallelPreviewView(
-        preview.schema,
-        preview.revision,
-        preview.selection.value,
-        preview.safe,
-        tuple(launchable),
-        tuple(excluded),
-    )
-
-
 def compose_status(
     facts: query_models.ProjectStatusFacts,
     work: Path,
@@ -739,7 +698,7 @@ def show_input_contract(
     return 0
 
 
-def _print_parallel_group(title: str, items: tuple[work_inspection_models.ParallelItemView, ...]) -> None:
+def _print_parallel_group(title: str, items: tuple[query_models.ParallelItemView, ...]) -> None:
     print(f"{title}:")
     if not items:
         print("- none")
@@ -765,7 +724,7 @@ def show_parallel_preview(
     )
     if isinstance(preview, query_models.ParallelSelectionInvalid):
         return errors.CommandFailure(errors.CommandErrorCode.PARALLEL_SELECTION_INVALID, preview.message, None)
-    view = project_parallel_preview(preview)
+    view = queries.present_parallel_preview(preview)
     if command.json:
         write_json(view)
     else:

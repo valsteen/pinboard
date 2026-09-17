@@ -101,21 +101,3 @@ class CompletionInspectionView(msgspec.Struct, frozen=True, forbid_unknown_field
 
 class ActionsView(msgspec.Struct, frozen=True):
     actions: tuple[ActionView | CompletionInspectionView, ...]
-
-
-class ParallelItemView(msgspec.Struct, frozen=True):
-    item_id: str
-    label: str
-    state: str
-    attempt_id: str | None
-    outcome: str
-    reasons: tuple[query_models.ParallelReason, ...]
-
-
-class ParallelPreviewView(msgspec.Struct, frozen=True):
-    schema: str
-    revision: str
-    selection: str
-    safe: bool
-    launchable: tuple[ParallelItemView, ...]
-    excluded: tuple[ParallelItemView, ...]

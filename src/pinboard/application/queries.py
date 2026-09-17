@@ -962,3 +962,35 @@ def select_parallel_preview(
     if facts is None:
         return query_models.ParallelSelectionInvalid("Selected item identities must be current items.")
     return _project_parallel_preview_facts(facts, query_models.ParallelSelection.SELECTED, now)
+
+
+def present_parallel_preview(preview: query_models.ParallelPreview) -> query_models.ParallelPreviewView:
+    """Preserve the neutral v1 launchable/excluded grouping for sibling transports."""
+    launchable: list[query_models.ParallelItemView] = []
+    excluded: list[query_models.ParallelItemView] = []
+    for item in preview.items:
+        match item:
+            case query_models.LaunchableParallelItem():
+                launchable.append(
+                    query_models.ParallelItemView(
+                        item.item_id, item.label, item.state.value, item.attempt_id, "launchable", ()
+                    )
+                )
+            case query_models.ExcludedParallelItem(reasons=reasons):
+                excluded.append(
+                    query_models.ParallelItemView(
+                        item.item_id, item.label, item.state.value, item.attempt_id, "excluded", reasons
+                    )
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
+    match preview.selection:
+        case query_models.ParallelSelection.SELECTED:
+            selection = "selected"
+        case query_models.ParallelSelection.ALL_SAFE:
+            selection = "all-safe"
+        case _ as unreachable:
+            assert_never(unreachable)
+    return query_models.ParallelPreviewView(
+        "pinboard-parallel-preview/v1", preview.revision, selection, preview.safe, tuple(launchable), tuple(excluded)
+    )

@@ -638,6 +638,24 @@ class ParallelPreview:
     items: tuple[ParallelItem, ...]
 
 
+class ParallelItemView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: str
+    label: str
+    state: str
+    attempt_id: str | None
+    outcome: Literal["launchable", "excluded"]
+    reasons: tuple[ParallelReason, ...]
+
+
+class ParallelPreviewView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-parallel-preview/v1"]
+    revision: str
+    selection: Literal["selected", "all-safe"]
+    safe: bool
+    launchable: tuple[ParallelItemView, ...]
+    excluded: tuple[ParallelItemView, ...]
+
+
 class WorkItemDefinitionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-work-item-definition/v1"]
     title: str

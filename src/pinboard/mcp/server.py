@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import itertools
+import shlex
 import sys
 import threading
 import time
@@ -100,6 +101,8 @@ ITEM_DEFINITION_TOOL = "pinboard_item_definition"
 BRIEF_REVIEW_TOOL = "pinboard_brief_review"
 BRIEF_CONTRACT_TOOL = "pinboard_brief_contract"
 BRIEF_SOURCES_TOOL = "pinboard_brief_sources"
+ORDER_TOOL = "pinboard_order"
+PARALLEL_PREVIEW_TOOL = "pinboard_parallel_preview"
 THREAD_NAME_PREFIX = "pinboard-mcp-worker"
 
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
@@ -682,6 +685,133 @@ def _read_overview(project_root: str, work_root: str, token: CancellationToken) 
     content = msgspec.to_builtins(overview)
     assert isinstance(content, dict)
     return OperationResult(content, "ok", overview.revision)
+
+
+def _order(raw: dict[str, JsonValue], token: CancellationToken) -> OperationResult:
+    """Decode human-authorized order, commit under the shared lock, then refresh selected views."""
+    token.checkpoint()
+    try:
+        request = msgspec.convert(raw, type=contracts.OrderEnvelope, strict=True).request
+    except (msgspec.ValidationError, ValueError) as error:
+        return OperationResult(
+            {
+                "schema": "pinboard-mcp-order-result/v1",
+                "status": "rejected",
+                "code": "ORDER_INVALID",
+                "message": f"Cannot decode order request: {error}",
+                "state_changed": False,
+                **_details_json(None),
+                "recovery": None,
+            },
+            "rejected",
+            None,
+        )
+    recovery: dict[str, JsonValue] = {
+        "tool": OVERVIEW_TOOL,
+        "arguments": {"project_root": request.project_root, "work_root": request.work_root},
+        "meaning": "current-state-only-not-caller-commit-proof",
+    }
+    durable = _resolve_durable(request.project_root, request.work_root)
+    store = compose_store(durable)
+    now = datetime.now(UTC)
+    token.checkpoint()
+    committed = service.reorder(
+        store,
+        request.order.expected_order,
+        request.order.requested_order,
+        TaskId(request.actor_task_id),
+        HostId(request.actor_host_id),
+        now,
+    )
+    if isinstance(committed, DecisionFailure):
+        return OperationResult(
+            {
+                "schema": "pinboard-mcp-order-result/v1",
+                "status": "rejected",
+                "code": committed.code.value,
+                "message": committed.message,
+                "state_changed": False,
+                **_details_json(committed.details),
+                "recovery": recovery,
+            },
+            "rejected",
+            None,
+        )
+    refreshed = _refresh_affected_views(
+        durable, store, AffectedViews(committed.item_ids, committed.attempt_ids, (committed.receipt.history_id,)), now
+    )
+    content: dict[str, JsonValue] = {
+        "schema": "pinboard-mcp-order-result/v1",
+        "order": list[JsonValue](request.order.requested_order),
+        **_committed_authority_fields(committed, refreshed.warning),
+        "recovery": recovery,
+    }
+    if refreshed.warning is not None:
+        content["warning"] = {
+            "message": refreshed.warning.message,
+            "recovery": shlex.join(
+                (
+                    "pinboard",
+                    "--project-root",
+                    request.project_root,
+                    "--work-root",
+                    str(durable.work_root),
+                    "views",
+                    "rebuild",
+                )
+            ),
+        }
+    return OperationResult(
+        content,
+        "committed" if refreshed.warning is None else "committed-warning",
+        str(committed.receipt.project_revision),
+    )
+
+
+def _parallel_preview(raw: dict[str, JsonValue], token: CancellationToken) -> OperationResult:
+    """Read only exact selected constraints or explicit current portfolio facts; never launch work."""
+    token.checkpoint()
+    try:
+        request = msgspec.convert(raw, type=contracts.ParallelPreviewEnvelope, strict=True).request
+    except (msgspec.ValidationError, ValueError) as error:
+        return _read_failure(
+            "pinboard-mcp-parallel-preview-result/v1",
+            "PARALLEL_PREVIEW_INVALID",
+            f"Cannot decode parallel preview: {error}",
+            None,
+        )
+    durable = _resolve_durable(request.project_root, request.work_root)
+    token.checkpoint()
+    store = compose_store(durable)
+    operation_time = datetime.now(UTC)
+    match request:
+        case contracts.SelectedParallelPreviewRequest(item_ids=item_ids):
+            preview = queries.select_parallel_preview(store, selected=item_ids, now=operation_time)
+        case contracts.AllSafeParallelPreviewRequest():
+            preview = queries.project_current_parallel_preview(
+                store.read_current_parallel_snapshot(operation_time), now=operation_time
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    if isinstance(preview, query_models.ParallelSelectionInvalid):
+        return _read_failure(
+            "pinboard-mcp-parallel-preview-result/v1", "PARALLEL_SELECTION_INVALID", preview.message, None
+        )
+    token.checkpoint()
+    content = msgspec.to_builtins(queries.present_parallel_preview(preview))
+    assert isinstance(content, dict)
+    return OperationResult(
+        {
+            **content,
+            "status": "ok",
+            "state_changed": False,
+            "effect": "unchanged",
+            "retry": "safe-to-repeat",
+            "changed_surfaces": [],
+        },
+        "ok",
+        preview.revision,
+    )
 
 
 def _action_failure_details(
@@ -2571,6 +2701,34 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
     request_ids = itertools.count(1)
 
     @server.tool(
+        name=ORDER_TOOL,
+        description="Save an explicitly human-authorized complete priority permutation against the current live order; fresh overview reconciles state, not caller commitment. Never grants launch authority.",
+    )
+    async def order(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            ORDER_TOOL,
+            str(request.get("project_root", "")),
+            partial(_order, {"request": request}),
+        )
+
+    @server.tool(
+        name=PARALLEL_PREVIEW_TOOL,
+        description="Read exact selected or current-only all-safe structural parallel constraints. Does not certify readiness, acquire authority or launch native tasks.",
+    )
+    async def parallel_preview(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            PARALLEL_PREVIEW_TOOL,
+            str(request.get("project_root", "")),
+            partial(_parallel_preview, {"request": request}),
+        )
+
+    @server.tool(
         name=BRIEF_CONTRACT_TOOL,
         description="Construct the full strict work-brief contract or complete unresolved local/cross-boundary starter; no project facts, readiness or authority are invented.",
     )
@@ -2834,6 +2992,16 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
 def _install_boundary_contracts(server: MCPServer) -> None:
     """Install exact schemas through the pinned SDK's mutable tool metadata seam."""
     definitions = (
+        (
+            ORDER_TOOL,
+            contracts.schema_for(contracts.OrderEnvelope),
+            contracts.union_schema_for(contracts.ORDER_RESULT_TYPES),
+        ),
+        (
+            PARALLEL_PREVIEW_TOOL,
+            contracts.schema_for(contracts.ParallelPreviewEnvelope),
+            contracts.union_schema_for(contracts.PARALLEL_PREVIEW_RESULT_TYPES),
+        ),
         (
             BRIEF_CONTRACT_TOOL,
             contracts.schema_for(contracts.BriefContractEnvelope),

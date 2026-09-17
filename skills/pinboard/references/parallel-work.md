@@ -13,7 +13,7 @@ Use [the coding-agent runtime adapters](runtime-adapters.md) for native task, su
 ## Build the preview
 
 1. Require authority `sqlite-v6`.
-2. Run `pinboard parallel preview --json`. This all-safe discovery form is intentionally project-wide because its question spans every current item.
+2. Call `pinboard_parallel_preview` with exact roots and `selection: all-safe` inside `request`. This explicit leaf spans current portfolio facts, not proposal bodies or retained history; do not include `item_ids`.
 3. Present the result in two compact groups:
    - **Ready together:** the unambiguous all-safe set.
    - **Not ready:** excluded items with the command's exact reason translated into ordinary language.
@@ -34,13 +34,13 @@ Treat either of these as explicit launch authority:
 
 “All safe” means the preview's **Ready together** group.
 
-Before creating anything, rerun one selected preview containing every authorized item. This explicit form reads only those current items and their direct launch constraints:
+Before creating anything, call `pinboard_parallel_preview` again with exact roots, `selection: selected`, and every authorized item in nonempty unique `item_ids`, all inside `request`. This leaf reads only those current items and their direct launch constraints:
 
 ```text
-pinboard parallel preview --item <first> --item <second> --json
+{"request":{"project_root":"<exact checkout>","work_root":"<exact work root>","selection":"selected","item_ids":["<first>","<second>"]}}
 ```
 
-Proceed only when `safe` is true. Preserve its revision as the batch observation. If it is false, show the changed reason and ask only for the decision that the new state requires.
+Proceed only when `safe` is true. Preserve its revision as the batch observation. If it is false, show the changed reason and ask only for the decision that the new state requires. Safe is structural evidence, not readiness or worker authority; the subsequent accepted brief, fresh authority and native creation checks still apply. The installed CLI preview route remains temporarily supported pending actual-consumer disposition.
 
 ## Launch each outcome
 

@@ -14,7 +14,7 @@ from pinboard.application import (
     work_brief_contract,
     work_brief_models,
 )
-from pinboard.domain import authority_models, decision_models
+from pinboard.domain import authority_models, decision_models, ordering
 from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
 
 type JsonScalar = bool | int | float | str | None
@@ -85,6 +85,41 @@ class BriefPublishRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 class OverviewRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     project_root: RootPath
     work_root: RootPath
+
+
+class OrderRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    order: ordering.OrderRequest
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+
+
+class OrderEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: OrderRequest
+
+
+class SelectedParallelPreviewRequest(
+    msgspec.Struct, tag="selected", tag_field="selection", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    item_ids: Annotated[tuple[ordering.OrderItemId, ...], msgspec.Meta(min_length=1)]
+
+    def __post_init__(self) -> None:
+        if len(set(self.item_ids)) != len(self.item_ids):
+            raise ValueError("Selected item identities must be unique.")
+
+
+class AllSafeParallelPreviewRequest(
+    msgspec.Struct, tag="all-safe", tag_field="selection", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+
+
+class ParallelPreviewEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: SelectedParallelPreviewRequest | AllSafeParallelPreviewRequest
 
 
 class BriefContractFullRequest(
@@ -1311,6 +1346,59 @@ class WarningResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     recovery: NonEmptyText
 
 
+class OrderRecovery(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    tool: Literal["pinboard_overview"]
+    arguments: OverviewRequest
+    meaning: Literal["current-state-only-not-caller-commit-proof"]
+
+
+class OrderRejected(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-order-result/v1"]
+    code: Literal["ORDER_INVALID", "ACTION_NOT_AVAILABLE", "TRANSITION_INPUT_INVALID"]
+    retry: Literal["correct-input"]
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+    recovery: OrderRecovery | None
+
+
+class OrderCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-order-result/v1"]
+    order: tuple[ordering.OrderItemId, ...]
+    committed_revision: PositiveInt
+    history_id: PositiveInt
+    recovery: OrderRecovery
+    status: Literal["committed", "committed-with-warning"]
+    warning: WarningResult | None
+    changed_surfaces: LedgerSurface
+    effect: Literal["committed"]
+    retry: Literal["do-not-retry"]
+    state_changed: bool
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, True)
+        if (self.status == "committed-with-warning") != (self.warning is not None):
+            raise ValueError("Order terminal status must agree with its view-repair warning.")
+
+
+class ParallelPreviewRejected(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-parallel-preview-result/v1"]
+    code: Literal["PARALLEL_PREVIEW_INVALID", "PARALLEL_SELECTION_INVALID"]
+    retry: Literal["correct-input"]
+    observed: Empty
+    mismatches: Empty
+
+
+class ParallelPreviewSuccess(query_models.ParallelPreviewView, frozen=True):
+    status: Literal["ok"]
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
 def _committed_transition_surfaces(kind: decision_models.ActionKind) -> tuple[tuple[str, ...], ...]:
     """Own the supported action/effect combinations at the MCP result boundary."""
     match kind:
@@ -2113,6 +2201,8 @@ ITEM_STATUS_RESULT_TYPES = (
     ExecutorBusyResult,
 )
 OVERVIEW_RESULT_TYPES = (query_models.WorkOverview, OverviewRejected, ExecutorBusyResult)
+ORDER_RESULT_TYPES = (OrderCommitted, OrderRejected, ExecutorBusyResult)
+PARALLEL_PREVIEW_RESULT_TYPES = (ParallelPreviewSuccess, ParallelPreviewRejected, ExecutorBusyResult)
 ACTIONS_RESULT_TYPES = (
     ActionsSuccess,
     CompletionActionsSuccess,
@@ -2194,6 +2284,8 @@ type RequestBoundary = (
     | type[AttemptAuthorityEnvelope]
     | type[ItemDefinitionEnvelope]
     | type[BriefReviewEnvelope]
+    | type[OrderEnvelope]
+    | type[ParallelPreviewEnvelope]
 )
 type ResultBoundary = (
     type[work_brief_contract.WorkBriefContract]
@@ -2226,6 +2318,10 @@ type ResultBoundary = (
     | type[BriefPublicationAcceptanceFailure]
     | type[query_models.WorkOverview]
     | type[OverviewRejected]
+    | type[OrderCommitted]
+    | type[OrderRejected]
+    | type[ParallelPreviewSuccess]
+    | type[ParallelPreviewRejected]
     | type[ActionsInvalid]
     | type[ActionUnavailable]
     | type[AttemptLeaseRequired]
@@ -2317,6 +2413,7 @@ def transition_request_schema() -> dict[str, JsonSchemaValue]:
 
 def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
     changed_results = {
+        "OrderCommitted",
         "BriefReviewCommitted",
         "BriefReviewPublishedRejection",
         "BriefReviewAcceptanceFailure",
@@ -2338,6 +2435,9 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
         "ReviewJobFailedAfterPublication",
     }
     unchanged_results = {
+        "OrderRejected",
+        "ParallelPreviewSuccess",
+        "ParallelPreviewRejected",
         "ItemDefinitionRejected",
         "BriefReviewNoEvidence",
         "BriefReviewNeedsCorrection",
@@ -2399,6 +2499,16 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
             }
         if name == "ArtifactVerified":
             properties["verified"] = {"type": "boolean", "const": True}
+        if name == "OrderCommitted":
+            definition["oneOf"] = [
+                {"properties": {"status": {"const": "committed"}, "warning": {"type": "null"}}},
+                {
+                    "properties": {
+                        "status": {"const": "committed-with-warning"},
+                        "warning": {"$ref": "#/$defs/WarningResult"},
+                    }
+                },
+            ]
 
 
 def _action_semantics_constraint(kind: decision_models.ActionKind) -> dict[str, JsonSchemaValue]:
@@ -2769,6 +2879,12 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     surfaces = content.get("changed_surfaces")
     if schema == "pinboard-mcp-execution-result/v1":
         msgspec.convert(content, type=ExecutorBusyResult, strict=True)
+    elif tool_name == "pinboard_order":
+        msgspec.convert(content, type=OrderRejected if status == "rejected" else OrderCommitted, strict=True)
+    elif tool_name == "pinboard_parallel_preview":
+        msgspec.convert(
+            content, type=ParallelPreviewRejected if status == "rejected" else ParallelPreviewSuccess, strict=True
+        )
     elif tool_name == "pinboard_item_definition":
         if schema == "pinboard-item-definition/v1":
             msgspec.convert(content, type=query_models.ItemDefinition, strict=True)

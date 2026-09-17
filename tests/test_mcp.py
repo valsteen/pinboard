@@ -1,5 +1,6 @@
 import asyncio
 import io
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,7 @@ from mcp_types import CallToolResult, TextContent, Tool
 from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
+from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
 from pinboard.adapters.sqlite.database import initialize_database
@@ -36,13 +38,15 @@ from pinboard.application import (
 )
 from pinboard.application.artifact_publication import ArtifactPublication
 from pinboard.application.artifacts import NewArtifact
-from pinboard.application.ports import WorkStoreError
+from pinboard.application.mutation_models import CommittedEffect
+from pinboard.application.ports import WorkStore, WorkStoreError
 from pinboard.application.work_briefs import canonical_work_brief_bytes
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import authority_models, decision_models, ordering, work_models
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
+    DecisionResult,
     EffectDisposition,
     FailureDetails,
     FailureFact,
@@ -68,6 +72,8 @@ def _mcp_arguments(tool: str, request: Mapping[str, contracts.JsonValue]) -> dic
         mcp_server.PREPARATION_AUTHORITY_TOOL,
         mcp_server.ATTEMPT_AUTHORITY_TOOL,
         mcp_server.TRANSITION_TOOL,
+        mcp_server.ORDER_TOOL,
+        mcp_server.PARALLEL_PREVIEW_TOOL,
     }:
         return {"request": dict(request)}
     return dict(request)
@@ -174,6 +180,468 @@ class BoundedExecutorTest(unittest.TestCase):
 
 
 class McpTransportTest(unittest.TestCase):
+    def test_order_and_parallel_ingress_reject_before_resources(self) -> None:
+        roots: dict[str, contracts.JsonValue] = {"project_root": "/project", "work_root": "/work"}
+        order: dict[str, contracts.JsonValue] = {
+            **roots,
+            "order": {"schema": "pinboard-live-order/v1", "expected_order": ["work-a"], "requested_order": ["work-a"]},
+            "actor_task_id": "owner",
+            "actor_host_id": "local",
+        }
+        selected: dict[str, contracts.JsonValue] = {**roots, "selection": "selected", "item_ids": ["work-a"]}
+        with patch.object(mcp_server, "_resolve_durable", side_effect=AssertionError("invalid ingress resolved roots")):
+            invalid_orders: tuple[dict[str, contracts.JsonValue], ...] = (
+                {**order, "extra": True},
+                {**order, "actor_task_id": ""},
+                {
+                    **order,
+                    "order": {
+                        "schema": "pinboard-live-order/v1",
+                        "expected_order": [],
+                        "requested_order": ["work-a", "work-a"],
+                    },
+                },
+            )
+            for request in invalid_orders:
+                with self.subTest(order=request):
+                    result = mcp_server._order({"request": request}, mcp_server.CancellationToken())
+                    self.assertEqual("ORDER_INVALID", result.content["code"])
+                    contracts.validate_result(mcp_server.ORDER_TOOL, result.content)
+            invalid_previews: tuple[dict[str, contracts.JsonValue], ...] = (
+                {**selected, "item_ids": []},
+                {**selected, "item_ids": ["work-a", "work-a"]},
+                {**selected, "item_ids": ["../work-a"]},
+                {**selected, "item_ids": ["Work_A"]},
+                {**selected, "selection": "all-safe"},
+                {**roots, "selection": "selected"},
+                {**roots, "selection": "other"},
+            )
+            for request in invalid_previews:
+                with self.subTest(preview=request):
+                    result = mcp_server._parallel_preview({"request": request}, mcp_server.CancellationToken())
+                    self.assertEqual("PARALLEL_PREVIEW_INVALID", result.content["code"])
+                    contracts.validate_result(mcp_server.PARALLEL_PREVIEW_TOOL, result.content)
+
+    def test_order_persists_exact_priority_and_truthful_aftermath(self) -> None:  # noqa: PLR0915 - one persisted order/recovery journey
+        with patch("tests.test_mcp.datetime") as seed_clock:
+            seed_clock.now.return_value = SQLITE_NOW
+            temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        store = SQLiteWorkStore(roots.database_path)
+        before = store.validated_snapshot()
+        current = tuple(
+            item.item_id
+            for item in queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW).items
+        )
+        requested = (*current[1:], current[0])
+        request: dict[str, contracts.JsonValue] = {
+            "project_root": str(project),
+            "work_root": str(roots.work_root),
+            "order": {
+                "schema": "pinboard-live-order/v1",
+                "expected_order": list[contracts.JsonValue](current),
+                "requested_order": list[contracts.JsonValue](requested),
+            },
+            "actor_task_id": "priority-owner",
+            "actor_host_id": "priority-host",
+        }
+        with patch.object(mcp_server, "datetime") as clock:
+            clock.now.return_value = SQLITE_NOW
+            cancelled = mcp_server.CancellationToken()
+            cancelled.cancel()
+            with self.assertRaises(mcp_server.OperationCancelled):
+                mcp_server._order({"request": request}, cancelled)
+            self.assertEqual(before, store.validated_snapshot())
+            before_write = mcp_server.CancellationToken()
+
+            def cancel_before_write(_durable: DurableRoots) -> SQLiteWorkStore:
+                before_write.cancel()
+                return store
+
+            with (
+                patch.object(mcp_server, "compose_store", side_effect=cancel_before_write),
+                self.assertRaises(mcp_server.OperationCancelled),
+            ):
+                mcp_server._order({"request": request}, before_write)
+            self.assertEqual(before, store.validated_snapshot())
+            # Cancel after entering the shared write. Commitment still reaches terminal accounting.
+            entered = mcp_server.CancellationToken()
+            original = mcp_server.service.reorder
+
+            def commit_then_cancel(
+                selected_store: WorkStore,
+                expected: tuple[ItemId, ...],
+                replacement: tuple[ItemId, ...],
+                task_id: TaskId,
+                host_id: HostId,
+                now: datetime,
+            ) -> CommittedEffect | DecisionFailure:
+                result = original(selected_store, expected, replacement, task_id, host_id, now)
+                entered.cancel()
+                return result
+
+            with patch.object(mcp_server.service, "reorder", commit_then_cancel):
+                committed = mcp_server._order({"request": request}, entered).content
+            contracts.validate_result(mcp_server.ORDER_TOOL, committed)
+            self.assertEqual(
+                ("committed", ["ledger"], "do-not-retry"),
+                (committed["status"], committed["changed_surfaces"], committed["retry"]),
+            )
+            fresh = SQLiteWorkStore(roots.database_path)
+            after = fresh.validated_snapshot()
+            self.assertEqual(
+                requested,
+                tuple(
+                    item.item_id
+                    for item in queries.project_current_overview(
+                        fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW
+                    ).items
+                ),
+            )
+            self.assertEqual(before.authority, after.authority)
+            self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
+            self.assertEqual(before.lifecycle.dependencies, after.lifecycle.dependencies)
+            self.assertEqual(before.lifecycle.definition_revisions, after.lifecycle.definition_revisions)
+            receipt = after.transition_receipts[-1]
+            self.assertEqual(
+                ("priority-owner", "priority-host", committed["history_id"]),
+                (receipt.actor_task_id, receipt.actor_host_id, int(receipt.history_id)),
+            )
+            stale = mcp_server._order({"request": request}, mcp_server.CancellationToken()).content
+            self.assertEqual("ACTION_NOT_AVAILABLE", stale["code"])
+            self.assertEqual(after, fresh.validated_snapshot())
+            request["order"] = {
+                "schema": "pinboard-live-order/v1",
+                "expected_order": list[contracts.JsonValue](requested),
+                "requested_order": list[contracts.JsonValue](requested[:-1]),
+            }
+            invalid = mcp_server._order({"request": request}, mcp_server.CancellationToken()).content
+            self.assertEqual("TRANSITION_INPUT_INVALID", invalid["code"])
+            contracts.validate_result(mcp_server.ORDER_TOOL, invalid)
+            self.assertEqual(after, fresh.validated_snapshot())
+            request["order"] = {
+                "schema": "pinboard-live-order/v1",
+                "expected_order": list[contracts.JsonValue](requested),
+                "requested_order": list[contracts.JsonValue](requested),
+            }
+            # Matching fresh order is identical before and after a no-op: it cannot prove our commit.
+            prior_overview = queries.project_current_overview(fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW)
+            with patch(
+                "pinboard.adapters.files.views.atomic_replace",
+                side_effect=FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, "injected view failure"),
+            ):
+                warning = mcp_server._order({"request": request}, mcp_server.CancellationToken()).content
+            contracts.validate_result(mcp_server.ORDER_TOOL, warning)
+            self.assertEqual("committed-with-warning", warning["status"])
+            warning_view = msgspec.convert(warning, type=contracts.OrderCommitted)
+            self.assertEqual("current-state-only-not-caller-commit-proof", warning_view.recovery.meaning)
+            self.assertEqual(
+                prior_overview.items,
+                queries.project_current_overview(fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW).items,
+            )
+            self.assertNotEqual(committed["history_id"], warning["history_id"])
+            assert warning_view.warning is not None
+            self.assertIn(str(roots.work_root), warning_view.warning.recovery)
+
+    def test_order_warning_repairs_views_without_replaying_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary).resolve()
+            subprocess.run(("git", "init", "--quiet", str(project)), check=True)
+            roots = resolve_durable_roots(project)
+            initialize_database(roots, SQLITE_NOW)
+            with patch(
+                "pinboard.adapters.files.views.atomic_replace",
+                side_effect=FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, "injected view failure"),
+            ):
+                result = mcp_server._order(
+                    {
+                        "request": {
+                            "project_root": str(project),
+                            "work_root": str(roots.work_root),
+                            "actor_task_id": "repair-owner",
+                            "actor_host_id": "local",
+                            "order": {"schema": "pinboard-live-order/v1", "expected_order": [], "requested_order": []},
+                        }
+                    },
+                    mcp_server.CancellationToken(),
+                ).content
+            view = msgspec.convert(result, type=contracts.OrderCommitted)
+            self.assertEqual("committed-with-warning", view.status)
+            assert view.warning is not None
+            store = SQLiteWorkStore(roots.database_path)
+            committed_state = store.validated_snapshot()
+            repaired = subprocess.run(
+                (sys.executable, "-m", "pinboard", *shlex.split(view.warning.recovery)[1:]),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, repaired.returncode, repaired.stderr)
+            self.assertEqual(committed_state, store.validated_snapshot())
+            self.assertTrue((roots.work_root / "views/history" / f"{view.history_id}.md").is_file())
+
+    def test_parallel_preview_keeps_focused_scope_wire_shape_and_fixed_time_exclusions(self) -> None:
+        with patch("tests.test_mcp.datetime") as seed_clock:
+            seed_clock.now.return_value = SQLITE_NOW
+            temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        store = SQLiteWorkStore(roots.database_path)
+        before = store.validated_snapshot()
+        root_arguments: dict[str, contracts.JsonValue] = {
+            "project_root": str(project),
+            "work_root": str(roots.work_root),
+        }
+        with patch.object(mcp_server, "datetime") as clock:
+            clock.now.return_value = SQLITE_NOW
+            with (
+                patch.object(
+                    SQLiteWorkStore,
+                    "read_current_parallel_snapshot",
+                    side_effect=AssertionError("selected read portfolio"),
+                ),
+                patch(
+                    "pinboard.adapters.sqlite.state.read_state",
+                    side_effect=AssertionError("selected read complete state"),
+                ),
+            ):
+                for item_id, code in (
+                    ("work-c", None),
+                    ("intake-work", "state-not-launchable"),
+                    ("zz-proposal-a", "state-not-launchable"),
+                    ("work-a", "dependency-live"),
+                ):
+                    with self.subTest(item=item_id):
+                        result = mcp_server._parallel_preview(
+                            {"request": {**root_arguments, "selection": "selected", "item_ids": [item_id]}},
+                            mcp_server.CancellationToken(),
+                        ).content
+                        contracts.validate_result(mcp_server.PARALLEL_PREVIEW_TOOL, result)
+                        preview = queries.select_parallel_preview(store, selected=(item_id,), now=SQLITE_NOW)
+                        assert isinstance(preview, query_models.ParallelPreview)
+                        self.assertEqual(
+                            msgspec.to_builtins(queries.present_parallel_preview(preview)),
+                            {
+                                key: result[key]
+                                for key in ("schema", "revision", "selection", "safe", "launchable", "excluded")
+                            },
+                        )
+                        self.assertEqual(code is None, result["safe"])
+                        if code is not None:
+                            view = msgspec.convert(result, type=contracts.ParallelPreviewSuccess)
+                            self.assertEqual(code, view.excluded[0].reasons[0].code.value)
+                for item_id in ("missing-item", "work-b"):
+                    rejected = mcp_server._parallel_preview(
+                        {"request": {**root_arguments, "selection": "selected", "item_ids": [item_id]}},
+                        mcp_server.CancellationToken(),
+                    ).content
+                    self.assertEqual("PARALLEL_SELECTION_INVALID", rejected["code"])
+                    contracts.validate_result(mcp_server.PARALLEL_PREVIEW_TOOL, rejected)
+            clock.now.return_value = SQLITE_NOW + timedelta(minutes=5)
+            expired = mcp_server._parallel_preview(
+                {"request": {**root_arguments, "selection": "selected", "item_ids": ["work-a"]}},
+                mcp_server.CancellationToken(),
+            ).content
+            self.assertFalse(expired["safe"])
+            with (
+                patch.object(
+                    SQLiteWorkStore,
+                    "read_parallel_preview",
+                    side_effect=AssertionError("all-safe used selected reader"),
+                ),
+                patch(
+                    "pinboard.adapters.sqlite.state.read_state",
+                    side_effect=AssertionError("all-safe read retained state"),
+                ),
+                patch(
+                    "pinboard.adapters.sqlite.decision_reads._read_selected_proposal",
+                    side_effect=AssertionError("all-safe read proposal bodies"),
+                ),
+            ):
+                all_safe = mcp_server._parallel_preview(
+                    {"request": {**root_arguments, "selection": "all-safe"}}, mcp_server.CancellationToken()
+                ).content
+            self.assertTrue(all_safe["safe"])
+            all_safe_view = msgspec.convert(all_safe, type=contracts.ParallelPreviewSuccess)
+            self.assertEqual(("work-c",), tuple(item.item_id for item in all_safe_view.launchable))
+            self.assertEqual(before, store.validated_snapshot())
+
+    def test_parallel_preview_preserves_independent_precedence_and_expiry(self) -> None:
+        with patch("tests.test_mcp.datetime") as seed_clock:
+            seed_clock.now.return_value = SQLITE_NOW
+            temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        facts = SQLiteWorkStore(roots.database_path).read_parallel_preview((ItemId("work-c"),))
+        assert facts is not None
+        ready = facts.items[0]
+        live_preparation = query_models.ParallelPreparationFacts(
+            authority_models.PreparationLeaseStatus.ACTIVE, SQLITE_NOW + timedelta(minutes=5)
+        )
+        owned_attempt = query_models.ParallelAttemptFacts(
+            AttemptId("work-c-1"),
+            work_models.AttemptState.ACTIVE,
+            authority_models.AttemptLeaseStatus.ACTIVE,
+            SQLITE_NOW + timedelta(minutes=5),
+        )
+        cases = (
+            (
+                replace(
+                    ready,
+                    state=work_models.WorkState.INTAKE,
+                    preparation=live_preparation,
+                    live_dependencies=(ItemId("work-a"),),
+                ),
+                query_models.ParallelReasonCode.STATE_NOT_LAUNCHABLE,
+            ),
+            (
+                replace(ready, preparation=live_preparation, live_dependencies=(ItemId("work-a"),)),
+                query_models.ParallelReasonCode.PREPARATION_OWNED,
+            ),
+            (
+                replace(
+                    ready,
+                    preparation=replace(live_preparation, expires_at=SQLITE_NOW),
+                    live_dependencies=(ItemId("work-a"),),
+                ),
+                query_models.ParallelReasonCode.DEPENDENCY_LIVE,
+            ),
+            (
+                replace(ready, state=work_models.WorkState.ACTIVE, attempt=owned_attempt),
+                query_models.ParallelReasonCode.ATTEMPT_OWNED,
+            ),
+            (
+                replace(
+                    ready,
+                    state=work_models.WorkState.ACTIVE,
+                    attempt=replace(owned_attempt, authority_expires_at=SQLITE_NOW),
+                ),
+                None,
+            ),
+            (
+                replace(
+                    ready,
+                    preparation=replace(live_preparation, status=authority_models.PreparationLeaseStatus.RELEASED),
+                ),
+                None,
+            ),
+        )
+        request: dict[str, contracts.JsonValue] = {
+            "request": {
+                "project_root": str(project),
+                "work_root": str(roots.work_root),
+                "selection": "selected",
+                "item_ids": ["work-c"],
+            }
+        }
+        with patch.object(mcp_server, "datetime") as clock:
+            clock.now.return_value = SQLITE_NOW
+            for item, reason in cases:
+                with (
+                    self.subTest(reason=reason),
+                    patch.object(SQLiteWorkStore, "read_parallel_preview", return_value=replace(facts, items=(item,))),
+                ):
+                    view = msgspec.convert(
+                        mcp_server._parallel_preview(request, mcp_server.CancellationToken()).content,
+                        type=contracts.ParallelPreviewSuccess,
+                    )
+                    self.assertEqual(reason is None, view.safe)
+                    self.assertEqual(
+                        () if reason is None else (reason,),
+                        tuple(value.code for excluded in view.excluded for value in excluded.reasons),
+                    )
+
+    def test_order_competing_workers_and_empty_board_preserve_receipts(self) -> None:
+        with patch("tests.test_mcp.datetime") as seed_clock:
+            seed_clock.now.return_value = SQLITE_NOW
+            temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        store = SQLiteWorkStore(roots.database_path)
+        current = tuple(
+            item.item_id
+            for item in queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW).items
+        )
+        executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=2)
+        self.addCleanup(executor.shutdown)
+        locked, contender_started = threading.Event(), threading.Event()
+        original = mcp_server.service.decide_order
+
+        def controlled_decision(
+            observed: tuple[ItemId, ...], expected: tuple[ItemId, ...], requested: tuple[ItemId, ...]
+        ) -> DecisionResult[ordering.OrderChange]:
+            if requested == current[::-1]:
+                locked.set()
+                if not contender_started.wait(2):
+                    raise AssertionError("Contender did not start while the winner owned the write lock")
+            return original(observed, expected, requested)
+
+        def request_for(requested: tuple[str, ...]) -> dict[str, contracts.JsonValue]:
+            return {
+                "request": {
+                    "project_root": str(project),
+                    "work_root": str(roots.work_root),
+                    "actor_task_id": "owner",
+                    "actor_host_id": "local",
+                    "order": {
+                        "schema": "pinboard-live-order/v1",
+                        "expected_order": list[contracts.JsonValue](current),
+                        "requested_order": list[contracts.JsonValue](requested),
+                    },
+                }
+            }
+
+        def contender(token: mcp_server.CancellationToken) -> mcp_server.OperationResult:
+            contender_started.set()
+            return mcp_server._order(request_for((*current[1:], current[0])), token)
+
+        async def scenario() -> None:
+            winner = executor.submit(lambda token: mcp_server._order(request_for(current[::-1]), token))
+            await _wait_for(locked)
+            loser = executor.submit(contender)
+            results = await asyncio.gather(winner.result(), loser.result())
+            self.assertEqual(("committed", "rejected"), tuple(result.content["status"] for result in results))
+            self.assertEqual("ACTION_NOT_AVAILABLE", results[1].content["code"])
+
+        with (
+            patch.object(mcp_server.service, "decide_order", controlled_decision),
+            patch.object(mcp_server, "datetime") as clock,
+        ):
+            clock.now.return_value = SQLITE_NOW
+            _run_async(scenario())
+            empty = project / "empty"
+            empty.mkdir()
+            subprocess.run(("git", "init", "--quiet", str(empty)), check=True)
+            empty_roots = resolve_durable_roots(empty)
+            initialize_database(empty_roots, SQLITE_NOW)
+            result = mcp_server._order(
+                {
+                    "request": {
+                        "project_root": str(empty),
+                        "work_root": str(empty_roots.work_root),
+                        "actor_task_id": "empty-owner",
+                        "actor_host_id": "other-host",
+                        "order": {"schema": "pinboard-live-order/v1", "expected_order": [], "requested_order": []},
+                    }
+                },
+                mcp_server.CancellationToken(),
+            ).content
+            committed = msgspec.convert(result, type=contracts.OrderCommitted)
+            fresh = SQLiteWorkStore(empty_roots.database_path).validated_snapshot()
+            self.assertEqual((), committed.order)
+            self.assertEqual(
+                ("empty-owner", committed.history_id),
+                (fresh.transition_receipts[-1].actor_task_id, int(fresh.transition_receipts[-1].history_id)),
+            )
+            original_state = store.validated_snapshot()
+            self.assertEqual(
+                current[::-1],
+                tuple(
+                    item.item_id
+                    for item in queries.project_current_overview(
+                        store.read_project_overview(SQLITE_NOW), SQLITE_NOW
+                    ).items
+                ),
+            )
+            self.assertEqual(2, len(original_state.transition_receipts))
+
     def test_negotiated_tools_have_native_compatible_roots_and_wrapped_reads(self) -> None:
         executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
@@ -183,7 +651,7 @@ class McpTransportTest(unittest.TestCase):
 
         async def scenario() -> None:
             tools = await server.list_tools()
-            self.assertEqual(16, len(tools))
+            self.assertEqual(18, len(tools))
             for tool in tools:
                 with self.subTest(tool=tool.name):
                     self.assertEqual("object", tool.input_schema["type"])
@@ -3341,6 +3809,8 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.BRIEF_REVIEW_TOOL,
                 mcp_server.BRIEF_CONTRACT_TOOL,
                 mcp_server.BRIEF_SOURCES_TOOL,
+                mcp_server.ORDER_TOOL,
+                mcp_server.PARALLEL_PREVIEW_TOOL,
             },
             {tool.name for tool in tools},
         )

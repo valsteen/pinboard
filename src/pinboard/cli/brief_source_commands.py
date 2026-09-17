@@ -1,89 +1,18 @@
 """Plan, persist, or emit deterministic reviewed-authority source batches.
 
-This command owner reads the selected manifest and writes its requested stdout
-representation or exact immutable plan destination. Source selection remains
-in ``brief_sources``; this module owns the exact presentation conversion and
-command branching.
+This command owner acquires selected files and presents stdout or an explicit
+immutable destination. Application owners retain selection and plan codecs.
 """
 
-import hashlib
 import sys
 from functools import partial
 from typing import assert_never
 
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.file_io import create_immutable
-from pinboard.application import brief_source_models, brief_sources
+from pinboard.application import brief_source_codec, brief_sources
 from pinboard.application.brief_source_models import BriefSourceErrorCode, BriefSourceFailure, BriefSourceResult
 from pinboard.cli import cli_commands, cli_output
-
-
-def _project_brief_source_segment(
-    segment: brief_source_models.BriefSourceSegment,
-) -> brief_source_models.BriefSourceSegmentView:
-    return brief_source_models.BriefSourceSegmentView(
-        segment.authority_id,
-        segment.selector,
-        segment.index,
-        segment.start_line,
-        segment.end_line,
-        segment.content_byte_count,
-        segment.content_sha256,
-        segment.ends_with_newline,
-    )
-
-
-def _project_brief_source(source: brief_source_models.PlannedBriefSource) -> brief_source_models.BriefSourceView:
-    return brief_source_models.BriefSourceView(
-        source.authority_id,
-        source.selector,
-        source.families,
-        source.selected_sha256,
-        source.selected_byte_count,
-        source.start_line,
-        source.end_line,
-        source.whole_file,
-        tuple(_project_brief_source_segment(segment) for segment in source.segments),
-    )
-
-
-def _project_brief_source_batch(
-    batch: brief_source_models.BriefSourceBatch,
-) -> brief_source_models.BriefSourceBatchView:
-    return brief_source_models.BriefSourceBatchView(
-        batch.index,
-        batch.content_byte_count,
-        batch.estimated_rendered_byte_count,
-        tuple(_project_brief_source_segment(segment) for segment in batch.segments),
-    )
-
-
-def _project_brief_source_plan(plan: brief_source_models.BriefSourcePlan) -> brief_source_models.BriefSourcePlanView:
-    return brief_source_models.BriefSourcePlanView(
-        plan.schema,
-        plan.manifest_sha256,
-        plan.max_batch_bytes,
-        tuple(_project_brief_source(source) for source in plan.sources),
-        tuple(_project_brief_source_batch(batch) for batch in plan.batches),
-    )
-
-
-def _plan_output_receipt(
-    destination: str,
-    created: bool,
-    plan_bytes: bytes,
-    source_plan: brief_source_models.BriefSourcePlan,
-) -> brief_source_models.BriefSourcePlanOutputReceipt:
-    return brief_source_models.BriefSourcePlanOutputReceipt(
-        "pinboard-brief-source-plan-output/v1",
-        destination,
-        created,
-        hashlib.sha256(plan_bytes).hexdigest(),
-        len(plan_bytes),
-        len(source_plan.sources),
-        len(source_plan.batches),
-        sum(source.selected_byte_count for source in source_plan.sources),
-    )
 
 
 def plan_or_emit_brief_sources(
@@ -116,13 +45,15 @@ def plan_or_emit_brief_sources(
             )
             if isinstance(source_plan, BriefSourceFailure):
                 return source_plan
-            plan_bytes = cli_output.render_json(_project_brief_source_plan(source_plan))
+            plan_bytes = brief_source_codec.encode_brief_source_plan(source_plan)
             if isinstance(command, cli_commands.BriefSourcesPlanCommand):
                 sys.stdout.write(plan_bytes.decode())
             else:
                 destination = command.output_plan.absolute()
                 created = create_immutable(destination, plan_bytes)
-                cli_output.write_json(_plan_output_receipt(str(destination), created, plan_bytes, source_plan))
+                cli_output.write_json(
+                    brief_source_codec.plan_output_receipt(str(destination), created, plan_bytes, source_plan)
+                )
         case cli_commands.BriefSourcesEmitCommand(plan=plan_path, emit_batch=batch_index):
             try:
                 plan_bytes = plan_path.read_bytes()
@@ -131,7 +62,7 @@ def plan_or_emit_brief_sources(
                     BriefSourceErrorCode.PLAN_INVALID,
                     f"Cannot read brief source plan '{plan_path}': {error}",
                 )
-            source_plan = brief_sources.decode_brief_source_plan(plan_bytes)
+            source_plan = brief_source_codec.decode_brief_source_plan(plan_bytes)
             if isinstance(source_plan, BriefSourceFailure):
                 return source_plan
             rendered_batch = brief_sources.render_brief_source_batch(

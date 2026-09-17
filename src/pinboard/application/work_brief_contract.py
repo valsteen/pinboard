@@ -1,4 +1,4 @@
-"""Machine-readable construction contract for strict work briefs."""
+"""Transport-neutral construction contract for strict work briefs; no effects or project facts."""
 
 from typing import Literal
 

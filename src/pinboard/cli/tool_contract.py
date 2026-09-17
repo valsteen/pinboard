@@ -14,12 +14,12 @@ from pinboard.application import (
     brief_source_models,
     dispatch_models,
     proposal_models,
+    work_brief_contract,
     work_brief_models,
 )
 from pinboard.cli import (
     cli_commands,
     cli_parser,
-    work_brief_contract,
 )
 from pinboard.cli.cli_output import write_json
 from pinboard.cli.errors import CommandFailure, CommandResult

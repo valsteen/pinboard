@@ -3,8 +3,8 @@ import unittest
 import msgspec
 
 from pinboard.application import work_brief_models
+from pinboard.application.work_brief_contract import WorkBriefStructuralChoice, describe_work_brief_contract
 from pinboard.application.work_briefs import decode_work_brief
-from pinboard.cli.work_brief_contract import WorkBriefStructuralChoice, describe_work_brief_contract
 from tests.work_brief_support import example_work_brief, work_c_brief
 
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None

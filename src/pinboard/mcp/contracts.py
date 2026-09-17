@@ -5,7 +5,15 @@ from typing import Annotated, Any, Literal, assert_never  # noqa: TID251 - valid
 import msgspec
 
 from pinboard.adapters import dispatch_operations, review_operations
-from pinboard.application import action_models, dispatch_models, proposal_models, query_models, work_brief_models
+from pinboard.application import (
+    action_models,
+    brief_source_models,
+    dispatch_models,
+    proposal_models,
+    query_models,
+    work_brief_contract,
+    work_brief_models,
+)
 from pinboard.domain import authority_models, decision_models
 from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
 
@@ -77,6 +85,160 @@ class BriefPublishRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 class OverviewRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     project_root: RootPath
     work_root: RootPath
+
+
+class BriefContractFullRequest(
+    msgspec.Struct, tag="full", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+
+
+class BriefContractStarterRequest(
+    msgspec.Struct, tag="starter", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    boundary: Literal["local", "cross-boundary"]
+
+
+class BriefContractEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: BriefContractFullRequest | BriefContractStarterRequest
+
+
+class BriefSourcesPlanRequest(
+    msgspec.Struct, tag="plan", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    manifest: brief_source_models.BriefSourceManifest
+    max_batch_bytes: PositiveInt
+
+
+class BriefSourcesPlanToFileRequest(
+    msgspec.Struct, tag="plan-to-file", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    manifest: brief_source_models.BriefSourceManifest
+    max_batch_bytes: PositiveInt
+    destination: RootPath
+
+
+class BriefSourcesEmitRequest(
+    msgspec.Struct, tag="emit", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    plan: brief_source_models.BriefSourcePlanView
+    batch_index: NonNegativeInt
+
+
+class BriefSourcesEmitFileRequest(
+    msgspec.Struct, tag="emit-file", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    plan_path: RootPath
+    batch_index: NonNegativeInt
+
+
+class BriefSourcesEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: (
+        BriefSourcesPlanRequest | BriefSourcesPlanToFileRequest | BriefSourcesEmitRequest | BriefSourcesEmitFileRequest
+    )
+
+
+class BriefContractRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-brief-contract-result/v1"]
+    status: Literal["rejected"]
+    code: Literal["BRIEF_CONTRACT_REQUEST_INVALID"]
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["correct-input"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class BriefSourcesRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-brief-sources-result/v1"]
+    status: Literal["rejected"]
+    code: Literal[
+        "BRIEF_SOURCES_REQUEST_INVALID",
+        "BRIEF_SOURCE_BATCH_NOT_FOUND",
+        "BRIEF_SOURCE_LINE_TOO_LARGE",
+        "BRIEF_SOURCE_MANIFEST_INVALID",
+        "BRIEF_SOURCE_PLAN_INVALID",
+        "BRIEF_SOURCE_SELECTOR_INVALID",
+        "BRIEF_SOURCE_SELECTOR_OVERLAP",
+        "BRIEF_SOURCE_NOT_UTF8",
+        "BRIEF_SOURCE_CHANGED",
+        "BRIEF_SOURCE_UNREADABLE",
+        "DIRECTORY_CREATE_FAILED",
+        "DIRECTORY_INVALID",
+        "DIRECTORY_SYNC_FAILED",
+        "DIRECTORY_VERIFY_FAILED",
+        "FILE_ALREADY_EXISTS",
+        "FILE_PUBLISH_FAILED",
+        "PROJECT_GIT_CHECKOUT_UNAVAILABLE",
+        "PROJECT_GIT_EXCLUDE_UNAVAILABLE",
+        "PROJECT_GIT_LAYOUT_UNSUPPORTED",
+        "PROJECT_GIT_ROOT_UNAVAILABLE",
+    ]
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["correct-input"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class BriefSourceBatchResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-brief-source-batch/v1"]
+    batch_index: NonNegativeInt
+    content_byte_count: NonNegativeInt
+    rendered_byte_count: PositiveInt
+    text: NonEmptyText
+
+    def __post_init__(self) -> None:
+        if len(self.text.encode("utf-8")) != self.rendered_byte_count:
+            raise ValueError("rendered_byte_count must equal the UTF-8 batch text size")
+
+
+class BriefSourcePlanOutputResult(brief_source_models.BriefSourcePlanOutputReceipt, frozen=True):
+    state_changed: bool
+    effect: Literal["committed", "unchanged"]
+    retry: Literal["do-not-retry", "safe-to-repeat"]
+    changed_surfaces: tuple[Literal["selected-output"], ...]
+
+    def __post_init__(self) -> None:
+        expected = (
+            (True, "committed", "do-not-retry", ("selected-output",))
+            if self.created
+            else (False, "unchanged", "safe-to-repeat", ())
+        )
+        if (self.state_changed, self.effect, self.retry, self.changed_surfaces) != expected:
+            raise ValueError("plan output aftermath must agree with created disposition")
+
+
+class BriefSourcesPublishedFailure(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-brief-sources-result/v1"]
+    status: Literal["committed-effect"]
+    code: Literal["DIRECTORY_SYNC_FAILED"]
+    message: NonEmptyText
+    destination: RootPath
+    state_changed: bool
+    effect: Literal["committed"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: tuple[Literal["selected-output"]]
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, True)
 
 
 class ItemDefinitionCurrentRequest(
@@ -2017,7 +2179,9 @@ TRANSITION_RESULT_TYPES = (
     ExecutorBusyResult,
 )
 type RequestBoundary = (
-    type[ItemStatusRequest]
+    type[BriefContractEnvelope]
+    | type[BriefSourcesEnvelope]
+    | type[ItemStatusRequest]
     | type[ProposalCreateRequest]
     | type[BriefPublishRequest]
     | type[OverviewRequest]
@@ -2032,7 +2196,15 @@ type RequestBoundary = (
     | type[BriefReviewEnvelope]
 )
 type ResultBoundary = (
-    type[query_models.ItemStatus]
+    type[work_brief_contract.WorkBriefContract]
+    | type[work_brief_contract.WorkBriefStarterContract]
+    | type[BriefContractRejected]
+    | type[brief_source_models.BriefSourcePlanView]
+    | type[BriefSourcePlanOutputResult]
+    | type[BriefSourceBatchResult]
+    | type[BriefSourcesRejected]
+    | type[BriefSourcesPublishedFailure]
+    | type[query_models.ItemStatus]
     | type[ItemStatusInvalid]
     | type[ItemStatusUnavailable]
     | type[ItemStatusInconsistent]
@@ -2544,8 +2716,53 @@ def union_schema_for(boundary_types: tuple[ResultBoundary, ...]) -> dict[str, Js
     return {"type": "object", "anyOf": list[JsonSchemaValue](schemas), "$defs": definitions}
 
 
+BRIEF_CONTRACT_RESULT_TYPES = (
+    work_brief_contract.WorkBriefContract,
+    work_brief_contract.WorkBriefStarterContract,
+    BriefContractRejected,
+    ExecutorBusyResult,
+)
+BRIEF_SOURCES_RESULT_TYPES = (
+    brief_source_models.BriefSourcePlanView,
+    BriefSourcePlanOutputResult,
+    BriefSourceBatchResult,
+    BriefSourcesRejected,
+    BriefSourcesPublishedFailure,
+    ExecutorBusyResult,
+)
+
+
+def validate_brief_preparation_result(content: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Decode Raw-bearing construction outputs exactly; structured requests never take this route."""
+    match content.get("schema"):
+        case "pinboard-work-brief-contract/v1":
+            msgspec.json.decode(msgspec.json.encode(content), type=work_brief_contract.WorkBriefContract)
+        case "pinboard-work-brief-starter/v1":
+            msgspec.json.decode(msgspec.json.encode(content), type=work_brief_contract.WorkBriefStarterContract)
+        case "pinboard-brief-source-plan/v1":
+            msgspec.convert(content, type=brief_source_models.BriefSourcePlanView, strict=True)
+        case "pinboard-brief-source-plan-output/v1":
+            msgspec.convert(content, type=BriefSourcePlanOutputResult, strict=True)
+        case "pinboard-brief-source-batch/v1":
+            msgspec.convert(content, type=BriefSourceBatchResult, strict=True)
+        case "pinboard-mcp-brief-contract-result/v1":
+            msgspec.convert(content, type=BriefContractRejected, strict=True)
+        case "pinboard-mcp-brief-sources-result/v1":
+            if content.get("status") == "committed-effect":
+                msgspec.convert(content, type=BriefSourcesPublishedFailure, strict=True)
+            else:
+                msgspec.convert(content, type=BriefSourcesRejected, strict=True)
+        case "pinboard-mcp-execution-result/v1":
+            msgspec.convert(content, type=ExecutorBusyResult, strict=True)
+        case unexpected:
+            raise ValueError(f"Unsupported brief preparation result schema: {unexpected}")
+    return content
+
+
 def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, JsonValue]:  # noqa: C901, PLR0912, PLR0915
     """Validate one emitted result against the exact alternative it claims."""
+    if tool_name in {"pinboard_brief_contract", "pinboard_brief_sources"}:
+        return validate_brief_preparation_result(content)
     schema = content.get("schema")
     status = content.get("status")
     code = content.get("code")

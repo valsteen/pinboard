@@ -59,44 +59,48 @@
       }
     },
     {
+      "certification": {
+        "reviewer_task_id": "01a0ae63-4587-7c81-b0ea-670645213ac4",
+        "reviewed_pair_sha256": "4d7689adfdbaf7d164de8a07584aeadb796bcee49a103bb428f992c18c674a2a",
+        "evidence_sha256": "14624adda86e67b7bb4b5b18a9d028582cd510995e972515f5762367987fb887"
+      },
       "identity": {
-        "id": "cli-route-and-mcp-effect",
         "format": "python",
-        "tokens": 84,
+        "id": "cli-route-and-mcp-effect",
         "lines": 14,
         "occurrences": [
           {
             "endpoint": {
+              "end": 712,
+              "endLoc": {
+                "column": 52,
+                "line": 712,
+                "position": 30581
+              },
               "name": "cli/tool_contract.py",
               "start": 699,
-              "end": 712,
               "startLoc": {
-                "line": 699,
                 "column": 12,
+                "line": 699,
                 "position": 29843
-              },
-              "endLoc": {
-                "line": 712,
-                "column": 52,
-                "position": 30581
               }
             },
             "sha256": "18c9aad898f049e0948b63c418b608e0889b4a43b03541922626d7100c12e958"
           },
           {
             "endpoint": {
-              "name": "mcp/contracts.py",
-              "start": 1179,
-              "end": 1192,
-              "startLoc": {
-                "line": 1179,
-                "column": 12,
-                "position": 43791
-              },
+              "end": 1354,
               "endLoc": {
-                "line": 1192,
                 "column": 52,
-                "position": 44529
+                "line": 1354,
+                "position": 49863
+              },
+              "name": "mcp/contracts.py",
+              "start": 1341,
+              "startLoc": {
+                "column": 12,
+                "line": 1341,
+                "position": 49125
               }
             },
             "sha256": "18c9aad898f049e0948b63c418b608e0889b4a43b03541922626d7100c12e958"
@@ -106,12 +110,8 @@
           "src/pinboard/cli/tool_contract.py#_action_execution_route",
           "src/pinboard/mcp/contracts.py#_committed_transition_surfaces"
         ],
-        "rationale": "CLI classifies the execution route; MCP validates successful action/surface correlation. Complete and checkpoint actions deliberately have different effect sets while they share one CLI route. Sharing this action inventory would couple independent questions or place transport-specific classification in domain/application."
-      },
-      "certification": {
-        "reviewer_task_id": "01a0a1e6-dfa6-77b2-a8d1-e09b4f13e42f",
-        "reviewed_pair_sha256": "5f1d478624964dc9b626183a794d6ba76b2cb13946f17260c570580ea62873b1",
-        "evidence_sha256": "2d428431efca0e114ac3eabcc74f15d2be964d05260c358da9565a867e4969dd"
+        "rationale": "CLI classifies the execution route; MCP validates successful action/surface correlation. Complete and checkpoint actions deliberately have different effect sets while they share one CLI route. Sharing this action inventory would couple independent questions or place transport-specific classification in domain/application.",
+        "tokens": 84
       }
     },
     {
@@ -171,44 +171,48 @@
       }
     },
     {
+      "certification": {
+        "reviewer_task_id": "01a0ae63-4587-7c81-b0ea-670645213ac4",
+        "reviewed_pair_sha256": "f72160de84dd54d50685468d02a1f4735d739326ff546e4cf95d1180be1eaae4",
+        "evidence_sha256": "14624adda86e67b7bb4b5b18a9d028582cd510995e972515f5762367987fb887"
+      },
       "identity": {
-        "id": "authority-revocation-and-rejection",
         "format": "python",
-        "tokens": 69,
+        "id": "authority-revocation-and-rejection",
         "lines": 14,
         "occurrences": [
           {
             "endpoint": {
-              "name": "mcp/server.py",
-              "start": 1903,
-              "end": 1916,
-              "startLoc": {
-                "line": 1903,
-                "column": 46,
-                "position": 76922
-              },
+              "end": 2060,
               "endLoc": {
-                "line": 1916,
                 "column": 25,
-                "position": 77431
+                "line": 2060,
+                "position": 84104
+              },
+              "name": "mcp/server.py",
+              "start": 2047,
+              "startLoc": {
+                "column": 46,
+                "line": 2047,
+                "position": 83595
               }
             },
             "sha256": "544027f2a1fd10aa6b80866ab5635f5ba698ecbd9447ce85750fadc0f7ede331"
           },
           {
             "endpoint": {
-              "name": "mcp/server.py",
-              "start": 2027,
-              "end": 2040,
-              "startLoc": {
-                "line": 2027,
-                "column": 55,
-                "position": 82184
-              },
+              "end": 2184,
               "endLoc": {
-                "line": 2040,
                 "column": 25,
-                "position": 82693
+                "line": 2184,
+                "position": 89366
+              },
+              "name": "mcp/server.py",
+              "start": 2171,
+              "startLoc": {
+                "column": 55,
+                "line": 2171,
+                "position": 88857
               }
             },
             "sha256": "544027f2a1fd10aa6b80866ab5635f5ba698ecbd9447ce85750fadc0f7ede331"
@@ -218,53 +222,53 @@
           "src/pinboard/mcp/server.py#_preparation_authority",
           "src/pinboard/mcp/server.py#_attempt_authority"
         ],
-        "rationale": "Distinct exact request leaves invoke different application operations with nominal ItemId versus AttemptId scope, then render different schema/scope/conflict records. Shared claim and rejection-detail conversion already owns the repeated representation. Further folding requires a cross-family workflow callback or late reclassification of a selected leaf."
-      },
-      "certification": {
-        "reviewer_task_id": "01a0a1e6-dfa6-77b2-a8d1-e09b4f13e42f",
-        "reviewed_pair_sha256": "67d8541cc7f3d0d2895860d8e793dc5866a17c3bf30fe160af18f31f0ed645e0",
-        "evidence_sha256": "2d428431efca0e114ac3eabcc74f15d2be964d05260c358da9565a867e4969dd"
+        "rationale": "Distinct exact request leaves invoke different application operations with nominal ItemId versus AttemptId scope, then render different schema/scope/conflict records. Shared claim and rejection-detail conversion already owns the repeated representation. Further folding requires a cross-family workflow callback or late reclassification of a selected leaf.",
+        "tokens": 69
       }
     },
     {
+      "certification": {
+        "reviewer_task_id": "01a0ae63-4587-7c81-b0ea-670645213ac4",
+        "reviewed_pair_sha256": "e1e5ced6027ffb674c1d07ce30b262f14c7e5bd3cedd95729f0cb3009da56c88",
+        "evidence_sha256": "14624adda86e67b7bb4b5b18a9d028582cd510995e972515f5762367987fb887"
+      },
       "identity": {
-        "id": "authority-rejection-and-view-effect",
         "format": "python",
-        "tokens": 68,
+        "id": "authority-rejection-and-view-effect",
         "lines": 16,
         "occurrences": [
           {
             "endpoint": {
-              "name": "mcp/server.py",
-              "start": 1922,
-              "end": 1937,
-              "startLoc": {
-                "line": 1922,
-                "column": 99,
-                "position": 77796
-              },
+              "end": 2081,
               "endLoc": {
-                "line": 1937,
                 "column": 31,
-                "position": 78223
+                "line": 2081,
+                "position": 84896
+              },
+              "name": "mcp/server.py",
+              "start": 2066,
+              "startLoc": {
+                "column": 99,
+                "line": 2066,
+                "position": 84469
               }
             },
             "sha256": "f8dfc07a511f17dbd45418a675d7504b640244c1f56d8eb88f084b0bf0928f55"
           },
           {
             "endpoint": {
-              "name": "mcp/server.py",
-              "start": 2046,
-              "end": 2061,
-              "startLoc": {
-                "line": 2046,
-                "column": 101,
-                "position": 83062
-              },
+              "end": 2205,
               "endLoc": {
-                "line": 2061,
                 "column": 31,
-                "position": 83489
+                "line": 2205,
+                "position": 90162
+              },
+              "name": "mcp/server.py",
+              "start": 2190,
+              "startLoc": {
+                "column": 101,
+                "line": 2190,
+                "position": 89735
               }
             },
             "sha256": "f8dfc07a511f17dbd45418a675d7504b640244c1f56d8eb88f084b0bf0928f55"
@@ -274,12 +278,8 @@
           "src/pinboard/mcp/server.py#_preparation_authority",
           "src/pinboard/mcp/server.py#_attempt_authority"
         ],
-        "rationale": "Each family reloads its distinct authority conflict after rejection. Successful operations explicitly refresh affected views before rendering the already-consolidated authority claims and committed receipt/warning. Hiding the remaining view effect inside a conversion would make a pure-looking renderer effectful; sharing the whole workflow would couple distinct scope and mutation-result types."
-      },
-      "certification": {
-        "reviewer_task_id": "01a0a1e6-dfa6-77b2-a8d1-e09b4f13e42f",
-        "reviewed_pair_sha256": "35c0b0ffe1e1f81b64e31879b661ace7dbd949090bd708aa48862d024efeb264",
-        "evidence_sha256": "2d428431efca0e114ac3eabcc74f15d2be964d05260c358da9565a867e4969dd"
+        "rationale": "Each family reloads its distinct authority conflict after rejection. Successful operations explicitly refresh affected views before rendering the already-consolidated authority claims and committed receipt/warning. Hiding the remaining view effect inside a conversion would make a pure-looking renderer effectful; sharing the whole workflow would couple distinct scope and mutation-result types.",
+        "tokens": 68
       }
     }
   ]

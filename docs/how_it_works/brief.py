@@ -1,5 +1,4 @@
-from pinboard.application import work_brief_models, work_briefs
-from pinboard.cli import work_brief_contract
+from pinboard.application import work_brief_contract, work_brief_models, work_briefs
 
 from .model import Box, Diagram, Guide, Note, Section
 

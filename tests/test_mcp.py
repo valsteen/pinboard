@@ -183,7 +183,7 @@ class McpTransportTest(unittest.TestCase):
 
         async def scenario() -> None:
             tools = await server.list_tools()
-            self.assertEqual(14, len(tools))
+            self.assertEqual(16, len(tools))
             for tool in tools:
                 with self.subTest(tool=tool.name):
                     self.assertEqual("object", tool.input_schema["type"])
@@ -3339,6 +3339,8 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.REVIEW_JOB_TOOL,
                 mcp_server.ITEM_DEFINITION_TOOL,
                 mcp_server.BRIEF_REVIEW_TOOL,
+                mcp_server.BRIEF_CONTRACT_TOOL,
+                mcp_server.BRIEF_SOURCES_TOOL,
             },
             {tool.name for tool in tools},
         )

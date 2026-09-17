@@ -30,8 +30,9 @@ from pinboard.adapters import (
     review_operations,
 )
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
-from pinboard.adapters.files.errors import ArtifactError
-from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
+from pinboard.adapters.files.brief_sources import select_checkout_brief_source
+from pinboard.adapters.files.errors import ArtifactError, FileIOError, ImmutableFilePublishedError, RootError
+from pinboard.adapters.files.file_io import DurableRoots, create_immutable, resolve_durable_roots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.files.views import refresh_facts
@@ -40,6 +41,9 @@ from pinboard.application import (
     action_models,
     actions,
     authority_operations,
+    brief_source_codec,
+    brief_source_models,
+    brief_sources,
     candidate_snapshots,
     dispatch_models,
     proposal_models,
@@ -48,6 +52,7 @@ from pinboard.application import (
     query_models,
     service,
     stored_state,
+    work_brief_contract,
     work_brief_models,
     work_briefs,
 )
@@ -93,6 +98,8 @@ DISPATCH_TOOL = "pinboard_dispatch"
 REVIEW_JOB_TOOL = "pinboard_review_job"
 ITEM_DEFINITION_TOOL = "pinboard_item_definition"
 BRIEF_REVIEW_TOOL = "pinboard_brief_review"
+BRIEF_CONTRACT_TOOL = "pinboard_brief_contract"
+BRIEF_SOURCES_TOOL = "pinboard_brief_sources"
 THREAD_NAME_PREFIX = "pinboard-mcp-worker"
 
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
@@ -352,6 +359,143 @@ def _resolve_durable(project_root: str, work_root: str) -> DurableRoots:
 
 def compose_store(durable: DurableRoots) -> SQLiteWorkStore:
     return SQLiteWorkStore(durable.database_path)
+
+
+def _brief_preparation_failure(schema: str, code: str, message: str) -> OperationResult:
+    return OperationResult(
+        {
+            "schema": schema,
+            "status": "rejected",
+            "code": code,
+            "message": message,
+            "state_changed": False,
+            "effect": "unchanged",
+            "retry": "correct-input",
+            "changed_surfaces": [],
+        },
+        "rejected",
+        None,
+    )
+
+
+def _brief_contract(raw: dict[str, JsonValue], token: CancellationToken) -> OperationResult:
+    """Construct unresolved contract data without resolving roots, stores or authority."""
+    token.checkpoint()
+    try:
+        request = msgspec.convert(raw, type=contracts.BriefContractEnvelope, strict=True).request
+    except (msgspec.ValidationError, ValueError) as error:
+        return _brief_preparation_failure(
+            "pinboard-mcp-brief-contract-result/v1", "BRIEF_CONTRACT_REQUEST_INVALID", str(error)
+        )
+    match request:
+        case contracts.BriefContractFullRequest():
+            contract = work_brief_contract.describe_work_brief_contract()
+        case contracts.BriefContractStarterRequest():
+            contract = work_brief_contract.describe_work_brief_starter(request.boundary)
+        case _ as unreachable:
+            assert_never(unreachable)
+    # Raw fragments require JSON output decoding, not dictionary conversion.
+    content: dict[str, JsonValue] = msgspec.json.decode(msgspec.json.encode(contract))
+    return OperationResult(content, "read", None)
+
+
+def _publish_source_plan(
+    destination: Path,
+    source_plan: brief_source_models.BriefSourcePlan,
+    token: CancellationToken,
+) -> OperationResult:
+    """Check cancellation before immutable publication; report terminal visibility without a late check."""
+    schema = "pinboard-mcp-brief-sources-result/v1"
+    plan_bytes = brief_source_codec.encode_brief_source_plan(source_plan)
+    token.checkpoint()
+    try:
+        created = create_immutable(destination, plan_bytes)
+    except ImmutableFilePublishedError as error:
+        return OperationResult(
+            {
+                "schema": schema,
+                "status": "committed-effect",
+                "code": error.code.value,
+                "message": str(error),
+                "destination": str(error.path),
+                "state_changed": True,
+                "effect": "committed",
+                "retry": "do-not-retry",
+                "changed_surfaces": ["selected-output"],
+            },
+            "committed-effect",
+            None,
+        )
+    except FileIOError as error:
+        return _brief_preparation_failure(schema, error.code.value, str(error))
+    receipt: dict[str, JsonValue] = msgspec.to_builtins(
+        brief_source_codec.plan_output_receipt(str(destination), created, plan_bytes, source_plan)
+    )
+    receipt.update(
+        {
+            "state_changed": created,
+            "effect": "committed" if created else "unchanged",
+            "retry": "do-not-retry" if created else "safe-to-repeat",
+            "changed_surfaces": ["selected-output"] if created else [],
+        }
+    )
+    return OperationResult(receipt, "committed" if created else "unchanged", None)
+
+
+def _brief_sources(raw: dict[str, JsonValue], token: CancellationToken) -> OperationResult:
+    """Acquire selected-checkout sources and optional explicit output, never durable work state."""
+    schema = "pinboard-mcp-brief-sources-result/v1"
+    token.checkpoint()
+    try:
+        request = msgspec.convert(raw, type=contracts.BriefSourcesEnvelope, strict=True).request
+    except (msgspec.ValidationError, ValueError) as error:
+        return _brief_preparation_failure(schema, "BRIEF_SOURCES_REQUEST_INVALID", str(error))
+    try:
+        source_checkout = resolve_source_checkout_root(Path(request.project_root))
+    except RootError as error:
+        return _brief_preparation_failure(schema, error.code.value, str(error))
+    select_source = partial(select_checkout_brief_source, source_checkout)
+    token.checkpoint()
+    match request:
+        case contracts.BriefSourcesPlanRequest() | contracts.BriefSourcesPlanToFileRequest():
+            source_plan = brief_sources.plan_brief_sources(select_source, request.manifest, request.max_batch_bytes)
+            if isinstance(source_plan, brief_source_models.BriefSourceFailure):
+                return _brief_preparation_failure(schema, source_plan.code.value, source_plan.message)
+            if isinstance(request, contracts.BriefSourcesPlanRequest):
+                content: dict[str, JsonValue] = msgspec.to_builtins(
+                    brief_source_codec.project_brief_source_plan(source_plan)
+                )
+                return OperationResult(content, "read", None)
+            return _publish_source_plan(Path(request.destination).absolute(), source_plan, token)
+        case contracts.BriefSourcesEmitRequest():
+            source_plan = brief_source_codec.plan_from_view(request.plan)
+        case contracts.BriefSourcesEmitFileRequest():
+            try:
+                plan_bytes = Path(request.plan_path).read_bytes()
+            except OSError as error:
+                return _brief_preparation_failure(
+                    schema, "BRIEF_SOURCE_PLAN_INVALID", f"Cannot read brief source plan '{request.plan_path}': {error}"
+                )
+            source_plan = brief_source_codec.decode_brief_source_plan(plan_bytes)
+            if isinstance(source_plan, brief_source_models.BriefSourceFailure):
+                return _brief_preparation_failure(schema, source_plan.code.value, source_plan.message)
+        case _ as unreachable:
+            assert_never(unreachable)
+    token.checkpoint()
+    batch = brief_sources.render_brief_source_batch(select_source, source_plan, request.batch_index)
+    if isinstance(batch, brief_source_models.BriefSourceFailure):
+        return _brief_preparation_failure(schema, batch.code.value, batch.message)
+    return OperationResult(
+        {
+            "schema": "pinboard-brief-source-batch/v1",
+            "batch_index": request.batch_index,
+            "content_byte_count": source_plan.batches[request.batch_index].content_byte_count,
+            "rendered_byte_count": len(batch),
+            "text": batch.decode("utf-8"),
+        },
+        "read",
+        None,
+    )
 
 
 def _read_item_definition(raw: dict[str, JsonValue], token: CancellationToken) -> OperationResult:
@@ -2427,6 +2571,34 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
     request_ids = itertools.count(1)
 
     @server.tool(
+        name=BRIEF_CONTRACT_TOOL,
+        description="Construct the full strict work-brief contract or complete unresolved local/cross-boundary starter; no project facts, readiness or authority are invented.",
+    )
+    async def brief_contract(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            BRIEF_CONTRACT_TOOL,
+            str(request.get("project_root", "")),
+            partial(_brief_contract, {"request": request}),
+        )
+
+    @server.tool(
+        name=BRIEF_SOURCES_TOOL,
+        description="Plan selected-checkout sources, optionally publish an immutable explicit plan, or emit one verified inline/saved-plan batch; never opens ledger or acquires authority.",
+    )
+    async def source_preparation(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            BRIEF_SOURCES_TOOL,
+            str(request.get("project_root", "")),
+            partial(_brief_sources, {"request": request}),
+        )
+
+    @server.tool(
         name=ITEM_DEFINITION_TOOL,
         description="Read one full accepted Pinboard item definition or bounded descending definition history.",
     )
@@ -2662,6 +2834,16 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
 def _install_boundary_contracts(server: MCPServer) -> None:
     """Install exact schemas through the pinned SDK's mutable tool metadata seam."""
     definitions = (
+        (
+            BRIEF_CONTRACT_TOOL,
+            contracts.schema_for(contracts.BriefContractEnvelope),
+            contracts.union_schema_for(contracts.BRIEF_CONTRACT_RESULT_TYPES),
+        ),
+        (
+            BRIEF_SOURCES_TOOL,
+            contracts.schema_for(contracts.BriefSourcesEnvelope),
+            contracts.union_schema_for(contracts.BRIEF_SOURCES_RESULT_TYPES),
+        ),
         (
             ITEM_DEFINITION_TOOL,
             contracts.schema_for(contracts.ItemDefinitionEnvelope),

@@ -365,6 +365,13 @@ class AttemptInspectRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     attempt_id: PathComponent
 
 
+class CandidateRestoreRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    attempt_id: PathComponent
+    candidate: NonEmptyText
+
+
 class ArtifactVerifyRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     project_root: RootPath
     work_root: RootPath
@@ -437,8 +444,28 @@ class PackageCorrectionReviewChoice(ReviewChoiceBase, tag="package-correction", 
     correction_history_id: PositiveInt
 
 
+class PackageInitialRecoveryReviewChoice(
+    ReviewChoiceBase, tag="package-initial-recovery", tag_field="kind", frozen=True
+):
+    checkpoint_history_id: PositiveInt
+    candidate_patch: bytes
+
+
+class PackageCorrectionRecoveryReviewChoice(
+    ReviewChoiceBase, tag="package-correction-recovery", tag_field="kind", frozen=True
+):
+    checkpoint_history_id: PositiveInt
+    correction_history_id: PositiveInt
+    candidate_patch: bytes
+
+
 type ReviewChoice = (
-    InitialReviewChoice | PackageInitialReviewChoice | CorrectionReviewChoice | PackageCorrectionReviewChoice
+    InitialReviewChoice
+    | PackageInitialReviewChoice
+    | CorrectionReviewChoice
+    | PackageCorrectionReviewChoice
+    | PackageInitialRecoveryReviewChoice
+    | PackageCorrectionRecoveryReviewChoice
 )
 
 
@@ -1253,6 +1280,19 @@ class CandidateRecoveryAbsent(msgspec.Struct, tag="absent", tag_field="kind", fr
     pass
 
 
+class CandidateRestoreArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: None
+    work_root: RootPath
+    attempt_id: PathComponent
+    candidate: NonEmptyText
+
+
+class CandidateRestoreInvocation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    tool: Literal["pinboard_candidate_restore"]
+    arguments: CandidateRestoreArguments
+    unresolved_fields: tuple[Literal["project_root"]]
+
+
 class CandidateRecoveryPresent(
     msgspec.Struct, tag="present", tag_field="kind", frozen=True, forbid_unknown_fields=True
 ):
@@ -1264,7 +1304,11 @@ class CandidateRecoveryPresent(
     selector: NonEmptyText
     sha256: Sha256
     size_bytes: PositiveInt
-    restore_command: tuple[NonEmptyText, ...]
+    restore: CandidateRestoreInvocation
+
+    def __post_init__(self) -> None:
+        if self.candidate != self.restore.arguments.candidate:
+            raise ValueError("Recovery must retain its inspected candidate binding.")
 
 
 type CandidateRecovery = CandidateRecoveryAbsent | CandidateRecoveryPresent
@@ -2126,6 +2170,46 @@ class ReviewJobRejected(RejectedReadResult, frozen=True):
     mismatches: tuple[FailureMismatch, ...]
 
 
+class InitialRecoveryTemplate(ReviewChoiceBase, tag="package-initial-recovery", tag_field="kind", frozen=True):
+    checkpoint_history_id: PositiveInt
+    candidate_patch: None
+
+
+class CorrectionRecoveryTemplate(ReviewChoiceBase, tag="package-correction-recovery", tag_field="kind", frozen=True):
+    checkpoint_history_id: PositiveInt
+    correction_history_id: PositiveInt
+    candidate_patch: None
+
+
+class ReviewRecoveryArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    review: InitialRecoveryTemplate | CorrectionRecoveryTemplate
+
+
+class ReviewRecoveryInvocation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    tool: Literal["pinboard_review_job"]
+    arguments: ReviewRecoveryArguments
+    unresolved_fields: tuple[Literal["review.candidate_patch"]]
+    historical_candidate: NonEmptyText
+    expected_patch_sha256: Sha256
+
+
+class ReviewJobCandidateRequired(ReviewJobRejected, frozen=True):
+    recovery: ReviewRecoveryInvocation
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        remedy = self.recovery
+        if (
+            self.code != DecisionFailureCode.ACTION_NOT_AVAILABLE
+            or self.attempt_id != remedy.arguments.review.attempt_id
+        ):
+            raise ValueError("Retained recovery must preserve its rejected attempt and expected missing-evidence code.")
+        if remedy.historical_candidate != f"working-tree-sha256:{remedy.expected_patch_sha256}":
+            raise ValueError("Retained recovery must bind the selected historical patch identity.")
+
+
 class JobFailedAfterPublication(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     status: Literal["failed-after-publication"]
     attempt_id: PathComponent
@@ -2157,7 +2241,11 @@ class DispatchFailedAfterPublication(JobFailedAfterPublication, frozen=True):
 
 class ReviewJobFailedAfterPublication(JobFailedAfterPublication, frozen=True):
     schema: Literal["pinboard-mcp-review-job-result/v1"]
-    code: Literal["ARTIFACT_ACCEPTANCE_FAILED"]
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.code != "ARTIFACT_ACCEPTANCE_FAILED":
+            DecisionFailureCode(self.code)
 
 
 DISPATCH_RESULT_TYPES = (
@@ -2171,7 +2259,71 @@ REVIEW_JOB_RESULT_TYPES = (
     ReviewJobReady,
     ReviewJobInvalid,
     ReviewJobRejected,
+    ReviewJobCandidateRequired,
     ReviewJobFailedAfterPublication,
+    ExecutorBusyResult,
+)
+
+
+class CandidateRestoreReady(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-candidate-restore-result/v1"]
+    status: Literal["restored"]
+    attempt_id: PathComponent
+    candidate: NonEmptyText
+    source_checkout: RootPath
+    state_changed: bool
+    effect: Literal["unchanged", "committed"]
+    retry: Literal["safe-to-repeat", "do-not-retry"]
+    changed_surfaces: Annotated[tuple[Literal["source-checkout"], ...], msgspec.Meta(max_length=1)]
+
+    def __post_init__(self) -> None:
+        changed = bool(self.changed_surfaces)
+        _require_state_changed(self.state_changed, changed)
+        if self.effect != ("committed" if changed else "unchanged") or self.retry != (
+            "do-not-retry" if changed else "safe-to-repeat"
+        ):
+            raise ValueError("Restoration must retain its exact source effect and retry disposition.")
+
+
+class CandidateRestoreInvalid(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-candidate-restore-result/v1"]
+    code: Literal["CANDIDATE_RESTORE_INVALID"]
+    retry: Literal["correct-input"]
+    observed: Empty
+    mismatches: Empty
+
+
+class CandidateRestoreRejected(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-candidate-restore-result/v1"]
+    attempt_id: PathComponent
+    code: DecisionFailureCode
+    retry: RetryDisposition
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+
+class CandidateRestoreFailed(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-candidate-restore-result/v1"]
+    status: Literal["failed-after-mutation"]
+    attempt_id: PathComponent
+    code: DecisionFailureCode
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["committed"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: tuple[Literal["source-checkout"]]
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, True)
+
+
+CANDIDATE_RESTORE_RESULT_TYPES = (
+    CandidateRestoreReady,
+    CandidateRestoreInvalid,
+    CandidateRestoreRejected,
+    CandidateRestoreFailed,
     ExecutorBusyResult,
 )
 
@@ -2276,6 +2428,7 @@ type RequestBoundary = (
     | type[BriefPublishRequest]
     | type[OverviewRequest]
     | type[AttemptInspectRequest]
+    | type[CandidateRestoreRequest]
     | type[ArtifactVerifyRequest]
     | type[DispatchRequest]
     | type[ReviewJobRequest]
@@ -2355,7 +2508,12 @@ type ResultBoundary = (
     | type[ReviewJobReady]
     | type[ReviewJobInvalid]
     | type[ReviewJobRejected]
+    | type[ReviewJobCandidateRequired]
     | type[ReviewJobFailedAfterPublication]
+    | type[CandidateRestoreReady]
+    | type[CandidateRestoreInvalid]
+    | type[CandidateRestoreRejected]
+    | type[CandidateRestoreFailed]
     | type[query_models.ItemDefinition]
     | type[query_models.ItemDefinitionHistory]
     | type[ItemDefinitionRejected]
@@ -2433,6 +2591,7 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
         "TransitionFailedAfterPublication",
         "DispatchFailedAfterPublication",
         "ReviewJobFailedAfterPublication",
+        "CandidateRestoreFailed",
     }
     unchanged_results = {
         "OrderRejected",
@@ -2479,6 +2638,9 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
         "DispatchRejected",
         "ReviewJobInvalid",
         "ReviewJobRejected",
+        "ReviewJobCandidateRequired",
+        "CandidateRestoreInvalid",
+        "CandidateRestoreRejected",
     }
     for name, definition in definitions.items():
         if name not in changed_results | unchanged_results:
@@ -2759,6 +2921,12 @@ def _apply_job_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
         ("accepted-artifact-reference", "ledger"),
         ("immutable-artifact", "accepted-artifact-reference", "ledger"),
     )
+    review_failure = definitions.get("ReviewJobFailedAfterPublication")
+    if isinstance(review_failure, dict) and isinstance(review_properties := review_failure.get("properties"), dict):
+        review_properties["code"] = {
+            "type": "string",
+            "enum": ["ARTIFACT_ACCEPTANCE_FAILED", *(code.value for code in DecisionFailureCode)],
+        }
     for name in (
         "DispatchReady",
         "ReviewJobReady",
@@ -2823,6 +2991,19 @@ def union_schema_for(boundary_types: tuple[ResultBoundary, ...]) -> dict[str, Js
     _apply_relative_action_constraints(definitions)
     _apply_attempt_constraints(definitions)
     _apply_job_constraints(definitions)
+    restore = definitions.get("CandidateRestoreReady")
+    if isinstance(restore, dict):
+        restore["anyOf"] = [
+            {
+                "properties": {
+                    "state_changed": {"const": changed},
+                    "effect": {"const": "committed" if changed else "unchanged"},
+                    "retry": {"const": "do-not-retry" if changed else "safe-to-repeat"},
+                    "changed_surfaces": {"const": list[JsonSchemaValue](("source-checkout",) if changed else ())},
+                }
+            }
+            for changed in (False, True)
+        ]
     return {"type": "object", "anyOf": list[JsonSchemaValue](schemas), "$defs": definitions}
 
 
@@ -2924,8 +3105,20 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
             result_type = ReviewJobFailedAfterPublication
         elif code == "REVIEW_JOB_INVALID":
             result_type = ReviewJobInvalid
+        elif "recovery" in content:
+            result_type = ReviewJobCandidateRequired
         else:
             result_type = ReviewJobRejected
+        msgspec.convert(content, type=result_type, strict=True)
+    elif tool_name == "pinboard_candidate_restore":
+        if status == "restored":
+            result_type = CandidateRestoreReady
+        elif status == "failed-after-mutation":
+            result_type = CandidateRestoreFailed
+        elif code == "CANDIDATE_RESTORE_INVALID":
+            result_type = CandidateRestoreInvalid
+        else:
+            result_type = CandidateRestoreRejected
         msgspec.convert(content, type=result_type, strict=True)
     elif tool_name == "pinboard_transition":
         if status in {"committed", "committed-with-warning"}:

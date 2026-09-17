@@ -2,6 +2,8 @@ import asyncio
 import io
 import json
 import re
+import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -15,15 +17,28 @@ import msgspec
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from pinboard.adapters import dispatch_operations
+from pinboard.adapters import candidate_evidence, dispatch_operations
+from pinboard.adapters.files import root
+from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
+from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import work_brief_models, work_briefs
+from pinboard.application import (
+    candidate_snapshot_compatibility_models,
+    candidate_snapshots,
+    stored_state,
+    work_brief_models,
+    work_briefs,
+)
+from pinboard.application.artifacts import NewArtifact
 from pinboard.application.brief_source_models import BriefSourceFailure, authority_selector
+from pinboard.domain import work_models
+from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import contracts
 from pinboard.mcp import server as mcp_server
 from tests import test_correction_source_review, test_dispatch
-from tests.checkpoint_support import CheckpointPackageSupport
+from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.work_brief_support import CHECKPOINT_ID, ready_review
 
 
@@ -35,12 +50,293 @@ class McpJobsTest(CheckpointPackageSupport):
         )
         try:
             tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
-            for name in ("pinboard_dispatch", "pinboard_review_job"):
+            self.assertEqual(19, len(tools))
+            for name in ("pinboard_dispatch", "pinboard_review_job", "pinboard_candidate_restore"):
                 self.assertIn(name, tuple(tools))
                 self.assertIsNotNone(tools[name].output_schema)
                 self.assertEqual(tools[name].input_schema["additionalProperties"], False)
         finally:
             executor.shutdown()
+
+    def test_native_restore_executes_inspected_snapshot_and_preserves_board_on_real_git(self) -> None:  # noqa: PLR0915 - complete native persisted-snapshot journey
+        for form in ("working-tree", "current-head", "retained-working-tree"):
+            with self.subTest(form=form):
+                fixture = self.checkpoint_fixture(
+                    candidate_form="current-head" if form == "current-head" else "working-tree"
+                )
+                first_inspection = mcp_server._read_attempt_inspection(
+                    str(fixture.project), str(fixture.work), "work-a-1", mcp_server.CancellationToken()
+                )
+                previously_inspected_candidate = str(
+                    self.json_object(first_inspection.content["candidate_recovery"])["candidate"]
+                )
+                payload = fixture.work / "real-submission.json"
+                payload.write_text('{"reason":"Exercise fresh actual submission."}', encoding="utf-8")
+                self.transition_json(
+                    fixture, self.project_action(fixture.common, "return-for-correction:work-a-1"), payload
+                )
+                (fixture.project / "tracked.txt").write_text("fresh candidate\n", encoding="utf-8")
+                candidate = (
+                    self.commit_all(fixture.project, "fresh candidate")
+                    if form == "current-head"
+                    else root.read_working_tree_candidate(fixture.project).identity
+                )
+                lease = self.run_json_cli(
+                    *fixture.common,
+                    "attempt",
+                    "acquire",
+                    "--attempt-id",
+                    "work-a-1",
+                    "--task-id",
+                    "native-restore",
+                    "--host-id",
+                    "local",
+                    "--ttl-seconds",
+                    "300",
+                )
+                selection = self.run_json_cli(
+                    *fixture.common,
+                    "actions",
+                    "--role",
+                    "worker",
+                    "--lease-id",
+                    str(lease["lease_id"]),
+                    "--generation",
+                    str(lease["generation"]),
+                    "--action-id",
+                    "submit-review:work-a-1",
+                )
+                payload.write_text(json.dumps({"candidate": candidate}), encoding="utf-8")
+                self.transition_json(fixture, self.json_object(self.json_array(selection["actions"])[0]), payload)
+                if form == "retained-working-tree":
+                    store = SQLiteWorkStore(fixture.work / "state.sqlite3")
+                    context = store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+                    assert context is not None
+                    current = candidate_snapshots.decode_candidate_snapshot(
+                        (fixture.work / context.reference.selector).read_bytes()
+                    )
+                    candidate = "working-tree-sha256:" + sha256(current.diff).hexdigest()
+                    retained = candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot(
+                        "pinboard-candidate-snapshot/v1",
+                        current.attempt_id,
+                        current.item_id,
+                        candidate,
+                        current.branch,
+                        current.preimage_revision,
+                        current.accepted_base_revision,
+                        current.recorded_at,
+                        current.diff,
+                    )
+                    repository = ArtifactRepository(resolve_durable_roots(fixture.project, fixture.work))
+                    published = repository.publish(
+                        NewArtifact(
+                            work_models.ArtifactKind.EVIDENCE,
+                            candidate_snapshots.candidate_snapshot_key(retained),
+                            1,
+                            ".json",
+                            candidate_snapshots.canonical_candidate_snapshot_bytes(retained),
+                        )
+                    )
+                    accepted = store.accept_artifact_reference(
+                        fixture.work, published.reference, context.receipt.committed_at
+                    )
+                    assert not isinstance(accepted, DecisionFailure)
+                    with sqlite3.connect(fixture.work / "state.sqlite3") as connection:
+                        connection.execute(
+                            "DELETE FROM artifact_refs WHERE artifact_ref_id = ?",
+                            (int(context.reference.artifact_ref_id),),
+                        )
+                        connection.execute(
+                            "UPDATE artifact_refs SET accepted_revision = ? WHERE artifact_ref_id = ?",
+                            (context.reference.accepted_revision, int(accepted.reference.artifact_ref_id)),
+                        )
+                        connection.execute(
+                            "UPDATE attempts SET candidate_revision = ? WHERE attempt_id = 'work-a-1'", (candidate,)
+                        )
+                        connection.execute(
+                            "UPDATE transition_history SET artifact_ref_id = ?, input_schema = ?, "
+                            "input_json = json_set(input_json, '$.candidate', ?, '$.snapshot_artifact_ref_id', ?), "
+                            "outcome_json = json_set(outcome_json, '$.candidate', ?) WHERE history_id = ?",
+                            (
+                                int(accepted.reference.artifact_ref_id),
+                                retained.schema,
+                                candidate,
+                                int(accepted.reference.artifact_ref_id),
+                                candidate,
+                                int(context.receipt.history_id),
+                            ),
+                        )
+                    (fixture.work / context.reference.selector).unlink()
+                    self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+                inspected = mcp_server._read_attempt_inspection(
+                    str(fixture.project), str(fixture.work), "work-a-1", mcp_server.CancellationToken()
+                )
+                recovery = self.json_object(inspected.content["candidate_recovery"])
+                invocation = self.json_object(recovery["restore"])
+                arguments = self.json_object(invocation["arguments"])
+                self.assertIsNone(arguments["project_root"])
+                before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+                evidence = candidate_evidence.read_candidate_evidence(
+                    fixture.work, SQLiteWorkStore(fixture.work / "state.sqlite3"), AttemptId("work-a-1"), candidate
+                )
+                self.assertNotIsInstance(evidence, DecisionFailure)
+                assert not isinstance(evidence, DecisionFailure)
+                target_directory = tempfile.TemporaryDirectory()
+                self.addCleanup(target_directory.cleanup)
+                target = Path(target_directory.name).resolve() / "checkout"
+                clone = Path(target_directory.name).resolve() / "repository" if form == "current-head" else target
+                subprocess.run(
+                    ["git", "clone", "-q", str(fixture.project), str(clone)], check=True, capture_output=True
+                )
+                if form == "current-head":
+                    subprocess.run(["git", "switch", "--detach"], cwd=clone, check=True, capture_output=True)
+                    subprocess.run(
+                        ["git", "worktree", "add", "-q", str(target), fixture.brief.branch],
+                        cwd=clone,
+                        check=True,
+                        capture_output=True,
+                    )
+                    subprocess.run(
+                        ["git", "switch", "-C", fixture.brief.branch, evidence.snapshot.preimage_revision],
+                        cwd=target,
+                        check=True,
+                        capture_output=True,
+                    )
+                self.run_json_cli("--project-root", str(target), "init")
+                other_store = SQLiteWorkStore(clone / ".codex" / "pinboard" / "state.sqlite3")
+                other_before = other_store.validated_snapshot()
+                arguments["project_root"] = str(target)
+
+                async def scenario(
+                    fixture: CheckpointFixture,
+                    invocation: dict[str, contracts.JsonValue],
+                    arguments: dict[str, contracts.JsonValue],
+                    before: stored_state.StoredWorkState,
+                    previously_inspected_candidate: str,
+                ) -> None:
+                    parameters = StdioServerParameters(command=sys.executable, args=("-m", "pinboard.mcp"))
+                    async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
+                        await session.initialize()
+                        stale = await session.call_tool(
+                            str(invocation["tool"]), arguments | {"candidate": previously_inspected_candidate}
+                        )
+                        self.assertFalse(stale.is_error, stale.content)
+                        assert isinstance(stale.structured_content, dict)
+                        self.assertFalse(stale.structured_content["state_changed"])
+                        for changed in (True, False):
+                            result = await session.call_tool(str(invocation["tool"]), arguments)
+                            self.assertFalse(result.is_error, result.content)
+                            assert isinstance(result.structured_content, dict)
+                            self.assertEqual("restored", result.structured_content["status"])
+                            self.assertEqual(changed, result.structured_content["state_changed"])
+                            self.assertEqual(
+                                ["source-checkout"] if changed else [], result.structured_content["changed_surfaces"]
+                            )
+                    self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+
+                asyncio.run(scenario(fixture, invocation, arguments, before, previously_inspected_candidate))
+                self.assertEqual(other_before, other_store.validated_snapshot())
+                self.assertEqual("fresh candidate\n", (target / "tracked.txt").read_text())
+                if form in ("working-tree", "retained-working-tree"):
+                    self.assertIn(
+                        "M  tracked.txt",
+                        subprocess.run(
+                            ["git", "status", "--short"], cwd=target, check=True, capture_output=True, text=True
+                        ).stdout,
+                    )
+                else:
+                    self.assertEqual(candidate, root.observe_checkout_identity(target)[1])
+
+    def test_restore_strict_ingress_terminal_effects_and_entered_cancellation(self) -> None:
+        for invalid in (
+            {"project_root": "", "work_root": "/board", "attempt_id": "a", "candidate": "c"},
+            {"project_root": "/repo", "work_root": "/board", "attempt_id": "../a", "candidate": "c"},
+            {"project_root": "/repo", "work_root": "/board", "attempt_id": "a", "candidate": ""},
+        ):
+            with self.subTest(invalid=invalid), patch.object(mcp_server, "resolve_source_checkout_root") as roots:
+                outcome = mcp_server._candidate_restore(**invalid, token=mcp_server.CancellationToken())
+                self.assertEqual("CANDIDATE_RESTORE_INVALID", outcome.content["code"])
+                roots.assert_not_called()
+        fixture = self.checkpoint_fixture()
+        entered, release = threading.Event(), threading.Event()
+
+        def mutation(*_args: object, **_kwargs: object) -> root.CandidateRestoreSuccess:
+            entered.set()
+            if not release.wait(2):
+                raise AssertionError("Restore was not released")
+            raise root.CandidateRestoreAfterMutationError(
+                root.RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "changed"
+            )
+
+        async def scenario() -> None:
+            executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+            try:
+                execution = executor.submit(
+                    lambda token: mcp_server._candidate_restore(
+                        str(fixture.project), str(fixture.work), "work-a-1", fixture.candidate_revision, token
+                    )
+                )
+                waiter = asyncio.create_task(execution.result())
+                self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+                waiter.cancel()
+                await asyncio.sleep(0)
+                release.set()
+                outcome = await waiter
+                self.assertEqual("failed-after-mutation", outcome.content["status"])
+                self.assertEqual(["source-checkout"], outcome.content["changed_surfaces"])
+                self.assertEqual("do-not-retry", outcome.content["retry"])
+                contracts.validate_result("pinboard_candidate_restore", outcome.content)
+            finally:
+                release.set()
+                executor.shutdown()
+
+        with patch.object(candidate_evidence.root, "restore_working_tree_candidate", side_effect=mutation):
+            asyncio.run(scenario())
+
+    def test_restore_cancellation_before_entry_and_exact_effect_correlation(self) -> None:
+        fixture = self.checkpoint_fixture()
+        for checkpoint in ("before-roots", "after-store"):
+            token = mcp_server.CancellationToken()
+            if checkpoint == "before-roots":
+                token.cancel()
+
+            def store_then_cancel(_roots: object) -> SQLiteWorkStore:
+                token.cancel()  # noqa: B023 - invoked synchronously within this subtest
+                return SQLiteWorkStore(fixture.work / "state.sqlite3")
+
+            with (
+                self.subTest(checkpoint=checkpoint),
+                patch.object(mcp_server, "compose_store", side_effect=store_then_cancel),
+                patch.object(candidate_evidence, "restore_candidate") as restore,
+                self.assertRaises(mcp_server.OperationCancelled),
+            ):
+                mcp_server._candidate_restore(
+                    str(fixture.project), str(fixture.work), "work-a-1", fixture.candidate_revision, token
+                )
+            restore.assert_not_called()
+        valid: dict[str, contracts.JsonValue] = {
+            "schema": "pinboard-mcp-candidate-restore-result/v1",
+            "status": "restored",
+            "attempt_id": "work-a-1",
+            "candidate": fixture.candidate_revision,
+            "source_checkout": str(fixture.project),
+            "state_changed": False,
+            "effect": "unchanged",
+            "retry": "safe-to-repeat",
+            "changed_surfaces": [],
+        }
+        contracts.validate_result("pinboard_candidate_restore", valid)
+        changes: tuple[dict[str, contracts.JsonValue], ...] = (
+            {"state_changed": True},
+            {"effect": "committed"},
+            {"retry": "do-not-retry"},
+            {"changed_surfaces": ["source-checkout"]},
+            {"changed_surfaces": ["ledger"]},
+            {"unexpected": True},
+        )
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(msgspec.ValidationError):
+                contracts.validate_result("pinboard_candidate_restore", valid | change)
 
     def dispatch_fixture(self) -> tuple[Path, Path, dict[str, contracts.JsonValue]]:
         temporary = tempfile.TemporaryDirectory()

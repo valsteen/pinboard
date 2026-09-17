@@ -25,6 +25,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from pinboard import __version__
 from pinboard.adapters import (
+    candidate_evidence,
+    checkpoint_compatibility,
     dispatch_operations,
     lifecycle_artifacts,
     lifecycle_operations,
@@ -91,6 +93,7 @@ BRIEF_PUBLISH_TOOL = "pinboard_brief_publish"
 OVERVIEW_TOOL = "pinboard_overview"
 ACTIONS_TOOL = "pinboard_actions"
 ATTEMPT_INSPECT_TOOL = "pinboard_attempt_inspect"
+CANDIDATE_RESTORE_TOOL = "pinboard_candidate_restore"
 ARTIFACT_VERIFY_TOOL = "pinboard_artifact_verify"
 PREPARATION_AUTHORITY_TOOL = "pinboard_preparation_authority"
 ATTEMPT_AUTHORITY_TOOL = "pinboard_attempt_authority"
@@ -1260,17 +1263,10 @@ def _candidate_recovery_view(
         evidence.reference.selector,
         evidence.reference.content_sha256,
         evidence.reference.size_bytes,
-        (
-            str(Path(sys.executable).with_name("pinboard")),
-            "--project-root",
-            "<exact-clean-checkout>",
-            "--work-root",
-            str(durable.work_root),
-            "candidate",
-            "restore",
-            "--attempt-id",
-            snapshot.attempt_id,
-            "--json",
+        contracts.CandidateRestoreInvocation(
+            CANDIDATE_RESTORE_TOOL,
+            contracts.CandidateRestoreArguments(None, str(durable.work_root), snapshot.attempt_id, snapshot.candidate),
+            ("project_root",),
         ),
     )
 
@@ -2575,11 +2571,11 @@ def _review_job(
     match choice:
         case contracts.InitialReviewChoice():
             checkpoint_history_id, correction_history_id = None, None
-        case contracts.PackageInitialReviewChoice():
+        case contracts.PackageInitialReviewChoice() | contracts.PackageInitialRecoveryReviewChoice():
             checkpoint_history_id, correction_history_id = HistoryId(choice.checkpoint_history_id), None
         case contracts.CorrectionReviewChoice():
             checkpoint_history_id, correction_history_id = None, HistoryId(choice.correction_history_id)
-        case contracts.PackageCorrectionReviewChoice():
+        case contracts.PackageCorrectionReviewChoice() | contracts.PackageCorrectionRecoveryReviewChoice():
             checkpoint_history_id, correction_history_id = (
                 HistoryId(choice.checkpoint_history_id),
                 HistoryId(choice.correction_history_id),
@@ -2590,18 +2586,37 @@ def _review_job(
     token.checkpoint()
     # Cancellation cannot turn an entered publication into an unchanged/replayable result.
     try:
-        prepared = review_operations.prepare_review_job(
-            durable.work_root,
-            store,
-            ArtifactRepository(durable),
-            AttemptId(choice.attempt_id),
-            choice.candidate_revision,
-            checkpoint_history_id,
-            correction_history_id,
-        )
+        if isinstance(
+            choice, (contracts.PackageInitialRecoveryReviewChoice, contracts.PackageCorrectionRecoveryReviewChoice)
+        ):
+            assert checkpoint_history_id is not None
+            prepared = checkpoint_compatibility.prepare_recovered_review_job(
+                durable.work_root,
+                store,
+                ArtifactRepository(durable),
+                AttemptId(choice.attempt_id),
+                choice.candidate_revision,
+                checkpoint_history_id,
+                correction_history_id,
+                choice.candidate_patch,
+            )
+        else:
+            prepared = review_operations.prepare_review_job(
+                durable.work_root,
+                store,
+                ArtifactRepository(durable),
+                AttemptId(choice.attempt_id),
+                choice.candidate_revision,
+                checkpoint_history_id,
+                correction_history_id,
+            )
     except ArtifactAcceptanceAfterPublicationError as error:
         return _job_publication_exception(schema, choice.attempt_id, error)
     if isinstance(prepared, DecisionFailure):
+        if isinstance(prepared, review_operations.CompatibilityCandidateRequired):
+            return _review_candidate_required(
+                source_checkout, durable.work_root, choice, prepared, correction_history_id
+            )
         return _job_failure(schema, choice.attempt_id, prepared.code.value, prepared.message, prepared.details)
     publication = prepared.published_prompt
     recovery = _candidate_recovery_view(durable, prepared.candidate_evidence)
@@ -2637,6 +2652,113 @@ def _review_job(
     return OperationResult(
         content, "committed" if surfaces else "unchanged", str(publication.reference.accepted_revision)
     )
+
+
+def _review_candidate_required(
+    source_checkout: Path,
+    work_root: Path,
+    choice: contracts.ReviewChoice,
+    required: review_operations.CompatibilityCandidateRequired,
+    correction_history_id: HistoryId | None,
+) -> OperationResult:
+    historical = required.package.candidate
+    if not historical.startswith("working-tree-sha256:") or len(historical.removeprefix("working-tree-sha256:")) != 64:
+        return _job_failure(
+            "pinboard-mcp-review-job-result/v1",
+            choice.attempt_id,
+            required.code.value,
+            "Selected historical candidate has no recoverable patch identity.",
+            required.details,
+        )
+    if correction_history_id is None:
+        template = contracts.InitialRecoveryTemplate(
+            choice.attempt_id, choice.candidate_revision, int(required.checkpoint_history_id), None
+        )
+    else:
+        template = contracts.CorrectionRecoveryTemplate(
+            choice.attempt_id,
+            choice.candidate_revision,
+            int(required.checkpoint_history_id),
+            int(correction_history_id),
+            None,
+        )
+    failure = _job_failure(
+        "pinboard-mcp-review-job-result/v1",
+        choice.attempt_id,
+        required.code.value,
+        "Selected retained-v1 patch bytes are missing; supply exact historical patch bytes in the native recovery request.",
+        required.details,
+    )
+    failure.content["recovery"] = msgspec.to_builtins(
+        contracts.ReviewRecoveryInvocation(
+            REVIEW_JOB_TOOL,
+            contracts.ReviewRecoveryArguments(str(source_checkout), str(work_root), template),
+            ("review.candidate_patch",),
+            historical,
+            historical.removeprefix("working-tree-sha256:"),
+        )
+    )
+    return failure
+
+
+def _candidate_restore(
+    project_root: str,
+    work_root: str,
+    attempt_id: str,
+    candidate: str,
+    token: CancellationToken,
+) -> OperationResult:
+    token.checkpoint()
+    schema = "pinboard-mcp-candidate-restore-result/v1"
+    try:
+        request = msgspec.convert(
+            {"project_root": project_root, "work_root": work_root, "attempt_id": attempt_id, "candidate": candidate},
+            type=contracts.CandidateRestoreRequest,
+            strict=True,
+        )
+        source_checkout = resolve_source_checkout_root(Path(request.project_root))
+        durable = resolve_durable_roots(resolve_shared_repository_root(source_checkout), Path(request.work_root))
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        return _read_failure(
+            schema, "CANDIDATE_RESTORE_INVALID", f"Cannot decode candidate restore request: {error}", None
+        )
+    store = compose_store(durable)
+    token.checkpoint()
+    # Entered source effects finish before cancellation can discard their terminal outcome.
+    restored = candidate_evidence.restore_candidate(
+        source_checkout, durable.work_root, store, AttemptId(request.attempt_id), request.candidate
+    )
+    if isinstance(restored, DecisionFailure):
+        details = _details_json(restored.details)
+        committed = restored.details is not None and restored.details.effect == EffectDisposition.COMMITTED
+        return OperationResult(
+            {
+                "schema": schema,
+                "status": "failed-after-mutation" if committed else "rejected",
+                "attempt_id": request.attempt_id,
+                "code": restored.code.value,
+                "message": restored.message,
+                "state_changed": committed,
+                **details,
+            },
+            "committed-failure" if committed else "rejected",
+            None,
+        )
+    content = msgspec.to_builtins(
+        contracts.CandidateRestoreReady(
+            schema,
+            "restored",
+            request.attempt_id,
+            restored.candidate,
+            str(source_checkout),
+            restored.changed,
+            "committed" if restored.changed else "unchanged",
+            "do-not-retry" if restored.changed else "safe-to-repeat",
+            ("source-checkout",) if restored.changed else (),
+        )
+    )
+    assert isinstance(content, dict)
+    return OperationResult(content, "committed" if restored.changed else "unchanged", None)
 
 
 async def _run_request(
@@ -2972,6 +3094,22 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
         )
 
     @server.tool(
+        name=CANDIDATE_RESTORE_TOOL,
+        description="Restore exact verified accepted candidate bytes into a caller-selected exact clean checkout. Changes only source checkout; no lifecycle, authority or automatic launch.",
+    )
+    async def candidate_restore(
+        project_root: str, work_root: str, attempt_id: str, candidate: str
+    ) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            CANDIDATE_RESTORE_TOOL,
+            project_root,
+            partial(_candidate_restore, project_root, work_root, attempt_id, candidate),
+        )
+
+    @server.tool(
         name=REVIEW_JOB_TOOL,
         description="Publish one candidate-bound reviewer launch with exact caller-selected historical evidence; run separate full CLI validation before package reuse.",
     )
@@ -3076,6 +3214,11 @@ def _install_boundary_contracts(server: MCPServer) -> None:
             DISPATCH_TOOL,
             contracts.schema_for(contracts.DispatchRequest),
             contracts.union_schema_for(contracts.DISPATCH_RESULT_TYPES),
+        ),
+        (
+            CANDIDATE_RESTORE_TOOL,
+            contracts.schema_for(contracts.CandidateRestoreRequest),
+            contracts.union_schema_for(contracts.CANDIDATE_RESTORE_RESULT_TYPES),
         ),
         (
             REVIEW_JOB_TOOL,

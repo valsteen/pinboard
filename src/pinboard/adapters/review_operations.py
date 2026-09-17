@@ -84,7 +84,7 @@ class PreparedReviewJob:
 
 @dataclass(frozen=True, slots=True)
 class CompatibilityCandidateRequired(DecisionFailure):
-    """Captured v1 facts needed by the CLI-only remedy; this owner never repairs."""
+    """Captured v1 facts needed by explicit sibling remedies; this owner never repairs."""
 
     package: checkpoint_compatibility_models.CheckpointReviewPackage
     candidate_reference: stored_state.ArtifactReference | None
@@ -168,7 +168,7 @@ def _select_prior_checkpoint_package(
     ):
         return CompatibilityCandidateRequired(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            "Selected historical v1 candidate bytes are not accepted; use the exact CLI-only recovery.",
+            "Selected historical v1 candidate bytes are not accepted; use the explicit retained-v1 recovery.",
             None,
             package,
             candidate_reference,

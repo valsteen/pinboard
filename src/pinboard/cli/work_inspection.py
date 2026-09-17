@@ -13,7 +13,8 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.adapters import review_operations
+from pinboard.adapters import candidate_evidence, review_operations
+from pinboard.adapters import checkpoint_compatibility as retained_checkpoint
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.errors import ArtifactError
 from pinboard.adapters.files.file_io import DurableRoots
@@ -140,9 +141,9 @@ def read_candidate_recovery(
         return work_inspection_models.NoCandidateRecovery()
     candidate = context.candidate_revision
     if (snapshot_context := store.read_candidate_snapshot_context(attempt_id)) is not None:
-        evidence = candidate_recovery.read_candidate_evidence_from_context(roots.work, snapshot_context, candidate)
-        if isinstance(evidence, errors.CommandFailure):
-            return evidence
+        evidence = candidate_evidence.read_candidate_evidence_from_context(roots.work, snapshot_context, candidate)
+        if isinstance(evidence, domain_errors.DecisionFailure):
+            return candidate_recovery.candidate_failure_view(evidence, attempt_id)
         return candidate_recovery.recovery_view(roots, evidence)
     return work_inspection_models.NoCandidateRecovery()
 
@@ -271,7 +272,6 @@ def show_review_job(
     command: cli_commands.ReviewJobCommand,
 ) -> errors.CommandResult[int]:
     checkpoint_history_id, correction_history_id = _review_job_history_ids(command)
-    recovered = None
     if isinstance(
         command,
         (
@@ -279,17 +279,21 @@ def show_review_job(
             cli_commands.CompatibilityPackageCorrectionRecoveryReviewJobCommand,
         ),
     ):
-        facts = queries.select_review_job_context(
-            store, command.attempt_id, checkpoint_history_id, correction_history_id
+        patch_bytes = checkpoint_compatibility.read_candidate_patch(command.candidate_patch)
+        if isinstance(patch_bytes, errors.CommandFailure):
+            return patch_bytes
+        assert checkpoint_history_id is not None
+        prepared = retained_checkpoint.prepare_recovered_review_job(
+            roots.work,
+            store,
+            ArtifactRepository(durable),
+            command.attempt_id,
+            command.candidate_revision,
+            checkpoint_history_id,
+            correction_history_id,
+            patch_bytes,
         )
-        if isinstance(facts, domain_errors.DecisionFailure):
-            return errors.CommandFailure(facts.code, facts.message, facts.details)
-        recovered = checkpoint_compatibility.recover_checkpoint_candidate(
-            roots, durable, store, command, facts, checkpoint_history_id
-        )
-        if isinstance(recovered, errors.CommandFailure):
-            return recovered
-    try:
+    else:
         prepared = review_operations.prepare_review_job(
             roots.work,
             store,
@@ -299,18 +303,10 @@ def show_review_job(
             checkpoint_history_id,
             correction_history_id,
         )
-    except (ArtifactError, ports.WorkStoreError, domain_errors.ArtifactAcceptanceAfterPublicationError) as error:
-        checkpoint_compatibility.raise_after_recovery_exception(error, recovered)
     if isinstance(prepared, domain_errors.DecisionFailure):
         if isinstance(prepared, review_operations.CompatibilityCandidateRequired):
-            failure = checkpoint_compatibility.require_candidate_reference(
-                roots, command, prepared.package, prepared.candidate_reference, prepared.checkpoint_history_id
-            )
-            if failure is not None:
-                return checkpoint_compatibility.after_recovery_failure(failure, recovered)
-        return checkpoint_compatibility.after_recovery_failure(
-            errors.CommandFailure(prepared.code, prepared.message, prepared.details), recovered
-        )
+            return checkpoint_compatibility.candidate_required_failure(roots, command, prepared)
+        return errors.CommandFailure(prepared.code, prepared.message, prepared.details)
     publication = prepared.published_prompt
     brief = prepared.brief
     reference = prepared.brief_reference
@@ -332,12 +328,7 @@ def show_review_job(
         agent_launch.launch_envelope(
             roots.source_checkout, roots.work, "reviewer", str(command.attempt_id), publication, None
         ),
-        tuple(
-            surface.value
-            for surface in dict.fromkeys(
-                (*checkpoint_compatibility.recovery_surfaces(recovered), *publication.changed_surfaces)
-            )
-        ),
+        tuple(surface.value for surface in publication.changed_surfaces),
         prepared.return_contract,
     )
     if command.json:

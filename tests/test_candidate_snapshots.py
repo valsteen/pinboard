@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import msgspec
 
-from pinboard.adapters import lifecycle_artifacts
+from pinboard.adapters import candidate_evidence, lifecycle_artifacts
 from pinboard.adapters.files import candidate_compatibility
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, RootError, RootErrorCode
@@ -704,9 +704,9 @@ class CandidateSnapshotTest(unittest.TestCase):
         evidence = CandidateSnapshotEvidence(snapshot, context.reference, context.receipt)
 
         self.assertIsInstance(candidate_recovery.restore_candidate(roots, store, command), CommandFailure)
-        with patch.object(candidate_recovery, "read_reference", return_value=b"invalid"):
+        with patch.object(candidate_evidence, "read_reference", return_value=b"invalid"):
             self.assertIsInstance(
-                candidate_recovery.read_candidate_evidence_from_context(checkout, context, None), CommandFailure
+                candidate_evidence.read_candidate_evidence_from_context(checkout, context, None), DecisionFailure
             )
 
         rejection = CandidateRestoreRejection("wrong-head", "branch", "head")
@@ -721,9 +721,9 @@ class CandidateSnapshotTest(unittest.TestCase):
         for outcome, expected_type in working_outcomes:
             with (
                 self.subTest(outcome=outcome),
-                patch.object(candidate_recovery, "read_candidate_evidence", return_value=evidence),
+                patch.object(candidate_evidence, "read_candidate_evidence", return_value=evidence),
                 patch.object(
-                    candidate_recovery,
+                    candidate_evidence.root,
                     "restore_working_tree_candidate",
                     side_effect=outcome if isinstance(outcome, RootError) else None,
                     return_value=outcome if not isinstance(outcome, RootError) else None,
@@ -749,9 +749,9 @@ class CandidateSnapshotTest(unittest.TestCase):
         )
         commit_evidence = CandidateSnapshotEvidence(commit, context.reference, context.receipt)
         with (
-            patch.object(candidate_recovery, "read_candidate_evidence", return_value=commit_evidence),
+            patch.object(candidate_evidence, "read_candidate_evidence", return_value=commit_evidence),
             patch.object(
-                candidate_recovery,
+                candidate_evidence.root,
                 "restore_commit_candidate",
                 return_value=CandidateRestoreSuccess(False, commit.candidate),
             ) as restore,

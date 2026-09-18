@@ -3055,6 +3055,7 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
     @server.tool(
         name=OVERVIEW_TOOL,
         description="Read the current authoritative Pinboard work overview without changing durable state.",
+        meta={"anthropic/alwaysLoad": True},
     )
     async def overview(project_root: str, work_root: str) -> dict[str, JsonValue]:
         return await _run_request(

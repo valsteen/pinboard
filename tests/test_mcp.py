@@ -3818,6 +3818,10 @@ class McpTransportTest(unittest.TestCase):
             {tool.name for tool in tools},
         )
         tools_by_name = {tool.name: tool for tool in tools}
+        self.assertEqual(
+            {mcp_server.OVERVIEW_TOOL: {"anthropic/alwaysLoad": True}},
+            {tool.name: tool.meta for tool in tools if tool.meta is not None},
+        )
         expected_required = {
             mcp_server.DISPATCH_TOOL: {"project_root", "work_root", "dispatch"},
             mcp_server.REVIEW_JOB_TOOL: {"project_root", "work_root", "review"},

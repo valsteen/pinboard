@@ -2903,6 +2903,10 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
         instructions=(
             "Pinboard coordinates local repository work: intake, canonical briefs, status, legal actions, "
             "own leases, dispatch, independent review and recovery.\n\n"
+            "For intake or coordination, load the complete existing workflow skill before constructing "
+            "attributed calls: pinboard-intake for new work, or pinboard for coordination of existing work. "
+            "Use this runtime's advertised native skill loader; if unavailable, read that skill's actual "
+            "resolved SKILL.md completely. Follow that owner's sequencing and runtime identity instructions.\n\n"
             "For deferred tools, find the required Pinboard operation in this host's actual announced tool "
             "inventory. Select its full advertised callable name, including the connector prefix, not its "
             "short wire name. Resolve each host's names independently. If the full name is unknown, use "

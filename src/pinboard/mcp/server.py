@@ -3065,7 +3065,7 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
 
     @server.tool(
         name=TRANSITION_TOOL,
-        description="Apply one exact current Pinboard lifecycle action and its strict leaf payload.",
+        description="Apply one current Pinboard lifecycle action. Put project_root, work_root, role, receipt, payload and authority fields inside request. receipt contains ONLY action_id and subject_revision from pinboard_actions, not the whole action. For role project, put actor_task_id and actor_host_id in request; for role worker or preparer, put lease_id and generation there instead. Get the action-specific payload schema from pinboard_actions.",
     )
     async def lifecycle_transition(
         request: dict[str, JsonValue],

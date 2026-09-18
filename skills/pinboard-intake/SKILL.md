@@ -7,7 +7,7 @@ description: Preserve one newly proposed piece of project work as an intake item
 
 Convert one explicit concern into immutable proposal facts and a same-identity intake item. Do not claim that intake made it ready, active, or current work.
 
-Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) for coding-agent identity and optional messaging. Intake persistence remains the correctness boundary.
+Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) for native MCP discovery, coding-agent identity and optional messaging. Intake persistence remains the correctness boundary.
 
 Intake may be standalone or embedded in ongoing Pinboard work. Standalone intake may end after its persistence receipt only when the user did not also ask to begin the new work. Before embedded intake, retain a compact continuation anchor containing the pre-intake objective, the next promised action, and the exact durable owner selector. Intake changes queue state but preserves active attempts, so return control to that anchor after persistence and any explicitly requested notification handling.
 
@@ -27,7 +27,7 @@ An explicitly requested notification remains subordinate to this continuation. S
 
 ## Preconditions
 
-1. For CLI-only operations, resolve `../../scripts/pinboard` relative to the active skill. The directory two levels above the skill is `<launcher-root>`, so invoke `<launcher-root>/scripts/pinboard` for every retained CLI command. Integration-specific discovery belongs in the shared runtime adapters; the launcher-relative executable and downstream CLI contract are common. A prepared Pinboard source checkout uses `<pinboard-source>/.venv`; an installed plugin uses only its marker-backed `<launcher-root>/.pinboard-runtime/environment`. `<managed-project>` is the repository selected by `--project-root`; ordinary launch never invokes uv or consults that project's Python environment or dependency files. If the launcher returns `pinboard-launcher-result/v1`, require `pinboard_started=false`, preserve any upstream diagnostics, and follow only its exact same-launcher `--prepare-runtime` action and retry disposition. Preparation may require one narrow write to `<launcher-root>/.pinboard-runtime`; never substitute an ad hoc uv command, ambient cache workaround, installed-cache locator, or managed-project `.venv`.
+1. Before selecting the first deferred Pinboard tool schema, read and follow the shared runtime adapter's [Packaged connection and first setup](../pinboard/references/runtime-adapters.md#packaged-connection-and-first-setup) procedure. It owns connection-first native discovery and any required setup.
 2. Call `pinboard_overview` with the exact project and work roots.
 3. Require authority `sqlite-v6`. Intake is a direct trusted-local project action; its task and host values are audit attribution, not credentials, and it does not require a lease.
 4. If the workflow or required MCP tool is unavailable, stop. Do not infer shared state from titles, recency, nearby tasks, branches, or old audit files.

@@ -30,8 +30,13 @@ Pinboard keeps those decisions attached to the work. It:
 
 The coding agent operates that workflow and brings material choices back to you in ordinary language.
 
-The overview identifies the first unstarted item even when a live dependency blocks it. Its `next_unstarted` context names that item and its live dependencies; the corresponding item row retains replacement and preparation facts. Available actions and parallel eligibility remain separate from priority. A changed order does not authorize starting work.
+## Choose what to build next
 
+Ask your coding agent to compare queued improvements by relative size and explain where the scope is uncertain. Here Pinboard uses its own backlog to compare four ways to make agent runs more reliable: clearer task-brief errors, a complete correction workflow, trustworthy command evidence, and reuse of valid evidence after a correction.
+
+![A native Codex conversation comparing four queued Pinboard improvements by relative size and explaining uncertainty](assets/pinboard-work-selection.png)
+
+The answer links to the recorded tasks and makes qualitative judgments, not measured effort estimates. The smallest apparent change differs from the first task in the saved priority order, and existing evidence reuse may already suffice. Comparing work does not start implementation.
 
 ## Skills
 

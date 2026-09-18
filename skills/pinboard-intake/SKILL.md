@@ -13,7 +13,7 @@ Intake may be standalone or embedded in ongoing Pinboard work. Standalone intake
 
 ## Preserve immediate-start intent
 
-When the same request says `start`, `begin`, `work on`, `implement`, `fix now`, or otherwise clearly asks for immediate execution, treat intake as the first atomic step rather than the requested outcome. After persistence, continue through `$pinboard` to admit, prepare, and activate the same-identity item, then use `$pinboard-deliver` to complete its accepted work. Do not end with a save-for-later receipt merely because the user explicitly named `$pinboard-intake`.
+When the same request says `start`, `begin`, `work on`, `implement`, `fix now`, or otherwise clearly asks for immediate execution, treat intake as the first atomic step rather than the requested outcome. After persistence and before admission or work-brief composition, load the complete main Pinboard skill through the runtime's advertised native coordinator skill loader (`Skill` for `pinboard:pinboard` in Claude). If that loader is unavailable, read the actual sibling `../pinboard/SKILL.md` completely; unavailable complete content stops the continuation. A `$pinboard` mention is not a loaded skill. Follow that loaded owner to admit, prepare, and activate the same-identity item, then use `$pinboard-deliver` to complete its accepted work. Do not end with a save-for-later receipt merely because the user explicitly named `$pinboard-intake`.
 
 Follow the main Pinboard skill's user-facing detail threshold during that continuation. Preserve every higher-level required first-use skill disclosure, keep each one concise and outcome-oriented, and add no separate Pinboard explanation of companion-skill selection or internal routing.
 

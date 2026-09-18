@@ -3158,7 +3158,46 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
 
     @server.tool(
         name=DISPATCH_TOOL,
-        description="Publish one exact Pinboard worker launch from structured environment and independent review inputs.",
+        description=(
+            "Publish verified Pinboard worker launch instructions; creates no worker or worker authority. "
+            "Arguments are project_root, work_root and dispatch (no request wrapper). Unknown fields reject.\n"
+            "All three dispatch leaves require kind, receipt, checkpoint_id, environment and prompt. "
+            "receipt contains ONLY action_id:{kind:'dispatch',subject:<attempt_id>} and subject_revision "
+            "copied from the fresh project dispatch action returned by pinboard_actions, not the whole action. "
+            "checkpoint_id is the accepted brief's stable checkpoint ID. Use explicit prompt:null for "
+            "canonical prompt construction. A supplied prompt string must match the canonical prompt.\n"
+            "environment requires all eight fields: schema:'pinboard-dispatch/v2', checkout:<exact source "
+            "checkout>, branch:<recorded branch>, starting_revision:<accepted attempt base>, host_id:<trusted "
+            "runtime host>, fresh_context:true, lease_ttl_seconds:<positive integer>, permissions:<array of "
+            "already-authorized 'repository-read', 'repository-write', 'network', 'external-write' or "
+            "'live-application' declarations>. Declarations grant no runtime access.\n"
+            "kind:'ordinary' has only those common fields; a cross-boundary checkpoint reuses its exact "
+            "accepted ready review. kind:'reviewed' additionally requires review_id "
+            "and brief_review:<complete independent ready WorkBriefReview>. kind:'correction' additionally "
+            "requires review_id, correction_history_id:<positive ID of the selected current canonical "
+            "return-for-correction/v1 receipt>, and brief_review:<CorrectionSourceReview>, not an initial review.\n"
+            "WorkBriefReview requires schema:'pinboard-work-brief-review/v2', attempt_id, checkpoint_id, "
+            "checkpoint_sha256, reviewed_authority_set_sha256, reviewer_task_id, status:'complete', "
+            "verdict:'ready', and nonempty coverage. Bind the current checkpoint and ordered reviewed "
+            "authority set; the reviewer must be independent. Every coverage record requires authority_id, "
+            "family, owner, verdict:'covered' and counterexample_result. owner is exactly one of "
+            "{disposition:'contract',contract_invariant:<text>}, {disposition:'acceptance',criterion:<positive "
+            "integer>}, {disposition:'deferred',deferral_id:<ID>} or {disposition:'not-applicable',reason:<text>}, "
+            "matching the brief's complete coverage. Needs-correction evidence is not ready evidence.\n"
+            "CorrectionSourceReview requires schema:'pinboard-correction-source-review/v1', "
+            "contract_review:<current effective WorkBriefReview>, starting_candidate:<exact accepted "
+            "candidate identity>, correction_input:{reason:<exact selected correction reason>}, and "
+            "assessment:<independent assessment>. starting_candidate requires role:'candidate', "
+            "kind:'evidence', key, revision:<positive integer>, selector, content_sha256 and "
+            "size_bytes:<nonnegative integer>. Preserve candidate/history binding and fresh source review.\n"
+            "The negotiated strict schema and decoder remain authoritative. Dispatch publication may "
+            "change immutable-artifact, accepted-artifact-reference and ledger surfaces, never lifecycle "
+            "or worker authority; honor returned effect/retry facts. On ready, pass ONLY the returned "
+            "native_launch.message unchanged as the actual host worker-message argument to a genuinely "
+            "fresh native worker (Codex spawn_agent.message; Claude Agent.prompt). prompt_reference remains "
+            "independently required immutable provenance, not an alternative launch input. Missing native "
+            "launch capability stops execution; publication alone is not a launch."
+        ),
     )
     async def dispatch_job(project_root: str, work_root: str, dispatch: dict[str, JsonValue]) -> dict[str, JsonValue]:
         return await _run_request(

@@ -10,6 +10,8 @@ Codex's explicit root `mcp-codex.json` declares `sh ./scripts/pinboard --mcp` wi
 
 If a version is unprepared, MCP startup exits before the server starts and puts its strict same-launcher preparation action on stderr, never protocol stdout. Deliberate CLI setup may run `<launcher-root>/scripts/pinboard --prepare-runtime` with uv and write access only to that version's `.pinboard-runtime`. Follow the exact preparation result, then use the client's supported MCP reconnect or plugin reload mechanism before attempting a covered tool. Setup and CLI-only operations retain their direct launcher route. A missing required MCP tool stops that operation and never authorizes shell fallback.
 
+Discover tools by their advertised identities, not by the skill name: intake uses `pinboard_overview` and `pinboard_proposal_create`. When the host defers tool exposure, search for the exact required identity and inspect its returned schema; a broad search that omits it does not establish that it is unavailable. Use the host's advertised callable name, including any connector prefix, for the native call.
+
 | Operation | Codex (primary, stress-tested) | Claude Code (experimental) |
 | --- | --- | --- |
 | Run Pinboard | Discover the connected Pinboard MCP tools and pass exact roots. For CLI-only operations, resolve `../../scripts/pinboard` relative to the active skill; its directory two levels above is `<launcher-root>`. | Discover the same connected Pinboard MCP tools and pass exact roots. For CLI-only operations, use the substituted absolute `${CLAUDE_PLUGIN_ROOT}` as `<launcher-root>` and run `PINBOARD_RUNTIME=claude "${CLAUDE_PLUGIN_ROOT}/scripts/pinboard" ...`. |

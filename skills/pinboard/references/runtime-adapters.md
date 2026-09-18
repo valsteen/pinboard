@@ -10,7 +10,12 @@ Codex's explicit root `mcp-codex.json` declares `sh ./scripts/pinboard --mcp` wi
 
 If a version is unprepared, MCP startup exits before the server starts and puts its strict same-launcher preparation action on stderr, never protocol stdout. Deliberate CLI setup may run `<launcher-root>/scripts/pinboard --prepare-runtime` with uv and write access only to that version's `.pinboard-runtime`. Follow the exact preparation result, then use the client's supported MCP reconnect or plugin reload mechanism before attempting a covered tool. Setup and CLI-only operations retain their direct launcher route. A missing required MCP tool stops that operation and never authorizes shell fallback.
 
-Discover tools by their advertised identities, not by the skill name: intake uses `pinboard_overview` and `pinboard_proposal_create`. When the host defers tool exposure, search for the exact required identity and inspect its returned schema; a broad search that omits it does not establish that it is unavailable. Use the host's advertised callable name, including any connector prefix, for the native call.
+Pinboard wire identities, such as intake's `pinboard_overview` and `pinboard_proposal_create`, identify the required operations. The current host may advertise different full callable names for them. Resolve the native name before selecting a deferred tool schema:
+
+1. Find the required operation in the host's actual tool announcement or native inventory and copy its full callable name, including the connector prefix. Resolve each host's names independently.
+2. When the full name is known, use the host's exact-name selection with that full name. When it is unresolved, use supported keyword discovery to find the advertised callable.
+3. If exact selection returns no match, reconcile the selected name with the actual advertised inventory. When a short wire name was selected, retry with the advertised full callable name. An unmatched short-name selection or an incomplete broad search does not establish a missing connection.
+4. Inspect the returned callable identity and schema against the required operation, then invoke that native callable with exact project and work roots under its negotiated contract.
 
 | Operation | Codex (primary, stress-tested) | Claude Code (experimental) |
 | --- | --- | --- |

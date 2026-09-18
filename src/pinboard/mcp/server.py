@@ -2852,7 +2852,7 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
 
     @server.tool(
         name=BRIEF_CONTRACT_TOOL,
-        description="Construct the full strict work-brief contract or complete unresolved local/cross-boundary starter; no project facts, readiness or authority are invented.",
+        description="Construct the strict work-brief contract or unresolved local/cross-boundary starter; no project facts or authority. Structural construction is not readiness review or activation. Follow the Pinboard coordination Skill for preparation.",
     )
     async def brief_contract(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         return await _run_request(
@@ -2942,7 +2942,7 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
 
     @server.tool(
         name=BRIEF_PUBLISH_TOOL,
-        description="Publish and accept one canonical Pinboard work brief from structured input.",
+        description="Publish one canonical Pinboard work brief and accept its artifact reference. Publication is not readiness review or activation. Follow the Pinboard coordination Skill for preparation.",
     )
     async def brief_publish(
         project_root: str,

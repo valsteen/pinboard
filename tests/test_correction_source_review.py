@@ -4,6 +4,8 @@ import json
 import subprocess
 import tempfile
 from copy import deepcopy
+from datetime import datetime, timedelta, tzinfo
+from itertools import count
 from pathlib import Path
 from unittest.mock import patch
 
@@ -30,7 +32,7 @@ from pinboard.mcp import server
 from tests import test_dispatch
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import call_native_tool
-from tests.support import JsonObject
+from tests.support import SQLITE_NOW, JsonObject
 from tests.work_brief_support import ready_review, work_a_brief
 
 
@@ -134,12 +136,33 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         return server._dispatch_job(str(fixture.project), str(fixture.work), choice, server.CancellationToken()).content
 
     def test_replacement_brief_uses_historical_findings_but_requires_a_new_current_return(self) -> None:
+        with (
+            patch("pinboard.mcp.server.datetime", wraps=datetime) as boundary_clock,
+            patch("tests.checkpoint_support.datetime", wraps=datetime) as fixture_clock,
+        ):
+            clock_ticks = count()
+
+            def sampled_time(_: tzinfo) -> datetime:
+                return SQLITE_NOW + timedelta(seconds=next(clock_ticks))
+
+            boundary_clock.now.side_effect = sampled_time
+            fixture_clock.now.return_value = SQLITE_NOW
+            for publish_ready in (False, True):
+                with self.subTest(publish_ready=publish_ready):
+                    self.replacement_brief_recovery(publish_ready)
+
+    def replacement_brief_recovery(self, publish_ready: bool) -> None:  # noqa: PLR0915 - one complete causal recovery journey
         fixture = self.correction_fixture()
-        old_history, old_choice = self.submit_and_return(fixture, "returned-test", committed=False)
-        candidate = root.read_working_tree_candidate(fixture.project).identity
+        old_history, old_choice = self.submit_and_return(fixture, "returned-test", committed=True)
+        candidate = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=fixture.project, check=True, capture_output=True, text=True
+        ).stdout.strip()
         replacement = msgspec.structs.replace(
             fixture.brief,
             artifact_revision=fixture.brief.artifact_revision + 1,
+            checkpoint=msgspec.structs.replace(
+                fixture.brief.checkpoint, title="Review a genuinely distinct replacement checkpoint"
+            ),
             bootstrap=(
                 *fixture.brief.bootstrap,
                 "Reassess the protected candidate against the complete replacement brief.",
@@ -167,6 +190,9 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         )
         self.assertEqual("committed", rebound["status"], rebound)
         fixture = dataclasses.replace(fixture, brief=replacement)
+        checkpoint_digest = hashlib.sha256(work_briefs.canonical_checkpoint_bytes(replacement.checkpoint)).hexdigest()
+        ready_key = f"work-a-1-brief-review-{checkpoint_digest}"
+        self.assertIsNone(fixture.store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, ready_key, 1))
         action = self.project_action(fixture, "dispatch:work-a-1")
         old_choice["receipt"] = {
             "action_id": {"kind": "dispatch", "subject": "work-a-1"},
@@ -180,6 +206,39 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", stale["code"], stale)
         self.assertFalse(stale["state_changed"])
         self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+
+        if publish_ready:
+            environment = msgspec.structs.replace(
+                test_dispatch.DispatchTest().environment(fixture.project),
+                branch=replacement.branch,
+                starting_revision=replacement.base_revision,
+            )
+            published_ready = call_native_tool(
+                server.DISPATCH_TOOL,
+                {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "dispatch": {
+                        "kind": "reviewed",
+                        "receipt": {
+                            "action_id": {"kind": "dispatch", "subject": "work-a-1"},
+                            "subject_revision": action["subject_revision"],
+                        },
+                        "checkpoint_id": replacement.checkpoint.checkpoint_id,
+                        "environment": msgspec.to_builtins(
+                            environment, enc_hook=test_dispatch.dispatch_environment_enc_hook
+                        ),
+                        "prompt": None,
+                        "brief_review": msgspec.json.decode(ready_review(replacement)),
+                        "review_id": "replacement-readiness",
+                    },
+                },
+            )
+            self.assertEqual("ready", published_ready["status"], published_ready)
+        ready_reference = SQLiteWorkStore(fixture.work / "state.sqlite3").read_artifact_reference(
+            work_models.ArtifactKind.EVIDENCE, ready_key, 1
+        )
+        self.assertEqual(publish_ready, ready_reference is not None)
 
         lease = self.native_attempt_acquire(fixture, "replacement-owner")
         submitted = self.transition_result(
@@ -197,6 +256,10 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertEqual(candidate, historical_review["candidate_revision"])
         self.assertEqual(brief_reference["sha256"], historical_review["brief_sha256"])
         self.assertEqual(old_history, self.json_object(historical_review["review_round"])["history_id"])
+        denied_dispatch = self.actions_result(
+            fixture, {"role": "project", "action_id": {"kind": "dispatch", "subject": "work-a-1"}}
+        )
+        self.assertFalse(denied_dispatch.get("actions"), denied_dispatch)
         reloaded = SQLiteWorkStore(fixture.work / "state.sqlite3")
         context = reloaded.read_candidate_snapshot_context(AttemptId("work-a-1"))
         assert context is not None
@@ -234,6 +297,80 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         assert fresh_context is not None and fresh_context.correction_receipt is not None
         self.assertEqual(new_history, int(fresh_context.correction_receipt.history_id))
         self.assertEqual(fresh_verdict, (fixture.work / "attempts" / "work-a-1" / "review.md").read_bytes())
+        self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+
+        self.assertEqual(
+            ready_reference,
+            reloaded.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, ready_key, 1),
+        )
+        (fixture.project / "tests" / "test_only.py").write_text("assert 'corrected'\n", encoding="utf-8")
+        corrected = self.commit_all(fixture.project, "corrected replacement candidate")
+        worker_lease = self.native_attempt_acquire(fixture, "replacement-correction-worker")
+        submitted = self.transition_result(
+            fixture,
+            self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=worker_lease),
+            {"candidate": corrected},
+        )
+        self.assertEqual("committed", submitted["status"], submitted)
+        self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+        corrected_review = self.review_result(
+            fixture, {"kind": "correction", "candidate_revision": corrected, "correction_history_id": new_history}
+        )
+        self.assertEqual("ready", corrected_review["status"], corrected_review)
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        result_bytes = b"Complete corrected frozen result.\n"
+        review_bytes = b"Complete favorable current candidate verdict.\n"
+        (attempt_root / "result.md").write_bytes(result_bytes)
+        (attempt_root / "review.md").write_bytes(review_bytes)
+        before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        files = {path: path.read_bytes() for path in (fixture.work / "artifacts").rglob("*") if path.is_file()}
+        outcome = self.transition_result(
+            fixture,
+            self.project_action(fixture, "accept-checkpoint:work-a-1"),
+            {
+                "checkpoint": replacement.checkpoint.checkpoint_id,
+                "candidate": corrected,
+                "evidence": "Exact favorable corrected review.",
+            },
+        )
+        fresh_store = SQLiteWorkStore(fixture.work / "state.sqlite3")
+        if not publish_ready:
+            self.assertEqual(
+                ("rejected", "TRANSITION_INPUT_INVALID", False, "unchanged", []),
+                (
+                    outcome["status"],
+                    outcome["code"],
+                    outcome["state_changed"],
+                    outcome["effect"],
+                    outcome["changed_surfaces"],
+                ),
+            )
+            message = outcome["message"]
+            assert isinstance(message, str)
+            self.assertIn("exact ready brief review", message)
+            self.assertEqual(before, fresh_store.validated_snapshot())
+            self.assertEqual(
+                files, {path: path.read_bytes() for path in (fixture.work / "artifacts").rglob("*") if path.is_file()}
+            )
+            return
+        self.assertEqual("committed", outcome["status"], outcome)
+        current = fresh_store.read_attempt_context(AttemptId("work-a-1"))
+        assert isinstance(current, query_models.NonterminalAttemptContextFacts)
+        self.assertEqual(work_models.AttemptState.PAUSED, current.state)
+        self.assertIsNone(current.candidate_revision)
+        package_reference = fresh_store.read_artifact_reference(
+            work_models.ArtifactKind.EVIDENCE, f"work-a-1-{replacement.checkpoint.checkpoint_id}-review-package", 1
+        )
+        assert package_reference is not None and ready_reference is not None
+        package = work_briefs.decode_canonical_checkpoint_review_package(
+            (fixture.work / package_reference.selector).read_bytes()
+        )
+        assert isinstance(package, work_brief_models.CheckpointReviewPackageV3)
+        assert isinstance(package.review_basis, work_brief_models.CrossBoundaryReviewBasis)
+        self.assertEqual(corrected, package.candidate)
+        self.assertEqual(ready_reference.selector, package.review_basis.brief_review.selector)
+        self.assertEqual(result_bytes, (fixture.work / package.result.selector).read_bytes())
+        self.assertEqual(review_bytes, (fixture.work / package.implementation_review.selector).read_bytes())
         self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
 
     def test_old_same_patch_snapshot_cannot_authorize_a_newer_returned_start(self) -> None:

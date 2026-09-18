@@ -190,10 +190,12 @@ Stop after the bounded recommendation unless further evidence is necessary for t
 
 When an accepted brief is replaced while a returned candidate still awaits correction, its old correction request is historical context, not authority for the new target. This recovery does not apply to ordinary initial briefs, new checkpoints, or rebinds without an outstanding superseded correction.
 
-1. Bind the replacement brief, then protect the exact unchanged candidate through submission using the caller's own current attempt authority.
-2. Commission a fresh complete review against that brief and candidate. Supply the selected previous return and checkpoint as independently verified historical context. Retain every prior finding with an evidence-backed disposition; replacing the brief does not erase findings or make the old verdict current.
-3. Preserve the complete new verdict. If it requests changes, apply one new `return-for-correction` and retain its actual canonical history identity.
-4. Independently review the current correction sources, then dispatch correction using that new return on the same reviewed brief binding. If another genuine brief replacement becomes necessary, repeat fresh review against it rather than transferring the old verdict.
+1. Bind the replacement brief.
+2. For a cross-boundary replacement, obtain independent readiness review of the complete current canonical brief. While the attempt is active, publish normal reviewed dispatch through `pinboard_dispatch` with `kind: reviewed`. Verify the distinct accepted plain ready-review record for that canonical checkpoint before protecting the candidate. An embedded `contract_review` in composite correction evidence does not publish this record; checkpoint acceptance consumes it separately. This publication returns a prompt and native envelope but launches no worker and acquires no worker authority. Do not launch an implementation worker merely to publish readiness. Local replacements retain their existing preparation rules without a cross-boundary ready review.
+3. Protect the exact unchanged candidate through submission using the caller's own current attempt authority.
+4. Commission a fresh complete review against that brief and candidate. Supply the selected previous return and checkpoint as independently verified historical context. Retain every prior finding with an evidence-backed disposition; replacing the brief does not erase findings or make the old verdict current.
+5. Preserve the complete new verdict. If it requests changes, apply one new `return-for-correction` and retain its actual canonical history identity.
+6. Independently review the current correction sources, then dispatch correction using that new return on the same reviewed brief binding. Preserve the accepted plain readiness record through corrected submission, review, and checkpoint acceptance. If another genuine brief replacement becomes necessary, repeat fresh review against it rather than transferring the old verdict.
 
 Review-job may select an older return as context; correction dispatch requires the current canonical return. Do not replay completed transitions, relax stale-return checks, or add storage machinery to preserve the old request.
 

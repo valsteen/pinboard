@@ -77,9 +77,15 @@ def tree_fingerprint(root: Path) -> tuple[tuple[str, str, int, str, str], ...]:
 class PluginPackagingTests(unittest.TestCase):
     def test_installed_native_hook_delivers_only_own_identity_and_rejects_invalid_events(self) -> None:
         event = subagent_start_event()
-        invalid: list[dict[str, str | int] | list[str]] = [
+        extended: JsonObject = {
+            **event,
+            "prompt_id": "sensitive-prompt",
+            "unexpected": "sensitive-extra",
+            "metadata": {"nested": [47, {"value": "sensitive-nested"}]},
+        }
+        invalid: list[JsonObject | list[str]] = [
             [],
-            {**event, "unexpected": "sensitive-extra"},
+            {**extended, "agent_id": "parent/worker"},
             {**event, "hook_event_name": "SubagentStop"},
             {**event, "agent_id": ""},
             {**event, "agent_id": "parent/worker"},
@@ -90,7 +96,8 @@ class PluginPackagingTests(unittest.TestCase):
         ]
         invalid.extend({key: value for key, value in event.items() if key != missing} for missing in event)
         invalid.extend({**event, key: 47} for key in event if key != "agent_id")
-        payloads = [json.dumps(event), *(json.dumps(value) for value in invalid), "{"]
+        payloads = [json.dumps(event), json.dumps(extended), *(json.dumps(value) for value in invalid), "{"]
+        successful_outputs: list[str] = []
         for index, payload in enumerate(payloads):
             with self.subTest(index=index):
                 result = subprocess.run(
@@ -100,7 +107,7 @@ class PluginPackagingTests(unittest.TestCase):
                     text=True,
                     check=False,
                 )
-                if index == 0:
+                if index < 2:
                     self.assertEqual(0, result.returncode, result.stderr)
                     output = json.loads(result.stdout)
                     self.assertEqual({"hookSpecificOutput"}, set(output))
@@ -109,13 +116,17 @@ class PluginPackagingTests(unittest.TestCase):
                     self.assertEqual("SubagentStart", context["hookEventName"])
                     self.assertIn(json.dumps(event["agent_id"]), context["additionalContext"])
                     self.assertEqual("", result.stderr)
+                    successful_outputs.append(result.stdout)
                 else:
                     self.assertEqual(1, result.returncode, result.stderr)
                     self.assertEqual("", result.stdout)
                     self.assertLess(len(result.stderr), 256)
                 for key in ("cwd", "session_id", "transcript_path"):
                     self.assertNotIn(event[key], result.stdout + result.stderr)
-                self.assertNotIn("sensitive-extra", result.stdout + result.stderr)
+                for sensitive in ("sensitive-prompt", "sensitive-extra", "sensitive-nested"):
+                    self.assertNotIn(sensitive, result.stdout + result.stderr)
+        self.assertEqual(2, len(successful_outputs))
+        self.assertEqual(successful_outputs[0], successful_outputs[1])
 
     def assert_configured_mcp_reads(
         self, sandbox: Path, plugin_root: Path, project: Path, environment: dict[str, str], proposal: JsonObject
@@ -416,7 +427,7 @@ class PluginPackagingTests(unittest.TestCase):
             hook = subprocess.run(
                 hook_command.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root)),
                 shell=True,
-                input=json.dumps(subagent_start_event()),
+                input=json.dumps({**subagent_start_event(), "prompt_id": "sensitive-prompt"}),
                 cwd=project,
                 env=environment,
                 check=False,
@@ -428,6 +439,7 @@ class PluginPackagingTests(unittest.TestCase):
             self.assertEqual("SubagentStart", context["hookEventName"])
             self.assertIn(json.dumps(subagent_start_event()["agent_id"]), context["additionalContext"])
             self.assertEqual("", hook.stderr)
+            self.assertNotIn("sensitive-prompt", hook.stdout)
 
             def run(*arguments: str) -> subprocess.CompletedProcess[str]:
                 result = subprocess.run(

@@ -12,7 +12,9 @@ type NativeAgentId = Annotated[
 ]
 
 
-class SubagentStart(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class SubagentStart(msgspec.Struct, frozen=True):
+    """Project Claude-owned input onto required fields; ignore unrelated host extensions."""
+
     agent_id: NativeAgentId
     agent_type: NativeText
     cwd: NativeText

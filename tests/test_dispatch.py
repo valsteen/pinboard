@@ -264,8 +264,6 @@ class DispatchTest(unittest.TestCase):
         self.assertIn(f"Canonical brief: {path}", prompt)
         self.assertIn("- Fresh context: required", prompt)
         self.assertIn("- Runtime host: local", prompt)
-        self.assertIn("Worker task identity: read `CODEX_THREAD_ID` after launch", prompt)
-        self.assertIn("Do not use `CODEX_SESSION_ID`", prompt)
         self.assertIn(f"- Result: {project / 'attempts' / value.attempt_id / 'result.md'}", prompt)
         self.assertIn(f"- Blocker: {project / 'attempts' / value.attempt_id / 'blocker.md'}", prompt)
         self.assertIn("- Declared permissions: repository-read", prompt)

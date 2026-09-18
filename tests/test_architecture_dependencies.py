@@ -111,12 +111,13 @@ def _database_location_literals(source_root: Path = SOURCE_ROOT) -> tuple[Path, 
 
 
 class ArchitectureDependencyTest(unittest.TestCase):
-    def test_package_exposes_cli_and_local_stdio_mcp_entrypoints(self) -> None:
+    def test_package_exposes_declared_process_entrypoints(self) -> None:
         metadata = tomllib.loads((SOURCE_ROOT.parents[1] / "pyproject.toml").read_text())
         self.assertEqual(
             {
                 "pinboard": "pinboard.cli.entrypoint:main",
                 "pinboard-mcp": "pinboard.mcp.server:main",
+                "pinboard-claude-subagent-start": "pinboard.claude_hook:main",
             },
             metadata["project"]["scripts"],
         )

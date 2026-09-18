@@ -2377,7 +2377,7 @@ def _mcp_launch_envelope(
             "work_root": str(work_root),
             "operation": "acquire",
             "attempt_id": attempt_id,
-            "task_id": "<post-launch CODEX_THREAD_ID>",
+            "task_id": "<own trusted post-launch runtime identity>",
             "host_id": str(environment.host_id),
             "ttl_seconds": environment.lease_ttl_seconds,
         }
@@ -2390,7 +2390,8 @@ def _mcp_launch_envelope(
             "action_id": {"kind": "continue", "subject": attempt_id},
         }
         message += (
-            " After reading the complete canonical brief/bootstrap, read CODEX_THREAD_ID after native launch; "
+            " After reading the complete canonical brief/bootstrap, obtain your own trusted post-launch identity "
+            "through the current runtime adapter; "
             f"call `pinboard_attempt_authority` with {msgspec.json.encode({'request': acquisition}, order='sorted').decode()}, "
             f"then `pinboard_actions` with {msgspec.json.encode({'request': continuation}, order='sorted').decode()}. "
             "Substitute only the trusted post-launch identity and returned lease facts. Missing connected tools or identity "

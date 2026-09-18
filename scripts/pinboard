@@ -27,6 +27,18 @@ if [ "$#" -ge 1 ] && [ "$1" = "--mcp" ]; then
         exit 64
     fi
 fi
+if [ "$#" -ge 1 ] && [ "$1" = "--claude-subagent-start" ]; then
+    entry_name=pinboard-claude-subagent-start
+    result_output_fd=2
+    shift
+    if [ "$#" -ne 0 ]; then
+        launcher_result \
+            "invalid-startup-arguments" \
+            '["Claude SubagentStart startup accepts only scripts/pinboard --claude-subagent-start."]' \
+            "null" "correct-environment" "unchanged" '[]' "null"
+        exit 64
+    fi
+fi
 runtime_executable="$runtime_environment/bin/$entry_name"
 
 runtime_write_failure() {
@@ -42,7 +54,7 @@ runtime_write_failure() {
 }
 
 if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
-    if [ -f "$ready_marker" ] && [ -x "$runtime_executable" ] && [ -x "$runtime_environment/bin/pinboard-mcp" ]; then
+    if [ -f "$ready_marker" ] && [ -x "$runtime_executable" ] && [ -x "$runtime_environment/bin/pinboard-mcp" ] && [ -x "$runtime_environment/bin/pinboard-claude-subagent-start" ]; then
         launcher_result \
             "runtime-already-ready" \
             '["The launcher-root private runtime is already ready."]' \
@@ -122,6 +134,16 @@ if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
         launcher_result \
             "runtime-entrypoint-invalid" \
             '["The locked private runtime MCP entry point is missing or not executable."]' \
+            "1" "correct-environment" "potentially-changed" '[".pinboard-runtime"]' \
+            '{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["a valid locked runtime"]}'
+        exit 78
+    fi
+    if [ ! -x "$runtime_environment/bin/pinboard-claude-subagent-start" ]; then
+        printf 'prepared Claude startup entry point is not executable: %s\n' "$runtime_environment/bin/pinboard-claude-subagent-start" >&2
+        rm -f "$diagnostics"
+        launcher_result \
+            "runtime-entrypoint-invalid" \
+            '["The locked private runtime Claude startup entry point is missing or not executable."]' \
             "1" "correct-environment" "potentially-changed" '[".pinboard-runtime"]' \
             '{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["a valid locked runtime"]}'
         exit 78

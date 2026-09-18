@@ -53,6 +53,7 @@ EXPECTED_SKILL_DISPLAY_NAMES: Final = {
 EXPECTED_ENTRY_POINTS: Final = {
     "pinboard": "pinboard.cli.entrypoint:main",
     "pinboard-mcp": "pinboard.mcp.server:main",
+    "pinboard-claude-subagent-start": "pinboard.claude_hook:main",
 }
 
 type SkillName = Annotated[
@@ -141,6 +142,26 @@ class CodexMcpConfiguration(msgspec.Struct, frozen=True, forbid_unknown_fields=T
 
 class ClaudeMcpConfiguration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     mcp_servers: ClaudeMcpServers = msgspec.field(name="mcpServers")
+
+
+class ClaudeStartupCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    type: Literal["command"]
+    command: Literal['"${CLAUDE_PLUGIN_ROOT}/scripts/pinboard" --claude-subagent-start']
+
+
+class ClaudeStartupMatcher(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    matcher: Literal[".*"]
+    hooks: Annotated[tuple[ClaudeStartupCommand, ...], msgspec.Meta(min_length=1, max_length=1)]
+
+
+class ClaudeStartupHooks(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    subagent_start: Annotated[tuple[ClaudeStartupMatcher, ...], msgspec.Meta(min_length=1, max_length=1)] = (
+        msgspec.field(name="SubagentStart")
+    )
+
+
+class ClaudeHookConfiguration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    hooks: ClaudeStartupHooks
 
 
 class ProjectMetadata(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -268,6 +289,7 @@ def validate_claude_plugin() -> None:
         raise ValueError("Claude plugin repository or homepage is invalid")
     if not (ROOT / "skills").is_dir():
         raise ValueError("Claude plugin must use the shared repository-root skills directory")
+    msgspec.json.decode((ROOT / "hooks" / "hooks.json").read_bytes(), type=ClaudeHookConfiguration)
 
 
 def validate_mcp_configuration() -> None:
@@ -298,7 +320,9 @@ def validate_project_metadata() -> None:
     if project.dependencies != ("mcp==2.2.0", "msgspec>=0.21.1"):
         raise ValueError("runtime dependencies must be exact and limited to MCP plus msgspec")
     if project.scripts != EXPECTED_ENTRY_POINTS:
-        raise ValueError("project entry points must expose exactly the CLI and local-stdio MCP boundaries")
+        raise ValueError(
+            "project entry points must expose exactly the CLI, local-stdio MCP and Claude startup boundaries"
+        )
 
 
 def validate_codex_marketplace() -> None:

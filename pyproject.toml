@@ -18,6 +18,7 @@ dependencies = [
 [project.scripts]
 pinboard = "pinboard.cli.entrypoint:main"
 pinboard-mcp = "pinboard.mcp.server:main"
+pinboard-claude-subagent-start = "pinboard.claude_hook:main"
 
 [tool.uv]
 required-version = "==0.12.10"

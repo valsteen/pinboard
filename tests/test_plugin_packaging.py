@@ -19,6 +19,17 @@ from tests.support import JsonObject
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def subagent_start_event() -> dict[str, str]:
+    return {
+        "agent_id": "native-worker",
+        "agent_type": "general-purpose",
+        "cwd": "/sensitive/native-project",
+        "hook_event_name": "SubagentStart",
+        "session_id": "sensitive-parent-session",
+        "transcript_path": "/sensitive/native-transcript.jsonl",
+    }
+
+
 def copied_repository_payload(source_root: Path, destination: Path) -> None:
     listed = subprocess.run(
         ["git", "ls-files", "-z"],
@@ -64,6 +75,48 @@ def tree_fingerprint(root: Path) -> tuple[tuple[str, str, int, str, str], ...]:
 
 
 class PluginPackagingTests(unittest.TestCase):
+    def test_installed_native_hook_delivers_only_own_identity_and_rejects_invalid_events(self) -> None:
+        event = subagent_start_event()
+        invalid: list[dict[str, str | int] | list[str]] = [
+            [],
+            {**event, "unexpected": "sensitive-extra"},
+            {**event, "hook_event_name": "SubagentStop"},
+            {**event, "agent_id": ""},
+            {**event, "agent_id": "parent/worker"},
+            {**event, "agent_id": "worker\nspoofed context"},
+            {**event, "agent_id": "worker\u0000"},
+            {**event, "agent_id": " worker"},
+            {**event, "agent_id": 47},
+        ]
+        invalid.extend({key: value for key, value in event.items() if key != missing} for missing in event)
+        invalid.extend({**event, key: 47} for key in event if key != "agent_id")
+        payloads = [json.dumps(event), *(json.dumps(value) for value in invalid), "{"]
+        for index, payload in enumerate(payloads):
+            with self.subTest(index=index):
+                result = subprocess.run(
+                    [str(ROOT / "scripts" / "pinboard"), "--claude-subagent-start"],
+                    input=payload,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if index == 0:
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    output = json.loads(result.stdout)
+                    self.assertEqual({"hookSpecificOutput"}, set(output))
+                    context = output["hookSpecificOutput"]
+                    self.assertEqual({"hookEventName", "additionalContext"}, set(context))
+                    self.assertEqual("SubagentStart", context["hookEventName"])
+                    self.assertIn(json.dumps(event["agent_id"]), context["additionalContext"])
+                    self.assertEqual("", result.stderr)
+                else:
+                    self.assertEqual(1, result.returncode, result.stderr)
+                    self.assertEqual("", result.stdout)
+                    self.assertLess(len(result.stderr), 256)
+                for key in ("cwd", "session_id", "transcript_path"):
+                    self.assertNotIn(event[key], result.stdout + result.stderr)
+                self.assertNotIn("sensitive-extra", result.stdout + result.stderr)
+
     def assert_configured_mcp_reads(
         self, sandbox: Path, plugin_root: Path, project: Path, environment: dict[str, str], proposal: JsonObject
     ) -> None:
@@ -166,6 +219,20 @@ class PluginPackagingTests(unittest.TestCase):
             ("mcp-codex.json", None),
             ("mcp-claude.json", None),
             ("scripts/pinboard", None),
+            ("hooks/hooks.json", None),
+            ("hooks/hooks.json", '{"hooks":{"SubagentStart":[]}}'),
+            ("hooks/hooks.json", '{"hooks":{"SubagentStop":[]}}'),
+            (
+                "hooks/hooks.json",
+                '{"hooks":{"SubagentStart":[{"matcher":".*","hooks":[{"type":"command",'
+                '"command":"scripts/pinboard --claude-subagent-start"}]}]}}',
+            ),
+            (
+                "hooks/hooks.json",
+                '{"hooks":{"SubagentStart":[{"matcher":".*","hooks":[{"type":"command",'
+                '"command":"\\"${CLAUDE_PLUGIN_ROOT}/scripts/pinboard\\" --claude-subagent-start",'
+                '"async":true}]}]}}',
+            ),
         )
         for relative, content in changes:
             with self.subTest(relative=relative, content=content), tempfile.TemporaryDirectory() as directory:
@@ -295,7 +362,7 @@ class PluginPackagingTests(unittest.TestCase):
     def test_copied_plugin_launcher_runs_complete_no_model_workflow_without_mutating_plugin_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             sandbox = Path(directory).resolve()
-            plugin_root = sandbox / "copied-plugin"
+            plugin_root = sandbox / "copied plugin"
             plugin_root.mkdir()
             copied_repository_payload(ROOT, plugin_root)
 
@@ -333,6 +400,23 @@ class PluginPackagingTests(unittest.TestCase):
                 "freshness_assumptions": ["The disposable repository began empty."],
             }
             launcher, environment, before = self.prepare_copied_launcher(sandbox, plugin_root, project)
+            hook_configuration = json.loads((plugin_root / "hooks" / "hooks.json").read_bytes())
+            hook_command = hook_configuration["hooks"]["SubagentStart"][0]["hooks"][0]["command"]
+            hook = subprocess.run(
+                hook_command.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root)),
+                shell=True,
+                input=json.dumps(subagent_start_event()),
+                cwd=project,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, hook.returncode, hook.stderr)
+            context = json.loads(hook.stdout)["hookSpecificOutput"]
+            self.assertEqual("SubagentStart", context["hookEventName"])
+            self.assertIn(json.dumps(subagent_start_event()["agent_id"]), context["additionalContext"])
+            self.assertEqual("", hook.stderr)
 
             def run(*arguments: str) -> subprocess.CompletedProcess[str]:
                 result = subprocess.run(

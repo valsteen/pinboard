@@ -24,6 +24,7 @@ class HowItWorksDocumentationTests(unittest.TestCase):
                 Path("assets/how-it-works/product.svg"),
                 Path("assets/how-it-works/layers.svg"),
                 Path("assets/how-it-works/journey.svg"),
+                Path("assets/how-it-works/outcomes.svg"),
                 Path("assets/how-it-works/database.svg"),
                 Path("assets/how-it-works/handover.svg"),
                 Path("assets/how-it-works/brief.svg"),
@@ -31,6 +32,7 @@ class HowItWorksDocumentationTests(unittest.TestCase):
                 Path("assets/how-it-works/product-dark.svg"),
                 Path("assets/how-it-works/layers-dark.svg"),
                 Path("assets/how-it-works/journey-dark.svg"),
+                Path("assets/how-it-works/outcomes-dark.svg"),
                 Path("assets/how-it-works/database-dark.svg"),
                 Path("assets/how-it-works/handover-dark.svg"),
                 Path("assets/how-it-works/brief-dark.svg"),
@@ -39,11 +41,23 @@ class HowItWorksDocumentationTests(unittest.TestCase):
             outputs.keys(),
         )
         guide = outputs[Path("HOW_IT_WORKS.md")]
-        self.assertEqual(7, guide.count("<picture>"))
-        self.assertEqual(7, guide.count('media="(prefers-color-scheme: dark)"'))
-        for slug in ("product", "layers", "journey", "database", "handover", "brief", "review-loop"):
+        self.assertEqual(8, guide.count("<picture>"))
+        self.assertEqual(8, guide.count('media="(prefers-color-scheme: dark)"'))
+        for slug in ("product", "layers", "journey", "outcomes", "database", "handover", "brief", "review-loop"):
             self.assertIn(f'srcset="assets/how-it-works/{slug}-dark.svg"', guide)
             self.assertIn(f'src="assets/how-it-works/{slug}.svg"', guide)
+
+    def test_outcome_diagram_follows_the_operation_journey(self) -> None:
+        guide = render.build_outputs(ROOT)[Path("HOW_IT_WORKS.md")]
+
+        self.assertLess(
+            guide.index('src="assets/how-it-works/journey.svg"'),
+            guide.index('src="assets/how-it-works/outcomes.svg"'),
+        )
+        self.assertLess(
+            guide.index('src="assets/how-it-works/outcomes.svg"'),
+            guide.index("## The repository keeps the memory"),
+        )
 
     def test_diagrams_use_the_approved_reading_surfaces(self) -> None:
         outputs = render.build_outputs(ROOT)
@@ -62,7 +76,7 @@ class HowItWorksDocumentationTests(unittest.TestCase):
                 self.assertNotIn("linearGradient", svg)
                 self.assertNotIn("feDropShadow", svg)
 
-        for slug in ("product", "layers", "journey", "database", "handover", "brief", "review-loop"):
+        for slug in ("product", "layers", "journey", "outcomes", "database", "handover", "brief", "review-loop"):
             day = outputs[Path(f"assets/how-it-works/{slug}.svg")]
             night = outputs[Path(f"assets/how-it-works/{slug}-dark.svg")]
             with self.subTest(slug=slug):

@@ -4,9 +4,11 @@
 
 <img align="right" width="430" src="assets/pinboard-investigation-office.png" alt="A 1970s office worker explaining a wall-sized investigation board covered with a map, notes, portraits, diagrams, colored markers, and connecting thread">
 
-Working with a coding agent can stay fluid: follow an idea, ask for the change, and keep moving. You do not need to maintain a parallel version of the project in a ticket system. Pinboard keeps that rhythm while recording ideas, decisions, work, and reviews beside the repository.
+Working with a coding agent can stay fluid: follow an idea, ask for the change, and keep moving. But the backlog grows. Ideas lose their context, priorities become unclear, and unfinished work gets harder to pick up.
 
-Your coding agent still does the work. Pinboard adds guardrails that let the flow continue without losing the decisions behind it.
+Pinboard helps you keep that backlog useful through the conversation you already have with your coding agent. It records tasks, priorities, dependencies, and the decisions behind them beside the repository.
+
+That context carries into delivery. Accepted direction becomes a precise brief that guides implementation and a separate review. Later sessions can continue from the recorded scope, progress, and evidence, helping you and the agent avoid building on forgotten choices or assumptions neither of you meant to make.
 
 <br clear="right">
 <br>
@@ -23,15 +25,25 @@ You decide what belongs in the product. You accept or reject proposed work, sett
 Pinboard keeps those decisions attached to the work. It:
 
 - preserves ideas without quietly starting them;
-- saves your explicit priority order
+- saves your explicit priority order and dependencies;
 - turns accepted direction into a stable brief;
 - carries that direction through implementation and a separate review of both the request and the change; and
 - restores the decision, current work, and evidence after an interruption.
 
 The coding agent operates that workflow and brings material choices back to you in ordinary language.
 
-The overview identifies the first unstarted item even when a live dependency blocks it. Its `next_unstarted` context names that item and its live dependencies; the corresponding item row retains replacement and preparation facts. Available actions and parallel eligibility remain separate from priority. A changed order does not authorize starting work.
+## Explore your backlog in conversation
 
+The same context that guides implementation also helps your agent reason about what comes next. Ask it to compare tasks, explain dependencies, or identify work that fits your current goals.
+
+Here, the agent uses Pinboard's own backlog to compare the relative size of queued improvements and explain where their scope remains uncertain.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/pinboard-work-selection-dark.png">
+  <img src="assets/pinboard-work-selection.png" alt="A native Codex conversation comparing four queued Pinboard improvements by relative size and explaining uncertainty">
+</picture>
+
+The answer links to the recorded tasks and makes qualitative judgments, not measured effort estimates. The smallest apparent change differs from the first task in the saved priority order, and existing evidence reuse may already suffice. Comparing work does not start implementation.
 
 ## Skills
 

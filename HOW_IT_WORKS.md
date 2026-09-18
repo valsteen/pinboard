@@ -12,21 +12,25 @@ A coding agent already works through interpretation: it reads a request, changes
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works/review-loop-dark.svg">
-  <img src="assets/how-it-works/review-loop.svg" alt="An ordinary coding-agent implementation and review loop beside the same loop anchored by one accepted Pinboard brief, exact candidate, and evidence">
+  <img src="assets/how-it-works/review-loop.svg" alt="Published brief, independent brief review for cross-boundary work, implementation, prepared review context, and independent implementation review, with separate correction paths">
 </picture>
 
-Pinboard anchors that loop to one accepted direction. The implementer and a separate reviewer work from the same brief and the same candidate. Review can still find that the brief, implementation, or evidence is wrong, but the correction stays attached to an explicit decision instead of whichever message happens to be most recent.
+Pinboard anchors that loop to one accepted direction. Cross-boundary work receives an independent review of its published brief before implementation. Findings lead to bounded corrections, republication, and another check of the corrected brief. Local work uses a lighter brief and skips this separate brief review.
+
+After implementation, Pinboard prepares review context that binds the accepted brief, exact candidate, result, and any selected earlier evidence. A separate reviewer then examines that candidate against the brief. Preparing the context is not the review: it may publish an immutable prompt, but it neither judges nor accepts the implementation. Implementation defects return to the same attempt for correction and another review. A gap in the brief or an unresolved product decision goes back to its owner before implementation continues.
 
 The human still decides what belongs in the product, which tradeoffs are acceptable, and what should happen to reviewed repository changes. Pinboard preserves those decisions and returns material choices in ordinary language.
 
 ## The brief makes the agreement inspectable
 
-Before implementation, Pinboard turns accepted direction into a structured brief. It separates the desired outcome from scope, exclusions, compatibility constraints, evidence, verification, and work deliberately left for later. Larger changes also name the project authorities and relationships the implementation and review must preserve.
+Before implementation, Pinboard turns accepted direction into a structured brief. It separates the desired outcome from scope, exclusions, compatibility constraints, evidence, verification, and work deliberately left for later. Cross-boundary work also names the project authorities and relationships the implementation and review must preserve.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works/brief-dark.svg">
   <img src="assets/how-it-works/brief.svg" alt="The canonical work brief organized into artifact identity, accepted scope, whole-work definition, and a checkpoint containing criteria, architecture impact, reviewed authorities, contracts, coverage, lifecycle distinctions, verification, and deferrals">
 </picture>
+
+The diagram expands the cross-boundary form. A local checkpoint retains acceptance criteria, architecture impact, verification, and deferrals without the additional authority, contract, coverage, and lifecycle records. It applies only when ownership, dependency direction, stored and wire identities, and independent consumers remain unchanged and one entry point exposes the complete change.
 
 The structure prevents important kinds of information from disappearing into a paragraph. It does not decide what the project should want or prove that every claim is true. People and coding agents still interpret the evidence; Pinboard checks that they are discussing the same accepted scope and that required distinctions have not been omitted.
 
@@ -50,20 +54,40 @@ Across those paths, four guarantees stay constant:
 - **Review concerns one candidate.** Findings and acceptance stay bound to the exact result that was examined.
 - **Authoritative changes are atomic.** A rejected or failed transition leaves the previous ledger intact; repairable views cannot silently rewrite accepted state.
 
-## One change moves from decision to evidence
+## One operation moves through the layers
 
-The ordinary agent journey uses local MCP tools: select the current accepted work, decide against current facts, then commit and present the result. Preparation start selects the accepted definition and the permitted claim operation under the same lock that commits it.
+Starting a preparation claim through MCP is one representative operation. The request is decoded, the current definition and claim operation are selected under the same transaction that commits the change, and a pure decision accepts or rejects it. An accepted mutation is committed before replaceable views are refreshed and the result is presented.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works/journey-dark.svg">
   <img src="assets/how-it-works/journey.svg" alt="An ordinary preparation start selecting the current definition and claim operation against locked state, then committing, refreshing, and presenting it">
 </picture>
 
-Preparation preserves the accepted meaning and the sources most likely to challenge it. Implementation reads that brief, follows the concrete impact through the repository, and records one candidate with its evidence. A separate reviewer checks the request as well as the change, widens the investigation when a changed relationship exposes another owner, and returns findings to the same attempt.
+The same separation keeps a failed view refresh from undoing an accepted transaction. Preparation, implementation, and review use these boundaries while preserving the accepted work and its evidence.
 
 If accepted direction changes late, Pinboard does not reinterpret the old candidate as satisfying the new request. The complete definition and brief are replaced before another candidate and review. If work pauses or a worker disappears, the same attempt can resume from its accepted Git lineage and recorded evidence without retelling the project history.
 
 The extra steps make a first delivery slower. Their return appears when the work needs another revision, conversation, reviewer, or task: the decision, implementation, and evidence remain connected.
+
+## Precise outcomes cross intact boundaries
+
+Pinboard's layers pass typed outcomes upward instead of flattening a result into an opaque message. Each layer keeps its own responsibility while giving the next layer the facts it needs.
+
+The preparation-start path follows those boundaries:
+
+- MCP decodes an exact `PreparationAuthorityStartRequest`.
+- The application selects the current definition, claim, and dependencies.
+- The domain's preparation-authority decision returns either an accepted decision or an expected `DecisionFailure`.
+- The storage adapter attempts only the mutation described by an accepted decision.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works/outcomes-dark.svg">
+  <img src="assets/how-it-works/outcomes.svg" alt="Preparation start crossing MCP, application, domain, and adapter boundaries while domain rejection, stale-persistence rejection, successful commit, infrastructure failure, and view-warning facts stay distinct for MCP-owned presentation">
+</picture>
+
+Outcomes are broader than errors. An accepted decision describes the proposed lease, an expected rejection returns `DecisionFailure`, and an attempted effect returns either `CommittedEffect` or a separate stale-persistence rejection. Infrastructure failures remain exceptions. A later view-refresh warning remains separate from a committed success.
+
+MCP owns presentation. It returns structured observations, mismatches, changed surfaces, retry disposition, and bounded recovery without parsing message text or inventing missing facts.
 
 ## The repository keeps the memory
 
@@ -108,4 +132,4 @@ For installation and the product overview, return to the [README](README.md). Ma
 
 ---
 
-<sub>This guide and its seven SVG diagrams are generated from the executable seeds in <code>docs/how_it_works/</code>. Edit the seeds and regenerate the outputs; do not edit this file directly.</sub>
+<sub>This guide and its eight SVG diagrams are generated from the executable seeds in <code>docs/how_it_works/</code>. Edit the seeds and regenerate the outputs; do not edit this file directly.</sub>

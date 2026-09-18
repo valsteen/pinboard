@@ -30,7 +30,7 @@ def validate() -> None:
 
 DIAGRAM = Diagram(
     slug="journey",
-    title="One change tells one ordered story",
+    title="One preparation claim moves through the four layers",
     description=(
         "An ordinary preparation start is decoded, samples its operation time, selects the current definition and "
         "initial acquisition or inactive transfer against locked state, commits the targeted mutation atomically, "
@@ -51,9 +51,9 @@ DIAGRAM = Diagram(
         Guide((24, 578), (1376, 578)),
     ),
     connectors=(
-        Connector(((320, 130), (350, 130)), "request", "command", "decode", (335, 116)),
-        Connector(((520, 130), (550, 130)), "command", "observed", "sample", (535, 116)),
-        Connector(((730, 130), (760, 130)), "observed", "requested", "parameters", (745, 116)),
+        Connector(((320, 130), (350, 130)), "request", "command", "decode", (335, 76)),
+        Connector(((520, 130), (550, 130)), "command", "observed", "sample", (535, 76)),
+        Connector(((730, 130), (760, 130)), "observed", "requested", "parameters", (745, 76)),
         Connector(
             ((855, 172), (855, 214), (670, 214), (670, 244)), "requested", "locked", "open transaction", (786, 202)
         ),
@@ -68,9 +68,9 @@ DIAGRAM = Diagram(
             "stale",
             (650, 738),
         ),
-        Connector(((965, 671), (1000, 671)), "transaction", "views", "interface refresh", (982, 659)),
+        Connector(((965, 671), (1000, 671)), "transaction", "views", "refresh", (982, 606)),
         Connector(((1090, 620), (1090, 172)), "views", "latest", "keep receipt", (1125, 410)),
-        Connector(((1190, 130), (1210, 130)), "latest", "result", "present", (1200, 116)),
+        Connector(((1190, 130), (1210, 130)), "latest", "result", "present", (1200, 76)),
     ),
     boxes=(
         Box("request", "Request", "start claim", (), ("MCP request",), 170, 88, 150, 84, "muted"),

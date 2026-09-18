@@ -10,6 +10,8 @@ Codex's explicit root `mcp-codex.json` declares `sh ./scripts/pinboard --mcp` wi
 
 If a version is unprepared, MCP startup exits before the server starts and puts its strict same-launcher preparation action on stderr, never protocol stdout. Deliberate CLI setup may run `<launcher-root>/scripts/pinboard --prepare-runtime` with uv and write access only to that version's `.pinboard-runtime`. Follow the exact preparation result, then use the client's supported MCP reconnect or plugin reload mechanism before attempting a covered tool. Setup and CLI-only operations retain their direct launcher route. A missing required MCP tool stops that operation and never authorizes shell fallback.
 
+The server's existing SDK registration supplies discovery instructions in standard MCP initialization, before deferred tool schemas. Follow those connection instructions first; this reference provides the detailed host procedure and request, startup and recovery contracts. If connection discovery instructions are absent, use the procedure below.
+
 Pinboard wire identities, such as intake's `pinboard_overview` and `pinboard_proposal_create`, identify the required operations. The current host may advertise different full callable names for them. Resolve the native name before selecting a deferred tool schema:
 
 1. Find the required operation in the host's actual tool announcement or native inventory and copy its full callable name, including the connector prefix. Resolve each host's names independently.

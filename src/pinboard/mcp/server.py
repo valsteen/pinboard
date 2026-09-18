@@ -2896,7 +2896,24 @@ async def _run_request(
 
 
 def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPServer:  # noqa: C901 - explicit installed SDK tool registration
-    server = MCPServer("pinboard", version=__version__, log_level="ERROR")
+    server = MCPServer(
+        "pinboard",
+        version=__version__,
+        log_level="ERROR",
+        instructions=(
+            "Pinboard coordinates local repository work: intake, canonical briefs, status, legal actions, "
+            "own leases, dispatch, independent review and recovery.\n\n"
+            "For deferred tools, find the required Pinboard operation in this host's actual announced tool "
+            "inventory. Select its full advertised callable name, including the connector prefix, not its "
+            "short wire name. Resolve each host's names independently. If the full name is unknown, use "
+            "supported native keyword discovery. If exact selection finds no match, reconcile the selected "
+            "name with the advertised inventory before declaring the tool unavailable.\n\n"
+            "Inspect the selected tool's negotiated strict schema and invoke that native callable with exact "
+            "project_root and work_root. These instructions grant no identity, authority or permissions. "
+            "A missing required MCP tool stops its operation; retired agent-workflow CLI commands are not "
+            "substitutes."
+        ),
+    )
     request_ids = itertools.count(1)
 
     @server.tool(

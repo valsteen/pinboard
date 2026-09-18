@@ -3749,7 +3749,8 @@ class McpTransportTest(unittest.TestCase):
                 stdio_client(parameters, errlog=diagnostics) as streams,
                 ClientSession(*streams, message_handler=record_transport_error) as session,
             ):
-                await session.initialize()
+                initialized = await session.initialize()
+                self.assertTrue(initialized.instructions and initialized.instructions.strip())
                 tools = await session.list_tools()
                 result = await session.call_tool(
                     mcp_server.ITEM_STATUS_TOOL,

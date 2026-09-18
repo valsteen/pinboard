@@ -45,7 +45,7 @@ Use the current definition and canonical brief fields to preserve the decision a
 
 ## Start from executable state
 
-Before selecting a deferred Pinboard tool schema, read and follow the [native discovery procedure](references/runtime-adapters.md#packaged-connection-and-first-setup). Use the [current MCP request contract](references/runtime-adapters.md#current-mcp-request-shapes) for connected tool calls. It owns the exact request-envelope placement; workflow authority and lifecycle decisions remain here.
+Before selecting a deferred Pinboard tool schema, follow the discovery instructions supplied by the initialized connection. If those instructions are absent, read and follow the [native discovery procedure](references/runtime-adapters.md#packaged-connection-and-first-setup). Load that shared runtime reference when an operation needs its detailed request, startup or recovery contract, including the [current MCP request contract](references/runtime-adapters.md#current-mcp-request-shapes). It owns exact request-envelope placement; workflow authority and lifecycle decisions remain here.
 
 Classify the current request before entering delivery. When the human asks only to load named context, get oriented, or wait without requesting a revision or implementation, read only that bounded context and stop there. Do not inspect or mutate lifecycle state, validate worker authority, plan brief sources, dispatch work, or launch a reviewer until the human asks to change or execute the work.
 

@@ -191,7 +191,17 @@ class PluginPackagingTests(unittest.TestCase):
         )
 
     def test_metadata_rejects_invalid_mcp_configuration_and_missing_assets(self) -> None:
+        manifest_path = ".claude-plugin/plugin.json"
+        manifest = json.loads((ROOT / manifest_path).read_bytes())
+        missing_hooks = {key: value for key, value in manifest.items() if key != "hooks"}
         changes = (
+            (manifest_path, None),
+            (manifest_path, json.dumps(missing_hooks)),
+            (manifest_path, json.dumps({**manifest, "hooks": "./hooks/hooks.json"})),
+            (manifest_path, json.dumps({**manifest, "hooks": "./hooks/missing.json"})),
+            (manifest_path, json.dumps({**manifest, "hooks": {}})),
+            (manifest_path, json.dumps({**manifest, "hooks": None})),
+            ("hooks/hooks.json", (ROOT / manifest["hooks"]).read_text(encoding="utf-8")),
             ("mcp-codex.json", '{"mcpServers":{"pinboard":{"command":"sh","args":["--mcp"],"cwd":"."}}}'),
             (
                 "mcp-codex.json",
@@ -219,16 +229,16 @@ class PluginPackagingTests(unittest.TestCase):
             ("mcp-codex.json", None),
             ("mcp-claude.json", None),
             ("scripts/pinboard", None),
-            ("hooks/hooks.json", None),
-            ("hooks/hooks.json", '{"hooks":{"SubagentStart":[]}}'),
-            ("hooks/hooks.json", '{"hooks":{"SubagentStop":[]}}'),
+            ("hooks/claude-hooks.json", None),
+            ("hooks/claude-hooks.json", '{"hooks":{"SubagentStart":[]}}'),
+            ("hooks/claude-hooks.json", '{"hooks":{"SubagentStop":[]}}'),
             (
-                "hooks/hooks.json",
+                "hooks/claude-hooks.json",
                 '{"hooks":{"SubagentStart":[{"matcher":".*","hooks":[{"type":"command",'
                 '"command":"scripts/pinboard --claude-subagent-start"}]}]}}',
             ),
             (
-                "hooks/hooks.json",
+                "hooks/claude-hooks.json",
                 '{"hooks":{"SubagentStart":[{"matcher":".*","hooks":[{"type":"command",'
                 '"command":"\\"${CLAUDE_PLUGIN_ROOT}/scripts/pinboard\\" --claude-subagent-start",'
                 '"async":true}]}]}}',
@@ -400,7 +410,8 @@ class PluginPackagingTests(unittest.TestCase):
                 "freshness_assumptions": ["The disposable repository began empty."],
             }
             launcher, environment, before = self.prepare_copied_launcher(sandbox, plugin_root, project)
-            hook_configuration = json.loads((plugin_root / "hooks" / "hooks.json").read_bytes())
+            claude_manifest = json.loads((plugin_root / ".claude-plugin" / "plugin.json").read_bytes())
+            hook_configuration = json.loads((plugin_root / claude_manifest["hooks"]).read_bytes())
             hook_command = hook_configuration["hooks"]["SubagentStart"][0]["hooks"][0]["command"]
             hook = subprocess.run(
                 hook_command.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root)),

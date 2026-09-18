@@ -107,6 +107,7 @@ class ClaudePluginManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     license: str
     keywords: tuple[str, ...]
     mcp_servers: Literal["./mcp-claude.json"] = msgspec.field(name="mcpServers")
+    hooks: Literal["./hooks/claude-hooks.json"]
 
 
 class CodexMcpServer(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -289,7 +290,9 @@ def validate_claude_plugin() -> None:
         raise ValueError("Claude plugin repository or homepage is invalid")
     if not (ROOT / "skills").is_dir():
         raise ValueError("Claude plugin must use the shared repository-root skills directory")
-    msgspec.json.decode((ROOT / "hooks" / "hooks.json").read_bytes(), type=ClaudeHookConfiguration)
+    if (ROOT / "hooks" / "hooks.json").exists():
+        raise ValueError("Claude-only startup hooks must not use shared default hook discovery")
+    msgspec.json.decode((ROOT / value.hooks).read_bytes(), type=ClaudeHookConfiguration)
 
 
 def validate_mcp_configuration() -> None:

@@ -10,6 +10,7 @@
   "repository": "https://github.com/valsteen/pinboard",
   "license": "MIT",
   "mcpServers": "./mcp-claude.json",
+  "hooks": "./hooks/claude-hooks.json",
   "keywords": [
     "coding-agent",
     "project-coordination",

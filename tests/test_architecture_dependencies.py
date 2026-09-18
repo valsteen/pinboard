@@ -118,6 +118,7 @@ class ArchitectureDependencyTest(unittest.TestCase):
                 "pinboard": "pinboard.cli.entrypoint:main",
                 "pinboard-mcp": "pinboard.mcp.server:main",
                 "pinboard-claude-subagent-start": "pinboard.claude_hook:main",
+                "pinboard-claude-session-start": "pinboard.claude_hook:session_start_main",
             },
             metadata["project"]["scripts"],
         )

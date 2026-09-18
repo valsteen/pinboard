@@ -54,6 +54,7 @@ EXPECTED_ENTRY_POINTS: Final = {
     "pinboard": "pinboard.cli.entrypoint:main",
     "pinboard-mcp": "pinboard.mcp.server:main",
     "pinboard-claude-subagent-start": "pinboard.claude_hook:main",
+    "pinboard-claude-session-start": "pinboard.claude_hook:session_start_main",
 }
 
 type SkillName = Annotated[
@@ -155,7 +156,20 @@ class ClaudeStartupMatcher(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     hooks: Annotated[tuple[ClaudeStartupCommand, ...], msgspec.Meta(min_length=1, max_length=1)]
 
 
+class ClaudeParentStartupCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    type: Literal["command"]
+    command: Literal['"${CLAUDE_PLUGIN_ROOT}/scripts/pinboard" --claude-session-start']
+
+
+class ClaudeParentStartupMatcher(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    matcher: Literal[".*"]
+    hooks: Annotated[tuple[ClaudeParentStartupCommand, ...], msgspec.Meta(min_length=1, max_length=1)]
+
+
 class ClaudeStartupHooks(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    session_start: Annotated[tuple[ClaudeParentStartupMatcher, ...], msgspec.Meta(min_length=1, max_length=1)] = (
+        msgspec.field(name="SessionStart")
+    )
     subagent_start: Annotated[tuple[ClaudeStartupMatcher, ...], msgspec.Meta(min_length=1, max_length=1)] = (
         msgspec.field(name="SubagentStart")
     )

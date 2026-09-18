@@ -1,19 +1,24 @@
 import asyncio
 import hashlib
+import io
 import json
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import chdir
+from contextlib import chdir, redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
+import msgspec
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
+from pinboard import claude_hook
 from tests.support import JsonObject
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -26,6 +31,15 @@ def subagent_start_event() -> dict[str, str]:
         "cwd": "/sensitive/native-project",
         "hook_event_name": "SubagentStart",
         "session_id": "sensitive-parent-session",
+        "transcript_path": "/sensitive/native-transcript.jsonl",
+    }
+
+
+def session_start_event() -> dict[str, str]:
+    return {
+        "cwd": "/sensitive/native-project",
+        "hook_event_name": "SessionStart",
+        "session_id": "actual-local-parent",
         "transcript_path": "/sensitive/native-transcript.jsonl",
     }
 
@@ -75,6 +89,110 @@ def tree_fingerprint(root: Path) -> tuple[tuple[str, str, int, str, str], ...]:
 
 
 class PluginPackagingTests(unittest.TestCase):
+    def test_owned_hook_output_rejects_undeclared_fields_and_event_kinds(self) -> None:
+        context: JsonObject = {"hookEventName": "SessionStart", "additionalContext": "parent-context"}
+        for value in (
+            {"hookSpecificOutput": context, "unknown": True},
+            {"hookSpecificOutput": {**context, "unknown": True}},
+            {"hookSpecificOutput": {**context, "hookEventName": "SessionEnd"}},
+        ):
+            with self.subTest(value=value), self.assertRaises(msgspec.ValidationError):
+                msgspec.json.decode(json.dumps(value), type=claude_hook.HookOutput)
+
+    def test_installed_parent_hook_delivers_current_session_and_machine_without_forwarding_payload(self) -> None:
+        event = session_start_event()
+        extended: JsonObject = {
+            **event,
+            "remote_control_session": "sensitive-remote-alias",
+            "host_id": "sensitive-model-host",
+            "metadata": {"nested": [47, {"value": "sensitive-nested"}]},
+        }
+        invalid: list[JsonObject | list[str]] = [
+            [],
+            {**subagent_start_event()},
+            {**extended, "session_id": "parent\nspoofed"},
+            {**event, "hook_event_name": "SessionEnd"},
+            {**event, "session_id": ""},
+            {**event, "session_id": " parent"},
+            {**event, "session_id": "parent/worker"},
+            {**event, "session_id": "parent\u0000"},
+        ]
+        invalid.extend({key: value for key, value in event.items() if key != missing} for missing in event)
+        invalid.extend({**event, key: 47} for key in event)
+        valid: list[JsonObject] = [{**event}, extended]
+        valid.extend(
+            {**extended, "source": source} for source in ("startup", "resume", "clear", "compact", "fork", "future")
+        )
+        payloads = [*(json.dumps(value) for value in [*valid, *invalid]), "{"]
+        outputs: list[str] = []
+        for index, payload in enumerate(payloads):
+            with self.subTest(index=index):
+                result = subprocess.run(
+                    [str(ROOT / "scripts" / "pinboard"), "--claude-session-start"],
+                    input=payload,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if index < len(valid):
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    output = json.loads(result.stdout)
+                    self.assertEqual({"hookSpecificOutput"}, set(output))
+                    context = output["hookSpecificOutput"]
+                    self.assertEqual({"hookEventName", "additionalContext"}, set(context))
+                    self.assertEqual("SessionStart", context["hookEventName"])
+                    self.assertIn(json.dumps(event["session_id"]), context["additionalContext"])
+                    self.assertIn(json.dumps(socket.gethostname()), context["additionalContext"])
+                    self.assertEqual("", result.stderr)
+                    outputs.append(result.stdout)
+                else:
+                    self.assertEqual(1, result.returncode, result.stderr)
+                    self.assertEqual("", result.stdout)
+                    self.assertLess(len(result.stderr), 256)
+                for sensitive in (
+                    event["cwd"],
+                    event["transcript_path"],
+                    "sensitive-remote-alias",
+                    "sensitive-model-host",
+                    "sensitive-nested",
+                ):
+                    self.assertNotIn(sensitive, result.stdout + result.stderr)
+        self.assertEqual(len(valid), len(outputs))
+        self.assertEqual(1, len(set(outputs)))
+
+    def test_parent_hook_samples_machine_for_each_current_session_and_rejects_unavailable_machine(self) -> None:
+        for session_id, hostname in (("first-session", "first-machine"), ("second-session", 'machine-"quoted"-é')):
+            with (
+                self.subTest(session_id=session_id),
+                patch.object(sys, "argv", ["pinboard-claude-session-start"]),
+                patch.object(
+                    sys,
+                    "stdin",
+                    io.TextIOWrapper(
+                        io.BytesIO(json.dumps({**session_start_event(), "session_id": session_id}).encode())
+                    ),
+                ),
+                patch.object(socket, "gethostname", return_value=hostname),
+                redirect_stdout(io.StringIO()) as stdout,
+                redirect_stderr(io.StringIO()) as stderr,
+            ):
+                self.assertEqual(0, claude_hook.session_start_main())
+                context = json.loads(stdout.getvalue())["hookSpecificOutput"]["additionalContext"]
+                self.assertIn(json.dumps(session_id), context)
+                self.assertIn(json.dumps(hostname, ensure_ascii=False), context)
+                self.assertEqual("", stderr.getvalue())
+        with (
+            patch.object(sys, "argv", ["pinboard-claude-session-start"]),
+            patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(session_start_event()).encode()))),
+            patch.object(socket, "gethostname", side_effect=OSError("sensitive-machine-error")),
+            redirect_stdout(io.StringIO()) as stdout,
+            redirect_stderr(io.StringIO()) as stderr,
+        ):
+            self.assertEqual(1, claude_hook.session_start_main())
+            self.assertEqual("", stdout.getvalue())
+            self.assertNotIn("sensitive-machine-error", stderr.getvalue())
+            self.assertLess(len(stderr.getvalue()), 256)
+
     def test_installed_native_hook_delivers_only_own_identity_and_rejects_invalid_events(self) -> None:
         event = subagent_start_event()
         extended: JsonObject = {
@@ -205,6 +323,11 @@ class PluginPackagingTests(unittest.TestCase):
         manifest_path = ".claude-plugin/plugin.json"
         manifest = json.loads((ROOT / manifest_path).read_bytes())
         missing_hooks = {key: value for key, value in manifest.items() if key != "hooks"}
+        hooks = json.loads((ROOT / manifest["hooks"]).read_bytes())["hooks"]
+        parent_matcher = hooks["SessionStart"][0]
+        parent_command = parent_matcher["hooks"][0]
+        worker_matcher = hooks["SubagentStart"][0]
+        worker_command = worker_matcher["hooks"][0]
         changes = (
             (manifest_path, None),
             (manifest_path, json.dumps(missing_hooks)),
@@ -241,18 +364,69 @@ class PluginPackagingTests(unittest.TestCase):
             ("mcp-claude.json", None),
             ("scripts/pinboard", None),
             ("hooks/claude-hooks.json", None),
-            ("hooks/claude-hooks.json", '{"hooks":{"SubagentStart":[]}}'),
+            ("hooks/claude-hooks.json", json.dumps({"hooks": {**hooks, "SubagentStart": []}})),
             ("hooks/claude-hooks.json", '{"hooks":{"SubagentStop":[]}}'),
+            ("hooks/claude-hooks.json", json.dumps({"hooks": {"SubagentStart": hooks["SubagentStart"]}})),
+            ("hooks/claude-hooks.json", json.dumps({"hooks": {**hooks, "SessionStart": []}})),
             (
                 "hooks/claude-hooks.json",
-                '{"hooks":{"SubagentStart":[{"matcher":".*","hooks":[{"type":"command",'
-                '"command":"scripts/pinboard --claude-subagent-start"}]}]}}',
+                json.dumps({"hooks": {**hooks, "SessionStart": [{**parent_matcher, "matcher": "startup"}]}}),
             ),
             (
                 "hooks/claude-hooks.json",
-                '{"hooks":{"SubagentStart":[{"matcher":".*","hooks":[{"type":"command",'
-                '"command":"\\"${CLAUDE_PLUGIN_ROOT}/scripts/pinboard\\" --claude-subagent-start",'
-                '"async":true}]}]}}',
+                json.dumps(
+                    {
+                        "hooks": {
+                            **hooks,
+                            "SessionStart": [
+                                {
+                                    **parent_matcher,
+                                    "hooks": [{**parent_command, "command": parent_command["command"] + " --version"}],
+                                }
+                            ],
+                        }
+                    }
+                ),
+            ),
+            (
+                "hooks/claude-hooks.json",
+                json.dumps(
+                    {
+                        "hooks": {
+                            **hooks,
+                            "SessionStart": [{**parent_matcher, "hooks": [{**parent_command, "async": True}]}],
+                        }
+                    }
+                ),
+            ),
+            (
+                "hooks/claude-hooks.json",
+                json.dumps(
+                    {
+                        "hooks": {
+                            **hooks,
+                            "SubagentStart": [
+                                {
+                                    **worker_matcher,
+                                    "hooks": [
+                                        {**worker_command, "command": "scripts/pinboard --claude-subagent-start"}
+                                    ],
+                                }
+                            ],
+                        }
+                    }
+                ),
+            ),
+            (
+                "hooks/claude-hooks.json",
+                json.dumps(
+                    {
+                        "hooks": {
+                            **hooks,
+                            "SubagentStart": [{**worker_matcher, "hooks": [{**worker_command, "async": True}]}],
+                        }
+                    }
+                ),
             ),
         )
         for relative, content in changes:
@@ -380,6 +554,41 @@ class PluginPackagingTests(unittest.TestCase):
         self.assertEqual("", version.stderr)
         return launcher, environment, tree_fingerprint(plugin_root)
 
+    def assert_registered_startup_context(self, plugin_root: Path, project: Path, environment: dict[str, str]) -> None:
+        manifest = json.loads((plugin_root / ".claude-plugin" / "plugin.json").read_bytes())
+        hooks = json.loads((plugin_root / manifest["hooks"]).read_bytes())["hooks"]
+        for event, identity_field in (
+            ({**subagent_start_event(), "prompt_id": "sensitive-prompt"}, "agent_id"),
+            ({**session_start_event(), "session_id": "first-current-session", "source": "startup"}, "session_id"),
+            ({**session_start_event(), "session_id": "resumed-current-session", "source": "resume"}, "session_id"),
+        ):
+            command = hooks[event["hook_event_name"]][0]["hooks"][0]["command"]
+            result = subprocess.run(
+                command.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root)),
+                shell=True,
+                input=json.dumps({**event, "prompt_id": "sensitive-prompt"}),
+                cwd=project,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            output = json.loads(result.stdout)
+            self.assertEqual({"hookSpecificOutput"}, set(output))
+            context = output["hookSpecificOutput"]
+            self.assertEqual({"hookEventName", "additionalContext"}, set(context))
+            self.assertEqual(event["hook_event_name"], context["hookEventName"])
+            self.assertIn(json.dumps(event[identity_field]), context["additionalContext"])
+            if event["hook_event_name"] == "SessionStart":
+                self.assertIn(json.dumps(socket.gethostname()), context["additionalContext"])
+            else:
+                self.assertNotIn(event["session_id"], result.stdout)
+            for key in ("cwd", "transcript_path"):
+                self.assertNotIn(event[key], result.stdout)
+            self.assertNotIn("sensitive-prompt", result.stdout)
+            self.assertEqual("", result.stderr)
+
     def test_copied_plugin_launcher_runs_complete_no_model_workflow_without_mutating_plugin_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             sandbox = Path(directory).resolve()
@@ -421,25 +630,7 @@ class PluginPackagingTests(unittest.TestCase):
                 "freshness_assumptions": ["The disposable repository began empty."],
             }
             launcher, environment, before = self.prepare_copied_launcher(sandbox, plugin_root, project)
-            claude_manifest = json.loads((plugin_root / ".claude-plugin" / "plugin.json").read_bytes())
-            hook_configuration = json.loads((plugin_root / claude_manifest["hooks"]).read_bytes())
-            hook_command = hook_configuration["hooks"]["SubagentStart"][0]["hooks"][0]["command"]
-            hook = subprocess.run(
-                hook_command.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root)),
-                shell=True,
-                input=json.dumps({**subagent_start_event(), "prompt_id": "sensitive-prompt"}),
-                cwd=project,
-                env=environment,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(0, hook.returncode, hook.stderr)
-            context = json.loads(hook.stdout)["hookSpecificOutput"]
-            self.assertEqual("SubagentStart", context["hookEventName"])
-            self.assertIn(json.dumps(subagent_start_event()["agent_id"]), context["additionalContext"])
-            self.assertEqual("", hook.stderr)
-            self.assertNotIn("sensitive-prompt", hook.stdout)
+            self.assert_registered_startup_context(plugin_root, project, environment)
 
             def run(*arguments: str) -> subprocess.CompletedProcess[str]:
                 result = subprocess.run(

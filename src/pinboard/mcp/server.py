@@ -32,6 +32,7 @@ from pinboard.adapters import (
     lifecycle_operations,
     review_operations,
 )
+from pinboard.adapters.files import root as git_root
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, ImmutableFilePublishedError, RootError
@@ -94,6 +95,7 @@ OVERVIEW_TOOL = "pinboard_overview"
 ACTIONS_TOOL = "pinboard_actions"
 ATTEMPT_INSPECT_TOOL = "pinboard_attempt_inspect"
 CANDIDATE_RESTORE_TOOL = "pinboard_candidate_restore"
+CANDIDATE_OBSERVE_TOOL = "pinboard_candidate_observe"
 ARTIFACT_VERIFY_TOOL = "pinboard_artifact_verify"
 PREPARATION_AUTHORITY_TOOL = "pinboard_preparation_authority"
 ATTEMPT_AUTHORITY_TOOL = "pinboard_attempt_authority"
@@ -2390,8 +2392,8 @@ def _mcp_launch_envelope(
             "action_id": {"kind": "continue", "subject": attempt_id},
         }
         message += (
-            " After reading the complete canonical brief/bootstrap, obtain your own trusted post-launch identity "
-            "through the current runtime adapter; "
+            " After reading the complete canonical brief/bootstrap and loading the complete delivery skill through "
+            "the current runtime adapter, obtain your own trusted post-launch identity; "
             f"call `pinboard_attempt_authority` with {msgspec.json.encode({'request': acquisition}, order='sorted').decode()}, "
             f"then `pinboard_actions` with {msgspec.json.encode({'request': continuation}, order='sorted').decode()}. "
             "Substitute only the trusted post-launch identity and returned lease facts. Missing connected tools or identity "
@@ -2700,6 +2702,80 @@ def _review_candidate_required(
         )
     )
     return failure
+
+
+def _observe_candidate(
+    project_root: str,
+    work_root: str,
+    attempt_id: str,
+    token: CancellationToken,
+) -> OperationResult:
+    """Read one checkout and selected attempt context; never prepare, freeze or submit."""
+
+    token.checkpoint()
+    schema = "pinboard-mcp-candidate-observation-result/v1"
+    try:
+        request = msgspec.convert(
+            {"project_root": project_root, "work_root": work_root, "attempt_id": attempt_id},
+            type=contracts.CandidateObserveRequest,
+            strict=True,
+        )
+    except (msgspec.ValidationError, ValueError) as error:
+        return _read_failure(
+            schema, "CANDIDATE_OBSERVATION_INVALID", f"Cannot decode candidate observation: {error}", None
+        )
+    try:
+        source_checkout = resolve_source_checkout_root(Path(request.project_root))
+        durable = resolve_durable_roots(resolve_shared_repository_root(source_checkout), Path(request.work_root))
+    except (RootError, OSError, ValueError) as error:
+        return _read_failure(schema, "CANDIDATE_GIT_UNAVAILABLE", f"Cannot resolve candidate checkout: {error}", None)
+    store = compose_store(durable)
+    context = queries.select_attempt_context(store, AttemptId(request.attempt_id))
+    if isinstance(context, DecisionFailure) or not isinstance(context, query_models.NonterminalAttemptContextFacts):
+        return _read_failure(
+            schema, "CANDIDATE_CONTEXT_UNAVAILABLE", "Observation requires one current nonterminal attempt.", None
+        )
+    token.checkpoint()
+    try:
+        branch, _ = git_root.observe_checkout_identity(source_checkout)
+        if branch != context.branch:
+            return _read_failure(
+                schema,
+                "CANDIDATE_BRANCH_MISMATCH",
+                "Candidate observation requires the attempt's exact branch.",
+                FailureDetails(
+                    observed=(FailureFact("branch", branch),),
+                    mismatches=(FailureMismatch("branch", context.branch, branch),),
+                    retry=RetryDisposition.CORRECT_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
+        candidate = git_root.read_working_tree_candidate(source_checkout)
+        omitted = git_root.read_untracked_paths(source_checkout)
+    except (RootError, OSError, ValueError) as error:
+        return _read_failure(schema, "CANDIDATE_GIT_UNAVAILABLE", f"Cannot read candidate checkout: {error}", None)
+    content = msgspec.to_builtins(
+        contracts.CandidateObserved(
+            schema,
+            "observed",
+            request.attempt_id,
+            candidate.identity,
+            str(source_checkout),
+            branch,
+            context.base_revision,
+            candidate.preimage_revision,
+            hashlib.sha256(candidate.diff).hexdigest(),
+            len(candidate.diff),
+            omitted,
+            False,
+            "unchanged",
+            "safe-to-repeat",
+            (),
+        )
+    )
+    return OperationResult(content, "ok", None)
 
 
 def _candidate_restore(
@@ -3095,6 +3171,20 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
         )
 
     @server.tool(
+        name=CANDIDATE_OBSERVE_TOOL,
+        description="Read one attempt's actual tracked working-tree candidate identity and omitted Git-visible nonignored untracked paths. Changes nothing; does not prepare files, freeze evidence, acquire authority, submit or decide acceptance. Prepare only intended files under separate authority, then reobserve before existing leased submission.",
+    )
+    async def candidate_observe(project_root: str, work_root: str, attempt_id: str) -> dict[str, JsonValue]:
+        return await _run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            CANDIDATE_OBSERVE_TOOL,
+            project_root,
+            partial(_observe_candidate, project_root, work_root, attempt_id),
+        )
+
+    @server.tool(
         name=CANDIDATE_RESTORE_TOOL,
         description="Restore exact verified accepted candidate bytes into a caller-selected exact clean checkout. Changes only source checkout; no lifecycle, authority or automatic launch.",
     )
@@ -3220,6 +3310,11 @@ def _install_boundary_contracts(server: MCPServer) -> None:
             CANDIDATE_RESTORE_TOOL,
             contracts.schema_for(contracts.CandidateRestoreRequest),
             contracts.union_schema_for(contracts.CANDIDATE_RESTORE_RESULT_TYPES),
+        ),
+        (
+            CANDIDATE_OBSERVE_TOOL,
+            contracts.schema_for(contracts.CandidateObserveRequest),
+            contracts.union_schema_for(contracts.CANDIDATE_OBSERVATION_RESULT_TYPES),
         ),
         (
             REVIEW_JOB_TOOL,

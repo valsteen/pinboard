@@ -134,7 +134,7 @@ class PluginPackagingTests(unittest.TestCase):
                         initialized = await session.initialize()
                         self.assertEqual("pinboard", initialized.server_info.name)
                         discovered = await session.list_tools()
-                        self.assertEqual(19, len(discovered.tools))
+                        self.assertEqual(20, len(discovered.tools))
                         if manifest_index == 0:
                             created = await session.call_tool(
                                 "pinboard_proposal_create",

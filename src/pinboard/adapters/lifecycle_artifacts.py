@@ -187,7 +187,7 @@ def _observe_review_candidate(
     if not isinstance(context, query_models.NonterminalAttemptContextFacts):
         return _unchanged("Review submission requires one current nonterminal attempt.", candidate=candidate)
     try:
-        branch, head = observe_checkout_identity(source_checkout)
+        branch, _ = observe_checkout_identity(source_checkout)
     except RootError as error:
         return _unchanged(f"Cannot observe the review candidate checkout: {error}", candidate=candidate)
     if branch != context.branch:
@@ -205,7 +205,7 @@ def _observe_review_candidate(
             str(context.item_id),
             candidate,
             branch,
-            head,
+            observed.preimage_revision,
             context.base_revision,
             recorded_at.isoformat(),
             observed.diff,

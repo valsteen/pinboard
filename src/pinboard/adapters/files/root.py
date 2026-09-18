@@ -14,6 +14,7 @@ _READ_CHUNK_BYTES = 64 * 1024
 @dataclass(frozen=True, slots=True)
 class WorkingTreeCandidate:
     identity: str
+    preimage_revision: str
     diff: bytes
 
 
@@ -140,6 +141,8 @@ def read_working_tree_candidate(cwd: Path) -> WorkingTreeCandidate:
 
     diff = _git_bytes(
         cwd,
+        "-c",
+        "diff.autoRefreshIndex=false",
         "diff",
         "--binary",
         "HEAD",
@@ -147,7 +150,21 @@ def read_working_tree_candidate(cwd: Path) -> WorkingTreeCandidate:
         unavailable_message=f"Cannot read the working-tree diff at '{cwd}'.",
     )
     head = _git_text(cwd, "rev-parse", "--verify", "HEAD")
-    return WorkingTreeCandidate(working_tree_identity(head, diff), diff)
+    return WorkingTreeCandidate(working_tree_identity(head, diff), head, diff)
+
+
+def read_untracked_paths(cwd: Path) -> tuple[str, ...]:
+    """Read Git-visible nonignored paths excluded from the tracked candidate diff."""
+
+    paths = _git_bytes(
+        cwd,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        unavailable_message=f"Cannot read untracked paths at '{cwd}'.",
+    )
+    return tuple(path.decode() for path in paths.split(b"\0") if path)
 
 
 def read_current_head_candidate(

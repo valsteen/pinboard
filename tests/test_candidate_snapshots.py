@@ -58,6 +58,43 @@ from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 
 
 class CandidateSnapshotTest(unittest.TestCase):
+    def test_candidate_reader_uses_exact_preimage_and_binary_test_changes(self) -> None:
+        checkout, base = self.repository()
+        (checkout / "test_example.py").write_text("assert True\n", encoding="utf-8")
+        (checkout / "binary.dat").write_bytes(b"\0base")
+        self.git(checkout, "add", "test_example.py", "binary.dat")
+        self.git(
+            checkout, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "tests and binary"
+        )
+        original = read_working_tree_candidate(checkout)
+        (checkout / "test_example.py").write_text("assert False\n", encoding="utf-8")
+        changed_test = read_working_tree_candidate(checkout)
+        self.assertNotEqual(original.identity, changed_test.identity)
+        (checkout / "binary.dat").write_bytes(b"\0changed")
+        changed_binary = read_working_tree_candidate(checkout)
+        self.assertNotEqual(changed_test.identity, changed_binary.identity)
+        self.assertIn(b"GIT binary patch", changed_binary.diff)
+        self.assertIn(b"test_example.py", changed_binary.diff)
+        self.assertEqual(
+            working_tree_identity(changed_binary.preimage_revision, changed_binary.diff), changed_binary.identity
+        )
+        self.assertNotEqual(base, changed_binary.preimage_revision)
+        self.git(
+            checkout,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "different preimage",
+        )
+        new_preimage = read_working_tree_candidate(checkout)
+        self.assertEqual(changed_binary.diff, new_preimage.diff)
+        self.assertNotEqual(changed_binary.preimage_revision, new_preimage.preimage_revision)
+        self.assertNotEqual(changed_binary.identity, new_preimage.identity)
+
     def git(self, cwd: Path, *arguments: str) -> str:
         return subprocess.run(["git", *arguments], cwd=cwd, check=True, text=True, capture_output=True).stdout.strip()
 
@@ -477,7 +514,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             patch("pinboard.adapters.files.root._working_tree_status", return_value=b""),
             patch(
                 "pinboard.adapters.files.root.read_working_tree_candidate",
-                side_effect=(WorkingTreeCandidate("empty", b""), WorkingTreeCandidate("empty", b"")),
+                side_effect=(WorkingTreeCandidate("empty", base, b""), WorkingTreeCandidate("empty", base, b"")),
             ),
             patch(
                 "pinboard.adapters.files.root.subprocess.run",
@@ -648,7 +685,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             patch.object(
                 lifecycle_artifacts,
                 "read_working_tree_candidate",
-                return_value=WorkingTreeCandidate("working-tree-sha256:" + "1" * 64, b"diff"),
+                return_value=WorkingTreeCandidate("working-tree-sha256:" + "1" * 64, "head", b"diff"),
             ),
         ):
             self.assertIsInstance(
@@ -660,11 +697,13 @@ class CandidateSnapshotTest(unittest.TestCase):
             patch.object(
                 lifecycle_artifacts,
                 "read_working_tree_candidate",
-                return_value=WorkingTreeCandidate(working_candidate, b"diff"),
+                return_value=WorkingTreeCandidate(working_candidate, "head", b"diff"),
             ),
         ):
             snapshot = lifecycle_artifacts._observe_review_candidate(checkout, store, working, SQLITE_NOW)
         self.assertIsInstance(snapshot, WorkingTreeCandidateSnapshot)
+        assert isinstance(snapshot, WorkingTreeCandidateSnapshot)
+        self.assertEqual("head", snapshot.preimage_revision)
 
         commit_observations = (
             (CurrentHeadCandidate("commit", b"diff"), CommitCandidateSnapshot),

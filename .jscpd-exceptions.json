@@ -124,17 +124,17 @@
           {
             "endpoint": {
               "name": "mcp/server.py",
-              "start": 2173,
-              "end": 2186,
+              "start": 2175,
+              "end": 2188,
               "startLoc": {
-                "line": 2173,
                 "column": 46,
-                "position": 88551
+                "line": 2175,
+                "position": 88658
               },
               "endLoc": {
-                "line": 2186,
                 "column": 25,
-                "position": 89060
+                "line": 2188,
+                "position": 89167
               }
             },
             "sha256": "544027f2a1fd10aa6b80866ab5635f5ba698ecbd9447ce85750fadc0f7ede331"
@@ -142,17 +142,17 @@
           {
             "endpoint": {
               "name": "mcp/server.py",
-              "start": 2297,
-              "end": 2310,
+              "start": 2299,
+              "end": 2312,
               "startLoc": {
-                "line": 2297,
                 "column": 55,
-                "position": 93813
+                "line": 2299,
+                "position": 93920
               },
               "endLoc": {
-                "line": 2310,
                 "column": 25,
-                "position": 94322
+                "line": 2312,
+                "position": 94429
               }
             },
             "sha256": "544027f2a1fd10aa6b80866ab5635f5ba698ecbd9447ce85750fadc0f7ede331"
@@ -165,9 +165,9 @@
         "rationale": "Distinct exact request leaves invoke different application operations with nominal ItemId versus AttemptId scope, then render different schema/scope/conflict records. Shared claim and rejection-detail conversion already owns the repeated representation. Further folding requires a cross-family workflow callback or late reclassification of a selected leaf."
       },
       "certification": {
-        "reviewer_task_id": "01a0aeb6-0da1-7681-9ef2-45e524300c6c",
-        "reviewed_pair_sha256": "f1f2d56f01468e1092034bde74642d2236a65c587276797e0aec32304477118d",
-        "evidence_sha256": "2f91a3da2872be65e5e5e6c58cff96d70b34be0d1838f1965c19e6b5a0e376a0"
+        "reviewer_task_id": "01a0b3ca-5a63-7f03-8df7-515d362bec41",
+        "reviewed_pair_sha256": "bd493e7047b9661d7296d59b0762c9daa468cd956834957f188294cfed052530",
+        "evidence_sha256": "c90cd3e3e2f6a6230953244d16170c9974a5938861c993944bc4d6bda6681f51"
       }
     },
     {
@@ -180,17 +180,17 @@
           {
             "endpoint": {
               "name": "mcp/server.py",
-              "start": 2192,
-              "end": 2207,
+              "start": 2194,
+              "end": 2209,
               "startLoc": {
-                "line": 2192,
                 "column": 99,
-                "position": 89425
+                "line": 2194,
+                "position": 89532
               },
               "endLoc": {
-                "line": 2207,
                 "column": 31,
-                "position": 89852
+                "line": 2209,
+                "position": 89959
               }
             },
             "sha256": "f8dfc07a511f17dbd45418a675d7504b640244c1f56d8eb88f084b0bf0928f55"
@@ -198,17 +198,17 @@
           {
             "endpoint": {
               "name": "mcp/server.py",
-              "start": 2316,
-              "end": 2331,
+              "start": 2318,
+              "end": 2333,
               "startLoc": {
-                "line": 2316,
                 "column": 101,
-                "position": 94691
+                "line": 2318,
+                "position": 94798
               },
               "endLoc": {
-                "line": 2331,
                 "column": 31,
-                "position": 95118
+                "line": 2333,
+                "position": 95225
               }
             },
             "sha256": "f8dfc07a511f17dbd45418a675d7504b640244c1f56d8eb88f084b0bf0928f55"
@@ -221,9 +221,9 @@
         "rationale": "Each family reloads its distinct authority conflict after rejection. Successful operations explicitly refresh affected views before rendering the already-consolidated authority claims and committed receipt/warning. Hiding the remaining view effect inside a conversion would make a pure-looking renderer effectful; sharing the whole workflow would couple distinct scope and mutation-result types."
       },
       "certification": {
-        "reviewer_task_id": "01a0aeb6-0da1-7681-9ef2-45e524300c6c",
-        "reviewed_pair_sha256": "6451f0bb9b7f2b4537e3164fbd76f9a7888ba84b9342a8bdb4d1ed02d9b79833",
-        "evidence_sha256": "2f91a3da2872be65e5e5e6c58cff96d70b34be0d1838f1965c19e6b5a0e376a0"
+        "reviewer_task_id": "01a0b3ca-5a63-7f03-8df7-515d362bec41",
+        "reviewed_pair_sha256": "01a6384cc8cc4bca143a9aaf8c347dfedce1b60a31300f163495c8f587a6347a",
+        "evidence_sha256": "c90cd3e3e2f6a6230953244d16170c9974a5938861c993944bc4d6bda6681f51"
       }
     }
   ]

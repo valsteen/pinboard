@@ -651,7 +651,7 @@ class McpTransportTest(unittest.TestCase):
 
         async def scenario() -> None:
             tools = await server.list_tools()
-            self.assertEqual(19, len(tools))
+            self.assertEqual(20, len(tools))
             for tool in tools:
                 with self.subTest(tool=tool.name):
                     self.assertEqual("object", tool.input_schema["type"])
@@ -3806,6 +3806,7 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.DISPATCH_TOOL,
                 mcp_server.REVIEW_JOB_TOOL,
                 mcp_server.CANDIDATE_RESTORE_TOOL,
+                mcp_server.CANDIDATE_OBSERVE_TOOL,
                 mcp_server.ITEM_DEFINITION_TOOL,
                 mcp_server.BRIEF_REVIEW_TOOL,
                 mcp_server.BRIEF_CONTRACT_TOOL,
@@ -3865,6 +3866,14 @@ class McpTransportTest(unittest.TestCase):
         self.assertTrue(committed_schema["properties"]["state_changed"]["const"])
         self.assertEqual(3, committed_schema["properties"]["changed_surfaces"]["minItems"])
         self.assertEqual({"type": "null"}, committed_schema["properties"]["warning"])
+        observation_schema = tools_by_name[mcp_server.CANDIDATE_OBSERVE_TOOL].output_schema
+        assert observation_schema is not None
+        for name in ("CandidateObserved", "CandidateObservationRejected"):
+            with self.subTest(observation_result=name):
+                self.assertEqual(
+                    {"type": "boolean", "const": False},
+                    observation_schema["$defs"][name]["properties"]["state_changed"],
+                )
         self.assertEqual(self._expected_bytes(roots, "work-a"), msgspec.json.encode(result.structured_content))
         self.assertTrue(rejected.is_error)
         self.assertEqual(1, len(rejected.content))

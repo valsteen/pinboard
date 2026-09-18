@@ -365,6 +365,12 @@ class AttemptInspectRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     attempt_id: PathComponent
 
 
+class CandidateObserveRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    attempt_id: PathComponent
+
+
 class CandidateRestoreRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     project_root: RootPath
     work_root: RootPath
@@ -2327,6 +2333,43 @@ CANDIDATE_RESTORE_RESULT_TYPES = (
     ExecutorBusyResult,
 )
 
+
+class CandidateObserved(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-candidate-observation-result/v1"]
+    status: Literal["observed"]
+    attempt_id: PathComponent
+    candidate: Annotated[str, msgspec.Meta(pattern=r"\Aworking-tree-state-sha256:[0-9a-f]{64}\z")]
+    source_checkout: RootPath
+    branch: NonEmptyText
+    accepted_base_revision: NonEmptyText
+    preimage_revision: NonEmptyText
+    diff_sha256: Sha256
+    diff_size_bytes: NonNegativeInt
+    omitted_untracked_paths: tuple[NonEmptyText, ...]
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_state_changed(self.state_changed, False)
+
+
+class CandidateObservationRejected(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-candidate-observation-result/v1"]
+    code: Literal[
+        "CANDIDATE_OBSERVATION_INVALID",
+        "CANDIDATE_CONTEXT_UNAVAILABLE",
+        "CANDIDATE_BRANCH_MISMATCH",
+        "CANDIDATE_GIT_UNAVAILABLE",
+    ]
+    retry: Literal["correct-input"]
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+
+CANDIDATE_OBSERVATION_RESULT_TYPES = (CandidateObserved, CandidateObservationRejected, ExecutorBusyResult)
+
 ITEM_DEFINITION_RESULT_TYPES = (
     query_models.ItemDefinition,
     query_models.ItemDefinitionHistory,
@@ -2428,6 +2471,7 @@ type RequestBoundary = (
     | type[BriefPublishRequest]
     | type[OverviewRequest]
     | type[AttemptInspectRequest]
+    | type[CandidateObserveRequest]
     | type[CandidateRestoreRequest]
     | type[ArtifactVerifyRequest]
     | type[DispatchRequest]
@@ -2511,6 +2555,8 @@ type ResultBoundary = (
     | type[ReviewJobCandidateRequired]
     | type[ReviewJobFailedAfterPublication]
     | type[CandidateRestoreReady]
+    | type[CandidateObserved]
+    | type[CandidateObservationRejected]
     | type[CandidateRestoreInvalid]
     | type[CandidateRestoreRejected]
     | type[CandidateRestoreFailed]
@@ -2639,6 +2685,8 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
         "ReviewJobInvalid",
         "ReviewJobRejected",
         "ReviewJobCandidateRequired",
+        "CandidateObserved",
+        "CandidateObservationRejected",
         "CandidateRestoreInvalid",
         "CandidateRestoreRejected",
     }
@@ -3110,6 +3158,10 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         else:
             result_type = ReviewJobRejected
         msgspec.convert(content, type=result_type, strict=True)
+    elif tool_name == "pinboard_candidate_observe":
+        msgspec.convert(
+            content, type=CandidateObserved if status == "observed" else CandidateObservationRejected, strict=True
+        )
     elif tool_name == "pinboard_candidate_restore":
         if status == "restored":
             result_type = CandidateRestoreReady

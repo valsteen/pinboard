@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -16,6 +17,7 @@ from unittest.mock import patch
 import msgspec
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp_types import CallToolResult
 
 from pinboard.adapters import candidate_evidence, dispatch_operations
 from pinboard.adapters.files import root
@@ -43,6 +45,133 @@ from tests.work_brief_support import CHECKPOINT_ID, ready_review
 
 
 class McpJobsTest(CheckpointPackageSupport):
+    def test_candidate_observation_rejects_invalid_input_context_and_result_claims(self) -> None:
+        with patch.object(mcp_server, "resolve_source_checkout_root", side_effect=AssertionError("Must not resolve")):
+            invalid = mcp_server._observe_candidate("", "/work", "work-a-1", mcp_server.CancellationToken())
+            self.assertEqual("CANDIDATE_OBSERVATION_INVALID", invalid.content["code"])
+        fixture = self.checkpoint_fixture()
+        for project, attempt, code in (
+            (str(fixture.project), "missing", "CANDIDATE_CONTEXT_UNAVAILABLE"),
+            ("/nonexistent/pinboard-observation-checkout", "work-a-1", "CANDIDATE_GIT_UNAVAILABLE"),
+        ):
+            with self.subTest(code=code):
+                result = mcp_server._observe_candidate(
+                    project, str(fixture.work), attempt, mcp_server.CancellationToken()
+                )
+                contracts.validate_result("pinboard_candidate_observe", result.content)
+                self.assertEqual(code, result.content["code"])
+                self.assertEqual([], result.content["changed_surfaces"])
+        observed = mcp_server._observe_candidate(
+            str(fixture.project), str(fixture.work), "work-a-1", mcp_server.CancellationToken()
+        )
+        invalid_claims: tuple[dict[str, contracts.JsonValue], ...] = (
+            {"state_changed": True},
+            {"changed_surfaces": ["ledger"]},
+            {"candidate": "invented"},
+            {"accepted": True},
+        )
+        for override in invalid_claims:
+            with self.subTest(override=override), self.assertRaises(msgspec.ValidationError):
+                contracts.validate_result("pinboard_candidate_observe", observed.content | override)
+        for override in ({"operation": "commit"}, {"lease_id": "borrowed"}, {"attempt_id": "../other"}):
+            with self.subTest(override=override), self.assertRaises(msgspec.ValidationError):
+                msgspec.convert(
+                    {"project_root": str(fixture.project), "work_root": str(fixture.work), "attempt_id": "work-a-1"}
+                    | override,
+                    type=contracts.CandidateObserveRequest,
+                    strict=True,
+                )
+
+    def test_native_candidate_observation_reports_omissions_without_effects_and_submits_exact_state(self) -> None:  # noqa: PLR0915 - one negotiated observation and persisted submission journey
+        fixture = self.checkpoint_fixture(candidate_form="current-head")
+        returned = self.transition_result(
+            fixture, self.project_action(fixture, "return-for-correction:work-a-1"), {"reason": "New candidate."}
+        )
+        self.assertEqual("committed", returned["status"])
+        (fixture.project / "GREETING.md").write_text("Hello\n", encoding="utf-8")
+        (fixture.project / "unrelated-note.md").write_text("Private note\n", encoding="utf-8")
+        (fixture.project / ".git" / "info" / "exclude").write_text("/.codex/pinboard/\nignored\n", encoding="utf-8")
+        (fixture.project / "ignored").write_text("Ignored\n", encoding="utf-8")
+        roots = {"project_root": str(fixture.project), "work_root": str(fixture.work), "attempt_id": "work-a-1"}
+        executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        server = mcp_server.create_server(
+            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=8, line_limit=256)
+        )
+
+        def observe() -> dict[str, contracts.JsonValue]:
+            result = asyncio.run(server.call_tool("pinboard_candidate_observe", roots))
+            assert isinstance(result, CallToolResult)
+            assert isinstance(result.structured_content, dict)
+            return result.structured_content
+
+        async def negotiated_observe() -> dict[str, contracts.JsonValue]:
+            parameters = StdioServerParameters(command=sys.executable, args=["-m", "pinboard.mcp"])
+            async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
+                await session.initialize()
+                tools = await session.list_tools()
+                self.assertIn("pinboard_candidate_observe", {tool.name for tool in tools.tools})
+                result = await session.call_tool("pinboard_candidate_observe", roots)
+                assert isinstance(result.structured_content, dict)
+                return result.structured_content
+
+        before = fixture.store.validated_snapshot()
+        index_before = (fixture.project / ".git" / "index").read_bytes()
+        os.utime(fixture.project / "tracked.txt", ns=(1_500_000_000_000_000_000, 1_500_000_000_000_000_000))
+        artifacts_before = tuple(sorted((fixture.work / "artifacts").rglob("*")))
+        accepted_bytes_before = tuple(
+            (reference.selector, (fixture.work / reference.selector).read_bytes())
+            for reference in before.artifact_references
+        )
+        source_bytes_before = tuple(
+            (name, (fixture.project / name).read_bytes())
+            for name in ("GREETING.md", "unrelated-note.md", "tracked.txt")
+        )
+        first = asyncio.run(negotiated_observe())
+        self.assertEqual("observed", first["status"], first)
+        self.assertEqual(["GREETING.md", "unrelated-note.md"], first["omitted_untracked_paths"])
+        self.assertEqual(root.read_working_tree_candidate(fixture.project).identity, first["candidate"])
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        self.assertEqual(index_before, (fixture.project / ".git" / "index").read_bytes())
+        self.assertEqual(artifacts_before, tuple(sorted((fixture.work / "artifacts").rglob("*"))))
+        for selector, contents in accepted_bytes_before:
+            self.assertEqual(contents, (fixture.work / selector).read_bytes())
+        for name, contents in source_bytes_before:
+            self.assertEqual(contents, (fixture.project / name).read_bytes())
+        subprocess.run(["git", "add", "--intent-to-add", "--", "GREETING.md"], cwd=fixture.project, check=True)
+        prepared = observe()
+        self.assertNotEqual(first["candidate"], prepared["candidate"])
+        self.assertEqual(["unrelated-note.md"], prepared["omitted_untracked_paths"])
+        self.assertIn(b"GREETING.md", root.read_working_tree_candidate(fixture.project).diff)
+        lease = self.native_attempt_acquire(fixture, "native-observer-worker")
+        selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
+        before_stale_submission = fixture.store.validated_snapshot()
+        (fixture.project / "GREETING.md").write_text("Changed after observation\n", encoding="utf-8")
+        stale = self.transition_result(fixture, selected, {"candidate": prepared["candidate"]})
+        self.assertEqual("rejected", stale["status"], stale)
+        self.assertEqual([], stale["changed_surfaces"])
+        self.assertEqual(before_stale_submission, fixture.store.validated_snapshot())
+        (fixture.project / "GREETING.md").write_text("Hello\n", encoding="utf-8")
+        selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
+        self.assertEqual(
+            "committed", self.transition_result(fixture, selected, {"candidate": prepared["candidate"]})["status"]
+        )
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
+        context = fresh.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        assert context is not None
+        snapshot = candidate_snapshots.decode_candidate_snapshot(
+            (fixture.work / context.reference.selector).read_bytes()
+        )
+        self.assertEqual(prepared["candidate"], snapshot.candidate)
+        self.assertEqual(prepared["preimage_revision"], snapshot.preimage_revision)
+        self.assertIn(b"GREETING.md", snapshot.diff)
+        self.assertNotIn(b"unrelated-note.md", snapshot.diff)
+        subprocess.run(["git", "switch", "-c", "wrong-branch"], cwd=fixture.project, check=True, capture_output=True)
+        rejected = observe()
+        self.assertEqual("CANDIDATE_BRANCH_MISMATCH", rejected["code"])
+        self.assertFalse(rejected["state_changed"])
+        self.assertEqual("unchanged", rejected["effect"])
+
     def test_dispatch_and_review_are_installed_strict_tools(self) -> None:
         executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
         server = mcp_server.create_server(
@@ -50,8 +179,13 @@ class McpJobsTest(CheckpointPackageSupport):
         )
         try:
             tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
-            self.assertEqual(19, len(tools))
-            for name in ("pinboard_dispatch", "pinboard_review_job", "pinboard_candidate_restore"):
+            self.assertEqual(20, len(tools))
+            for name in (
+                "pinboard_dispatch",
+                "pinboard_review_job",
+                "pinboard_candidate_restore",
+                "pinboard_candidate_observe",
+            ):
                 self.assertIn(name, tuple(tools))
                 self.assertIsNotNone(tools[name].output_schema)
                 self.assertEqual(tools[name].input_schema["additionalProperties"], False)

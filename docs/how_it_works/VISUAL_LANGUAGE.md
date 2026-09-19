@@ -37,7 +37,7 @@ The day canvas uses a warm paper tone; the night canvas uses muted navy selected
 ## Source ownership
 
 - `model.py` owns the reusable primitives, named day and night palettes, soft-elbow rendering, and mechanically checkable geometry rules. Rendering receives one complete palette rather than selecting or hardcoding theme colors inside drawing helpers.
-- `product.py`, `layers.py`, `journey.py`, `database.py`, `handover.py`, `review_loop.py`, and `brief.py` own the semantic inventory and authored composition of their diagrams.
+- `product.py`, `layers.py`, `journey.py`, `outcomes.py`, `database.py`, `handover.py`, `review_loop.py`, and `brief.py` own the semantic inventory and authored composition of their diagrams.
 - `render.py` owns the guide text, output paths, dependency validation, and content-based freshness command.
 - `HOW_IT_WORKS.md`, the day `assets/how-it-works/*.svg` files, and their `*-dark.svg` counterparts are generated projections and are never edited directly.
 

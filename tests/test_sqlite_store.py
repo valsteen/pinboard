@@ -1067,6 +1067,7 @@ class SQLiteStoreTest(unittest.TestCase):
         self.assertEqual(
             (stored_state.StoredWorkItemState.DONE, "accepted direct completion"), (item.state, item.outcome_evidence)
         )
+        self.assertIsNone(item.next_action)
         self.assertEqual(
             (work_models.AttemptState.DONE, None, None),
             (attempt.state, attempt.candidate_revision, attempt.candidate_recorded_at),

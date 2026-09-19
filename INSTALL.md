@@ -90,6 +90,8 @@ Claude's manual permission mode asks before each MCP tool call by default. To ap
 
 This rule covers only tools from the installed Pinboard plugin server. It does not approve shell commands, repository writes outside Claude's existing file permissions, or another MCP server, and it does not bypass Pinboard's receipts and leases. Omit it if you prefer to approve every Pinboard call separately.
 
+For an autonomous repository-writing run, also use Claude's normal edit-accepting mode and include any selected linked worktree in the session's allowed directories. Pinboard records the intended access but cannot grant it; `dontAsk` may deny an uncovered write instead of asking.
+
 This route uses Claude Code's marketplace mechanism with your local checkout. Pinboard is not published in or installed from Anthropic's official marketplace, and it does not claim live sharing between Codex and Claude Code.
 
 ### One session without installation

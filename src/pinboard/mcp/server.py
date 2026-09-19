@@ -3229,7 +3229,8 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
             "native_launch.message unchanged as the actual host worker-message argument to a genuinely "
             "fresh native worker (Codex spawn_agent.message; Claude Agent.prompt). prompt_reference remains "
             "independently required immutable provenance, not an alternative launch input. Missing native "
-            "launch capability stops execution; publication alone is not a launch."
+            "launch capability stops execution; publication alone is not a launch. A worker launched from "
+            "other text is invalid: stop it and launch a fresh worker from native_launch.message."
         ),
     )
     async def dispatch_job(project_root: str, work_root: str, dispatch: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -3274,7 +3275,12 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
 
     @server.tool(
         name=REVIEW_JOB_TOOL,
-        description="Publish one candidate-bound reviewer launch with exact caller-selected historical evidence; run separate full CLI validation before package reuse.",
+        description=(
+            "Publish one candidate-bound reviewer launch with exact caller-selected historical evidence; run "
+            "separate full CLI validation before package reuse. On ready, pass only native_launch.message "
+            "unchanged to a fresh reviewer. A rejection publishes no reviewer prompt: correct its precondition "
+            "and never synthesize a substitute review launch."
+        ),
     )
     async def review_job(project_root: str, work_root: str, review: dict[str, JsonValue]) -> dict[str, JsonValue]:
         return await _run_request(

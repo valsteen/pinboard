@@ -491,6 +491,14 @@ class PreparationAuthorityTest(unittest.TestCase):
             "The relationship is current.",
             ("source:local",),
             ("Work C remains ready.",),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "A project can evaluate it.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
         before = store.validated_snapshot()
 
@@ -534,6 +542,14 @@ class PreparationAuthorityTest(unittest.TestCase):
             "The relationship is current.",
             ("source:local",),
             ("Work C remains ready.",),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "A project can evaluate it.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
         before = store.validated_snapshot()
 

@@ -279,7 +279,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                             "actor_task_id": "review-owner",
                             "actor_host_id": "local",
                             "proposal": {
-                                "schema": "pinboard-proposal/v1",
+                                "schema": "pinboard-proposal/v2",
                                 "proposal_id": proposal_id,
                                 "created_at": "2026-08-25T12:00:00+00:00",
                                 "source_task_id": "review-owner",
@@ -296,6 +296,14 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                                 "unlock": "Review its disposition.",
                                 "urgency_evidence": "The accepted consumer requires an exact relation revision.",
                                 "freshness_assumptions": ["The affected item remains known."],
+                                "checkout_policy": "coordinator-selected",
+                                "obligations": [
+                                    {
+                                        "obligation_id": "review-disposition",
+                                        "statement": "Review its disposition.",
+                                        "deferral_policy": "forbidden",
+                                    }
+                                ],
                             },
                         },
                     )
@@ -335,7 +343,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                         "actor_task_id": "review-owner",
                         "actor_host_id": "local",
                         "proposal": {
-                            "schema": "pinboard-proposal/v1",
+                            "schema": "pinboard-proposal/v2",
                             "proposal_id": "new-proposal",
                             "created_at": "2026-08-25T12:00:00+00:00",
                             "source_task_id": "review-owner",
@@ -348,6 +356,14 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                             "unlock": "Inspect the current affected items.",
                             "urgency_evidence": "The accepted consumer requires immediate current views.",
                             "freshness_assumptions": ["The affected item remains known."],
+                            "checkout_policy": "coordinator-selected",
+                            "obligations": [
+                                {
+                                    "obligation_id": "inspect-affected-items",
+                                    "statement": "Inspect the current affected items.",
+                                    "deferral_policy": "forbidden",
+                                }
+                            ],
                         },
                     },
                 )

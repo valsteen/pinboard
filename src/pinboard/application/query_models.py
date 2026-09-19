@@ -656,8 +656,14 @@ class ParallelPreviewView(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     excluded: tuple[ParallelItemView, ...]
 
 
+class WorkObligationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    obligation_id: str
+    statement: str
+    deferral_policy: work_models.ObligationDeferralPolicy
+
+
 class WorkItemDefinitionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-work-item-definition/v1"]
+    schema: Literal["pinboard-work-item-definition/v2"]
     title: str
     objective: str
     hypothesis: str
@@ -668,6 +674,8 @@ class WorkItemDefinitionView(msgspec.Struct, frozen=True, forbid_unknown_fields=
     dependencies: tuple[str, ...]
     effect: str
     unlock: str
+    checkout_policy: work_models.CheckoutPolicy
+    obligations: tuple[WorkObligationView, ...]
 
 
 class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

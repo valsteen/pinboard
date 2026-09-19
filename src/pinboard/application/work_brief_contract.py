@@ -235,6 +235,46 @@ class _UnresolvedRequiredLifecyclePartition(
     operations: tuple[_UnresolvedLifecycleRecord, ...]
 
 
+class _UnresolvedContractObligationTarget(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="contract",
+    tag_field="kind",
+):
+    invariant: None
+
+
+class _UnresolvedCriterionObligationTarget(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="criterion",
+    tag_field="kind",
+):
+    number: None
+
+
+class _UnresolvedDeferralObligationTarget(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="deferral",
+    tag_field="kind",
+):
+    deferral_id: None
+
+
+type _UnresolvedObligationTarget = (
+    _UnresolvedContractObligationTarget | _UnresolvedCriterionObligationTarget | _UnresolvedDeferralObligationTarget
+)
+
+
+class _UnresolvedObligationCorrespondence(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    obligation_id: None
+    target: _UnresolvedObligationTarget
+
+
 class _UnresolvedLocalCheckpoint(
     msgspec.Struct,
     frozen=True,
@@ -276,7 +316,7 @@ type _UnresolvedCheckpoint = _UnresolvedLocalCheckpoint | _UnresolvedCrossBounda
 
 
 class _UnresolvedWorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-work-brief/v2"]
+    schema: Literal["pinboard-work-brief/v3"]
     artifact_revision: None
     attempt_id: None
     item_id: None
@@ -294,12 +334,14 @@ class _UnresolvedWorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     compatibility: tuple[None, ...]
     non_goals: tuple[None, ...]
     checkpoint: _UnresolvedCheckpoint
+    checkout_selection: None
+    obligation_correspondence: tuple[_UnresolvedObligationCorrespondence, ...]
     remaining_work: None
 
 
 def _local_starter() -> _UnresolvedWorkBrief:
     return _UnresolvedWorkBrief(
-        schema="pinboard-work-brief/v2",
+        schema="pinboard-work-brief/v3",
         artifact_revision=None,
         attempt_id=None,
         item_id=None,
@@ -324,6 +366,10 @@ def _local_starter() -> _UnresolvedWorkBrief:
             acceptance_criteria=(_UnresolvedAcceptanceCriterion(None, None),),
             verification=(_UnresolvedVerificationRecord(_UnresolvedAcceptedScopeAuthorization(None, None), None),),
             deferrals=(),
+        ),
+        checkout_selection=None,
+        obligation_correspondence=(
+            _UnresolvedObligationCorrespondence(None, _UnresolvedCriterionObligationTarget(None)),
         ),
         remaining_work=None,
     )
@@ -364,7 +410,13 @@ def _cross_boundary_starter() -> _UnresolvedWorkBrief:
         deferrals=(),
     )
     local = _local_starter()
-    return msgspec.structs.replace(local, checkpoint=checkpoint)
+    return msgspec.structs.replace(
+        local,
+        checkpoint=checkpoint,
+        obligation_correspondence=(
+            _UnresolvedObligationCorrespondence(None, _UnresolvedContractObligationTarget(None)),
+        ),
+    )
 
 
 def _raw[T](value: T) -> msgspec.Raw:
@@ -435,12 +487,37 @@ _LIFECYCLE_PARTITION_CHOICE = WorkBriefStructuralChoice(
     ),
 )
 
-_LOCAL_STRUCTURAL_CHOICES = (_ARCHITECTURE_CHOICE,)
+_CHECKOUT_SELECTION_CHOICE = WorkBriefStructuralChoice(
+    "checkout-selection",
+    ("$.checkout_selection",),
+    (
+        WorkBriefStructuralVariant("main", _raw("main")),
+        WorkBriefStructuralVariant("isolated", _raw("isolated")),
+    ),
+)
+
+_OBLIGATION_TARGET_CHOICE = WorkBriefStructuralChoice(
+    "obligation-target",
+    ("$.obligation_correspondence[*].target",),
+    (
+        WorkBriefStructuralVariant("contract", _raw(_UnresolvedContractObligationTarget(None))),
+        WorkBriefStructuralVariant("criterion", _raw(_UnresolvedCriterionObligationTarget(None))),
+        WorkBriefStructuralVariant("deferral", _raw(_UnresolvedDeferralObligationTarget(None))),
+    ),
+)
+
+_LOCAL_STRUCTURAL_CHOICES = (
+    _ARCHITECTURE_CHOICE,
+    _CHECKOUT_SELECTION_CHOICE,
+    _OBLIGATION_TARGET_CHOICE,
+)
 _CROSS_BOUNDARY_STRUCTURAL_CHOICES = (
     _ARCHITECTURE_CHOICE,
     _AUTHORIZATION_CHOICE,
     _COVERAGE_OWNER_CHOICE,
     _LIFECYCLE_PARTITION_CHOICE,
+    _CHECKOUT_SELECTION_CHOICE,
+    _OBLIGATION_TARGET_CHOICE,
 )
 
 
@@ -488,6 +565,10 @@ _RELATIONAL_CONSTRAINTS = (
     WorkBriefRelationalConstraint(
         "unique-lifecycle-operations",
         "When a lifecycle partition is required, operation identities must be unique.",
+    ),
+    WorkBriefRelationalConstraint(
+        "complete-obligation-correspondence",
+        "Obligation correspondence must contain exactly one record for every accepted definition obligation and no other records; every target must name an existing contract, criterion, or deferral, and obligations that forbid deferral must not target a deferral.",
     ),
 )
 

@@ -11,6 +11,7 @@ from pinboard.application.work_briefs import (
     canonical_work_brief_review_bytes,
     canonical_work_brief_review_needs_correction_bytes,
 )
+from pinboard.domain import work_models
 from pinboard.domain.identifiers import ItemId
 from tests.support import SQLITE_DIGEST, test_definition
 
@@ -73,7 +74,7 @@ def example_work_brief() -> work_brief_models.WorkBrief:
         ),
     )
     return work_brief_models.WorkBrief(
-        schema="pinboard-work-brief/v2",
+        schema="pinboard-work-brief/v3",
         artifact_revision=1,
         attempt_id="make-canonical-briefs-typed-json-1",
         item_id="make-canonical-briefs-typed-json",
@@ -92,6 +93,13 @@ def example_work_brief() -> work_brief_models.WorkBrief:
         non_goals=("Do not change lifecycle legality.",),
         checkpoint=checkpoint,
         remaining_work="Resume the separately accepted structural cleanup after this prerequisite.",
+        checkout_selection=work_models.CheckoutSelection.MAIN,
+        obligation_correspondence=(
+            work_brief_models.ObligationCorrespondence(
+                "next-decision",
+                work_brief_models.ContractObligationTarget(contract.invariant),
+            ),
+        ),
     )
 
 
@@ -166,6 +174,12 @@ def work_c_brief() -> work_brief_models.WorkBrief:
         base_revision="candidate-base",
         accepted_scope=replace(candidate.accepted_scope, digest=test_definition(ItemId("work-c"))[1]),
         checkpoint=local,
+        obligation_correspondence=(
+            work_brief_models.ObligationCorrespondence(
+                "next-decision",
+                work_brief_models.CriterionObligationTarget(1),
+            ),
+        ),
     )
 
 

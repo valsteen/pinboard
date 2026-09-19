@@ -20,9 +20,15 @@ class ProposalFailure:
 type ProposalResult[T] = T | ProposalFailure
 type ProposalJsonValue = bool | int | float | str | list[ProposalJsonValue] | dict[str, ProposalJsonValue] | None
 
-type ProposalSchema = Literal["pinboard-proposal/v1"]
+type ProposalSchema = Literal["pinboard-proposal/v2"]
 type ProposalIdentity = Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
 type ProposalText = Annotated[str, msgspec.Meta(pattern=r"\A[^\s|\n](?:[^|\n]*[^\s|\n])?\z")]
+
+
+class ProposalObligation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    obligation_id: ProposalIdentity
+    statement: ProposalText
+    deferral_policy: Literal["allowed", "forbidden"]
 
 
 def _proposal_datetime(value: str) -> datetime:
@@ -97,6 +103,8 @@ class Proposal(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     unlock: ProposalText
     urgency_evidence: ProposalText
     freshness_assumptions: tuple[ProposalText, ...]
+    checkout_policy: Literal["main", "isolated", "coordinator-selected"]
+    obligations: Annotated[tuple[ProposalObligation, ...], msgspec.Meta(min_length=1)]
     position: Annotated[int, msgspec.Meta(ge=1)] | None = None
 
     def __post_init__(self) -> None:
@@ -110,6 +118,9 @@ class Proposal(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
             raise ValueError("evidence entries must be ordered and unique.")
         if len(self.freshness_assumptions) != len(set(self.freshness_assumptions)):
             raise ValueError("freshness_assumptions entries must be ordered and unique.")
+        obligation_ids = tuple(value.obligation_id for value in self.obligations)
+        if len(obligation_ids) != len(set(obligation_ids)):
+            raise ValueError("obligation identities must be ordered and unique.")
 
     def created_at_utc(self) -> datetime:
         created_at = _proposal_datetime(self.created_at)

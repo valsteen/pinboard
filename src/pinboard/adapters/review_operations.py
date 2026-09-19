@@ -72,7 +72,7 @@ type ReviewRound = InitialReviewRound | CorrectionReviewRound
 @dataclass(frozen=True, slots=True)
 class PreparedReviewJob:
     candidate_evidence: candidate_snapshots.CandidateSnapshotEvidence
-    brief: work_brief_models.WorkBrief
+    brief: work_brief_models.ReadableWorkBrief
     brief_reference: BriefArtifactRef
     result_path: Path
     result_sha256: str

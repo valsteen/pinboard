@@ -615,7 +615,7 @@ class PluginPackagingTests(unittest.TestCase):
                 managed_lock.read_bytes(),
             )
             proposal: JsonObject = {
-                "schema": "pinboard-proposal/v1",
+                "schema": "pinboard-proposal/v2",
                 "proposal_id": "packaged-proposal",
                 "created_at": "2026-09-06T12:00:00Z",
                 "source_task_id": "claude-session",
@@ -628,6 +628,14 @@ class PluginPackagingTests(unittest.TestCase):
                 "unlock": "The copied plugin can run the supported workflow.",
                 "urgency_evidence": "This is the packaging compatibility boundary.",
                 "freshness_assumptions": ["The disposable repository began empty."],
+                "checkout_policy": "coordinator-selected",
+                "obligations": [
+                    {
+                        "obligation_id": "packaged-workflow",
+                        "statement": "The copied plugin can run the supported workflow.",
+                        "deferral_policy": "forbidden",
+                    }
+                ],
             }
             launcher, environment, before = self.prepare_copied_launcher(sandbox, plugin_root, project)
             self.assert_registered_startup_context(plugin_root, project, environment)

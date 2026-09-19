@@ -37,7 +37,7 @@ def revise_item_payload() -> JsonObject:
         "source_task": "owner-task",
         "reason": "Clarify the accepted outcome.",
         "definition": {
-            "schema": "pinboard-work-item-definition/v1",
+            "schema": "pinboard-work-item-definition/v2",
             "title": "Work A",
             "objective": "Make the outcome explicit.",
             "hypothesis": "Explicit outcomes reduce coordination mistakes.",
@@ -48,6 +48,14 @@ def revise_item_payload() -> JsonObject:
             "dependencies": [],
             "effect": "The outcome is explicit.",
             "unlock": "Work can continue.",
+            "checkout_policy": "coordinator-selected",
+            "obligations": [
+                {
+                    "obligation_id": "continue-work",
+                    "statement": "Work can continue.",
+                    "deferral_policy": "forbidden",
+                }
+            ],
         },
     }
 

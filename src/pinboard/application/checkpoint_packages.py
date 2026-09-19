@@ -92,7 +92,7 @@ def _brief(
     package: work_briefs.CheckpointPackage,
     reference: stored_state.ArtifactReference,
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBrief]:
+) -> work_brief_models.WorkBriefResult[work_briefs.WorkBriefValue]:
     brief = decode_canonical_work_brief(artifact_bytes[reference.artifact_ref_id])
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _invalid(f"The package accepted brief is invalid: {brief.message}")
@@ -111,7 +111,7 @@ def _brief(
 
 def _review_basis(
     package: work_briefs.CheckpointPackage,
-    brief: work_brief_models.WorkBrief,
+    brief: work_brief_models.ReadableWorkBrief,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> work_brief_models.WorkBriefFailure | None:

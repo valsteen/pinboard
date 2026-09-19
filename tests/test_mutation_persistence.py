@@ -276,6 +276,14 @@ class MutationPersistenceTest(unittest.TestCase):
             (ItemId("work-c"),),
             "The state becomes explicit.",
             "The next decision can run.",
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("next-decision"),
+                    "The next decision can run.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
         current_digest = expect_success(work_item_definition_digest(current))
         state = replace(

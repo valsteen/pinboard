@@ -1,12 +1,13 @@
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Annotated, Literal, assert_never
+from typing import Annotated, Literal, Protocol, assert_never
 
 import msgspec
 
 from pinboard.application import action_models, stored_state
 from pinboard.application.brief_source_models import BriefSourceFailure, parse_authority_selector
+from pinboard.domain import work_models
 
 
 class WorkBriefErrorCode(Enum):
@@ -273,6 +274,44 @@ class Deferral(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     reopen_when: NonEmptyText
 
 
+class ContractObligationTarget(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="contract",
+    tag_field="kind",
+):
+    invariant: NonEmptyText
+
+
+class CriterionObligationTarget(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="criterion",
+    tag_field="kind",
+):
+    number: PositiveInt
+
+
+class DeferralObligationTarget(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="deferral",
+    tag_field="kind",
+):
+    deferral_id: KebabId
+
+
+type ObligationTarget = ContractObligationTarget | CriterionObligationTarget | DeferralObligationTarget
+
+
+class ObligationCorrespondence(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    obligation_id: KebabId
+    target: ObligationTarget
+
+
 class LocalCheckpoint(
     msgspec.Struct,
     frozen=True,
@@ -433,7 +472,7 @@ def _validate_cross_boundary_checkpoint(
             assert_never(unreachable)
 
 
-def _validate_work_brief(brief: WorkBrief) -> None:
+def _validate_work_brief(brief: WorkBrief) -> None:  # noqa: PLR0912 - exhaustive closed correspondence validation
     checkpoint = brief.checkpoint
     criteria, deferrals = _validate_common_checkpoint(checkpoint)
     match checkpoint:
@@ -444,10 +483,33 @@ def _validate_work_brief(brief: WorkBrief) -> None:
             _validate_cross_boundary_checkpoint(brief, checkpoint, criteria, deferrals)
         case _ as unreachable:
             assert_never(unreachable)
+    obligation_ids = tuple(row.obligation_id for row in brief.obligation_correspondence)
+    if len(obligation_ids) != len(set(obligation_ids)):
+        raise ValueError("Obligation correspondence identities must be unique.")
+    contracts = (
+        frozenset(record.invariant for record in checkpoint.contracts)
+        if isinstance(checkpoint, CrossBoundaryCheckpoint)
+        else frozenset()
+    )
+    criteria = frozenset(record.number for record in checkpoint.acceptance_criteria)
+    deferrals = frozenset(record.deferral_id for record in checkpoint.deferrals)
+    for row in brief.obligation_correspondence:
+        match row.target:
+            case ContractObligationTarget(invariant=invariant):
+                if invariant not in contracts:
+                    raise ValueError(f"Obligation correspondence names unknown contract '{invariant}'.")
+            case CriterionObligationTarget(number=number):
+                if number not in criteria:
+                    raise ValueError(f"Obligation correspondence names unknown criterion '{number}'.")
+            case DeferralObligationTarget(deferral_id=deferral_id):
+                if deferral_id not in deferrals:
+                    raise ValueError(f"Obligation correspondence names unknown deferral '{deferral_id}'.")
+            case _ as unreachable:
+                assert_never(unreachable)
 
 
 class WorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-work-brief/v2"]
+    schema: Literal["pinboard-work-brief/v3"]
     artifact_revision: PositiveInt
     attempt_id: KebabId
     item_id: KebabId
@@ -466,9 +528,70 @@ class WorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     non_goals: tuple[NonEmptyText, ...]
     checkpoint: WorkBriefCheckpoint
     remaining_work: NonEmptyText
+    checkout_selection: work_models.CheckoutSelection
+    obligation_correspondence: Annotated[tuple[ObligationCorrespondence, ...], msgspec.Meta(min_length=1)]
 
     def __post_init__(self) -> None:
         _validate_work_brief(self)
+
+
+class ReadableWorkBrief(Protocol):
+    @property
+    def schema(self) -> str: ...
+
+    @property
+    def artifact_revision(self) -> int: ...
+
+    @property
+    def attempt_id(self) -> str: ...
+
+    @property
+    def item_id(self) -> str: ...
+
+    @property
+    def branch(self) -> str: ...
+
+    @property
+    def base_revision(self) -> str: ...
+
+    @property
+    def owner_task_id(self) -> str: ...
+
+    @property
+    def accepted_scope(self) -> AcceptedScope: ...
+
+    @property
+    def title(self) -> str: ...
+
+    @property
+    def outcome(self) -> str: ...
+
+    @property
+    def supported_production_roots(self) -> tuple[str, ...]: ...
+
+    @property
+    def product_decision_and_provenance(self) -> str: ...
+
+    @property
+    def testing_strategy(self) -> str: ...
+
+    @property
+    def scope(self) -> tuple[str, ...]: ...
+
+    @property
+    def bootstrap(self) -> tuple[str, ...]: ...
+
+    @property
+    def compatibility(self) -> tuple[str, ...]: ...
+
+    @property
+    def non_goals(self) -> tuple[str, ...]: ...
+
+    @property
+    def checkpoint(self) -> WorkBriefCheckpoint: ...
+
+    @property
+    def remaining_work(self) -> str: ...
 
 
 class ReviewCoverageResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -525,7 +648,7 @@ class WorkBriefReviewNeedsCorrection(msgspec.Struct, frozen=True, forbid_unknown
 @dataclass(frozen=True, slots=True)
 class AcceptedWorkBrief:
     reference: stored_state.ArtifactReference
-    brief: WorkBrief
+    brief: ReadableWorkBrief
 
 
 @dataclass(frozen=True, slots=True)

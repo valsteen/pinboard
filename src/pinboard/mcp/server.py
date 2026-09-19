@@ -1773,7 +1773,7 @@ def _brief_published(
             "infrastructure-failure",
             error.selector,
         )
-    if isinstance(publication, DecisionFailure):
+    if isinstance(publication, (DecisionFailure, work_brief_models.WorkBriefFailure)):
         return _brief_failure(publication)
     view_result = _refresh_affected_views(durable, store, AffectedViews((), (), ()), now)
     warning = view_result.warning

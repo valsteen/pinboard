@@ -20,7 +20,7 @@ from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
-from pinboard.adapters.sqlite.database import translate_database_error
+from pinboard.adapters.sqlite.database import initialize_database, translate_database_error
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import checkpoint_compatibility_models, work_brief_models
@@ -33,12 +33,14 @@ from pinboard.application.work_briefs import (
     canonical_work_brief_bytes,
     canonical_work_brief_review_needs_correction_bytes,
     decode_canonical_checkpoint_review_package,
+    decode_canonical_work_brief,
     decode_canonical_work_brief_review_needs_correction,
     decode_checkpoint_review_package,
     decode_work_brief,
     decode_work_brief_review,
     read_selected_work_brief_identity,
     render_work_brief_markdown,
+    validate_definition_brief_agreement,
     validate_reviewed_authority_digests,
     validate_work_brief_review,
     validate_work_brief_review_needs_correction,
@@ -50,8 +52,21 @@ from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId
 from pinboard.mcp import server
 from tests.artifact_support import write_revision
 from tests.native_support import call_native_tool
-from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, decision_facts
-from tests.work_brief_support import example_work_brief, needs_correction_review, work_a_brief, work_c_brief
+from tests.support import (
+    SQLITE_NOW,
+    JsonObject,
+    complete_sqlite_state,
+    decision_facts,
+    initialize_store,
+    test_definition,
+)
+from tests.work_brief_support import (
+    example_work_brief,
+    needs_correction_review,
+    ready_review,
+    work_a_brief,
+    work_c_brief,
+)
 
 
 def expect_work_brief_success[T](result: work_brief_models.WorkBriefResult[T]) -> T:
@@ -124,6 +139,52 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 expect_work_brief_failure(
                     decode_work_brief(msgspec.json.encode(payload)), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
                 )
+
+    def test_retained_v2_brief_remains_exactly_readable_reviewable_and_renderable(self) -> None:
+        current = example_work_brief()
+        payload = msgspec.to_builtins(current)
+        assert isinstance(payload, dict)
+        payload["schema"] = "pinboard-work-brief/v2"
+        del payload["checkout_selection"]
+        del payload["obligation_correspondence"]
+        legacy_bytes = msgspec.json.encode(payload, order="sorted") + b"\n"
+
+        legacy = expect_work_brief_success(decode_canonical_work_brief(legacy_bytes))
+
+        self.assertEqual("pinboard-work-brief/v2", legacy.schema)
+        self.assertIn(b"authority: pinboard-work-brief/v2", render_work_brief_markdown(legacy))
+        review = msgspec.json.decode(ready_review(current), type=work_brief_models.WorkBriefReview)
+        self.assertIsNone(validate_work_brief_review(review, legacy))
+
+    def test_definition_agreement_requires_complete_ids_and_permitted_checkout_and_deferral(self) -> None:
+        brief = work_a_brief(Path(tempfile.mkdtemp()).resolve())
+        checkpoint = brief.checkpoint
+        assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        definition, _digest = test_definition(ItemId("work-a"))
+        self.assertIsNone(validate_definition_brief_agreement(definition, brief))
+        unknown = replace(
+            brief,
+            obligation_correspondence=(
+                work_brief_models.ObligationCorrespondence(
+                    "unknown-obligation",
+                    work_brief_models.ContractObligationTarget(checkpoint.contracts[0].invariant),
+                ),
+            ),
+        )
+        forbidden = replace(
+            brief,
+            obligation_correspondence=(
+                work_brief_models.ObligationCorrespondence(
+                    "next-decision",
+                    work_brief_models.DeferralObligationTarget("later-work"),
+                ),
+            ),
+        )
+        fixed = dataclass_replace(definition, checkout_policy=work_models.CheckoutPolicy.ISOLATED)
+
+        self.assertIsNotNone(validate_definition_brief_agreement(definition, unknown))
+        self.assertIsNotNone(validate_definition_brief_agreement(definition, forbidden))
+        self.assertIsNotNone(validate_definition_brief_agreement(fixed, brief))
 
     def test_cross_references_are_rejected_at_the_typed_boundary(self) -> None:
         value = example_work_brief()
@@ -693,8 +754,8 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         project = Path(temporary.name).resolve()
         subprocess.run(("git", "init", "--quiet", str(project)), check=True)
         work = project / ".codex" / "work"
-        result, _, stderr = self.run_cli("--project-root", str(project), "--work-root", str(work), "init")
-        self.assertEqual(0, result, stderr)
+        initialize_database(resolve_durable_roots(project, work), SQLITE_NOW)
+        initialize_store(SQLiteWorkStore(work / "state.sqlite3"), complete_sqlite_state())
         return project, work
 
     def publish(self, project: Path, work: Path, brief: work_brief_models.WorkBrief) -> JsonObject:
@@ -705,13 +766,13 @@ class WorkBriefBoundaryTest(unittest.TestCase):
 
     def test_native_publication_is_canonical_scheduling_neutral_retryable_and_collision_safe(self) -> None:
         project, work = self.initialized_publication()
-        brief = example_work_brief()
+        brief = work_a_brief(project)
         before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
         result = self.publish(project, work, brief)
         self.assertEqual("committed", result["status"])
         reference = result["reference"]
         assert isinstance(reference, dict) and isinstance(reference["selector"], str)
-        self.assertEqual("artifacts/briefs/make-canonical-briefs-typed-json-1/1.json", reference["selector"])
+        self.assertEqual("artifacts/briefs/work-a-1/1.json", reference["selector"])
         after = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
         self.assertEqual(before.lifecycle.work_items, after.lifecycle.work_items)
         self.assertEqual(before.authority, after.authority)
@@ -763,7 +824,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             with self.subTest(target=target, code=error.code):
                 project, work = self.initialized_publication()
                 before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
-                brief = example_work_brief()
+                brief = work_a_brief(project)
                 selector = f"artifacts/briefs/{brief.attempt_id}/1.json"
                 with patch(target, side_effect=error):
                     failure = self.publish(project, work, brief)
@@ -808,11 +869,11 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 self.assertEqual(before.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
                 self.assertEqual(before.lifecycle.work_items, reloaded.lifecycle.work_items)
                 self.assertEqual(before.authority, reloaded.authority)
-                self.assertEqual(1, len(reloaded.artifact_references))
+                self.assertEqual(len(before.artifact_references) + 1, len(reloaded.artifact_references))
 
     def test_native_post_link_sync_failure_preserves_and_reuses_exact_publication(self) -> None:
         project, work = self.initialized_publication()
-        brief = example_work_brief()
+        brief = work_a_brief(project)
         selector = f"artifacts/briefs/{brief.attempt_id}/1.json"
         publication = work / selector
         before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
@@ -858,7 +919,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             with self.subTest(error=type(error).__name__):
                 project, work = self.initialized_publication()
                 before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
-                brief = example_work_brief()
+                brief = work_a_brief(project)
                 with (
                     patch("pinboard.adapters.sqlite.artifacts.verify_reference", side_effect=error),
                     self.assertRaises(UnexpectedToolError) as failure,
@@ -872,7 +933,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
     def test_native_returned_rejection_reports_new_immutable_artifact(self) -> None:
         project, work = self.initialized_publication()
         before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
-        brief = example_work_brief()
+        brief = work_a_brief(project)
         rejected = DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "acceptance changed", None)
         with patch.object(SQLiteWorkStore, "accept_artifact_reference", return_value=rejected):
             failure = self.publish(project, work, brief)

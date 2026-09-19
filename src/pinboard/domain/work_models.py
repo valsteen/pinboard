@@ -16,6 +16,8 @@ from pinboard.domain.identifiers import (
     TaskId,
 )
 
+ObligationId = NewType("ObligationId", str)
+
 CanonicalJson = NewType("CanonicalJson", bytes)
 
 
@@ -53,6 +55,30 @@ class Timing(Enum):
     MUST_NOW = "must-now"
     CHEAPER_NOW = "cheaper-now"
     SAFE_TO_DEFER = "safe-to-defer"
+
+
+class CheckoutPolicy(Enum):
+    MAIN = "main"
+    ISOLATED = "isolated"
+    COORDINATOR_SELECTED = "coordinator-selected"
+    LEGACY_UNRECORDED = "legacy-unrecorded"
+
+
+class CheckoutSelection(Enum):
+    MAIN = "main"
+    ISOLATED = "isolated"
+
+
+class ObligationDeferralPolicy(Enum):
+    ALLOWED = "allowed"
+    FORBIDDEN = "forbidden"
+
+
+@dataclass(frozen=True, slots=True)
+class WorkObligation:
+    obligation_id: ObligationId
+    statement: str
+    deferral_policy: ObligationDeferralPolicy
 
 
 class ArtifactKind(Enum):
@@ -342,6 +368,8 @@ class WorkItemDefinition:
     dependencies: tuple[ItemId, ...]
     effect: str
     unlock: str
+    checkout_policy: CheckoutPolicy
+    obligations: tuple[WorkObligation, ...]
 
 
 @dataclass(frozen=True, slots=True)

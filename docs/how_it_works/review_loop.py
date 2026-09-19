@@ -91,7 +91,7 @@ DIAGRAM = Diagram(
             "Accepted direction",
             "Publish structured brief",
             ("outcome · scope · verification", "authorities for cross-boundary work"),
-            ("pinboard-work-brief/v2",),
+            ("pinboard-work-brief/v3",),
             60,
             150,
             300,

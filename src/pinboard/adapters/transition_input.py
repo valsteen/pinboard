@@ -81,6 +81,15 @@ def _revise_item_input(payload: transition_models.ReviseItemInputPayload) -> wor
             tuple(ItemId(value) for value in definition.dependencies),
             definition.effect,
             definition.unlock,
+            work_models.CheckoutPolicy(definition.checkout_policy),
+            tuple(
+                work_models.WorkObligation(
+                    work_models.ObligationId(obligation.obligation_id),
+                    obligation.statement,
+                    work_models.ObligationDeferralPolicy(obligation.deferral_policy),
+                )
+                for obligation in definition.obligations
+            ),
         ),
     )
 

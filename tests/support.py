@@ -52,6 +52,13 @@ type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValu
 type JsonObject = dict[str, JsonValue]
 
 SQLITE_NOW = datetime(2026, 8, 22, 14, 0, tzinfo=UTC)
+SQLITE_OBLIGATIONS = (
+    work_models.WorkObligation(
+        work_models.ObligationId("next-decision"),
+        "The next decision can run.",
+        work_models.ObligationDeferralPolicy.FORBIDDEN,
+    ),
+)
 SQLITE_DEFINITION = work_models.WorkItemDefinition(
     "Work work-a",
     "Make the state explicit.",
@@ -63,6 +70,8 @@ SQLITE_DEFINITION = work_models.WorkItemDefinition(
     (ItemId("work-c"),),
     "The state becomes explicit.",
     "The next decision can run.",
+    work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+    SQLITE_OBLIGATIONS,
 )
 _SQLITE_DEFINITION_DIGEST = work_item_definition_digest(SQLITE_DEFINITION)
 assert isinstance(_SQLITE_DEFINITION_DIGEST, str)
@@ -91,6 +100,14 @@ def test_definition(item: ItemId) -> tuple[work_models.WorkItemDefinition, str]:
             (ItemId("work-c"),),
             "Record the follow-up.",
             "A later task can assess it.",
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("later-assessment"),
+                    "A later task can assess it.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
     else:
         definition = work_models.WorkItemDefinition(
@@ -104,6 +121,8 @@ def test_definition(item: ItemId) -> tuple[work_models.WorkItemDefinition, str]:
             (),
             SQLITE_DEFINITION.effect,
             SQLITE_DEFINITION.unlock,
+            SQLITE_DEFINITION.checkout_policy,
+            SQLITE_DEFINITION.obligations,
         )
     digest = work_item_definition_digest(definition)
     assert isinstance(digest, str)

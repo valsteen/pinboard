@@ -56,6 +56,15 @@ def convert_proposal(value: Proposal) -> domain_proposal_models.CreateProposalOp
             value.urgency_evidence,
             value.evidence,
             value.freshness_assumptions,
+            work_models.CheckoutPolicy(value.checkout_policy),
+            tuple(
+                work_models.WorkObligation(
+                    work_models.ObligationId(obligation.obligation_id),
+                    obligation.statement,
+                    work_models.ObligationDeferralPolicy(obligation.deferral_policy),
+                )
+                for obligation in value.obligations
+            ),
             value.position,
         )
     )

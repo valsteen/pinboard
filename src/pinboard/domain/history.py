@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 import msgspec
 
-from pinboard.domain import work_models
+from pinboard.domain import definition_compatibility, work_models
 from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
@@ -20,6 +20,12 @@ def _encoded_record(value: msgspec.Struct) -> bytes:
     return msgspec.json.encode(value, order="sorted") + b"\n"
 
 
+class WorkObligationPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    obligation_id: Identity
+    statement: CanonicalLine
+    deferral_policy: work_models.ObligationDeferralPolicy
+
+
 class WorkItemDefinitionPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     acceptance_criteria: Annotated[tuple[CanonicalLine, ...], msgspec.Meta(min_length=1)]
     dependencies: tuple[Identity, ...]
@@ -28,10 +34,12 @@ class WorkItemDefinitionPayload(msgspec.Struct, frozen=True, forbid_unknown_fiel
     hypothesis: CanonicalLine
     non_scope: tuple[CanonicalLine, ...]
     objective: CanonicalLine
-    schema: Literal["pinboard-work-item-definition/v1"]
+    schema: Literal["pinboard-work-item-definition/v2"]
     scope: Annotated[tuple[CanonicalLine, ...], msgspec.Meta(min_length=1)]
     title: CanonicalLine
     unlock: CanonicalLine
+    checkout_policy: Literal["main", "isolated", "coordinator-selected"]
+    obligations: Annotated[tuple[WorkObligationPayload, ...], msgspec.Meta(min_length=1)]
 
     def __post_init__(self) -> None:
         for field, values in (
@@ -43,6 +51,9 @@ class WorkItemDefinitionPayload(msgspec.Struct, frozen=True, forbid_unknown_fiel
         ):
             if len(values) != len(set(values)):
                 raise ValueError(f"{field} entries must be ordered and unique.")
+        obligation_ids = tuple(value.obligation_id for value in self.obligations)
+        if len(obligation_ids) != len(set(obligation_ids)):
+            raise ValueError("obligation identities must be ordered and unique.")
 
 
 class TransitionReceiptOutcome(msgspec.Struct, frozen=True, forbid_unknown_fields=True, omit_defaults=True):
@@ -105,6 +116,8 @@ def _work_item_definition_payload(
     definition: work_models.WorkItemDefinition,
 ) -> DecisionResult[WorkItemDefinitionPayload]:
     try:
+        if definition.checkout_policy == work_models.CheckoutPolicy.LEGACY_UNRECORDED:
+            raise msgspec.ValidationError("current definitions require an explicit checkout policy")
         return msgspec.convert(
             {
                 "acceptance_criteria": definition.acceptance_criteria,
@@ -114,10 +127,19 @@ def _work_item_definition_payload(
                 "hypothesis": definition.hypothesis,
                 "non_scope": definition.non_scope,
                 "objective": definition.objective,
-                "schema": "pinboard-work-item-definition/v1",
+                "schema": "pinboard-work-item-definition/v2",
                 "scope": definition.scope,
                 "title": definition.title,
                 "unlock": definition.unlock,
+                "checkout_policy": definition.checkout_policy.value,
+                "obligations": tuple(
+                    {
+                        "obligation_id": value.obligation_id,
+                        "statement": value.statement,
+                        "deferral_policy": value.deferral_policy.value,
+                    }
+                    for value in definition.obligations
+                ),
             },
             type=WorkItemDefinitionPayload,
             strict=True,
@@ -127,6 +149,8 @@ def _work_item_definition_payload(
 
 
 def work_item_definition_bytes(definition: work_models.WorkItemDefinition) -> DecisionResult[bytes]:
+    if definition.checkout_policy == work_models.CheckoutPolicy.LEGACY_UNRECORDED:
+        return definition_compatibility.encode_v1(definition)
     payload = _work_item_definition_payload(definition)
     if isinstance(payload, DecisionFailure):
         return payload
@@ -141,6 +165,14 @@ def work_item_definition_digest(definition: work_models.WorkItemDefinition) -> D
 
 
 def decode_work_item_definition(payload: bytes) -> DecisionResult[work_models.WorkItemDefinition]:
+    try:
+        schema = msgspec.json.decode(payload, type=dict[str, msgspec.Raw]).get("schema")
+        if schema is not None and msgspec.json.decode(schema, type=str) == "pinboard-work-item-definition/v1":
+            return definition_compatibility.decode_v1(payload)
+    except (msgspec.DecodeError, ValueError) as error:
+        return DecisionFailure(
+            DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Definition JSON is invalid: {error}", None
+        )
     try:
         record = msgspec.json.decode(payload, type=WorkItemDefinitionPayload, strict=True)
     except msgspec.DecodeError as error:
@@ -164,4 +196,13 @@ def decode_work_item_definition(payload: bytes) -> DecisionResult[work_models.Wo
         tuple(ItemId(value) for value in record.dependencies),
         record.effect,
         record.unlock,
+        work_models.CheckoutPolicy(record.checkout_policy),
+        tuple(
+            work_models.WorkObligation(
+                work_models.ObligationId(value.obligation_id),
+                value.statement,
+                value.deferral_policy,
+            )
+            for value in record.obligations
+        ),
     )

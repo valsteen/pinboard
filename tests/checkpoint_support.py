@@ -281,6 +281,12 @@ class CheckpointPackageSupport(unittest.TestCase):
                 ),
                 (),
             ),
+            obligation_correspondence=(
+                work_brief_models.ObligationCorrespondence(
+                    "next-decision",
+                    work_brief_models.CriterionObligationTarget(checkpoint.acceptance_criteria[0].number),
+                ),
+            ),
         )
 
     def accept_candidate_snapshot(

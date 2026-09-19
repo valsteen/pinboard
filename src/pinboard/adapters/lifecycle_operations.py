@@ -9,7 +9,7 @@ from typing import assert_never
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
-from pinboard.adapters.files.root import observe_checkout_identity
+from pinboard.adapters.files.root import classify_checkout, observe_checkout_identity
 from pinboard.adapters.transition_input import ParsedTransitionInput, TransitionInputFailure, parse_transition_input
 from pinboard.application import action_models, actions, ports, service, work_brief_models
 from pinboard.application.artifacts import WorkBriefIdentity
@@ -17,6 +17,7 @@ from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.work_briefs import (
     decode_canonical_work_brief,
     read_selected_work_brief_identity,
+    validate_executable_work_brief,
     validate_reviewed_authority_digests,
 )
 from pinboard.domain import decision_models, work_models
@@ -66,7 +67,7 @@ def _input_failure(message: str, mismatches: tuple[FailureMismatch, ...]) -> Dec
     )
 
 
-def resolve_activation(
+def resolve_activation(  # noqa: C901, PLR0912 - one ordered activation boundary with exact failure ownership
     source_checkout: Path,
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
@@ -82,6 +83,10 @@ def resolve_activation(
     brief = decode_canonical_work_brief(artifacts.read(reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _input_failure(f"The selected brief artifact is invalid: {brief.message}", ())
+    if not isinstance(brief, work_brief_models.WorkBrief):
+        return _input_failure("Legacy work brief v2 is readable but cannot authorize activation.", ())
+    if (failure := validate_executable_work_brief(store, brief, classify_checkout(source_checkout))) is not None:
+        return _input_failure(f"The selected brief cannot authorize activation: {failure.message}", ())
     preparation = action.capability.preparation_authority
     if preparation is None:
         return _input_failure("Activation requires exact live preparation authority.", ())
@@ -138,6 +143,34 @@ def resolve_activation(
     )
 
 
+def _validate_replacement_brief(
+    source_checkout: Path,
+    store: ports.WorkStore,
+    artifacts: ArtifactRepository,
+    command: decision_models.TransitionCommand,
+) -> DecisionFailure | None:
+    match command:
+        case decision_models.ResumeCommand(value=value) if value.brief_artifact_ref_id is not None:
+            reference_id = value.brief_artifact_ref_id
+            operation = "resume"
+        case decision_models.RebindAttemptCommand(value=value):
+            reference_id = value.brief_artifact_ref_id
+            operation = "rebind"
+        case _:
+            return None
+    reference = store.read_artifact_reference_by_id(reference_id)
+    if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
+        return _input_failure(f"The {operation} operation requires one existing brief artifact reference.", ())
+    brief = decode_canonical_work_brief(artifacts.read(reference))
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
+        return _input_failure(f"The selected brief artifact is invalid: {brief.message}", ())
+    if not isinstance(brief, work_brief_models.WorkBrief):
+        return _input_failure(f"Legacy work brief v2 is readable but cannot authorize {operation}.", ())
+    if (failure := validate_executable_work_brief(store, brief, classify_checkout(source_checkout))) is not None:
+        return _input_failure(f"The selected brief cannot authorize {operation}: {failure.message}", ())
+    return None
+
+
 def select_transition(
     source_checkout: Path,
     store: ports.WorkStore,
@@ -191,6 +224,8 @@ def select_transition(
         command = decoded
     if isinstance(command, DecisionFailure):
         return command
+    if (failure := _validate_replacement_brief(source_checkout, store, artifacts, command)) is not None:
+        return failure
     return SelectedTransition(action, command, receipt.actor_task_id, receipt.actor_host_id)
 
 

@@ -9,7 +9,7 @@ from tests.support import JsonObject
 
 def proposal() -> JsonObject:
     return {
-        "schema": "pinboard-proposal/v1",
+        "schema": "pinboard-proposal/v2",
         "proposal_id": "proposal-1",
         "created_at": "2026-08-25T00:00:00Z",
         "source_task_id": "task",
@@ -22,6 +22,14 @@ def proposal() -> JsonObject:
         "unlock": "Current proposal intake remains usable.",
         "urgency_evidence": "The installed command exercises this boundary.",
         "freshness_assumptions": ["SQLite remains authoritative."],
+        "checkout_policy": "coordinator-selected",
+        "obligations": [
+            {
+                "obligation_id": "sqlite-persistence",
+                "statement": "The proposal persists through SQLite.",
+                "deferral_policy": "forbidden",
+            }
+        ],
     }
 
 
@@ -51,7 +59,7 @@ class ProposalInputTest(unittest.TestCase):
         valid = proposal()
         cases = (
             ({**valid, "schema": "repo" + "-work/v1"}, "schema"),
-            ({**valid, "schema": "pinboard" + "-proposal/v2"}, "schema"),
+            ({**valid, "schema": "pinboard" + "-proposal/v1"}, "schema"),
             ({**valid, "proposal_id": "Not Valid"}, "proposal_id"),
             ({**valid, "proposal_id": "proposal-1\n"}, "proposal_id"),
             ({**valid, "trigger": ""}, "trigger"),

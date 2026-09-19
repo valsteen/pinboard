@@ -112,6 +112,14 @@ def definition_anchor(
             dependencies,
             "Add navigable routes",
             "Reach the next area",
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("reach-next-area"),
+                    "Reach the next area",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         ),
     )
 

@@ -320,6 +320,8 @@ def _read_current_attempt_brief(
     brief = decode_canonical_work_brief(artifacts.read(context.brief_reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _unchanged(f"The accepted brief is invalid: {brief.message}", candidate=None)
+    if not isinstance(brief, work_brief_models.WorkBrief):
+        return _unchanged("Legacy work brief v2 cannot authorize checkpoint acceptance.", candidate=None)
     if (
         brief.attempt_id,
         brief.item_id,

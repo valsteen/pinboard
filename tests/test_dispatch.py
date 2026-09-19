@@ -25,6 +25,7 @@ from pinboard.adapters.dispatch_operations import (
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
+from pinboard.adapters.files.root import classify_checkout
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -185,10 +186,11 @@ class DispatchTest(unittest.TestCase):
     ]:
         if project is None:
             project = Path(tempfile.mkdtemp()).resolve()
+        if not (project / ".git").exists():
             self.run_git(project, "init", "-q")
         roots = resolve_durable_roots(project) if roots is None else roots
         initialize_database(roots, SQLITE_NOW)
-        brief = work_a_brief(project)
+        brief = replace(work_a_brief(project), checkout_selection=classify_checkout(project))
         published = write_revision(
             roots,
             NewArtifact(
@@ -500,7 +502,16 @@ class DispatchTest(unittest.TestCase):
             cross.verification,
             cross.deferrals,
         )
-        value = replace(value, checkpoint=local)
+        value = replace(
+            value,
+            checkpoint=local,
+            obligation_correspondence=(
+                work_brief_models.ObligationCorrespondence(
+                    "next-decision",
+                    work_brief_models.CriterionObligationTarget(local.acceptance_criteria[0].number),
+                ),
+            ),
+        )
         path = project / "local.json"
         path.write_bytes(canonical_work_brief_bytes(value))
 

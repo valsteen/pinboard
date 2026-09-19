@@ -19,6 +19,8 @@ class ProposalIntake:
     urgency_evidence: str
     evidence: tuple[str, ...]
     freshness_assumptions: tuple[str, ...]
+    checkout_policy: work_models.CheckoutPolicy
+    obligations: tuple[work_models.WorkObligation, ...]
     position: int | None = None
 
 

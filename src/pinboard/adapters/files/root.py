@@ -6,6 +6,7 @@ from typing import BinaryIO
 
 from pinboard.adapters.files.errors import RootError, RootErrorCode
 from pinboard.application.candidate_identity import working_tree_identity
+from pinboard.domain import work_models
 
 PINBOARD_GIT_EXCLUDE = b"/.codex/pinboard/"
 _READ_CHUNK_BYTES = 64 * 1024
@@ -93,6 +94,36 @@ def resolve_source_checkout_root(cwd: Path) -> Path:
         cwd,
         "--show-toplevel",
         f"'{cwd}' is not inside a Git checkout.",
+    )
+
+
+def classify_checkout(cwd: Path) -> work_models.CheckoutSelection:
+    """Classify one supported Git checkout without relying on its current branch name."""
+
+    source_root = resolve_source_checkout_root(cwd)
+    common_directory = _resolve_git_common_directory(cwd)
+    git_directory = _resolve_git_path(cwd, "--git-dir", f"Cannot resolve the Git directory for '{cwd}'.")
+    primary_root = common_directory.parent.resolve()
+    if source_root == primary_root and git_directory == common_directory:
+        return work_models.CheckoutSelection.MAIN
+    registered = _git_bytes(
+        cwd,
+        "worktree",
+        "list",
+        "--porcelain",
+        "-z",
+        unavailable_message=f"Cannot read registered Git worktrees for '{cwd}'.",
+    )
+    worktree_roots = {
+        Path(field.removeprefix(b"worktree ").decode()).resolve()
+        for field in registered.split(b"\0")
+        if field.startswith(b"worktree ")
+    }
+    if source_root != primary_root and git_directory != common_directory and source_root in worktree_roots:
+        return work_models.CheckoutSelection.ISOLATED
+    raise RootError(
+        RootErrorCode.PROJECT_GIT_LAYOUT_UNSUPPORTED,
+        f"Checkout '{source_root}' is neither the primary checkout nor a registered linked worktree.",
     )
 
 

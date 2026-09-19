@@ -11,6 +11,7 @@ from pinboard.application import (
     dispatch_models,
     proposal_models,
     query_models,
+    work_brief_compatibility_models,
     work_brief_contract,
     work_brief_models,
 )
@@ -1998,7 +1999,6 @@ class BriefReviewCorrection(msgspec.Struct, frozen=True, forbid_unknown_fields=T
 class BriefReviewStatusResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
     accepted_brief: ArtifactReferenceResult
-    brief: work_brief_models.WorkBrief
     correction: BriefReviewCorrection
     retry: Literal["safe-to-repeat"]
     state_changed: bool
@@ -2011,10 +2011,24 @@ class BriefReviewStatusResult(msgspec.Struct, frozen=True, forbid_unknown_fields
 
 class BriefReviewNoEvidence(BriefReviewStatusResult, frozen=True):
     status: Literal["no-needs-correction-evidence"]
+    brief: work_brief_models.WorkBrief
+
+
+class LegacyBriefReviewNoEvidence(BriefReviewStatusResult, frozen=True):
+    status: Literal["no-needs-correction-evidence"]
+    brief: work_brief_compatibility_models.WorkBriefV2
 
 
 class BriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
     status: Literal["needs-correction"]
+    brief: work_brief_models.WorkBrief
+    reference: ReviewEvidenceReference
+    review: work_brief_models.WorkBriefReviewNeedsCorrection
+
+
+class LegacyBriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
+    status: Literal["needs-correction"]
+    brief: work_brief_compatibility_models.WorkBriefV2
     reference: ReviewEvidenceReference
     review: work_brief_models.WorkBriefReviewNeedsCorrection
 
@@ -2378,7 +2392,9 @@ ITEM_DEFINITION_RESULT_TYPES = (
 )
 BRIEF_REVIEW_RESULT_TYPES = (
     BriefReviewNoEvidence,
+    LegacyBriefReviewNoEvidence,
     BriefReviewNeedsCorrection,
+    LegacyBriefReviewNeedsCorrection,
     BriefReviewCommitted,
     BriefReviewUnchanged,
     BriefReviewRejected,
@@ -2564,7 +2580,9 @@ type ResultBoundary = (
     | type[query_models.ItemDefinitionHistory]
     | type[ItemDefinitionRejected]
     | type[BriefReviewNoEvidence]
+    | type[LegacyBriefReviewNoEvidence]
     | type[BriefReviewNeedsCorrection]
+    | type[LegacyBriefReviewNeedsCorrection]
     | type[BriefReviewCommitted]
     | type[BriefReviewUnchanged]
     | type[BriefReviewRejected]
@@ -2645,7 +2663,9 @@ def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
         "ParallelPreviewRejected",
         "ItemDefinitionRejected",
         "BriefReviewNoEvidence",
+        "LegacyBriefReviewNoEvidence",
         "BriefReviewNeedsCorrection",
+        "LegacyBriefReviewNeedsCorrection",
         "BriefReviewUnchanged",
         "BriefReviewRejected",
         "ItemStatusInvalid",
@@ -3122,10 +3142,20 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         else:
             msgspec.convert(content, type=ItemDefinitionRejected, strict=True)
     elif tool_name == "pinboard_brief_review":
+        brief = content.get("brief")
+        legacy_brief = isinstance(brief, dict) and brief.get("schema") == "pinboard-work-brief/v2"
         if status == "no-needs-correction-evidence":
-            msgspec.convert(content, type=BriefReviewNoEvidence, strict=True)
+            msgspec.convert(
+                content,
+                type=LegacyBriefReviewNoEvidence if legacy_brief else BriefReviewNoEvidence,
+                strict=True,
+            )
         elif status == "needs-correction":
-            msgspec.convert(content, type=BriefReviewNeedsCorrection, strict=True)
+            msgspec.convert(
+                content,
+                type=LegacyBriefReviewNeedsCorrection if legacy_brief else BriefReviewNeedsCorrection,
+                strict=True,
+            )
         elif status == "committed":
             msgspec.convert(content, type=BriefReviewCommitted, strict=True)
         elif status == "unchanged":

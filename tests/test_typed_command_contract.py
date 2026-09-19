@@ -205,7 +205,24 @@ class TypedTransitionContractTest(unittest.TestCase):
                     2,
                     "d" * 64,
                     work_models.WorkItemDefinition(
-                        "Ready item", "effect", "why", (), ("effect",), (), ("unlock",), (), "effect", "unlock"
+                        "Ready item",
+                        "effect",
+                        "why",
+                        (),
+                        ("effect",),
+                        (),
+                        ("unlock",),
+                        (),
+                        "effect",
+                        "unlock",
+                        work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+                        (
+                            work_models.WorkObligation(
+                                work_models.ObligationId("unlock"),
+                                "unlock",
+                                work_models.ObligationDeferralPolicy.FORBIDDEN,
+                            ),
+                        ),
                     ),
                 ),
             ),

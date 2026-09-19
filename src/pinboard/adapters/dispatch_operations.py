@@ -47,6 +47,7 @@ from pinboard.application.work_briefs import (
     canonical_work_brief_review_bytes,
     decode_canonical_work_brief,
     decode_canonical_work_brief_review,
+    validate_executable_work_brief,
     validate_reviewed_authority_digests,
     validate_work_brief_review,
 )
@@ -433,6 +434,12 @@ def _read_dispatch_brief(
     brief = decode_canonical_work_brief(accepted_brief_bytes)
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, brief.message, None)
+    if not isinstance(brief, work_brief_models.WorkBrief):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_INVALID,
+            "Legacy work brief v2 is readable but cannot authorize dispatch.",
+            None,
+        )
     if (
         failure := _validate_dispatch_identity(
             brief,
@@ -807,6 +814,14 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
     )
     if isinstance(validated_brief, DispatchFailure):
         return validated_brief
+    if (
+        failure := validate_executable_work_brief(
+            store,
+            validated_brief,
+            root.classify_checkout(source_checkout_root),
+        )
+    ) is not None:
+        return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, failure.message, None)
     if isinstance(choice, CorrectionDispatch):
         if (
             failure := _validate_correction_history(

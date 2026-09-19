@@ -296,6 +296,14 @@ def _race_preparation_and_prerequisite_proposal(
             "The relationship is current.",
             ("source:local",),
             ("Work C remains ready.",),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "A task can evaluate it.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
         barrier.wait()
         result = create_proposal(

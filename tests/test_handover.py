@@ -371,7 +371,7 @@ class HandoverTest(unittest.TestCase):
         result, stdout, stderr, statements = self.run_handover_with_trace(common)
         self.assertEqual(0, result, stderr)
         handover = self.decode_handover(stdout)
-        self.assertEqual("pinboard-project-handover/v6", handover.schema)
+        self.assertEqual("pinboard-project-handover/v7", handover.schema)
         self.assertEqual((), handover.completion_packages)
         self.assertEqual((), handover.checkpoint_packages)
         self.assertEqual("sqlite-v6", handover.authority)
@@ -392,6 +392,14 @@ class HandoverTest(unittest.TestCase):
         )
         self.assertEqual("Clarified the export objective.", latest_definition.reason)
         self.assertEqual("definition-owner", latest_definition.source_task_id)
+        self.assertEqual(
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            latest_definition.definition.checkout_policy,
+        )
+        self.assertEqual(
+            ("next-decision",),
+            tuple(value.obligation_id for value in latest_definition.definition.obligations),
+        )
         self.assertEqual(
             {
                 "IndependentProposalRelation",
@@ -469,7 +477,7 @@ class HandoverTest(unittest.TestCase):
         replacement_cost = "Work C implementation and review would be discarded."
         subprocess.run(("git", "init", "--quiet", str(project)), check=True)
         proposal: JsonObject = {
-            "schema": "pinboard-proposal/v1",
+            "schema": "pinboard-proposal/v2",
             "proposal_id": "provenance-replacement",
             "created_at": creation_time.isoformat(),
             "source_task_id": "discoverer",
@@ -482,6 +490,14 @@ class HandoverTest(unittest.TestCase):
             "unlock": "Fresh reloads and handover preserve the accepted provenance.",
             "urgency_evidence": "Creation and commit times are independently meaningful.",
             "freshness_assumptions": ["Work C remains live."],
+            "checkout_policy": "coordinator-selected",
+            "obligations": [
+                {
+                    "obligation_id": "preserve-provenance",
+                    "statement": "Fresh reloads and handover preserve the accepted provenance.",
+                    "deferral_policy": "forbidden",
+                }
+            ],
         }
         with patch.object(server, "datetime") as proposal_clock:
             proposal_clock.now.return_value = commit_time

@@ -14,6 +14,7 @@ from unittest.mock import patch
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
+    classify_checkout,
     ensure_default_git_exclude,
     observe_checkout_identity,
     read_current_head_candidate,
@@ -21,6 +22,7 @@ from pinboard.adapters.files.root import (
     resolve_source_checkout_root,
 )
 from pinboard.cli.entrypoint import main
+from pinboard.domain import work_models
 from pinboard.mcp import server
 from tests.native_support import call_native_tool
 
@@ -66,9 +68,13 @@ class RootResolutionTest(unittest.TestCase):
         self.assertEqual(linked.resolve(), resolve_source_checkout_root(linked))
         self.assertEqual(repository.resolve(), resolve_shared_repository_root(repository))
         self.assertEqual(repository.resolve(), resolve_shared_repository_root(linked))
+        self.assertEqual(work_models.CheckoutSelection.MAIN, classify_checkout(repository))
+        self.assertEqual(work_models.CheckoutSelection.ISOLATED, classify_checkout(linked))
         repository_revision = self.run_git(repository, "rev-parse", "HEAD").strip()
         self.assertEqual(("main", repository_revision), observe_checkout_identity(repository))
         self.assertEqual(("linked", repository_revision), observe_checkout_identity(linked))
+        self.run_git(repository, "switch", "-c", "primary-feature")
+        self.assertEqual(work_models.CheckoutSelection.MAIN, classify_checkout(repository))
 
         with chdir(linked):
             result, stdout, stderr = self.run_cli("root")

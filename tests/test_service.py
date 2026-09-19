@@ -948,6 +948,14 @@ class ServiceTest(unittest.TestCase):
             "The evidence is current.",
             ("source:local",),
             ("The current schema remains accepted.",),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "A task can inspect it later.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
 
         with reject_table_deletes("work_items"):
@@ -964,9 +972,19 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(("source:local",), tuple(value.selector for value in after.proposals.evidence))
         proposal = after.proposals.proposals[0]
         intake_item = next(value for value in after.lifecycle.work_items if value.item_id == ItemId("sqlite-proposal"))
+        intake_definition = next(
+            value.definition
+            for value in after.lifecycle.definition_revisions
+            if value.item_id == ItemId("sqlite-proposal")
+        )
         self.assertEqual(stored_state.StoredWorkItemState.INTAKE, intake_item.state)
         self.assertEqual(5, intake_item.queue_position)
         self.assertEqual("proposal:sqlite-proposal", intake_item.source)
+        self.assertEqual(work_models.CheckoutPolicy.COORDINATOR_SELECTED, intake_definition.checkout_policy)
+        self.assertEqual(
+            (work_models.ObligationId("proposal-outcome"),),
+            tuple(value.obligation_id for value in intake_definition.obligations),
+        )
         self.assertEqual(before.authority, after.authority)
         self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
         self.assertEqual(created_at, proposal.created_at)
@@ -992,6 +1010,14 @@ class ServiceTest(unittest.TestCase):
             "The relationship is current.",
             ("source:local",),
             ("Work C remains live.",),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "A task can evaluate it in queue order.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
             2,
         )
 
@@ -1045,6 +1071,14 @@ class ServiceTest(unittest.TestCase):
             "The replacement decision is current.",
             ("source:accepted-design",),
             ("Work C remains live.",),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "The replacement can be evaluated without losing the relationship.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
 
         result = self._create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW + timedelta(seconds=1))
@@ -1077,6 +1111,14 @@ class ServiceTest(unittest.TestCase):
             "The queue currently contains four live items.",
             (),
             (),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "Keep the prior queue intact.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
             6,
         )
         before = store.validated_snapshot()
@@ -1105,6 +1147,14 @@ class ServiceTest(unittest.TestCase):
             "The related item is absent.",
             (),
             (),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "Return a typed item rejection.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
         before = store.validated_snapshot()
 

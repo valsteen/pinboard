@@ -816,6 +816,7 @@ class McpTransportTest(unittest.TestCase):
                 reopened, ArtifactRepository(roots), corrected, SQLITE_NOW
             )
             assert not isinstance(accepted_corrected, DecisionFailure)
+            assert not isinstance(accepted_corrected, work_brief_models.WorkBriefFailure)
             corrected_status = await call(
                 mcp_server.BRIEF_REVIEW_TOOL,
                 {
@@ -937,9 +938,16 @@ class McpTransportTest(unittest.TestCase):
                 brief.checkpoint.verification,
                 brief.checkpoint.deferrals,
             ),
+            obligation_correspondence=(
+                work_brief_models.ObligationCorrespondence(
+                    "next-decision",
+                    work_brief_models.CriterionObligationTarget(brief.checkpoint.acceptance_criteria[0].number),
+                ),
+            ),
         )
         published_local = work_briefs.publish_work_brief(store, ArtifactRepository(roots), local, SQLITE_NOW)
         assert not isinstance(published_local, DecisionFailure)
+        assert not isinstance(published_local, work_brief_models.WorkBriefFailure)
         for operation in ("status", "publish"):
             request: dict[str, contracts.JsonValue] = {
                 **base,
@@ -1546,6 +1554,12 @@ class McpTransportTest(unittest.TestCase):
                             ),
                         ),
                     ),
+                    obligation_correspondence=(
+                        work_brief_models.ObligationCorrespondence(
+                            "sqlite-persistence",
+                            work_brief_models.CriterionObligationTarget(checkpoint.acceptance_criteria[0].number),
+                        ),
+                    ),
                 )
                 publication = await call(mcp_server.BRIEF_PUBLISH_TOOL, {"brief": msgspec.to_builtins(brief)})
                 reference = publication["reference"]
@@ -1699,7 +1713,7 @@ class McpTransportTest(unittest.TestCase):
         reason: dict[str, contracts.JsonValue] = {"reason": "Accepted reason."}
         evidence: dict[str, contracts.JsonValue] = {"evidence": "Independent review evidence."}
         definition: dict[str, contracts.JsonValue] = {
-            "schema": "pinboard-work-item-definition/v1",
+            "schema": "pinboard-work-item-definition/v2",
             "title": "Item",
             "objective": "Change one consumer.",
             "hypothesis": "It remains observable.",
@@ -1710,6 +1724,14 @@ class McpTransportTest(unittest.TestCase):
             "dependencies": [],
             "effect": "Changed consumer.",
             "unlock": "Use the consumer.",
+            "checkout_policy": "coordinator-selected",
+            "obligations": [
+                {
+                    "obligation_id": "use-consumer",
+                    "statement": "Use the consumer.",
+                    "deferral_policy": "forbidden",
+                }
+            ],
         }
         cases: tuple[tuple[str, str, dict[str, contracts.JsonValue]], ...] = (
             ("accept-checkpoint", "project", {"checkpoint": "checkpoint-1", "candidate": "candidate", **evidence}),
@@ -3573,7 +3595,7 @@ class McpTransportTest(unittest.TestCase):
                     arguments = {
                         "project_root": str(project),
                         "work_root": str(roots.work_root),
-                        "brief": msgspec.to_builtins(example_work_brief()),
+                        "brief": msgspec.to_builtins(work_a_brief(project)),
                     }
                 with (
                     patch.object(mcp_server, "_refresh_affected_views", side_effect=RuntimeError("reply lost")),
@@ -3588,7 +3610,7 @@ class McpTransportTest(unittest.TestCase):
                 else:
                     reference = reopened.read_artifact_reference(
                         kind=work_models.ArtifactKind.BRIEF,
-                        key="make-canonical-briefs-typed-json-1",
+                        key="work-a-1",
                         revision=1,
                     )
                     self.assertIsNotNone(reference)
@@ -3601,7 +3623,7 @@ class McpTransportTest(unittest.TestCase):
         server = mcp_server.create_server(
             executor, mcp_server.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256)
         )
-        brief = example_work_brief()
+        brief = work_a_brief(project)
         references_before = SQLiteWorkStore(roots.database_path).validated_snapshot().artifact_references
 
         with patch.object(
@@ -3903,7 +3925,7 @@ class McpTransportTest(unittest.TestCase):
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
         proposal = proposal_input()
-        brief_value = example_work_brief()
+        brief_value = work_a_brief(project)
         brief = msgspec.to_builtins(brief_value)
         self.assertIsInstance(brief, dict)
 

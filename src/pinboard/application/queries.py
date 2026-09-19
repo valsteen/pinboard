@@ -86,7 +86,7 @@ def select_review_job_context(
 
 def validate_attempt_brief_identity(
     context: query_models.NonterminalAttemptContextFacts,
-    brief: work_brief_models.WorkBrief,
+    brief: work_brief_models.ReadableWorkBrief,
 ) -> DecisionFailure | None:
     """Require one decoded brief to be the exact accepted identity for an attempt."""
 
@@ -686,7 +686,7 @@ def project_item_status(
 
 def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
     return query_models.WorkItemDefinitionView(
-        "pinboard-work-item-definition/v1",
+        "pinboard-work-item-definition/v2",
         definition.title,
         definition.objective,
         definition.hypothesis,
@@ -697,6 +697,15 @@ def _project_definition(definition: work_models.WorkItemDefinition) -> query_mod
         tuple(definition.dependencies),
         definition.effect,
         definition.unlock,
+        definition.checkout_policy,
+        tuple(
+            query_models.WorkObligationView(
+                obligation.obligation_id,
+                obligation.statement,
+                obligation.deferral_policy,
+            )
+            for obligation in definition.obligations
+        ),
     )
 
 

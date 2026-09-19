@@ -4,7 +4,13 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.application import checkpoint_compatibility_models, query_models, stored_state, work_brief_models
+from pinboard.application import (
+    checkpoint_compatibility_models,
+    query_models,
+    stored_state,
+    work_brief_compatibility_models,
+    work_brief_models,
+)
 from pinboard.application.artifact_publication import (
     AcceptedArtifactPublication,
     ArtifactPublisher,
@@ -17,7 +23,9 @@ from pinboard.application.brief_sources import BriefSourceSelector
 from pinboard.application.ports import WorkStore
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, ItemId
+
+type WorkBriefValue = work_brief_models.WorkBrief | work_brief_compatibility_models.WorkBriefV2
 
 type CheckpointPackage = (
     checkpoint_compatibility_models.CheckpointReviewPackage
@@ -31,7 +39,17 @@ def publish_work_brief(
     publisher: ArtifactPublisher,
     brief: work_brief_models.WorkBrief,
     accepted_at: datetime,
-) -> DecisionResult[AcceptedArtifactPublication]:
+) -> AcceptedArtifactPublication | DecisionFailure | work_brief_models.WorkBriefFailure:
+    selected = store.read_item_definition(ItemId(brief.item_id))
+    definition = selected.definition
+    if (
+        definition is None
+        or definition.revision != brief.accepted_scope.revision
+        or definition.digest != brief.accepted_scope.digest
+    ):
+        return _invalid("The work brief does not name the exact current accepted definition.")
+    if (failure := validate_definition_brief_agreement(definition.definition, brief)) is not None:
+        return failure
     return publish_accepted_artifact(
         store,
         publisher,
@@ -77,18 +95,22 @@ def _owner_key(owner: work_brief_models.CoverageOwner) -> tuple[str, str | int]:
             assert_never(unreachable)
 
 
-def decode_work_brief(data: bytes) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBrief]:
+def decode_work_brief(data: bytes) -> work_brief_models.WorkBriefResult[WorkBriefValue]:
     try:
+        schema_raw = msgspec.json.decode(data, type=dict[str, msgspec.Raw]).get("schema")
+        schema = None if schema_raw is None else msgspec.json.decode(schema_raw, type=str)
+        if schema == "pinboard-work-brief/v2":
+            return msgspec.json.decode(data, type=work_brief_compatibility_models.WorkBriefV2)
         return msgspec.json.decode(data, type=work_brief_models.WorkBrief)
     except msgspec.DecodeError as error:
         return _invalid(f"Cannot decode canonical work brief: {error}")
 
 
-def canonical_work_brief_bytes(brief: work_brief_models.WorkBrief) -> bytes:
+def canonical_work_brief_bytes(brief: work_brief_models.ReadableWorkBrief) -> bytes:
     return _canonical_bytes(brief) + b"\n"
 
 
-def decode_canonical_work_brief(data: bytes) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBrief]:
+def decode_canonical_work_brief(data: bytes) -> work_brief_models.WorkBriefResult[WorkBriefValue]:
     brief = decode_work_brief(data)
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return brief
@@ -98,6 +120,56 @@ def decode_canonical_work_brief(data: bytes) -> work_brief_models.WorkBriefResul
             "Accepted work brief bytes are not the canonical msgspec encoding.",
         )
     return brief
+
+
+def validate_definition_brief_agreement(
+    definition: work_models.WorkItemDefinition,
+    brief: work_brief_models.WorkBrief,
+) -> work_brief_models.WorkBriefFailure | None:
+    if definition.checkout_policy == work_models.CheckoutPolicy.LEGACY_UNRECORDED:
+        return _invalid("Current work briefs require a current definition with explicit checkout policy.")
+    expected_ids = tuple(value.obligation_id for value in definition.obligations)
+    observed_ids = tuple(work_models.ObligationId(value.obligation_id) for value in brief.obligation_correspondence)
+    if len(observed_ids) != len(set(observed_ids)) or set(observed_ids) != set(expected_ids):
+        return _invalid("Obligation correspondence must contain exactly one row for every accepted obligation.")
+    policies = {value.obligation_id: value.deferral_policy for value in definition.obligations}
+    if any(
+        isinstance(row.target, work_brief_models.DeferralObligationTarget)
+        and policies[work_models.ObligationId(row.obligation_id)] == work_models.ObligationDeferralPolicy.FORBIDDEN
+        for row in brief.obligation_correspondence
+    ):
+        return _invalid("An obligation whose deferral is forbidden cannot map to a deferral.")
+    expected_selection = {
+        work_models.CheckoutPolicy.MAIN: work_models.CheckoutSelection.MAIN,
+        work_models.CheckoutPolicy.ISOLATED: work_models.CheckoutSelection.ISOLATED,
+    }.get(definition.checkout_policy)
+    if expected_selection is not None and brief.checkout_selection != expected_selection:
+        return _invalid("The resolved checkout selection does not match the fixed definition policy.")
+    return None
+
+
+def validate_executable_work_brief(
+    store: WorkStore,
+    brief: WorkBriefValue,
+    observed_checkout: work_models.CheckoutSelection,
+) -> work_brief_models.WorkBriefFailure | None:
+    """Require the exact current definition, current brief schema, and selected checkout."""
+
+    if isinstance(brief, work_brief_compatibility_models.WorkBriefV2):
+        return _invalid("Legacy work brief v2 is readable but cannot authorize execution.")
+    selected = store.read_item_definition(ItemId(brief.item_id))
+    definition = selected.definition
+    if (
+        definition is None
+        or definition.revision != brief.accepted_scope.revision
+        or definition.digest != brief.accepted_scope.digest
+    ):
+        return _invalid("The work brief does not name the exact current accepted definition.")
+    if (failure := validate_definition_brief_agreement(definition.definition, brief)) is not None:
+        return failure
+    if brief.checkout_selection != observed_checkout:
+        return _invalid("The selected source checkout does not match the checkout recorded by the work brief.")
+    return None
 
 
 def canonical_checkpoint_bytes(checkpoint: work_brief_models.WorkBriefCheckpoint) -> bytes:
@@ -202,7 +274,7 @@ def decode_canonical_work_brief_review_needs_correction(
     return review
 
 
-def needs_correction_review_key(brief: work_brief_models.WorkBrief) -> str:
+def needs_correction_review_key(brief: work_brief_models.ReadableWorkBrief) -> str:
     checkpoint = brief.checkpoint
     if not isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
         raise ValueError("Local checkpoints do not use needs-correction brief reviews.")
@@ -290,7 +362,7 @@ def read_brief_review_status(
 
 
 def _review_checkpoint(
-    brief: work_brief_models.WorkBrief,
+    brief: work_brief_models.ReadableWorkBrief,
 ) -> work_brief_models.CrossBoundaryCheckpoint | work_brief_models.WorkBriefFailure:
     checkpoint = brief.checkpoint
     if isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
@@ -302,7 +374,7 @@ def _review_checkpoint(
 
 def validate_work_brief_review_needs_correction(
     review: work_brief_models.WorkBriefReviewNeedsCorrection,
-    brief: work_brief_models.WorkBrief,
+    brief: work_brief_models.ReadableWorkBrief,
 ) -> work_brief_models.WorkBriefFailure | None:
     checkpoint = _review_checkpoint(brief)
     if isinstance(checkpoint, work_brief_models.WorkBriefFailure):
@@ -399,7 +471,7 @@ def decode_canonical_completion_review_package(
 
 def validate_work_brief_review(
     review: work_brief_models.WorkBriefReview,
-    brief: work_brief_models.WorkBrief,
+    brief: work_brief_models.ReadableWorkBrief,
     reviewer_task_id: str | None = None,
 ) -> work_brief_models.WorkBriefFailure | None:
     checkpoint = _review_checkpoint(brief)
@@ -471,12 +543,24 @@ def _section(lines: list[str], heading: str, values: tuple[str, ...]) -> None:
     lines.append("")
 
 
-def render_work_brief_markdown(brief: work_brief_models.WorkBrief) -> bytes:
+def _obligation_target_text(target: work_brief_models.ObligationTarget) -> str:
+    match target:
+        case work_brief_models.ContractObligationTarget(invariant=invariant):
+            return f"contract:{invariant}"
+        case work_brief_models.CriterionObligationTarget(number=number):
+            return f"criterion:{number}"
+        case work_brief_models.DeferralObligationTarget(deferral_id=deferral_id):
+            return f"deferral:{deferral_id}"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def render_work_brief_markdown(brief: WorkBriefValue) -> bytes:
     checkpoint = brief.checkpoint
     lines = [
         "---",
         "kind: work-attempt-view",
-        "authority: pinboard-work-brief/v2",
+        f"authority: {brief.schema}",
         f"attempt: {brief.attempt_id}",
         f"item_id: {brief.item_id}",
         f"branch: {brief.branch}",
@@ -485,6 +569,11 @@ def render_work_brief_markdown(brief: work_brief_models.WorkBrief) -> bytes:
         f"accepted_scope_revision: {brief.accepted_scope.revision}",
         f"accepted_scope_digest: {brief.accepted_scope.digest}",
         f"artifact_revision: {brief.artifact_revision}",
+        *(
+            (f"checkout_selection: {brief.checkout_selection.value}",)
+            if isinstance(brief, work_brief_models.WorkBrief)
+            else ()
+        ),
         "---",
         "",
         "> Generated projection; canonical JSON is authoritative.",
@@ -509,6 +598,13 @@ def render_work_brief_markdown(brief: work_brief_models.WorkBrief) -> bytes:
     _section(lines, "Non-goals", brief.non_goals)
     lines.extend(("## Product decision and provenance", "", brief.product_decision_and_provenance, ""))
     lines.extend(("## Testing strategy", "", brief.testing_strategy, ""))
+    if isinstance(brief, work_brief_models.WorkBrief):
+        lines.extend(("## Obligation correspondence", ""))
+        lines.extend(
+            f"- `{row.obligation_id}` — `{_obligation_target_text(row.target)}`"
+            for row in brief.obligation_correspondence
+        )
+        lines.append("")
     if isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
         lines.extend(("## Contract", ""))
         for record in checkpoint.contracts:
@@ -619,7 +715,7 @@ def _render_attempt_brief_view(
     if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
         return _invalid(f"Live attempt '{attempt.attempt_id}' has no accepted brief reference.")
     if not reference.selector.endswith(".json"):
-        return _invalid(f"Live attempt '{attempt.attempt_id}' accepted brief is not canonical v2 JSON.")
+        return _invalid(f"Live attempt '{attempt.attempt_id}' accepted brief is not canonical typed JSON.")
     brief = decode_canonical_work_brief(artifacts.read(reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return brief

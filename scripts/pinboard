@@ -9,6 +9,7 @@ result_output_fd=1
 ready_marker="$runtime_root/.pinboard-ready"
 diagnostics="$runtime_root/.preparation-output"
 preparation_action='{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["uv and write access to launcher-root .pinboard-runtime"]}'
+export PYTHONDONTWRITEBYTECODE=1
 
 launcher_result() {
     printf '{"schema":"pinboard-launcher-result/v1","status":"%s","pinboard_started":false,"runtime_location":{"base":"launcher-root","relative":".pinboard-runtime"},"observations":%s,"upstream_exit_code":%s,"retry_disposition":"%s","effect_disposition":"%s","changed_surfaces":%s,"next_action":%s}\n' \
@@ -186,7 +187,6 @@ if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
     fi
 fi
 
-export PYTHONDONTWRITEBYTECODE=1
 if [ -x "$plugin_root/.venv/bin/$entry_name" ]; then
     exec "$plugin_root/.venv/bin/$entry_name" "$@"
 fi

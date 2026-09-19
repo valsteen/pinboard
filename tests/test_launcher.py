@@ -503,7 +503,7 @@ class LauncherTest(unittest.TestCase):
             trace = root / "uv-trace"
             self.write_uv(
                 root,
-                'printf "%s\\n%s\\n" "$*" "$UV_PROJECT_ENVIRONMENT" > "$TRACE_FILE"\n'
+                'printf "%s\\n%s\\n%s\\n" "$*" "$UV_PROJECT_ENVIRONMENT" "$PYTHONDONTWRITEBYTECODE" > "$TRACE_FILE"\n'
                 'mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"\n'
                 'printf \'#!/bin/sh\\nif [ "$1" = "--version" ]; then printf "pinboard 0.1.0\\n"; exit 0; fi\\n'
                 'printf "private:%%s\\n" "$*"\\n\' > "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n'
@@ -534,7 +534,7 @@ class LauncherTest(unittest.TestCase):
             )
             self.assertEqual("", prepared.stderr)
             self.assertEqual(
-                f"sync --locked --no-dev --project {root}\n{root / '.pinboard-runtime' / 'environment'}\n",
+                f"sync --locked --no-dev --project {root}\n{root / '.pinboard-runtime' / 'environment'}\n1\n",
                 trace.read_text(encoding="utf-8"),
             )
             self.assertTrue((root / ".pinboard-runtime" / ".pinboard-ready").is_file())

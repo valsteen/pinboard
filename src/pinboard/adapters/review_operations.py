@@ -297,7 +297,8 @@ def prepare_review_job(
     if not isinstance(attempt, query_models.NonterminalAttemptContextFacts):
         return unavailable
     reference = attempt.brief_reference
-    brief = work_briefs.decode_canonical_work_brief(read_reference(work_root, reference))
+    brief_bytes = read_reference(work_root, reference)
+    brief = work_briefs.decode_canonical_work_brief(brief_bytes)
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _review_job_failure(str(brief))
     if (failure := queries.validate_attempt_brief_identity(attempt, brief)) is not None:
@@ -349,6 +350,11 @@ def prepare_review_job(
         f"Recorded preimage: {candidate.snapshot.preimage_revision}\n"
         f"Attempt: {attempt.attempt_id}\nCandidate: {candidate_revision}\n"
         f"Canonical accepted brief: {brief_path}\nBrief SHA-256: {reference.content_sha256}\n"
+        "The complete accepted brief follows as direct review scope; its path and digest remain provenance and "
+        "read-back evidence, not another instruction source.\n"
+        "----- BEGIN CANONICAL PINBOARD BRIEF -----\n"
+        f"{brief_bytes.decode()}"
+        "----- END CANONICAL PINBOARD BRIEF -----\n"
         f"Current result evidence: {rendered_result_path}\nResult SHA-256: {digest}\n\n"
         "Before using result.md, independently read its bytes and compute SHA-256. Stop if it is missing, empty, "
         "unreadable, or differs from the digest above; do not review replacement bytes under this job. Verify the "

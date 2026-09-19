@@ -545,6 +545,12 @@ class McpJobsTest(CheckpointPackageSupport):
         self.assertNotIn("isolation", arguments)
         message = arguments["message"]
         assert isinstance(message, str)
+        reference = self.json_object(outcome.content["prompt_reference"])
+        published_prompt = (work / str(reference["selector"])).read_text(encoding="utf-8")
+        self.assertIn("BEGIN ACCEPTED PINBOARD TASK", message)
+        self.assertIn(published_prompt, message)
+        self.assertNotIn("follow those exact bytes", message)
+        self.assertIn("Do not return successful delivery before", message)
         matched = re.search(
             r"call `pinboard_attempt_authority` with (.*?), then `pinboard_actions` with (.*?)\. ", message
         )
@@ -580,7 +586,12 @@ class McpJobsTest(CheckpointPackageSupport):
         self.assertNotIn("isolation", arguments)
         prompt = arguments["prompt"]
         assert isinstance(prompt, str)
-        self.assertTrue(prompt.endswith("fallback."))
+        reference = self.json_object(outcome.content["prompt_reference"])
+        published_prompt = (work / str(reference["selector"])).read_text(encoding="utf-8")
+        self.assertIn("BEGIN ACCEPTED PINBOARD TASK", prompt)
+        self.assertIn(published_prompt, prompt)
+        self.assertNotIn("follow those exact bytes", prompt)
+        self.assertIn("Do not return successful delivery before", prompt)
 
     def test_review_jobs_select_four_rounds_and_keep_mutable_review_digest_separate(self) -> None:
         fixture, package_id, correction_id = self.review_job_fixture()
@@ -617,6 +628,14 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertEqual({"description", "prompt", "run_in_background"}, set(arguments))
                 self.assertFalse(arguments["run_in_background"])
                 self.assertNotIn("isolation", arguments)
+                prompt = arguments["prompt"]
+                assert isinstance(prompt, str)
+                reference = self.json_object(outcome.content["prompt_reference"])
+                published_prompt = (fixture.work / str(reference["selector"])).read_text(encoding="utf-8")
+                self.assertIn("BEGIN ACCEPTED PINBOARD TASK", prompt)
+                self.assertIn(published_prompt, prompt)
+                self.assertIn(work_briefs.canonical_work_brief_bytes(fixture.brief).decode(), published_prompt)
+                self.assertNotIn("follow those exact bytes", prompt)
                 round_ = self.json_object(outcome.content["review_round"])
                 if "correction" in kind:
                     self.assertEqual("candidate-a", round_["candidate_revision"])

@@ -116,6 +116,7 @@ def prepare_dispatch_from_artifact(
         return brief
     return _render_dispatch_prompt(
         brief,
+        attempt_path.read_bytes(),
         attempt_path.parent,
         attempt_path,
         checkpoint,
@@ -309,6 +310,7 @@ class DispatchTest(unittest.TestCase):
         self.assertNotIn("$deliver", prompt)
         self.assertIn(f"Checkpoint: {CHECKPOINT_ID}", prompt)
         self.assertIn(f"Canonical brief: {path}", prompt)
+        self.assertIn(canonical_work_brief_bytes(value).decode(), prompt)
         self.assertIn("- Fresh context: required", prompt)
         self.assertIn("- Runtime host: local", prompt)
         self.assertIn(f"- Result: {project / 'attempts' / value.attempt_id / 'result.md'}", prompt)
@@ -822,6 +824,7 @@ class DispatchTest(unittest.TestCase):
 
         def render_then_accept_unrelated_revision(
             brief: work_brief_models.WorkBrief,
+            accepted_brief_bytes: bytes,
             work_root: Path,
             attempt_path: Path,
             checkpoint: str,
@@ -831,6 +834,7 @@ class DispatchTest(unittest.TestCase):
         ) -> DispatchResult[str]:
             rendered = render_prompt(
                 brief,
+                accepted_brief_bytes,
                 work_root,
                 attempt_path,
                 checkpoint,
@@ -1033,6 +1037,7 @@ class DispatchTest(unittest.TestCase):
         rendered = expect_dispatch_success(
             _render_dispatch_prompt(
                 value,
+                canonical_work_brief_bytes(value),
                 roots.work_root,
                 roots.work_root / reference.selector,
                 CHECKPOINT_ID,
@@ -1102,6 +1107,7 @@ class DispatchTest(unittest.TestCase):
         rendered = expect_dispatch_success(
             _render_dispatch_prompt(
                 value,
+                canonical_work_brief_bytes(value),
                 roots.work_root,
                 roots.work_root / reference.selector,
                 CHECKPOINT_ID,

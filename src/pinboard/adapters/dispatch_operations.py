@@ -313,6 +313,7 @@ def _dispatch_failure(failure: ApplicationDispatchFailure) -> DispatchFailure:
 def _canonical_prompt(
     work_root: Path,
     attempt_path: Path,
+    accepted_brief_bytes: bytes,
     attempt_id: str,
     checkpoint_id: str,
     environment: DispatchEnvironment,
@@ -320,13 +321,21 @@ def _canonical_prompt(
     permissions = ", ".join(sorted(permission.value for permission in environment.permissions)) or "none"
     result_path = work_root / "attempts" / attempt_id / "result.md"
     blocker_path = work_root / "attempts" / attempt_id / "blocker.md"
+    brief_sha256 = hashlib.sha256(accepted_brief_bytes).hexdigest()
+    brief_text = accepted_brief_bytes.decode()
     return (
         "Use $pinboard-deliver for this repository attempt.\n\n"
         f"Attempt: {attempt_id}\n"
         f"Checkpoint: {checkpoint_id}\n"
-        f"Canonical brief: {attempt_path}\n\n"
-        "Read and follow that canonical attempt brief. It is the sole semantic execution contract. "
+        f"Canonical brief: {attempt_path}\n"
+        f"Canonical brief SHA-256: {brief_sha256}\n"
+        f"Canonical brief size: {len(accepted_brief_bytes)} bytes\n\n"
+        "The complete accepted brief is included below as direct task content. It is the sole semantic execution "
+        "contract; the path and digest are provenance and read-back evidence, not another instruction source. "
         "Do not restate, narrow, defer, or add acceptance semantics in this launch.\n\n"
+        "----- BEGIN CANONICAL PINBOARD BRIEF -----\n"
+        f"{brief_text}"
+        "----- END CANONICAL PINBOARD BRIEF -----\n\n"
         "Execution environment declaration:\n"
         f"- Checkout: {environment.checkout}\n"
         f"- Branch: {environment.branch}\n"
@@ -794,6 +803,7 @@ def _stale_review_failure_from_legacy(brief: work_brief_models.WorkBrief) -> Dis
 
 def _render_dispatch_prompt(
     brief: work_brief_models.WorkBrief,
+    accepted_brief_bytes: bytes,
     work_root: Path,
     attempt_path: Path,
     checkpoint: str,
@@ -803,7 +813,7 @@ def _render_dispatch_prompt(
 ) -> DispatchResult[str]:
     if (failure := _validate_accepted_review(brief, accepted_review)) is not None:
         return failure
-    prompt = _canonical_prompt(work_root, attempt_path, brief.attempt_id, checkpoint, environment)
+    prompt = _canonical_prompt(work_root, attempt_path, accepted_brief_bytes, brief.attempt_id, checkpoint, environment)
     if supplied_prompt is not None and supplied_prompt != prompt.encode():
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_PROMPT_NOT_CANONICAL,
@@ -961,6 +971,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
                 assert_never(unreachable)
     rendered_prompt = _render_dispatch_prompt(
         validated_brief,
+        accepted_brief_bytes,
         artifacts.work_root,
         accepted_brief_path,
         checkpoint,

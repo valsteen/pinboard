@@ -259,9 +259,8 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
         and context.replacement_resolved
     ):
         label = (
-            f"Terminally complete {context.item} only after repository disposition and cleanup are complete or not applicable"
-            if context.item_state == work_models.WorkState.REVIEW
-            else f"Terminally complete {context.item} only when no authorized effect remains"
+            f"Terminally complete {context.item} only after every authorized integration and publication effect, "
+            "then exact disposable worktree, local branch, and remote branch cleanup, are verified or not applicable"
         )
         attempt_actions.append(
             decision_models.CompleteAction(factory.make(context.attempt, label, context.attempt_subject_revision))

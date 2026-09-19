@@ -179,9 +179,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_OR_REVIEW_ATTEMPT_CURRENT_SCOPE,
-                "Verify every authorized integration and publication effect, then remove and verify the exact "
-                "disposable worktree, local branch, and remote branch before recording terminal completion. No "
-                "later repository effect may remain.",
+                "Record terminal completion and remove the item from live work. No later repository effect may remain.",
             )
         case ActionKind.CLOSE:
             return ActionSemantics(

@@ -280,14 +280,16 @@ class LifecycleDecisionTest(unittest.TestCase):
                 )
                 self.assertEqual(expected, selected_global)
                 self.assertEqual(expected, selected_exact)
-                if name == "review-current":
+                if name in {"active-current", "review-current"}:
                     completion = next(
                         action
                         for action in groups.attempt_actions
                         if isinstance(action, decision_models.CompleteAction)
                     )
                     self.assertEqual(
-                        "Terminally complete target only after repository disposition and cleanup are complete or not applicable",
+                        "Terminally complete target only after every authorized integration and publication effect, "
+                        "then exact disposable worktree, local branch, and remote branch cleanup, are verified or not "
+                        "applicable",
                         completion.capability.label,
                     )
 
@@ -311,9 +313,7 @@ class LifecycleDecisionTest(unittest.TestCase):
         self.assertEqual(decision_models.LifecycleEffect.CHANGES_LIFECYCLE, review_acceptance.lifecycle_effect)
         completion = decision_models.action_semantics(decision_models.ActionKind.COMPLETE)
         self.assertEqual(
-            "Verify every authorized integration and publication effect, then remove and verify the exact disposable "
-            "worktree, local branch, and remote branch before recording terminal completion. No later repository "
-            "effect may remain.",
+            "Record terminal completion and remove the item from live work. No later repository effect may remain.",
             completion.practical_result,
         )
         self.assertEqual(

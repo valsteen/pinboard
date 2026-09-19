@@ -2988,7 +2988,8 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
             "supported native keyword discovery. If exact selection finds no match, reconcile the selected "
             "name with the advertised inventory before declaring the tool unavailable.\n\n"
             "Inspect the selected tool's negotiated strict schema and invoke that native callable with exact "
-            "project_root and work_root. These instructions grant no identity, authority or permissions. "
+            "project_root and work_root. When its sole top-level property is request, keep the selected leaf inside "
+            "that request object instead of flattening it. These instructions grant no identity, authority or permissions. "
             "A missing required MCP tool stops its operation; retired agent-workflow CLI commands are not "
             "substitutes."
         ),

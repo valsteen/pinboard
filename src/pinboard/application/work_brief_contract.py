@@ -580,7 +580,8 @@ def describe_work_brief_contract() -> WorkBriefContract:
         completion_rule=(
             "After selecting every applicable structural variant, every null is an unresolved required value. Fill it "
             "from accepted scope, reviewed authorities, and observed production consumers before publication; never "
-            "infer missing facts. Empty optional collections may remain empty."
+            "infer missing facts. Empty optional collections may remain empty. When a null's JSON type is unclear, "
+            "request the full contract and follow its generated payload schema instead of guessing from nearby fields."
         ),
         structural_selection_rule=(
             "For every applicable selection path, choose exactly one returned variant and replace the starter value at "

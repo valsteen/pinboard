@@ -121,7 +121,7 @@ For either candidate form, prepare the review evidence in this order:
 5. map every acceptance criterion to code, test, or evidence;
 6. if an existing test file shrank materially, inventory the removed behavior or test names and identify the replacement evidence;
 7. when acceptance claims lifecycle wiring, prove it through the production entry point rather than only through an internal primitive;
-8. write `result.md` at the exact attempt path `<work-root>/attempts/<attempt-id>/result.md`.
+8. write `result.md` at the exact attempt path `<work-root>/attempts/<attempt-id>/result.md`. Keep it proportional to the candidate. On correction, replace stale candidate narrative with the current evidence instead of appending another account; retained review and history already preserve the earlier state.
 
 When `result.md` is new or materially refreshed, return it to the owning task with one concise purpose label and one native clickable link. Keep that confirmed link on every later contextual mention of the result; avoid only a separate unchanged-status announcement.
 

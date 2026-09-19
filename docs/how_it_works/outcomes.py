@@ -88,18 +88,16 @@ DIAGRAM = Diagram(
     slug="outcomes",
     title="Precise outcomes cross intact layer boundaries",
     description=(
-        "The interface decodes a preparation start, the application selects current state, the domain returns an "
-        "accepted decision or expected rejection, and the adapter attempts only an accepted effect. Domain "
-        "rejections, stale-persistence rejections, successful commits, infrastructure failures, and later view "
-        "warnings retain their distinct facts; the interface presents only those facts and maps supported "
-        "alternatives to bounded follow-ups."
+        "A preparation start crosses stable interface, application, domain, and adapter boundaries. Accepted "
+        "decisions, expected rejections, attempted effects, infrastructure failures, and later view warnings keep "
+        "their distinct facts. The interface alone turns those facts into presentation and bounded follow-ups."
     ),
     width=1400,
     height=820,
     sections=(
-        Section("Intact layer boundaries", "exact input moves inward without moving ownership", 28, 42),
-        Section("Typed outcome models", "success, rejection, and effect failures remain separate", 28, 330),
-        Section("Interface-owned actionability", "presentation and follow-up selection happen once", 28, 630),
+        Section("Stable ownership boundaries", "each layer contributes facts without taking over presentation", 28, 42),
+        Section("Distinct typed outcomes", "accepted decision, expected rejection, and attempted effect", 28, 330),
+        Section("One presentation owner", "structured facts become truthful guidance and bounded actions", 28, 630),
     ),
     guides=(
         Guide((176, 38), (1372, 38)),
@@ -137,7 +135,7 @@ DIAGRAM = Diagram(
         Box(
             "request",
             "INTERFACE INPUT",
-            "Decode exact command",
+            "Decode an exact request",
             ("item · task · host · TTL",),
             ("PreparationStartCommand",),
             160,
@@ -148,7 +146,7 @@ DIAGRAM = Diagram(
         Box(
             "state",
             "APPLICATION",
-            "Select current facts",
+            "Select current state",
             ("definition · claim · dependencies",),
             ("start_preparation",),
             470,
@@ -159,8 +157,8 @@ DIAGRAM = Diagram(
         Box(
             "decision",
             "DOMAIN",
-            "Return a typed decision",
-            ("authority or qualified rejection",),
+            "Decide legality",
+            ("accepted authority or rejection",),
             ("decide_preparation_authority",),
             810,
             90,
@@ -170,8 +168,8 @@ DIAGRAM = Diagram(
         Box(
             "effect",
             "ADAPTER EFFECT",
-            "Commit only accepted change",
-            ("transaction or infrastructure stop",),
+            "Attempt the accepted mutation",
+            ("commit, stale guard, or fault",),
             ("WorkTransaction.commit",),
             1110,
             90,
@@ -181,8 +179,8 @@ DIAGRAM = Diagram(
         Box(
             "rejection",
             "DOMAIN OUTCOME",
-            "Reject with the exact reason",
-            ("code · message · optional details", "this path: details = None", "no invented observations"),
+            "Return an expected rejection",
+            ("code · message", "optional FailureDetails", "this path: details = None"),
             ("DecisionFailure",),
             520,
             360,
@@ -192,14 +190,14 @@ DIAGRAM = Diagram(
         ),
         Box(
             "effect-outcome",
-            "DISTINCT EFFECT EXITS",
-            "Keep result families separate",
+            "ATTEMPTED EFFECT",
+            "Report the actual outcome",
             (
-                "success: PreparationStart",
-                "stale write: DecisionFailure",
-                "exception: storage_failure_details",
+                "commit → CommittedEffect",
+                "stale guard → DecisionFailure",
+                "fault → infrastructure exception",
             ),
-            ("CommittedEffect · view warning separate",),
+            ("view warning remains separate",),
             1040,
             360,
             330,
@@ -209,13 +207,13 @@ DIAGRAM = Diagram(
         Box(
             "guidance",
             "INTERFACE PRESENTATION",
-            "Render only available facts",
+            "Translate facts into guidance",
             (
-                "failure: state · surfaces · retry",
-                "only supplied alternatives become actions",
-                "success: exact lease · warning separate",
+                "facts → observations · mismatches",
+                "effect → state · surfaces · retry",
+                "alternatives → bounded actions",
             ),
-            ("RejectedOperationView · success output",),
+            ("RejectedOperationView · lease output",),
             645,
             650,
             510,
@@ -224,7 +222,7 @@ DIAGRAM = Diagram(
     ),
     notes=(
         Note(
-            "Only supplied alternatives become next actions; absent facts stay explicit and empty.",
+            "No lower layer chooses wording or invents a follow-up.",
             700,
             805,
             12,

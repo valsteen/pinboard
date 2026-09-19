@@ -67,20 +67,36 @@ The same separation keeps a failed view refresh from undoing an accepted transac
 
 ## Precise outcomes cross intact boundaries
 
-Pinboard's layers pass typed outcomes upward instead of flattening a result into an opaque message. In the preparation-start path, the interface decodes `PreparationStartCommand`; the application selects the current definition, claim, and dependencies; the domain's `decide_preparation_authority` returns either an accepted `PreparationAuthorityDecision` or an expected `DecisionFailure`; and the storage adapter attempts only the accepted mutation.
+Pinboard's layers pass typed outcomes upward instead of flattening a result into an opaque message. Each layer keeps its own responsibility while giving the next layer the facts it needs.
+
+The preparation-start path follows those boundaries:
+
+- The interface decodes an exact `PreparationStartCommand`.
+- The application selects the current definition, claim, and dependencies.
+- The domain's `decide_preparation_authority` returns either an accepted `PreparationAuthorityDecision` or an expected `DecisionFailure`.
+- The storage adapter attempts only the mutation described by an accepted decision.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works/outcomes-dark.svg">
   <img src="assets/how-it-works/outcomes.svg" alt="Preparation start crossing interface, application, domain, and adapter boundaries while domain rejection, stale-persistence rejection, successful commit, infrastructure failure, and view-warning facts stay distinct for interface-owned presentation">
 </picture>
 
-Those outcomes are broader than errors, and each result family carries only its own facts. An accepted `PreparationAuthorityDecision` describes the proposed lease. The adapter's `WorkTransaction.commit` returns another `DecisionResult`: a successful commit produces `CommittedEffect`, while a stale persistence guard returns a separate `DecisionFailure`. `PreparationStart` pairs only the successful effect with the authority. The representative domain and stale-persistence rejections carry a code and message with `details = None`, so no layer invents observations or mismatches.
+Outcomes are broader than errors. The path keeps three result families distinct:
 
-Each owner keeps its responsibility. Domain code decides without I/O or wording. Application code sequences current facts, decision, and effect. Adapters return a committed effect or typed stale-persistence rejection, while infrastructure failures remain exceptions. The interface turns either `DecisionFailure` or an infrastructure failure into `RejectedOperationView`; absent details become explicit empty observations, mismatches, and changed surfaces rather than reconstructed claims. For these typed rejections, the view reports `state_changed: false`, `do-not-retry`, and no next action. A successful command instead outputs the exact lease fields, while a later view-refresh warning remains separate from that committed success. Where a result really supplies `FailureDetails` or supported alternatives, the same interface preserves them and alone maps them to bounded next actions.
+- An accepted `PreparationAuthorityDecision` describes the proposed lease.
+- An expected domain rejection returns `DecisionFailure`.
+- An attempted effect returns either `CommittedEffect` or a separate stale-persistence `DecisionFailure`. Infrastructure failures remain exceptions.
 
-If accepted direction changes late, Pinboard does not reinterpret the old candidate as satisfying the new request. The complete definition and brief are replaced before another candidate and review. If work pauses or a worker disappears, the same attempt can resume from its accepted Git lineage and recorded evidence without retelling the project history.
+`PreparationStart` pairs only a successful effect with its authority. A later view-refresh warning remains separate from that committed success.
 
-The extra steps make a first delivery slower. Their return appears when the work needs another revision, conversation, reviewer, or task: the decision, implementation, and evidence remain connected.
+The interface owns presentation. It converts a typed rejection or infrastructure failure into `RejectedOperationView`, using structured facts rather than parsing message text:
+
+- observations and mismatches explain what was found;
+- effect and changed-surface facts report whether state changed;
+- retry disposition states whether repeating the input is safe;
+- supplied alternatives or recovery become bounded next actions.
+
+The representative domain and stale-persistence rejections contain a code and message with `details = None`. The interface therefore emits empty observations, mismatches, and changed surfaces, together with `state_changed: false`, `do-not-retry`, and no next action. It does not invent missing facts. Successful preparation instead presents the exact lease fields.
 
 ## The repository keeps the memory
 

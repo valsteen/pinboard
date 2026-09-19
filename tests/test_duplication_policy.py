@@ -45,18 +45,18 @@ def certified_pair(native: policy.NativePair, source_root: Path) -> policy.Excep
 
 
 class DuplicationPolicyTests(unittest.TestCase):
-    def test_certification_survives_unrelated_preceding_byte_growth(self) -> None:
+    def test_certification_survives_unrelated_preceding_line_and_byte_growth(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             matched = b"a\nb\nc\nd\ne\nf\ng\nh\nx"
 
-            def endpoint(name: str, position: int) -> policy.Occurrence:
+            def endpoint(name: str, position: int, start: int = 2) -> policy.Occurrence:
                 return policy.Occurrence(
                     name,
-                    2,
-                    10,
-                    policy.Location(2, 0, position),
-                    policy.Location(10, 1, position + len(matched)),
+                    start,
+                    start + 8,
+                    policy.Location(start, 0, position),
+                    policy.Location(start + 8, 1, position + len(matched)),
                 )
 
             (root / "first.py").write_bytes(b"old\n" + matched)
@@ -66,10 +66,10 @@ class DuplicationPolicyTests(unittest.TestCase):
                 "pinboard-duplication-exceptions/v1", "5.1.2", (certified_pair(original, root),)
             )
 
-            prefix = b"longer prefix\n"
+            prefix = b"longer\nprefix\n"
             (root / "first.py").write_bytes(prefix + matched)
             (root / "second.py").write_bytes(prefix + matched)
-            shifted = pair(endpoint("first.py", len(prefix)), endpoint("second.py", len(prefix)), False)
+            shifted = pair(endpoint("first.py", len(prefix), 3), endpoint("second.py", len(prefix), 3), False)
 
             self.assertFalse(policy.evaluate(report((shifted,), 10000), exceptions, root).errors)
 

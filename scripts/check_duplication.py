@@ -112,6 +112,8 @@ class Exceptions(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 type StableOccurrence = tuple[str, int, int, int, int]
 type PairIdentity = tuple[frozenset[StableOccurrence], str, int, int]
+type ContentOccurrence = tuple[str, int, int, str]
+type ContentPairIdentity = tuple[tuple[ContentOccurrence, ContentOccurrence], str, int, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +152,36 @@ def native_pair_identity(pair: NativePair) -> PairIdentity:
     return endpoints, pair.format, pair.tokens, pair.lines
 
 
+def _content_pair_identity(pair: NativePair, source_root: Path) -> ContentPairIdentity:
+    endpoints = tuple(
+        sorted(
+            (
+                value.name,
+                value.startLoc.column,
+                value.endLoc.column,
+                occurrence_digest(source_root, value),
+            )
+            for value in (pair.firstFile, pair.secondFile)
+        )
+    )
+    return (endpoints[0], endpoints[1]), pair.format, pair.tokens, pair.lines
+
+
+def _certified_pair_identity(identity: ReviewedPair) -> ContentPairIdentity:
+    endpoints = tuple(
+        sorted(
+            (
+                value.endpoint.name,
+                value.endpoint.startLoc.column,
+                value.endpoint.endLoc.column,
+                value.sha256,
+            )
+            for value in identity.occurrences
+        )
+    )
+    return (endpoints[0], endpoints[1]), identity.format, identity.tokens, identity.lines
+
+
 def evaluate(report: NativeReport, exceptions: Exceptions, source_root: Path) -> PolicyResult:
     """Validate certification before omitting any native pair contribution."""
     errors: list[str] = []
@@ -161,28 +193,24 @@ def evaluate(report: NativeReport, exceptions: Exceptions, source_root: Path) ->
         if certification is None or certification.reviewed_pair_sha256 != reviewed_pair_digest(identity):
             errors.append(f"{identity.id}: missing or changed certification; separate review is required.")
             continue
-        endpoints = tuple(value.endpoint for value in identity.occurrences)
-        stable_endpoints = frozenset(_stable_occurrence(value) for value in endpoints)
-        identity_key = stable_endpoints, identity.format, identity.tokens, identity.lines
-        current_pair = next((pair for pair in report.duplicates if native_pair_identity(pair) == identity_key), None)
-        if current_pair is None:
+        expected_pair = _certified_pair_identity(identity)
+        matches: list[NativePair] = []
+        for pair in report.duplicates:
+            try:
+                if _content_pair_identity(pair, source_root) == expected_pair:
+                    matches.append(pair)
+            except OSError, ValueError:
+                continue
+        if not matches:
             errors.append(f"{identity.id}: certified native pair is missing or changed.")
             continue
-        current_occurrences = {
-            _stable_occurrence(value): value for value in (current_pair.firstFile, current_pair.secondFile)
-        }
-        try:
-            unchanged = all(
-                occurrence_digest(source_root, current_occurrences[_stable_occurrence(value.endpoint)]) == value.sha256
-                for value in identity.occurrences
-            )
-        except KeyError, OSError, ValueError:
-            unchanged = False
-        if not unchanged:
-            errors.append(f"{identity.id}: certified matched bytes are missing or changed.")
+        if len(matches) != 1:
+            errors.append(f"{identity.id}: certified native pair matches multiple current pairs.")
             continue
+        current_pair = matches[0]
+        identity_key = native_pair_identity(current_pair)
         exempt.add(identity_key)
-        reviewed_occurrences.update(_stable_occurrence(value) for value in endpoints)
+        reviewed_occurrences.update(_stable_occurrence(value) for value in (current_pair.firstFile, current_pair.secondFile))
     raw_lines = sum(pair.firstFile.end - pair.firstFile.start for pair in report.duplicates)
     if (len(report.duplicates), raw_lines) != (report.statistics.total.clones, report.statistics.total.duplicatedLines):
         errors.append("Native raw statistics disagree with pinned pair contributions.")

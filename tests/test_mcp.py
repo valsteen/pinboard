@@ -3218,6 +3218,47 @@ class McpTransportTest(unittest.TestCase):
             contracts.validate_result(mcp_server.ARTIFACT_VERIFY_TOOL, corrupted.content),
         )
 
+    def test_uninitialized_work_root_returns_typed_read_and_write_rejections(self) -> None:
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        uninitialized = project / "uninitialized-work"
+        uninitialized.mkdir()
+        token = mcp_server.CancellationToken()
+
+        results = (
+            (
+                mcp_server.OVERVIEW_TOOL,
+                "OVERVIEW_INVALID",
+                mcp_server._read_overview(str(project), str(uninitialized), token),
+            ),
+            (
+                mcp_server.PROPOSAL_CREATE_TOOL,
+                "PROPOSAL_INVALID",
+                mcp_server._proposal_created(
+                    str(project),
+                    str(uninitialized),
+                    proposal_input(),
+                    "mcp-test-task",
+                    "local",
+                    token,
+                ),
+            ),
+        )
+        for tool_name, code, result in results:
+            with self.subTest(tool_name=tool_name):
+                self.assertEqual(result.content, contracts.validate_result(tool_name, result.content))
+                self.assertEqual("rejected", result.content["status"])
+                self.assertEqual(code, result.content["code"])
+                message = result.content["message"]
+                self.assertIsInstance(message, str)
+                assert isinstance(message, str)
+                self.assertIn(str(roots.work_root), message)
+                self.assertFalse(result.content["state_changed"])
+                self.assertEqual("unchanged", result.content["effect"])
+                self.assertEqual("correct-input", result.content["retry"])
+                self.assertEqual([], result.content["changed_surfaces"])
+        self.assertFalse((uninitialized / "state.sqlite3").exists())
+
     def test_mcp_cancellation_releases_running_and_queued_admission(self) -> None:  # noqa: PLR0915 - one MCP cancellation journey
         executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=2)
         diagnostics_stream = io.StringIO()

@@ -28,7 +28,7 @@ An explicitly requested notification remains subordinate to this continuation. S
 ## Preconditions
 
 1. Before selecting the first deferred Pinboard tool schema, read and follow the shared runtime adapter's [Packaged connection and first setup](../pinboard/references/runtime-adapters.md#packaged-connection-and-first-setup) procedure. It owns connection-first native discovery and any required setup.
-2. Call `pinboard_overview` with the exact project and work roots.
+2. Resolve both roots before the first call. `project_root` is the selected checkout. Unless the user or an existing Pinboard receipt selected another work root, a normal checkout uses `<project_root>/.codex/pinboard`; never substitute the checkout, its parent, or a containing fixture directory. Call `pinboard_overview` with those exact roots.
 3. Require authority `sqlite-v6`. Intake is a direct trusted-local project action; its task and host values are audit attribution, not credentials, and it does not require a lease.
 4. If the workflow or required MCP tool is unavailable, stop. Do not infer shared state from titles, recency, nearby tasks, branches, or old audit files.
 5. Before constructing attributed proposal fields, read and follow the `Task and host identity` row in the [shared runtime adapters](../pinboard/references/runtime-adapters.md#packaged-connection-and-first-setup) to determine the current source task identity. If that source is unavailable, ask the human for the exact task ID rather than inventing one.

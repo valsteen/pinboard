@@ -362,7 +362,7 @@ def _read_failure(
 def _resolve_durable(project_root: str, work_root: str) -> DurableRoots:
     source_checkout = resolve_source_checkout_root(Path(project_root))
     shared_repository = resolve_shared_repository_root(source_checkout)
-    return resolve_durable_roots(shared_repository, Path(work_root))
+    return _require_initialized_durable(shared_repository, Path(work_root))
 
 
 def compose_store(durable: DurableRoots) -> SQLiteWorkStore:
@@ -697,7 +697,8 @@ def _order(raw: dict[str, JsonValue], token: CancellationToken) -> OperationResu
     token.checkpoint()
     try:
         request = msgspec.convert(raw, type=contracts.OrderEnvelope, strict=True).request
-    except (msgspec.ValidationError, ValueError) as error:
+        durable = _resolve_durable(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError) as error:
         return OperationResult(
             {
                 "schema": "pinboard-mcp-order-result/v1",
@@ -716,7 +717,6 @@ def _order(raw: dict[str, JsonValue], token: CancellationToken) -> OperationResu
         "arguments": {"project_root": request.project_root, "work_root": request.work_root},
         "meaning": "current-state-only-not-caller-commit-proof",
     }
-    durable = _resolve_durable(request.project_root, request.work_root)
     store = compose_store(durable)
     now = datetime.now(UTC)
     token.checkpoint()
@@ -778,14 +778,14 @@ def _parallel_preview(raw: dict[str, JsonValue], token: CancellationToken) -> Op
     token.checkpoint()
     try:
         request = msgspec.convert(raw, type=contracts.ParallelPreviewEnvelope, strict=True).request
-    except (msgspec.ValidationError, ValueError) as error:
+        durable = _resolve_durable(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError) as error:
         return _read_failure(
             "pinboard-mcp-parallel-preview-result/v1",
             "PARALLEL_PREVIEW_INVALID",
             f"Cannot decode parallel preview: {error}",
             None,
         )
-    durable = _resolve_durable(request.project_root, request.work_root)
     token.checkpoint()
     store = compose_store(durable)
     operation_time = datetime.now(UTC)
@@ -1674,7 +1674,8 @@ def _proposal_created(
             type=contracts.ProposalCreateRequest,
             strict=True,
         )
-    except (msgspec.ValidationError, ValueError) as error:
+        durable = _resolve_durable(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError) as error:
         return _proposal_failure(
             proposal_models.ProposalFailure(
                 DecisionFailureCode.PROPOSAL_INVALID,
@@ -1683,7 +1684,6 @@ def _proposal_created(
             )
         )
     decoded = request.proposal
-    durable = _resolve_durable(request.project_root, request.work_root)
     store = compose_store(durable)
     token.checkpoint()
     now = datetime.now(UTC)
@@ -1739,7 +1739,8 @@ def _brief_published(
             type=contracts.BriefPublishRequest,
             strict=True,
         )
-    except (msgspec.ValidationError, ValueError) as error:
+        durable = _resolve_durable(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError) as error:
         return _brief_failure(
             work_brief_models.WorkBriefFailure(
                 work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
@@ -1747,7 +1748,6 @@ def _brief_published(
             )
         )
     decoded = request.brief
-    durable = _resolve_durable(request.project_root, request.work_root)
     store = compose_store(durable)
     token.checkpoint()
     now = datetime.now(UTC)
@@ -1861,7 +1861,7 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
     try:
         request = contracts.decode_transition_request(raw)
         source_checkout = resolve_source_checkout_root(Path(request.project_root))
-        durable = resolve_durable_roots(resolve_shared_repository_root(source_checkout), Path(request.work_root))
+        durable = _require_initialized_durable(resolve_shared_repository_root(source_checkout), Path(request.work_root))
     except (msgspec.ValidationError, ValueError, OSError) as error:
         inner = raw.get("request")
         receipt = inner.get("receipt") if isinstance(inner, dict) else None
@@ -2481,7 +2481,7 @@ def _dispatch_job(
             dec_hook=dispatch_models.dispatch_environment_dec_hook,
         )
         source_checkout = resolve_source_checkout_root(Path(request.project_root))
-        durable = resolve_durable_roots(resolve_shared_repository_root(source_checkout), Path(request.work_root))
+        durable = _require_initialized_durable(resolve_shared_repository_root(source_checkout), Path(request.work_root))
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return _read_failure(schema, "DISPATCH_INVALID", f"Cannot decode dispatch request: {error}", None)
     choice = request.dispatch
@@ -2567,7 +2567,7 @@ def _review_job(
             strict=True,
         )
         source_checkout = resolve_source_checkout_root(Path(request.project_root))
-        durable = resolve_durable_roots(resolve_shared_repository_root(source_checkout), Path(request.work_root))
+        durable = _require_initialized_durable(resolve_shared_repository_root(source_checkout), Path(request.work_root))
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return _read_failure(schema, "REVIEW_JOB_INVALID", f"Cannot decode review-job request: {error}", None)
     choice = request.review
@@ -2726,7 +2726,7 @@ def _observe_candidate(
         )
     try:
         source_checkout = resolve_source_checkout_root(Path(request.project_root))
-        durable = resolve_durable_roots(resolve_shared_repository_root(source_checkout), Path(request.work_root))
+        durable = _require_initialized_durable(resolve_shared_repository_root(source_checkout), Path(request.work_root))
     except (RootError, OSError, ValueError) as error:
         return _read_failure(schema, "CANDIDATE_GIT_UNAVAILABLE", f"Cannot resolve candidate checkout: {error}", None)
     store = compose_store(durable)
@@ -2794,7 +2794,7 @@ def _candidate_restore(
             strict=True,
         )
         source_checkout = resolve_source_checkout_root(Path(request.project_root))
-        durable = resolve_durable_roots(resolve_shared_repository_root(source_checkout), Path(request.work_root))
+        durable = _require_initialized_durable(resolve_shared_repository_root(source_checkout), Path(request.work_root))
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return _read_failure(
             schema, "CANDIDATE_RESTORE_INVALID", f"Cannot decode candidate restore request: {error}", None
@@ -2836,6 +2836,17 @@ def _candidate_restore(
     )
     assert isinstance(content, dict)
     return OperationResult(content, "committed" if restored.changed else "unchanged", None)
+
+
+def _require_initialized_durable(shared_repository: Path, work_root: Path) -> DurableRoots:
+    durable = resolve_durable_roots(shared_repository, work_root)
+    if not durable.database_path.is_file():
+        default_work_root = shared_repository / ".codex" / "pinboard"
+        raise ValueError(
+            f"Pinboard work state is unavailable at {durable.work_root}; use the exact initialized work root. "
+            f"The default for this repository is {default_work_root}."
+        )
+    return durable
 
 
 async def _run_request(

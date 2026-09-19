@@ -21,6 +21,8 @@ Pinboard wire identities, such as intake's `pinboard_overview` and `pinboard_pro
 3. If exact selection returns no match, reconcile the selected name with the actual advertised inventory. When a short wire name was selected, retry with the advertised full callable name. An unmatched short-name selection or an incomplete broad search does not establish a missing connection.
 4. Inspect the returned callable identity and schema against the required operation, then invoke that native callable with exact project and work roots under its negotiated contract.
 
+Each client column describes that client acting as the current runtime. It does not authorize one client to control another or use another client's connection as a fallback.
+
 | Operation | Codex (primary, stress-tested) | Claude Code (experimental) |
 | --- | --- | --- |
 | Run Pinboard | Discover the connected Pinboard MCP tools and pass exact roots. For CLI-only operations, resolve `../../scripts/pinboard` relative to the active skill; its directory two levels above is `<launcher-root>`. | Discover the same connected Pinboard MCP tools and pass exact roots. For CLI-only operations, use the substituted absolute `${CLAUDE_PLUGIN_ROOT}` as `<launcher-root>` and run `PINBOARD_RUNTIME=claude "${CLAUDE_PLUGIN_ROOT}/scripts/pinboard" ...`. |

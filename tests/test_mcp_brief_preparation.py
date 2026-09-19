@@ -23,7 +23,7 @@ from pinboard.application import (
     work_briefs,
 )
 from pinboard.mcp import common as mcp_common
-from pinboard.mcp import contracts, server
+from pinboard.mcp import contract_schemas, contracts, server
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import read_operations as mcp_reads
 from tests import test_mcp
@@ -53,7 +53,7 @@ class McpBriefPreparationTest(unittest.TestCase):
         result = mcp_reads._brief_sources(
             {"request": {**self.roots, "operation": operation, **fields}}, mcp_execution.CancellationToken()
         )
-        return contracts.validate_result(server.BRIEF_SOURCES_TOOL, result.content)
+        return contract_schemas.validate_result(server.BRIEF_SOURCES_TOOL, result.content)
 
     def test_negotiated_construction_outputs_complete_canonical_starters_and_publish(self) -> None:
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
@@ -113,7 +113,7 @@ class McpBriefPreparationTest(unittest.TestCase):
             result = mcp_reads._brief_contract(
                 {"request": {**self.roots, "operation": "full"}}, mcp_execution.CancellationToken()
             )
-            contracts.validate_result(server.BRIEF_CONTRACT_TOOL, result.content)
+            contract_schemas.validate_result(server.BRIEF_CONTRACT_TOOL, result.content)
         asyncio.run(scenario())
 
     def test_strict_leaf_matrix_rejects_before_root_source_or_output_effects(self) -> None:
@@ -146,7 +146,7 @@ class McpBriefPreparationTest(unittest.TestCase):
                         {"request": {**self.roots, **leaf}}, mcp_execution.CancellationToken()
                     ).content
                     self.assertEqual("BRIEF_SOURCES_REQUEST_INVALID", result["code"])
-                    contracts.validate_result(server.BRIEF_SOURCES_TOOL, result)
+                    contract_schemas.validate_result(server.BRIEF_SOURCES_TOOL, result)
             for root in ("", "bad\x00root"):
                 self.assertEqual(
                     "BRIEF_SOURCES_REQUEST_INVALID",
@@ -161,7 +161,7 @@ class McpBriefPreparationTest(unittest.TestCase):
                 {"request": {**self.roots, **fields}}, mcp_execution.CancellationToken()
             ).content
             self.assertEqual("BRIEF_CONTRACT_REQUEST_INVALID", result["code"])
-            contracts.validate_result(server.BRIEF_CONTRACT_TOOL, result)
+            contract_schemas.validate_result(server.BRIEF_CONTRACT_TOOL, result)
 
     def test_inline_saved_and_selected_checkout_batches_preserve_facts(self) -> None:
         with patch.object(

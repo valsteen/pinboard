@@ -55,7 +55,7 @@ from pinboard.domain.errors import (
 )
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
 from pinboard.mcp import common as mcp_common
-from pinboard.mcp import contracts
+from pinboard.mcp import contract_schemas, contracts
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import mutation_operations as mcp_mutations
 from pinboard.mcp import read_operations as mcp_reads
@@ -213,7 +213,7 @@ class McpTransportTest(unittest.TestCase):
                 with self.subTest(order=request):
                     result = mcp_reads._order({"request": request}, mcp_execution.CancellationToken())
                     self.assertEqual("ORDER_INVALID", result.content["code"])
-                    contracts.validate_result(mcp_server.ORDER_TOOL, result.content)
+                    contract_schemas.validate_result(mcp_server.ORDER_TOOL, result.content)
             invalid_previews: tuple[dict[str, contracts.JsonValue], ...] = (
                 {**selected, "item_ids": []},
                 {**selected, "item_ids": ["work-a", "work-a"]},
@@ -227,7 +227,7 @@ class McpTransportTest(unittest.TestCase):
                 with self.subTest(preview=request):
                     result = mcp_reads._parallel_preview({"request": request}, mcp_execution.CancellationToken())
                     self.assertEqual("PARALLEL_PREVIEW_INVALID", result.content["code"])
-                    contracts.validate_result(mcp_server.PARALLEL_PREVIEW_TOOL, result.content)
+                    contract_schemas.validate_result(mcp_server.PARALLEL_PREVIEW_TOOL, result.content)
 
     def test_order_persists_exact_priority_and_truthful_aftermath(self) -> None:  # noqa: PLR0915 - one persisted order/recovery journey
         with patch("tests.test_mcp.datetime") as seed_clock:
@@ -289,7 +289,7 @@ class McpTransportTest(unittest.TestCase):
 
             with patch.object(mcp_reads.service, "reorder", commit_then_cancel):
                 committed = mcp_reads._order({"request": request}, entered).content
-            contracts.validate_result(mcp_server.ORDER_TOOL, committed)
+            contract_schemas.validate_result(mcp_server.ORDER_TOOL, committed)
             self.assertEqual(
                 ("committed", ["ledger"], "do-not-retry"),
                 (committed["status"], committed["changed_surfaces"], committed["retry"]),
@@ -324,7 +324,7 @@ class McpTransportTest(unittest.TestCase):
             }
             invalid = mcp_reads._order({"request": request}, mcp_execution.CancellationToken()).content
             self.assertEqual("TRANSITION_INPUT_INVALID", invalid["code"])
-            contracts.validate_result(mcp_server.ORDER_TOOL, invalid)
+            contract_schemas.validate_result(mcp_server.ORDER_TOOL, invalid)
             self.assertEqual(after, fresh.validated_snapshot())
             request["order"] = {
                 "schema": "pinboard-live-order/v1",
@@ -338,7 +338,7 @@ class McpTransportTest(unittest.TestCase):
                 side_effect=FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, "injected view failure"),
             ):
                 warning = mcp_reads._order({"request": request}, mcp_execution.CancellationToken()).content
-            contracts.validate_result(mcp_server.ORDER_TOOL, warning)
+            contract_schemas.validate_result(mcp_server.ORDER_TOOL, warning)
             self.assertEqual("committed-with-warning", warning["status"])
             warning_view = msgspec.convert(warning, type=contracts.OrderCommitted)
             self.assertEqual("current-state-only-not-caller-commit-proof", warning_view.recovery.meaning)
@@ -422,7 +422,7 @@ class McpTransportTest(unittest.TestCase):
                             {"request": {**root_arguments, "selection": "selected", "item_ids": [item_id]}},
                             mcp_execution.CancellationToken(),
                         ).content
-                        contracts.validate_result(mcp_server.PARALLEL_PREVIEW_TOOL, result)
+                        contract_schemas.validate_result(mcp_server.PARALLEL_PREVIEW_TOOL, result)
                         preview = queries.select_parallel_preview(store, selected=(item_id,), now=SQLITE_NOW)
                         assert isinstance(preview, query_models.ParallelPreview)
                         self.assertEqual(
@@ -442,7 +442,7 @@ class McpTransportTest(unittest.TestCase):
                         mcp_execution.CancellationToken(),
                     ).content
                     self.assertEqual("PARALLEL_SELECTION_INVALID", rejected["code"])
-                    contracts.validate_result(mcp_server.PARALLEL_PREVIEW_TOOL, rejected)
+                    contract_schemas.validate_result(mcp_server.PARALLEL_PREVIEW_TOOL, rejected)
             clock.now.return_value = SQLITE_NOW + timedelta(minutes=5)
             expired = mcp_reads._parallel_preview(
                 {"request": {**root_arguments, "selection": "selected", "item_ids": ["work-a"]}},
@@ -904,7 +904,7 @@ class McpTransportTest(unittest.TestCase):
                     result = handler(raw, mcp_execution.CancellationToken())
                     self.assertEqual("rejected", result.content["status"])
                     self.assertEqual([], result.content["changed_surfaces"])
-                    contracts.validate_result(tool, result.content)
+                    contract_schemas.validate_result(tool, result.content)
                     resolve.assert_not_called()
 
     def test_negative_review_rejections_and_irreversible_publication_aftermath(self) -> None:  # noqa: PLR0915 - rejection and immutable-publication fault matrix
@@ -933,7 +933,7 @@ class McpTransportTest(unittest.TestCase):
                 {"request": {**base, "review": msgspec.to_builtins(changed)}}, mcp_execution.CancellationToken()
             )
             self.assertEqual(expected, result.content["code"])
-            contracts.validate_result(mcp_server.BRIEF_REVIEW_TOOL, result.content)
+            contract_schemas.validate_result(mcp_server.BRIEF_REVIEW_TOOL, result.content)
             self.assertEqual(before, store.validated_snapshot())
         local = replace_struct(
             brief,
@@ -975,7 +975,7 @@ class McpTransportTest(unittest.TestCase):
         self.assertEqual("failed-after-publication", failed.content["status"])
         self.assertEqual(["immutable-artifact"], failed.content["changed_surfaces"])
         self.assertEqual("do-not-retry", failed.content["retry"])
-        contracts.validate_result(mcp_server.BRIEF_REVIEW_TOOL, failed.content)
+        contract_schemas.validate_result(mcp_server.BRIEF_REVIEW_TOOL, failed.content)
         second = replace_struct(review, artifact_revision=2)
         second_raw: dict[str, contracts.JsonValue] = {"request": {**base, "review": msgspec.to_builtins(second)}}
         with patch.object(
@@ -991,10 +991,10 @@ class McpTransportTest(unittest.TestCase):
         self.assertEqual("rejected", rejected.content["status"])
         self.assertTrue(rejected.content["state_changed"])
         self.assertEqual(["immutable-artifact"], rejected.content["changed_surfaces"])
-        contracts.validate_result(mcp_server.BRIEF_REVIEW_TOOL, rejected.content)
+        contract_schemas.validate_result(mcp_server.BRIEF_REVIEW_TOOL, rejected.content)
         adopted = mcp_reads._brief_review(raw, mcp_execution.CancellationToken())
         self.assertEqual(["accepted-artifact-reference", "ledger"], adopted.content["changed_surfaces"])
-        contracts.validate_result(mcp_server.BRIEF_REVIEW_TOOL, adopted.content)
+        contract_schemas.validate_result(mcp_server.BRIEF_REVIEW_TOOL, adopted.content)
         stable = store.validated_snapshot()
         different = replace_struct(review, reviewer_task_id="another-independent-reviewer")
         with self.assertRaises(UnexpectedToolError):
@@ -1407,7 +1407,7 @@ class McpTransportTest(unittest.TestCase):
         self.assertEqual("paused", attempt.state.value)
 
     def test_transition_request_contract_has_only_exact_mutating_leaves(self) -> None:
-        schema = contracts.transition_request_schema()
+        schema = contract_schemas.transition_request_schema()
         encoded_schema = msgspec.json.encode(schema)
         properties = schema["properties"]
         assert isinstance(properties, dict) and isinstance(properties["request"], dict)
@@ -1484,7 +1484,7 @@ class McpTransportTest(unittest.TestCase):
                 mcp_execution.CancellationToken(),
             )
         resolve_source.assert_called_once_with(project)
-        content = contracts.validate_result(mcp_server.TRANSITION_TOOL, result.content)
+        content = contract_schemas.validate_result(mcp_server.TRANSITION_TOOL, result.content)
         self.assertEqual("failed-after-publication", content["status"], content)
         self.assertEqual("committed", content["effect"])
         self.assertEqual("do-not-retry", content["retry"])
@@ -2486,7 +2486,7 @@ class McpTransportTest(unittest.TestCase):
             )
         )
         assert isinstance(action_result, dict)
-        contracts.validate_result(mcp_server.ACTIONS_TOOL, action_result)
+        contract_schemas.validate_result(mcp_server.ACTIONS_TOOL, action_result)
 
         wrong_payload = deepcopy(action_result)
         wrong_payload_action = wrong_payload["actions"][0]
@@ -2495,14 +2495,14 @@ class McpTransportTest(unittest.TestCase):
         assert isinstance(wrong_payload_contract, dict)
         wrong_payload_contract["payload_schema"] = {"type": "object"}
         with self.assertRaises((msgspec.ValidationError, ValueError)):
-            contracts.validate_result(mcp_server.ACTIONS_TOOL, wrong_payload)
+            contract_schemas.validate_result(mcp_server.ACTIONS_TOOL, wrong_payload)
 
         wrong_identity = deepcopy(action_result)
         wrong_identity_action = wrong_identity["actions"][0]
         assert isinstance(wrong_identity_action, dict)
         wrong_identity_action["action_id"] = {"kind": "block", "subject": "attempt-1"}
         with self.assertRaises((msgspec.ValidationError, ValueError)):
-            contracts.validate_result(mcp_server.ACTIONS_TOOL, wrong_identity)
+            contract_schemas.validate_result(mcp_server.ACTIONS_TOOL, wrong_identity)
 
         continuation = query_models.ActiveAttemptContinuation(
             "pinboard-attempt-continuation/v1",
@@ -2537,7 +2537,7 @@ class McpTransportTest(unittest.TestCase):
         )
         inspection_result = msgspec.json.decode(msgspec.json.encode(inspection))
         assert isinstance(inspection_result, dict)
-        contracts.validate_result(mcp_server.ATTEMPT_INSPECT_TOOL, inspection_result)
+        contract_schemas.validate_result(mcp_server.ATTEMPT_INSPECT_TOOL, inspection_result)
 
         for field, value in (
             (
@@ -2557,7 +2557,7 @@ class McpTransportTest(unittest.TestCase):
                 assert isinstance(invalid_continuation, dict)
                 invalid_continuation[field] = value
                 with self.assertRaises((msgspec.ValidationError, ValueError)):
-                    contracts.validate_result(mcp_server.ATTEMPT_INSPECT_TOOL, invalid)
+                    contract_schemas.validate_result(mcp_server.ATTEMPT_INSPECT_TOOL, invalid)
 
         missing_forbidden = deepcopy(inspection_result)
         missing_forbidden_continuation = missing_forbidden["continuation"]
@@ -2572,7 +2572,7 @@ class McpTransportTest(unittest.TestCase):
             "action_kind": "resume",
         }
         with self.assertRaises((msgspec.ValidationError, ValueError)):
-            contracts.validate_result(mcp_server.ATTEMPT_INSPECT_TOOL, state_incompatible_legal)
+            contract_schemas.validate_result(mcp_server.ATTEMPT_INSPECT_TOOL, state_incompatible_legal)
 
         async def advertised_schema_scenario() -> None:
             parameters = StdioServerParameters(command=sys.executable, args=["-m", "pinboard.mcp"], cwd=Path.cwd())
@@ -2633,10 +2633,10 @@ class McpTransportTest(unittest.TestCase):
             committed("complete", ["ledger", "accepted-artifact-reference"]),
         )
         for content in valid:
-            contracts.validate_result(mcp_server.TRANSITION_TOOL, content)
+            contract_schemas.validate_result(mcp_server.TRANSITION_TOOL, content)
         for content in invalid:
             with self.subTest(content=content), self.assertRaises((msgspec.ValidationError, ValueError)):
-                contracts.validate_result(mcp_server.TRANSITION_TOOL, content)
+                contract_schemas.validate_result(mcp_server.TRANSITION_TOOL, content)
 
         async def advertised_schema_scenario() -> None:
             parameters = StdioServerParameters(command=sys.executable, args=["-m", "pinboard.mcp"])
@@ -3217,7 +3217,7 @@ class McpTransportTest(unittest.TestCase):
         )
         for tool_name, result in results:
             with self.subTest(tool_name=tool_name, classification=result.classification):
-                self.assertEqual(result.content, contracts.validate_result(tool_name, result.content))
+                self.assertEqual(result.content, contract_schemas.validate_result(tool_name, result.content))
 
         artifact_path = roots.work_root / reference.selector
         artifact_path.write_bytes(b"corrupt")
@@ -3232,7 +3232,7 @@ class McpTransportTest(unittest.TestCase):
         self.assertEqual("ARTIFACT_BYTES_INVALID", corrupted.content["code"])
         self.assertEqual(
             corrupted.content,
-            contracts.validate_result(mcp_server.ARTIFACT_VERIFY_TOOL, corrupted.content),
+            contract_schemas.validate_result(mcp_server.ARTIFACT_VERIFY_TOOL, corrupted.content),
         )
 
     def test_uninitialized_work_root_returns_typed_read_and_write_rejections(self) -> None:
@@ -3263,7 +3263,7 @@ class McpTransportTest(unittest.TestCase):
         )
         for tool_name, code, result in results:
             with self.subTest(tool_name=tool_name):
-                self.assertEqual(result.content, contracts.validate_result(tool_name, result.content))
+                self.assertEqual(result.content, contract_schemas.validate_result(tool_name, result.content))
                 self.assertEqual("rejected", result.content["status"])
                 self.assertEqual(code, result.content["code"])
                 message = result.content["message"]

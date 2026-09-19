@@ -18,7 +18,7 @@ from pinboard.domain.errors import (
     EffectDisposition,
     RetryDisposition,
 )
-from pinboard.mcp import contracts
+from pinboard.mcp import contract_schemas
 from pinboard.mcp.contracts import JsonValue
 
 THREAD_NAME_PREFIX = "pinboard-mcp-worker"
@@ -203,7 +203,7 @@ async def _run_request(
             "observed": [],
             "mismatches": [],
         }
-        return contracts.validate_result(operation, busy)
+        return contract_schemas.validate_result(operation, busy)
     try:
         result = await execution.result()
     except asyncio.CancelledError:
@@ -219,4 +219,4 @@ async def _run_request(
         emit("error", None)
         raise
     emit(result.classification, result.commit_reference)
-    return contracts.validate_result(operation, result.content)
+    return contract_schemas.validate_result(operation, result.content)

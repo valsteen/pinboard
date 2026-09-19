@@ -18,7 +18,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import candidate_snapshots, checkpoint_compatibility_models, stored_state, work_brief_models
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.mcp import contracts
+from pinboard.mcp import contract_schemas, contracts
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import job_operations as mcp_jobs
 from tests import test_correction_source_review
@@ -135,7 +135,7 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
                     "TRANSITION_INPUT_INVALID" if disposition == "acceptance-rejection" else "ACTION_NOT_AVAILABLE",
                     outcome.content["code"],
                 )
-                contracts.validate_result("pinboard_review_job", outcome.content)
+                contract_schemas.validate_result("pinboard_review_job", outcome.content)
                 self.assertEqual(patch_bytes, patch_path.read_bytes())
                 if disposition != "orphan":
                     self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
@@ -315,9 +315,9 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
                     ["immutable-artifact", "accepted-artifact-reference", "ledger"], outcome.content["changed_surfaces"]
                 )
                 self.assertEqual("do-not-retry", outcome.content["retry"])
-                contracts.validate_result("pinboard_review_job", outcome.content)
+                contract_schemas.validate_result("pinboard_review_job", outcome.content)
                 with self.assertRaises(msgspec.ValidationError):
-                    contracts.validate_result(
+                    contract_schemas.validate_result(
                         "pinboard_review_job", outcome.content | {"code": "NOT_A_RECOGNIZED_CODE"}
                     )
                 self.assertIsNotNone(
@@ -327,7 +327,7 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
                         1,
                     )
                 )
-                schema = contracts.union_schema_for(contracts.REVIEW_JOB_RESULT_TYPES)
+                schema = contract_schemas.union_schema_for(contracts.REVIEW_JOB_RESULT_TYPES)
                 definitions = self.json_object(schema["$defs"])
                 failed = self.json_object(definitions["ReviewJobFailedAfterPublication"])
                 properties = self.json_object(failed["properties"])

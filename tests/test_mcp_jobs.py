@@ -38,7 +38,7 @@ from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import common as mcp_common
-from pinboard.mcp import contracts
+from pinboard.mcp import contract_schemas, contracts
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import job_operations as mcp_jobs
 from pinboard.mcp import read_operations as mcp_reads
@@ -77,7 +77,7 @@ class McpJobsTest(CheckpointPackageSupport):
                 result = mcp_jobs._observe_candidate(
                     project, str(fixture.work), attempt, mcp_execution.CancellationToken()
                 )
-                contracts.validate_result("pinboard_candidate_observe", result.content)
+                contract_schemas.validate_result("pinboard_candidate_observe", result.content)
                 self.assertEqual(code, result.content["code"])
                 self.assertEqual([], result.content["changed_surfaces"])
         observed = mcp_jobs._observe_candidate(
@@ -91,7 +91,7 @@ class McpJobsTest(CheckpointPackageSupport):
         )
         for override in invalid_claims:
             with self.subTest(override=override), self.assertRaises(msgspec.ValidationError):
-                contracts.validate_result("pinboard_candidate_observe", observed.content | override)
+                contract_schemas.validate_result("pinboard_candidate_observe", observed.content | override)
         for override in ({"operation": "commit"}, {"lease_id": "borrowed"}, {"attempt_id": "../other"}):
             with self.subTest(override=override), self.assertRaises(msgspec.ValidationError):
                 msgspec.convert(
@@ -413,7 +413,7 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertEqual("failed-after-mutation", outcome.content["status"])
                 self.assertEqual(["source-checkout"], outcome.content["changed_surfaces"])
                 self.assertEqual("do-not-retry", outcome.content["retry"])
-                contracts.validate_result("pinboard_candidate_restore", outcome.content)
+                contract_schemas.validate_result("pinboard_candidate_restore", outcome.content)
             finally:
                 release.set()
                 executor.shutdown()
@@ -453,7 +453,7 @@ class McpJobsTest(CheckpointPackageSupport):
             "retry": "safe-to-repeat",
             "changed_surfaces": [],
         }
-        contracts.validate_result("pinboard_candidate_restore", valid)
+        contract_schemas.validate_result("pinboard_candidate_restore", valid)
         changes: tuple[dict[str, contracts.JsonValue], ...] = (
             {"state_changed": True},
             {"effect": "committed"},
@@ -464,7 +464,7 @@ class McpJobsTest(CheckpointPackageSupport):
         )
         for change in changes:
             with self.subTest(change=change), self.assertRaises(msgspec.ValidationError):
-                contracts.validate_result("pinboard_candidate_restore", valid | change)
+                contract_schemas.validate_result("pinboard_candidate_restore", valid | change)
 
     def dispatch_fixture(self) -> tuple[Path, Path, dict[str, contracts.JsonValue]]:
         temporary = tempfile.TemporaryDirectory()
@@ -514,7 +514,7 @@ class McpJobsTest(CheckpointPackageSupport):
         first = mcp_jobs._dispatch_job(str(project), str(work), choice, mcp_execution.CancellationToken())
         self.assertEqual("ready", first.content["status"], first.content)
         self.assertEqual("committed", first.content["effect"])
-        contracts.validate_result("pinboard_dispatch", first.content)
+        contract_schemas.validate_result("pinboard_dispatch", first.content)
         after = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
         self.assertEqual(before.lifecycle.work_items, after.lifecycle.work_items)
         self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
@@ -622,7 +622,7 @@ class McpJobsTest(CheckpointPackageSupport):
                     mcp_execution.CancellationToken(),
                 )
                 self.assertEqual("ready", outcome.content["status"], outcome.content)
-                contracts.validate_result("pinboard_review_job", outcome.content)
+                contract_schemas.validate_result("pinboard_review_job", outcome.content)
                 launch = self.json_object(outcome.content["native_launch"])
                 self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
                 self.assertEqual("claude-code", launch["runtime"])
@@ -730,7 +730,7 @@ class McpJobsTest(CheckpointPackageSupport):
             str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
         )
         self.assertEqual("ready", ready.content["status"], ready.content)
-        contracts.validate_result("pinboard_dispatch", ready.content)
+        contract_schemas.validate_result("pinboard_dispatch", ready.content)
 
     def test_dispatch_output_rejects_false_effect_claims(self) -> None:
         project, work, choice = self.dispatch_fixture()
@@ -744,7 +744,7 @@ class McpJobsTest(CheckpointPackageSupport):
         )
         for changed in changes:
             with self.subTest(changed=changed), self.assertRaises(msgspec.ValidationError):
-                contracts.validate_result("pinboard_dispatch", deepcopy(outcome.content) | changed)
+                contract_schemas.validate_result("pinboard_dispatch", deepcopy(outcome.content) | changed)
 
     def test_dispatch_failure_preserves_ready_review_publication(self) -> None:
         project, work, choice = self.dispatch_fixture()
@@ -758,7 +758,7 @@ class McpJobsTest(CheckpointPackageSupport):
         self.assertEqual(
             ["immutable-artifact", "accepted-artifact-reference", "ledger"], outcome.content["changed_surfaces"]
         )
-        contracts.validate_result("pinboard_dispatch", outcome.content)
+        contract_schemas.validate_result("pinboard_dispatch", outcome.content)
         review = msgspec.convert(choice["brief_review"], type=work_brief_models.WorkBriefReview, strict=True)
         review_sha256 = sha256(work_briefs.canonical_work_brief_review_bytes(review)).hexdigest()
         self.assertTrue(

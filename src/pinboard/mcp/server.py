@@ -15,7 +15,7 @@ from pinboard.application import (
     proposal_models,
     work_brief_models,
 )
-from pinboard.mcp import contracts, execution, job_operations, mutation_operations, read_operations
+from pinboard.mcp import contract_schemas, contracts, execution, job_operations, mutation_operations, read_operations
 from pinboard.mcp.contracts import JsonValue
 from pinboard.mcp.tool_names import (
     ACTIONS_TOOL,
@@ -452,103 +452,103 @@ def _install_boundary_contracts(server: MCPServer) -> None:
     definitions = (
         (
             ORDER_TOOL,
-            contracts.schema_for(contracts.OrderEnvelope),
-            contracts.union_schema_for(contracts.ORDER_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.OrderEnvelope),
+            contract_schemas.union_schema_for(contracts.ORDER_RESULT_TYPES),
         ),
         (
             PARALLEL_PREVIEW_TOOL,
-            contracts.schema_for(contracts.ParallelPreviewEnvelope),
-            contracts.union_schema_for(contracts.PARALLEL_PREVIEW_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.ParallelPreviewEnvelope),
+            contract_schemas.union_schema_for(contracts.PARALLEL_PREVIEW_RESULT_TYPES),
         ),
         (
             BRIEF_CONTRACT_TOOL,
-            contracts.schema_for(contracts.BriefContractEnvelope),
-            contracts.union_schema_for(contracts.BRIEF_CONTRACT_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.BriefContractEnvelope),
+            contract_schemas.union_schema_for(contract_schemas.BRIEF_CONTRACT_RESULT_TYPES),
         ),
         (
             BRIEF_SOURCES_TOOL,
-            contracts.schema_for(contracts.BriefSourcesEnvelope),
-            contracts.union_schema_for(contracts.BRIEF_SOURCES_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.BriefSourcesEnvelope),
+            contract_schemas.union_schema_for(contract_schemas.BRIEF_SOURCES_RESULT_TYPES),
         ),
         (
             ITEM_DEFINITION_TOOL,
-            contracts.schema_for(contracts.ItemDefinitionEnvelope),
-            contracts.union_schema_for(contracts.ITEM_DEFINITION_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.ItemDefinitionEnvelope),
+            contract_schemas.union_schema_for(contracts.ITEM_DEFINITION_RESULT_TYPES),
         ),
         (
             BRIEF_REVIEW_TOOL,
-            contracts.schema_for(contracts.BriefReviewEnvelope),
-            contracts.union_schema_for(contracts.BRIEF_REVIEW_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.BriefReviewEnvelope),
+            contract_schemas.union_schema_for(contracts.BRIEF_REVIEW_RESULT_TYPES),
         ),
         (
             ITEM_STATUS_TOOL,
-            contracts.schema_for(contracts.ItemStatusRequest),
-            contracts.union_schema_for(contracts.ITEM_STATUS_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.ItemStatusRequest),
+            contract_schemas.union_schema_for(contracts.ITEM_STATUS_RESULT_TYPES),
         ),
         (
             PROPOSAL_CREATE_TOOL,
-            contracts.schema_for(contracts.ProposalCreateRequest),
-            contracts.union_schema_for(contracts.PROPOSAL_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.ProposalCreateRequest),
+            contract_schemas.union_schema_for(contracts.PROPOSAL_RESULT_TYPES),
         ),
         (
             BRIEF_PUBLISH_TOOL,
-            contracts.schema_for(contracts.BriefPublishRequest),
-            contracts.union_schema_for(contracts.BRIEF_PUBLICATION_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.BriefPublishRequest),
+            contract_schemas.union_schema_for(contracts.BRIEF_PUBLICATION_RESULT_TYPES),
         ),
         (
             OVERVIEW_TOOL,
-            contracts.schema_for(contracts.OverviewRequest),
-            contracts.union_schema_for(contracts.OVERVIEW_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.OverviewRequest),
+            contract_schemas.union_schema_for(contracts.OVERVIEW_RESULT_TYPES),
         ),
         (
             ACTIONS_TOOL,
-            contracts.actions_request_schema(),
-            contracts.union_schema_for(contracts.ACTIONS_RESULT_TYPES),
+            contract_schemas.actions_request_schema(),
+            contract_schemas.union_schema_for(contracts.ACTIONS_RESULT_TYPES),
         ),
         (
             ATTEMPT_INSPECT_TOOL,
-            contracts.schema_for(contracts.AttemptInspectRequest),
-            contracts.union_schema_for(contracts.ATTEMPT_INSPECTION_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.AttemptInspectRequest),
+            contract_schemas.union_schema_for(contracts.ATTEMPT_INSPECTION_RESULT_TYPES),
         ),
         (
             ARTIFACT_VERIFY_TOOL,
-            contracts.schema_for(contracts.ArtifactVerifyRequest),
-            contracts.union_schema_for(contracts.ARTIFACT_VERIFICATION_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.ArtifactVerifyRequest),
+            contract_schemas.union_schema_for(contracts.ARTIFACT_VERIFICATION_RESULT_TYPES),
         ),
         (
             PREPARATION_AUTHORITY_TOOL,
-            contracts.preparation_authority_request_schema(),
-            contracts.union_schema_for(contracts.PREPARATION_AUTHORITY_RESULT_TYPES),
+            contract_schemas.preparation_authority_request_schema(),
+            contract_schemas.union_schema_for(contracts.PREPARATION_AUTHORITY_RESULT_TYPES),
         ),
         (
             ATTEMPT_AUTHORITY_TOOL,
-            contracts.attempt_authority_request_schema(),
-            contracts.union_schema_for(contracts.ATTEMPT_AUTHORITY_RESULT_TYPES),
+            contract_schemas.attempt_authority_request_schema(),
+            contract_schemas.union_schema_for(contracts.ATTEMPT_AUTHORITY_RESULT_TYPES),
         ),
         (
             TRANSITION_TOOL,
-            contracts.transition_request_schema(),
-            contracts.union_schema_for(contracts.TRANSITION_RESULT_TYPES),
+            contract_schemas.transition_request_schema(),
+            contract_schemas.union_schema_for(contracts.TRANSITION_RESULT_TYPES),
         ),
         (
             DISPATCH_TOOL,
-            contracts.schema_for(contracts.DispatchRequest),
-            contracts.union_schema_for(contracts.DISPATCH_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.DispatchRequest),
+            contract_schemas.union_schema_for(contracts.DISPATCH_RESULT_TYPES),
         ),
         (
             CANDIDATE_RESTORE_TOOL,
-            contracts.schema_for(contracts.CandidateRestoreRequest),
-            contracts.union_schema_for(contracts.CANDIDATE_RESTORE_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.CandidateRestoreRequest),
+            contract_schemas.union_schema_for(contracts.CANDIDATE_RESTORE_RESULT_TYPES),
         ),
         (
             CANDIDATE_OBSERVE_TOOL,
-            contracts.schema_for(contracts.CandidateObserveRequest),
-            contracts.union_schema_for(contracts.CANDIDATE_OBSERVATION_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.CandidateObserveRequest),
+            contract_schemas.union_schema_for(contracts.CANDIDATE_OBSERVATION_RESULT_TYPES),
         ),
         (
             REVIEW_JOB_TOOL,
-            contracts.schema_for(contracts.ReviewJobRequest),
-            contracts.union_schema_for(contracts.REVIEW_JOB_RESULT_TYPES),
+            contract_schemas.schema_for(contracts.ReviewJobRequest),
+            contract_schemas.union_schema_for(contracts.REVIEW_JOB_RESULT_TYPES),
         ),
     )
     for name, input_schema, output_schema in definitions:

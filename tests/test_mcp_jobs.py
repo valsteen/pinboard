@@ -552,9 +552,10 @@ class McpJobsTest(CheckpointPackageSupport):
         assert isinstance(message, str)
         reference = self.json_object(outcome.content["prompt_reference"])
         published_prompt = (work / str(reference["selector"])).read_text(encoding="utf-8")
-        self.assertIn("BEGIN ACCEPTED PINBOARD TASK", message)
-        self.assertIn(published_prompt, message)
-        self.assertNotIn("follow those exact bytes", message)
+        self.assertNotIn("BEGIN ACCEPTED PINBOARD TASK", message)
+        self.assertNotIn(published_prompt, message)
+        self.assertIn(str(work / str(reference["selector"])), message)
+        self.assertIn(str(reference["sha256"]), message)
         self.assertIn("Do not return successful delivery before", message)
         matched = re.search(
             r"call `pinboard_attempt_authority` with (.*?), then `pinboard_actions` with (.*?)\. ", message
@@ -593,9 +594,10 @@ class McpJobsTest(CheckpointPackageSupport):
         assert isinstance(prompt, str)
         reference = self.json_object(outcome.content["prompt_reference"])
         published_prompt = (work / str(reference["selector"])).read_text(encoding="utf-8")
-        self.assertIn("BEGIN ACCEPTED PINBOARD TASK", prompt)
-        self.assertIn(published_prompt, prompt)
-        self.assertNotIn("follow those exact bytes", prompt)
+        self.assertNotIn("BEGIN ACCEPTED PINBOARD TASK", prompt)
+        self.assertNotIn(published_prompt, prompt)
+        self.assertIn(str(work / str(reference["selector"])), prompt)
+        self.assertIn(str(reference["sha256"]), prompt)
         self.assertIn("Do not return successful delivery before", prompt)
 
     def test_review_jobs_select_four_rounds_and_keep_mutable_review_digest_separate(self) -> None:
@@ -637,10 +639,11 @@ class McpJobsTest(CheckpointPackageSupport):
                 assert isinstance(prompt, str)
                 reference = self.json_object(outcome.content["prompt_reference"])
                 published_prompt = (fixture.work / str(reference["selector"])).read_text(encoding="utf-8")
-                self.assertIn("BEGIN ACCEPTED PINBOARD TASK", prompt)
-                self.assertIn(published_prompt, prompt)
+                self.assertNotIn("BEGIN ACCEPTED PINBOARD TASK", prompt)
+                self.assertNotIn(published_prompt, prompt)
+                self.assertIn(str(fixture.work / str(reference["selector"])), prompt)
+                self.assertIn(str(reference["sha256"]), prompt)
                 self.assertIn(work_briefs.canonical_work_brief_bytes(fixture.brief).decode(), published_prompt)
-                self.assertNotIn("follow those exact bytes", prompt)
                 round_ = self.json_object(outcome.content["review_round"])
                 if "correction" in kind:
                     self.assertEqual("candidate-a", round_["candidate_revision"])

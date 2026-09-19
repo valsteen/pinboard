@@ -2408,27 +2408,31 @@ def _mcp_launch_envelope(
             "Substitute only the trusted post-launch identity and returned lease facts. Missing connected tools or identity "
             "stops that operation; never invent a shell command, payload file, or disconnected-client fallback."
         )
-    if runtime == "codex":
-        return dispatch_models.CodexNativeLaunchEnvelope(
-            "pinboard-native-agent-launch/v2",
-            "spawn_agent",
-            background,
-            dispatch_models.CodexLaunchArguments(
-                f"pinboard_{prompt_role}_{uuid4().hex[:8]}",
-                message,
-                "none",
-            ),
-        )
-    return dispatch_models.ClaudeNativeLaunchEnvelope(
-        "pinboard-native-agent-launch/v2",
-        "Agent",
-        background,
-        dispatch_models.ClaudeLaunchArguments(
-            f"Pinboard {prompt_role} for {attempt_id}",
-            message,
-            background,
-        ),
-    )
+    match runtime:
+        case "codex":
+            return dispatch_models.CodexNativeLaunchEnvelope(
+                "pinboard-native-agent-launch/v2",
+                "spawn_agent",
+                background,
+                dispatch_models.CodexLaunchArguments(
+                    f"pinboard_{prompt_role}_{uuid4().hex[:8]}",
+                    message,
+                    "none",
+                ),
+            )
+        case "claude-code":
+            return dispatch_models.ClaudeNativeLaunchEnvelope(
+                "pinboard-native-agent-launch/v2",
+                "Agent",
+                background,
+                dispatch_models.ClaudeLaunchArguments(
+                    f"Pinboard {prompt_role} for {attempt_id}",
+                    message,
+                    background,
+                ),
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _job_failure(

@@ -540,6 +540,7 @@ class McpJobsTest(CheckpointPackageSupport):
         self.assertEqual("spawn_agent", launch["tool"])
         self.assertFalse(launch["background"])
         arguments = self.json_object(launch["arguments"])
+        self.assertEqual({"task_name", "message", "fork_turns"}, set(arguments))
         self.assertEqual("none", arguments["fork_turns"])
         self.assertNotIn("isolation", arguments)
         message = arguments["message"]

@@ -76,6 +76,20 @@ Open the target project and ask Claude Code to set up Pinboard there.
 
 The Claude manifest selects the separate root `mcp-claude.json`. Claude expands `${CLAUDE_PLUGIN_ROOT}` in its command and invokes that root's `scripts/pinboard --mcp`, independent of the target project's current directory. Prepare an installed version deliberately as described above, then use Claude Code's supported reconnect or reload mechanism. A one-session source load uses the prepared source `.venv` when present.
 
+Claude's manual permission mode asks before each MCP tool call by default. To approve Pinboard once for autonomous workflows, merge this server-scoped rule into your user-level `~/.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_pinboard_pinboard__*"
+    ]
+  }
+}
+```
+
+This rule covers only tools from the installed Pinboard plugin server. It does not approve shell commands, repository writes outside Claude's existing file permissions, or another MCP server, and it does not bypass Pinboard's receipts and leases. Omit it if you prefer to approve every Pinboard call separately.
+
 This route uses Claude Code's marketplace mechanism with your local checkout. Pinboard is not published in or installed from Anthropic's official marketplace, and it does not claim live sharing between Codex and Claude Code.
 
 ### One session without installation

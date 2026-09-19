@@ -320,6 +320,8 @@ class PluginPackagingTests(unittest.TestCase):
         )
 
     def test_metadata_rejects_invalid_mcp_configuration_and_missing_assets(self) -> None:
+        codex_manifest_path = ".codex-plugin/plugin.json"
+        codex_manifest = json.loads((ROOT / codex_manifest_path).read_bytes())
         manifest_path = ".claude-plugin/plugin.json"
         manifest = json.loads((ROOT / manifest_path).read_bytes())
         missing_hooks = {key: value for key, value in manifest.items() if key != "hooks"}
@@ -329,6 +331,21 @@ class PluginPackagingTests(unittest.TestCase):
         worker_matcher = hooks["SubagentStart"][0]
         worker_command = worker_matcher["hooks"][0]
         changes = (
+            (
+                codex_manifest_path,
+                json.dumps(
+                    {
+                        **codex_manifest,
+                        "interface": {
+                            **codex_manifest["interface"],
+                            "defaultPrompt": [
+                                *codex_manifest["interface"]["defaultPrompt"],
+                                "A fourth prompt that the Codex plugin manifest does not support.",
+                            ],
+                        },
+                    }
+                ),
+            ),
             (manifest_path, None),
             (manifest_path, json.dumps(missing_hooks)),
             (manifest_path, json.dumps({**manifest, "hooks": "./hooks/hooks.json"})),

@@ -81,7 +81,9 @@ class PluginInterface(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     category: str
     website_url: str = msgspec.field(name="websiteURL")
     capabilities: tuple[str, ...]
-    default_prompt: tuple[str, ...] = msgspec.field(name="defaultPrompt")
+    default_prompt: Annotated[tuple[NonBlankText, ...], msgspec.Meta(min_length=1, max_length=3)] = msgspec.field(
+        name="defaultPrompt"
+    )
 
 
 class PluginManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

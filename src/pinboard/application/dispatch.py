@@ -134,18 +134,18 @@ def select_dispatch(
 def _find_ready_review_reference(
     store: WorkStore,
     attempt_id: AttemptId,
-    checkpoint_sha256: str,
+    review_key_sha256: str,
 ) -> stored_state.ArtifactReference | None:
-    key = f"{attempt_id}-brief-review-{checkpoint_sha256}"
+    key = f"{attempt_id}-brief-review-{review_key_sha256}"
     return store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, key, 1)
 
 
 def find_dispatch_review(
     store: WorkStore,
     attempt_id: AttemptId,
-    checkpoint_sha256: str,
+    review_key_sha256: str,
 ) -> DispatchResult[stored_state.ArtifactReference]:
-    existing = _find_ready_review_reference(store, attempt_id, checkpoint_sha256)
+    existing = _find_ready_review_reference(store, attempt_id, review_key_sha256)
     if existing is None:
         return DispatchFailure(DispatchRejectionCode.REVIEW_MISSING, "The exact ready brief review is absent.", None)
     return existing
@@ -155,13 +155,13 @@ def publish_dispatch_review(
     store: WorkStore,
     artifacts: DispatchArtifactPort,
     attempt_id: AttemptId,
-    checkpoint_sha256: str,
+    review_key_sha256: str,
     candidate: bytes,
     review_id: ReviewId,
     accepted_at: datetime,
 ) -> DispatchResult[AcceptedDispatchReview]:
-    key = f"{attempt_id}-brief-review-{checkpoint_sha256}"
-    existing = _find_ready_review_reference(store, attempt_id, checkpoint_sha256)
+    key = f"{attempt_id}-brief-review-{review_key_sha256}"
+    existing = _find_ready_review_reference(store, attempt_id, review_key_sha256)
     if existing is not None:
         if artifacts.read(existing) == candidate:
             return AcceptedDispatchReview(existing, ())

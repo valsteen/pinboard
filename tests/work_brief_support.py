@@ -193,9 +193,10 @@ def ready_review(
     assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
     coverage = checkpoint.coverage[0]
     review = work_brief_models.WorkBriefReview(
-        "pinboard-work-brief-review/v2",
+        "pinboard-work-brief-review/v3",
         value.attempt_id,
         checkpoint.checkpoint_id,
+        hashlib.sha256(canonical_work_brief_bytes(value)).hexdigest(),
         hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest(),
         hashlib.sha256(canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)).hexdigest(),
         reviewer,

@@ -23,7 +23,7 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database, translate_database_error
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import checkpoint_compatibility_models, work_brief_models
+from pinboard.application import checkpoint_compatibility_models, work_brief_compatibility_models, work_brief_models
 from pinboard.application.artifact_publication import validate_transition_work_brief
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.work_briefs import (
@@ -153,7 +153,18 @@ class WorkBriefBoundaryTest(unittest.TestCase):
 
         self.assertEqual("pinboard-work-brief/v2", legacy.schema)
         self.assertIn(b"authority: pinboard-work-brief/v2", render_work_brief_markdown(legacy))
-        review = msgspec.json.decode(ready_review(current), type=work_brief_models.WorkBriefReview)
+        current_review = msgspec.json.decode(ready_review(current), type=work_brief_models.WorkBriefReview)
+        review = work_brief_compatibility_models.WorkBriefReviewV2(
+            "pinboard-work-brief-review/v2",
+            current_review.attempt_id,
+            current_review.checkpoint_id,
+            current_review.checkpoint_sha256,
+            current_review.reviewed_authority_set_sha256,
+            current_review.reviewer_task_id,
+            current_review.status,
+            current_review.verdict,
+            current_review.coverage,
+        )
         self.assertIsNone(validate_work_brief_review(review, legacy))
 
     def test_definition_agreement_requires_complete_ids_and_permitted_checkout_and_deferral(self) -> None:
@@ -336,9 +347,10 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
         coverage = checkpoint.coverage[0]
         review = work_brief_models.WorkBriefReview(
-            schema="pinboard-work-brief-review/v2",
+            schema="pinboard-work-brief-review/v3",
             attempt_id=value.attempt_id,
             checkpoint_id=checkpoint.checkpoint_id,
+            accepted_brief_sha256=hashlib.sha256(canonical_work_brief_bytes(value)).hexdigest(),
             checkpoint_sha256=hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest(),
             reviewed_authority_set_sha256=hashlib.sha256(
                 canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)
@@ -382,6 +394,23 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         stale = validate_work_brief_review(replace(review, checkpoint_sha256="f" * 64), value)
         assert stale is not None
         self.assertEqual(work_brief_models.WorkBriefErrorCode.REVIEW_STALE, stale.code)
+
+        for changed in (
+            replace(value, checkout_selection=work_models.CheckoutSelection.ISOLATED),
+            replace(
+                value,
+                obligation_correspondence=(
+                    work_brief_models.ObligationCorrespondence(
+                        value.obligation_correspondence[0].obligation_id,
+                        work_brief_models.CriterionObligationTarget(checkpoint.acceptance_criteria[0].number),
+                    ),
+                ),
+            ),
+        ):
+            with self.subTest(changed=changed.checkout_selection):
+                stale = validate_work_brief_review(review, changed)
+                assert stale is not None
+                self.assertEqual(work_brief_models.WorkBriefErrorCode.REVIEW_STALE, stale.code)
 
     def test_needs_correction_review_is_canonical_digest_bound_and_independent(self) -> None:
         value = example_work_brief()

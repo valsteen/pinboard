@@ -1,6 +1,7 @@
 """Current native transition receipts, view repair and bounded follow-up reads."""
 
 import sqlite3
+import subprocess
 from collections.abc import Callable
 from datetime import datetime
 from unittest.mock import patch
@@ -11,23 +12,186 @@ from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters import lifecycle_operations
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
+from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import work_brief_models
-from pinboard.application.artifacts import WorkBriefIdentity
+from pinboard.application import work_brief_models, work_briefs
+from pinboard.application.artifacts import NewArtifact, WorkBriefIdentity
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.ports import WorkStore
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionResult
+from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.identifiers import HostId, TaskId
 from pinboard.mcp import server as mcp_server
+from tests.artifact_support import write_revision
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import call_native_tool
-from tests.support import JsonObject
+from tests.support import SQLITE_NOW, JsonObject
+from tests.work_brief_support import work_c_brief
 
 
 class NativeLifecycleEffectsTest(CheckpointPackageSupport):
+    def accept_execution_brief(
+        self,
+        fixture: CheckpointFixture,
+        brief: work_brief_models.WorkBrief,
+        *,
+        legacy: bool,
+    ) -> int:
+        if legacy:
+            payload = msgspec.to_builtins(brief)
+            assert isinstance(payload, dict)
+            payload["schema"] = "pinboard-work-brief/v2"
+            del payload["checkout_selection"]
+            del payload["obligation_correspondence"]
+            content = msgspec.json.encode(payload, order="sorted") + b"\n"
+        else:
+            content = work_briefs.canonical_work_brief_bytes(brief)
+        published = write_revision(
+            resolve_durable_roots(fixture.project),
+            NewArtifact(
+                work_models.ArtifactKind.BRIEF,
+                brief.attempt_id,
+                brief.artifact_revision,
+                ".json",
+                content,
+            ),
+        )
+        accepted = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW)
+        if isinstance(accepted, DecisionFailure):
+            self.fail(str(accepted))
+        return int(accepted.reference.artifact_ref_id)
+
+    def test_activation_rebind_and_revised_resume_reject_legacy_and_checkout_mismatch_unchanged(self) -> None:
+        for invalidity in ("legacy", "checkout-mismatch"):
+            with self.subTest(route="activate", invalidity=invalidity):
+                fixture = self.active_fixture()
+                prepared = call_native_tool(
+                    mcp_server.PREPARATION_AUTHORITY_TOOL,
+                    {
+                        "request": {
+                            "project_root": str(fixture.project),
+                            "work_root": str(fixture.work),
+                            "operation": "start",
+                            "item_id": "work-c",
+                            "task_id": "preparer",
+                            "host_id": "local",
+                            "ttl_seconds": 300,
+                        }
+                    },
+                )
+                branch = subprocess.run(
+                    ["git", "branch", "--show-current"],
+                    cwd=fixture.project,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                base = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=fixture.project,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                definition_revision = prepared["definition_revision"]
+                definition_digest = prepared["definition_digest"]
+                assert isinstance(definition_revision, int)
+                assert isinstance(definition_digest, str)
+                brief = replace_struct(
+                    work_c_brief(),
+                    artifact_revision=2,
+                    branch=branch,
+                    base_revision=base,
+                    owner_task_id="preparer",
+                    accepted_scope=work_brief_models.AcceptedScope(definition_revision, definition_digest),
+                    checkout_selection=work_models.CheckoutSelection.ISOLATED,
+                )
+                reference_id = self.accept_execution_brief(fixture, brief, legacy=invalidity == "legacy")
+                action = self.native_actions(
+                    fixture,
+                    "activate",
+                    "work-c",
+                    role="preparer",
+                    lease=self.json_object(prepared),
+                )
+                before = fixture.store.validated_snapshot()
+                result = call_native_tool(
+                    mcp_server.TRANSITION_TOOL,
+                    {
+                        "request": {
+                            "project_root": str(fixture.project),
+                            "work_root": str(fixture.work),
+                            "role": "preparer",
+                            "receipt": {
+                                "action_id": action["action_id"],
+                                "subject_revision": action["subject_revision"],
+                            },
+                            "payload": {"brief_artifact_ref_id": reference_id},
+                            "lease_id": action["lease_id"],
+                            "generation": action["generation"],
+                        }
+                    },
+                )
+                self.assertEqual("TRANSITION_INPUT_INVALID", result["code"], result)
+                self.assertFalse(result["state_changed"])
+                self.assertEqual(before, fixture.store.validated_snapshot())
+
+            for route in ("rebind", "resume"):
+                with self.subTest(route=route, invalidity=invalidity):
+                    fixture = self.active_fixture()
+                    brief = replace_struct(
+                        fixture.brief,
+                        artifact_revision=2,
+                        checkout_selection=work_models.CheckoutSelection.ISOLATED,
+                    )
+                    reference_id = self.accept_execution_brief(fixture, brief, legacy=invalidity == "legacy")
+                    if route == "rebind":
+                        action = self.project_action(fixture, "rebind-attempt:work-a-1")
+                        payload: JsonObject = {
+                            "attempt": "work-a-1",
+                            "branch": brief.branch,
+                            "base_revision": brief.base_revision,
+                            "brief_artifact_ref_id": reference_id,
+                        }
+                    else:
+                        closed, stdout, stderr = self.run_cli(
+                            *fixture.common,
+                            "close",
+                            "work-c",
+                            "--outcome",
+                            "done",
+                            "--reason",
+                            "Exercise revised-brief resume.",
+                            "--task-id",
+                            "review-owner",
+                            "--host-id",
+                            "local",
+                        )
+                        self.assertEqual(0, closed, f"{stdout}\n{stderr}")
+                        pause = self.project_action(fixture, "pause:work-a-1")
+                        self.assertEqual(
+                            "committed",
+                            self.transition_result(fixture, pause, {"reason": "Exercise revised-brief resume."})[
+                                "status"
+                            ],
+                        )
+                        actions = self.actions_result(fixture, {"role": "project"})
+                        candidates = actions["actions"]
+                        assert isinstance(candidates, list)
+                        action = next(
+                            self.json_object(value)
+                            for value in candidates
+                            if isinstance(value, dict) and self.json_object(value["action_id"])["kind"] == "resume"
+                        )
+                        payload = {"brief_artifact_ref_id": reference_id}
+                    before = fixture.store.validated_snapshot()
+                    result = self.transition_result(fixture, action, payload)
+                    self.assertEqual("TRANSITION_INPUT_INVALID", result["code"], result)
+                    self.assertFalse(result["state_changed"])
+                    self.assertEqual(before, fixture.store.validated_snapshot())
+
     def test_retained_human_close_rejects_active_and_review_then_commits_exact_actor_with_warning(self) -> None:
         for fixture in (self.checkpoint_fixture(), self.active_fixture()):
             with self.subTest(state=fixture.store.validated_snapshot().lifecycle.work_items[0].state):

@@ -26,6 +26,7 @@ from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, Decisio
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, ItemId
 
 type WorkBriefValue = work_brief_models.WorkBrief | work_brief_compatibility_models.WorkBriefV2
+type WorkBriefReviewValue = work_brief_models.WorkBriefReview | work_brief_compatibility_models.WorkBriefReviewV2
 
 type CheckpointPackage = (
     checkpoint_compatibility_models.CheckpointReviewPackage
@@ -198,17 +199,21 @@ def validate_reviewed_authority_digests(
     return None
 
 
-def decode_work_brief_review(data: bytes) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBriefReview]:
+def decode_work_brief_review(data: bytes) -> work_brief_models.WorkBriefResult[WorkBriefReviewValue]:
     try:
+        schema_raw = msgspec.json.decode(data, type=dict[str, msgspec.Raw]).get("schema")
+        schema = None if schema_raw is None else msgspec.json.decode(schema_raw, type=str)
+        if schema == "pinboard-work-brief-review/v2":
+            return msgspec.json.decode(data, type=work_brief_compatibility_models.WorkBriefReviewV2)
         return msgspec.json.decode(data, type=work_brief_models.WorkBriefReview)
-    except msgspec.DecodeError as error:
+    except (msgspec.DecodeError, ValueError) as error:
         return work_brief_models.WorkBriefFailure(
             work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,
             f"Cannot decode canonical work brief review: {error}",
         )
 
 
-def canonical_work_brief_review_bytes(review: work_brief_models.WorkBriefReview) -> bytes:
+def canonical_work_brief_review_bytes(review: WorkBriefReviewValue) -> bytes:
     return _canonical_bytes(review) + b"\n"
 
 
@@ -230,7 +235,7 @@ def canonical_correction_source_review_bytes(review: work_brief_models.Correctio
 
 def decode_canonical_work_brief_review(
     data: bytes,
-) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBriefReview]:
+) -> work_brief_models.WorkBriefResult[WorkBriefReviewValue]:
     review = decode_work_brief_review(data)
     if isinstance(review, work_brief_models.WorkBriefFailure):
         return review
@@ -470,7 +475,7 @@ def decode_canonical_completion_review_package(
 
 
 def validate_work_brief_review(
-    review: work_brief_models.WorkBriefReview,
+    review: WorkBriefReviewValue,
     brief: work_brief_models.ReadableWorkBrief,
     reviewer_task_id: str | None = None,
 ) -> work_brief_models.WorkBriefFailure | None:
@@ -488,13 +493,33 @@ def validate_work_brief_review(
             work_brief_models.WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT,
             "The brief reviewer must be a different task from the attempt owner.",
         )
-    if review.checkpoint_sha256 != hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest() or (
-        review.reviewed_authority_set_sha256
-        != hashlib.sha256(canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)).hexdigest()
+    if isinstance(brief, work_brief_models.WorkBrief):
+        if not isinstance(review, work_brief_models.WorkBriefReview):
+            return work_brief_models.WorkBriefFailure(
+                work_brief_models.WorkBriefErrorCode.REVIEW_STALE,
+                "Current work briefs require a ready review bound to the exact accepted brief.",
+            )
+        accepted_brief_stale = (
+            review.accepted_brief_sha256 != hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
+        )
+    else:
+        if not isinstance(review, work_brief_compatibility_models.WorkBriefReviewV2):
+            return work_brief_models.WorkBriefFailure(
+                work_brief_models.WorkBriefErrorCode.REVIEW_STALE,
+                "Retained work brief v2 requires its exact retained ready-review format.",
+            )
+        accepted_brief_stale = False
+    if (
+        accepted_brief_stale
+        or review.checkpoint_sha256 != hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
+        or (
+            review.reviewed_authority_set_sha256
+            != hashlib.sha256(canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)).hexdigest()
+        )
     ):
         return work_brief_models.WorkBriefFailure(
             work_brief_models.WorkBriefErrorCode.REVIEW_STALE,
-            "Brief review is not bound to the current checkpoint and reviewed authorities.",
+            "Brief review is not bound to the exact accepted brief, checkpoint, and reviewed authorities.",
         )
     expected = {(record.authority_id, record.family, _owner_key(record.owner)) for record in checkpoint.coverage}
     observed = {(record.authority_id, record.family, _owner_key(record.owner)) for record in review.coverage}
@@ -504,6 +529,14 @@ def validate_work_brief_review(
             "Brief review must contain exactly one covered result for every coverage owner.",
         )
     return None
+
+
+def ready_review_key_sha256(brief: work_brief_models.ReadableWorkBrief) -> str:
+    """Return the durable ready-review key without reinterpreting retained v2 evidence."""
+
+    if isinstance(brief, work_brief_models.WorkBrief):
+        return hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
+    return hashlib.sha256(canonical_checkpoint_bytes(brief.checkpoint)).hexdigest()
 
 
 def _authorization_text(

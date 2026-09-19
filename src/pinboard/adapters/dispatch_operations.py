@@ -44,9 +44,11 @@ from pinboard.application.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_correction_source_review_bytes,
     canonical_reviewed_authority_set_bytes,
+    canonical_work_brief_bytes,
     canonical_work_brief_review_bytes,
     decode_canonical_work_brief,
     decode_canonical_work_brief_review,
+    ready_review_key_sha256,
     validate_executable_work_brief,
     validate_reviewed_authority_digests,
     validate_work_brief_review,
@@ -129,12 +131,12 @@ type DispatchPreparationChoice = OrdinaryDispatch | ReviewedDispatch | Correctio
 
 @dataclass(frozen=True, slots=True)
 class ReuseAcceptedDispatchReview:
-    checkpoint_sha256: str
+    review_key_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
 class PublishSuppliedDispatchReview:
-    checkpoint_sha256: str
+    review_key_sha256: str
     candidate: bytes
     review_id: ReviewId
 
@@ -190,14 +192,17 @@ def _stale_review_failure(
     checkpoint = brief.checkpoint
     assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
     current_checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
+    current_accepted_brief_sha256 = hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
     current_authority_set_sha256 = hashlib.sha256(
         canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)
     ).hexdigest()
     return DispatchFailure(
         DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
-        "Brief review is not bound to the current checkpoint and reviewed authorities.",
+        "Brief review is not bound to the current accepted brief, checkpoint, and reviewed authorities.",
         _fresh_review_details(
             (
+                FailureFact("provided_accepted_brief_sha256", review.accepted_brief_sha256),
+                FailureFact("current_accepted_brief_sha256", current_accepted_brief_sha256),
                 FailureFact("provided_checkpoint_sha256", review.checkpoint_sha256),
                 FailureFact("current_checkpoint_sha256", current_checkpoint_sha256),
                 FailureFact(
@@ -207,6 +212,17 @@ def _stale_review_failure(
                 FailureFact("current_reviewed_authority_set_sha256", current_authority_set_sha256),
             ),
             (
+                *(
+                    (
+                        FailureMismatch(
+                            "accepted_brief_sha256",
+                            current_accepted_brief_sha256,
+                            review.accepted_brief_sha256,
+                        ),
+                    )
+                    if review.accepted_brief_sha256 != current_accepted_brief_sha256
+                    else ()
+                ),
                 *(
                     (FailureMismatch("checkpoint_sha256", current_checkpoint_sha256, review.checkpoint_sha256),)
                     if review.checkpoint_sha256 != current_checkpoint_sha256
@@ -644,6 +660,7 @@ def _correction_review_subject(
     return hashlib.sha256(
         msgspec.json.encode(
             (
+                review.contract_review.accepted_brief_sha256,
                 review.contract_review.checkpoint_sha256,
                 review.contract_review.reviewed_authority_set_sha256,
                 snapshot.attempt_id,
@@ -704,12 +721,10 @@ def _select_dispatch_review(
                     )
                 case _ as unreachable:
                     assert_never(unreachable)
-        case work_brief_models.CrossBoundaryCheckpoint() as checkpoint:
+        case work_brief_models.CrossBoundaryCheckpoint():
             match choice:
                 case OrdinaryDispatch():
-                    return ReuseAcceptedDispatchReview(
-                        hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
-                    )
+                    return ReuseAcceptedDispatchReview(ready_review_key_sha256(brief))
                 case ReviewedDispatch():
                     review = choice.review
                 case CorrectionDispatch():
@@ -725,7 +740,7 @@ def _select_dispatch_review(
                 if isinstance(choice, CorrectionDispatch)
                 else canonical_work_brief_review_bytes(review)
             )
-            return PublishSuppliedDispatchReview(review.checkpoint_sha256, candidate, choice.review_id)
+            return PublishSuppliedDispatchReview(ready_review_key_sha256(brief), candidate, choice.review_id)
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -751,6 +766,8 @@ def _validate_accepted_review(
             review = decode_canonical_work_brief_review(accepted_review)
             if isinstance(review, work_brief_models.WorkBriefFailure):
                 return review_failure(review)
+            if not isinstance(review, work_brief_models.WorkBriefReview):
+                return _stale_review_failure_from_legacy(brief)
             if (failure := validate_work_brief_review(review, brief)) is not None:
                 if failure.code == work_brief_models.WorkBriefErrorCode.REVIEW_STALE:
                     return _stale_review_failure(review, brief)
@@ -758,6 +775,21 @@ def _validate_accepted_review(
         case _ as unreachable:
             assert_never(unreachable)
     return None
+
+
+def _stale_review_failure_from_legacy(brief: work_brief_models.WorkBrief) -> DispatchFailure:
+    return DispatchFailure(
+        DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+        "Current work briefs require a ready review bound to the exact accepted brief.",
+        _fresh_review_details(
+            (
+                FailureFact(
+                    "current_accepted_brief_sha256", hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
+                ),
+            ),
+            (FailureMismatch("review_schema", "pinboard-work-brief-review/v3", "pinboard-work-brief-review/v2"),),
+        ),
+    )
 
 
 def _render_dispatch_prompt(
@@ -845,7 +877,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
         if isinstance(starting_snapshot, DispatchFailure):
             return starting_snapshot
         review_choice = dataclass_replace(
-            review_choice, checkpoint_sha256=_correction_review_subject(choice.review, starting_snapshot)
+            review_choice, review_key_sha256=_correction_review_subject(choice.review, starting_snapshot)
         )
     accepted_review_bytes: bytes | None = None
     review_publication_selector: str | None = None
@@ -853,13 +885,13 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
     match review_choice:
         case None:
             pass
-        case ReuseAcceptedDispatchReview(checkpoint_sha256=checkpoint_sha256):
-            accepted_review_reference = find_dispatch_review(store, attempt.attempt_id, checkpoint_sha256)
+        case ReuseAcceptedDispatchReview(review_key_sha256=review_key_sha256):
+            accepted_review_reference = find_dispatch_review(store, attempt.attempt_id, review_key_sha256)
             if isinstance(accepted_review_reference, ApplicationDispatchFailure):
                 return _dispatch_failure(accepted_review_reference)
             accepted_review_bytes = artifacts.read(accepted_review_reference)
         case PublishSuppliedDispatchReview(
-            checkpoint_sha256=checkpoint_sha256,
+            review_key_sha256=review_key_sha256,
             candidate=candidate,
             review_id=review_id,
         ):
@@ -867,7 +899,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
                 store,
                 artifacts,
                 attempt.attempt_id,
-                checkpoint_sha256,
+                review_key_sha256,
                 candidate,
                 review_id,
                 datetime.now(UTC),

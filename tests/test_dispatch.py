@@ -71,6 +71,8 @@ def supplied_review(content: bytes, review_id: ReviewId) -> ReviewedDispatch:
     review = decode_work_brief_review(content)
     if isinstance(review, work_brief_models.WorkBriefFailure):
         raise AssertionError(review.message)
+    if not isinstance(review, work_brief_models.WorkBriefReview):
+        raise AssertionError("Current dispatch fixtures require current ready-review evidence.")
     return ReviewedDispatch(review, review_id)
 
 
@@ -176,6 +178,7 @@ class DispatchTest(unittest.TestCase):
         self,
         project: Path | None = None,
         roots: DurableRoots | None = None,
+        brief_content: Callable[[work_brief_models.WorkBrief], bytes] | None = None,
     ) -> tuple[
         Path,
         DurableRoots,
@@ -198,7 +201,7 @@ class DispatchTest(unittest.TestCase):
                 brief.attempt_id,
                 brief.artifact_revision,
                 ".json",
-                canonical_work_brief_bytes(brief),
+                canonical_work_brief_bytes(brief) if brief_content is None else brief_content(brief),
             ),
         )
         state = complete_sqlite_state()
@@ -235,6 +238,46 @@ class DispatchTest(unittest.TestCase):
             return selected
 
         return project, roots, store, brief, action, self.environment(project)
+
+    def test_dispatch_rejects_legacy_and_checkout_mismatch_unchanged(self) -> None:
+        def legacy_bytes(brief: work_brief_models.WorkBrief) -> bytes:
+            payload = msgspec.to_builtins(brief)
+            assert isinstance(payload, dict)
+            payload["schema"] = "pinboard-work-brief/v2"
+            del payload["checkout_selection"]
+            del payload["obligation_correspondence"]
+            return msgspec.json.encode(payload, order="sorted") + b"\n"
+
+        def mismatch_bytes(brief: work_brief_models.WorkBrief) -> bytes:
+            selection = (
+                work_models.CheckoutSelection.ISOLATED
+                if brief.checkout_selection == work_models.CheckoutSelection.MAIN
+                else work_models.CheckoutSelection.MAIN
+            )
+            return canonical_work_brief_bytes(replace(brief, checkout_selection=selection))
+
+        for invalidity, content in (("legacy", legacy_bytes), ("checkout-mismatch", mismatch_bytes)):
+            with self.subTest(invalidity=invalidity):
+                project, roots, store, _brief, action, environment = self.initialized(brief_content=content)
+                before = store.validated_snapshot()
+                failure = expect_dispatch_failure(
+                    prepare_dispatch(
+                        store,
+                        ArtifactRepository(roots),
+                        project,
+                        action(),
+                        CHECKPOINT_ID,
+                        environment,
+                        supplied_prompt=None,
+                        choice=dispatch_brief.OrdinaryDispatch(),
+                    ),
+                    DispatchErrorCode.DISPATCH_BRIEF_INVALID,
+                )
+                if invalidity == "legacy":
+                    self.assertIn("Legacy work brief", failure.message)
+                else:
+                    self.assertIn("checkout", failure.message)
+                self.assertEqual(before, store.validated_snapshot())
 
     def test_direct_typed_dispatch_validates_identity_sources_review_and_prompt(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
@@ -415,6 +458,7 @@ class DispatchTest(unittest.TestCase):
         review = msgspec.json.decode(ready_review(value), type=work_brief_models.WorkBriefReview)
         for changed, code in (
             ({"reviewer_task_id": value.owner_task_id}, DispatchErrorCode.DISPATCH_BRIEF_REVIEW_NOT_INDEPENDENT),
+            ({"accepted_brief_sha256": "f" * 64}, DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE),
             ({"checkpoint_sha256": "f" * 64}, DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE),
             ({"coverage": ()}, DispatchErrorCode.DISPATCH_BRIEF_REVIEW_INVALID),
         ):
@@ -587,6 +631,10 @@ class DispatchTest(unittest.TestCase):
         )
         self.assertEqual(1, len(ready))
         self.assertTrue(ready[0].selector.endswith(".json"))
+        self.assertEqual(
+            f"{value.attempt_id}-brief-review-{sha256(canonical_work_brief_bytes(value)).hexdigest()}",
+            ready[0].key,
+        )
 
         reused = expect_dispatch_success(
             prepare_dispatch(

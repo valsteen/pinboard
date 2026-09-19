@@ -603,9 +603,10 @@ class ReviewCoverageResult(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
 
 
 class WorkBriefReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-work-brief-review/v2"]
+    schema: Literal["pinboard-work-brief-review/v3"]
     attempt_id: KebabId
     checkpoint_id: KebabId
+    accepted_brief_sha256: Sha256
     checkpoint_sha256: Sha256
     reviewed_authority_set_sha256: Sha256
     reviewer_task_id: NonEmptyLine

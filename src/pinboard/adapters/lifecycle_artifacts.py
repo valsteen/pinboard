@@ -50,6 +50,7 @@ from pinboard.application.work_briefs import (
     canonical_reviewed_authority_set_bytes,
     decode_canonical_work_brief,
     decode_canonical_work_brief_review,
+    ready_review_key_sha256,
     validate_work_brief_review,
 )
 from pinboard.domain import decision_models, work_models
@@ -358,10 +359,9 @@ def _checkpoint_context(
         case work_brief_models.LocalCheckpoint():
             review_reference = None
         case work_brief_models.CrossBoundaryCheckpoint():
-            digest = hashlib.sha256(canonical_checkpoint_bytes(brief.checkpoint)).hexdigest()
             stored_review = store.read_artifact_reference(
                 work_models.ArtifactKind.EVIDENCE,
-                f"{brief.attempt_id}-brief-review-{digest}",
+                f"{brief.attempt_id}-brief-review-{ready_review_key_sha256(brief)}",
                 1,
             )
             if stored_review is None:

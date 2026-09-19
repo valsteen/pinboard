@@ -19,6 +19,7 @@ from pinboard.application.work_briefs import (
     decode_canonical_checkpoint_review_package,
     decode_canonical_work_brief,
     decode_canonical_work_brief_review,
+    ready_review_key_sha256,
     validate_work_brief_review,
 )
 from pinboard.domain import decision_models, history, work_models
@@ -133,7 +134,7 @@ def _review_basis(
                 (review_identity.kind, review_identity.key)
                 != (
                     work_models.ArtifactKind.EVIDENCE.value,
-                    f"{package.attempt_id}-brief-review-{package.checkpoint.sha256}",
+                    f"{package.attempt_id}-brief-review-{ready_review_key_sha256(brief)}",
                 )
                 or checkpoint_sha256 != package.checkpoint.sha256
                 or authority_set_sha256

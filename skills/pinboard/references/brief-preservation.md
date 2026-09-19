@@ -123,7 +123,7 @@ Canonical encoding uses the application JSON codec with sorted object keys. The 
 - `reviewed_authority_set_sha256` is SHA-256 of the canonical encoded ordered tuple of reviewed-authority records;
 - each `reviewed_sha256` remains the digest of the selected source bytes.
 
-For initial dispatch, prepare strict `pinboard-work-brief-review/v2` JSON with `attempt_id`, stable `checkpoint_id`, both digests, independent `reviewer_task_id`, `status: complete`, `verdict: ready`, and one coverage result per brief coverage record. Each result repeats the exact `authority_id`, `family`, and tagged owner, records `verdict: covered`, and states the concrete `counterexample_result`.
+For initial dispatch, prepare strict `pinboard-work-brief-review/v3` JSON with `attempt_id`, stable `checkpoint_id`, `accepted_brief_sha256`, `checkpoint_sha256`, `reviewed_authority_set_sha256`, independent `reviewer_task_id`, `status: complete`, `verdict: ready`, and one coverage result per brief coverage record. `accepted_brief_sha256` is SHA-256 of the complete canonical accepted brief bytes, so checkout selection and obligation correspondence are part of the reviewed identity. Each result repeats the exact `authority_id`, `family`, and tagged owner, records `verdict: covered`, and states the concrete `counterexample_result`. Ready-review v2 is retained only for exact historical brief v2 evidence and cannot authorize a current brief.
 
 For a returned candidate, prepare strict `pinboard-correction-source-review/v1` JSON before implementation changes the checkout. Its required fields are:
 

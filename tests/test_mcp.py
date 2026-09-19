@@ -1008,6 +1008,78 @@ class McpTransportTest(unittest.TestCase):
         with self.assertRaises(mcp_server.ArtifactError):
             mcp_server._brief_review({"request": {**base, "operation": "status"}}, mcp_server.CancellationToken())
 
+    def test_independent_review_preserves_semantically_narrower_correspondence_as_blocking_evidence(self) -> None:
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        brief = work_a_brief(project)
+        checkpoint = brief.checkpoint
+        assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        narrowed = replace_struct(
+            brief,
+            artifact_revision=2,
+            obligation_correspondence=(
+                work_brief_models.ObligationCorrespondence(
+                    brief.obligation_correspondence[0].obligation_id,
+                    work_brief_models.CriterionObligationTarget(checkpoint.acceptance_criteria[0].number),
+                ),
+            ),
+        )
+        published = work_briefs.publish_work_brief(
+            SQLiteWorkStore(roots.database_path), ArtifactRepository(roots), narrowed, SQLITE_NOW
+        )
+        assert not isinstance(published, DecisionFailure)
+        assert not isinstance(published, work_brief_models.WorkBriefFailure)
+        reference = published.reference
+        review = msgspec.json.decode(
+            needs_correction_review(narrowed), type=work_brief_models.WorkBriefReviewNeedsCorrection
+        )
+        semantic_review = replace_struct(
+            review,
+            findings=(
+                work_brief_models.BlockingReviewFinding(
+                    "narrowed-obligation",
+                    "The selected criterion is semantically narrower than the accepted obligation.",
+                    "The criterion proves the typed boundary but omits the obligation's complete publication contract.",
+                    "Map the obligation to the complete contract or expand the criterion before requesting readiness.",
+                ),
+            ),
+        )
+        request: dict[str, contracts.JsonValue] = {
+            "project_root": str(project),
+            "work_root": str(roots.work_root),
+            "operation": "publish",
+            "brief_artifact_ref_id": int(reference.artifact_ref_id),
+            "review": msgspec.to_builtins(semantic_review),
+        }
+        result = mcp_server._brief_review({"request": request}, mcp_server.CancellationToken())
+        self.assertEqual("committed", result.content["status"], result.content)
+        status = mcp_server._brief_review(
+            {
+                "request": {
+                    "project_root": str(project),
+                    "work_root": str(roots.work_root),
+                    "operation": "status",
+                    "brief_artifact_ref_id": int(reference.artifact_ref_id),
+                }
+            },
+            mcp_server.CancellationToken(),
+        )
+        self.assertEqual("needs-correction", status.content["status"], status.content)
+        returned_review = status.content["review"]
+        assert isinstance(returned_review, dict)
+        findings = returned_review["findings"]
+        assert isinstance(findings, (list, tuple))
+        finding = findings[0]
+        assert isinstance(finding, dict)
+        self.assertEqual("narrowed-obligation", finding["finding_id"])
+        self.assertIsNone(
+            SQLiteWorkStore(roots.database_path).read_artifact_reference(
+                work_models.ArtifactKind.EVIDENCE,
+                f"{narrowed.attempt_id}-brief-review-{work_briefs.ready_review_key_sha256(narrowed)}",
+                1,
+            )
+        )
+
     def test_request_envelopes_reject_mixed_fields_before_resources(self) -> None:
         roots: dict[str, contracts.JsonValue] = {"project_root": "/project", "work_root": "/work"}
         cases: tuple[

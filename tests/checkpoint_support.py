@@ -527,7 +527,6 @@ class CheckpointPackageSupport(unittest.TestCase):
         if not local and review_condition != "missing":
             checkpoint = brief.checkpoint
             assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
-            checkpoint_sha256 = hashlib.sha256(msgspec.json.encode(checkpoint, order="sorted")).hexdigest()
             review_bytes = ready_review(brief)
             review = msgspec.json.decode(review_bytes, type=work_brief_models.WorkBriefReview)
             if review_condition == "malformed":
@@ -542,7 +541,7 @@ class CheckpointPackageSupport(unittest.TestCase):
                 roots,
                 NewArtifact(
                     work_models.ArtifactKind.EVIDENCE,
-                    f"work-a-1-brief-review-{checkpoint_sha256}",
+                    f"work-a-1-brief-review-{work_briefs.ready_review_key_sha256(brief)}",
                     1,
                     ".json",
                     review_bytes,

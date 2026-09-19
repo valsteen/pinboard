@@ -190,8 +190,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         )
         self.assertEqual("committed", rebound["status"], rebound)
         fixture = dataclasses.replace(fixture, brief=replacement)
-        checkpoint_digest = hashlib.sha256(work_briefs.canonical_checkpoint_bytes(replacement.checkpoint)).hexdigest()
-        ready_key = f"work-a-1-brief-review-{checkpoint_digest}"
+        ready_key = f"work-a-1-brief-review-{work_briefs.ready_review_key_sha256(replacement)}"
         self.assertIsNone(fixture.store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, ready_key, 1))
         action = self.project_action(fixture, "dispatch:work-a-1")
         old_choice["receipt"] = {
@@ -419,10 +418,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
 
     def test_real_native_two_test_only_candidates_reload_distinct_subjects_and_initial_proof(self) -> None:
         fixture = self.correction_fixture()
-        checkpoint = fixture.brief.checkpoint
-        initial_key = (
-            f"work-a-1-brief-review-{hashlib.sha256(work_briefs.canonical_checkpoint_bytes(checkpoint)).hexdigest()}"
-        )
+        initial_key = f"work-a-1-brief-review-{work_briefs.ready_review_key_sha256(fixture.brief)}"
         initial_reference = fixture.store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, initial_key, 1)
         assert initial_reference is not None
         initial_bytes = (fixture.work / initial_reference.selector).read_bytes()

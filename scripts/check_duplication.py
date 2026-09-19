@@ -210,7 +210,9 @@ def evaluate(report: NativeReport, exceptions: Exceptions, source_root: Path) ->
         current_pair = matches[0]
         identity_key = native_pair_identity(current_pair)
         exempt.add(identity_key)
-        reviewed_occurrences.update(_stable_occurrence(value) for value in (current_pair.firstFile, current_pair.secondFile))
+        reviewed_occurrences.update(
+            _stable_occurrence(value) for value in (current_pair.firstFile, current_pair.secondFile)
+        )
     raw_lines = sum(pair.firstFile.end - pair.firstFile.start for pair in report.duplicates)
     if (len(report.duplicates), raw_lines) != (report.statistics.total.clones, report.statistics.total.duplicatedLines):
         errors.append("Native raw statistics disagree with pinned pair contributions.")

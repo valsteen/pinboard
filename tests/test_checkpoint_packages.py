@@ -1,4 +1,5 @@
 import base64
+import contextlib
 import hashlib
 import json
 import sqlite3
@@ -641,7 +642,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             {"pinboard-checkpoint-review-package/v2", "pinboard-checkpoint-review-package/v3"},
             {row["schema"] for row in before_packages if isinstance(row, dict)},
         )
-        with sqlite3.connect(fixture.work / "state.sqlite3") as connection:
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             connection.execute("UPDATE work_items SET state = 'active' WHERE item_id = 'work-a'")
             connection.execute("UPDATE attempts SET state = 'active' WHERE attempt_id = 'work-a-1'")
             connection.execute("UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = 'paused'")
@@ -1034,7 +1035,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 for value in fixture.store.validated_snapshot().artifact_references
                 if value.key == package.candidate_snapshot.key
             )
-            with sqlite3.connect(fixture.work / "state.sqlite3") as connection:
+            with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
                 connection.execute(
                     "DELETE FROM artifact_refs WHERE artifact_ref_id = ?",
                     (int(candidate_reference.artifact_ref_id),),

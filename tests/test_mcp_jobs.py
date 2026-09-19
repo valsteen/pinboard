@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import io
 import json
 import os
@@ -269,7 +270,7 @@ class McpJobsTest(CheckpointPackageSupport):
                         fixture.work, published.reference, context.receipt.committed_at
                     )
                     assert not isinstance(accepted, DecisionFailure)
-                    with sqlite3.connect(fixture.work / "state.sqlite3") as connection:
+                    with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
                         connection.execute(
                             "DELETE FROM artifact_refs WHERE artifact_ref_id = ?",
                             (int(context.reference.artifact_ref_id),),

@@ -346,7 +346,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         accepted = store.accept_artifact_reference(roots.work_root, published, recorded_at)
         if isinstance(accepted, DecisionFailure):
             self.fail(str(accepted))
-        with sqlite3.connect(roots.database_path) as connection:
+        with contextlib.closing(sqlite3.connect(roots.database_path)) as connection, connection:
             history_id = connection.execute(
                 "SELECT COALESCE(MAX(history_id), 0) + 1 FROM transition_history"
             ).fetchone()[0]
@@ -394,7 +394,7 @@ class CheckpointPackageSupport(unittest.TestCase):
             attempt.base_revision,
             SQLITE_NOW,
         )
-        with sqlite3.connect(fixture.work / "state.sqlite3") as connection:
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             current_state = connection.execute("SELECT state FROM work_items WHERE item_id = 'work-a'").fetchone()[0]
             connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = 'work-a'")
             if current_state != "review":
@@ -787,7 +787,7 @@ class CheckpointPackageSupport(unittest.TestCase):
             work_models.ArtifactKind.EVIDENCE, published_package.key, 1
         )
         assert package_reference is not None
-        with sqlite3.connect(fixture.work / "state.sqlite3") as connection:
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             revision = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()[0] + 1
             connection.execute(
                 """INSERT INTO transition_history(history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id, artifact_kind, authorization_kind, actor_task_id, actor_host_id, input_schema, input_json, outcome_schema, outcome_json, committed_at)

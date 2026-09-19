@@ -1,5 +1,6 @@
 """Current native transition receipts, view repair and bounded follow-up reads."""
 
+import contextlib
 import sqlite3
 import subprocess
 from collections.abc import Callable
@@ -827,7 +828,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         fixture = self.active_fixture()
         action = self.project_action(fixture, "pause:work-a-1")
         database = fixture.work / "state.sqlite3"
-        with sqlite3.connect(database) as connection:
+        with contextlib.closing(sqlite3.connect(database)) as connection, connection:
             connection.execute("DELETE FROM item_dependencies WHERE item_id = 'work-a'")
             connection.commit()
             before = tuple(connection.iterdump())
@@ -845,5 +846,5 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         with self.assertRaises(UnexpectedToolError) as failure:
             self.transition_result(fixture, action, {"reason": "Pause before corrupt dependency writes."})
         self.assertIsInstance(failure.exception.__cause__, StorageError)
-        with sqlite3.connect(database) as connection:
+        with contextlib.closing(sqlite3.connect(database)) as connection, connection:
             self.assertEqual(before, tuple(connection.iterdump()))

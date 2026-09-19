@@ -784,7 +784,15 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 mcp_server.REVIEW_JOB_TOOL,
                 str(project),
                 str(work),
-                {"review": {"kind": "initial", "attempt_id": "work-a-1", "candidate_revision": "candidate-a"}},
+                {
+                    "review": {
+                        "kind": "initial",
+                        "attempt_id": "work-a-1",
+                        "candidate_revision": "candidate-a",
+                        "runtime": "codex",
+                        "background": False,
+                    }
+                },
             )
 
         after_review = store.validated_snapshot()

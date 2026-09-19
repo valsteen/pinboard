@@ -22,6 +22,7 @@ import anyio
 import msgspec
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
 
 from pinboard import __version__
 from pinboard.adapters import (
@@ -109,6 +110,12 @@ BRIEF_SOURCES_TOOL = "pinboard_brief_sources"
 ORDER_TOOL = "pinboard_order"
 PARALLEL_PREVIEW_TOOL = "pinboard_parallel_preview"
 THREAD_NAME_PREFIX = "pinboard-mcp-worker"
+LOCAL_AUTHORITY_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=False,
+)
 
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
 type IntegerBoundaryValue = bool | int | float | str | None
@@ -2355,6 +2362,8 @@ def _mcp_launch_envelope(
     attempt_id: str,
     publication: dispatch_models.PublishedAgentPrompt,
     environment: dispatch_models.DispatchEnvironment | None,
+    runtime: dispatch_models.NativeRuntime,
+    background: bool,
 ) -> dispatch_models.NativeLaunchEnvelope:
     reference = publication.reference
     verification = {
@@ -2399,7 +2408,27 @@ def _mcp_launch_envelope(
             "Substitute only the trusted post-launch identity and returned lease facts. Missing connected tools or identity "
             "stops that operation; never invent a shell command, payload file, or disconnected-client fallback."
         )
-    return dispatch_models.NativeLaunchEnvelope("pinboard-native-agent-launch/v1", "native-subagent", message)
+    if runtime == "codex":
+        return dispatch_models.CodexNativeLaunchEnvelope(
+            "pinboard-native-agent-launch/v2",
+            "spawn_agent",
+            background,
+            dispatch_models.CodexLaunchArguments(
+                f"pinboard_{prompt_role}_{uuid4().hex[:8]}",
+                message,
+                "none",
+            ),
+        )
+    return dispatch_models.ClaudeNativeLaunchEnvelope(
+        "pinboard-native-agent-launch/v2",
+        "Agent",
+        background,
+        dispatch_models.ClaudeLaunchArguments(
+            f"Pinboard {prompt_role} for {attempt_id}",
+            message,
+            background,
+        ),
+    )
 
 
 def _job_failure(
@@ -2538,7 +2567,14 @@ def _dispatch_job(
             "ready",
             publication.reference,
             _mcp_launch_envelope(
-                source_checkout, durable.work_root, "worker", attempt_id, publication, choice.environment
+                source_checkout,
+                durable.work_root,
+                "worker",
+                attempt_id,
+                publication,
+                choice.environment,
+                choice.environment.runtime,
+                choice.environment.background,
             ),
             bool(surfaces),
             "committed" if surfaces else "unchanged",
@@ -2630,7 +2666,16 @@ def _review_job(
         contracts.ReviewJobReady(
             "ready",
             publication.reference,
-            _mcp_launch_envelope(source_checkout, durable.work_root, "reviewer", choice.attempt_id, publication, None),
+            _mcp_launch_envelope(
+                source_checkout,
+                durable.work_root,
+                "reviewer",
+                choice.attempt_id,
+                publication,
+                None,
+                choice.runtime,
+                choice.background,
+            ),
             bool(surfaces),
             "committed" if surfaces else "unchanged",
             "do-not-retry" if surfaces else "safe-to-repeat",
@@ -2675,12 +2720,19 @@ def _review_candidate_required(
         )
     if correction_history_id is None:
         template = contracts.InitialRecoveryTemplate(
-            choice.attempt_id, choice.candidate_revision, int(required.checkpoint_history_id), None
+            choice.attempt_id,
+            choice.candidate_revision,
+            choice.runtime,
+            choice.background,
+            int(required.checkpoint_history_id),
+            None,
         )
     else:
         template = contracts.CorrectionRecoveryTemplate(
             choice.attempt_id,
             choice.candidate_revision,
+            choice.runtime,
+            choice.background,
             int(required.checkpoint_history_id),
             int(correction_history_id),
             None,
@@ -3144,6 +3196,7 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
     @server.tool(
         name=PREPARATION_AUTHORITY_TOOL,
         description="Read or change one exact Pinboard preparation authority.",
+        annotations=LOCAL_AUTHORITY_ANNOTATIONS,
     )
     async def preparation_authority(
         request: dict[str, JsonValue],
@@ -3160,6 +3213,7 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
     @server.tool(
         name=ATTEMPT_AUTHORITY_TOOL,
         description="Read or change one exact Pinboard attempt authority.",
+        annotations=LOCAL_AUTHORITY_ANNOTATIONS,
     )
     async def attempt_authority(
         request: dict[str, JsonValue],
@@ -3199,8 +3253,9 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
             "copied from the fresh project dispatch action returned by pinboard_actions, not the whole action. "
             "checkpoint_id is the accepted brief's stable checkpoint ID. Use explicit prompt:null for "
             "canonical prompt construction. A supplied prompt string must match the canonical prompt.\n"
-            "environment requires all eight fields: schema:'pinboard-dispatch/v2', checkout:<exact source "
-            "checkout>, branch:<recorded branch>, starting_revision:<accepted attempt base>, host_id:<trusted "
+            "environment requires all ten fields: schema:'pinboard-dispatch/v2', runtime:'codex' or "
+            "'claude-code', background:<boolean>, checkout:<exact source checkout>, branch:<recorded branch>, "
+            "starting_revision:<accepted attempt base>, host_id:<trusted "
             "runtime host>, fresh_context:true, lease_ttl_seconds:<positive integer>, permissions:<array of "
             "already-authorized 'repository-read', 'repository-write', 'network', 'external-write' or "
             "'live-application' declarations>. Declarations grant no runtime access.\n"
@@ -3225,12 +3280,12 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
             "size_bytes:<nonnegative integer>. Preserve candidate/history binding and fresh source review.\n"
             "The negotiated strict schema and decoder remain authoritative. Dispatch publication may "
             "change immutable-artifact, accepted-artifact-reference and ledger surfaces, never lifecycle "
-            "or worker authority; honor returned effect/retry facts. On ready, pass ONLY the returned "
-            "native_launch.message unchanged as the actual host worker-message argument to a genuinely "
-            "fresh native worker (Codex spawn_agent.message; Claude Agent.prompt). prompt_reference remains "
-            "independently required immutable provenance, not an alternative launch input. Missing native "
-            "launch capability stops execution; publication alone is not a launch. A worker launched from "
-            "other text is invalid: stop it and launch a fresh worker from native_launch.message."
+            "or worker authority; honor returned effect/retry facts. On ready, call the exact returned "
+            "native_launch.tool with exactly native_launch.arguments. Do not add, remove or rewrite an "
+            "argument. prompt_reference remains independently required immutable provenance, not an "
+            "alternative launch input. Missing native launch capability stops execution; publication alone "
+            "is not a launch. A worker launched from other arguments is invalid: stop it and use a fresh "
+            "native launch from the returned recipe."
         ),
     )
     async def dispatch_job(project_root: str, work_root: str, dispatch: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -3276,10 +3331,11 @@ def create_server(executor: BoundedExecutor, diagnostics: Diagnostics) -> MCPSer
     @server.tool(
         name=REVIEW_JOB_TOOL,
         description=(
-            "Publish one candidate-bound reviewer launch with exact caller-selected historical evidence; run "
-            "separate full CLI validation before package reuse. On ready, pass only native_launch.message "
-            "unchanged to a fresh reviewer. A rejection publishes no reviewer prompt: correct its precondition "
-            "and never synthesize a substitute review launch."
+            "Publish one candidate-bound reviewer launch with exact caller-selected historical evidence. "
+            "Every review leaf requires runtime:'codex' or 'claude-code' and background:<boolean>. Run separate "
+            "full CLI validation before package reuse. On ready, call the exact returned native_launch.tool "
+            "with exactly native_launch.arguments; do not add, remove or rewrite an argument. A rejection "
+            "publishes no reviewer prompt: correct its precondition and never synthesize a substitute launch."
         ),
     )
     async def review_job(project_root: str, work_root: str, review: dict[str, JsonValue]) -> dict[str, JsonValue]:

@@ -151,7 +151,13 @@ class CheckpointPackageSupport(unittest.TestCase):
             {
                 "project_root": str(fixture.project),
                 "work_root": str(fixture.work),
-                "review": {"attempt_id": "work-a-1", "candidate_revision": "b" * 40, **review},
+                "review": {
+                    "attempt_id": "work-a-1",
+                    "candidate_revision": "b" * 40,
+                    "runtime": "codex",
+                    "background": False,
+                    **review,
+                },
             },
         )
 

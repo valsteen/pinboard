@@ -45,6 +45,21 @@ from tests.work_brief_support import CHECKPOINT_ID, ready_review
 
 
 class McpJobsTest(CheckpointPackageSupport):
+    def test_authority_tools_describe_temporary_local_mutation_to_clients(self) -> None:
+        executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        transport = mcp_server.create_server(
+            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+        )
+        for name in (mcp_server.PREPARATION_AUTHORITY_TOOL, mcp_server.ATTEMPT_AUTHORITY_TOOL):
+            with self.subTest(name=name):
+                tool = transport._tool_manager.get_tool(name)
+                assert tool is not None and tool.annotations is not None
+                self.assertFalse(tool.annotations.read_only_hint)
+                self.assertFalse(tool.annotations.destructive_hint)
+                self.assertFalse(tool.annotations.idempotent_hint)
+                self.assertFalse(tool.annotations.open_world_hint)
+
     def test_candidate_observation_rejects_invalid_input_context_and_result_claims(self) -> None:
         with patch.object(mcp_server, "resolve_source_checkout_root", side_effect=AssertionError("Must not resolve")):
             invalid = mcp_server._observe_candidate("", "/work", "work-a-1", mcp_server.CancellationToken())
@@ -520,7 +535,14 @@ class McpJobsTest(CheckpointPackageSupport):
         outcome = mcp_server._dispatch_job(str(project), str(work), choice, mcp_server.CancellationToken())
         self.assertEqual("ready", outcome.content["status"])
         launch = self.json_object(outcome.content["native_launch"])
-        message = launch["message"]
+        self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
+        self.assertEqual("codex", launch["runtime"])
+        self.assertEqual("spawn_agent", launch["tool"])
+        self.assertFalse(launch["background"])
+        arguments = self.json_object(launch["arguments"])
+        self.assertEqual("none", arguments["fork_turns"])
+        self.assertNotIn("isolation", arguments)
+        message = arguments["message"]
         assert isinstance(message, str)
         matched = re.search(
             r"call `pinboard_attempt_authority` with (.*?), then `pinboard_actions` with (.*?)\. ", message
@@ -540,6 +562,25 @@ class McpJobsTest(CheckpointPackageSupport):
         self.assertEqual(str(project), selected.project_root)
         self.assertEqual(str(work), selected.work_root)
 
+    def test_claude_worker_launch_is_complete_and_cannot_request_another_checkout(self) -> None:
+        project, work, choice = self.dispatch_fixture()
+        environment = self.json_object(choice["environment"])
+        choice["environment"] = environment | {"runtime": "claude-code", "background": False}
+        outcome = mcp_server._dispatch_job(str(project), str(work), choice, mcp_server.CancellationToken())
+        self.assertEqual("ready", outcome.content["status"])
+        launch = self.json_object(outcome.content["native_launch"])
+        self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
+        self.assertEqual("claude-code", launch["runtime"])
+        self.assertEqual("Agent", launch["tool"])
+        self.assertFalse(launch["background"])
+        arguments = self.json_object(launch["arguments"])
+        self.assertEqual({"description", "prompt", "run_in_background"}, set(arguments))
+        self.assertFalse(arguments["run_in_background"])
+        self.assertNotIn("isolation", arguments)
+        prompt = arguments["prompt"]
+        assert isinstance(prompt, str)
+        self.assertTrue(prompt.endswith("fallback."))
+
     def test_review_jobs_select_four_rounds_and_keep_mutable_review_digest_separate(self) -> None:
         fixture, package_id, correction_id = self.review_job_fixture()
         before = fixture.store.validated_snapshot()
@@ -554,11 +595,27 @@ class McpJobsTest(CheckpointPackageSupport):
                 outcome = mcp_server._review_job(
                     str(fixture.project),
                     str(fixture.work),
-                    {"kind": kind, "attempt_id": "work-a-1", "candidate_revision": "b" * 40, **ids},
+                    {
+                        "kind": kind,
+                        "attempt_id": "work-a-1",
+                        "candidate_revision": "b" * 40,
+                        "runtime": "claude-code",
+                        "background": False,
+                        **ids,
+                    },
                     mcp_server.CancellationToken(),
                 )
                 self.assertEqual("ready", outcome.content["status"], outcome.content)
                 contracts.validate_result("pinboard_review_job", outcome.content)
+                launch = self.json_object(outcome.content["native_launch"])
+                self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
+                self.assertEqual("claude-code", launch["runtime"])
+                self.assertEqual("Agent", launch["tool"])
+                self.assertFalse(launch["background"])
+                arguments = self.json_object(launch["arguments"])
+                self.assertEqual({"description", "prompt", "run_in_background"}, set(arguments))
+                self.assertFalse(arguments["run_in_background"])
+                self.assertNotIn("isolation", arguments)
                 round_ = self.json_object(outcome.content["review_round"])
                 if "correction" in kind:
                     self.assertEqual("candidate-a", round_["candidate_revision"])
@@ -573,7 +630,14 @@ class McpJobsTest(CheckpointPackageSupport):
             outcome = mcp_server._review_job(
                 "/not-a-repository",
                 "/not-a-board",
-                {"kind": "initial", "attempt_id": "work-a-1", "candidate_revision": "a", "correction_history_id": 1},
+                {
+                    "kind": "initial",
+                    "attempt_id": "work-a-1",
+                    "candidate_revision": "a",
+                    "runtime": "codex",
+                    "background": False,
+                    "correction_history_id": 1,
+                },
                 mcp_server.CancellationToken(),
             )
             self.assertEqual("REVIEW_JOB_INVALID", outcome.content["code"])
@@ -743,6 +807,8 @@ class McpJobsTest(CheckpointPackageSupport):
                                 "kind": "package-correction",
                                 "attempt_id": "work-a-1",
                                 "candidate_revision": "b" * 40,
+                                "runtime": "codex",
+                                "background": False,
                                 "checkpoint_history_id": package_id,
                                 "correction_history_id": correction_id,
                             }

@@ -30,6 +30,8 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
             "kind": "package-initial-recovery",
             "attempt_id": "work-a-1",
             "candidate_revision": "b" * 40,
+            "runtime": "codex",
+            "background": False,
             "checkpoint_history_id": history_id,
             "candidate_patch": base64.b64encode(patch_bytes).decode(),
         }
@@ -72,6 +74,8 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
                     "kind": "package-initial-recovery",
                     "attempt_id": "work-a-1",
                     "candidate_revision": "b" * 40,
+                    "runtime": "codex",
+                    "background": False,
                     "checkpoint_history_id": history_id,
                     "candidate_patch": base64.b64encode(patch_bytes).decode(),
                 }
@@ -143,6 +147,8 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
                     "kind": round_kind,
                     "attempt_id": "work-a-1",
                     "candidate_revision": "b" * 40,
+                    "runtime": "codex",
+                    "background": False,
                     "checkpoint_history_id": history_id,
                 }
                 if round_kind == "package-correction":
@@ -209,6 +215,8 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
             "kind": "package-initial-recovery",
             "attempt_id": "work-a-1",
             "candidate_revision": "b" * 40,
+            "runtime": "codex",
+            "background": False,
             "checkpoint_history_id": 1,
             "candidate_patch": "",
         }
@@ -257,6 +265,8 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
                     "kind": "package-correction-recovery",
                     "attempt_id": "work-a-1",
                     "candidate_revision": "b" * 40,
+                    "runtime": "codex",
+                    "background": False,
                     "checkpoint_history_id": history_id,
                     "correction_history_id": correction_id,
                     "candidate_patch": base64.b64encode(patch_bytes).decode(),

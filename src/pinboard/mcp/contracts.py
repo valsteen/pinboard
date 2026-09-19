@@ -432,6 +432,8 @@ class DispatchRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 class ReviewChoiceBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: PathComponent
     candidate_revision: NonEmptyText
+    runtime: dispatch_models.NativeRuntime
+    background: bool
 
 
 class InitialReviewChoice(ReviewChoiceBase, tag="initial", tag_field="kind", frozen=True):

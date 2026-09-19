@@ -162,6 +162,8 @@ class DispatchTest(unittest.TestCase):
     def environment(self, project: Path) -> DispatchEnvironment:
         return DispatchEnvironment(
             "pinboard-dispatch/v2",
+            "codex",
+            False,
             str(project),
             "codex/work-a",
             "base-revision",
@@ -1346,6 +1348,7 @@ class DispatchTest(unittest.TestCase):
         assert isinstance(environment_json, dict)
         changes: tuple[JsonObject, ...] = (
             {"schema": "pinboard-dispatch/v1"},
+            {"runtime": "unknown"},
             {"branch": "b\n"},
             {"fresh_context": False},
             {"unexpected": True},

@@ -21,6 +21,7 @@ from pinboard.domain.identifiers import HostId
 type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\n]+\z")]
 
 type DispatchSchema = Literal["pinboard-dispatch/v2"]
+type NativeRuntime = Literal["codex", "claude-code"]
 type StableHostId = Annotated[
     HostId,
     msgspec.Meta(min_length=1, pattern=r"\A(?!\s)(?!\.{1,2}\z)[^/\r\n\x00]*[^\s/\r\n\x00]\z"),
@@ -79,6 +80,8 @@ def dispatch_environment_schema_hook(value_type: type) -> dict[str, bool | str]:
 
 class DispatchEnvironment(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: DispatchSchema
+    runtime: NativeRuntime
+    background: bool
     checkout: NonEmptyLine
     branch: NonEmptyLine
     starting_revision: NonEmptyLine
@@ -106,10 +109,37 @@ class PromptReferenceView(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     ledger_changed: bool
 
 
-class NativeLaunchEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-native-agent-launch/v1"]
-    runtime: Literal["native-subagent"]
+class CodexLaunchArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    task_name: Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9_]+\z")]
     message: Annotated[str, msgspec.Meta(min_length=1)]
+    fork_turns: Literal["none"]
+
+
+class ClaudeLaunchArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    description: NonEmptyLine
+    prompt: Annotated[str, msgspec.Meta(min_length=1)]
+    run_in_background: bool
+
+
+class CodexNativeLaunchEnvelope(
+    msgspec.Struct, tag="codex", tag_field="runtime", frozen=True, forbid_unknown_fields=True
+):
+    schema: Literal["pinboard-native-agent-launch/v2"]
+    tool: Literal["spawn_agent"]
+    background: bool
+    arguments: CodexLaunchArguments
+
+
+class ClaudeNativeLaunchEnvelope(
+    msgspec.Struct, tag="claude-code", tag_field="runtime", frozen=True, forbid_unknown_fields=True
+):
+    schema: Literal["pinboard-native-agent-launch/v2"]
+    tool: Literal["Agent"]
+    background: bool
+    arguments: ClaudeLaunchArguments
+
+
+type NativeLaunchEnvelope = CodexNativeLaunchEnvelope | ClaudeNativeLaunchEnvelope
 
 
 class PublishedAgentPrompt(str):

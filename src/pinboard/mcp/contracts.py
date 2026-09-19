@@ -49,6 +49,18 @@ type PublicationSurfaces = tuple[
 type JobPublicationSurface = Literal["immutable-artifact", "accepted-artifact-reference", "ledger"]
 
 
+class _ChangedResult:
+    pass
+
+
+class _UnchangedResult:
+    pass
+
+
+class _VariableStateChangedResult:
+    pass
+
+
 def _require_state_changed(actual: bool, expected: bool) -> None:
     if actual is not expected:
         raise ValueError(f"state_changed must be {str(expected).lower()} for this result.")
@@ -185,7 +197,7 @@ class BriefSourcesEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     )
 
 
-class BriefContractRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefContractRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-contract-result/v1"]
     status: Literal["rejected"]
     code: Literal["BRIEF_CONTRACT_REQUEST_INVALID"]
@@ -199,7 +211,7 @@ class BriefContractRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=T
         _require_state_changed(self.state_changed, False)
 
 
-class BriefSourcesRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefSourcesRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-sources-result/v1"]
     status: Literal["rejected"]
     code: Literal[
@@ -246,7 +258,9 @@ class BriefSourceBatchResult(msgspec.Struct, frozen=True, forbid_unknown_fields=
             raise ValueError("rendered_byte_count must equal the UTF-8 batch text size")
 
 
-class BriefSourcePlanOutputResult(brief_source_models.BriefSourcePlanOutputReceipt, frozen=True):
+class BriefSourcePlanOutputResult(
+    _VariableStateChangedResult, brief_source_models.BriefSourcePlanOutputReceipt, frozen=True
+):
     state_changed: bool
     effect: Literal["committed", "unchanged"]
     retry: Literal["do-not-retry", "safe-to-repeat"]
@@ -262,7 +276,7 @@ class BriefSourcePlanOutputResult(brief_source_models.BriefSourcePlanOutputRecei
             raise ValueError("plan output aftermath must agree with created disposition")
 
 
-class BriefSourcesPublishedFailure(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefSourcesPublishedFailure(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-sources-result/v1"]
     status: Literal["committed-effect"]
     code: Literal["DIRECTORY_SYNC_FAILED"]
@@ -843,7 +857,7 @@ class FailureMismatch(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     observed: JsonScalar
 
 
-class ItemStatusInvalid(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ItemStatusInvalid(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-item-status-result/v1"]
     status: Literal["rejected"]
     code: Literal["ITEM_STATUS_INVALID"]
@@ -859,7 +873,7 @@ class ItemStatusInvalid(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
         _require_state_changed(self.state_changed, False)
 
 
-class ItemStatusUnavailable(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ItemStatusUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-item-status-result/v1"]
     status: Literal["rejected"]
     code: Literal["ITEM_NOT_FOUND", "ITEM_DEFINITION_INVALID"]
@@ -875,7 +889,7 @@ class ItemStatusUnavailable(msgspec.Struct, frozen=True, forbid_unknown_fields=T
         _require_state_changed(self.state_changed, False)
 
 
-class ItemStatusInconsistent(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ItemStatusInconsistent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-item-status-result/v1"]
     status: Literal["rejected"]
     code: Literal["ITEM_STATUS_INCONSISTENT"]
@@ -891,7 +905,7 @@ class ItemStatusInconsistent(msgspec.Struct, frozen=True, forbid_unknown_fields=
         _require_state_changed(self.state_changed, False)
 
 
-class OverviewRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class OverviewRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-overview-result/v1"]
     status: Literal["rejected"]
     code: Literal["OVERVIEW_INVALID"]
@@ -907,7 +921,7 @@ class OverviewRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
         _require_state_changed(self.state_changed, False)
 
 
-class RejectedReadResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class RejectedReadResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     status: Literal["rejected"]
     message: NonEmptyText
     state_changed: bool
@@ -1032,7 +1046,7 @@ class ActionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
         )
 
 
-class ActionsSuccess(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ActionsSuccess(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-actions-result/v1"]
     status: Literal["ok"]
     actions: tuple[ActionView, ...]
@@ -1323,7 +1337,7 @@ class CandidateRecoveryPresent(
 type CandidateRecovery = CandidateRecoveryAbsent | CandidateRecoveryPresent
 
 
-class TerminalAttemptInspectionSuccess(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class TerminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
     status: Literal["ok"]
     continuation: TerminalAttemptContinuation
@@ -1341,7 +1355,7 @@ class TerminalAttemptInspectionSuccess(msgspec.Struct, frozen=True, forbid_unkno
         _require_state_changed(self.state_changed, False)
 
 
-class NonterminalAttemptInspectionSuccess(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class NonterminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
     status: Literal["ok"]
     continuation: NonterminalAttemptContinuation
@@ -1359,7 +1373,7 @@ class NonterminalAttemptInspectionSuccess(msgspec.Struct, frozen=True, forbid_un
         _require_state_changed(self.state_changed, False)
 
 
-class ArtifactVerified(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ArtifactVerified(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-verified-artifact-reference/v1"]
     artifact_ref_id: PositiveInt
     selector: NonEmptyText
@@ -1378,7 +1392,7 @@ class ArtifactVerified(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
             raise ValueError("verified must be true for a verified artifact result.")
 
 
-class ExecutorBusyResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ExecutorBusyResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-execution-result/v1"]
     status: Literal["busy"]
     code: Literal["EXECUTOR_BUSY"]
@@ -1414,7 +1428,7 @@ class OrderRejected(RejectedReadResult, frozen=True):
     recovery: OrderRecovery | None
 
 
-class OrderCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class OrderCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-order-result/v1"]
     order: tuple[ordering.OrderItemId, ...]
     committed_revision: PositiveInt
@@ -1441,7 +1455,7 @@ class ParallelPreviewRejected(RejectedReadResult, frozen=True):
     mismatches: Empty
 
 
-class ParallelPreviewSuccess(query_models.ParallelPreviewView, frozen=True):
+class ParallelPreviewSuccess(_UnchangedResult, query_models.ParallelPreviewView, frozen=True):
     status: Literal["ok"]
     state_changed: bool
     effect: Literal["unchanged"]
@@ -1499,7 +1513,7 @@ def _committed_transition_surfaces(kind: decision_models.ActionKind) -> tuple[tu
             assert_never(unreachable)
 
 
-class TransitionCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class TransitionCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-transition-result/v1"]
     status: Literal["committed", "committed-with-warning"]
     action_id: ActionIdentity
@@ -1522,7 +1536,7 @@ class TransitionCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
             raise ValueError("committed transition must pair a mutating action with its exact supported surfaces")
 
 
-class TransitionRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class TransitionRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-transition-result/v1"]
     status: Literal["rejected"]
     action_id: ActionIdentity
@@ -1539,7 +1553,7 @@ class TransitionRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True
         _require_state_changed(self.state_changed, False)
 
 
-class PublishedFailureResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class PublishedFailureResult(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """Publication already changed durable bytes; exact result leaves own identity and code."""
 
     state_changed: bool
@@ -1579,7 +1593,7 @@ class AttemptAuthorityConflict(msgspec.Struct, frozen=True, forbid_unknown_field
     authority_status: authority_models.AttemptLeaseStatus
 
 
-class PreparationAuthorityStatusPresent(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class PreparationAuthorityStatusPresent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
     status: Literal["present"]
     item_id: PathComponent
@@ -1601,7 +1615,7 @@ class PreparationAuthorityStatusPresent(msgspec.Struct, frozen=True, forbid_unkn
         _require_state_changed(self.state_changed, False)
 
 
-class PreparationAuthorityStatusAbsent(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class PreparationAuthorityStatusAbsent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
     status: Literal["absent"]
     item_id: PathComponent
@@ -1614,7 +1628,7 @@ class PreparationAuthorityStatusAbsent(msgspec.Struct, frozen=True, forbid_unkno
         _require_state_changed(self.state_changed, False)
 
 
-class AuthorityCommittedResult[StatusT](msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class AuthorityCommittedResult[StatusT](_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """Reloaded committed authority and its optional replaceable-view warning."""
 
     status: Literal["committed", "committed-with-warning"]
@@ -1646,7 +1660,7 @@ class PreparationAuthorityCommitted(AuthorityCommittedResult[authority_models.Pr
     definition_digest: Sha256
 
 
-class PreparationAuthorityRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class PreparationAuthorityRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
     status: Literal["rejected"]
     item_id: PathComponent
@@ -1664,7 +1678,7 @@ class PreparationAuthorityRejected(msgspec.Struct, frozen=True, forbid_unknown_f
         _require_state_changed(self.state_changed, False)
 
 
-class AttemptAuthorityStatusPresent(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class AttemptAuthorityStatusPresent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-attempt-authority-result/v1"]
     status: Literal["present"]
     attempt_id: PathComponent
@@ -1684,7 +1698,7 @@ class AttemptAuthorityStatusPresent(msgspec.Struct, frozen=True, forbid_unknown_
         _require_state_changed(self.state_changed, False)
 
 
-class AttemptAuthorityStatusAbsent(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class AttemptAuthorityStatusAbsent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-attempt-authority-result/v1"]
     status: Literal["absent"]
     attempt_id: PathComponent
@@ -1703,7 +1717,7 @@ class AttemptAuthorityCommitted(AuthorityCommittedResult[authority_models.Attemp
     item_id: PathComponent
 
 
-class AttemptAuthorityRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class AttemptAuthorityRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-attempt-authority-result/v1"]
     status: Literal["rejected"]
     attempt_id: PathComponent
@@ -1721,7 +1735,7 @@ class AttemptAuthorityRejected(msgspec.Struct, frozen=True, forbid_unknown_field
         _require_state_changed(self.state_changed, False)
 
 
-class ProposalCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ProposalCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-proposal-result/v1"]
     status: Literal["committed"]
     proposal_id: proposal_models.ProposalIdentity
@@ -1740,7 +1754,7 @@ class ProposalCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
         _require_state_changed(self.state_changed, True)
 
 
-class ProposalCommittedWithWarning(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ProposalCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-proposal-result/v1"]
     status: Literal["committed-with-warning"]
     proposal_id: proposal_models.ProposalIdentity
@@ -1759,7 +1773,7 @@ class ProposalCommittedWithWarning(msgspec.Struct, frozen=True, forbid_unknown_f
         _require_state_changed(self.state_changed, True)
 
 
-class ProposalRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ProposalRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-proposal-result/v1"]
     status: Literal["rejected"]
     code: Literal[
@@ -1782,7 +1796,7 @@ class ProposalRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
         _require_state_changed(self.state_changed, False)
 
 
-class ProposalDuplicate(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ProposalDuplicate(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-proposal-result/v1"]
     status: Literal["rejected"]
     code: Literal["PROPOSAL_ALREADY_EXISTS"]
@@ -1810,7 +1824,7 @@ class ArtifactReferenceResult(msgspec.Struct, frozen=True, forbid_unknown_fields
     accepted_revision: PositiveInt
 
 
-class BriefCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["committed"]
     reference: ArtifactReferenceResult
@@ -1825,7 +1839,7 @@ class BriefCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
         _require_state_changed(self.state_changed, True)
 
 
-class BriefReferenceCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefReferenceCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["committed"]
     reference: ArtifactReferenceResult
@@ -1840,7 +1854,7 @@ class BriefReferenceCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields
         _require_state_changed(self.state_changed, True)
 
 
-class BriefArtifactCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefArtifactCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["committed"]
     reference: ArtifactReferenceResult
@@ -1855,7 +1869,7 @@ class BriefArtifactCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=
         _require_state_changed(self.state_changed, True)
 
 
-class BriefCommittedWithWarning(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["committed-with-warning"]
     reference: ArtifactReferenceResult
@@ -1870,7 +1884,7 @@ class BriefCommittedWithWarning(msgspec.Struct, frozen=True, forbid_unknown_fiel
         _require_state_changed(self.state_changed, True)
 
 
-class BriefReferenceCommittedWithWarning(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefReferenceCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["committed-with-warning"]
     reference: ArtifactReferenceResult
@@ -1885,7 +1899,7 @@ class BriefReferenceCommittedWithWarning(msgspec.Struct, frozen=True, forbid_unk
         _require_state_changed(self.state_changed, True)
 
 
-class BriefArtifactCommittedWithWarning(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefArtifactCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["committed-with-warning"]
     reference: ArtifactReferenceResult
@@ -1900,7 +1914,7 @@ class BriefArtifactCommittedWithWarning(msgspec.Struct, frozen=True, forbid_unkn
         _require_state_changed(self.state_changed, True)
 
 
-class BriefUnchanged(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefUnchanged(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["unchanged"]
     reference: ArtifactReferenceResult
@@ -1915,7 +1929,7 @@ class BriefUnchanged(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
         _require_state_changed(self.state_changed, False)
 
 
-class BriefUnchangedWithWarning(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefUnchangedWithWarning(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["unchanged-with-warning"]
     reference: ArtifactReferenceResult
@@ -1930,7 +1944,7 @@ class BriefUnchangedWithWarning(msgspec.Struct, frozen=True, forbid_unknown_fiel
         _require_state_changed(self.state_changed, False)
 
 
-class BriefRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["rejected"]
     code: Literal["WORK_BRIEF_INVALID", "ACTION_NOT_AVAILABLE"]
@@ -1953,7 +1967,7 @@ class BriefPublishedRejection(PublishedFailureResult, frozen=True):
     message: NonEmptyText
 
 
-class PublicationAcceptanceFailureResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class PublicationAcceptanceFailureResult(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     status: Literal["failed-after-publication"]
     code: Literal["ARTIFACT_ACCEPTANCE_FAILED"]
     message: NonEmptyText
@@ -1998,7 +2012,7 @@ class BriefReviewCorrection(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     instruction: NonEmptyText
 
 
-class BriefReviewStatusResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefReviewStatusResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
     accepted_brief: ArtifactReferenceResult
     correction: BriefReviewCorrection
@@ -2035,7 +2049,7 @@ class LegacyBriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
     review: work_brief_models.WorkBriefReviewNeedsCorrection
 
 
-class BriefReviewCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefReviewCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
     status: Literal["committed"]
     reference: ReviewEvidenceReference
@@ -2050,7 +2064,7 @@ class BriefReviewCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
         _require_publication_surfaces(self.changed_surfaces)
 
 
-class BriefReviewUnchanged(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefReviewUnchanged(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
     status: Literal["unchanged"]
     reference: ReviewEvidenceReference
@@ -2092,7 +2106,7 @@ class BriefReviewAcceptanceFailure(PublicationAcceptanceFailureResult, frozen=Tr
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
 
 
-class PublishedJobReady(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class PublishedJobReady(_VariableStateChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     status: Literal["ready"]
     prompt_reference: dispatch_models.PromptReferenceView
     native_launch: dispatch_models.NativeLaunchEnvelope
@@ -2232,7 +2246,7 @@ class ReviewJobCandidateRequired(ReviewJobRejected, frozen=True):
             raise ValueError("Retained recovery must bind the selected historical patch identity.")
 
 
-class JobFailedAfterPublication(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class JobFailedAfterPublication(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     status: Literal["failed-after-publication"]
     attempt_id: PathComponent
     code: NonEmptyText
@@ -2287,7 +2301,7 @@ REVIEW_JOB_RESULT_TYPES = (
 )
 
 
-class CandidateRestoreReady(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class CandidateRestoreReady(_VariableStateChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-candidate-restore-result/v1"]
     status: Literal["restored"]
     attempt_id: PathComponent
@@ -2324,7 +2338,7 @@ class CandidateRestoreRejected(RejectedReadResult, frozen=True):
     mismatches: tuple[FailureMismatch, ...]
 
 
-class CandidateRestoreFailed(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class CandidateRestoreFailed(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-candidate-restore-result/v1"]
     status: Literal["failed-after-mutation"]
     attempt_id: PathComponent
@@ -2350,7 +2364,7 @@ CANDIDATE_RESTORE_RESULT_TYPES = (
 )
 
 
-class CandidateObserved(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class CandidateObserved(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-candidate-observation-result/v1"]
     status: Literal["observed"]
     attempt_id: PathComponent
@@ -2635,112 +2649,49 @@ def transition_request_schema() -> dict[str, JsonSchemaValue]:
     }
 
 
-def _apply_boolean_constants(definitions: dict[str, JsonSchemaValue]) -> None:
-    changed_results = {
-        "OrderCommitted",
-        "BriefReviewCommitted",
-        "BriefReviewPublishedRejection",
-        "BriefReviewAcceptanceFailure",
-        "ProposalCommitted",
-        "ProposalCommittedWithWarning",
-        "BriefCommitted",
-        "BriefReferenceCommitted",
-        "BriefArtifactCommitted",
-        "BriefCommittedWithWarning",
-        "BriefReferenceCommittedWithWarning",
-        "BriefArtifactCommittedWithWarning",
-        "BriefPublishedRejection",
-        "BriefPublicationAcceptanceFailure",
-        "PreparationAuthorityCommitted",
-        "AttemptAuthorityCommitted",
-        "TransitionCommitted",
-        "TransitionFailedAfterPublication",
-        "DispatchFailedAfterPublication",
-        "ReviewJobFailedAfterPublication",
-        "CandidateRestoreFailed",
-    }
-    unchanged_results = {
-        "OrderRejected",
-        "ParallelPreviewSuccess",
-        "ParallelPreviewRejected",
-        "ItemDefinitionRejected",
-        "BriefReviewNoEvidence",
-        "LegacyBriefReviewNoEvidence",
-        "BriefReviewNeedsCorrection",
-        "LegacyBriefReviewNeedsCorrection",
-        "BriefReviewUnchanged",
-        "BriefReviewRejected",
-        "ItemStatusInvalid",
-        "ItemStatusUnavailable",
-        "ItemStatusInconsistent",
-        "ExecutorBusyResult",
-        "ProposalRejected",
-        "ProposalDuplicate",
-        "BriefUnchanged",
-        "BriefUnchangedWithWarning",
-        "BriefRejected",
-        "OverviewRejected",
-        "ActionsInvalid",
-        "ActionUnavailable",
-        "AttemptLeaseRequired",
-        "AttemptInspectInvalid",
-        "AttemptNotFound",
-        "AttemptBriefInvalid",
-        "AttemptActionUnavailable",
-        "ArtifactVerificationInvalid",
-        "ArtifactReferenceMismatch",
-        "ArtifactBytesInvalid",
-        "ActionsSuccess",
-        "CompletionActionsSuccess",
-        "TerminalAttemptInspectionSuccess",
-        "NonterminalAttemptInspectionSuccess",
-        "ArtifactVerified",
-        "PreparationAuthorityStatusPresent",
-        "PreparationAuthorityStatusAbsent",
-        "PreparationAuthorityRejected",
-        "AttemptAuthorityStatusPresent",
-        "AttemptAuthorityStatusAbsent",
-        "AttemptAuthorityRejected",
-        "TransitionRejected",
-        "DispatchInvalid",
-        "DispatchRejected",
-        "ReviewJobInvalid",
-        "ReviewJobRejected",
-        "ReviewJobCandidateRequired",
-        "CandidateObserved",
-        "CandidateObservationRejected",
-        "CandidateRestoreInvalid",
-        "CandidateRestoreRejected",
-    }
-    for name, definition in definitions.items():
-        if name not in changed_results | unchanged_results:
+def _apply_result_state_constraints(
+    definitions: dict[str, JsonSchemaValue], boundary_types: tuple[ResultBoundary, ...]
+) -> None:
+    for boundary_type in boundary_types:
+        if issubclass(boundary_type, _ChangedResult):
+            state_changed = True
+        elif issubclass(boundary_type, _UnchangedResult):
+            state_changed = False
+        elif issubclass(boundary_type, _VariableStateChangedResult):
             continue
+        else:
+            continue
+        name = boundary_type.__name__
+        definition = definitions.get(name)
         if not isinstance(definition, dict):
             raise TypeError(f"MCP result definition '{name}' must be an object.")
         properties = definition.get("properties")
         if not isinstance(properties, dict):
             raise TypeError(f"MCP result definition '{name}' must declare properties.")
-        properties["state_changed"] = {"type": "boolean", "const": name in changed_results}
-        if name == "BriefReviewCommitted":
-            properties["changed_surfaces"] = {
-                "enum": [
-                    ["immutable-artifact"],
-                    ["accepted-artifact-reference", "ledger"],
-                    ["immutable-artifact", "accepted-artifact-reference", "ledger"],
-                ],
-            }
-        if name == "ArtifactVerified":
-            properties["verified"] = {"type": "boolean", "const": True}
-        if name == "OrderCommitted":
-            definition["oneOf"] = [
-                {"properties": {"status": {"const": "committed"}, "warning": {"type": "null"}}},
-                {
-                    "properties": {
-                        "status": {"const": "committed-with-warning"},
-                        "warning": {"$ref": "#/$defs/WarningResult"},
-                    }
-                },
-            ]
+        properties["state_changed"] = {"type": "boolean", "const": state_changed}
+    review = definitions.get("BriefReviewCommitted")
+    if isinstance(review, dict) and isinstance(properties := review.get("properties"), dict):
+        properties["changed_surfaces"] = {
+            "enum": [
+                ["immutable-artifact"],
+                ["accepted-artifact-reference", "ledger"],
+                ["immutable-artifact", "accepted-artifact-reference", "ledger"],
+            ],
+        }
+    artifact = definitions.get("ArtifactVerified")
+    if isinstance(artifact, dict) and isinstance(properties := artifact.get("properties"), dict):
+        properties["verified"] = {"type": "boolean", "const": True}
+    order = definitions.get("OrderCommitted")
+    if isinstance(order, dict):
+        order["oneOf"] = [
+            {"properties": {"status": {"const": "committed"}, "warning": {"type": "null"}}},
+            {
+                "properties": {
+                    "status": {"const": "committed-with-warning"},
+                    "warning": {"$ref": "#/$defs/WarningResult"},
+                }
+            },
+        ]
 
 
 def _action_semantics_constraint(kind: decision_models.ActionKind) -> dict[str, JsonSchemaValue]:
@@ -3055,7 +3006,7 @@ def union_schema_for(boundary_types: tuple[ResultBoundary, ...]) -> dict[str, Js
     components = msgspec.json.schema_components(boundary_types)
     schemas: tuple[dict[str, JsonSchemaValue], ...] = components[0]
     definitions: dict[str, JsonSchemaValue] = components[1]
-    _apply_boolean_constants(definitions)
+    _apply_result_state_constraints(definitions, boundary_types)
     _apply_action_constraints(definitions)
     _apply_transition_constraints(definitions)
     _apply_relative_action_constraints(definitions)

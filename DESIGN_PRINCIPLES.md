@@ -24,6 +24,8 @@ The primary reader must be able to answer what can happen, under which condition
 
 Preserve independent conditions on neighboring behavior unless accepted scope changes them. Permission for one operation must not enable, disable, or bypass a sibling with a different condition. Test one mixed counterexample where the new behavior is allowed and the sibling remains forbidden.
 
+Keep correlated facts with the type or decision that makes them true. A schema constraint, effect flag, retry rule, or surface classification may be projected from that owner, but must not depend on a second class-name inventory that developers must update in parallel. Preserve genuinely variable correlations as explicit alternatives instead of forcing them into the fixed classification.
+
 File size and total lines are separate signals, not objectives. A reduction helps only when it concentrates real alternatives or removes repetition without hiding control flow.
 
 Agent-facing schemas, values, and entry points are product surfaces when agents can use them to steer work. Unless a public API or CLI already makes the contract obvious, keep the consumer, semantic effect or deliberate non-effect, and owner discoverable from the definition or direct entry point. Remove a surface that survives only because a schema can carry it.

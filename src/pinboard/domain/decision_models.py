@@ -120,12 +120,12 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.ACCEPT_REVIEW_AND_CONTINUE:
             return ActionSemantics(
-                "Accept a reviewed candidate while continuing the same attempt.",
+                "Accept a reviewed candidate while other accepted work remains in the same attempt.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.REVIEW_ATTEMPT,
-                "Record the accepted review, return the attempt to active, and fence its prior worker authority.",
+                "Record the accepted review, return the attempt to active, and fence its prior worker authority so remaining accepted work can proceed.",
             )
         case ActionKind.ACCEPT_PROPOSAL:
             return ActionSemantics(
@@ -174,12 +174,12 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.COMPLETE:
             return ActionSemantics(
-                "Accept and finish an active or reviewed attempt.",
+                "Terminally finish an active or reviewed attempt only when no authorized external effect remains.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_OR_REVIEW_ATTEMPT_CURRENT_SCOPE,
-                "Record terminal completion and remove the item from live work.",
+                "Record terminal completion and remove the item from live work. No later repository effect may remain.",
             )
         case ActionKind.CLOSE:
             return ActionSemantics(

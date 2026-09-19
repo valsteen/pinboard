@@ -171,10 +171,10 @@ class LifecycleDecisionTest(unittest.TestCase):
                 DIGEST_A,
                 (),
                 (
-                    "complete:target-1",
                     "return-for-correction:target-1",
                     "accept-checkpoint:target-1",
                     "accept-review-and-continue:target-1",
+                    "complete:target-1",
                     "revise-item:target",
                 ),
             ),
@@ -280,6 +280,14 @@ class LifecycleDecisionTest(unittest.TestCase):
                 )
                 self.assertEqual(expected, selected_global)
                 self.assertEqual(expected, selected_exact)
+                if name == "review-current":
+                    completion = next(
+                        action for action in groups.attempt_actions if isinstance(action, decision_models.CompleteAction)
+                    )
+                    self.assertEqual(
+                        "Terminally complete target only after repository disposition and cleanup are complete or not applicable",
+                        completion.capability.label,
+                    )
 
     def test_every_action_kind_has_one_complete_domain_semantics_descriptor(self) -> None:
         descriptors = tuple(decision_models.action_semantics(kind) for kind in decision_models.ActionKind)
@@ -303,6 +311,10 @@ class LifecycleDecisionTest(unittest.TestCase):
             decision_models.ActionLifecyclePrecondition.REVIEW_ATTEMPT,
             review_acceptance.lifecycle_precondition,
         )
+        self.assertIn("other accepted work remains", review_acceptance.use_case)
+        completion = decision_models.action_semantics(decision_models.ActionKind.COMPLETE)
+        self.assertIn("no authorized external effect remains", completion.use_case)
+        self.assertIn("No later repository effect may remain", completion.practical_result)
 
     def test_review_continuation_is_a_project_action_and_requires_the_protected_candidate(self) -> None:
         review = item("target", work_models.WorkState.REVIEW, attempt="target-1")

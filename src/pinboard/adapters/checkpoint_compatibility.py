@@ -13,6 +13,7 @@ from pathlib import Path
 
 from pinboard.adapters import review_operations
 from pinboard.adapters.files.artifacts import read_reference
+from pinboard.adapters.files.errors import ArtifactError
 from pinboard.application import (
     artifact_publication,
     checkpoint_compatibility_models,
@@ -118,7 +119,7 @@ def prepare_recovered_review_job(  # noqa: C901 - one cohesive selected remedy a
             checkpoint_history_id,
             correction_history_id,
         )
-    except Exception as error:
+    except (errors.ArtifactAcceptanceAfterPublicationError, ArtifactError, ports.WorkStoreError) as error:
         if not surfaces:
             raise
         if isinstance(error, errors.ArtifactAcceptanceAfterPublicationError):

@@ -1086,7 +1086,7 @@ class SQLiteWorkTransaction:
             return self._select(failure)
         if (
             continuation_attempt_id is None
-            and isinstance(mutation, (TransitionMutation, ReviewSubmissionMutation))
+            and isinstance(mutation, TransitionMutation)
             and isinstance(mutation.decision.change, decision_models.ActivationChange)
         ):
             continuation_attempt_id = mutation.decision.change.attempt

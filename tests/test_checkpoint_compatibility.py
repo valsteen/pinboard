@@ -335,6 +335,40 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
                 self.assertIn(outcome.content["code"], codes)
                 self.assertNotIn("NOT_A_RECOGNIZED_CODE", codes)
 
+    def test_native_recovery_does_not_mask_programming_failure_after_publication(self) -> None:
+        fixture, history_id, _correction_id, patch_bytes = self.compatibility_review_fixture()
+        choice: dict[str, contracts.JsonValue] = {
+            "kind": "package-initial-recovery",
+            "attempt_id": "work-a-1",
+            "candidate_revision": "b" * 40,
+            "runtime": "codex",
+            "background": False,
+            "checkpoint_history_id": history_id,
+            "candidate_patch": base64.b64encode(patch_bytes).decode(),
+        }
+        before = fixture.store.validated_snapshot()
+        programming_failure = RuntimeError("unexpected review preparation bug")
+        with (
+            patch.object(
+                checkpoint_compatibility.review_operations,
+                "prepare_review_job",
+                side_effect=programming_failure,
+            ),
+            self.assertRaises(RuntimeError) as propagated,
+        ):
+            mcp_jobs._review_job(str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken())
+
+        self.assertIs(programming_failure, propagated.exception)
+        after = fixture.store.validated_snapshot()
+        self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
+        self.assertIsNotNone(
+            fixture.store.read_artifact_reference(
+                work_models.ArtifactKind.EVIDENCE,
+                f"work-a-1-{fixture.brief.checkpoint.checkpoint_id}-candidate",
+                1,
+            )
+        )
+
     def compatibility_review_fixture(self) -> tuple[AcceptedPackageFixture, int, int, bytes]:
         fixture, history_id, correction_history_id = self.review_job_fixture()
         package = self.package(fixture)

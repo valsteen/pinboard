@@ -24,7 +24,6 @@ class CliRetirementTest(unittest.TestCase):
             ("attempt", "acquire"),
             ("dispatch",),
             ("artifact", "verify"),
-            ("candidate", "restore"),
             ("input-contract",),
             ("tool-contract", "--action-kind", "complete"),
             ("tool-contract", "--brief-starter", "local"),

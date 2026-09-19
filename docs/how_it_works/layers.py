@@ -4,6 +4,7 @@ from .model import Box, Connector, Diagram, Guide, Note, Section
 
 LAYER_DIRECTORIES: dict[str, str] = {
     "cli": "Turn outside input and optional setup context into exact commands and thematic use cases.",
+    "mcp": "Decode native agent requests, compose shared operations, and present protocol results.",
     "application": "Request exact operation facts or complete state, then project accepted decisions into targeted mutations.",
     "domain": "Decide what is legal without reading files, issuing SQL, or presenting commands.",
     "adapters": "Store and recover accepted facts without deciding workflow policy.",
@@ -15,6 +16,7 @@ REQUIRED_ARCHITECTURE_HEADINGS = (
     "### Application",
     "### Adapters",
     "### CLI",
+    "### MCP",
 )
 
 
@@ -72,7 +74,7 @@ DIAGRAM = Diagram(
             "Interfaces",
             "Make the request exact",
             ("small exhaustive route", "thematic composition · setup context"),
-            ("src/pinboard/interfaces",),
+            ("src/pinboard/cli · mcp",),
             60,
             100,
             300,

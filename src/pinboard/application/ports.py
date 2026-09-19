@@ -55,6 +55,8 @@ class WorkTransaction(Protocol):
 
 
 class WorkStore(Protocol):
+    def validated_snapshot(self) -> stored_state.StoredWorkState: ...
+
     def write(self) -> AbstractContextManager[WorkTransaction]: ...
 
     def accept_artifact_reference(
@@ -77,6 +79,10 @@ class WorkStore(Protocol):
     ) -> stored_state.ArtifactReference | None: ...
 
     def read_attempt_context(self, attempt_id: AttemptId) -> query_models.AttemptContextFacts | None: ...
+
+    def read_candidate_snapshot_context(
+        self, attempt_id: AttemptId
+    ) -> query_models.CandidateSnapshotContextFacts | None: ...
 
     def read_review_job_context(
         self,
@@ -132,12 +138,6 @@ class ValidatedStateReader(Protocol):
     """Explicit capability for full integrity validation and state assembly."""
 
     def validated_snapshot(self) -> stored_state.StoredWorkState: ...
-
-
-class AuthorityStatusReader(Protocol):
-    def read_attempt_authority_status(self, attempt_id: AttemptId) -> query_models.AttemptAuthorityStatus | None: ...
-
-    def read_preparation_authority_status(self, item_id: ItemId) -> query_models.PreparationAuthorityStatus | None: ...
 
 
 class ItemDefinitionReader(Protocol):

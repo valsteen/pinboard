@@ -703,12 +703,14 @@ def set_item_state(
             connection.execute(
                 """
                 UPDATE work_items
-                SET state = ?, outcome_evidence = ?, subject_revision = ?, updated_at = ?, queue_position = ?
+                SET state = ?, outcome_evidence = ?, next_action = ?, subject_revision = ?, updated_at = ?,
+                    queue_position = ?
                 WHERE item_id = ? AND state = ? AND subject_revision = ?
                 """,
                 (
                     after_state.value,
                     outcome_evidence,
+                    None if terminal else current.next_action,
                     revision,
                     now.isoformat(),
                     None if terminal else current.queue_position,

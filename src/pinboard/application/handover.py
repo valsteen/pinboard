@@ -313,7 +313,7 @@ class CompatibilityHandoverCheckpointPackage(
     review_basis: HandoverReviewBasis
 
 
-class HandoverCheckpointPackageV2(
+class CompatibilityHandoverCheckpointPackageV2(
     msgspec.Struct,
     tag="pinboard-checkpoint-review-package/v2",
     tag_field="schema",
@@ -336,7 +336,32 @@ class HandoverCheckpointPackageV2(
     review_basis: HandoverReviewBasis
 
 
-type HandoverCheckpointPackageValue = CompatibilityHandoverCheckpointPackage | HandoverCheckpointPackageV2
+class HandoverCheckpointPackageV3(
+    msgspec.Struct,
+    tag="pinboard-checkpoint-review-package/v3",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    history_id: int
+    package_artifact_ref_id: int
+    attempt_id: str
+    item_id: str
+    candidate: str
+    acceptance_evidence: str
+    accepted_scope: HandoverAcceptedScope
+    checkpoint: HandoverCheckpointIdentity
+    candidate_snapshot: HandoverPortableArtifactIdentity
+    accepted_brief: HandoverPortableArtifactIdentity
+    result: HandoverPortableArtifactIdentity
+    implementation_review: HandoverPortableArtifactIdentity
+    verdict: Literal["ready"]
+    review_basis: HandoverReviewBasis
+
+
+type HandoverCheckpointPackageValue = (
+    CompatibilityHandoverCheckpointPackage | CompatibilityHandoverCheckpointPackageV2 | HandoverCheckpointPackageV3
+)
 
 
 class HandoverAcceptedBriefCompletionIdentity(
@@ -409,7 +434,7 @@ class HandoverCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_unknow
 
 
 class ProjectHandover(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-project-handover/v6"]
+    schema: Literal["pinboard-project-handover/v7"]
     authority: Literal["sqlite-v6"]
     revision: int
     project: HandoverProject
@@ -513,7 +538,7 @@ def project_artifact_reference(
 
 def _project_definition(value: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
     return query_models.WorkItemDefinitionView(
-        "pinboard-work-item-definition/v1",
+        "pinboard-work-item-definition/v2",
         value.title,
         value.objective,
         value.hypothesis,
@@ -524,6 +549,15 @@ def _project_definition(value: work_models.WorkItemDefinition) -> query_models.W
         tuple(value.dependencies),
         value.effect,
         value.unlock,
+        value.checkout_policy,
+        tuple(
+            query_models.WorkObligationView(
+                obligation.obligation_id,
+                obligation.statement,
+                obligation.deferral_policy,
+            )
+            for obligation in value.obligations
+        ),
     )
 
 
@@ -599,7 +633,7 @@ def project_handover_from_state(
         proposal_id: tuple(assumptions) for proposal_id, assumptions in proposal_freshness_groups.items()
     }
     return ProjectHandover(
-        "pinboard-project-handover/v6",
+        "pinboard-project-handover/v7",
         "sqlite-v6",
         state.lifecycle.project.revision,
         HandoverProject(

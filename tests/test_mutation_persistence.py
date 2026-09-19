@@ -11,6 +11,7 @@ from pinboard.adapters.sqlite.database import initialize_database, open_database
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.adapters.transition_input import parse_transition_input
 from pinboard.application import stored_state
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
@@ -34,7 +35,6 @@ from pinboard.domain.identifiers import (
     TaskId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
-from pinboard.interfaces.transition_input import parse_transition_input
 from tests.decision_support import project_decision_snapshot
 from tests.domain_support import expect_success, expect_transition_command
 from tests.support import (
@@ -276,6 +276,14 @@ class MutationPersistenceTest(unittest.TestCase):
             (ItemId("work-c"),),
             "The state becomes explicit.",
             "The next decision can run.",
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("next-decision"),
+                    "The next decision can run.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
         current_digest = expect_success(work_item_definition_digest(current))
         state = replace(
@@ -766,7 +774,7 @@ class MutationPersistenceTest(unittest.TestCase):
                 connection.execute(trigger)
 
                 with (
-                    patch("pinboard.adapters.sqlite.store.open_database", return_value=connection),
+                    patch("pinboard.adapters.sqlite.persistence.open_database", return_value=connection),
                     store.write() as transaction,
                 ):
                     result = transaction.commit(mutation)

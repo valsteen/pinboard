@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import datetime
 from typing import assert_never, overload
 
@@ -6,7 +7,12 @@ import msgspec
 from pinboard.application import query_models
 from pinboard.application.actions import action_subject_ids
 from pinboard.application.artifact_publication import validate_transition_work_brief
-from pinboard.application.artifacts import CheckpointArtifacts, CompletionArtifacts, WorkBriefIdentity
+from pinboard.application.artifacts import (
+    CheckpointArtifacts,
+    CompletionArtifacts,
+    EvidenceArtifactRef,
+    WorkBriefIdentity,
+)
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     CommittedEffect,
@@ -19,6 +25,7 @@ from pinboard.application.mutation_models import (
 from pinboard.application.mutations import (
     project_checkpoint_acceptance_mutation,
     project_completion_acceptance_mutation,
+    project_review_submission_mutation,
     project_transition_mutation,
 )
 from pinboard.application.ports import WorkStore, WorkTransaction
@@ -28,7 +35,16 @@ from pinboard.domain.authority_decisions import (
     decide_preparation_authority,
 )
 from pinboard.domain.decisions import decide, validate_checkpoint_candidate, validate_supplied_action
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.errors import (
+    DecisionFailure,
+    DecisionFailureCode,
+    DecisionResult,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    FailureMismatch,
+    RetryDisposition,
+)
 from pinboard.domain.identifiers import (
     ActionId,
     ArtifactRefId,
@@ -75,6 +91,98 @@ def decide_and_commit_attempt_authority_change(
 ) -> DecisionResult[CommittedEffect]:
     """Reread locked state, decide, and commit one attempt-authority change."""
 
+    with store.write() as transaction:
+        return _commit_attempt_authority_change(transaction, requested_change)
+
+
+def acquire_attempt_authority(
+    store: WorkStore,
+    *,
+    attempt_id: AttemptId,
+    task_id: TaskId,
+    host_id: HostId,
+    lease_id: LeaseId,
+    acquired_at: datetime,
+    expires_at: datetime,
+) -> DecisionResult[CommittedEffect]:
+    """Select initial acquisition or inactive transfer under one write lock."""
+
+    with store.write() as transaction:
+        snapshot = transaction.read_decision_facts(
+            query_models.DecisionScope((), (), (), (), (attempt_id,), (), (), ()), acquired_at
+        ).snapshot
+        attempt = snapshot.attempt(attempt_id)
+        if attempt is None:
+            return DecisionFailure(
+                DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+                f"Attempt '{attempt_id}' is not current.",
+                None,
+            )
+        retained = transaction.read_attempt_authority_status(attempt_id)
+        if retained is None:
+            requested_change: authority_models.AttemptAuthorityOperation = (
+                authority_models.AcquireInitialAttemptAuthority(
+                    snapshot.host_epoch,
+                    attempt_id,
+                    attempt.item,
+                    task_id,
+                    host_id,
+                    lease_id,
+                    acquired_at,
+                    expires_at,
+                )
+            )
+        else:
+            state = retained.status
+            if state == authority_models.AttemptLeaseStatus.ACTIVE and retained.expires_at <= acquired_at:
+                state = authority_models.AttemptLeaseStatus.EXPIRED
+            if state == authority_models.AttemptLeaseStatus.ACTIVE:
+                return DecisionFailure(
+                    DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
+                    "Attempt authority remains live.",
+                    FailureDetails(
+                        observed=(
+                            FailureFact("attempt_id", str(attempt_id)),
+                            FailureFact("holder_task_id", str(retained.task_id)),
+                            FailureFact("holder_host_id", str(retained.host_id)),
+                            FailureFact("generation", retained.generation),
+                            FailureFact("expires_at", retained.expires_at.isoformat()),
+                            FailureFact("authority_status", retained.status.value),
+                        ),
+                        mismatches=(FailureMismatch("authority_availability", "available", "live-holder"),),
+                        retry=RetryDisposition.DO_NOT_RETRY,
+                        effect=EffectDisposition.UNCHANGED,
+                        changed_surfaces=(),
+                        alternatives=(),
+                    ),
+                )
+            requested_change = authority_models.TransferAttemptAuthority(
+                authority_models.InactiveAttemptAuthority(
+                    snapshot.host_epoch,
+                    attempt_id,
+                    attempt.item,
+                    retained.task_id,
+                    retained.host_id,
+                    retained.lease_id,
+                    retained.generation,
+                    retained.expires_at,
+                    state,
+                ),
+                task_id,
+                host_id,
+                lease_id,
+                acquired_at,
+                expires_at,
+            )
+        return _commit_attempt_authority_change(transaction, requested_change)
+
+
+def _commit_attempt_authority_change(
+    transaction: WorkTransaction,
+    requested_change: authority_models.AttemptAuthorityOperation,
+) -> DecisionResult[CommittedEffect]:
+    """Decide and persist inside the caller's existing transaction."""
+
     match requested_change:
         case authority_models.AcquireInitialAttemptAuthority(
             attempt=attempt_id, task_id=actor_task_id, host_id=actor_host_id, acquired_at=decided_at
@@ -99,60 +207,59 @@ def decide_and_commit_attempt_authority_change(
             history_outcome = "revoke-attempt-authority"
         case _ as unreachable:
             assert_never(unreachable)
-    with store.write() as transaction:
-        decision_context = transaction.read_decision_facts(
-            query_models.DecisionScope((), (), (), (), (attempt_id,), (), (), ()), decided_at
-        ).snapshot
-        retained = transaction.read_attempt_authority_status(attempt_id)
-        generation_before = transaction.read_attempt_generation(attempt_id)
-        decision_result = decide_attempt_authority(
-            retained=_project_retained_attempt_authority(decision_context, retained, attempt_id),
-            counter=generation_before,
-            operation=requested_change,
-            live_attempt=(
-                (attempt_id, attempt.item)
-                if (attempt := decision_context.attempt(attempt_id)) is not None
-                and attempt.state == work_models.AttemptState.ACTIVE
-                else None
-            ),
-            transferable_attempt=(
-                (attempt_id, attempt.item)
-                if (attempt := decision_context.attempt(attempt_id)) is not None
-                and attempt.state != work_models.AttemptState.DONE
-                else None
-            ),
-            project_host_epoch=decision_context.host_epoch,
-        )
-        if isinstance(decision_result, DecisionFailure):
-            return decision_result
-        accepted_decision = decision_result
-        proposed_replacement = accepted_decision.proposed_replacement
-        transition_receipt = decision_models.TransitionReceipt(
-            action_id=ActionId(f"continue:attempt-authority:{attempt_id}:{proposed_replacement.generation}"),
-            item=proposed_replacement.item,
-            outcome=history_outcome,
-            evidence=None,
-            decided_at=decided_at,
-        )
-        allocation = transaction.read_mutation_allocation()
-        mutation_receipt = MutationReceipt(
-            transition=transition_receipt,
-            history_id=allocation.next_history_id,
-            project_revision=allocation.project_revision + 1,
-            action_kind=decision_models.ActionKind.CONTINUE,
-            subject_id=HistorySubjectId(attempt_id),
-            artifact_ref_id=None,
-            authorization=decision_models.AuthorizationKind.ATTEMPT,
-            actor_task_id=actor_task_id,
-            actor_host_id=actor_host_id,
-            input_schema="attempt-authority/v1",
-            input_payload=work_models.CanonicalJson(b"{}"),
-        )
-        mutation = AttemptAuthorityMutation(
-            receipt=mutation_receipt,
-            decision=accepted_decision,
-        )
-        return transaction.commit(mutation)
+    decision_context = transaction.read_decision_facts(
+        query_models.DecisionScope((), (), (), (), (attempt_id,), (), (), ()), decided_at
+    ).snapshot
+    retained = transaction.read_attempt_authority_status(attempt_id)
+    generation_before = transaction.read_attempt_generation(attempt_id)
+    decision_result = decide_attempt_authority(
+        retained=_project_retained_attempt_authority(decision_context, retained, attempt_id),
+        counter=generation_before,
+        operation=requested_change,
+        live_attempt=(
+            (attempt_id, attempt.item)
+            if (attempt := decision_context.attempt(attempt_id)) is not None
+            and attempt.state == work_models.AttemptState.ACTIVE
+            else None
+        ),
+        transferable_attempt=(
+            (attempt_id, attempt.item)
+            if (attempt := decision_context.attempt(attempt_id)) is not None
+            and attempt.state != work_models.AttemptState.DONE
+            else None
+        ),
+        project_host_epoch=decision_context.host_epoch,
+    )
+    if isinstance(decision_result, DecisionFailure):
+        return decision_result
+    accepted_decision = decision_result
+    proposed_replacement = accepted_decision.proposed_replacement
+    transition_receipt = decision_models.TransitionReceipt(
+        action_id=ActionId(f"continue:attempt-authority:{attempt_id}:{proposed_replacement.generation}"),
+        item=proposed_replacement.item,
+        outcome=history_outcome,
+        evidence=None,
+        decided_at=decided_at,
+    )
+    allocation = transaction.read_mutation_allocation()
+    mutation_receipt = MutationReceipt(
+        transition=transition_receipt,
+        history_id=allocation.next_history_id,
+        project_revision=allocation.project_revision + 1,
+        action_kind=decision_models.ActionKind.CONTINUE,
+        subject_id=HistorySubjectId(attempt_id),
+        artifact_ref_id=None,
+        authorization=decision_models.AuthorizationKind.ATTEMPT,
+        actor_task_id=actor_task_id,
+        actor_host_id=actor_host_id,
+        input_schema="attempt-authority/v1",
+        input_payload=work_models.CanonicalJson(b"{}"),
+    )
+    mutation = AttemptAuthorityMutation(
+        receipt=mutation_receipt,
+        decision=accepted_decision,
+    )
+    return transaction.commit(mutation)
 
 
 def _project_retained_preparation_authority(
@@ -520,48 +627,54 @@ def _transition_decision_scope(
 
 
 @overload
-def _validate_supplied_transition_and_decide(
-    facts: query_models.DecisionFacts,
+def _read_authorize_and_decide(
+    reader: WorkStore | WorkTransaction,
     command: decision_models.AcceptCheckpointCommand,
     now: datetime,
     transition_brief_identity: WorkBriefIdentity | None,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
+    read_authorization_time: Callable[[], datetime],
 ) -> DecisionResult[decision_models.CheckpointAcceptanceDecision]: ...
 
 
 @overload
-def _validate_supplied_transition_and_decide(
-    facts: query_models.DecisionFacts,
+def _read_authorize_and_decide(
+    reader: WorkStore | WorkTransaction,
     command: decision_models.NonCheckpointTransitionCommand,
     now: datetime,
     transition_brief_identity: WorkBriefIdentity | None,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
+    read_authorization_time: Callable[[], datetime],
 ) -> DecisionResult[decision_models.TransitionDecision]: ...
 
 
 @overload
-def _validate_supplied_transition_and_decide(
-    facts: query_models.DecisionFacts,
+def _read_authorize_and_decide(
+    reader: WorkStore | WorkTransaction,
     command: decision_models.CoveredCompleteCommand,
     now: datetime,
     transition_brief_identity: WorkBriefIdentity | None,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
+    read_authorization_time: Callable[[], datetime],
 ) -> DecisionResult[decision_models.CompletionAcceptanceDecision]: ...
 
 
-def _validate_supplied_transition_and_decide(
-    facts: query_models.DecisionFacts,
+def _read_authorize_and_decide(
+    reader: WorkStore | WorkTransaction,
     command: decision_models.TransitionCommand,
     now: datetime,
     transition_brief_identity: WorkBriefIdentity | None,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
+    read_authorization_time: Callable[[], datetime],
 ) -> DecisionResult[decision_models.Decision]:
-    """Resolve supplied authority and reject stale context before deciding."""
+    """Read exact facts, sample fresh authority validity, and decide without committing."""
 
+    facts = reader.read_decision_facts(_transition_decision_scope(command), read_authorization_time())
+    authority_observed_at = read_authorization_time()
     decision_context = facts.snapshot
     if command.action.capability.authorization == decision_models.AuthorizationKind.PROJECT and (
         actor_task_id is None or actor_host_id is None
@@ -571,7 +684,7 @@ def _validate_supplied_transition_and_decide(
             "Project actions require the invoking task and host identity.",
             None,
         )
-    actor_authority = _resolve_actor_authority(decision_context, command.action, now)
+    actor_authority = _resolve_actor_authority(decision_context, command.action, authority_observed_at)
     if isinstance(actor_authority, DecisionFailure):
         return actor_authority
     if (failure := validate_supplied_action(decision_context, actor_authority, command.action)) is not None:
@@ -586,22 +699,43 @@ def decide_and_commit_transition(
     command: decision_models.NonCheckpointTransitionCommand,
     now: datetime,
     *,
+    read_authorization_time: Callable[[], datetime],
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
     transition_brief_identity: WorkBriefIdentity | None = None,
 ) -> DecisionResult[CommittedEffect]:
-    """Validate, decide, and commit one lifecycle mutation under one write lock."""
+    """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
 
     with store.write() as transaction:
-        facts = transaction.read_decision_facts(_transition_decision_scope(command), now)
-        decision_result = _validate_supplied_transition_and_decide(
-            facts, command, now, transition_brief_identity, actor_task_id, actor_host_id
+        decision_result = _read_authorize_and_decide(
+            transaction, command, now, transition_brief_identity, actor_task_id, actor_host_id, read_authorization_time
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result
         accepted_decision = decision_result
         allocation = transaction.read_mutation_allocation()
         mutation = project_transition_mutation(allocation, accepted_decision, actor_task_id, actor_host_id)
+        return transaction.commit(mutation)
+
+
+def decide_and_commit_review_submission(
+    store: WorkStore,
+    command: decision_models.SubmitReviewCommand,
+    now: datetime,
+    candidate_snapshot: EvidenceArtifactRef,
+    *,
+    read_authorization_time: Callable[[], datetime],
+) -> DecisionResult[CommittedEffect]:
+    """Authorize with the supplied clock under lock; retain snapshot-time receipt provenance."""
+
+    with store.write() as transaction:
+        decision_result = _read_authorize_and_decide(
+            transaction, command, now, None, None, None, read_authorization_time
+        )
+        if isinstance(decision_result, DecisionFailure):
+            return decision_result
+        allocation = transaction.read_checkpoint_mutation_allocation((candidate_snapshot,))
+        mutation = project_review_submission_mutation(allocation, decision_result, candidate_snapshot)
         return transaction.commit(mutation)
 
 
@@ -631,8 +765,7 @@ def preflight_covered_completion(
 ) -> DecisionFailure | None:
     """Reject stale authority, wrong lifecycle, candidate, or checkpoint coverage before publication."""
 
-    facts = store.read_decision_facts(_transition_decision_scope(command), now)
-    result = _validate_supplied_transition_and_decide(facts, command, now, None, actor_task_id, actor_host_id)
+    result = _read_authorize_and_decide(store, command, now, None, actor_task_id, actor_host_id, lambda: now)
     if isinstance(result, DecisionFailure):
         return result
     return None
@@ -644,16 +777,16 @@ def decide_and_commit_checkpoint_acceptance(
     now: datetime,
     checkpoint_artifacts: CheckpointArtifacts,
     *,
+    read_authorization_time: Callable[[], datetime],
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
     transition_brief_identity: WorkBriefIdentity | None = None,
 ) -> DecisionResult[CommittedEffect]:
-    """Validate, decide, and commit checkpoint acceptance with its required artifacts."""
+    """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
 
     with store.write() as transaction:
-        facts = transaction.read_decision_facts(_transition_decision_scope(command), now)
-        decision_result = _validate_supplied_transition_and_decide(
-            facts, command, now, transition_brief_identity, actor_task_id, actor_host_id
+        decision_result = _read_authorize_and_decide(
+            transaction, command, now, transition_brief_identity, actor_task_id, actor_host_id, read_authorization_time
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result
@@ -678,15 +811,15 @@ def decide_and_commit_covered_completion(
     now: datetime,
     completion_artifacts: CompletionArtifacts,
     *,
+    read_authorization_time: Callable[[], datetime],
     actor_task_id: TaskId,
     actor_host_id: HostId,
 ) -> DecisionResult[CommittedEffect]:
-    """Revalidate the authoritative checkpoint set and atomically accept terminal evidence."""
+    """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
 
     with store.write() as transaction:
-        facts = transaction.read_decision_facts(_transition_decision_scope(command), now)
-        decision_result = _validate_supplied_transition_and_decide(
-            facts, command, now, None, actor_task_id, actor_host_id
+        decision_result = _read_authorize_and_decide(
+            transaction, command, now, None, actor_task_id, actor_host_id, read_authorization_time
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result

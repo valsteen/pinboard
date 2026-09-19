@@ -98,6 +98,17 @@ def _render_item(
         + f"- Scope: {'; '.join(accepted.scope)}\n"
         + f"- Non-scope: {'; '.join(accepted.non_scope) if accepted.non_scope else 'none'}\n"
         + f"- Acceptance criteria: {'; '.join(accepted.acceptance_criteria)}\n"
+        + f"- Checkout policy: {accepted.checkout_policy.value}\n"
+        + "- Obligations: "
+        + (
+            "; ".join(
+                f"{value.obligation_id} ({value.deferral_policy.value}): {value.statement}"
+                for value in accepted.obligations
+            )
+            if accepted.obligations
+            else "none"
+        )
+        + "\n"
         + f"- Effect: {accepted.effect}\n"
         + f"- Unlock: {accepted.unlock}\n"
     ).encode()

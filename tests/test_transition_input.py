@@ -1,17 +1,19 @@
 import json
 import unittest
+from unittest.mock import patch
 
+import msgspec
+
+from pinboard.adapters.transition_input import (
+    ParsedTransitionInput,
+    TransitionInputFailure,
+    parse_transition_input,
+)
+from pinboard.application import action_models
+from pinboard.application.actions import encoded_action_input_schema
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CandidateId, ItemId, ProposalId
-from pinboard.interfaces import transition_models
-from pinboard.interfaces.errors import TransitionInputFailure
-from pinboard.interfaces.transition_input import (
-    INPUT_CONTRACT_ACTION_KINDS,
-    ParsedTransitionInput,
-    encoded_transition_input_schema,
-    parse_transition_input,
-)
 from tests.domain_support import action
 from tests.support import JsonObject, JsonValue
 
@@ -21,14 +23,8 @@ def expect_transition_command(
 ) -> decision_models.TransitionCommand:
     if isinstance(value, TransitionInputFailure):
         raise AssertionError(str(value))
-    if isinstance(value, transition_models.ActivateInputPayload):
+    if isinstance(value, action_models.ActivateInputPayload):
         raise AssertionError("Expected a domain command, received an unresolved activation request.")
-    return value
-
-
-def expect_schema(value: bytes | TransitionInputFailure) -> bytes:
-    if isinstance(value, TransitionInputFailure):
-        raise AssertionError(str(value))
     return value
 
 
@@ -41,7 +37,7 @@ def revise_item_payload() -> JsonObject:
         "source_task": "owner-task",
         "reason": "Clarify the accepted outcome.",
         "definition": {
-            "schema": "pinboard-work-item-definition/v1",
+            "schema": "pinboard-work-item-definition/v2",
             "title": "Work A",
             "objective": "Make the outcome explicit.",
             "hypothesis": "Explicit outcomes reduce coordination mistakes.",
@@ -52,6 +48,14 @@ def revise_item_payload() -> JsonObject:
             "dependencies": [],
             "effect": "The outcome is explicit.",
             "unlock": "Work can continue.",
+            "checkout_policy": "coordinator-selected",
+            "obligations": [
+                {
+                    "obligation_id": "continue-work",
+                    "statement": "Work can continue.",
+                    "deferral_policy": "forbidden",
+                }
+            ],
         },
     }
 
@@ -101,6 +105,12 @@ class TransitionInputTest(unittest.TestCase):
             ],
         }
         covered = expect_transition_command(parse_transition_input(complete, json.dumps(covered_payload)))
+        typed_covered = msgspec.json.decode(json.dumps(covered_payload), type=action_models.CoveredCompleteInputPayload)
+        with patch(
+            "pinboard.adapters.transition_input.msgspec.json.decode", side_effect=AssertionError("typed re-decode")
+        ):
+            self.assertEqual(direct, parse_transition_input(complete, action_models.EvidenceInputPayload("accepted")))
+            self.assertEqual(covered, parse_transition_input(complete, typed_covered))
 
         self.assertIsInstance(direct, decision_models.DirectCompleteCommand)
         self.assertIsInstance(covered, decision_models.CoveredCompleteCommand)
@@ -118,17 +128,11 @@ class TransitionInputTest(unittest.TestCase):
                 rejected = parse_transition_input(complete, json.dumps(payload))
                 self.assertIsInstance(rejected, TransitionInputFailure)
 
-    def test_input_contract_describes_every_action_kind(self) -> None:
-        self.assertEqual(
-            tuple(kind.value for kind in decision_models.ActionKind),
-            INPUT_CONTRACT_ACTION_KINDS,
-        )
-
     def test_current_inputs_decode_exact_models(self) -> None:
         activation_action = action(decision_models.ActivateAction, ItemId("item-1"))
         activation = parse_transition_input(activation_action, '{"brief_artifact_ref_id":7}')
         self.assertEqual(
-            transition_models.ActivateInputPayload(ArtifactRefId(7)),
+            action_models.ActivateInputPayload(ArtifactRefId(7)),
             activation,
         )
         resume_action = action(decision_models.ResumeAction, ItemId("item-1"))
@@ -348,11 +352,21 @@ class TransitionInputTest(unittest.TestCase):
         for selected_action, payload in cases:
             with self.subTest(kind=selected_action.kind):
                 decoded = parse_transition_input(selected_action, json.dumps(payload))
+                model = action_models.action_input_model(selected_action.kind)
+                if model is None:
+                    model = action_models.EvidenceInputPayload
+                typed_payload = msgspec.json.decode(json.dumps(payload), type=model)
+                with patch(
+                    "pinboard.adapters.transition_input.msgspec.json.decode",
+                    side_effect=AssertionError("typed re-decode"),
+                ):
+                    self.assertEqual(decoded, parse_transition_input(selected_action, typed_payload))
                 if isinstance(selected_action, decision_models.ActivateAction):
-                    self.assertIsInstance(decoded, transition_models.ActivateInputPayload)
+                    self.assertIsInstance(decoded, action_models.ActivateInputPayload)
                 else:
                     expect_transition_command(decoded)
-                schema = expect_schema(encoded_transition_input_schema(selected_action.kind))
+                schema = encoded_action_input_schema(selected_action.kind)
+                assert schema is not None
                 self.assertIn(b'"type":"object"', schema)
 
     def test_activate_rejects_repeated_brief_owned_identity(self) -> None:

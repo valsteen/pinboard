@@ -491,6 +491,14 @@ class PreparationAuthorityTest(unittest.TestCase):
             "The relationship is current.",
             ("source:local",),
             ("Work C remains ready.",),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "A project can evaluate it.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
         before = store.validated_snapshot()
 
@@ -534,6 +542,14 @@ class PreparationAuthorityTest(unittest.TestCase):
             "The relationship is current.",
             ("source:local",),
             ("Work C remains ready.",),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "A project can evaluate it.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
         before = store.validated_snapshot()
 
@@ -662,7 +678,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             return connection
 
         with (
-            patch("pinboard.adapters.sqlite.store.open_database", side_effect=open_contender),
+            patch("pinboard.adapters.sqlite.persistence.open_database", side_effect=open_contender),
             ThreadPoolExecutor(max_workers=1) as executor,
         ):
             pending_release = executor.submit(

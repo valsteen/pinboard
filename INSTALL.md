@@ -6,10 +6,10 @@ Pinboard supports macOS and Linux. Codex is the primary, stress-tested integrati
 
 Pinboard uses these terms consistently:
 
-- `<launcher-root>` is the directory that contains `scripts/pinboard`. Every human and agent Pinboard command invokes `<launcher-root>/scripts/pinboard`.
+- `<launcher-root>` is the directory that contains `scripts/pinboard`. Direct CLI commands invoke this launcher; the plugin's MCP declaration invokes the same launcher with `--mcp`.
 - `<launcher-root>/.pinboard-runtime/environment` is the installed private runtime. One explicit `--prepare-runtime` command uses uv to create it for an installed plugin version; ordinary installed commands use neither uv nor its cache.
 - `<pinboard-source>/.venv` is the development environment for a prepared Pinboard source checkout. Repository-owned `uv sync` and `uv run` commands create or use this environment only for Pinboard development; `uv build` may use uv's isolated build environment.
-- `<managed-project>` is the repository whose work Pinboard coordinates. Callers select it with `--project-root <managed-project>`; Pinboard never uses its Python environment, `.venv`, or dependency files.
+- `<managed-project>` is the repository whose work Pinboard coordinates. CLI callers select it with `--project-root <managed-project>`; native tool requests carry explicit `project_root` and `work_root` fields. Pinboard never uses the managed project's Python environment, `.venv`, or dependency files.
 
 The launcher root may be a prepared Pinboard source checkout or an installed plugin version. A prepared source launcher uses `<pinboard-source>/.venv`; an installed launcher uses its private runtime. That runtime choice follows the resolved launcher root, not whether the caller is a human or an agent.
 
@@ -26,7 +26,9 @@ Start a Codex task in the repository where you want to use Pinboard and ask:
 
 > Set up Pinboard here and explain how I can use it from one task or several tasks.
 
-The coding agent discovers `<launcher-root>` relative to the active Pinboard skill and invokes `<launcher-root>/scripts/pinboard`. On first use, an unprepared installed launcher returns one machine-readable preparation action. The agent runs that same launcher with `--prepare-runtime`, requesting write access only to the installed plugin version when needed. Later commands use `<launcher-root>/.pinboard-runtime/environment` without uv or its cache.
+The plugin manifest selects `mcp-codex.json` at the plugin root. Codex resolves its `cwd` to that root and starts `sh ./scripts/pinboard --mcp`. The connected Pinboard tools take explicit project and work roots for each request; they do not use the client's current directory as a board selection.
+
+An installed version needs deliberate runtime preparation before its first connection. If startup reports a preparation requirement, discover `<launcher-root>` relative to the active Pinboard skill and run `<launcher-root>/scripts/pinboard --prepare-runtime` once with uv available. Request write access only to that version's `.pinboard-runtime` when needed. Then reconnect through the client's supported MCP reconnect mechanism or start a new task/session that reloads the plugin. Startup itself never prepares or changes the plugin. Later connections and CLI commands use the prepared runtime without uv or its cache.
 
 ### Allow routine project-data writes
 
@@ -72,6 +74,24 @@ claude plugin install pinboard@pinboard
 
 Open the target project and ask Claude Code to set up Pinboard there.
 
+The Claude manifest selects the separate root `mcp-claude.json`. Claude expands `${CLAUDE_PLUGIN_ROOT}` in its command and invokes that root's `scripts/pinboard --mcp`, independent of the target project's current directory. Prepare an installed version deliberately as described above, then use Claude Code's supported reconnect or reload mechanism. A one-session source load uses the prepared source `.venv` when present.
+
+Claude's manual permission mode asks before each MCP tool call by default. To approve Pinboard once for autonomous workflows, merge this server-scoped rule into your user-level `~/.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_pinboard_pinboard__*"
+    ]
+  }
+}
+```
+
+This rule covers only tools from the installed Pinboard plugin server. It does not approve shell commands, repository writes outside Claude's existing file permissions, or another MCP server, and it does not bypass Pinboard's receipts and leases. Omit it if you prefer to approve every Pinboard call separately.
+
+For an autonomous repository-writing run, also use Claude's normal edit-accepting mode and include any selected linked worktree in the session's allowed directories. Pinboard records the intended access but cannot grant it; `dontAsk` may deny an uncovered write instead of asking.
+
 This route uses Claude Code's marketplace mechanism with your local checkout. Pinboard is not published in or installed from Anthropic's official marketplace, and it does not claim live sharing between Codex and Claude Code.
 
 ### One session without installation
@@ -96,6 +116,8 @@ scripts/prepare-worktree
 
 The source-development environment at `<pinboard-source>/.venv` contains Pinboard development dependencies. It is distinct from an installed plugin's `<launcher-root>/.pinboard-runtime/environment` and from any environment or dependency files under `<managed-project>`.
 
+Direct CLI use covers root discovery, initialization, summary status, validation, generated-view repair, portable human export, direct closure, and the CLI's own `tool-contract` diagnostics. Agent workflow tools are available through the connected MCP server, not through alternate CLI routes. A missing connection needs the supported reconnect or reload, not a CLI fallback.
+
 ## After setup
 
 After the first successful setup, Pinboard may point to the optional Repository Readiness, Slop Cleanup, and Maintaining Agent Guidance skills. It does not run them, create work, or change configuration.
@@ -106,14 +128,14 @@ Pinboard may also recommend the `model_auto_compact_token_limit_scope` setting f
 
 ### Pinboard cannot write its project data
 
-When a routine Codex operation lacks the required permission, Pinboard reports `SQLITE_READONLY`, the affected location and operation, whether anything changed, and the exact recovery path.
+For retained CLI mutations, a denied SQLite write reports `SQLITE_READONLY`, the affected location and operation, whether anything changed, and narrow permission recovery. Native tools report their own correlated failure, retry, and changed-surface facts rather than CLI-specific diagnostic prose. A native brief acceptance failure after immutable publication reports `ARTIFACT_ACCEPTANCE_FAILED` and its exact published selector; it does not claim the underlying failure is necessarily a permission error.
 
-For a normal primary checkout, grant only relative `.codex/pinboard`. For a linked worktree or explicit data location, grant only the exact absolute location reported by Pinboard. If the failure says an immutable artifact was already published, inspect current state before retrying rather than replaying the operation.
+For a normal primary checkout, grant only relative `.codex/pinboard`. For a linked worktree or explicit data location, grant only the exact absolute location resolved by Pinboard. If an immutable artifact was already published, preserve it and inspect current state and artifact identity before selecting supported recovery; do not blindly replay the operation.
 
 ### The launcher says runtime preparation is required
 
-An unprepared installed plugin exits before Pinboard starts and returns `pinboard-launcher-result/v1` with the exact same-launcher `--prepare-runtime` action. Run that action once with uv available and grant write access only to `<launcher-root>/.pinboard-runtime`. If preparation fails, keep the reported upstream diagnostics and follow its stated retry requirement; do not substitute `<managed-project>/.venv`, an import-path change, or an ad hoc uv command.
+An unprepared installed plugin exits before Pinboard starts and returns `pinboard-launcher-result/v1` with the exact same-launcher `--prepare-runtime` action. CLI recovery is on stdout; MCP prestart recovery is on stderr so protocol stdout stays empty. Run that action once with uv available and grant write access only to `<launcher-root>/.pinboard-runtime`. If preparation fails, keep the reported upstream diagnostics and follow its stated retry requirement; do not substitute `<managed-project>/.venv`, an import-path change, or an ad hoc uv command.
 
-After preparation succeeds, `<launcher-root>/scripts/pinboard` uses the verified private entry point in `<launcher-root>/.pinboard-runtime/environment`. Ordinary installed use does not invoke uv, read its cache, or mutate the prepared plugin tree. A source checkout prepared by `<pinboard-source>/scripts/prepare-worktree` continues to use `<pinboard-source>/.venv`.
+Preparation verifies the CLI entry and availability of the MCP executable before writing the ready marker. After it succeeds, reconnect the client; `scripts/pinboard --mcp` selects `pinboard-mcp`, while ordinary CLI arguments select `pinboard`. MCP startup accepts no additional arguments: roots belong to tool requests. Ordinary installed use does not invoke uv, read its cache, or mutate the prepared plugin tree. A source checkout prepared by `<pinboard-source>/scripts/prepare-worktree` continues to use `<pinboard-source>/.venv`.
 
 For workflow and recovery behavior beyond installation, see [How Pinboard works](HOW_IT_WORKS.md). For system boundaries and current operating assumptions, see [Architecture](ARCHITECTURE.md).

@@ -6,7 +6,7 @@
   },
   "scripts": {
     "duplication": "jscpd --config .jscpd.json --min-lines 4 --min-tokens 40 --reporters ai --no-tips src/pinboard",
-    "duplication:ci": "jscpd --config .jscpd.json --min-lines 8 --min-tokens 60 --threshold 0.3 --baseline-from-ref origin/main --fail-on-new-clones 0 --reporters ai --no-tips src/pinboard"
+    "duplication:ci": "uv run --locked python scripts/check_duplication.py"
   },
   "devDependencies": {
     "jscpd": "5.1.2"

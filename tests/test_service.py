@@ -9,6 +9,7 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.adapters.transition_input import parse_transition_input
 from pinboard.application import stored_state
 from pinboard.application.artifacts import (
     CheckpointArtifacts,
@@ -47,7 +48,6 @@ from pinboard.domain.proposal_models import (
     CreateProposalOperation,
     ProposalIntake,
 )
-from pinboard.interfaces.transition_input import parse_transition_input
 from tests.artifact_support import write_revision
 from tests.decision_support import (
     project_decision_snapshot,
@@ -131,6 +131,7 @@ class ServiceTest(unittest.TestCase):
             store,
             command,
             now,
+            read_authorization_time=lambda: now,
             actor_task_id=TaskId("project-task") if is_project else None,
             actor_host_id=HostId("host-a") if is_project else None,
             transition_brief_identity=transition_brief_identity,
@@ -390,6 +391,32 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(ActionId("submit-review:work-a-1"), committed_mutation.receipt.transition.action_id)
         self.assertEqual("review", store.validated_snapshot().lifecycle.attempts[0].state.value)
 
+    def test_final_authorization_rechecks_expiry_after_locked_facts_are_read(self) -> None:
+        store, database_path = self._store_with_state(complete_sqlite_state())
+        before = store.validated_snapshot()
+        selected = self._worker_action(store, decision_models.SubmitReviewAction)
+        authority = selected.capability.command_authority
+        assert authority is not None
+        times = iter((SQLITE_NOW, authority.expires_at + timedelta(seconds=1)))
+
+        def read_authorization_time() -> datetime:
+            return next(times)
+
+        result = decide_and_commit_transition(
+            store,
+            decision_models.SubmitReviewCommand(
+                selected, work_models.SubmitReviewInput(CandidateId("candidate-review"))
+            ),
+            SQLITE_NOW,
+            read_authorization_time=read_authorization_time,
+            actor_task_id=None,
+            actor_host_id=None,
+        )
+        self.assertIsInstance(result, DecisionFailure)
+        assert isinstance(result, DecisionFailure)
+        self.assertEqual(DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED, result.code)
+        self.assertEqual(before, SQLiteWorkStore(database_path).validated_snapshot())
+
     def test_positive_item_state_variants_reload_from_fresh_stores(self) -> None:
         for action_type, initial, payload, expected in (
             (
@@ -574,6 +601,7 @@ class ServiceTest(unittest.TestCase):
             mismatch,
             SQLITE_NOW + timedelta(seconds=2),
             checkpoint_artifacts,
+            read_authorization_time=lambda: SQLITE_NOW + timedelta(seconds=2),
             actor_task_id=TaskId("project-task"),
             actor_host_id=HostId("host-a"),
         )
@@ -611,6 +639,7 @@ class ServiceTest(unittest.TestCase):
                 accept,
                 SQLITE_NOW + timedelta(seconds=2),
                 checkpoint_artifacts,
+                read_authorization_time=lambda: SQLITE_NOW + timedelta(seconds=2),
                 actor_task_id=TaskId("project-task"),
                 actor_host_id=HostId("host-a"),
             )
@@ -623,6 +652,7 @@ class ServiceTest(unittest.TestCase):
                 accept,
                 SQLITE_NOW + timedelta(seconds=2),
                 checkpoint_artifacts,
+                read_authorization_time=lambda: SQLITE_NOW + timedelta(seconds=2),
                 actor_task_id=TaskId("project-task"),
                 actor_host_id=HostId("host-a"),
             )
@@ -918,6 +948,14 @@ class ServiceTest(unittest.TestCase):
             "The evidence is current.",
             ("source:local",),
             ("The current schema remains accepted.",),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "A task can inspect it later.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
 
         with reject_table_deletes("work_items"):
@@ -934,9 +972,19 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(("source:local",), tuple(value.selector for value in after.proposals.evidence))
         proposal = after.proposals.proposals[0]
         intake_item = next(value for value in after.lifecycle.work_items if value.item_id == ItemId("sqlite-proposal"))
+        intake_definition = next(
+            value.definition
+            for value in after.lifecycle.definition_revisions
+            if value.item_id == ItemId("sqlite-proposal")
+        )
         self.assertEqual(stored_state.StoredWorkItemState.INTAKE, intake_item.state)
         self.assertEqual(5, intake_item.queue_position)
         self.assertEqual("proposal:sqlite-proposal", intake_item.source)
+        self.assertEqual(work_models.CheckoutPolicy.COORDINATOR_SELECTED, intake_definition.checkout_policy)
+        self.assertEqual(
+            (work_models.ObligationId("proposal-outcome"),),
+            tuple(value.obligation_id for value in intake_definition.obligations),
+        )
         self.assertEqual(before.authority, after.authority)
         self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
         self.assertEqual(created_at, proposal.created_at)
@@ -962,6 +1010,14 @@ class ServiceTest(unittest.TestCase):
             "The relationship is current.",
             ("source:local",),
             ("Work C remains live.",),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "A task can evaluate it in queue order.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
             2,
         )
 
@@ -1015,6 +1071,14 @@ class ServiceTest(unittest.TestCase):
             "The replacement decision is current.",
             ("source:accepted-design",),
             ("Work C remains live.",),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "The replacement can be evaluated without losing the relationship.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
 
         result = self._create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW + timedelta(seconds=1))
@@ -1047,6 +1111,14 @@ class ServiceTest(unittest.TestCase):
             "The queue currently contains four live items.",
             (),
             (),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "Keep the prior queue intact.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
             6,
         )
         before = store.validated_snapshot()
@@ -1075,6 +1147,14 @@ class ServiceTest(unittest.TestCase):
             "The related item is absent.",
             (),
             (),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "Return a typed item rejection.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
         before = store.validated_snapshot()
 

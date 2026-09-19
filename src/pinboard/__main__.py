@@ -1,4 +1,4 @@
-from pinboard.interfaces.cli import main
+from pinboard.cli.entrypoint import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

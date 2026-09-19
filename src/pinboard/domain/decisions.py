@@ -229,16 +229,6 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
                 ),
             )
         )
-    if (
-        context.item_state in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}
-        and not stale
-        and context.replacement_resolved
-    ):
-        attempt_actions.append(
-            decision_models.CompleteAction(
-                factory.make(context.attempt, f"Accept and complete {context.item}", context.attempt_subject_revision)
-            )
-        )
     if context.item_state == work_models.WorkState.REVIEW:
         attempt_actions.append(
             decision_models.ReturnForCorrectionAction(
@@ -263,6 +253,18 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
                         )
                     )
                 )
+    if (
+        context.item_state in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}
+        and not stale
+        and context.replacement_resolved
+    ):
+        label = (
+            f"Terminally complete {context.item} only after every authorized integration and publication effect, "
+            "then exact disposable worktree, local branch, and remote branch cleanup, are verified or not applicable"
+        )
+        attempt_actions.append(
+            decision_models.CompleteAction(factory.make(context.attempt, label, context.attempt_subject_revision))
+        )
 
     item_actions: list[decision_models.Action] = [
         decision_models.RecordReplacementAction(

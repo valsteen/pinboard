@@ -1,441 +1,79 @@
 import contextlib
 import io
 import json
-import shlex
 import unittest
 from unittest.mock import patch
 
+import msgspec
+
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.domain import decision_models
-from pinboard.interfaces import cli_commands, cli_parser, tool_contract
-from pinboard.interfaces.cli import main
-from pinboard.interfaces.errors import CommandFailure, CommandResult
-
-
-def expect_command_success[T](result: CommandResult[T]) -> T:
-    if isinstance(result, CommandFailure):
-        raise AssertionError(str(result))
-    return result
+from pinboard.cli import cli_commands, cli_parser, tool_contract
+from pinboard.cli.entrypoint import main
+from pinboard.cli.errors import CommandFailure
 
 
 class ToolContractTest(unittest.TestCase):
-    def test_installed_index_covers_every_parser_variant_and_action_once(self) -> None:
-        contract = tool_contract.installed_tool_contract()
-
-        parser_variants = cli_parser.installed_command_variants()
-        self.assertEqual(
-            {(variant.operation_id, variant.variant) for variant in parser_variants},
-            {(operation.operation_id, operation.variant) for operation in contract.operations},
-        )
-        self.assertEqual(
-            {kind.value for kind in decision_models.ActionKind},
-            {action.action_kind for action in contract.actions},
-        )
-        self.assertEqual(len(parser_variants), len(contract.operations))
-        self.assertEqual(len(decision_models.ActionKind), len(contract.actions))
-        self.assertEqual(
-            {"root", "help", "version"},
-            {presentation.presentation for presentation in contract.presentations},
-        )
-        self.assertEqual(
-            {"local", "cross-boundary"},
-            {starter.boundary for starter in contract.brief_starters},
-        )
-        for operation in contract.operations:
-            with self.subTest(operation=operation.detail_selector):
-                detail = expect_command_success(
-                    tool_contract.describe_operation(operation.operation_id, operation.variant)
-                )
-                self.assertEqual("pinboard-agent-tool-operation/v1", detail.schema)
-                self.assertTrue(detail.purpose)
-                self.assertTrue(detail.success_postcondition)
-        for action in decision_models.ActionKind:
-            with self.subTest(action=action.value):
-                detail = tool_contract.describe_action(action)
-                self.assertTrue(detail.purpose)
-                self.assertTrue(detail.success_postcondition)
-
-    def test_selected_command_and_action_expose_bounded_execution_facts(self) -> None:  # noqa: PLR0915
-        command = expect_command_success(tool_contract.describe_operation("transition", "attempt"))
-        self.assertIsInstance(command, tool_contract.OperationContract)
-        assert isinstance(command, tool_contract.OperationContract)
-        self.assertEqual("pinboard-agent-tool-operation/v1", command.schema)
-        self.assertEqual("transition", command.operation_id)
-        self.assertEqual("attempt", command.variant)
-        self.assertTrue(
-            command.cli_usage.startswith("pinboard [--project-root PROJECT_ROOT] [--work-root WORK_ROOT] transition ")
-        )
-        self.assertIn("--authorization attempt", command.cli_usage)
-        self.assertNotIn("--task-id", command.cli_usage)
-        self.assertNotIn("--host-id", command.cli_usage)
-        self.assertNotIn("{project,attempt,preparation}", command.cli_usage)
-        self.assertIn("--lease-id LEASE_ID", command.cli_usage)
-        self.assertEqual("mutates-ledger", command.mutation_class)
-        self.assertEqual(("worker",), command.permitted_roles)
-        self.assertEqual("attempt-lease", command.required_authority)
-        self.assertEqual("action-subject", command.subject_kind)
-        self.assertIsNotNone(command.input_schema)
-        self.assertEqual("never-retry-with-stale-action-facts", command.retry_semantics)
-
-        project_command = expect_command_success(tool_contract.describe_operation("transition", "project"))
-        self.assertIsInstance(project_command, tool_contract.OperationContract)
-        assert isinstance(project_command, tool_contract.OperationContract)
-        self.assertEqual(
-            "direct-project-operation-with-task-host-attribution",
-            project_command.required_authority,
-        )
-
-        action = tool_contract.describe_action(decision_models.ActionKind.SUBMIT_REVIEW)
-        self.assertEqual("pinboard-agent-tool-action/v2", action.schema)
-        self.assertEqual("submit-review", action.action_kind)
-        self.assertEqual("mutates-ledger", action.mutation_class)
-        self.assertEqual("transition:attempt", action.operation_selector)
-        self.assertIsNotNone(action.cli_usage)
-        assert action.cli_usage is not None
-        self.assertIn("--authorization attempt", action.cli_usage)
-        self.assertNotIn("--task-id", action.cli_usage)
-        self.assertNotIn("--host-id", action.cli_usage)
-        self.assertEqual(("worker",), action.permitted_roles)
-        self.assertEqual("attempt", action.subject_kind)
-        self.assertEqual("active-attempt-current-scope", action.lifecycle_precondition)
-        self.assertIsNotNone(action.input_schema)
-        self.assertEqual("reselect-after-any-rejection", action.retry_semantics)
-
-        dispatch_fields = {
-            "without-review": ("--brief-review", "--review-id", "--correction-history-id"),
-            "with-review": ("--correction-history-id",),
-            "correction": (),
-        }
-        expected_types = {
-            "without-review": cli_commands.ProjectDispatchCommand,
-            "with-review": cli_commands.ProjectReviewedDispatchCommand,
-            "correction": cli_commands.ProjectCorrectionDispatchCommand,
-        }
-        for variant, forbidden_fields in dispatch_fields.items():
-            with self.subTest(dispatch_variant=variant):
-                selected = expect_command_success(tool_contract.describe_operation("dispatch", variant))
-                self.assertIsInstance(selected, tool_contract.OperationContract)
-                assert isinstance(selected, tool_contract.OperationContract)
-                for field in forbidden_fields:
-                    self.assertNotIn(field, selected.cli_usage)
-                arguments = shlex.split(selected.cli_usage)
-                replacements = {
-                    "PROJECT_ROOT": "/tmp/project",
-                    "WORK_ROOT": "/tmp/work",
-                    "ACTION_ID": "dispatch:work-a-1",
-                    "SUBJECT_REVISION": "3",
-                    "TASK_ID": "owner-task",
-                    "HOST_ID": "local",
-                    "CHECKPOINT": "checkpoint-a",
-                    "ENVIRONMENT": "/tmp/environment.json",
-                    "BRIEF_REVIEW": "/tmp/review.json",
-                    "REVIEW_ID": "review-id",
-                    "CORRECTION_HISTORY_ID": "7",
-                    "PROMPT": "/tmp/prompt.txt",
-                }
-                concrete = [replacements.get(value.strip("[]"), value.strip("[]")) for value in arguments[1:]]
-                invocation = cli_parser.parse_invocation(concrete)
-                self.assertIsInstance(invocation.command, expected_types[variant])
-
-        brief = expect_command_success(tool_contract.describe_operation("brief/publish", "default"))
-        self.assertIsInstance(brief, tool_contract.OperationContract)
-        assert isinstance(brief, tool_contract.OperationContract)
-        self.assertIsNone(brief.artifact_schema)
-        self.assertIsNotNone(brief.work_brief)
-        assert brief.work_brief is not None
-        self.assertEqual("pinboard-work-brief-contract/v1", brief.work_brief.schema)
-
-        needs_correction = expect_command_success(
-            tool_contract.describe_operation("brief/review-needs-correction", "default")
-        )
-        status = expect_command_success(tool_contract.describe_operation("brief/review-status", "default"))
-        self.assertIsInstance(needs_correction, tool_contract.OperationContract)
-        self.assertIsInstance(status, tool_contract.OperationContract)
-        assert isinstance(needs_correction, tool_contract.OperationContract)
-        assert isinstance(status, tool_contract.OperationContract)
-        self.assertEqual("publishes-and-records-artifact", needs_correction.mutation_class)
-        self.assertEqual("read-only", status.mutation_class)
-        self.assertEqual("focused", needs_correction.data_scope)
-        self.assertEqual("focused", status.data_scope)
-        self.assertIn("non-ready", needs_correction.purpose)
-        self.assertIn("latest verified blocking review", status.purpose)
-        assert needs_correction.artifact_schema is not None
-        negative_schema = json.loads(bytes(needs_correction.artifact_schema))
-        self.assertEqual(
-            ["pinboard-work-brief-review-needs-correction/v1"],
-            negative_schema["$defs"]["WorkBriefReviewNeedsCorrection"]["properties"]["schema"]["enum"],
-        )
-
-        proposal = expect_command_success(tool_contract.describe_operation("proposal", "default"))
-        self.assertIsInstance(proposal, tool_contract.OperationContract)
-        assert isinstance(proposal, tool_contract.OperationContract)
-        assert proposal.artifact_schema is not None
-        proposal_schema = json.loads(bytes(proposal.artifact_schema))
-        relation_variants = proposal_schema["$defs"]["Proposal"]["properties"]["relation"]
-        self.assertIn("anyOf", relation_variants)
-        self.assertEqual(
-            {"type": "null"},
-            proposal_schema["$defs"]["IndependentProposalRelation"]["properties"]["item"],
-        )
-        self.assertEqual(
-            {"type": "null"},
-            proposal_schema["$defs"]["ClarificationProposalRelation"]["properties"]["item"],
-        )
-        self.assertEqual(
-            "string",
-            proposal_schema["$defs"]["FollowUpProposalRelation"]["properties"]["item"]["type"],
-        )
-
-    def test_complete_action_exposes_exact_direct_and_covered_input_leaves(self) -> None:
-        action = tool_contract.describe_action(decision_models.ActionKind.COMPLETE)
-        assert action.input_schema is not None
-        schema = json.loads(bytes(action.input_schema))
-
-        self.assertEqual(
-            [
-                {"$ref": "#/$defs/EvidenceInputPayload"},
-                {"$ref": "#/$defs/CoveredCompleteInputPayload"},
-            ],
-            schema["oneOf"],
-        )
-        covered = schema["$defs"]["CoveredCompleteInputPayload"]
-        self.assertFalse(covered["additionalProperties"])
-        self.assertEqual(
-            [
-                "schema",
-                "candidate",
-                "evidence",
-                "reviewer_task_id",
-                "result_sha256",
-                "review_sha256",
-                "packages",
-            ],
-            covered["required"],
-        )
-        self.assertEqual(1, covered["properties"]["packages"]["minItems"])
-        row = schema["$defs"]["CoveredCompletionPackageInputPayload"]
-        self.assertFalse(row["additionalProperties"])
-        self.assertEqual(["history_id", "package_sha256", "disposition", "evidence"], row["required"])
-
-    def test_acquisition_and_initialization_contracts_name_actual_authority_and_receipts(self) -> None:
-        preparation_start = expect_command_success(tool_contract.describe_operation("preparation/start", "default"))
-        self.assertIsInstance(preparation_start, tool_contract.OperationContract)
-        assert isinstance(preparation_start, tool_contract.OperationContract)
-        self.assertEqual(
-            "direct-preparation-claim-with-task-host-attribution",
-            preparation_start.required_authority,
-        )
-        self.assertEqual("eligible-ready-item", preparation_start.lifecycle_precondition)
-        self.assertIn("definition_revision", preparation_start.success_postcondition)
-        self.assertIn("definition_digest", preparation_start.success_postcondition)
-        self.assertIn("lease_id", preparation_start.success_postcondition)
-        self.assertIn("generation", preparation_start.success_postcondition)
-
-        preparation_acquire = expect_command_success(tool_contract.describe_operation("preparation/acquire", "default"))
-        self.assertIsInstance(preparation_acquire, tool_contract.OperationContract)
-        assert isinstance(preparation_acquire, tool_contract.OperationContract)
-        self.assertEqual(
-            "direct-preparation-claim-with-task-host-attribution",
-            preparation_acquire.required_authority,
-        )
-
-        preparation_transfer = expect_command_success(
-            tool_contract.describe_operation("preparation/transfer", "default")
-        )
-        self.assertIsInstance(preparation_transfer, tool_contract.OperationContract)
-        assert isinstance(preparation_transfer, tool_contract.OperationContract)
-        self.assertEqual(
-            "inactive-preparation-claim-with-task-host-attribution",
-            preparation_transfer.required_authority,
-        )
-
-        attempt_acquire = expect_command_success(tool_contract.describe_operation("attempt/acquire", "default"))
-        self.assertIsInstance(attempt_acquire, tool_contract.OperationContract)
-        assert isinstance(attempt_acquire, tool_contract.OperationContract)
-        self.assertEqual(
-            "direct-attempt-claim-with-task-host-attribution",
-            attempt_acquire.required_authority,
-        )
-        self.assertIn("lease_id", attempt_acquire.success_postcondition)
-        self.assertIn("generation", attempt_acquire.success_postcondition)
-
-        initialized = expect_command_success(tool_contract.describe_operation("init", "default"))
-        self.assertIsInstance(initialized, tool_contract.OperationContract)
-        assert isinstance(initialized, tool_contract.OperationContract)
-        self.assertIn("work_root", initialized.success_postcondition)
-        self.assertIn("resumed", initialized.success_postcondition)
-        self.assertNotIn("committed revision", initialized.success_postcondition)
-
-    def test_brief_source_leaves_expose_distinct_manifest_and_plan_inputs(self) -> None:
-        source_plan = expect_command_success(tool_contract.describe_operation("brief-sources", "plan"))
-        source_plan_output = expect_command_success(tool_contract.describe_operation("brief-sources", "plan-to-file"))
-        source_emit = expect_command_success(tool_contract.describe_operation("brief-sources", "emit"))
-        self.assertIsInstance(source_plan, tool_contract.OperationContract)
-        self.assertIsInstance(source_plan_output, tool_contract.OperationContract)
-        self.assertIsInstance(source_emit, tool_contract.OperationContract)
-        assert isinstance(source_plan, tool_contract.OperationContract)
-        assert isinstance(source_plan_output, tool_contract.OperationContract)
-        assert isinstance(source_emit, tool_contract.OperationContract)
-        self.assertEqual("source-manifest", source_plan.subject_kind)
-        self.assertEqual("pinboard-brief-sources/v1 file", source_plan.artifact_selector)
-        self.assertIn("--file FILE", source_plan.cli_usage)
-        self.assertEqual("source-manifest-and-output", source_plan_output.subject_kind)
-        self.assertEqual("publishes-selected-output", source_plan_output.mutation_class)
-        self.assertIn("--output-plan OUTPUT_PLAN", source_plan_output.cli_usage)
-        self.assertEqual("source-plan", source_emit.subject_kind)
-        self.assertEqual("pinboard-brief-source-plan/v1 file", source_emit.artifact_selector)
-        self.assertIn("--plan PLAN", source_emit.cli_usage)
-        assert source_emit.artifact_schema is not None
-        self.assertIn("BriefSourcePlanView", json.loads(bytes(source_emit.artifact_schema))["$defs"])
-
-    def test_review_job_exposes_exact_package_and_recovery_variants(self) -> None:
-        contract = tool_contract.installed_tool_contract()
-        review_variants = {
-            operation.variant: operation for operation in contract.operations if operation.operation_id == "review-job"
-        }
-        self.assertEqual(
-            {
-                "initial",
-                "package-initial",
-                "package-initial-recovery",
-                "correction",
-                "package-correction",
-                "package-correction-recovery",
-            },
-            set(review_variants),
-        )
-        details = {
-            variant: expect_command_success(tool_contract.describe_operation("review-job", variant))
-            for variant in review_variants
-        }
-        self.assertNotIn(b"checkpoint_history_id", bytes(details["initial"].input_schema or b""))
-        self.assertIn(b"checkpoint_history_id", bytes(details["package-initial"].input_schema or b""))
-        self.assertIn(b"correction_history_id", bytes(details["correction"].input_schema or b""))
-        combined = bytes(details["package-correction"].input_schema or b"")
-        self.assertIn(b"checkpoint_history_id", combined)
-        self.assertIn(b"correction_history_id", combined)
-        for variant in ("package-initial-recovery", "package-correction-recovery"):
-            recovery = bytes(details[variant].input_schema or b"")
-            self.assertIn(b"checkpoint_history_id", recovery)
-            self.assertIn(b"candidate_patch", recovery)
-        for detail in details.values():
-            self.assertEqual("publishes-and-records-artifact", detail.mutation_class)
+    def test_cli_only_index_and_every_returned_selector_are_static_and_exact(self) -> None:
+        with patch("pinboard.cli.entrypoint.work_state_commands.resolve_roots") as roots:
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                result = main(("tool-contract", "--json"))
+            self.assertEqual(0, result)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual("pinboard-cli-tool-contract/v1", payload["schema"])
+            self.assertNotIn("actions", payload)
+            self.assertNotIn("brief_starters", payload)
+            installed = cli_parser.installed_commands()
             self.assertEqual(
-                "Read the focused candidate-review inputs, then publish and accept the immutable reviewer prompt.",
-                detail.purpose,
+                {command.operation_id for command in installed},
+                {operation["operation_id"] for operation in payload["operations"]},
             )
+            self.assertEqual(len(installed), len(payload["operations"]))
+            for operation in payload["operations"]:
+                with self.subTest(selector=operation["detail_selector"]):
+                    detail = tool_contract.describe_operation(operation["operation_id"])
+                    self.assertIsInstance(detail, tool_contract.OperationContract)
+                    assert isinstance(detail, tool_contract.OperationContract)
+                    self.assertEqual("pinboard-cli-tool-operation/v1", detail.schema)
+                    self.assertEqual(operation["mutation_class"], detail.mutation_class)
+                    self.assertEqual(operation["data_scope"], detail.data_scope)
+                    self.assertTrue(detail.cli_usage)
+                    self.assertTrue(detail.success_postcondition)
+                    self.assertTrue(json.loads(bytes(detail.input_schema)))
+            for selector in payload["presentation_selectors"]:
+                detail = tool_contract.describe_operation(selector)
+                self.assertIsInstance(detail, tool_contract.PresentationContract)
+            roots.assert_not_called()
 
-    def test_operation_contract_flags_every_project_wide_and_selection_dependent_scope(self) -> None:
-        index = tool_contract.installed_tool_contract()
-        scopes = {(entry.operation_id, entry.variant): entry.data_scope for entry in index.operations}
-        self.assertEqual(
-            {
-                ("validate", "default"),
-                ("handover", "default"),
-                ("init", "default"),
-                ("views/rebuild", "default"),
-            },
-            {identity for identity, scope in scopes.items() if scope == "explicit-project-wide"},
-        )
-        self.assertEqual("current-project", scopes[("status", "default")])
-        self.assertEqual("current-project", scopes[("overview", "default")])
-        self.assertEqual("focused", scopes[("item/status", "default")])
-        self.assertEqual("focused-or-current-project", scopes[("actions", "unleased")])
-        self.assertEqual("focused-or-current-project", scopes[("parallel/preview", "default")])
-        handover = expect_command_success(tool_contract.describe_operation("handover", "default"))
-        self.assertIsInstance(handover, tool_contract.OperationContract)
-        assert isinstance(handover, tool_contract.OperationContract)
-        self.assertIn("complete declared project fact set", handover.data_scope_detail)
-
-    def test_action_contract_names_the_execution_route_and_exact_authority(self) -> None:
-        transition = tool_contract.describe_action(decision_models.ActionKind.SUBMIT_REVIEW)
-        self.assertEqual("transition", transition.execution_route)
-
-        continuation = tool_contract.describe_action(decision_models.ActionKind.CONTINUE)
-        self.assertEqual("runtime-continuation", continuation.execution_route)
-        self.assertIsNone(continuation.input_schema)
-
-        project_action = tool_contract.describe_action(decision_models.ActionKind.MARK_READY)
-        self.assertEqual(
-            "direct-project-operation-with-task-host-attribution",
-            project_action.required_authority,
-        )
-
-    def test_cli_index_and_selected_detail_do_not_resolve_project_roots(self) -> None:
-        for arguments in (
-            ("tool-contract", "--json"),
-            ("tool-contract", "--operation", "attempt/inspect", "--json"),
-            ("tool-contract", "--action-kind", "activate", "--json"),
-            ("tool-contract", "--brief-starter", "local", "--json"),
-        ):
-            with self.subTest(arguments=arguments):
-                stdout = io.StringIO()
-                stderr = io.StringIO()
-                with (
-                    contextlib.redirect_stdout(stdout),
-                    contextlib.redirect_stderr(stderr),
-                    patch(
-                        "pinboard.interfaces.cli.work_state_commands.resolve_roots",
-                        side_effect=AssertionError("unexpected project-root read"),
-                    ),
-                ):
-                    result = main(arguments)
-                self.assertEqual(0, result, stderr.getvalue())
-                payload = json.loads(stdout.getvalue())
-                self.assertIsInstance(payload, dict)
-                self.assertIn("schema", payload)
-
-    def test_boundary_specific_brief_starter_is_complete_and_compact(self) -> None:
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            result = main(("tool-contract", "--brief-starter", "local", "--json"))
-
-        self.assertEqual(0, result, stderr.getvalue())
-        payload = json.loads(stdout.getvalue())
-        self.assertEqual("pinboard-work-brief-starter/v1", payload["schema"])
-        self.assertEqual("local", payload["boundary"])
-        self.assertNotIn("payload_schema", payload)
-        self.assertEqual("local", payload["starter"]["checkpoint"]["boundary"])
-        self.assertIn("outcome_description", payload["starter"]["checkpoint"])
-        self.assertIn("deferrals", payload["starter"]["checkpoint"])
-        self.assertLess(len(stdout.getvalue()), 10_000)
-
-    def test_bare_multi_variant_operation_returns_exact_selectors(self) -> None:
-        expected = {
-            "transition": {"attempt", "preparation", "project"},
-            "dispatch": {"correction", "with-review", "without-review"},
-            "brief-sources": {"plan", "plan-to-file", "emit"},
-        }
-        for operation, variants in expected.items():
-            with self.subTest(operation=operation):
-                stdout = io.StringIO()
-                stderr = io.StringIO()
-                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                    result = main(("tool-contract", "--operation", operation, "--json"))
-
-                self.assertEqual(0, result, stderr.getvalue())
-                payload = json.loads(stdout.getvalue())
-                self.assertEqual("pinboard-agent-tool-operation-variants/v1", payload["schema"])
-                self.assertEqual(operation, payload["operation_id"])
-                self.assertEqual(variants, {entry["variant"] for entry in payload["variants"]})
-                self.assertEqual(
-                    {f"--operation {operation}:{variant}" for variant in variants},
-                    {entry["detail_selector"] for entry in payload["variants"]},
-                )
-
-    def test_completeness_rejects_missing_duplicate_and_unknown_classification(self) -> None:
-        installed = cli_parser.installed_command_variants()
-        operation_keys = tuple((variant.operation_id, variant.variant) for variant in installed)
-        actions = tuple(kind.value for kind in decision_models.ActionKind)
-        with self.assertRaisesRegex(ValueError, "missing operation classification"):
-            tool_contract.validate_contract_inventory(operation_keys, operation_keys[1:], actions, actions)
-        with self.assertRaisesRegex(ValueError, "duplicate operation classification"):
-            tool_contract.validate_contract_inventory(
-                operation_keys, (*operation_keys, operation_keys[0]), actions, actions
+    def test_retained_human_close_leaf_schema_rejects_unknown_and_invalid_values(self) -> None:
+        detail = tool_contract.describe_operation("close")
+        assert isinstance(detail, tool_contract.OperationContract)
+        schema = json.loads(bytes(detail.input_schema))
+        self.assertIn("CloseCommand", schema["$defs"])
+        command = cli_parser.parse_invocation(
+            (
+                "close",
+                "work-a",
+                "--outcome",
+                "dropped",
+                "--reason",
+                "No longer needed.",
+                "--task-id",
+                "human",
+                "--host-id",
+                "local",
             )
-        with self.assertRaisesRegex(ValueError, "unknown action classification"):
-            tool_contract.validate_contract_inventory(operation_keys, operation_keys, actions[:-1], actions)
+        ).command
+        self.assertIsInstance(command, cli_commands.CloseCommand)
+        self.assertEqual("focused", detail.data_scope)
+        self.assertEqual("mutates-ledger", detail.mutation_class)
+        value = msgspec.to_builtins(command)
+        assert isinstance(value, dict)
+        with self.assertRaises(msgspec.ValidationError):
+            msgspec.convert(value | {"action_id": "close:work-a"}, type=cli_commands.CloseCommand)
+        for selector in ("transition", "brief/publish", "review-job", "attempt/acquire", "input-contract"):
+            with self.subTest(selector=selector):
+                self.assertIsInstance(tool_contract.describe_operation(selector), CommandFailure)
 
     def test_unknown_selected_operation_is_an_expected_rejection(self) -> None:
         stdout = io.StringIO()
@@ -488,7 +126,7 @@ class ToolContractTest(unittest.TestCase):
             contextlib.redirect_stdout(stdout),
             contextlib.redirect_stderr(stderr),
             patch(
-                "pinboard.interfaces.cli._dispatch",
+                "pinboard.cli.entrypoint._dispatch",
                 side_effect=StorageError(StorageErrorCode.BUSY, "held by another process", retryable=True),
             ),
         ):

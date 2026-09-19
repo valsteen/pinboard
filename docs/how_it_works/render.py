@@ -81,11 +81,15 @@ Across those paths, four guarantees stay constant:
 
 ## One operation moves through the layers
 
-Starting a preparation claim is one representative operation. The request is decoded, the current definition and claim are selected under a transaction, and a pure decision accepts or rejects the change. An accepted mutation is committed before replaceable views are refreshed and the result is presented.
+Starting a preparation claim through MCP is one representative operation. The request is decoded, the current definition and claim operation are selected under the same transaction that commits the change, and a pure decision accepts or rejects it. An accepted mutation is committed before replaceable views are refreshed and the result is presented.
 
 {_picture("journey", "An ordinary preparation start selecting the current definition and claim operation against locked state, then committing, refreshing, and presenting it")}
 
 The same separation keeps a failed view refresh from undoing an accepted transaction. Preparation, implementation, and review use these boundaries while preserving the accepted work and its evidence.
+
+If accepted direction changes late, Pinboard does not reinterpret the old candidate as satisfying the new request. The complete definition and brief are replaced before another candidate and review. If work pauses or a worker disappears, the same attempt can resume from its accepted Git lineage and recorded evidence without retelling the project history.
+
+The extra steps make a first delivery slower. Their return appears when the work needs another revision, conversation, reviewer, or task: the decision, implementation, and evidence remain connected.
 
 ## Precise outcomes cross intact boundaries
 
@@ -93,29 +97,16 @@ Pinboard's layers pass typed outcomes upward instead of flattening a result into
 
 The preparation-start path follows those boundaries:
 
-- The interface decodes an exact `PreparationStartCommand`.
+- MCP decodes an exact `PreparationAuthorityStartRequest`.
 - The application selects the current definition, claim, and dependencies.
-- The domain's `decide_preparation_authority` returns either an accepted `PreparationAuthorityDecision` or an expected `DecisionFailure`.
+- The domain's preparation-authority decision returns either an accepted decision or an expected `DecisionFailure`.
 - The storage adapter attempts only the mutation described by an accepted decision.
 
-{_picture("outcomes", "Preparation start crossing interface, application, domain, and adapter boundaries while domain rejection, stale-persistence rejection, successful commit, infrastructure failure, and view-warning facts stay distinct for interface-owned presentation")}
+{_picture("outcomes", "Preparation start crossing MCP, application, domain, and adapter boundaries while domain rejection, stale-persistence rejection, successful commit, infrastructure failure, and view-warning facts stay distinct for MCP-owned presentation")}
 
-Outcomes are broader than errors. The path keeps three result families distinct:
+Outcomes are broader than errors. An accepted decision describes the proposed lease, an expected rejection returns `DecisionFailure`, and an attempted effect returns either `CommittedEffect` or a separate stale-persistence rejection. Infrastructure failures remain exceptions. A later view-refresh warning remains separate from a committed success.
 
-- An accepted `PreparationAuthorityDecision` describes the proposed lease.
-- An expected domain rejection returns `DecisionFailure`.
-- An attempted effect returns either `CommittedEffect` or a separate stale-persistence `DecisionFailure`. Infrastructure failures remain exceptions.
-
-`PreparationStart` pairs only a successful effect with its authority. A later view-refresh warning remains separate from that committed success.
-
-The interface owns presentation. It converts a typed rejection or infrastructure failure into `RejectedOperationView`, using structured facts rather than parsing message text:
-
-- observations and mismatches explain what was found;
-- effect and changed-surface facts report whether state changed;
-- retry disposition states whether repeating the input is safe;
-- supplied alternatives or recovery become bounded next actions.
-
-The representative domain and stale-persistence rejections contain a code and message with `details = None`. The interface therefore emits empty observations, mismatches, and changed surfaces, together with `state_changed: false`, `do-not-retry`, and no next action. It does not invent missing facts. Successful preparation instead presents the exact lease fields.
+MCP owns presentation. It returns structured observations, mismatches, changed surfaces, retry disposition, and bounded recovery without parsing message text or inventing missing facts.
 
 ## The repository keeps the memory
 
@@ -142,6 +133,8 @@ Pinboard keeps product decisions, operation sequencing, persistence, and externa
 {_picture("layers", "Four package layers showing interfaces, application, domain, and adapters, connected by package dependencies")}
 
 Every arrow means “may depend on.” Interfaces make outside input exact and present results. Application code coordinates complete operations through explicit capabilities. The domain decides legality without reading files or issuing SQL. Adapters store and recover accepted facts without deciding workflow policy.
+
+MCP owns agent intake, brief preparation, authority, implementation transitions, dispatch, and review. The CLI serves human setup, summary status, validation, view repair, portable export, direct closure, and its own diagnostics. It does not provide a second agent workflow when MCP is unavailable.
 
 That separation is why a storage failure cannot redefine a product decision, a renderer cannot become the source of truth, and an interface cannot silently invent lifecycle policy.
 

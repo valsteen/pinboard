@@ -2,6 +2,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta
 
+from pinboard.adapters.transition_input import parse_transition_input
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.decisions import available_actions as available_actions_outcome
 from pinboard.domain.decisions import decide as decision_outcome
@@ -17,7 +18,6 @@ from pinboard.domain.identifiers import (
     TaskId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
-from pinboard.interfaces.transition_input import parse_transition_input
 from tests.decision_support import project_decision_snapshot
 from tests.domain_support import action, expect_success
 from tests.support import SQLITE_NOW, complete_sqlite_state, test_definition
@@ -205,7 +205,24 @@ class TypedTransitionContractTest(unittest.TestCase):
                     2,
                     "d" * 64,
                     work_models.WorkItemDefinition(
-                        "Ready item", "effect", "why", (), ("effect",), (), ("unlock",), (), "effect", "unlock"
+                        "Ready item",
+                        "effect",
+                        "why",
+                        (),
+                        ("effect",),
+                        (),
+                        ("unlock",),
+                        (),
+                        "effect",
+                        "unlock",
+                        work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+                        (
+                            work_models.WorkObligation(
+                                work_models.ObligationId("unlock"),
+                                "unlock",
+                                work_models.ObligationDeferralPolicy.FORBIDDEN,
+                            ),
+                        ),
                     ),
                 ),
             ),

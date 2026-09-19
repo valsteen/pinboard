@@ -112,6 +112,14 @@ def definition_anchor(
             dependencies,
             "Add navigable routes",
             "Reach the next area",
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("reach-next-area"),
+                    "Reach the next area",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         ),
     )
 
@@ -163,10 +171,10 @@ class LifecycleDecisionTest(unittest.TestCase):
                 DIGEST_A,
                 (),
                 (
-                    "complete:target-1",
                     "return-for-correction:target-1",
                     "accept-checkpoint:target-1",
                     "accept-review-and-continue:target-1",
+                    "complete:target-1",
                     "revise-item:target",
                 ),
             ),
@@ -272,6 +280,18 @@ class LifecycleDecisionTest(unittest.TestCase):
                 )
                 self.assertEqual(expected, selected_global)
                 self.assertEqual(expected, selected_exact)
+                if name in {"active-current", "review-current"}:
+                    completion = next(
+                        action
+                        for action in groups.attempt_actions
+                        if isinstance(action, decision_models.CompleteAction)
+                    )
+                    self.assertEqual(
+                        "Terminally complete target only after every authorized integration and publication effect, "
+                        "then exact disposable worktree, local branch, and remote branch cleanup, are verified or not "
+                        "applicable",
+                        completion.capability.label,
+                    )
 
     def test_every_action_kind_has_one_complete_domain_semantics_descriptor(self) -> None:
         descriptors = tuple(decision_models.action_semantics(kind) for kind in decision_models.ActionKind)
@@ -291,10 +311,19 @@ class LifecycleDecisionTest(unittest.TestCase):
         self.assertEqual(decision_models.LifecycleEffect.NO_LIFECYCLE_CHANGE, advisory.lifecycle_effect)
         self.assertEqual(decision_models.ActionLifecyclePrecondition.ACTIVE_ATTEMPT, advisory.lifecycle_precondition)
         self.assertEqual(decision_models.LifecycleEffect.CHANGES_LIFECYCLE, review_acceptance.lifecycle_effect)
+        completion = decision_models.action_semantics(decision_models.ActionKind.COMPLETE)
+        self.assertEqual(
+            "Record terminal completion and remove the item from live work. No later repository effect may remain.",
+            completion.practical_result,
+        )
         self.assertEqual(
             decision_models.ActionLifecyclePrecondition.REVIEW_ATTEMPT,
             review_acceptance.lifecycle_precondition,
         )
+        self.assertIn("other accepted work remains", review_acceptance.use_case)
+        completion = decision_models.action_semantics(decision_models.ActionKind.COMPLETE)
+        self.assertIn("no authorized external effect remains", completion.use_case)
+        self.assertIn("No later repository effect may remain", completion.practical_result)
 
     def test_review_continuation_is_a_project_action_and_requires_the_protected_candidate(self) -> None:
         review = item("target", work_models.WorkState.REVIEW, attempt="target-1")

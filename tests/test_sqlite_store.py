@@ -986,8 +986,8 @@ class SQLiteStoreTest(unittest.TestCase):
         runtime_connection = open_database(path, OpenMode.READ_WRITE)
 
         with (
-            patch("pinboard.adapters.sqlite.store.open_database", return_value=runtime_connection),
-            patch("pinboard.adapters.sqlite.store._persist", side_effect=application_error),
+            patch("pinboard.adapters.sqlite.persistence.open_database", return_value=runtime_connection),
+            patch("pinboard.adapters.sqlite.persistence._persist", side_effect=application_error),
             self.assertRaises(RuntimeError) as propagated,
             store.write() as transaction,
         ):
@@ -1067,6 +1067,7 @@ class SQLiteStoreTest(unittest.TestCase):
         self.assertEqual(
             (stored_state.StoredWorkItemState.DONE, "accepted direct completion"), (item.state, item.outcome_evidence)
         )
+        self.assertIsNone(item.next_action)
         self.assertEqual(
             (work_models.AttemptState.DONE, None, None),
             (attempt.state, attempt.candidate_revision, attempt.candidate_recorded_at),

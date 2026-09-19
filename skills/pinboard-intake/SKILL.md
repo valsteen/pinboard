@@ -7,13 +7,13 @@ description: Preserve one newly proposed piece of project work as an intake item
 
 Convert one explicit concern into immutable proposal facts and a same-identity intake item. Do not claim that intake made it ready, active, or current work.
 
-Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) for coding-agent identity and optional messaging. Intake persistence remains the correctness boundary.
+Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) for native MCP discovery, coding-agent identity and optional messaging. Intake persistence remains the correctness boundary.
 
 Intake may be standalone or embedded in ongoing Pinboard work. Standalone intake may end after its persistence receipt only when the user did not also ask to begin the new work. Before embedded intake, retain a compact continuation anchor containing the pre-intake objective, the next promised action, and the exact durable owner selector. Intake changes queue state but preserves active attempts, so return control to that anchor after persistence and any explicitly requested notification handling.
 
 ## Preserve immediate-start intent
 
-When the same request says `start`, `begin`, `work on`, `implement`, `fix now`, or otherwise clearly asks for immediate execution, treat intake as the first atomic step rather than the requested outcome. After persistence, continue through `$pinboard` to admit, prepare, and activate the same-identity item, then use `$pinboard-deliver` to complete its accepted work. Do not end with a save-for-later receipt merely because the user explicitly named `$pinboard-intake`.
+When the same request says `start`, `begin`, `work on`, `implement`, `fix now`, or otherwise clearly asks for immediate execution, treat intake as the first atomic step rather than the requested outcome. After persistence and before admission or work-brief composition, load the complete main Pinboard skill through the runtime's advertised native coordinator skill loader (`Skill` for `pinboard:pinboard` in Claude). If that loader is unavailable, read the actual sibling `../pinboard/SKILL.md` completely; unavailable complete content stops the continuation. A `$pinboard` mention is not a loaded skill. Follow that loaded owner to admit, prepare, and activate the same-identity item, then use `$pinboard-deliver` to complete its accepted work. Do not end with a save-for-later receipt merely because the user explicitly named `$pinboard-intake`.
 
 Follow the main Pinboard skill's user-facing detail threshold during that continuation. Preserve every higher-level required first-use skill disclosure, keep each one concise and outcome-oriented, and add no separate Pinboard explanation of companion-skill selection or internal routing.
 
@@ -27,11 +27,11 @@ An explicitly requested notification remains subordinate to this continuation. S
 
 ## Preconditions
 
-1. Resolve `../../scripts/pinboard` relative to the active skill. The directory two levels above the skill is `<launcher-root>`, so invoke `<launcher-root>/scripts/pinboard` for every Pinboard command. Integration-specific discovery belongs in the shared runtime adapters; the launcher-relative executable and downstream CLI contract are common. A prepared Pinboard source checkout uses `<pinboard-source>/.venv`; an installed plugin uses only its marker-backed `<launcher-root>/.pinboard-runtime/environment`. `<managed-project>` is the repository selected by `--project-root`; ordinary launch never invokes uv or consults that project's Python environment or dependency files. If the launcher returns `pinboard-launcher-result/v1`, require `pinboard_started=false`, preserve any upstream diagnostics, and follow only its exact same-launcher `--prepare-runtime` action and retry disposition. Preparation may require one narrow write to `<launcher-root>/.pinboard-runtime`; never substitute an ad hoc uv command, ambient cache workaround, installed-cache locator, or managed-project `.venv`.
-2. Run `<launcher-root>/scripts/pinboard status --json` from the repository checkout.
+1. Before selecting the first deferred Pinboard tool schema, read and follow the shared runtime adapter's [Packaged connection and first setup](../pinboard/references/runtime-adapters.md#packaged-connection-and-first-setup) procedure. It owns connection-first native discovery and any required setup.
+2. Resolve both roots before the first call. `project_root` is the selected checkout. Unless the user or an existing Pinboard receipt selected another work root, a normal checkout uses `<project_root>/.codex/pinboard`; never substitute the checkout, its parent, or a containing fixture directory. Call `pinboard_overview` with those exact roots.
 3. Require authority `sqlite-v6`. Intake is a direct trusted-local project action; its task and host values are audit attribution, not credentials, and it does not require a lease.
-4. If the workflow or executable is unavailable, stop. Do not infer shared state from titles, recency, nearby tasks, branches, or old audit files.
-5. Determine the current source task identity from trusted task context. If the environment does not expose it, ask the human for the exact task ID rather than inventing one.
+4. If the workflow or required MCP tool is unavailable, stop. Do not infer shared state from titles, recency, nearby tasks, branches, or old audit files.
+5. Before constructing attributed proposal fields, read and follow the `Task and host identity` row in the [shared runtime adapters](../pinboard/references/runtime-adapters.md#packaged-connection-and-first-setup) to determine the current source task identity. If that source is unavailable, ask the human for the exact task ID rather than inventing one.
 
 ## Resolve conditional follow-up authority
 
@@ -45,7 +45,7 @@ This conditional authority does not authorize a prerequisite relation, admission
 
 ## Prepare one proposal
 
-If any proposal field or relation shape is uncertain, read `<launcher-root>/scripts/pinboard tool-contract --operation proposal --json` and construct the artifact from its strict generated schema. This static read does not open the ledger. Do not infer the schema from an old example or inspect Pinboard source.
+If any proposal field or relation shape is uncertain, read the advertised `pinboard_proposal_create` input schema. Do not infer the schema from an old example or inspect Pinboard source.
 
 Create a bounded JSON proposal containing:
 
@@ -66,6 +66,8 @@ Create a bounded JSON proposal containing:
 - freshness-sensitive assumptions in `freshness_assumptions`;
 - optional one-based `position`; omit it to place the intake item at the back of live work.
 
+When the negotiated proposal schema includes checkout policy and obligations, keep the obligations about the product or repository outcome that implementation must produce. A user request to use isolation, obtain independent review, integrate or publish an accepted candidate, clean up disposable checkouts or branches, and terminally close the item authorizes the owning coordinator's outer workflow; it is not implementation scope and must not become a proposal obligation. Preserve that authority in the current task context and follow it after candidate review. Use `checkout_policy` for the selected checkout rule rather than restating isolation as an obligation.
+
 Use `follow-up` when the new intake item depends on the related item. Use `prerequisite` when the live related item depends on the new intake item; persistence advances that target item's immutable definition history as well as its relational dependency projection. Use `planned-replacement` when the proposed intake item would replace its affected `relation.item`; proposal admission records the intake item and explicit replacement relation together or accepts neither. Use `duplicate`, `contradiction`, or `clarification` to expose a review flag rather than inventing a dependency. Encode `relation.item` as JSON `null` for `independent` and `clarification`; the other relations require a string identity. Every new proposal also creates definition revision 1 from its immutable facts, so do not add parallel semantic prose after intake.
 
 Do not create work merely because a question was asked. Require an explicit request to preserve or submit the concern.
@@ -76,9 +78,9 @@ Before creating a proposal, distinguish exact prior coverage from a merely relat
 
 Before a first default initialization or after `SQLITE_READONLY`, follow the shared runtime adapter's [Codex protected project writes](../pinboard/references/runtime-adapters.md#codex-protected-project-writes) rule. A normal checkout uses relative `.codex/pinboard`; a linked worktree or explicit root uses only the exact absolute effective work root reported by recovery. Do not substitute the whole shared repository or treat a denied proposal write as saved intake.
 
-1. Write the proposal to a temporary file outside canonical work state.
-2. Run `<launcher-root>/scripts/pinboard proposal --file <path> --task-id <current-task> --host-id <current-host> --json`.
-3. Treat the returned `pinboard-proposal-created/v1` record as proof that both the proposal facts and intake item persisted. Use its exact `proposal_id`, `position`, `state`, and `committed_revision`; do not scrape human output.
+1. Call `pinboard_proposal_create` with the structured proposal, exact project and work roots, and current actor task and host identities. No temporary proposal file is needed.
+2. Treat `pinboard-mcp-proposal-result/v1` with status `committed` or `committed-with-warning` as proof that both the proposal facts and intake item persisted. Use its exact `proposal_id`, `position`, `item_state`, and `committed_revision`; do not scrape human output.
+3. Follow the returned effect and retry disposition. An unchanged rejection may be corrected as directed; a committed effect must be inspected rather than replayed.
 4. After that success, announce the generated item summary as the readable accepted-definition view only when `<work-root>/views/items/<proposal-id>.md` is confirmed available, using a concise purpose label and a native clickable link. On every later user-facing reference to that item, keep its human-facing label linked to the confirmed view under the main Pinboard skill's shared readable-artifact rule. If the command reports a generated-view warning or the file is unavailable, preserve the successful intake receipt without a broken link; after a successful refresh or rebuild confirms availability, announce it then. Do not send a standalone re-announcement after an unchanged refresh.
 5. For explicitly requested delivery in Codex, read and follow the Codex-only `references/codex-transport.md`. For explicitly requested delivery in Claude Code, follow only the bounded optional-messaging behavior in the shared runtime adapters; do not read or apply the Codex transport leaf.
 6. Notify the requested eligible task or teammate with the proposal ID, shared work root, and confirmed item-view link when available. Repository persistence, not messaging, is the correctness boundary.
@@ -94,13 +96,13 @@ When delivery was explicitly requested but transport or the requested target is 
 
 Keep the active work as the main topic and lead with the practical outcome:
 
-- After `OK PROPOSAL_CREATED`, say `Saved for later — <concern> is now <proposal-id> at intake position <n>; current work <continues | is blocked by it>.` When the generated item Markdown is confirmed available, make `<proposal-id>` the native clickable item-view link; otherwise keep the persistence receipt accurate without linking an unavailable view.
+- After committed proposal creation, say `Saved for later — <concern> is now <proposal-id> at intake position <n>; current work <continues | is blocked by it>.` When the generated item Markdown is confirmed available, make `<proposal-id>` the native clickable item-view link; otherwise keep the persistence receipt accurate without linking an unavailable view.
 - For exact prior coverage, say `Saved for later — <concern> was already recorded at <selector and state>; current work <continues | is blocked by it>.` Make the human-facing selector a native clickable link whenever its readable Markdown is confirmed available.
 - When the user explicitly dismisses the concern, say `Not saved — <concern> was dismissed at your request; no follow-up remains.`
 
 The `Saved for later` forms apply only when intake is the terminal action requested. For immediate-start intent, keep the persistence receipt and, only when its readable view is confirmed available, its accepted-definition-summary link subordinate while continuing the same turn. Keep that confirmed link on every later item reference. An unavailable item summary does not undo persistence or stop immediate-start continuation; report the work as started only after the normal Pinboard activation succeeds.
 
-Use `now` only after `OK PROPOSAL_CREATED`; it means this turn before the update. Notification delivery never upgrades persistence into admission or priority. If persistence happened in response to the user's question, say that directly instead of implying the exact concern was present earlier. When delivery is user-requested or materially affects the result, report it after the durable outcome without implying that optional transport changes persistence.
+Use `now` only after committed proposal creation; it means this turn before the update. Notification delivery never upgrades persistence into admission or priority. If persistence happened in response to the user's question, say that directly instead of implying the exact concern was present earlier. When delivery is user-requested or materially affects the result, report it after the durable outcome without implying that optional transport changes persistence.
 
 When proposal creation fails, `not recorded` is an unresolved state, not a terminal receipt. Give one compact formal announcement containing:
 

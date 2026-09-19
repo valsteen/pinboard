@@ -11,11 +11,15 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.14,<3.15"
 dependencies = [
+    "mcp==2.2.0",
     "msgspec>=0.21.1",
 ]
 
 [project.scripts]
-pinboard = "pinboard.interfaces.cli:main"
+pinboard = "pinboard.cli.entrypoint:main"
+pinboard-mcp = "pinboard.mcp.server:main"
+pinboard-claude-subagent-start = "pinboard.claude_hook:main"
+pinboard-claude-session-start = "pinboard.claude_hook:session_start_main"
 
 [tool.uv]
 required-version = "==0.12.10"
@@ -41,9 +45,8 @@ banned-from = [
     "pinboard.domain.authority_models",
     "pinboard.domain.decision_models",
     "pinboard.domain.work_models",
-    "pinboard.interfaces.cli_commands",
-    "pinboard.interfaces.transition_models",
-    "pinboard.interfaces.work_brief_models",
+    "pinboard.cli.cli_commands",
+    "pinboard.application.work_brief_models",
 ]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
@@ -61,7 +64,7 @@ known-first-party = ["pinboard", "tests"]
 
 [tool.pyrefly]
 python-version = "3.14"
-project-includes = ["src", "tests", "docs/how_it_works"]
+project-includes = ["src", "tests", "docs/how_it_works", "scripts/check_duplication.py"]
 search-path = ["."]
 preset = "strict"
 min-severity = "warn"

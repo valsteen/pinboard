@@ -3,6 +3,8 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+import msgspec
+
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -12,7 +14,6 @@ from pinboard.application.queries import (
     project_current_overview,
     project_item_status,
     project_overview,
-    project_parallel_preview,
     select_item_definition,
     select_item_definition_history,
     select_parallel_preview,
@@ -50,10 +51,6 @@ class SQLiteQueriesTest(unittest.TestCase):
 
         state = store.validated_snapshot()
         overview = project_overview(state, SQLITE_NOW)
-        preview = project_parallel_preview(state, now=SQLITE_NOW)
-        self.assertIsInstance(preview, query_models.ParallelPreview)
-        assert isinstance(preview, query_models.ParallelPreview)
-
         self.assertEqual("sqlite-v6", overview.authority)
         self.assertEqual("12", overview.revision)
         self.assertEqual(("work-a-1",), overview.active_attempts)
@@ -69,7 +66,6 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertIn("Follow-up to work-c", proposal.dependency_reasons[0].reason)
         self.assertEqual((), proposal.review_flags)
         self.assertNotIn("zz-proposal-a", overview.immediate_options)
-        self.assertEqual("12", preview.revision)
 
     def test_overview_exposes_duplicate_contradiction_and_clarification_for_review(self) -> None:
         for relation in (
@@ -461,6 +457,99 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertIsInstance(invalid_selection, query_models.ParallelSelectionInvalid)
         assert isinstance(invalid_selection, query_models.ParallelSelectionInvalid)
         self.assertEqual("Selected item identities must be current items.", invalid_selection.message)
+
+    def test_attempt_continuation_round_trips_exact_states_and_rejects_cross_identity(self) -> None:
+        forbidden = ("create-user-task", "wake-user-task", "return-ownership-to-parent")
+        active = query_models.ActiveAttemptContinuation(
+            "pinboard-attempt-continuation/v1",
+            "attempt-1",
+            "item-1",
+            1,
+            "owner-task",
+            False,
+            False,
+            query_models.ActionContinuation("continue:attempt-1", decision_models.ActionKind.CONTINUE, "Continue."),
+            ("continue:attempt-1", "revise-item:item-1"),
+            forbidden,
+        )
+        review = query_models.ReviewAttemptContinuation(
+            "pinboard-attempt-continuation/v1",
+            "attempt-1",
+            "item-1",
+            1,
+            "owner-task",
+            False,
+            False,
+            query_models.ReviewContinuation("attempt-1", "candidate-1", "runtime-subagent"),
+            ("accept-checkpoint:attempt-1", "return-for-correction:attempt-1"),
+            forbidden,
+        )
+        paused = query_models.PausedAttemptContinuation(
+            "pinboard-attempt-continuation/v1",
+            "attempt-1",
+            "item-1",
+            1,
+            "owner-task",
+            False,
+            False,
+            query_models.ActionContinuation("resume:item-1", decision_models.ActionKind.RESUME, "Resume."),
+            ("resume:item-1",),
+            forbidden,
+        )
+        blocked = query_models.BlockedAttemptContinuation(
+            "pinboard-attempt-continuation/v1",
+            "attempt-1",
+            "item-1",
+            1,
+            "owner-task",
+            False,
+            False,
+            query_models.DependencyContinuation(("dependency-1",)),
+            ("resume:item-1",),
+            forbidden,
+        )
+        terminal = query_models.TerminalAttemptContinuation(
+            "pinboard-attempt-continuation/v1",
+            "attempt-1",
+            "item-1",
+            1,
+            None,
+            True,
+            False,
+            None,
+            (),
+            forbidden,
+        )
+
+        for continuation in (active, review, paused, blocked, terminal):
+            with self.subTest(state=continuation.state):
+                self.assertEqual(
+                    continuation,
+                    msgspec.json.decode(msgspec.json.encode(continuation), type=query_models.AttemptContinuation),
+                )
+
+        invalid_active = msgspec.to_builtins(active)
+        assert isinstance(invalid_active, dict)
+        invalid_active["next_operation"] = {
+            "kind": "action",
+            "action_id": "continue:attempt-2",
+            "action_kind": "continue",
+            "condition": "Continue.",
+        }
+        invalid_legal = msgspec.to_builtins(active)
+        assert isinstance(invalid_legal, dict)
+        invalid_legal["legal_actions"] = ["continue:attempt-2"]
+        invalid_review = msgspec.to_builtins(review)
+        assert isinstance(invalid_review, dict)
+        review_operation = invalid_review["next_operation"]
+        assert isinstance(review_operation, dict)
+        review_operation["attempt_id"] = "attempt-2"
+        invalid_forbidden = msgspec.to_builtins(active)
+        assert isinstance(invalid_forbidden, dict)
+        invalid_forbidden["forbidden_routes"] = list[str]()
+        for invalid in (invalid_active, invalid_legal, invalid_review, invalid_forbidden):
+            with self.assertRaises((msgspec.ValidationError, ValueError)):
+                msgspec.convert(invalid, type=query_models.AttemptContinuation, strict=True)
 
 
 if __name__ == "__main__":

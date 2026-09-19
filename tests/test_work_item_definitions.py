@@ -10,7 +10,7 @@ from pinboard.domain import decision_models, work_models
 from pinboard.domain.decisions import available_actions, decide
 from pinboard.domain.definition_decisions import decide_definition_revision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.domain.history import work_item_definition_bytes, work_item_definition_digest
+from pinboard.domain.history import decode_work_item_definition, work_item_definition_bytes, work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, ItemId, LeaseId, TaskId
 from pinboard.domain.ledger import LedgerSnapshot
 from tests.domain_support import expect_success
@@ -30,12 +30,20 @@ def definition() -> work_models.WorkItemDefinition:
         dependencies=(ItemId("survey-west"), ItemId("survey-east")),
         effect="Navigable routes are available.",
         unlock="The party can reach the next area.",
+        checkout_policy=work_models.CheckoutPolicy.ISOLATED,
+        obligations=(
+            work_models.WorkObligation(
+                work_models.ObligationId("reachable-area"),
+                "The next area is reachable.",
+                work_models.ObligationDeferralPolicy.FORBIDDEN,
+            ),
+        ),
     )
 
 
 class WorkItemDefinitionContractTest(unittest.TestCase):
-    def test_definition_has_one_frozen_canonical_identity(self) -> None:
-        expected = (
+    def test_retained_v1_definition_round_trips_exact_bytes_and_digest(self) -> None:
+        payload = (
             b'{"acceptance_criteria":["The next area is reachable."],'
             b'"dependencies":["survey-west","survey-east"],'
             b'"effect":"Navigable routes are available.",'
@@ -44,6 +52,31 @@ class WorkItemDefinitionContractTest(unittest.TestCase):
             b'"non_scope":["Do not redesign combat."],'
             b'"objective":"Add navigable routes",'
             b'"schema":"pinboard-work-item-definition/v1",'
+            b'"scope":["Map the western route.","Map the eastern route."],'
+            b'"title":"Build the map",'
+            b'"unlock":"The party can reach the next area."}\n'
+        )
+
+        decoded = expect_success(decode_work_item_definition(payload))
+
+        self.assertEqual(work_models.CheckoutPolicy.LEGACY_UNRECORDED, decoded.checkout_policy)
+        self.assertEqual(payload, expect_success(work_item_definition_bytes(decoded)))
+        self.assertEqual(hashlib.sha256(payload).hexdigest(), expect_success(work_item_definition_digest(decoded)))
+        self.assertEqual(decoded.acceptance_criteria, tuple(value.statement for value in decoded.obligations))
+
+    def test_definition_has_one_frozen_canonical_identity(self) -> None:
+        expected = (
+            b'{"acceptance_criteria":["The next area is reachable."],'
+            b'"checkout_policy":"isolated",'
+            b'"dependencies":["survey-west","survey-east"],'
+            b'"effect":"Navigable routes are available.",'
+            b'"evidence":["artifacts/requirements/routes.md"],'
+            b'"hypothesis":"The party cannot travel without a reliable route.",'
+            b'"non_scope":["Do not redesign combat."],'
+            b'"objective":"Add navigable routes",'
+            b'"obligations":[{"deferral_policy":"forbidden","obligation_id":"reachable-area",'
+            b'"statement":"The next area is reachable."}],'
+            b'"schema":"pinboard-work-item-definition/v2",'
             b'"scope":["Map the western route.","Map the eastern route."],'
             b'"title":"Build the map",'
             b'"unlock":"The party can reach the next area."}\n'

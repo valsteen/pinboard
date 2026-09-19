@@ -23,6 +23,7 @@ class ChangedSurface(Enum):
     LEDGER = "ledger"
     REPOSITORY_GIT_EXCLUDE = "repository-git-exclude"
     SELECTED_OUTPUT = "selected-output"
+    SOURCE_CHECKOUT = "source-checkout"
 
 
 class ArtifactAcceptanceAfterPublicationError(RuntimeError):

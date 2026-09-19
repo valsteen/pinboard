@@ -1,0 +1,342 @@
+{
+  "schema": "pinboard-duplication-exceptions/v1",
+  "detector_version": "5.1.2",
+  "records": [
+    {
+      "identity": {
+        "id": "application-transition-and-checkpoint",
+        "format": "python",
+        "tokens": 88,
+        "lines": 17,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 716,
+              "endLoc": {
+                "column": 33,
+                "line": 716,
+                "position": 29564
+              },
+              "name": "application/service.py",
+              "start": 700,
+              "startLoc": {
+                "column": 17,
+                "line": 700,
+                "position": 28843
+              }
+            },
+            "sha256": "daa21b54a0936382e0160d5d302ccfdd48ac2eda0e9555a222d070b927555775"
+          },
+          {
+            "endpoint": {
+              "end": 794,
+              "endLoc": {
+                "column": 33,
+                "line": 794,
+                "position": 32744
+              },
+              "name": "application/service.py",
+              "start": 778,
+              "startLoc": {
+                "column": 45,
+                "line": 778,
+                "position": 32023
+              }
+            },
+            "sha256": "daa21b54a0936382e0160d5d302ccfdd48ac2eda0e9555a222d070b927555775"
+          }
+        ],
+        "owners": [
+          "src/pinboard/application/service.py#decide_and_commit_transition",
+          "src/pinboard/application/service.py#decide_and_commit_checkpoint_acceptance"
+        ],
+        "rationale": "Both entry points visibly own their distinct transaction, allocation and mutation projection. Final fact reread and fresh clock authorization are already consolidated in _read_authorize_and_decide. Folding the remaining typed signatures and transaction-to-projection sequence would require callback-driven allocation/projection or lose checkpoint-specific artifact allocation; those are independently required use-case contracts."
+      },
+      "certification": {
+        "reviewer_task_id": "01a0a970-0a0d-7ba2-a214-20f5c5ac50e5",
+        "reviewed_pair_sha256": "c22daa37635e0eb157da4e4daa7009df00bcb774b7a79bb3ca026b06059341ca",
+        "evidence_sha256": "68886019993d298a909eab5da730270a03c0cedf8a27a25ecde6cfde7e03e947"
+      }
+    },
+    {
+      "certification": {
+        "evidence_sha256": "7b1828e2ee2d60772dc031436d80c6fbb056035b8a5d83b692b04e657b884562",
+        "reviewed_pair_sha256": "a7121a0de9614f84c40153d55af1a576c25e77d81aa094225b5f3b624285d8f2",
+        "reviewer_task_id": "01a0ac23-e40f-72f0-8c76-9f6a4d02890c"
+      },
+      "identity": {
+        "format": "python",
+        "id": "handover-versioned-checkpoint-export-shapes",
+        "lines": 19,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 336,
+              "endLoc": {
+                "column": 37,
+                "line": 336,
+                "position": 8466
+              },
+              "name": "application/handover.py",
+              "start": 318,
+              "startLoc": {
+                "column": 47,
+                "line": 318,
+                "position": 7883
+              }
+            },
+            "sha256": "7f4c548c5fa0c3e5d9b95ae75a56b66405b8be1987ce268c1dbae84c0f481190"
+          },
+          {
+            "endpoint": {
+              "end": 359,
+              "endLoc": {
+                "column": 37,
+                "line": 359,
+                "position": 9154
+              },
+              "name": "application/handover.py",
+              "start": 341,
+              "startLoc": {
+                "column": 47,
+                "line": 341,
+                "position": 8571
+              }
+            },
+            "sha256": "7f4c548c5fa0c3e5d9b95ae75a56b66405b8be1987ce268c1dbae84c0f481190"
+          }
+        ],
+        "owners": [
+          "src/pinboard/application/handover.py#CompatibilityHandoverCheckpointPackageV2",
+          "src/pinboard/application/handover.py#HandoverCheckpointPackageV3"
+        ],
+        "rationale": "Retained patch-only v2 and current complete-state v3 are independently required exact tagged export records. The match repeats required frozen strict fields, not behavior; shared portable identities and the explicit tagged union already own common representation. An inherited field base would couple independent schema meanings without consolidating a decision or invariant, while precise validated version conversion must remain explicit.",
+        "tokens": 60
+      }
+    },
+    {
+      "identity": {
+        "id": "definition-v1-v2-wire-shapes",
+        "format": "python",
+        "tokens": 79,
+        "lines": 9,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 23,
+              "endLoc": {
+                "column": 20,
+                "line": 23,
+                "position": 790
+              },
+              "name": "domain/definition_compatibility.py",
+              "start": 15,
+              "startLoc": {
+                "column": 33,
+                "line": 15,
+                "position": 416
+              }
+            },
+            "sha256": "fd66df12aec7aa1ef152890e072234325cc302d89c5c96bff813fabb7055bdf6"
+          },
+          {
+            "endpoint": {
+              "end": 37,
+              "endLoc": {
+                "column": 20,
+                "line": 37,
+                "position": 1220
+              },
+              "name": "domain/history.py",
+              "start": 29,
+              "startLoc": {
+                "column": 31,
+                "line": 29,
+                "position": 846
+              }
+            },
+            "sha256": "fd66df12aec7aa1ef152890e072234325cc302d89c5c96bff813fabb7055bdf6"
+          }
+        ],
+        "owners": [
+          "src/pinboard/domain/definition_compatibility.py#WorkItemDefinitionPayloadV1",
+          "src/pinboard/domain/history.py#WorkItemDefinitionPayload"
+        ],
+        "rationale": "Retained definition v1 and current definition v2 are independently versioned strict canonical wire records. Sharing their required common fields would couple current code to compatibility structure without consolidating a decision; revisit only if both versions can share one schema owner without changing exact bytes, field order, validation independence, or dependency direction."
+      },
+      "certification": {
+        "reviewer_task_id": "01a0b8cb-6635-71c2-9045-24fe68e89a73",
+        "reviewed_pair_sha256": "daeee4c094842cb44ab5f20b75af531a6da2831f2b647f886bf8abe5aacb87f0",
+        "evidence_sha256": "935b935d64f7669ce72135e27bca50c94a0ba4c7e4684d6d1c2146416d47433b"
+      }
+    },
+    {
+      "identity": {
+        "id": "definition-v1-v2-unique-collection-validation",
+        "format": "python",
+        "tokens": 78,
+        "lines": 10,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 37,
+              "endLoc": {
+                "column": 80,
+                "line": 37,
+                "position": 1392
+              },
+              "name": "domain/definition_compatibility.py",
+              "start": 28,
+              "startLoc": {
+                "column": 4,
+                "line": 28,
+                "position": 958
+              }
+            },
+            "sha256": "39d59f333b68d5ad2ed64952e6218c07b08c2c8e019557c17d3be05a4bf76c88"
+          },
+          {
+            "endpoint": {
+              "end": 53,
+              "endLoc": {
+                "column": 80,
+                "line": 53,
+                "position": 1985
+              },
+              "name": "domain/history.py",
+              "start": 44,
+              "startLoc": {
+                "column": 4,
+                "line": 44,
+                "position": 1551
+              }
+            },
+            "sha256": "39d59f333b68d5ad2ed64952e6218c07b08c2c8e019557c17d3be05a4bf76c88"
+          }
+        ],
+        "owners": [
+          "src/pinboard/domain/definition_compatibility.py#WorkItemDefinitionPayloadV1.__post_init__",
+          "src/pinboard/domain/history.py#WorkItemDefinitionPayload.__post_init__"
+        ],
+        "rationale": "The identical collection check validates two independently frozen schema versions. Extracting it would add a neutral module solely for ten lines or make current code depend on compatibility code; revisit if ordered-and-unique definition collections become one explicit domain-wide invariant across versions."
+      },
+      "certification": {
+        "reviewer_task_id": "01a0b8cb-6635-71c2-9045-24fe68e89a73",
+        "reviewed_pair_sha256": "2d4db855dd30e37b3a89e1a6120f896de7b25cb34a9453fc2c0636f7d47c7051",
+        "evidence_sha256": "935b935d64f7669ce72135e27bca50c94a0ba4c7e4684d6d1c2146416d47433b"
+      }
+    },
+    {
+      "identity": {
+        "id": "authority-revocation-and-rejection",
+        "format": "python",
+        "tokens": 71,
+        "lines": 14,
+        "occurrences": [
+          {
+            "endpoint": {
+              "name": "mcp/mutation_operations.py",
+              "start": 574,
+              "end": 587,
+              "startLoc": {
+                "column": 46,
+                "line": 574,
+                "position": 23259
+              },
+              "endLoc": {
+                "column": 25,
+                "line": 587,
+                "position": 23778
+              }
+            },
+            "sha256": "f8232475788de0765eaceff4b372fc8552ee0f97f53d66d2097e871cccf71401"
+          },
+          {
+            "endpoint": {
+              "name": "mcp/mutation_operations.py",
+              "start": 698,
+              "end": 711,
+              "startLoc": {
+                "column": 55,
+                "line": 698,
+                "position": 28609
+              },
+              "endLoc": {
+                "column": 25,
+                "line": 711,
+                "position": 29128
+              }
+            },
+            "sha256": "f8232475788de0765eaceff4b372fc8552ee0f97f53d66d2097e871cccf71401"
+          }
+        ],
+        "owners": [
+          "src/pinboard/mcp/mutation_operations.py#_preparation_authority",
+          "src/pinboard/mcp/mutation_operations.py#_attempt_authority"
+        ],
+        "rationale": "Distinct exact request leaves invoke different application operations with nominal ItemId versus AttemptId scope, then render different schema/scope/conflict records. Shared claim and rejection-detail conversion already owns the repeated representation. Further folding requires a cross-family workflow callback or late reclassification of a selected leaf."
+      },
+      "certification": {
+        "reviewer_task_id": "d47a8c3f-2b91-4e9d-a8c4-7f6e5b3a1d29",
+        "reviewed_pair_sha256": "95bb3692eb7ffecd0e51e5d14b12c0d0d1080d8630d3e0cd69ddaf93aa9558dd",
+        "evidence_sha256": "33322cada3ffeb462a9f19bab058c84c81a39f6b6bc698faf3b4df305e9a5b3d"
+      }
+    },
+    {
+      "identity": {
+        "id": "authority-rejection-and-view-effect",
+        "format": "python",
+        "tokens": 70,
+        "lines": 16,
+        "occurrences": [
+          {
+            "endpoint": {
+              "name": "mcp/mutation_operations.py",
+              "start": 593,
+              "end": 608,
+              "startLoc": {
+                "column": 99,
+                "line": 593,
+                "position": 24143
+              },
+              "endLoc": {
+                "column": 31,
+                "line": 608,
+                "position": 24577
+              }
+            },
+            "sha256": "dc1f6e2dc84e78ed7070bafb3fc4165f1a09fa781686e689e6ab1216ff486f0b"
+          },
+          {
+            "endpoint": {
+              "name": "mcp/mutation_operations.py",
+              "start": 717,
+              "end": 732,
+              "startLoc": {
+                "column": 101,
+                "line": 717,
+                "position": 29497
+              },
+              "endLoc": {
+                "column": 31,
+                "line": 732,
+                "position": 29931
+              }
+            },
+            "sha256": "dc1f6e2dc84e78ed7070bafb3fc4165f1a09fa781686e689e6ab1216ff486f0b"
+          }
+        ],
+        "owners": [
+          "src/pinboard/mcp/mutation_operations.py#_preparation_authority",
+          "src/pinboard/mcp/mutation_operations.py#_attempt_authority"
+        ],
+        "rationale": "Each family reloads its distinct authority conflict after rejection. Successful operations explicitly refresh affected views before rendering the already-consolidated authority claims and committed receipt/warning. Hiding the remaining view effect inside a conversion would make a pure-looking renderer effectful; sharing the whole workflow would couple distinct scope and mutation-result types."
+      },
+      "certification": {
+        "reviewer_task_id": "d47a8c3f-2b91-4e9d-a8c4-7f6e5b3a1d29",
+        "reviewed_pair_sha256": "a3cc7fba7d5405ccd3cf834699599877e973a54990cb3ad5bd3755dd6c8dcc37",
+        "evidence_sha256": "33322cada3ffeb462a9f19bab058c84c81a39f6b6bc698faf3b4df305e9a5b3d"
+      }
+    }
+  ]
+}

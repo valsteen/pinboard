@@ -1,6 +1,6 @@
 {
   "name": "pinboard",
-  "version": "0.1.0+codex.20260913152421",
+  "version": "0.1.0+codex.20260919205019",
   "description": "Coordinate repository work with canonical briefs, validated transitions, and decision-ready project writing.",
   "author": {
     "name": "Vincent Alsteen",
@@ -16,6 +16,7 @@
     "technical-writing"
   ],
   "skills": "./skills/",
+  "mcpServers": "./mcp-codex.json",
   "interface": {
     "displayName": "Pinboard",
     "shortDescription": "Coordinate one validated repository work ledger.",
@@ -30,10 +31,7 @@
     "defaultPrompt": [
       "Show the legal next project actions.",
       "Preserve this proposed work for later selection.",
-      "Shape this technical proposal incrementally, preserving evidence and unresolved decisions.",
-      "Assess whether this unfamiliar repository can be changed reliably.",
-      "Trace and plan a recursive cleanup of dead, test-only, and abandoned feature residue.",
-      "Find the smallest durable owner for this project's AI-facing guidance."
+      "Shape this technical proposal incrementally, preserving evidence and unresolved decisions."
     ]
   }
 }

@@ -57,15 +57,6 @@ def publish_work_brief(
     )
 
 
-def convert_work_brief_input(
-    data: dict[str, work_brief_models.WorkBriefJsonValue],
-) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBrief]:
-    try:
-        return msgspec.convert(data, type=work_brief_models.WorkBrief, strict=True)
-    except (msgspec.ValidationError, ValueError) as error:
-        return _invalid(f"Cannot decode work brief JSON: {error}")
-
-
 def _invalid(message: str) -> work_brief_models.WorkBriefFailure:
     return work_brief_models.WorkBriefFailure(work_brief_models.WorkBriefErrorCode.BRIEF_INVALID, message)
 
@@ -214,18 +205,6 @@ def decode_work_brief_review(data: bytes) -> work_brief_models.WorkBriefResult[W
 
 def canonical_work_brief_review_bytes(review: WorkBriefReviewValue) -> bytes:
     return _canonical_bytes(review) + b"\n"
-
-
-def decode_correction_source_review(
-    data: bytes,
-) -> work_brief_models.WorkBriefResult[work_brief_models.CorrectionSourceReview]:
-    try:
-        return msgspec.json.decode(data, type=work_brief_models.CorrectionSourceReview)
-    except msgspec.DecodeError as error:
-        return work_brief_models.WorkBriefFailure(
-            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,
-            f"Cannot decode correction source review: {error}",
-        )
 
 
 def canonical_correction_source_review_bytes(review: work_brief_models.CorrectionSourceReview) -> bytes:

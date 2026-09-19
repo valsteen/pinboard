@@ -14,7 +14,6 @@ from pinboard.application.queries import (
     project_current_overview,
     project_item_status,
     project_overview,
-    project_parallel_preview,
     select_item_definition,
     select_item_definition_history,
     select_parallel_preview,
@@ -52,10 +51,6 @@ class SQLiteQueriesTest(unittest.TestCase):
 
         state = store.validated_snapshot()
         overview = project_overview(state, SQLITE_NOW)
-        preview = project_parallel_preview(state, now=SQLITE_NOW)
-        self.assertIsInstance(preview, query_models.ParallelPreview)
-        assert isinstance(preview, query_models.ParallelPreview)
-
         self.assertEqual("sqlite-v6", overview.authority)
         self.assertEqual("12", overview.revision)
         self.assertEqual(("work-a-1",), overview.active_attempts)
@@ -71,7 +66,6 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertIn("Follow-up to work-c", proposal.dependency_reasons[0].reason)
         self.assertEqual((), proposal.review_flags)
         self.assertNotIn("zz-proposal-a", overview.immediate_options)
-        self.assertEqual("12", preview.revision)
 
     def test_overview_exposes_duplicate_contradiction_and_clarification_for_review(self) -> None:
         for relation in (

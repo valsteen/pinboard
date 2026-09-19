@@ -1,4 +1,5 @@
 import hashlib
+import json
 import subprocess
 import tempfile
 import unittest
@@ -22,7 +23,6 @@ from pinboard.application.brief_source_models import (
 )
 from pinboard.application.brief_sources import (
     BriefSourceSelector,
-    decode_brief_source_manifest,
     plan_brief_sources,
     render_brief_source_batch,
     select_brief_source_bytes,
@@ -111,9 +111,19 @@ class BriefSourcesTest(unittest.TestCase):
             b'{"schema":"pinboard-brief-sources/v1","sources":[{"authority_id":"a","selector":"a.md\\n","families":["contract"]}]}',
         )
 
-        for raw in cases:
-            with self.subTest(raw=raw):
-                expect_brief_source_failure(decode_brief_source_manifest(raw), BriefSourceErrorCode.MANIFEST_INVALID)
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            for raw in cases:
+                with self.subTest(raw=raw):
+                    manifest: JsonObject = json.loads(raw)
+                    rejected = self.sources(
+                        project,
+                        "plan",
+                        manifest=manifest,
+                        max_batch_bytes=128,
+                    )
+                    self.assertEqual("BRIEF_SOURCES_REQUEST_INVALID", rejected["code"])
+                    self.assertFalse(rejected["state_changed"])
 
     def test_plan_normalizes_heading_bytes_and_batches_every_selected_byte_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

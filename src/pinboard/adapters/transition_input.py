@@ -94,12 +94,6 @@ def _revise_item_input(payload: transition_models.ReviseItemInputPayload) -> wor
     )
 
 
-def parse_item_revision_input(data: bytes | str) -> TransitionInputResult[work_models.ReviseItemDefinitionInput]:
-    if isinstance(payload := _decode(data, transition_models.ReviseItemInputPayload), TransitionInputFailure):
-        return payload
-    return _revise_item_input(payload)
-
-
 type ParsedTransitionInput = decision_models.TransitionCommand | transition_models.ActivateInputPayload
 
 

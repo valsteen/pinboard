@@ -536,34 +536,20 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         with tempfile.TemporaryDirectory() as directory:
             initial = ready_review(work_a_brief(Path(directory)))
             self.assertIsInstance(work_briefs.decode_work_brief_review(initial), work_brief_models.WorkBriefReview)
-            correction = {
-                "schema": "pinboard-correction-source-review/v1",
-                "contract_review": msgspec.json.decode(initial),
-                "starting_candidate": {
-                    "role": "candidate",
-                    "kind": "evidence",
-                    "key": "snapshot",
-                    "revision": 1,
-                    "selector": "artifacts/evidence/snapshot/1.json",
-                    "content_sha256": "a" * 64,
-                    "size_bytes": 10,
-                },
-                "correction_input": {"reason": "Repair the actual starting candidate."},
-                "assessment": "The exact snapshot and proposed correction agree with the contract review.",
-            }
-            decoded = work_briefs.decode_correction_source_review(msgspec.json.encode(correction))
-            self.assertIsInstance(decoded, work_brief_models.CorrectionSourceReview)
-            self.assertIsInstance(
-                work_briefs.decode_correction_source_review(initial), work_brief_models.WorkBriefFailure
-            )
-            changes: tuple[dict[str, work_brief_models.WorkBriefJsonValue], ...] = (
-                {"unknown": True},
-                {"starting_candidate": {}},
-                {"correction_input": {"reason": ""}},
-            )
-            for change in changes:
-                with self.subTest(change=change):
-                    self.assertIsInstance(
-                        work_briefs.decode_correction_source_review(msgspec.json.encode(correction | change)),
-                        work_brief_models.WorkBriefFailure,
-                    )
+
+        fixture = self.correction_fixture()
+        _history_id, choice = self.submit_and_return(fixture, "strict-record", committed=False)
+        changes: tuple[dict[str, work_brief_models.WorkBriefJsonValue], ...] = (
+            {"unknown": True},
+            {"starting_candidate": {}},
+            {"correction_input": {"reason": ""}},
+        )
+        for change in changes:
+            with self.subTest(change=change):
+                invalid = deepcopy(choice)
+                self.json_object(invalid["brief_review"]).update(change)
+                before = fixture.store.validated_snapshot()
+                rejected = self.dispatch_native(fixture, invalid)
+                self.assertEqual("DISPATCH_INVALID", rejected["code"])
+                self.assertFalse(rejected["state_changed"])
+                self.assertEqual(before, fixture.store.validated_snapshot())

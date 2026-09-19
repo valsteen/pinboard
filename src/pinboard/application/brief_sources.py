@@ -36,17 +36,6 @@ class BriefSourceSelector(Protocol):
     ) -> BriefSourceResult[SelectedBriefSource]: ...
 
 
-def decode_brief_source_manifest(raw: bytes) -> BriefSourceResult[BriefSourceManifest]:
-    try:
-        manifest = msgspec.json.decode(raw, type=BriefSourceManifest)
-    except (msgspec.DecodeError, ValueError) as error:
-        return BriefSourceFailure(
-            BriefSourceErrorCode.MANIFEST_INVALID,
-            f"Cannot decode brief source manifest: {error}",
-        )
-    return manifest
-
-
 def _find_heading_range(
     lines: tuple[str, ...], heading: str, relative_path: PurePosixPath
 ) -> BriefSourceResult[tuple[int, int]]:

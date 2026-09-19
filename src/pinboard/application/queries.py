@@ -5,7 +5,6 @@ their operation facts; remaining projections select from an already-loaded compl
 snapshot. These functions never read files, mutate state, or present output.
 """
 
-from dataclasses import replace
 from datetime import datetime
 from typing import assert_never
 
@@ -24,34 +23,6 @@ from pinboard.domain.errors import (
 )
 from pinboard.domain.identifiers import AttemptId, CandidateId, HistoryId, ItemId, TaskId
 from pinboard.domain.ledger import LedgerSnapshot
-
-
-def select_attempt_authority_status(
-    reader: ports.AuthorityStatusReader, attempt_id: AttemptId
-) -> DecisionResult[query_models.AttemptAuthorityStatus]:
-    selected = reader.read_attempt_authority_status(attempt_id)
-    if selected is None:
-        return DecisionFailure(
-            DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
-            f"Attempt '{attempt_id}' has no retained authority.",
-            None,
-        )
-    return selected
-
-
-def select_preparation_authority_status(
-    reader: ports.AuthorityStatusReader, item_id: ItemId, observed_at: datetime
-) -> DecisionResult[query_models.PreparationAuthorityStatus]:
-    selected = reader.read_preparation_authority_status(item_id)
-    if selected is None:
-        return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            f"Item '{item_id}' has no preparation claim.",
-            None,
-        )
-    if selected.status == authority_models.PreparationLeaseStatus.ACTIVE and selected.expires_at <= observed_at:
-        return replace(selected, status=authority_models.PreparationLeaseStatus.EXPIRED)
-    return selected
 
 
 def select_attempt_context(
@@ -259,10 +230,6 @@ def _next_attempt_operation(
 
 def _dependency_key(value: stored_state.ItemDependency) -> tuple[int, str]:
     return value.position, str(value.dependency_id)
-
-
-def _dependency_position(value: stored_state.ItemDependency) -> int:
-    return value.position
 
 
 def _item_key(value: stored_state.StoredWorkItem) -> tuple[int, str]:
@@ -815,69 +782,6 @@ def _classify_parallel_exclusion_reasons(
     return ()
 
 
-def _complete_parallel_preview_facts(state: stored_state.StoredWorkState) -> query_models.ParallelPreviewFacts:
-    live = _select_live_items(state)
-    definitions = {value.item_id: value.definition for value in state.lifecycle.definition_revisions}
-    live_ids = frozenset(item.item_id for item, _live_state in live)
-    preparations_by_item = {lease.item_id: lease for lease in state.authority.preparation_leases}
-    open_attempts_by_item: dict[
-        ItemId,
-        tuple[stored_state.StoredAttempt, query_models.NonterminalAttemptState],
-    ] = {}
-    for stored_attempt in state.lifecycle.attempts:
-        match stored_attempt.state:
-            case work_models.AttemptState.DONE:
-                continue
-            case (
-                work_models.AttemptState.ACTIVE
-                | work_models.AttemptState.PAUSED
-                | work_models.AttemptState.BLOCKED
-                | work_models.AttemptState.REVIEW
-            ) as attempt_state:
-                open_attempts_by_item[stored_attempt.item_id] = stored_attempt, attempt_state
-            case _ as unreachable:
-                assert_never(unreachable)
-    attempt_leases_by_attempt = {lease.attempt_id: lease for lease in state.authority.attempt_leases}
-    live_dependency_groups: dict[ItemId, list[ItemId]] = {item.item_id: [] for item, _live_state in live}
-    for link in sorted(state.lifecycle.dependencies, key=_dependency_position):
-        if link.dependency_id in live_ids:
-            live_dependency_groups[link.item_id].append(link.dependency_id)
-    items: list[query_models.ParallelPreviewItemFacts] = []
-    for item, live_state in live:
-        preparation_lease = preparations_by_item.get(item.item_id)
-        preparation = (
-            None
-            if preparation_lease is None
-            else query_models.ParallelPreparationFacts(preparation_lease.state, preparation_lease.expires_at)
-        )
-        stored_attempt_context = open_attempts_by_item.get(item.item_id)
-        attempt = None
-        if stored_attempt_context is not None:
-            stored_attempt, attempt_state = stored_attempt_context
-            attempt_lease = (
-                attempt_leases_by_attempt.get(stored_attempt.attempt_id)
-                if attempt_state == work_models.AttemptState.ACTIVE
-                else None
-            )
-            attempt = query_models.ParallelAttemptFacts(
-                stored_attempt.attempt_id,
-                attempt_state,
-                None if attempt_lease is None else attempt_lease.state,
-                None if attempt_lease is None else attempt_lease.expires_at,
-            )
-        items.append(
-            query_models.ParallelPreviewItemFacts(
-                item.item_id,
-                definitions[item.item_id].title,
-                live_state,
-                tuple(live_dependency_groups[item.item_id]),
-                preparation,
-                attempt,
-            )
-        )
-    return query_models.ParallelPreviewFacts(state.lifecycle.project.revision, tuple(items))
-
-
 def _project_parallel_preview_facts(
     facts: query_models.ParallelPreviewFacts,
     selection: query_models.ParallelSelection,
@@ -904,14 +808,6 @@ def _project_parallel_preview_facts(
         selection == query_models.ParallelSelection.ALL_SAFE
         or not any(isinstance(item, query_models.ExcludedParallelItem) for item in items),
         tuple(sorted(items, key=_parallel_item_key)),
-    )
-
-
-def project_parallel_preview(state: stored_state.StoredWorkState, *, now: datetime) -> query_models.ParallelPreview:
-    return _project_parallel_preview_facts(
-        _complete_parallel_preview_facts(state),
-        query_models.ParallelSelection.ALL_SAFE,
-        now,
     )
 
 

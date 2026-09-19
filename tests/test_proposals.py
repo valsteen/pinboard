@@ -1,13 +1,17 @@
-import json
 import unittest
 from datetime import UTC, datetime
+from unittest.mock import patch
 
-from pinboard.application.proposal_models import Proposal, ProposalFailure
-from pinboard.application.proposals import parse_proposal
-from tests.support import JsonObject
+import msgspec
+
+from pinboard.application import proposal_models
+from pinboard.application.proposal_models import Proposal
+from pinboard.mcp import contracts
+from pinboard.mcp import execution as mcp_execution
+from pinboard.mcp import mutation_operations as mcp_mutations
 
 
-def proposal() -> JsonObject:
+def proposal() -> dict[str, proposal_models.ProposalJsonValue]:
     return {
         "schema": "pinboard-proposal/v2",
         "proposal_id": "proposal-1",
@@ -36,28 +40,31 @@ def proposal() -> JsonObject:
 class ProposalInputTest(unittest.TestCase):
     def test_current_proposal_decodes_exact_model(self) -> None:
         value = proposal()
-        decoded = parse_proposal(json.dumps(value))
-        positioned = parse_proposal(json.dumps({**value, "position": 2}))
-        date_only = parse_proposal(json.dumps({**value, "created_at": "2026-08-25"}))
-        timezone_aware = parse_proposal(json.dumps({**value, "created_at": "2026-08-25T12:00:00+02:00"}))
-        unexpected = parse_proposal(json.dumps({**value, "unexpected": True}))
-        self.assertIsInstance(decoded, Proposal)
-        self.assertIsInstance(positioned, Proposal)
-        self.assertIsInstance(date_only, Proposal)
-        self.assertIsInstance(timezone_aware, Proposal)
-        self.assertIsInstance(unexpected, ProposalFailure)
-        assert isinstance(decoded, Proposal)
-        assert isinstance(positioned, Proposal)
-        assert isinstance(date_only, Proposal)
-        assert isinstance(timezone_aware, Proposal)
-        self.assertEqual("proposal-1", decoded.proposal_id)
+        common: dict[str, proposal_models.ProposalJsonValue] = {
+            "project_root": "/project",
+            "work_root": "/work",
+            "actor_task_id": "task",
+            "actor_host_id": "host",
+        }
+
+        def decoded(proposal: dict[str, proposal_models.ProposalJsonValue]) -> Proposal:
+            return msgspec.convert(common | {"proposal": proposal}, type=contracts.ProposalCreateRequest).proposal
+
+        current = decoded(value)
+        positioned = decoded(value | {"position": 2})
+        date_only = decoded(value | {"created_at": "2026-08-25"})
+        timezone_aware = decoded(value | {"created_at": "2026-08-25T12:00:00+02:00"})
+        with self.assertRaises(msgspec.ValidationError):
+            decoded(value | {"unexpected": True})
+
+        self.assertEqual("proposal-1", current.proposal_id)
         self.assertEqual(2, positioned.position)
         self.assertEqual(datetime(2026, 8, 25, tzinfo=UTC), date_only.created_at_utc())
         self.assertEqual(datetime(2026, 8, 25, 10, tzinfo=UTC), timezone_aware.created_at_utc())
 
     def test_decoder_rejects_invalid_shapes_and_reports_paths(self) -> None:
         valid = proposal()
-        cases = (
+        cases: tuple[tuple[dict[str, proposal_models.ProposalJsonValue], str], ...] = (
             ({**valid, "schema": "repo" + "-work/v1"}, "schema"),
             ({**valid, "schema": "pinboard" + "-proposal/v1"}, "schema"),
             ({**valid, "proposal_id": "Not Valid"}, "proposal_id"),
@@ -80,11 +87,20 @@ class ProposalInputTest(unittest.TestCase):
             ({**valid, "relation": {"kind": "prerequisite", "item": None}}, "relation.item"),
         )
         for value, field in cases:
-            with self.subTest(field=field):
-                failure = parse_proposal(json.dumps(value))
-            self.assertIsInstance(failure, ProposalFailure)
-            self.assertEqual("PROPOSAL_INVALID", failure.code.value)
-            self.assertIn(field, failure.message)
+            with self.subTest(field=field), patch.object(mcp_mutations.common, "_resolve_durable") as durable:
+                failure = mcp_mutations._proposal_created(
+                    "/project",
+                    "/work",
+                    value,
+                    "task",
+                    "host",
+                    mcp_execution.CancellationToken(),
+                )
+                self.assertEqual("PROPOSAL_INVALID", failure.content["code"])
+                message = failure.content["message"]
+                assert isinstance(message, str)
+                self.assertIn(field, message)
+                durable.assert_not_called()
 
 
 if __name__ == "__main__":

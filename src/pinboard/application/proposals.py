@@ -1,27 +1,10 @@
 from typing import assert_never
 
-import msgspec
-
 from pinboard.application import proposal_models
-from pinboard.application.proposal_models import Proposal, ProposalFailure, ProposalResult
+from pinboard.application.proposal_models import Proposal
 from pinboard.domain import proposal_models as domain_proposal_models
 from pinboard.domain import work_models
-from pinboard.domain.errors import DecisionFailureCode
 from pinboard.domain.identifiers import ItemId, ProposalId, TaskId
-
-
-def parse_proposal(data: bytes | str) -> ProposalResult[Proposal]:
-    try:
-        return msgspec.json.decode(data, type=Proposal)
-    except msgspec.DecodeError as error:
-        return ProposalFailure(DecisionFailureCode.PROPOSAL_INVALID, f"Cannot decode proposal JSON: {error}", None)
-
-
-def convert_proposal_input(data: dict[str, proposal_models.ProposalJsonValue]) -> ProposalResult[Proposal]:
-    try:
-        return msgspec.convert(data, type=Proposal, strict=True)
-    except (msgspec.ValidationError, ValueError) as error:
-        return ProposalFailure(DecisionFailureCode.PROPOSAL_INVALID, f"Cannot decode proposal JSON: {error}", None)
 
 
 def convert_proposal(value: Proposal) -> domain_proposal_models.CreateProposalOperation:

@@ -17,7 +17,6 @@ class ProposalFailure:
         return f"{self.code.value}: {self.message}"
 
 
-type ProposalResult[T] = T | ProposalFailure
 type ProposalJsonValue = bool | int | float | str | list[ProposalJsonValue] | dict[str, ProposalJsonValue] | None
 
 type ProposalSchema = Literal["pinboard-proposal/v2"]

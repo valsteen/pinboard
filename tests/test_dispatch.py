@@ -1363,7 +1363,8 @@ class DispatchTest(unittest.TestCase):
             with (
                 self.subTest(changed=changed),
                 patch(
-                    "pinboard.mcp.server.compose_store", side_effect=AssertionError("invalid dispatch reached effects")
+                    "pinboard.mcp.mcp_common.compose_store",
+                    side_effect=AssertionError("invalid dispatch reached effects"),
                 ),
             ):
                 rejected = self.native_dispatch(project, roots, valid | {"environment": environment_json | changed})

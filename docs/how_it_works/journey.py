@@ -3,20 +3,22 @@ from pinboard.application import service
 from pinboard.application.mutation_models import PreparationAuthorityMutation
 from pinboard.domain import authority_models
 from pinboard.domain.authority_decisions import decide_preparation_authority
-from pinboard.mcp import contracts, server
+from pinboard.mcp import common as mcp_common
+from pinboard.mcp import contracts
+from pinboard.mcp import mutation_operations as mcp_mutations
 
 from .model import Box, Connector, Diagram, Guide, Note, Section
 
 SOURCE_SYMBOL_NAMES: dict[str, str] = {
     "PreparationAuthorityStartRequest": contracts.PreparationAuthorityStartRequest.__name__,
-    "_preparation_authority": server._preparation_authority.__name__,
+    "_preparation_authority": mcp_mutations._preparation_authority.__name__,
     "AcquireInitialPreparationAuthority": authority_models.AcquireInitialPreparationAuthority.__name__,
     "TransferPreparationAuthority": authority_models.TransferPreparationAuthority.__name__,
     "decide_preparation_authority": decide_preparation_authority.__name__,
     "PreparationAuthorityMutation": PreparationAuthorityMutation.__name__,
     "SQLiteWorkStore": SQLiteWorkStore.__name__,
     "write": SQLiteWorkStore.write.__name__,
-    "_refresh_affected_views": server._refresh_affected_views.__name__,
+    "_refresh_affected_views": mcp_common._refresh_affected_views.__name__,
 }
 
 

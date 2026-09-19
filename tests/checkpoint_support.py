@@ -38,6 +38,8 @@ from pinboard.cli.entrypoint import main
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId, ItemId
+from pinboard.mcp import execution as mcp_execution
+from pinboard.mcp import mutation_operations as mcp_mutations
 from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.native_support import call_native_tool
@@ -172,7 +174,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         return self.native_actions(fixture, kind, subject)
 
     def native_attempt_acquire(self, fixture: CheckpointFixture, worker: str) -> JsonObject:
-        result = mcp_server._attempt_authority(
+        result = mcp_mutations._attempt_authority(
             {
                 "request": {
                     "project_root": str(fixture.project),
@@ -184,7 +186,7 @@ class CheckpointPackageSupport(unittest.TestCase):
                     "ttl_seconds": 300,
                 }
             },
-            mcp_server.CancellationToken(),
+            mcp_execution.CancellationToken(),
         )
         self.assertEqual("committed", result.content["status"], result.content)
         return result.content
@@ -219,9 +221,9 @@ class CheckpointPackageSupport(unittest.TestCase):
         action: JsonObject,
         payload: Path,
     ) -> JsonObject:
-        result = mcp_server._transition(
+        result = mcp_mutations._transition(
             self.native_transition_request(fixture, action, self.json_object(json.loads(payload.read_bytes()))),
-            mcp_server.CancellationToken(),
+            mcp_execution.CancellationToken(),
         )
         self.assertEqual("committed", result.content["status"], result.content)
         return result.content

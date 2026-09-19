@@ -37,7 +37,11 @@ from pinboard.application.brief_source_models import BriefSourceFailure, authori
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId
+from pinboard.mcp import common as mcp_common
 from pinboard.mcp import contracts
+from pinboard.mcp import execution as mcp_execution
+from pinboard.mcp import job_operations as mcp_jobs
+from pinboard.mcp import read_operations as mcp_reads
 from pinboard.mcp import server as mcp_server
 from tests import test_correction_source_review, test_dispatch
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
@@ -46,10 +50,10 @@ from tests.work_brief_support import CHECKPOINT_ID, ready_review
 
 class McpJobsTest(CheckpointPackageSupport):
     def test_authority_tools_describe_temporary_local_mutation_to_clients(self) -> None:
-        executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
         transport = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
         )
         for name in (mcp_server.PREPARATION_AUTHORITY_TOOL, mcp_server.ATTEMPT_AUTHORITY_TOOL):
             with self.subTest(name=name):
@@ -61,8 +65,8 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertFalse(tool.annotations.open_world_hint)
 
     def test_candidate_observation_rejects_invalid_input_context_and_result_claims(self) -> None:
-        with patch.object(mcp_server, "resolve_source_checkout_root", side_effect=AssertionError("Must not resolve")):
-            invalid = mcp_server._observe_candidate("", "/work", "work-a-1", mcp_server.CancellationToken())
+        with patch.object(mcp_jobs, "resolve_source_checkout_root", side_effect=AssertionError("Must not resolve")):
+            invalid = mcp_jobs._observe_candidate("", "/work", "work-a-1", mcp_execution.CancellationToken())
             self.assertEqual("CANDIDATE_OBSERVATION_INVALID", invalid.content["code"])
         fixture = self.checkpoint_fixture()
         for project, attempt, code in (
@@ -70,14 +74,14 @@ class McpJobsTest(CheckpointPackageSupport):
             ("/nonexistent/pinboard-observation-checkout", "work-a-1", "CANDIDATE_GIT_UNAVAILABLE"),
         ):
             with self.subTest(code=code):
-                result = mcp_server._observe_candidate(
-                    project, str(fixture.work), attempt, mcp_server.CancellationToken()
+                result = mcp_jobs._observe_candidate(
+                    project, str(fixture.work), attempt, mcp_execution.CancellationToken()
                 )
                 contracts.validate_result("pinboard_candidate_observe", result.content)
                 self.assertEqual(code, result.content["code"])
                 self.assertEqual([], result.content["changed_surfaces"])
-        observed = mcp_server._observe_candidate(
-            str(fixture.project), str(fixture.work), "work-a-1", mcp_server.CancellationToken()
+        observed = mcp_jobs._observe_candidate(
+            str(fixture.project), str(fixture.work), "work-a-1", mcp_execution.CancellationToken()
         )
         invalid_claims: tuple[dict[str, contracts.JsonValue], ...] = (
             {"state_changed": True},
@@ -108,10 +112,10 @@ class McpJobsTest(CheckpointPackageSupport):
         (fixture.project / ".git" / "info" / "exclude").write_text("/.codex/pinboard/\nignored\n", encoding="utf-8")
         (fixture.project / "ignored").write_text("Ignored\n", encoding="utf-8")
         roots = {"project_root": str(fixture.project), "work_root": str(fixture.work), "attempt_id": "work-a-1"}
-        executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
         server = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=8, line_limit=256)
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=8, line_limit=256)
         )
 
         def observe() -> dict[str, contracts.JsonValue]:
@@ -188,9 +192,9 @@ class McpJobsTest(CheckpointPackageSupport):
         self.assertEqual("unchanged", rejected["effect"])
 
     def test_dispatch_and_review_are_installed_strict_tools(self) -> None:
-        executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         server = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=8, line_limit=256)
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=8, line_limit=256)
         )
         try:
             tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
@@ -213,8 +217,8 @@ class McpJobsTest(CheckpointPackageSupport):
                 fixture = self.checkpoint_fixture(
                     candidate_form="current-head" if form == "current-head" else "working-tree"
                 )
-                first_inspection = mcp_server._read_attempt_inspection(
-                    str(fixture.project), str(fixture.work), "work-a-1", mcp_server.CancellationToken()
+                first_inspection = mcp_reads._read_attempt_inspection(
+                    str(fixture.project), str(fixture.work), "work-a-1", mcp_execution.CancellationToken()
                 )
                 previously_inspected_candidate = str(
                     self.json_object(first_inspection.content["candidate_recovery"])["candidate"]
@@ -292,8 +296,8 @@ class McpJobsTest(CheckpointPackageSupport):
                         )
                     (fixture.work / context.reference.selector).unlink()
                     self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
-                inspected = mcp_server._read_attempt_inspection(
-                    str(fixture.project), str(fixture.work), "work-a-1", mcp_server.CancellationToken()
+                inspected = mcp_reads._read_attempt_inspection(
+                    str(fixture.project), str(fixture.work), "work-a-1", mcp_execution.CancellationToken()
                 )
                 recovery = self.json_object(inspected.content["candidate_recovery"])
                 invocation = self.json_object(recovery["restore"])
@@ -377,8 +381,8 @@ class McpJobsTest(CheckpointPackageSupport):
             {"project_root": "/repo", "work_root": "/board", "attempt_id": "../a", "candidate": "c"},
             {"project_root": "/repo", "work_root": "/board", "attempt_id": "a", "candidate": ""},
         ):
-            with self.subTest(invalid=invalid), patch.object(mcp_server, "resolve_source_checkout_root") as roots:
-                outcome = mcp_server._candidate_restore(**invalid, token=mcp_server.CancellationToken())
+            with self.subTest(invalid=invalid), patch.object(mcp_jobs, "resolve_source_checkout_root") as roots:
+                outcome = mcp_jobs._candidate_restore(**invalid, token=mcp_execution.CancellationToken())
                 self.assertEqual("CANDIDATE_RESTORE_INVALID", outcome.content["code"])
                 roots.assert_not_called()
         fixture = self.checkpoint_fixture()
@@ -393,10 +397,10 @@ class McpJobsTest(CheckpointPackageSupport):
             )
 
         async def scenario() -> None:
-            executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+            executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
             try:
                 execution = executor.submit(
-                    lambda token: mcp_server._candidate_restore(
+                    lambda token: mcp_jobs._candidate_restore(
                         str(fixture.project), str(fixture.work), "work-a-1", fixture.candidate_revision, token
                     )
                 )
@@ -420,7 +424,7 @@ class McpJobsTest(CheckpointPackageSupport):
     def test_restore_cancellation_before_entry_and_exact_effect_correlation(self) -> None:
         fixture = self.checkpoint_fixture()
         for checkpoint in ("before-roots", "after-store"):
-            token = mcp_server.CancellationToken()
+            token = mcp_execution.CancellationToken()
             if checkpoint == "before-roots":
                 token.cancel()
 
@@ -430,11 +434,11 @@ class McpJobsTest(CheckpointPackageSupport):
 
             with (
                 self.subTest(checkpoint=checkpoint),
-                patch.object(mcp_server, "compose_store", side_effect=store_then_cancel),
+                patch.object(mcp_common, "compose_store", side_effect=store_then_cancel),
                 patch.object(candidate_evidence, "restore_candidate") as restore,
-                self.assertRaises(mcp_server.OperationCancelled),
+                self.assertRaises(mcp_execution.OperationCancelled),
             ):
-                mcp_server._candidate_restore(
+                mcp_jobs._candidate_restore(
                     str(fixture.project), str(fixture.work), "work-a-1", fixture.candidate_revision, token
                 )
             restore.assert_not_called()
@@ -498,8 +502,8 @@ class McpJobsTest(CheckpointPackageSupport):
         )
         for change in invalid_changes:
             invalid = choice | change
-            with self.subTest(invalid=invalid), patch.object(mcp_server, "resolve_source_checkout_root") as roots:
-                outcome = mcp_server._dispatch_job(str(project), str(work), invalid, mcp_server.CancellationToken())
+            with self.subTest(invalid=invalid), patch.object(mcp_jobs, "resolve_source_checkout_root") as roots:
+                outcome = mcp_jobs._dispatch_job(str(project), str(work), invalid, mcp_execution.CancellationToken())
                 self.assertEqual("DISPATCH_INVALID", outcome.content["code"])
                 self.assertFalse(outcome.content["state_changed"])
                 roots.assert_not_called()
@@ -507,7 +511,7 @@ class McpJobsTest(CheckpointPackageSupport):
     def test_dispatch_publication_reloads_and_repetition_is_unchanged(self) -> None:
         project, work, choice = self.dispatch_fixture()
         before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
-        first = mcp_server._dispatch_job(str(project), str(work), choice, mcp_server.CancellationToken())
+        first = mcp_jobs._dispatch_job(str(project), str(work), choice, mcp_execution.CancellationToken())
         self.assertEqual("ready", first.content["status"], first.content)
         self.assertEqual("committed", first.content["effect"])
         contracts.validate_result("pinboard_dispatch", first.content)
@@ -526,13 +530,13 @@ class McpJobsTest(CheckpointPackageSupport):
         # Publication changes the project revision, not this operation's subject receipt.
         ordinary = {key: value for key, value in choice.items() if key not in {"brief_review", "review_id"}}
         ordinary["kind"] = "ordinary"
-        second = mcp_server._dispatch_job(str(project), str(work), ordinary, mcp_server.CancellationToken())
+        second = mcp_jobs._dispatch_job(str(project), str(work), ordinary, mcp_execution.CancellationToken())
         self.assertEqual("unchanged", second.content["effect"])
         self.assertEqual(reference["sha256"], self.json_object(second.content["prompt_reference"])["sha256"])
 
     def test_current_native_worker_launch_inputs_decode_exact_wrapped_leaves(self) -> None:
         project, work, choice = self.dispatch_fixture()
-        outcome = mcp_server._dispatch_job(str(project), str(work), choice, mcp_server.CancellationToken())
+        outcome = mcp_jobs._dispatch_job(str(project), str(work), choice, mcp_execution.CancellationToken())
         self.assertEqual("ready", outcome.content["status"])
         launch = self.json_object(outcome.content["native_launch"])
         self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
@@ -573,7 +577,7 @@ class McpJobsTest(CheckpointPackageSupport):
         project, work, choice = self.dispatch_fixture()
         environment = self.json_object(choice["environment"])
         choice["environment"] = environment | {"runtime": "claude-code", "background": False}
-        outcome = mcp_server._dispatch_job(str(project), str(work), choice, mcp_server.CancellationToken())
+        outcome = mcp_jobs._dispatch_job(str(project), str(work), choice, mcp_execution.CancellationToken())
         self.assertEqual("ready", outcome.content["status"])
         launch = self.json_object(outcome.content["native_launch"])
         self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
@@ -604,7 +608,7 @@ class McpJobsTest(CheckpointPackageSupport):
         )
         for kind, ids in rounds:
             with self.subTest(kind=kind):
-                outcome = mcp_server._review_job(
+                outcome = mcp_jobs._review_job(
                     str(fixture.project),
                     str(fixture.work),
                     {
@@ -615,7 +619,7 @@ class McpJobsTest(CheckpointPackageSupport):
                         "background": False,
                         **ids,
                     },
-                    mcp_server.CancellationToken(),
+                    mcp_execution.CancellationToken(),
                 )
                 self.assertEqual("ready", outcome.content["status"], outcome.content)
                 contracts.validate_result("pinboard_review_job", outcome.content)
@@ -646,8 +650,8 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertEqual(before.authority, after.authority)
 
     def test_review_sibling_fields_are_rejected_before_state_access(self) -> None:
-        with patch.object(mcp_server, "compose_store") as store:
-            outcome = mcp_server._review_job(
+        with patch.object(mcp_common, "compose_store") as store:
+            outcome = mcp_jobs._review_job(
                 "/not-a-repository",
                 "/not-a-board",
                 {
@@ -658,7 +662,7 @@ class McpJobsTest(CheckpointPackageSupport):
                     "background": False,
                     "correction_history_id": 1,
                 },
-                mcp_server.CancellationToken(),
+                mcp_execution.CancellationToken(),
             )
             self.assertEqual("REVIEW_JOB_INVALID", outcome.content["code"])
             store.assert_not_called()
@@ -717,20 +721,20 @@ class McpJobsTest(CheckpointPackageSupport):
         stale_review["contract_review"] = msgspec.json.decode(ready_review(fixture.brief))
         stale_choice = choice | {"brief_review": stale_review}
         before = fixture.store.validated_snapshot()
-        stale = mcp_server._dispatch_job(
-            str(fixture.project), str(fixture.work), stale_choice, mcp_server.CancellationToken()
+        stale = mcp_jobs._dispatch_job(
+            str(fixture.project), str(fixture.work), stale_choice, mcp_execution.CancellationToken()
         )
         self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", stale.content["code"])
         self.assertEqual(before, fixture.store.validated_snapshot())
-        ready = mcp_server._dispatch_job(
-            str(fixture.project), str(fixture.work), choice, mcp_server.CancellationToken()
+        ready = mcp_jobs._dispatch_job(
+            str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
         )
         self.assertEqual("ready", ready.content["status"], ready.content)
         contracts.validate_result("pinboard_dispatch", ready.content)
 
     def test_dispatch_output_rejects_false_effect_claims(self) -> None:
         project, work, choice = self.dispatch_fixture()
-        outcome = mcp_server._dispatch_job(str(project), str(work), choice, mcp_server.CancellationToken())
+        outcome = mcp_jobs._dispatch_job(str(project), str(work), choice, mcp_execution.CancellationToken())
         self.assertEqual("ready", outcome.content["status"], outcome.content)
         changes: tuple[dict[str, contracts.JsonValue], ...] = (
             {"state_changed": False},
@@ -744,8 +748,8 @@ class McpJobsTest(CheckpointPackageSupport):
 
     def test_dispatch_failure_preserves_ready_review_publication(self) -> None:
         project, work, choice = self.dispatch_fixture()
-        outcome = mcp_server._dispatch_job(
-            str(project), str(work), choice | {"prompt": "not canonical"}, mcp_server.CancellationToken()
+        outcome = mcp_jobs._dispatch_job(
+            str(project), str(work), choice | {"prompt": "not canonical"}, mcp_execution.CancellationToken()
         )
         self.assertEqual("failed-after-publication", outcome.content["status"])
         self.assertEqual("DISPATCH_PROMPT_NOT_CANONICAL", outcome.content["code"])
@@ -781,10 +785,10 @@ class McpJobsTest(CheckpointPackageSupport):
             return entering
 
         async def scenario() -> None:
-            executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+            executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
             try:
                 execution = executor.submit(
-                    lambda token: mcp_server._dispatch_job(str(project), str(work), choice, token)
+                    lambda token: mcp_jobs._dispatch_job(str(project), str(work), choice, token)
                 )
                 waiter = asyncio.create_task(execution.result())
                 self.assertTrue(await asyncio.to_thread(entered.wait, 2))

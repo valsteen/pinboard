@@ -28,6 +28,8 @@ from pinboard.application.dispatch_models import DispatchArtifactPort
 from pinboard.application.ports import WorkStore
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, HistoryId
+from pinboard.mcp import execution as mcp_execution
+from pinboard.mcp import job_operations as mcp_jobs
 from pinboard.mcp import server
 from tests import test_dispatch
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
@@ -133,11 +135,13 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         return choice
 
     def dispatch_native(self, fixture: CheckpointFixture, choice: JsonObject) -> JsonObject:
-        return server._dispatch_job(str(fixture.project), str(fixture.work), choice, server.CancellationToken()).content
+        return mcp_jobs._dispatch_job(
+            str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
+        ).content
 
     def test_replacement_brief_uses_historical_findings_but_requires_a_new_current_return(self) -> None:
         with (
-            patch("pinboard.mcp.server.datetime", wraps=datetime) as boundary_clock,
+            patch("pinboard.mcp.job_operations.datetime", wraps=datetime) as boundary_clock,
             patch("tests.checkpoint_support.datetime", wraps=datetime) as fixture_clock,
         ):
             clock_ticks = count()
@@ -426,14 +430,18 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertEqual("ready", self.dispatch_native(fixture, first)["status"])
         first_state = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         first_reviews = {value.key for value in first_state.artifact_references if "-brief-review-" in value.key}
-        replay = server._dispatch_job(str(fixture.project), str(fixture.work), first, server.CancellationToken())
+        replay = mcp_jobs._dispatch_job(
+            str(fixture.project), str(fixture.work), first, mcp_execution.CancellationToken()
+        )
         self.assertEqual("unchanged", replay.content["effect"], replay.content)
         _, second = self.submit_and_return(fixture, "second-test", committed=False)
         self.assertEqual(
             self.json_object(first["brief_review"])["contract_review"],
             self.json_object(second["brief_review"])["contract_review"],
         )
-        ready = server._dispatch_job(str(fixture.project), str(fixture.work), second, server.CancellationToken())
+        ready = mcp_jobs._dispatch_job(
+            str(fixture.project), str(fixture.work), second, mcp_execution.CancellationToken()
+        )
         self.assertEqual("ready", ready.content["status"], ready.content)
         second_state = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         second_reviews = {value.key for value in second_state.artifact_references if "-brief-review-" in value.key}
@@ -444,12 +452,14 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             "Different evidence about the actually identical complete subject."
         )
         collision["review_id"] = "different-proof"
-        outcome = server._dispatch_job(str(fixture.project), str(fixture.work), collision, server.CancellationToken())
+        outcome = mcp_jobs._dispatch_job(
+            str(fixture.project), str(fixture.work), collision, mcp_execution.CancellationToken()
+        )
         self.assertEqual("DISPATCH_BRIEF_REVIEW_COLLISION", outcome.content["code"])
         self.assertEqual("failed-after-publication", outcome.content["status"])
         self.assertEqual("do-not-retry", outcome.content["retry"])
-        replay_collision = server._dispatch_job(
-            str(fixture.project), str(fixture.work), collision, server.CancellationToken()
+        replay_collision = mcp_jobs._dispatch_job(
+            str(fixture.project), str(fixture.work), collision, mcp_execution.CancellationToken()
         )
         self.assertFalse(replay_collision.content["state_changed"])
 
@@ -477,7 +487,9 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                 self.assertEqual(before, fixture.store.validated_snapshot())
         self.commit_all(fixture.project, "different preimage")
         before = fixture.store.validated_snapshot()
-        rejected = server._dispatch_job(str(fixture.project), str(fixture.work), choice, server.CancellationToken())
+        rejected = mcp_jobs._dispatch_job(
+            str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
+        )
         self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", rejected.content["code"])
         self.assertEqual(before, fixture.store.validated_snapshot())
 
@@ -509,7 +521,9 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             return observe(store, artifacts, source_checkout_root, brief, dispatch)
 
         with patch.object(dispatch_operations, "_read_correction_start", side_effect=change_before_recheck):
-            outcome = server._dispatch_job(str(fixture.project), str(fixture.work), choice, server.CancellationToken())
+            outcome = mcp_jobs._dispatch_job(
+                str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
+            )
         self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", outcome.content["code"])
         self.assertEqual("failed-after-publication", outcome.content["status"])
         self.assertEqual("do-not-retry", outcome.content["retry"])

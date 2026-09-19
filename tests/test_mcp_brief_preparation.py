@@ -22,7 +22,10 @@ from pinboard.application import (
     work_brief_contract,
     work_briefs,
 )
+from pinboard.mcp import common as mcp_common
 from pinboard.mcp import contracts, server
+from pinboard.mcp import execution as mcp_execution
+from pinboard.mcp import read_operations as mcp_reads
 from tests import test_mcp
 from tests.test_work_brief_contract import complete_starter, json_object, select_structural_variant
 from tests.work_brief_support import example_work_brief, work_c_brief
@@ -47,15 +50,17 @@ class McpBriefPreparationTest(unittest.TestCase):
         }
 
     def sources(self, operation: str, **fields: contracts.JsonValue) -> dict[str, contracts.JsonValue]:
-        result = server._brief_sources(
-            {"request": {**self.roots, "operation": operation, **fields}}, server.CancellationToken()
+        result = mcp_reads._brief_sources(
+            {"request": {**self.roots, "operation": operation, **fields}}, mcp_execution.CancellationToken()
         )
         return contracts.validate_result(server.BRIEF_SOURCES_TOOL, result.content)
 
     def test_negotiated_construction_outputs_complete_canonical_starters_and_publish(self) -> None:
-        executor = server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
-        transport = server.create_server(executor, server.Diagnostics(io.StringIO(), event_limit=8, line_limit=256))
+        transport = server.create_server(
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=8, line_limit=256)
+        )
         temporary, project, roots = test_mcp.McpTransportTest()._project()
         self.addCleanup(temporary.cleanup)
 
@@ -103,10 +108,10 @@ class McpBriefPreparationTest(unittest.TestCase):
                     assert isinstance(published, CallToolResult) and isinstance(published.structured_content, dict)
                     self.assertEqual("committed", published.structured_content["status"])
 
-        with patch.object(server, "_resolve_durable", side_effect=AssertionError("construction touched state")):
+        with patch.object(mcp_common, "_resolve_durable", side_effect=AssertionError("construction touched state")):
             # Construction uses nonexistent roots as context, not a store capability.
-            result = server._brief_contract(
-                {"request": {**self.roots, "operation": "full"}}, server.CancellationToken()
+            result = mcp_reads._brief_contract(
+                {"request": {**self.roots, "operation": "full"}}, mcp_execution.CancellationToken()
             )
             contracts.validate_result(server.BRIEF_CONTRACT_TOOL, result.content)
         asyncio.run(scenario())
@@ -133,12 +138,12 @@ class McpBriefPreparationTest(unittest.TestCase):
             {**valid[0], "manifest": {**self.manifest, "extra": True}},
         ]
         with patch.object(
-            server, "resolve_source_checkout_root", side_effect=AssertionError("invalid request read roots")
+            mcp_reads, "resolve_source_checkout_root", side_effect=AssertionError("invalid request read roots")
         ):
             for leaf in invalid:
                 with self.subTest(leaf=leaf):
-                    result = server._brief_sources(
-                        {"request": {**self.roots, **leaf}}, server.CancellationToken()
+                    result = mcp_reads._brief_sources(
+                        {"request": {**self.roots, **leaf}}, mcp_execution.CancellationToken()
                     ).content
                     self.assertEqual("BRIEF_SOURCES_REQUEST_INVALID", result["code"])
                     contracts.validate_result(server.BRIEF_SOURCES_TOOL, result)
@@ -152,12 +157,16 @@ class McpBriefPreparationTest(unittest.TestCase):
             {"operation": "starter", "boundary": "invalid"},
             {"operation": "starter"},
         ):
-            result = server._brief_contract({"request": {**self.roots, **fields}}, server.CancellationToken()).content
+            result = mcp_reads._brief_contract(
+                {"request": {**self.roots, **fields}}, mcp_execution.CancellationToken()
+            ).content
             self.assertEqual("BRIEF_CONTRACT_REQUEST_INVALID", result["code"])
             contracts.validate_result(server.BRIEF_CONTRACT_TOOL, result)
 
     def test_inline_saved_and_selected_checkout_batches_preserve_facts(self) -> None:
-        with patch.object(server, "_resolve_durable", side_effect=AssertionError("source preparation touched state")):
+        with patch.object(
+            mcp_common, "_resolve_durable", side_effect=AssertionError("source preparation touched state")
+        ):
             plan = self.sources("plan", manifest=self.manifest, max_batch_bytes=18)
             first = self.sources("emit", plan=plan, batch_index=0)
             saved = self.project / "saved.json"
@@ -165,7 +174,7 @@ class McpBriefPreparationTest(unittest.TestCase):
             self.assertEqual(first, self.sources("emit-file", plan_path=str(saved), batch_index=0))
             self.assertEqual("BRIEF_SOURCE_BATCH_NOT_FOUND", self.sources("emit", plan=plan, batch_index=100)["code"])
             with patch.object(
-                server, "select_checkout_brief_source", wraps=server.select_checkout_brief_source
+                mcp_reads, "select_checkout_brief_source", wraps=mcp_reads.select_checkout_brief_source
             ) as reads:
                 self.sources("emit", plan=plan, batch_index=0)
                 self.assertEqual(
@@ -211,8 +220,8 @@ class McpBriefPreparationTest(unittest.TestCase):
 
     def test_cancellation_before_publication_and_after_visibility_is_truthful(self) -> None:
         destination = self.project / "cancelled.json"
-        token = server.CancellationToken()
-        original = server.brief_sources.plan_brief_sources
+        token = mcp_execution.CancellationToken()
+        original = mcp_reads.brief_sources.plan_brief_sources
 
         def cancel_after_plan(
             select_source: brief_sources.BriefSourceSelector,
@@ -233,20 +242,20 @@ class McpBriefPreparationTest(unittest.TestCase):
             }
         }
         with (
-            patch.object(server.brief_sources, "plan_brief_sources", side_effect=cancel_after_plan),
-            self.assertRaises(server.OperationCancelled),
+            patch.object(mcp_reads.brief_sources, "plan_brief_sources", side_effect=cancel_after_plan),
+            self.assertRaises(mcp_execution.OperationCancelled),
         ):
-            server._brief_sources(request, token)
+            mcp_reads._brief_sources(request, token)
         self.assertFalse(destination.exists())
-        token = server.CancellationToken()
-        publish = server.create_immutable
+        token = mcp_execution.CancellationToken()
+        publish = mcp_reads.create_immutable
 
         def cancel_after_visibility(path: Path, content: bytes) -> bool:
             created = publish(path, content)
             token.cancel()
             return created
 
-        with patch.object(server, "create_immutable", side_effect=cancel_after_visibility):
-            result = server._brief_sources(request, token).content
+        with patch.object(mcp_reads, "create_immutable", side_effect=cancel_after_visibility):
+            result = mcp_reads._brief_sources(request, token).content
         self.assertEqual("committed", result["effect"])
         self.assertTrue(destination.exists())

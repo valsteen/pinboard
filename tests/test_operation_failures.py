@@ -21,7 +21,9 @@ from pinboard.cli import cli_commands
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import ChangedSurface, EffectDisposition, RetryDisposition
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, ReviewId
-from pinboard.mcp import server as mcp_server
+from pinboard.mcp import execution as mcp_execution
+from pinboard.mcp import mutation_operations as mcp_mutations
+from pinboard.mcp import read_operations as mcp_reads
 from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
 from tests.support import SQLITE_DIGEST, SQLITE_NOW, JsonObject, complete_sqlite_state, decision_facts, initialize_store
@@ -42,9 +44,9 @@ class OperationFailureTest(unittest.TestCase):
         return store, resolved
 
     def transition(self, roots: cli_commands.ResolvedRoots, receipt: JsonObject) -> JsonObject:
-        with patch("pinboard.mcp.server.datetime") as clock:
+        with patch("pinboard.mcp.mutation_operations.datetime") as clock:
             clock.now.return_value = SQLITE_NOW
-            return mcp_server._transition(
+            return mcp_mutations._transition(
                 {
                     "request": {
                         "project_root": str(roots.source_checkout),
@@ -56,7 +58,7 @@ class OperationFailureTest(unittest.TestCase):
                         "payload": {"reason": "Pause for review."},
                     }
                 },
-                mcp_server.CancellationToken(),
+                mcp_execution.CancellationToken(),
             ).content
 
     def test_sqlite_readonly_is_classified_separately_from_generic_storage_io(self) -> None:
@@ -118,9 +120,9 @@ class OperationFailureTest(unittest.TestCase):
             )
             status_store, status_roots = self.initialized(inactive)
             unchanged = status_store.validated_snapshot()
-            with patch("pinboard.mcp.server.datetime") as clock:
+            with patch("pinboard.mcp.mutation_operations.datetime") as clock:
                 clock.now.return_value = SQLITE_NOW
-                rejected = mcp_server._read_actions(
+                rejected = mcp_reads._read_actions(
                     {
                         "request": {
                             "project_root": str(status_roots.source_checkout),
@@ -131,7 +133,7 @@ class OperationFailureTest(unittest.TestCase):
                             "action_id": {"kind": "continue", "subject": "work-a-1"},
                         }
                     },
-                    mcp_server.CancellationToken(),
+                    mcp_execution.CancellationToken(),
                 ).content
             self.assertEqual("ATTEMPT_LEASE_REQUIRED", rejected["code"])
             self.assertEqual("reacquire-authority", rejected["retry"])

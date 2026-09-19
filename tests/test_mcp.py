@@ -22,10 +22,11 @@ from mcp.shared.message import SessionMessage
 from mcp_types import CallToolResult, TextContent, Tool
 from msgspec.structs import replace as replace_struct
 
+from pinboard.adapters import lifecycle_artifacts
 from pinboard.adapters.files.artifacts import ArtifactRepository
-from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
+from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
-from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
+from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
@@ -53,7 +54,11 @@ from pinboard.domain.errors import (
     RetryDisposition,
 )
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.mcp import common as mcp_common
 from pinboard.mcp import contracts
+from pinboard.mcp import execution as mcp_execution
+from pinboard.mcp import mutation_operations as mcp_mutations
+from pinboard.mcp import read_operations as mcp_reads
 from pinboard.mcp import server as mcp_server
 from tests.domain_support import action
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
@@ -85,7 +90,7 @@ async def _wait_for(event: threading.Event) -> None:
 
 
 async def _await_after_ready[Result](
-    execution: mcp_server.Execution[Result],
+    execution: mcp_execution.Execution[Result],
     ready: asyncio.Event,
 ) -> Result:
     ready.set()
@@ -95,12 +100,12 @@ async def _await_after_ready[Result](
 class BoundedExecutorTest(unittest.TestCase):
     def test_worker_and_admission_limits_reject_before_effect(self) -> None:
         async def scenario() -> None:
-            executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=3)
+            executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=3)
             release = threading.Event()
             started = (threading.Event(), threading.Event())
             rejected_effect = threading.Event()
 
-            def blocked(token: mcp_server.CancellationToken, index: int) -> int:
+            def blocked(token: mcp_execution.CancellationToken, index: int) -> int:
                 started[index].set()
                 if not release.wait(2):
                     raise AssertionError("The blocking operation was not released.")
@@ -111,7 +116,7 @@ class BoundedExecutorTest(unittest.TestCase):
             second = executor.submit(lambda token: blocked(token, 1))
             await asyncio.gather(*(_wait_for(event) for event in started))
             third = executor.submit(lambda _token: 3)
-            with self.assertRaises(mcp_server.ExecutorBusy):
+            with self.assertRaises(mcp_execution.ExecutorBusy):
                 executor.submit(lambda _token: rejected_effect.set())
             self.assertFalse(rejected_effect.is_set())
 
@@ -123,19 +128,19 @@ class BoundedExecutorTest(unittest.TestCase):
 
     def test_queued_and_running_cancellation_release_admission(self) -> None:
         async def scenario() -> None:
-            executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=2)
+            executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=2)
             running_started = threading.Event()
             running_release = threading.Event()
             queued_effect = threading.Event()
             cooperative_cancelled = threading.Event()
 
-            def running(token: mcp_server.CancellationToken) -> str:
+            def running(token: mcp_execution.CancellationToken) -> str:
                 running_started.set()
                 if not running_release.wait(2):
                     raise AssertionError("The running operation was not released.")
                 try:
                     token.checkpoint()
-                except mcp_server.OperationCancelled:
+                except mcp_execution.OperationCancelled:
                     cooperative_cancelled.set()
                     raise
                 return "unexpected"
@@ -157,7 +162,7 @@ class BoundedExecutorTest(unittest.TestCase):
             await asyncio.sleep(0)
             self.assertFalse(active_waiter.done())
             running_release.set()
-            with self.assertRaises(mcp_server.OperationCancelled):
+            with self.assertRaises(mcp_execution.OperationCancelled):
                 await active_waiter
             await _wait_for(active.finished)
             await _wait_for(queued.finished)
@@ -171,11 +176,13 @@ class BoundedExecutorTest(unittest.TestCase):
         _run_async(scenario())
 
     def test_shutdown_joins_workers_and_rejects_new_work(self) -> None:
-        executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=2)
+        executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=2)
         self.assertEqual("done", _run_async(executor.submit(lambda _token: "done").result()))
         executor.shutdown()
-        self.assertFalse(any(thread.name.startswith(mcp_server.THREAD_NAME_PREFIX) for thread in threading.enumerate()))
-        with self.assertRaises(mcp_server.ExecutorClosed):
+        self.assertFalse(
+            any(thread.name.startswith(mcp_execution.THREAD_NAME_PREFIX) for thread in threading.enumerate())
+        )
+        with self.assertRaises(mcp_execution.ExecutorClosed):
             executor.submit(lambda _token: None)
 
 
@@ -189,7 +196,7 @@ class McpTransportTest(unittest.TestCase):
             "actor_host_id": "local",
         }
         selected: dict[str, contracts.JsonValue] = {**roots, "selection": "selected", "item_ids": ["work-a"]}
-        with patch.object(mcp_server, "_resolve_durable", side_effect=AssertionError("invalid ingress resolved roots")):
+        with patch.object(mcp_common, "_resolve_durable", side_effect=AssertionError("invalid ingress resolved roots")):
             invalid_orders: tuple[dict[str, contracts.JsonValue], ...] = (
                 {**order, "extra": True},
                 {**order, "actor_task_id": ""},
@@ -204,7 +211,7 @@ class McpTransportTest(unittest.TestCase):
             )
             for request in invalid_orders:
                 with self.subTest(order=request):
-                    result = mcp_server._order({"request": request}, mcp_server.CancellationToken())
+                    result = mcp_reads._order({"request": request}, mcp_execution.CancellationToken())
                     self.assertEqual("ORDER_INVALID", result.content["code"])
                     contracts.validate_result(mcp_server.ORDER_TOOL, result.content)
             invalid_previews: tuple[dict[str, contracts.JsonValue], ...] = (
@@ -218,7 +225,7 @@ class McpTransportTest(unittest.TestCase):
             )
             for request in invalid_previews:
                 with self.subTest(preview=request):
-                    result = mcp_server._parallel_preview({"request": request}, mcp_server.CancellationToken())
+                    result = mcp_reads._parallel_preview({"request": request}, mcp_execution.CancellationToken())
                     self.assertEqual("PARALLEL_PREVIEW_INVALID", result.content["code"])
                     contracts.validate_result(mcp_server.PARALLEL_PREVIEW_TOOL, result.content)
 
@@ -245,28 +252,28 @@ class McpTransportTest(unittest.TestCase):
             "actor_task_id": "priority-owner",
             "actor_host_id": "priority-host",
         }
-        with patch.object(mcp_server, "datetime") as clock:
+        with patch.object(mcp_reads, "datetime") as clock:
             clock.now.return_value = SQLITE_NOW
-            cancelled = mcp_server.CancellationToken()
+            cancelled = mcp_execution.CancellationToken()
             cancelled.cancel()
-            with self.assertRaises(mcp_server.OperationCancelled):
-                mcp_server._order({"request": request}, cancelled)
+            with self.assertRaises(mcp_execution.OperationCancelled):
+                mcp_reads._order({"request": request}, cancelled)
             self.assertEqual(before, store.validated_snapshot())
-            before_write = mcp_server.CancellationToken()
+            before_write = mcp_execution.CancellationToken()
 
             def cancel_before_write(_durable: DurableRoots) -> SQLiteWorkStore:
                 before_write.cancel()
                 return store
 
             with (
-                patch.object(mcp_server, "compose_store", side_effect=cancel_before_write),
-                self.assertRaises(mcp_server.OperationCancelled),
+                patch.object(mcp_common, "compose_store", side_effect=cancel_before_write),
+                self.assertRaises(mcp_execution.OperationCancelled),
             ):
-                mcp_server._order({"request": request}, before_write)
+                mcp_reads._order({"request": request}, before_write)
             self.assertEqual(before, store.validated_snapshot())
             # Cancel after entering the shared write. Commitment still reaches terminal accounting.
-            entered = mcp_server.CancellationToken()
-            original = mcp_server.service.reorder
+            entered = mcp_execution.CancellationToken()
+            original = mcp_reads.service.reorder
 
             def commit_then_cancel(
                 selected_store: WorkStore,
@@ -280,8 +287,8 @@ class McpTransportTest(unittest.TestCase):
                 entered.cancel()
                 return result
 
-            with patch.object(mcp_server.service, "reorder", commit_then_cancel):
-                committed = mcp_server._order({"request": request}, entered).content
+            with patch.object(mcp_reads.service, "reorder", commit_then_cancel):
+                committed = mcp_reads._order({"request": request}, entered).content
             contracts.validate_result(mcp_server.ORDER_TOOL, committed)
             self.assertEqual(
                 ("committed", ["ledger"], "do-not-retry"),
@@ -307,7 +314,7 @@ class McpTransportTest(unittest.TestCase):
                 ("priority-owner", "priority-host", committed["history_id"]),
                 (receipt.actor_task_id, receipt.actor_host_id, int(receipt.history_id)),
             )
-            stale = mcp_server._order({"request": request}, mcp_server.CancellationToken()).content
+            stale = mcp_reads._order({"request": request}, mcp_execution.CancellationToken()).content
             self.assertEqual("ACTION_NOT_AVAILABLE", stale["code"])
             self.assertEqual(after, fresh.validated_snapshot())
             request["order"] = {
@@ -315,7 +322,7 @@ class McpTransportTest(unittest.TestCase):
                 "expected_order": list[contracts.JsonValue](requested),
                 "requested_order": list[contracts.JsonValue](requested[:-1]),
             }
-            invalid = mcp_server._order({"request": request}, mcp_server.CancellationToken()).content
+            invalid = mcp_reads._order({"request": request}, mcp_execution.CancellationToken()).content
             self.assertEqual("TRANSITION_INPUT_INVALID", invalid["code"])
             contracts.validate_result(mcp_server.ORDER_TOOL, invalid)
             self.assertEqual(after, fresh.validated_snapshot())
@@ -330,7 +337,7 @@ class McpTransportTest(unittest.TestCase):
                 "pinboard.adapters.files.views.atomic_replace",
                 side_effect=FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, "injected view failure"),
             ):
-                warning = mcp_server._order({"request": request}, mcp_server.CancellationToken()).content
+                warning = mcp_reads._order({"request": request}, mcp_execution.CancellationToken()).content
             contracts.validate_result(mcp_server.ORDER_TOOL, warning)
             self.assertEqual("committed-with-warning", warning["status"])
             warning_view = msgspec.convert(warning, type=contracts.OrderCommitted)
@@ -353,7 +360,7 @@ class McpTransportTest(unittest.TestCase):
                 "pinboard.adapters.files.views.atomic_replace",
                 side_effect=FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, "injected view failure"),
             ):
-                result = mcp_server._order(
+                result = mcp_reads._order(
                     {
                         "request": {
                             "project_root": str(project),
@@ -363,7 +370,7 @@ class McpTransportTest(unittest.TestCase):
                             "order": {"schema": "pinboard-live-order/v1", "expected_order": [], "requested_order": []},
                         }
                     },
-                    mcp_server.CancellationToken(),
+                    mcp_execution.CancellationToken(),
                 ).content
             view = msgspec.convert(result, type=contracts.OrderCommitted)
             self.assertEqual("committed-with-warning", view.status)
@@ -391,7 +398,7 @@ class McpTransportTest(unittest.TestCase):
             "project_root": str(project),
             "work_root": str(roots.work_root),
         }
-        with patch.object(mcp_server, "datetime") as clock:
+        with patch.object(mcp_reads, "datetime") as clock:
             clock.now.return_value = SQLITE_NOW
             with (
                 patch.object(
@@ -411,9 +418,9 @@ class McpTransportTest(unittest.TestCase):
                     ("work-a", "dependency-live"),
                 ):
                     with self.subTest(item=item_id):
-                        result = mcp_server._parallel_preview(
+                        result = mcp_reads._parallel_preview(
                             {"request": {**root_arguments, "selection": "selected", "item_ids": [item_id]}},
-                            mcp_server.CancellationToken(),
+                            mcp_execution.CancellationToken(),
                         ).content
                         contracts.validate_result(mcp_server.PARALLEL_PREVIEW_TOOL, result)
                         preview = queries.select_parallel_preview(store, selected=(item_id,), now=SQLITE_NOW)
@@ -430,16 +437,16 @@ class McpTransportTest(unittest.TestCase):
                             view = msgspec.convert(result, type=contracts.ParallelPreviewSuccess)
                             self.assertEqual(code, view.excluded[0].reasons[0].code.value)
                 for item_id in ("missing-item", "work-b"):
-                    rejected = mcp_server._parallel_preview(
+                    rejected = mcp_reads._parallel_preview(
                         {"request": {**root_arguments, "selection": "selected", "item_ids": [item_id]}},
-                        mcp_server.CancellationToken(),
+                        mcp_execution.CancellationToken(),
                     ).content
                     self.assertEqual("PARALLEL_SELECTION_INVALID", rejected["code"])
                     contracts.validate_result(mcp_server.PARALLEL_PREVIEW_TOOL, rejected)
             clock.now.return_value = SQLITE_NOW + timedelta(minutes=5)
-            expired = mcp_server._parallel_preview(
+            expired = mcp_reads._parallel_preview(
                 {"request": {**root_arguments, "selection": "selected", "item_ids": ["work-a"]}},
-                mcp_server.CancellationToken(),
+                mcp_execution.CancellationToken(),
             ).content
             self.assertFalse(expired["safe"])
             with (
@@ -457,8 +464,8 @@ class McpTransportTest(unittest.TestCase):
                     side_effect=AssertionError("all-safe read proposal bodies"),
                 ),
             ):
-                all_safe = mcp_server._parallel_preview(
-                    {"request": {**root_arguments, "selection": "all-safe"}}, mcp_server.CancellationToken()
+                all_safe = mcp_reads._parallel_preview(
+                    {"request": {**root_arguments, "selection": "all-safe"}}, mcp_execution.CancellationToken()
                 ).content
             self.assertTrue(all_safe["safe"])
             all_safe_view = msgspec.convert(all_safe, type=contracts.ParallelPreviewSuccess)
@@ -532,7 +539,7 @@ class McpTransportTest(unittest.TestCase):
                 "item_ids": ["work-c"],
             }
         }
-        with patch.object(mcp_server, "datetime") as clock:
+        with patch.object(mcp_reads, "datetime") as clock:
             clock.now.return_value = SQLITE_NOW
             for item, reason in cases:
                 with (
@@ -540,7 +547,7 @@ class McpTransportTest(unittest.TestCase):
                     patch.object(SQLiteWorkStore, "read_parallel_preview", return_value=replace(facts, items=(item,))),
                 ):
                     view = msgspec.convert(
-                        mcp_server._parallel_preview(request, mcp_server.CancellationToken()).content,
+                        mcp_reads._parallel_preview(request, mcp_execution.CancellationToken()).content,
                         type=contracts.ParallelPreviewSuccess,
                     )
                     self.assertEqual(reason is None, view.safe)
@@ -559,10 +566,10 @@ class McpTransportTest(unittest.TestCase):
             item.item_id
             for item in queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW).items
         )
-        executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=2)
+        executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=2)
         self.addCleanup(executor.shutdown)
         locked, contender_started = threading.Event(), threading.Event()
-        original = mcp_server.service.decide_order
+        original = mcp_reads.service.decide_order
 
         def controlled_decision(
             observed: tuple[ItemId, ...], expected: tuple[ItemId, ...], requested: tuple[ItemId, ...]
@@ -588,12 +595,12 @@ class McpTransportTest(unittest.TestCase):
                 }
             }
 
-        def contender(token: mcp_server.CancellationToken) -> mcp_server.OperationResult:
+        def contender(token: mcp_execution.CancellationToken) -> mcp_execution.OperationResult:
             contender_started.set()
-            return mcp_server._order(request_for((*current[1:], current[0])), token)
+            return mcp_reads._order(request_for((*current[1:], current[0])), token)
 
         async def scenario() -> None:
-            winner = executor.submit(lambda token: mcp_server._order(request_for(current[::-1]), token))
+            winner = executor.submit(lambda token: mcp_reads._order(request_for(current[::-1]), token))
             await _wait_for(locked)
             loser = executor.submit(contender)
             results = await asyncio.gather(winner.result(), loser.result())
@@ -601,8 +608,8 @@ class McpTransportTest(unittest.TestCase):
             self.assertEqual("ACTION_NOT_AVAILABLE", results[1].content["code"])
 
         with (
-            patch.object(mcp_server.service, "decide_order", controlled_decision),
-            patch.object(mcp_server, "datetime") as clock,
+            patch.object(mcp_reads.service, "decide_order", controlled_decision),
+            patch.object(mcp_reads, "datetime") as clock,
         ):
             clock.now.return_value = SQLITE_NOW
             _run_async(scenario())
@@ -611,7 +618,7 @@ class McpTransportTest(unittest.TestCase):
             subprocess.run(("git", "init", "--quiet", str(empty)), check=True)
             empty_roots = resolve_durable_roots(empty)
             initialize_database(empty_roots, SQLITE_NOW)
-            result = mcp_server._order(
+            result = mcp_reads._order(
                 {
                     "request": {
                         "project_root": str(empty),
@@ -621,7 +628,7 @@ class McpTransportTest(unittest.TestCase):
                         "order": {"schema": "pinboard-live-order/v1", "expected_order": [], "requested_order": []},
                     }
                 },
-                mcp_server.CancellationToken(),
+                mcp_execution.CancellationToken(),
             ).content
             committed = msgspec.convert(result, type=contracts.OrderCommitted)
             fresh = SQLiteWorkStore(empty_roots.database_path).validated_snapshot()
@@ -643,10 +650,10 @@ class McpTransportTest(unittest.TestCase):
             self.assertEqual(2, len(original_state.transition_receipts))
 
     def test_negotiated_tools_have_native_compatible_roots_and_wrapped_reads(self) -> None:
-        executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
         server = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
         )
 
         async def scenario() -> None:
@@ -678,10 +685,10 @@ class McpTransportTest(unittest.TestCase):
     def test_definition_and_negative_review_tools_persist_and_reload_exact_facts(self) -> None:  # noqa: PLR0915 - complete persisted query and review journey
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
-        executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
         server = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
         )
         explicit_roots = {"project_root": str(project), "work_root": str(roots.work_root)}
         brief = work_a_brief(project)
@@ -845,7 +852,9 @@ class McpTransportTest(unittest.TestCase):
         requests: tuple[
             tuple[
                 str,
-                Callable[[dict[str, contracts.JsonValue], mcp_server.CancellationToken], mcp_server.OperationResult],
+                Callable[
+                    [dict[str, contracts.JsonValue], mcp_execution.CancellationToken], mcp_execution.OperationResult
+                ],
                 dict[str, contracts.JsonValue],
                 tuple[dict[str, contracts.JsonValue], ...],
             ],
@@ -853,13 +862,13 @@ class McpTransportTest(unittest.TestCase):
         ] = (
             (
                 mcp_server.ITEM_DEFINITION_TOOL,
-                mcp_server._read_item_definition,
+                mcp_reads._read_item_definition,
                 {**roots, "operation": "current", "item_id": "item"},
                 ({"limit": 1}, {"before_revision": None}),
             ),
             (
                 mcp_server.ITEM_DEFINITION_TOOL,
-                mcp_server._read_item_definition,
+                mcp_reads._read_item_definition,
                 {**roots, "operation": "history", "item_id": "item", "limit": 1, "before_revision": None},
                 (
                     {"limit": 0},
@@ -872,13 +881,13 @@ class McpTransportTest(unittest.TestCase):
             ),
             (
                 mcp_server.BRIEF_REVIEW_TOOL,
-                mcp_server._brief_review,
+                mcp_reads._brief_review,
                 {**roots, "operation": "status", "brief_artifact_ref_id": 1},
                 ({"review": {}}, {"brief_artifact_ref_id": True}),
             ),
             (
                 mcp_server.BRIEF_REVIEW_TOOL,
-                mcp_server._brief_review,
+                mcp_reads._brief_review,
                 {**roots, "operation": "publish", "brief_artifact_ref_id": 1, "review": {}},
                 ({},),
             ),
@@ -891,8 +900,8 @@ class McpTransportTest(unittest.TestCase):
             ]
             invalid.extend({"request": {**request, **change}} for change in changes)
             for raw in invalid:
-                with self.subTest(raw=raw), patch.object(mcp_server, "_resolve_durable") as resolve:
-                    result = handler(raw, mcp_server.CancellationToken())
+                with self.subTest(raw=raw), patch.object(mcp_common, "_resolve_durable") as resolve:
+                    result = handler(raw, mcp_execution.CancellationToken())
                     self.assertEqual("rejected", result.content["status"])
                     self.assertEqual([], result.content["changed_surfaces"])
                     contracts.validate_result(tool, result.content)
@@ -920,8 +929,8 @@ class McpTransportTest(unittest.TestCase):
             (replace_struct(review, reviewed_authority_set_sha256="f" * 64), "WORK_BRIEF_REVIEW_STALE"),
             (replace_struct(review, checkpoint_id="other-checkpoint"), "WORK_BRIEF_REVIEW_INVALID"),
         ):
-            result = mcp_server._brief_review(
-                {"request": {**base, "review": msgspec.to_builtins(changed)}}, mcp_server.CancellationToken()
+            result = mcp_reads._brief_review(
+                {"request": {**base, "review": msgspec.to_builtins(changed)}}, mcp_execution.CancellationToken()
             )
             self.assertEqual(expected, result.content["code"])
             contracts.validate_result(mcp_server.BRIEF_REVIEW_TOOL, result.content)
@@ -956,13 +965,13 @@ class McpTransportTest(unittest.TestCase):
             }
             if operation == "publish":
                 request["review"] = msgspec.to_builtins(review)
-            result = mcp_server._brief_review({"request": request}, mcp_server.CancellationToken())
+            result = mcp_reads._brief_review({"request": request}, mcp_execution.CancellationToken())
             self.assertEqual("WORK_BRIEF_REVIEW_INVALID", result.content["code"])
         raw: dict[str, contracts.JsonValue] = {"request": {**base, "review": msgspec.to_builtins(review)}}
         with patch.object(
             SQLiteWorkStore, "accept_artifact_reference", side_effect=WorkStoreError("acceptance unavailable")
         ):
-            failed = mcp_server._brief_review(raw, mcp_server.CancellationToken())
+            failed = mcp_reads._brief_review(raw, mcp_execution.CancellationToken())
         self.assertEqual("failed-after-publication", failed.content["status"])
         self.assertEqual(["immutable-artifact"], failed.content["changed_surfaces"])
         self.assertEqual("do-not-retry", failed.content["retry"])
@@ -978,21 +987,21 @@ class McpTransportTest(unittest.TestCase):
                 None,
             ),
         ):
-            rejected = mcp_server._brief_review(second_raw, mcp_server.CancellationToken())
+            rejected = mcp_reads._brief_review(second_raw, mcp_execution.CancellationToken())
         self.assertEqual("rejected", rejected.content["status"])
         self.assertTrue(rejected.content["state_changed"])
         self.assertEqual(["immutable-artifact"], rejected.content["changed_surfaces"])
         contracts.validate_result(mcp_server.BRIEF_REVIEW_TOOL, rejected.content)
-        adopted = mcp_server._brief_review(raw, mcp_server.CancellationToken())
+        adopted = mcp_reads._brief_review(raw, mcp_execution.CancellationToken())
         self.assertEqual(["accepted-artifact-reference", "ledger"], adopted.content["changed_surfaces"])
         contracts.validate_result(mcp_server.BRIEF_REVIEW_TOOL, adopted.content)
         stable = store.validated_snapshot()
         different = replace_struct(review, reviewer_task_id="another-independent-reviewer")
         with self.assertRaises(UnexpectedToolError):
-            executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+            executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
             self.addCleanup(executor.shutdown)
             server = mcp_server.create_server(
-                executor, mcp_server.Diagnostics(io.StringIO(), event_limit=2, line_limit=256)
+                executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=2, line_limit=256)
             )
             _run_async(
                 server.call_tool(
@@ -1000,13 +1009,15 @@ class McpTransportTest(unittest.TestCase):
                 )
             )
         self.assertEqual(stable, store.validated_snapshot())
-        status = mcp_server._brief_review({"request": {**base, "operation": "status"}}, mcp_server.CancellationToken())
+        status = mcp_reads._brief_review(
+            {"request": {**base, "operation": "status"}}, mcp_execution.CancellationToken()
+        )
         self.assertEqual("needs-correction", status.content["status"])
         selector = failed.content["published_selector"]
         assert isinstance(selector, str)
         (roots.work_root / selector).write_bytes(b"{}\n")
-        with self.assertRaises(mcp_server.ArtifactError):
-            mcp_server._brief_review({"request": {**base, "operation": "status"}}, mcp_server.CancellationToken())
+        with self.assertRaises(ArtifactError):
+            mcp_reads._brief_review({"request": {**base, "operation": "status"}}, mcp_execution.CancellationToken())
 
     def test_independent_review_preserves_semantically_narrower_correspondence_as_blocking_evidence(self) -> None:
         temporary, project, roots = self._project()
@@ -1051,9 +1062,9 @@ class McpTransportTest(unittest.TestCase):
             "brief_artifact_ref_id": int(reference.artifact_ref_id),
             "review": msgspec.to_builtins(semantic_review),
         }
-        result = mcp_server._brief_review({"request": request}, mcp_server.CancellationToken())
+        result = mcp_reads._brief_review({"request": request}, mcp_execution.CancellationToken())
         self.assertEqual("committed", result.content["status"], result.content)
-        status = mcp_server._brief_review(
+        status = mcp_reads._brief_review(
             {
                 "request": {
                     "project_root": str(project),
@@ -1062,7 +1073,7 @@ class McpTransportTest(unittest.TestCase):
                     "brief_artifact_ref_id": int(reference.artifact_ref_id),
                 }
             },
-            mcp_server.CancellationToken(),
+            mcp_execution.CancellationToken(),
         )
         self.assertEqual("needs-correction", status.content["status"], status.content)
         returned_review = status.content["review"]
@@ -1084,14 +1095,16 @@ class McpTransportTest(unittest.TestCase):
         roots: dict[str, contracts.JsonValue] = {"project_root": "/project", "work_root": "/work"}
         cases: tuple[
             tuple[
-                Callable[[dict[str, contracts.JsonValue], mcp_server.CancellationToken], mcp_server.OperationResult],
+                Callable[
+                    [dict[str, contracts.JsonValue], mcp_execution.CancellationToken], mcp_execution.OperationResult
+                ],
                 dict[str, contracts.JsonValue],
                 tuple[dict[str, contracts.JsonValue], ...],
             ],
             ...,
         ] = (
             (
-                mcp_server._read_actions,
+                mcp_reads._read_actions,
                 {**roots, "role": "project"},
                 (
                     {"lease_id": None},
@@ -1099,7 +1112,7 @@ class McpTransportTest(unittest.TestCase):
                 ),
             ),
             (
-                mcp_server._read_actions,
+                mcp_reads._read_actions,
                 {**roots, "role": "worker", "lease_id": "worker", "generation": 1},
                 (
                     {"generation": True},
@@ -1109,7 +1122,7 @@ class McpTransportTest(unittest.TestCase):
                 ),
             ),
             (
-                mcp_server._preparation_authority,
+                mcp_mutations._preparation_authority,
                 {**roots, "operation": "release", "item_id": "item", "lease_id": "lease", "generation": 1},
                 (
                     {"ttl_seconds": 60},
@@ -1117,7 +1130,7 @@ class McpTransportTest(unittest.TestCase):
                 ),
             ),
             (
-                mcp_server._attempt_authority,
+                mcp_mutations._attempt_authority,
                 {
                     **roots,
                     "operation": "renew",
@@ -1133,7 +1146,7 @@ class McpTransportTest(unittest.TestCase):
                 ),
             ),
             (
-                mcp_server._transition,
+                mcp_mutations._transition,
                 {
                     **roots,
                     "role": "project",
@@ -1162,15 +1175,17 @@ class McpTransportTest(unittest.TestCase):
             for raw in invalid:
                 with (
                     self.subTest(handler=handler.__name__, raw=raw),
-                    patch.object(mcp_server, "_resolve_durable") as resolve,
-                    patch.object(mcp_server, "resolve_source_checkout_root") as source,
+                    patch.object(mcp_common, "_resolve_durable") as resolve,
+                    patch.object(mcp_reads, "resolve_source_checkout_root") as read_source,
+                    patch.object(mcp_mutations, "resolve_source_checkout_root") as mutation_source,
                 ):
-                    result = handler(raw, mcp_server.CancellationToken())
+                    result = handler(raw, mcp_execution.CancellationToken())
                     self.assertEqual("rejected", result.content["status"])
                     self.assertFalse(result.content["state_changed"])
                     self.assertEqual([], result.content["changed_surfaces"])
                     resolve.assert_not_called()
-                    source.assert_not_called()
+                    read_source.assert_not_called()
+                    mutation_source.assert_not_called()
 
     def _project(self) -> tuple[tempfile.TemporaryDirectory[str], Path, DurableRoots]:
         temporary = tempfile.TemporaryDirectory()
@@ -1425,7 +1440,7 @@ class McpTransportTest(unittest.TestCase):
             check=True,
             capture_output=True,
         )
-        candidate = mcp_server.lifecycle_artifacts.read_working_tree_candidate(project).identity
+        candidate = lifecycle_artifacts.read_working_tree_candidate(project).identity
         store = SQLiteWorkStore(roots.database_path)
         before = store.validated_snapshot()
         original_publish = ArtifactRepository.publish
@@ -1442,14 +1457,16 @@ class McpTransportTest(unittest.TestCase):
             return decision_time
 
         with (
-            patch.object(mcp_server, "datetime") as clock,
+            patch.object(mcp_mutations, "datetime") as clock,
             patch.object(ArtifactRepository, "publish", publish_then_expire),
             patch.object(
-                mcp_server, "resolve_source_checkout_root", wraps=mcp_server.resolve_source_checkout_root
+                mcp_mutations,
+                "resolve_source_checkout_root",
+                wraps=mcp_mutations.resolve_source_checkout_root,
             ) as resolve_source,
         ):
             clock.now.side_effect = current_time
-            result = mcp_server._transition(
+            result = mcp_mutations._transition(
                 {
                     "request": {
                         "project_root": str(project),
@@ -1464,7 +1481,7 @@ class McpTransportTest(unittest.TestCase):
                         "generation": 3,
                     }
                 },
-                mcp_server.CancellationToken(),
+                mcp_execution.CancellationToken(),
             )
         resolve_source.assert_called_once_with(project)
         content = contracts.validate_result(mcp_server.TRANSITION_TOOL, result.content)
@@ -1763,8 +1780,8 @@ class McpTransportTest(unittest.TestCase):
         for invalid in (wrong_role, unknown_payload, advisory):
             with self.subTest(invalid=invalid), self.assertRaises((msgspec.ValidationError, ValueError)):
                 contracts.decode_transition_request({"request": invalid})
-        with patch.object(mcp_server, "_resolve_durable") as resolve:
-            rejected = mcp_server._transition(
+        with patch.object(mcp_common, "_resolve_durable") as resolve:
+            rejected = mcp_mutations._transition(
                 {
                     "request": {
                         "project_root": "/project",
@@ -1776,7 +1793,7 @@ class McpTransportTest(unittest.TestCase):
                         "actor_host_id": "local",
                     }
                 },
-                mcp_server.CancellationToken(),
+                mcp_execution.CancellationToken(),
             )
             self.assertEqual("rejected", rejected.content["status"])
             resolve.assert_not_called()
@@ -1956,9 +1973,9 @@ class McpTransportTest(unittest.TestCase):
     ) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
-        executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=4)
+        executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         server = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
         )
         common: dict[str, contracts.JsonValue] = {
             "project_root": str(project),
@@ -2144,15 +2161,15 @@ class McpTransportTest(unittest.TestCase):
                 alternatives=(),
             )
             with patch.object(
-                mcp_server.lifecycle_artifacts,
+                lifecycle_artifacts,
                 "execute_artifact_transition",
-                return_value=mcp_server.lifecycle_artifacts.PublishedTransitionFailure(
+                return_value=lifecycle_artifacts.PublishedTransitionFailure(
                     "FILE_PUBLISH_FAILED", "publication failed", publication_details, None
                 ),
             ):
                 publication_failed = await call(mcp_server.TRANSITION_TOOL, submit_arguments)
             with patch.object(
-                mcp_server.lifecycle_artifacts,
+                lifecycle_artifacts,
                 "execute_artifact_transition",
                 return_value=DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
@@ -2303,10 +2320,10 @@ class McpTransportTest(unittest.TestCase):
         self.assertIn(contents[24]["status"], {"committed", "committed-with-warning"})
 
     def test_authority_tools_preserve_fixed_time_commit_reload_and_stale_rejection(self) -> None:
-        executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=4)
+        executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         self.addCleanup(executor.shutdown)
         server = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=1, line_limit=256)
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=1, line_limit=256)
         )
         for family in ("attempt", "preparation"):
             for operation in ("renew", "release", "revoke"):
@@ -2352,7 +2369,7 @@ class McpTransportTest(unittest.TestCase):
                         arguments.update(actor_task_id="project-owner", actor_host_id="project-host")
                     before = store.validated_snapshot()
                     operation_time = SQLITE_NOW + timedelta(seconds=1)
-                    with patch.object(mcp_server, "datetime") as clock:
+                    with patch.object(mcp_mutations, "datetime") as clock:
                         clock.now.return_value = operation_time
                         rejected = _run_async(
                             server.call_tool(tool, _mcp_arguments(tool, arguments | {"lease_id": "stale-lease"}))
@@ -2453,7 +2470,7 @@ class McpTransportTest(unittest.TestCase):
                     "schema": "pinboard-mcp-actions-result/v1",
                     "status": "ok",
                     "actions": [
-                        mcp_server._mcp_action(
+                        mcp_reads._mcp_action(
                             action(decision_models.AcceptCheckpointAction, AttemptId("attempt-1")),
                             SQLiteWorkStore(roots.database_path),
                             str(_project),
@@ -2500,7 +2517,7 @@ class McpTransportTest(unittest.TestCase):
             ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
         )
         absent = contracts.EvidenceAbsent("/work/attempts/attempt-1/result.md")
-        presented_continuation = mcp_server._mcp_attempt_continuation(continuation)
+        presented_continuation = mcp_reads._mcp_attempt_continuation(continuation)
         assert not isinstance(presented_continuation, contracts.TerminalAttemptContinuation)
         inspection = contracts.NonterminalAttemptInspectionSuccess(
             "pinboard-mcp-attempt-inspection-result/v1",
@@ -2754,11 +2771,11 @@ class McpTransportTest(unittest.TestCase):
     def test_negotiated_schemas_reject_cross_parent_action_identities(self) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
-        token = mcp_server.CancellationToken()
+        token = mcp_execution.CancellationToken()
         common = (str(project), str(roots.work_root))
         action_result = msgspec.json.decode(
             msgspec.json.encode(
-                mcp_server._read_actions(
+                mcp_reads._read_actions(
                     {
                         "request": {
                             "project_root": common[0],
@@ -2772,7 +2789,7 @@ class McpTransportTest(unittest.TestCase):
             )
         )
         attempt_result = msgspec.json.decode(
-            msgspec.json.encode(mcp_server._read_attempt_inspection(*common, "work-a-1", token).content)
+            msgspec.json.encode(mcp_reads._read_attempt_inspection(*common, "work-a-1", token).content)
         )
         assert isinstance(action_result, dict)
         assert isinstance(attempt_result, dict)
@@ -2870,7 +2887,7 @@ class McpTransportTest(unittest.TestCase):
 
         for continuation in continuations:
             with self.subTest(state=continuation.state):
-                presented = mcp_server._mcp_attempt_continuation(continuation)
+                presented = mcp_reads._mcp_attempt_continuation(continuation)
                 encoded = msgspec.to_builtins(presented)
                 assert isinstance(encoded, dict)
                 self.assertEqual("attempt-1", encoded["attempt_id"])
@@ -3060,28 +3077,28 @@ class McpTransportTest(unittest.TestCase):
     def test_workflow_read_handlers_cover_success_and_structured_rejections(self) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
-        token = mcp_server.CancellationToken()
+        token = mcp_execution.CancellationToken()
         reference = SQLiteWorkStore(roots.database_path).validated_snapshot().artifact_references[0]
         common = (str(project), str(roots.work_root))
 
         results = (
-            (mcp_server.OVERVIEW_TOOL, mcp_server._read_overview(*common, token)),
-            (mcp_server.OVERVIEW_TOOL, mcp_server._read_overview("", str(roots.work_root), token)),
+            (mcp_server.OVERVIEW_TOOL, mcp_reads._read_overview(*common, token)),
+            (mcp_server.OVERVIEW_TOOL, mcp_reads._read_overview("", str(roots.work_root), token)),
             (
                 mcp_server.ACTIONS_TOOL,
-                mcp_server._read_actions(
+                mcp_reads._read_actions(
                     {"request": {"project_root": common[0], "work_root": common[1], "role": "observer"}}, token
                 ),
             ),
             (
                 mcp_server.ACTIONS_TOOL,
-                mcp_server._read_actions(
+                mcp_reads._read_actions(
                     {"request": {"project_root": common[0], "work_root": common[1], "role": "project"}}, token
                 ),
             ),
             (
                 mcp_server.ACTIONS_TOOL,
-                mcp_server._read_actions(
+                mcp_reads._read_actions(
                     {
                         "request": {
                             "project_root": common[0],
@@ -3097,7 +3114,7 @@ class McpTransportTest(unittest.TestCase):
             ),
             (
                 mcp_server.ACTIONS_TOOL,
-                mcp_server._read_actions(
+                mcp_reads._read_actions(
                     {
                         "request": {
                             "project_root": common[0],
@@ -3113,7 +3130,7 @@ class McpTransportTest(unittest.TestCase):
             ),
             (
                 mcp_server.ACTIONS_TOOL,
-                mcp_server._read_actions(
+                mcp_reads._read_actions(
                     {
                         "request": {
                             "project_root": common[0],
@@ -3129,7 +3146,7 @@ class McpTransportTest(unittest.TestCase):
             ),
             (
                 mcp_server.ACTIONS_TOOL,
-                mcp_server._read_actions(
+                mcp_reads._read_actions(
                     {
                         "request": {
                             "project_root": common[0],
@@ -3143,19 +3160,19 @@ class McpTransportTest(unittest.TestCase):
             ),
             (
                 mcp_server.ATTEMPT_INSPECT_TOOL,
-                mcp_server._read_attempt_inspection(*common, "work-a-1", token),
+                mcp_reads._read_attempt_inspection(*common, "work-a-1", token),
             ),
             (
                 mcp_server.ATTEMPT_INSPECT_TOOL,
-                mcp_server._read_attempt_inspection(*common, "missing-attempt", token),
+                mcp_reads._read_attempt_inspection(*common, "missing-attempt", token),
             ),
             (
                 mcp_server.ATTEMPT_INSPECT_TOOL,
-                mcp_server._read_attempt_inspection(*common, "", token),
+                mcp_reads._read_attempt_inspection(*common, "", token),
             ),
             (
                 mcp_server.ARTIFACT_VERIFY_TOOL,
-                mcp_server._verify_artifact(
+                mcp_reads._verify_artifact(
                     *common,
                     int(reference.artifact_ref_id),
                     reference.selector,
@@ -3166,7 +3183,7 @@ class McpTransportTest(unittest.TestCase):
             ),
             (
                 mcp_server.ARTIFACT_VERIFY_TOOL,
-                mcp_server._verify_artifact(
+                mcp_reads._verify_artifact(
                     *common,
                     999,
                     reference.selector,
@@ -3177,7 +3194,7 @@ class McpTransportTest(unittest.TestCase):
             ),
             (
                 mcp_server.ARTIFACT_VERIFY_TOOL,
-                mcp_server._verify_artifact(
+                mcp_reads._verify_artifact(
                     *common,
                     int(reference.artifact_ref_id),
                     reference.selector,
@@ -3188,7 +3205,7 @@ class McpTransportTest(unittest.TestCase):
             ),
             (
                 mcp_server.ARTIFACT_VERIFY_TOOL,
-                mcp_server._verify_artifact(
+                mcp_reads._verify_artifact(
                     *common,
                     int(reference.artifact_ref_id),
                     "",
@@ -3204,7 +3221,7 @@ class McpTransportTest(unittest.TestCase):
 
         artifact_path = roots.work_root / reference.selector
         artifact_path.write_bytes(b"corrupt")
-        corrupted = mcp_server._verify_artifact(
+        corrupted = mcp_reads._verify_artifact(
             *common,
             int(reference.artifact_ref_id),
             reference.selector,
@@ -3223,18 +3240,18 @@ class McpTransportTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         uninitialized = project / "uninitialized-work"
         uninitialized.mkdir()
-        token = mcp_server.CancellationToken()
+        token = mcp_execution.CancellationToken()
 
         results = (
             (
                 mcp_server.OVERVIEW_TOOL,
                 "OVERVIEW_INVALID",
-                mcp_server._read_overview(str(project), str(uninitialized), token),
+                mcp_reads._read_overview(str(project), str(uninitialized), token),
             ),
             (
                 mcp_server.PROPOSAL_CREATE_TOOL,
                 "PROPOSAL_INVALID",
-                mcp_server._proposal_created(
+                mcp_mutations._proposal_created(
                     str(project),
                     str(uninitialized),
                     proposal_input(),
@@ -3260,9 +3277,9 @@ class McpTransportTest(unittest.TestCase):
         self.assertFalse((uninitialized / "state.sqlite3").exists())
 
     def test_mcp_cancellation_releases_running_and_queued_admission(self) -> None:  # noqa: PLR0915 - one MCP cancellation journey
-        executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=2)
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=2)
         diagnostics_stream = io.StringIO()
-        diagnostics = mcp_server.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256)
+        diagnostics = mcp_execution.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256)
         server = mcp_server.create_server(executor, diagnostics)
         original_emit = diagnostics.emit
         running_started = threading.Event()
@@ -3277,16 +3294,16 @@ class McpTransportTest(unittest.TestCase):
         calls_lock = threading.Lock()
         call_count = 0
         admitted = (threading.Event(), threading.Event())
-        executions: list[mcp_server.Execution[mcp_server.OperationResult]] = []
+        executions: list[mcp_execution.Execution[mcp_execution.OperationResult]] = []
         original_submit = executor.submit
-        original_cancel = mcp_server.CancellationToken.cancel
+        original_cancel = mcp_execution.CancellationToken.cancel
 
         def controlled_read(
             _project_root: str,
             _work_root: str,
             _item_id: str,
-            token: mcp_server.CancellationToken,
-        ) -> mcp_server.OperationResult:
+            token: mcp_execution.CancellationToken,
+        ) -> mcp_execution.OperationResult:
             nonlocal call_count
             with calls_lock:
                 call_count += 1
@@ -3297,14 +3314,14 @@ class McpTransportTest(unittest.TestCase):
                 raise AssertionError("The MCP operation was not released.")
             try:
                 token.checkpoint()
-            except mcp_server.OperationCancelled:
+            except mcp_execution.OperationCancelled:
                 cooperative_cancelled.set()
                 raise
-            return mcp_server.OperationResult({}, "ok", None)
+            return mcp_execution.OperationResult({}, "ok", None)
 
         def observed_submit(
-            callback: Callable[[mcp_server.CancellationToken], mcp_server.OperationResult],
-        ) -> mcp_server.Execution[mcp_server.OperationResult]:
+            callback: Callable[[mcp_execution.CancellationToken], mcp_execution.OperationResult],
+        ) -> mcp_execution.Execution[mcp_execution.OperationResult]:
             execution = original_submit(callback)
             executions.append(execution)
             admitted[len(executions) - 1].set()
@@ -3335,7 +3352,7 @@ class McpTransportTest(unittest.TestCase):
                     cancellation_events[cancellation_count].set()
                     cancellation_count += 1
 
-        def observed_cancel(token: mcp_server.CancellationToken) -> None:
+        def observed_cancel(token: mcp_execution.CancellationToken) -> None:
             nonlocal token_cancellation_count
             original_cancel(token)
             with cancellations_lock:
@@ -3360,10 +3377,10 @@ class McpTransportTest(unittest.TestCase):
                     await session.initialize()
                     arguments = {"project_root": "/project", "work_root": "/work", "item_id": "item"}
                     with (
-                        patch.object(mcp_server, "_read_item_status", controlled_read),
+                        patch.object(mcp_reads, "_read_item_status", controlled_read),
                         patch.object(executor, "submit", observed_submit),
                         patch.object(diagnostics, "emit", observed_emit),
-                        patch.object(mcp_server.CancellationToken, "cancel", observed_cancel),
+                        patch.object(mcp_execution.CancellationToken, "cancel", observed_cancel),
                     ):
                         active = asyncio.create_task(session.call_tool(mcp_server.ITEM_STATUS_TOOL, arguments))
                         await _wait_for(admitted[0])
@@ -3415,19 +3432,19 @@ class McpTransportTest(unittest.TestCase):
     def test_running_mutation_cancellation_waits_for_committed_result(self) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
-        executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=4)
+        executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         diagnostics_stream = io.StringIO()
         server = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256)
+            executor, mcp_execution.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256)
         )
         committed = threading.Event()
         release = threading.Event()
-        original_refresh = mcp_server._refresh_affected_views
+        original_refresh = mcp_common._refresh_affected_views
 
         def delayed_refresh(
             durable: DurableRoots,
             store: SQLiteWorkStore,
-            affected: mcp_server.AffectedViews,
+            affected: AffectedViews,
             now: datetime,
         ) -> ViewRefreshResult:
             result = original_refresh(durable, store, affected, now)
@@ -3437,7 +3454,7 @@ class McpTransportTest(unittest.TestCase):
             return result
 
         async def scenario() -> CallToolResult:
-            with patch.object(mcp_server, "_refresh_affected_views", delayed_refresh):
+            with patch.object(mcp_common, "_refresh_affected_views", delayed_refresh):
                 request = asyncio.create_task(
                     server.call_tool(
                         mcp_server.PROPOSAL_CREATE_TOOL,
@@ -3480,8 +3497,8 @@ class McpTransportTest(unittest.TestCase):
         second_temporary, second_project, second_roots = self._project()
         self.addCleanup(first_temporary.cleanup)
         self.addCleanup(second_temporary.cleanup)
-        executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=2)
-        diagnostics = mcp_server.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
+        executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=2)
+        diagnostics = mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
         server = mcp_server.create_server(executor, diagnostics)
         barrier = threading.Barrier(2)
         stores: list[tuple[int, Path, SQLiteWorkStore]] = []
@@ -3507,7 +3524,7 @@ class McpTransportTest(unittest.TestCase):
                     "item_id": "work-c",
                 },
             )
-            with patch.object(mcp_server, "compose_store", compose):
+            with patch.object(mcp_common, "compose_store", compose):
                 first, second = await asyncio.gather(
                     *(server.call_tool(mcp_server.ITEM_STATUS_TOOL, value) for value in arguments)
                 )
@@ -3532,9 +3549,9 @@ class McpTransportTest(unittest.TestCase):
     def test_structured_rejections_leave_ledger_unchanged_and_duplicate_is_recoverable(self) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
-        executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=4)
+        executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         server = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
         )
         store = SQLiteWorkStore(roots.database_path)
         before = store.validated_snapshot()
@@ -3591,9 +3608,9 @@ class McpTransportTest(unittest.TestCase):
     def test_invalid_actor_identity_is_structured_and_leaves_fresh_store_unchanged(self) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
-        executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=4)
+        executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         server = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
         )
         before = SQLiteWorkStore(roots.database_path).validated_snapshot()
 
@@ -3632,9 +3649,9 @@ class McpTransportTest(unittest.TestCase):
         self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
 
     def test_invalid_roots_are_rejected_before_durable_state_resolution(self) -> None:
-        executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=4)
+        executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         server = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
         )
         requests = (
             (
@@ -3680,7 +3697,7 @@ class McpTransportTest(unittest.TestCase):
                         self.assertFalse(content["state_changed"])
 
         try:
-            with patch.object(mcp_server, "_resolve_durable") as resolve_durable:
+            with patch.object(mcp_common, "_resolve_durable") as resolve_durable:
                 _run_async(scenario())
             resolve_durable.assert_not_called()
         finally:
@@ -3691,10 +3708,10 @@ class McpTransportTest(unittest.TestCase):
             with self.subTest(operation=operation):
                 temporary, project, roots = self._project()
                 self.addCleanup(temporary.cleanup)
-                executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=4)
+                executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
                 server = mcp_server.create_server(
                     executor,
-                    mcp_server.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
+                    mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
                 )
                 if operation == mcp_server.PROPOSAL_CREATE_TOOL:
                     arguments = {
@@ -3711,7 +3728,7 @@ class McpTransportTest(unittest.TestCase):
                         "brief": msgspec.to_builtins(work_a_brief(project)),
                     }
                 with (
-                    patch.object(mcp_server, "_refresh_affected_views", side_effect=RuntimeError("reply lost")),
+                    patch.object(mcp_common, "_refresh_affected_views", side_effect=RuntimeError("reply lost")),
                     self.assertRaises(UnexpectedToolError),
                 ):
                     _run_async(server.call_tool(operation, _mcp_arguments(operation, arguments)))
@@ -3731,10 +3748,10 @@ class McpTransportTest(unittest.TestCase):
     def test_brief_acceptance_failure_reports_discoverable_published_artifact(self) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
-        executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=4)
+        executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         diagnostics_stream = io.StringIO()
         server = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256)
+            executor, mcp_execution.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256)
         )
         brief = work_a_brief(project)
         references_before = SQLiteWorkStore(roots.database_path).validated_snapshot().artifact_references
@@ -3780,15 +3797,15 @@ class McpTransportTest(unittest.TestCase):
     def test_view_refresh_failure_reports_committed_warning_and_rebuild_recovery(self) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
-        executor = mcp_server.BoundedExecutor(worker_count=2, unfinished_limit=4)
+        executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         server = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
         )
         warning = ViewRefreshResult(
             12,
             ViewWarning("Generated views need repair.", "Run 'pinboard views rebuild'."),
         )
-        with patch.object(mcp_server, "_refresh_affected_views", return_value=warning):
+        with patch.object(mcp_common, "_refresh_affected_views", return_value=warning):
             result = _run_async(
                 server.call_tool(
                     mcp_server.PROPOSAL_CREATE_TOOL,
@@ -3814,18 +3831,18 @@ class McpTransportTest(unittest.TestCase):
         self.assertIsNotNone(SQLiteWorkStore(roots.database_path).read_item_status(ItemId("proposal-1")))
 
     def test_server_rejects_an_internal_result_that_violates_its_advertised_contract(self) -> None:
-        executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         server = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=8, line_limit=256)
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=8, line_limit=256)
         )
 
         def contradictory_result(
             _project_root: str,
             _work_root: str,
             _item_id: str,
-            _token: mcp_server.CancellationToken,
-        ) -> mcp_server.OperationResult:
-            return mcp_server.OperationResult(
+            _token: mcp_execution.CancellationToken,
+        ) -> mcp_execution.OperationResult:
+            return mcp_execution.OperationResult(
                 {
                     "schema": "pinboard-mcp-execution-result/v1",
                     "status": "busy",
@@ -3844,7 +3861,7 @@ class McpTransportTest(unittest.TestCase):
 
         try:
             with (
-                patch.object(mcp_server, "_read_item_status", contradictory_result),
+                patch.object(mcp_reads, "_read_item_status", contradictory_result),
                 self.assertRaises(UnexpectedToolError),
             ):
                 _run_async(

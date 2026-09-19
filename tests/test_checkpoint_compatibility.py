@@ -18,7 +18,9 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import candidate_snapshots, checkpoint_compatibility_models, stored_state, work_brief_models
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.mcp import contracts, server
+from pinboard.mcp import contracts
+from pinboard.mcp import execution as mcp_execution
+from pinboard.mcp import job_operations as mcp_jobs
 from tests import test_correction_source_review
 from tests.checkpoint_support import AcceptedPackageFixture, CheckpointPackageSupport
 
@@ -35,7 +37,7 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
             "checkpoint_history_id": history_id,
             "candidate_patch": base64.b64encode(patch_bytes).decode(),
         }
-        ready = server._review_job(str(fixture.project), str(fixture.work), remedy, server.CancellationToken())
+        ready = mcp_jobs._review_job(str(fixture.project), str(fixture.work), remedy, mcp_execution.CancellationToken())
         self.assertEqual("ready", ready.content["status"])
         recovered = fixture.store.read_artifact_reference(
             work_models.ArtifactKind.EVIDENCE,
@@ -61,7 +63,9 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
             "size_bytes": recovered.size_bytes,
         }
         before = fixture.store.validated_snapshot()
-        rejected = server._dispatch_job(str(fixture.project), str(fixture.work), choice, server.CancellationToken())
+        rejected = mcp_jobs._dispatch_job(
+            str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
+        )
         self.assertEqual("DISPATCH_BRIEF_REVIEW_INVALID", rejected.content["code"], rejected.content)
         self.assertEqual([], rejected.content["changed_surfaces"])
         self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
@@ -90,15 +94,17 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
                     patch_path.parent.mkdir(parents=True, exist_ok=True)
                     patch_path.write_bytes(b"different" if disposition == "collision" else patch_bytes)
                 if disposition == "reuse":
-                    ready = server._review_job(
-                        str(fixture.project), str(fixture.work), choice, server.CancellationToken()
+                    ready = mcp_jobs._review_job(
+                        str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
                     )
                     self.assertEqual("ready", ready.content["status"])
                 before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
                 (fixture.work / "attempts" / "work-a-1" / "result.md").unlink()
                 if disposition == "collision":
                     with self.assertRaises(ArtifactError):
-                        server._review_job(str(fixture.project), str(fixture.work), choice, server.CancellationToken())
+                        mcp_jobs._review_job(
+                            str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
+                        )
                     self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
                     self.assertEqual(b"different", patch_path.read_bytes())
                     continue
@@ -114,8 +120,8 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
                     )
                 )
                 with selected:
-                    outcome = server._review_job(
-                        str(fixture.project), str(fixture.work), choice, server.CancellationToken()
+                    outcome = mcp_jobs._review_job(
+                        str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
                     )
                 expected_by_disposition: dict[str, list[str]] = {
                     "orphan": ["accepted-artifact-reference", "ledger"],
@@ -231,8 +237,8 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
             {"attempt_id": "../invalid"},
         )
         for change in changes:
-            with self.subTest(change=change), patch.object(server, "resolve_source_checkout_root") as roots:
-                result = server._review_job("/repo", "/board", base | change, server.CancellationToken())
+            with self.subTest(change=change), patch.object(mcp_jobs, "resolve_source_checkout_root") as roots:
+                result = mcp_jobs._review_job("/repo", "/board", base | change, mcp_execution.CancellationToken())
                 self.assertEqual("REVIEW_JOB_INVALID", result.content["code"])
                 roots.assert_not_called()
         for version in ("v2", "v3"):
@@ -248,11 +254,11 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
                     )
                 )
             before = fixture.store.validated_snapshot()
-            outcome = server._review_job(
+            outcome = mcp_jobs._review_job(
                 str(fixture.project),
                 str(fixture.work),
                 base | {"checkpoint_history_id": history_id},
-                server.CancellationToken(),
+                mcp_execution.CancellationToken(),
             )
             self.assertEqual("rejected", outcome.content["status"], outcome.content)
             self.assertEqual(before, fixture.store.validated_snapshot())
@@ -290,8 +296,8 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
                     )
                 before = fixture.store.validated_snapshot()
                 with selected_patch:
-                    outcome = server._review_job(
-                        str(fixture.project), str(fixture.work), choice, server.CancellationToken()
+                    outcome = mcp_jobs._review_job(
+                        str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
                     )
                 after = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
                 self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)

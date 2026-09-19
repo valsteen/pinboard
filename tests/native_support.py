@@ -5,13 +5,14 @@ import io
 
 from mcp_types import CallToolResult
 
+from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server as mcp_server
 from tests.support import JsonObject
 
 
 def call_native_tool(tool: str, arguments: JsonObject) -> JsonObject:
-    executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
-    server = mcp_server.create_server(executor, mcp_server.Diagnostics(io.StringIO(), event_limit=4, line_limit=256))
+    executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+    server = mcp_server.create_server(executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256))
     try:
         result = asyncio.run(server.call_tool(tool, arguments))
         assert isinstance(result, CallToolResult) and isinstance(result.structured_content, dict)

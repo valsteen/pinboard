@@ -41,7 +41,7 @@ class OrderingTest(unittest.TestCase):
         return service.reorder(self.store, expected, requested, TaskId("owner"), HostId("local"), SQLITE_NOW)
 
     def native_order(self, order: JsonObject) -> JsonObject:
-        with patch("pinboard.mcp.server.datetime") as clock:
+        with patch("pinboard.mcp.read_operations.datetime") as clock:
             clock.now.return_value = SQLITE_NOW
             return call_native_tool(
                 mcp_server.ORDER_TOOL,

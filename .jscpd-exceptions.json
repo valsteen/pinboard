@@ -230,112 +230,112 @@
       "identity": {
         "id": "authority-revocation-and-rejection",
         "format": "python",
-        "tokens": 69,
+        "tokens": 71,
         "lines": 14,
         "occurrences": [
           {
             "endpoint": {
-              "name": "mcp/server.py",
-              "start": 2175,
-              "end": 2188,
+              "name": "mcp/mutation_operations.py",
+              "start": 574,
+              "end": 587,
               "startLoc": {
                 "column": 46,
-                "line": 2175,
-                "position": 88658
+                "line": 574,
+                "position": 23259
               },
               "endLoc": {
                 "column": 25,
-                "line": 2188,
-                "position": 89167
+                "line": 587,
+                "position": 23778
               }
             },
-            "sha256": "544027f2a1fd10aa6b80866ab5635f5ba698ecbd9447ce85750fadc0f7ede331"
+            "sha256": "f8232475788de0765eaceff4b372fc8552ee0f97f53d66d2097e871cccf71401"
           },
           {
             "endpoint": {
-              "name": "mcp/server.py",
-              "start": 2299,
-              "end": 2312,
+              "name": "mcp/mutation_operations.py",
+              "start": 698,
+              "end": 711,
               "startLoc": {
                 "column": 55,
-                "line": 2299,
-                "position": 93920
+                "line": 698,
+                "position": 28609
               },
               "endLoc": {
                 "column": 25,
-                "line": 2312,
-                "position": 94429
+                "line": 711,
+                "position": 29128
               }
             },
-            "sha256": "544027f2a1fd10aa6b80866ab5635f5ba698ecbd9447ce85750fadc0f7ede331"
+            "sha256": "f8232475788de0765eaceff4b372fc8552ee0f97f53d66d2097e871cccf71401"
           }
         ],
         "owners": [
-          "src/pinboard/mcp/server.py#_preparation_authority",
-          "src/pinboard/mcp/server.py#_attempt_authority"
+          "src/pinboard/mcp/mutation_operations.py#_preparation_authority",
+          "src/pinboard/mcp/mutation_operations.py#_attempt_authority"
         ],
         "rationale": "Distinct exact request leaves invoke different application operations with nominal ItemId versus AttemptId scope, then render different schema/scope/conflict records. Shared claim and rejection-detail conversion already owns the repeated representation. Further folding requires a cross-family workflow callback or late reclassification of a selected leaf."
       },
       "certification": {
-        "reviewer_task_id": "01a0b3ca-5a63-7f03-8df7-515d362bec41",
-        "reviewed_pair_sha256": "bd493e7047b9661d7296d59b0762c9daa468cd956834957f188294cfed052530",
-        "evidence_sha256": "c90cd3e3e2f6a6230953244d16170c9974a5938861c993944bc4d6bda6681f51"
+        "reviewer_task_id": "d47a8c3f-2b91-4e9d-a8c4-7f6e5b3a1d29",
+        "reviewed_pair_sha256": "95bb3692eb7ffecd0e51e5d14b12c0d0d1080d8630d3e0cd69ddaf93aa9558dd",
+        "evidence_sha256": "33322cada3ffeb462a9f19bab058c84c81a39f6b6bc698faf3b4df305e9a5b3d"
       }
     },
     {
       "identity": {
         "id": "authority-rejection-and-view-effect",
         "format": "python",
-        "tokens": 68,
+        "tokens": 70,
         "lines": 16,
         "occurrences": [
           {
             "endpoint": {
-              "name": "mcp/server.py",
-              "start": 2194,
-              "end": 2209,
+              "name": "mcp/mutation_operations.py",
+              "start": 593,
+              "end": 608,
               "startLoc": {
                 "column": 99,
-                "line": 2194,
-                "position": 89532
+                "line": 593,
+                "position": 24143
               },
               "endLoc": {
                 "column": 31,
-                "line": 2209,
-                "position": 89959
+                "line": 608,
+                "position": 24577
               }
             },
-            "sha256": "f8dfc07a511f17dbd45418a675d7504b640244c1f56d8eb88f084b0bf0928f55"
+            "sha256": "dc1f6e2dc84e78ed7070bafb3fc4165f1a09fa781686e689e6ab1216ff486f0b"
           },
           {
             "endpoint": {
-              "name": "mcp/server.py",
-              "start": 2318,
-              "end": 2333,
+              "name": "mcp/mutation_operations.py",
+              "start": 717,
+              "end": 732,
               "startLoc": {
                 "column": 101,
-                "line": 2318,
-                "position": 94798
+                "line": 717,
+                "position": 29497
               },
               "endLoc": {
                 "column": 31,
-                "line": 2333,
-                "position": 95225
+                "line": 732,
+                "position": 29931
               }
             },
-            "sha256": "f8dfc07a511f17dbd45418a675d7504b640244c1f56d8eb88f084b0bf0928f55"
+            "sha256": "dc1f6e2dc84e78ed7070bafb3fc4165f1a09fa781686e689e6ab1216ff486f0b"
           }
         ],
         "owners": [
-          "src/pinboard/mcp/server.py#_preparation_authority",
-          "src/pinboard/mcp/server.py#_attempt_authority"
+          "src/pinboard/mcp/mutation_operations.py#_preparation_authority",
+          "src/pinboard/mcp/mutation_operations.py#_attempt_authority"
         ],
         "rationale": "Each family reloads its distinct authority conflict after rejection. Successful operations explicitly refresh affected views before rendering the already-consolidated authority claims and committed receipt/warning. Hiding the remaining view effect inside a conversion would make a pure-looking renderer effectful; sharing the whole workflow would couple distinct scope and mutation-result types."
       },
       "certification": {
-        "reviewer_task_id": "01a0b3ca-5a63-7f03-8df7-515d362bec41",
-        "reviewed_pair_sha256": "01a6384cc8cc4bca143a9aaf8c347dfedce1b60a31300f163495c8f587a6347a",
-        "evidence_sha256": "c90cd3e3e2f6a6230953244d16170c9974a5938861c993944bc4d6bda6681f51"
+        "reviewer_task_id": "d47a8c3f-2b91-4e9d-a8c4-7f6e5b3a1d29",
+        "reviewed_pair_sha256": "a3cc7fba7d5405ccd3cf834699599877e973a54990cb3ad5bd3755dd6c8dcc37",
+        "evidence_sha256": "33322cada3ffeb462a9f19bab058c84c81a39f6b6bc698faf3b4df305e9a5b3d"
       }
     }
   ]

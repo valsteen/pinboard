@@ -186,8 +186,8 @@ class ArchitectureDependencyTest(unittest.TestCase):
 
     def test_sqlite_location_and_store_composition_have_one_explicit_owner(self) -> None:
         self.assertEqual((Path("adapters/files/file_io.py"),), _database_location_literals())
-        self.assertEqual((Path("cli/work_state_commands.py"), Path("mcp/server.py")), _sqlite_store_importers())
-        self.assertEqual((Path("cli/work_state_commands.py"), Path("mcp/server.py")), _sqlite_store_constructors())
+        self.assertEqual((Path("cli/work_state_commands.py"), Path("mcp/common.py")), _sqlite_store_importers())
+        self.assertEqual((Path("cli/work_state_commands.py"), Path("mcp/common.py")), _sqlite_store_constructors())
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ from pinboard.application.ports import WorkStore
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.identifiers import HostId, TaskId
+from pinboard.mcp import common as mcp_common
 from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
@@ -792,7 +793,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         before = fixture.store.validated_snapshot()
         error = RuntimeError("controlled unexpected projection exception")
         with (
-            patch.object(mcp_server, "_refresh_affected_views", side_effect=error),
+            patch.object(mcp_common, "_refresh_affected_views", side_effect=error),
             self.assertRaises(UnexpectedToolError) as failure,
         ):
             self.transition_result(fixture, action, {"reason": "Pause before exceptional reply loss."})
@@ -806,8 +807,8 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
     def test_follow_up_inspection_cannot_load_complete_state_after_view_refresh(self) -> None:
         fixture = self.active_fixture()
         action = self.project_action(fixture, "pause:work-a-1")
-        original_refresh = mcp_server._refresh_affected_views
-        with patch.object(mcp_server, "_refresh_affected_views", wraps=original_refresh) as refreshed:
+        original_refresh = mcp_common._refresh_affected_views
+        with patch.object(mcp_common, "_refresh_affected_views", wraps=original_refresh) as refreshed:
             result = self.transition_result(fixture, action, {"reason": "Pause before bounded inspection."})
         self.assertEqual("committed", result["status"])
         refreshed.assert_called_once()

@@ -18,7 +18,8 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
 from pinboard.application.artifacts import ArtifactPublication, NewArtifact
 from pinboard.domain import work_models
-from pinboard.mcp import server as mcp_server
+from pinboard.mcp import execution as mcp_execution
+from pinboard.mcp import mutation_operations as mcp_mutations
 from tests.checkpoint_support import CheckpointPackageSupport
 from tests.support import JsonObject
 
@@ -349,7 +350,7 @@ class NativeCheckpointEffectsTest(CheckpointPackageSupport):
             try:
                 # Direct handler execution keeps the deterministic effect boundary
                 # on this named request thread; winner exercises the registered SDK.
-                loser_results.append(mcp_server._transition(request, mcp_server.CancellationToken()).content)
+                loser_results.append(mcp_mutations._transition(request, mcp_execution.CancellationToken()).content)
             except BaseException as error:  # pragma: no cover - asserted by coordinator
                 loser_errors.append(error)
 

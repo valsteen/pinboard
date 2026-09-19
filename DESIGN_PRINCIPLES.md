@@ -28,6 +28,8 @@ Keep correlated facts with the type or decision that makes them true. A schema c
 
 File size and total lines are separate signals, not objectives. A reduction helps only when it concentrates real alternatives or removes repetition without hiding control flow.
 
+Use a module cohesion budget as a review trigger, not a pass/fail metric. At 1,500 source lines or 24 direct imports, inventory the module's top-level responsibilities and import neighborhoods. Split it when two groups can name independent product effects or verbs and each can depend on fewer collaborators. Keep a larger declarative catalog or one closed decision family together when extraction would add re-exports, translation, cycles, or scattered branching. Stop when every remaining module has one thematic owner and another move would increase dependency fan-out.
+
 Agent-facing schemas, values, and entry points are product surfaces when agents can use them to steer work. Unless a public API or CLI already makes the contract obvious, keep the consumer, semantic effect or deliberate non-effect, and owner discoverable from the definition or direct entry point. Remove a surface that survives only because a schema can carry it.
 
 When context must survive several reasoning stages, prefer a strict semantic scaffold. Give outcome, provenance, scope, non-goals, acceptance criteria, reviewed sources, verification, and remaining work stable places when those distinctions matter. Validate shape, references, identity, and canonical bytes without claiming that structure proves semantic truth.

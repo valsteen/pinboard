@@ -30,6 +30,7 @@ from pinboard.cli.entrypoint import main
 from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import ActionId, AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server as mcp_server
 from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
 from tests.work_brief_support import work_a_brief
@@ -38,8 +39,11 @@ from tests.work_brief_support import work_a_brief
 class AuthorityStatusReadTest(unittest.TestCase):
     @override
     def setUp(self) -> None:
-        clock_patch = patch("pinboard.mcp.server.datetime")
+        clock_patch = patch("pinboard.mcp.read_operations.datetime")
         clock = clock_patch.start()
+        mutation_clock_patch = patch("pinboard.mcp.mutation_operations.datetime", new=clock)
+        mutation_clock_patch.start()
+        self.addCleanup(mutation_clock_patch.stop)
         self.addCleanup(clock_patch.stop)
         clock.now.return_value = SQLITE_NOW
 
@@ -82,9 +86,9 @@ class AuthorityStatusReadTest(unittest.TestCase):
         return result, stdout.getvalue(), stderr.getvalue()
 
     def native(self, tool: str, project: str, work: str, request: dict[str, JsonValue]) -> JsonObject:
-        executor = mcp_server.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         server = mcp_server.create_server(
-            executor, mcp_server.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
         )
         arguments = {"project_root": project, "work_root": work, **request}
         if tool in {
@@ -345,7 +349,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
-            patch("pinboard.mcp.server.datetime") as clock,
+            patch("pinboard.mcp.mutation_operations.datetime") as clock,
             self.record_store_reads() as preparation_reads,
         ):
             clock.now.return_value = SQLITE_NOW + timedelta(minutes=1)
@@ -428,7 +432,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
                         "read_current_action_snapshot",
                         side_effect=AssertionError("current project read used"),
                     ),
-                    patch("pinboard.mcp.server.datetime") as clock,
+                    patch("pinboard.mcp.read_operations.datetime") as clock,
                     self.record_store_reads() as selected_reads,
                 ):
                     clock.now.return_value = SQLITE_NOW + timedelta(minutes=1)
@@ -459,7 +463,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 "read_leased_action_snapshot",
                 side_effect=AssertionError("lease-wide read used"),
             ),
-            patch("pinboard.mcp.server.datetime") as clock,
+            patch("pinboard.mcp.read_operations.datetime") as clock,
             self.record_store_reads() as selected_reads,
         ):
             clock.now.return_value = SQLITE_NOW + timedelta(minutes=1)
@@ -638,7 +642,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
-            patch("pinboard.mcp.server.datetime") as clock,
+            patch("pinboard.mcp.read_operations.datetime") as clock,
             self.record_store_reads() as preview_reads,
         ):
             clock.now.return_value = SQLITE_NOW
@@ -1288,7 +1292,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         ):
             with (
                 self.subTest(preparation_observed_at=observed_at),
-                patch("pinboard.mcp.server.datetime") as clock,
+                patch("pinboard.mcp.mutation_operations.datetime") as clock,
             ):
                 clock.now.return_value = observed_at
                 stdout = self.native(
@@ -1307,7 +1311,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
         project, work, _store = self.initialized_state(state)
 
-        with patch("pinboard.mcp.server.datetime") as clock:
+        with patch("pinboard.mcp.mutation_operations.datetime") as clock:
             clock.now.return_value = SQLITE_NOW + timedelta(days=1)
             stdout = self.native(
                 mcp_server.PREPARATION_AUTHORITY_TOOL,

@@ -87,15 +87,15 @@ Starting a preparation claim is one representative operation. The request is dec
 
 The same separation keeps a failed view refresh from undoing an accepted transaction. Preparation, implementation, and review use these boundaries while preserving the accepted work and its evidence.
 
-## Exact outcomes make the next move clear
+## Precise outcomes cross intact boundaries
 
-An agent needs to know what happened, whether anything changed, and how it can continue. Pinboard carries those answers through the same preparation-start path instead of collapsing them into an opaque message.
+Pinboard's layers pass typed outcomes upward instead of flattening a result into an opaque message. In the preparation-start path, the interface decodes `PreparationStartCommand`; the application selects the current definition, claim, and dependencies; the domain's `decide_preparation_authority` returns either an accepted `PreparationAuthorityDecision` or an expected `DecisionFailure`; and the storage adapter attempts only the accepted mutation.
 
-{_picture("outcomes", "Preparation start moving from exact input and selected current state through a pure decision and any attempted effect, with qualified facts reaching the interface that chooses actionable guidance")}
+{_picture("outcomes", "Preparation start crossing interface, application, domain, and adapter boundaries while domain rejection, stale-persistence rejection, successful commit, infrastructure failure, and view-warning facts stay distinct for interface-owned presentation")}
 
-An expected rejection preserves observations, mismatches, effect, changed surfaces, retry disposition, and bounded alternatives. An attempted effect likewise preserves durable truth: a successful claim is exact, an infrastructure failure reports whether anything committed, and a later view warning does not undo the accepted transaction.
+Those outcomes are broader than errors, and each result family carries only its own facts. An accepted `PreparationAuthorityDecision` describes the proposed lease. The adapter's `WorkTransaction.commit` returns another `DecisionResult`: a successful commit produces `CommittedEffect`, while a stale persistence guard returns a separate `DecisionFailure`. `PreparationStart` pairs only the successful effect with the authority. The representative domain and stale-persistence rejections carry a code and message with `details = None`, so no layer invents observations or mismatches.
 
-Each layer therefore reasons over a bounded set of facts without erasing the decision-relevant provenance needed by the next owner. The interface owns the final wording and supported next action; lower layers report what they know rather than inventing presentation policy.
+Each owner keeps its responsibility. Domain code decides without I/O or wording. Application code sequences current facts, decision, and effect. Adapters return a committed effect or typed stale-persistence rejection, while infrastructure failures remain exceptions. The interface turns either `DecisionFailure` or an infrastructure failure into `RejectedOperationView`; absent details become explicit empty observations, mismatches, and changed surfaces rather than reconstructed claims. For these typed rejections, the view reports `state_changed: false`, `do-not-retry`, and no next action. A successful command instead outputs the exact lease fields, while a later view-refresh warning remains separate from that committed success. Where a result really supplies `FailureDetails` or supported alternatives, the same interface preserves them and alone maps them to bounded next actions.
 
 If accepted direction changes late, Pinboard does not reinterpret the old candidate as satisfying the new request. The complete definition and brief are replaced before another candidate and review. If work pauses or a worker disappears, the same attempt can resume from its accepted Git lineage and recorded evidence without retelling the project history.
 

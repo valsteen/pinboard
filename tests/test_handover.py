@@ -28,7 +28,7 @@ from pinboard.cli.entrypoint import main
 from pinboard.domain import work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import ArtifactRefId, ItemId, ProposalId, TaskId
-from pinboard.mcp import server
+from pinboard.mcp import mutation_operations, server
 from tests.artifact_support import write_revision
 from tests.decision_support import project_decision_snapshot
 from tests.native_support import call_native_tool
@@ -499,7 +499,7 @@ class HandoverTest(unittest.TestCase):
                 }
             ],
         }
-        with patch.object(server, "datetime") as proposal_clock:
+        with patch.object(mutation_operations, "datetime") as proposal_clock:
             proposal_clock.now.return_value = commit_time
             result = call_native_tool(
                 server.PROPOSAL_CREATE_TOOL,

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from pinboard.adapters.sqlite import persistence as sqlite_persistence
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -191,7 +192,10 @@ def reject_table_deletes(table_name: str) -> Generator[None]:
             connection.set_authorizer(authorize)
         return connection
 
-    with patch.object(sqlite_store, "open_database", guarded_open):
+    with (
+        patch.object(sqlite_store, "open_database", guarded_open),
+        patch.object(sqlite_persistence, "open_database", guarded_open),
+    ):
         yield
 
 
@@ -219,7 +223,10 @@ def reject_table_inserts(table_name: str) -> Generator[None]:
             connection.set_authorizer(authorize)
         return connection
 
-    with patch.object(sqlite_store, "open_database", guarded_open):
+    with (
+        patch.object(sqlite_store, "open_database", guarded_open),
+        patch.object(sqlite_persistence, "open_database", guarded_open),
+    ):
         yield
 
 

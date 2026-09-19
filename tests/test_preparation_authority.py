@@ -678,7 +678,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             return connection
 
         with (
-            patch("pinboard.adapters.sqlite.store.open_database", side_effect=open_contender),
+            patch("pinboard.adapters.sqlite.persistence.open_database", side_effect=open_contender),
             ThreadPoolExecutor(max_workers=1) as executor,
         ):
             pending_release = executor.submit(

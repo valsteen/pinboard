@@ -18,6 +18,7 @@ from unittest.mock import patch
 from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.sqlite import persistence as sqlite_persistence
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.models import OpenMode
@@ -186,7 +187,7 @@ class CliTest(unittest.TestCase):
             return connection
 
         with (
-            patch.object(sqlite_store, "open_database", side_effect=open_query_only_database),
+            patch.object(sqlite_persistence, "open_database", side_effect=open_query_only_database),
             patch("pinboard.cli.transitions.datetime") as clock,
         ):
             clock.now.return_value = SQLITE_NOW

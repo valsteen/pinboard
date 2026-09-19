@@ -774,7 +774,7 @@ class MutationPersistenceTest(unittest.TestCase):
                 connection.execute(trigger)
 
                 with (
-                    patch("pinboard.adapters.sqlite.store.open_database", return_value=connection),
+                    patch("pinboard.adapters.sqlite.persistence.open_database", return_value=connection),
                     store.write() as transaction,
                 ):
                     result = transaction.commit(mutation)

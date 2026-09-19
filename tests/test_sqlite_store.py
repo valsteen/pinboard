@@ -986,8 +986,8 @@ class SQLiteStoreTest(unittest.TestCase):
         runtime_connection = open_database(path, OpenMode.READ_WRITE)
 
         with (
-            patch("pinboard.adapters.sqlite.store.open_database", return_value=runtime_connection),
-            patch("pinboard.adapters.sqlite.store._persist", side_effect=application_error),
+            patch("pinboard.adapters.sqlite.persistence.open_database", return_value=runtime_connection),
+            patch("pinboard.adapters.sqlite.persistence._persist", side_effect=application_error),
             self.assertRaises(RuntimeError) as propagated,
             store.write() as transaction,
         ):

@@ -1363,7 +1363,7 @@ class DispatchTest(unittest.TestCase):
             with (
                 self.subTest(changed=changed),
                 patch(
-                    "pinboard.mcp.mcp_common.compose_store",
+                    "pinboard.mcp.common.compose_store",
                     side_effect=AssertionError("invalid dispatch reached effects"),
                 ),
             ):

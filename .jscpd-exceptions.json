@@ -116,6 +116,118 @@
     },
     {
       "identity": {
+        "id": "definition-v1-v2-wire-shapes",
+        "format": "python",
+        "tokens": 79,
+        "lines": 9,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 23,
+              "endLoc": {
+                "column": 20,
+                "line": 23,
+                "position": 790
+              },
+              "name": "domain/definition_compatibility.py",
+              "start": 15,
+              "startLoc": {
+                "column": 33,
+                "line": 15,
+                "position": 416
+              }
+            },
+            "sha256": "fd66df12aec7aa1ef152890e072234325cc302d89c5c96bff813fabb7055bdf6"
+          },
+          {
+            "endpoint": {
+              "end": 37,
+              "endLoc": {
+                "column": 20,
+                "line": 37,
+                "position": 1220
+              },
+              "name": "domain/history.py",
+              "start": 29,
+              "startLoc": {
+                "column": 31,
+                "line": 29,
+                "position": 846
+              }
+            },
+            "sha256": "fd66df12aec7aa1ef152890e072234325cc302d89c5c96bff813fabb7055bdf6"
+          }
+        ],
+        "owners": [
+          "src/pinboard/domain/definition_compatibility.py#WorkItemDefinitionPayloadV1",
+          "src/pinboard/domain/history.py#WorkItemDefinitionPayload"
+        ],
+        "rationale": "Retained definition v1 and current definition v2 are independently versioned strict canonical wire records. Sharing their required common fields would couple current code to compatibility structure without consolidating a decision; revisit only if both versions can share one schema owner without changing exact bytes, field order, validation independence, or dependency direction."
+      },
+      "certification": {
+        "reviewer_task_id": "01a0b8cb-6635-71c2-9045-24fe68e89a73",
+        "reviewed_pair_sha256": "daeee4c094842cb44ab5f20b75af531a6da2831f2b647f886bf8abe5aacb87f0",
+        "evidence_sha256": "935b935d64f7669ce72135e27bca50c94a0ba4c7e4684d6d1c2146416d47433b"
+      }
+    },
+    {
+      "identity": {
+        "id": "definition-v1-v2-unique-collection-validation",
+        "format": "python",
+        "tokens": 78,
+        "lines": 10,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 37,
+              "endLoc": {
+                "column": 80,
+                "line": 37,
+                "position": 1392
+              },
+              "name": "domain/definition_compatibility.py",
+              "start": 28,
+              "startLoc": {
+                "column": 4,
+                "line": 28,
+                "position": 958
+              }
+            },
+            "sha256": "39d59f333b68d5ad2ed64952e6218c07b08c2c8e019557c17d3be05a4bf76c88"
+          },
+          {
+            "endpoint": {
+              "end": 53,
+              "endLoc": {
+                "column": 80,
+                "line": 53,
+                "position": 1985
+              },
+              "name": "domain/history.py",
+              "start": 44,
+              "startLoc": {
+                "column": 4,
+                "line": 44,
+                "position": 1551
+              }
+            },
+            "sha256": "39d59f333b68d5ad2ed64952e6218c07b08c2c8e019557c17d3be05a4bf76c88"
+          }
+        ],
+        "owners": [
+          "src/pinboard/domain/definition_compatibility.py#WorkItemDefinitionPayloadV1.__post_init__",
+          "src/pinboard/domain/history.py#WorkItemDefinitionPayload.__post_init__"
+        ],
+        "rationale": "The identical collection check validates two independently frozen schema versions. Extracting it would add a neutral module solely for ten lines or make current code depend on compatibility code; revisit if ordered-and-unique definition collections become one explicit domain-wide invariant across versions."
+      },
+      "certification": {
+        "reviewer_task_id": "01a0b8cb-6635-71c2-9045-24fe68e89a73",
+        "reviewed_pair_sha256": "2d4db855dd30e37b3a89e1a6120f896de7b25cb34a9453fc2c0636f7d47c7051",
+        "evidence_sha256": "935b935d64f7669ce72135e27bca50c94a0ba4c7e4684d6d1c2146416d47433b"
+      }
+    },
+    {
+      "identity": {
         "id": "authority-revocation-and-rejection",
         "format": "python",
         "tokens": 69,

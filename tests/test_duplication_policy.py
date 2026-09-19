@@ -45,6 +45,34 @@ def certified_pair(native: policy.NativePair, source_root: Path) -> policy.Excep
 
 
 class DuplicationPolicyTests(unittest.TestCase):
+    def test_certification_survives_unrelated_preceding_byte_growth(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            matched = b"a\nb\nc\nd\ne\nf\ng\nh\nx"
+
+            def endpoint(name: str, position: int) -> policy.Occurrence:
+                return policy.Occurrence(
+                    name,
+                    2,
+                    10,
+                    policy.Location(2, 0, position),
+                    policy.Location(10, 1, position + len(matched)),
+                )
+
+            (root / "first.py").write_bytes(b"old\n" + matched)
+            (root / "second.py").write_bytes(b"old\n" + matched)
+            original = pair(endpoint("first.py", 4), endpoint("second.py", 4), False)
+            exceptions = policy.Exceptions(
+                "pinboard-duplication-exceptions/v1", "5.1.2", (certified_pair(original, root),)
+            )
+
+            prefix = b"longer prefix\n"
+            (root / "first.py").write_bytes(prefix + matched)
+            (root / "second.py").write_bytes(prefix + matched)
+            shifted = pair(endpoint("first.py", len(prefix)), endpoint("second.py", len(prefix)), False)
+
+            self.assertFalse(policy.evaluate(report((shifted,), 10000), exceptions, root).errors)
+
     def test_certification_changed_missing_and_unreviewed_occurrences_fail(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

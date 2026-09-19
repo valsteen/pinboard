@@ -41,15 +41,7 @@ def publish_work_brief(
     brief: work_brief_models.WorkBrief,
     accepted_at: datetime,
 ) -> AcceptedArtifactPublication | DecisionFailure | work_brief_models.WorkBriefFailure:
-    selected = store.read_item_definition(ItemId(brief.item_id))
-    definition = selected.definition
-    if (
-        definition is None
-        or definition.revision != brief.accepted_scope.revision
-        or definition.digest != brief.accepted_scope.digest
-    ):
-        return _invalid("The work brief does not name the exact current accepted definition.")
-    if (failure := validate_definition_brief_agreement(definition.definition, brief)) is not None:
+    if (failure := _validate_current_definition(store, brief)) is not None:
         return failure
     return publish_accepted_artifact(
         store,
@@ -149,6 +141,21 @@ def validate_definition_brief_agreement(
     return None
 
 
+def _validate_current_definition(
+    store: WorkStore,
+    brief: work_brief_models.WorkBrief,
+) -> work_brief_models.WorkBriefFailure | None:
+    selected = store.read_item_definition(ItemId(brief.item_id))
+    definition = selected.definition
+    if (
+        definition is None
+        or definition.revision != brief.accepted_scope.revision
+        or definition.digest != brief.accepted_scope.digest
+    ):
+        return _invalid("The work brief does not name the exact current accepted definition.")
+    return validate_definition_brief_agreement(definition.definition, brief)
+
+
 def validate_executable_work_brief(
     store: WorkStore,
     brief: WorkBriefValue,
@@ -158,15 +165,7 @@ def validate_executable_work_brief(
 
     if isinstance(brief, work_brief_compatibility_models.WorkBriefV2):
         return _invalid("Legacy work brief v2 is readable but cannot authorize execution.")
-    selected = store.read_item_definition(ItemId(brief.item_id))
-    definition = selected.definition
-    if (
-        definition is None
-        or definition.revision != brief.accepted_scope.revision
-        or definition.digest != brief.accepted_scope.digest
-    ):
-        return _invalid("The work brief does not name the exact current accepted definition.")
-    if (failure := validate_definition_brief_agreement(definition.definition, brief)) is not None:
+    if (failure := _validate_current_definition(store, brief)) is not None:
         return failure
     if brief.checkout_selection != observed_checkout:
         return _invalid("The selected source checkout does not match the checkout recorded by the work brief.")

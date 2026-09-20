@@ -145,6 +145,22 @@ class Coverage:
     category: str
     status: str
     method: str
+    disposition_method: str
+
+
+@dataclass(frozen=True)
+class SemanticCategory:
+    category: str
+    coverage: str
+    candidate_sources: tuple[str, ...]
+    disposition_method: str
+
+
+@dataclass(frozen=True)
+class SemanticDisposition:
+    candidate_is_not_defect: bool
+    terminal_dispositions: tuple[str, ...]
+    categories: tuple[SemanticCategory, ...]
 
 
 @dataclass(frozen=True)
@@ -1115,30 +1131,47 @@ def coverage(mode: str) -> tuple[Coverage, ...]:
             "repository-files",
             "complete",
             "tracked and untracked non-ignored working-tree files from git ls-files",
+            "Reconcile every selected file to a declared production or test root before disposition.",
         ),
         Coverage(
             "generic-declarations",
             "partial",
             "conservative line patterns for Go, Kotlin, Python, Rust, and TypeScript",
+            "Validate each selector with the repository's language-aware analyzer or direct source inspection.",
         ),
         Coverage(
             "lexical-references",
             "partial",
             "identifier and literal counts; imports, scopes, reflection, and generated use remain unresolved",
+            "Trace an exact production producer and consumer, persisted-data or protocol owner, or retained exception.",
         ),
         Coverage(
             "closed-families",
             "partial",
             "enum-shaped declarations plus SQL CHECK IN vocabularies; Go constant groups require another analyzer",
+            "Account for every atom at its producer, consumer, boundary conversion, or exact retained exception.",
         ),
-        Coverage("sql-schema", "partial", "CREATE objects and literal CHECK IN vocabularies, including embedded SQL"),
-        Coverage("assets", "partial", "tracked common asset paths and basenames referenced by tracked text"),
+        Coverage(
+            "sql-schema",
+            "partial",
+            "CREATE objects and literal CHECK IN vocabularies, including embedded SQL",
+            "Trace each object and vocabulary to current storage reads, writes, initialization, or retained data.",
+        ),
+        Coverage(
+            "assets",
+            "partial",
+            "tracked common asset paths and basenames referenced by tracked text",
+            "Verify each candidate against package contents, generated output, documentation, and runtime loading.",
+        ),
         Coverage(
             "python-ast",
             "complete" if mode == "python-ast" else "unsupported",
             "stdlib ast definitions, Enum members, Literal vocabularies, explicit union aliases, and msgspec tags"
             if mode == "python-ast"
             else "mode disabled",
+            "Use the Python-AST run with the same input digest, then apply semantic producer and consumer evidence."
+            if mode != "python-ast"
+            else "Treat exact selectors as candidates and apply semantic producer and consumer evidence.",
         ),
         Coverage(
             "python-structural-smells",
@@ -1147,13 +1180,91 @@ def coverage(mode: str) -> tuple[Coverage, ...]:
             "duplicated match structures"
             if mode == "python-ast"
             else "mode disabled; use the language-portable structural sweep",
-        ),
-        Coverage("semantic-producer-consumer", "unsupported", "requires product authority and code-path inspection"),
-        Coverage(
-            "dynamic-reachability", "unsupported", "requires repository-specific registration and runtime inspection"
+            "Use the AST selectors or an equivalent complete construct sweep; retain only sites owning policy, "
+            "validation, effects, typing, or boundary conversion.",
         ),
         Coverage(
-            "navigation-and-structural-smells", "unsupported", "requires representative traces and semantic comparison"
+            "semantic-producer-consumer",
+            "unsupported",
+            "requires product authority and code-path inspection",
+            "Record the exact root, producer, consumer, data or protocol responsibility, and terminal disposition.",
+        ),
+        Coverage(
+            "dynamic-reachability",
+            "unsupported",
+            "requires repository-specific registration and runtime inspection",
+            "Enumerate package entry points, plugin manifests, configuration routes, serializers, and runtime registries.",
+        ),
+        Coverage(
+            "navigation-and-structural-smells",
+            "unsupported",
+            "requires representative traces and semantic comparison",
+            "Trace one supported value end to end, simulate one sibling, and disposition every duplicate owner.",
+        ),
+    )
+
+
+def semantic_disposition() -> SemanticDisposition:
+    return SemanticDisposition(
+        candidate_is_not_defect=True,
+        terminal_dispositions=("supported-root", "boundary", "retained-exception", "removal", "consolidation"),
+        categories=(
+            SemanticCategory(
+                "synonymous-representations",
+                "partial",
+                ("duplicated_closed_vocabularies", "exhaustive_passthrough_matches"),
+                "Trace each representation to its durable concept and independently required wire, storage, or "
+                "presentation owner; consolidate only same-meaning ownership.",
+            ),
+            SemanticCategory(
+                "colliding-complete-names",
+                "partial",
+                ("ambiguous_zero_production_definitions",),
+                "Compare complete qualified names and product roles; rename only when one spelling hides distinct "
+                "meaning or one concept has competing canonical owners.",
+            ),
+            SemanticCategory(
+                "detached-relational-roles",
+                "unsupported",
+                (),
+                "Inspect identity-shaped fields and parameters at each relationship owner; retain source, target, "
+                "affected, replacement, and similar role names when the relationship distinguishes them.",
+            ),
+            SemanticCategory(
+                "missing-or-misused-nominal-identifiers",
+                "unsupported",
+                (),
+                "Trace identifiers that travel independently across boundaries; require one owning conversion and a "
+                "distinct nominal type only when product identity must survive the trip.",
+            ),
+            SemanticCategory(
+                "repeated-invariant-enforcement",
+                "partial",
+                ("duplicated_match_structures", "equivalent_match_arms", "trivial_callable_bodies"),
+                "Compare each check with its decoding model and current-state inputs; consolidate same-record repeats "
+                "and retain checks that combine independent sources or current external state.",
+            ),
+            SemanticCategory(
+                "cartesian-variant-growth",
+                "unsupported",
+                (),
+                "Enumerate discriminators, optional payloads, and legal combinations; replace invalid products with "
+                "flat variants while preserving independently required protocol shapes.",
+            ),
+            SemanticCategory(
+                "unsupported-compatibility",
+                "unsupported",
+                (),
+                "Map each historical reader or branch to retained data or an independently changing consumer; "
+                "otherwise remove it recursively, and record an exact reopening condition for each retention.",
+            ),
+            SemanticCategory(
+                "speculative-obligations",
+                "unsupported",
+                (),
+                "Trace performance, security, concurrency, and deployment machinery to an observed supported-path "
+                "consequence or accepted authority; remove unsupported machinery without weakening required evidence.",
+            ),
         ),
     )
 
@@ -1234,7 +1345,7 @@ def main() -> None:
         "duplicated_match_structures": [asdict(item) for item in duplicated_match_structures(match_sites)],
     }
     report = {
-        "schema": "slop-cleanup-inventory/v1",
+        "schema": "slop-cleanup-inventory/v2",
         "mode": arguments.mode,
         "repository": str(repository),
         "input_digest": input_digest(sources, production_roots, test_roots),
@@ -1243,6 +1354,7 @@ def main() -> None:
             "test": [str(root) for root in test_roots],
         },
         "coverage": [asdict(item) for item in coverage(arguments.mode)],
+        "semantic_disposition": asdict(semantic_disposition()),
         "summary": {
             "repository_files": len(sources),
             "text_files": sum(source.text is not None for source in sources),
@@ -1270,7 +1382,7 @@ def main() -> None:
     print(
         json.dumps(
             {
-                "schema": "slop-cleanup-inventory-receipt/v1",
+                "schema": "slop-cleanup-inventory-receipt/v2",
                 "mode": report["mode"],
                 "input_digest": report["input_digest"],
                 "output": str(output),

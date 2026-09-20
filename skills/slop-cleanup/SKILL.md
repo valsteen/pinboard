@@ -44,6 +44,27 @@ For every candidate, record:
 
 Use runtime observations and real stores when they cheaply distinguish a required compatibility reader from empty scaffolding. Zero rows strengthen a case but do not by themselves prove that a product capability is unwanted.
 
+## Audit semantic maintenance cost
+
+After establishing production truth, inspect the exact semantic candidate categories owned by the supported-reality and canonical-naming method in `DESIGN_PRINCIPLES.md` when that authority exists:
+
+- synonymous representations of one fact;
+- colliding complete names for different facts;
+- detached relational roles;
+- missing or misused nominal identifiers;
+- repeated invariant enforcement;
+- Cartesian variant growth;
+- unsupported compatibility; and
+- speculative performance, security, concurrency, or deployment obligations.
+
+For every candidate selector, trace the supported root, production producer and consumer, retained data or external protocol, accepted authority, and cheapest falsifying observation. A mechanical match generates a candidate only. Shared words, equal atom sets, low reference counts, repeated syntax, line totals, compatibility labels, and obligation keywords never establish a defect by themselves.
+
+Use one terminal disposition per selector: `supported-root`, `boundary`, `retained-exception`, `removal`, or `consolidation`. A retained exception must name its exact current reason and reopening condition. The supported reasons are an independently required boundary translation, supported retained data, an independently changing external consumer or protocol, or an accepted product or assurance obligation with a current consequence.
+
+Keep relational role names distinct when the relationship distinguishes them. Keep nominal identifiers when identity travels independently across a boundary. Consolidate same-meaning representations at one canonical owner, with one explicit exhaustive conversion for each independently required external or persisted shape. Remove repeated validation only when the earlier owner already guarantees the same fact; retain checks that combine independent sources or current external state.
+
+If evidence cannot settle a consequential retention or naming decision, record the exact unresolved selector and block terminal acceptance. Continue independent evidence-backed cleanup, but do not count an unresolved selector as a retained exception or fixed point.
+
 ## Keep the inventory bounded and resumable
 
 For a repository-wide pass, read [references/reachability-inventory.md](references/reachability-inventory.md). Run its bundled inventory with the repository's existing analyzers. On a Python repository, run the same inputs once in generic mode and once with Python AST enrichment; compare their coverage and candidates so language-specific precision does not conceal what the portable pass can and cannot establish. For every category without analyzer coverage, use the language-portable fallback with a concrete extractor that understands the repository's actual syntax, and produce the same receipt rather than weakening the stopping condition. The inventory generates candidates and explicit coverage receipts, not semantic reachability by itself.

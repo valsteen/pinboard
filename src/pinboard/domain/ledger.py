@@ -4,10 +4,6 @@ from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, HistoryId, ItemId, LeaseId, ProposalId
 
 
-def _planned_replacement_revision(relation: work_models.PlannedReplacement) -> int:
-    return relation.relation_revision
-
-
 @dataclass(frozen=True, slots=True)
 class LedgerSnapshot:
     revision: str
@@ -87,7 +83,7 @@ class LedgerSnapshot:
         matching_relations: tuple[work_models.PlannedReplacement, ...] = tuple(
             relation for relation in self.planned_replacements if relation.affected_item == item_id
         )
-        latest = max(matching_relations, key=_planned_replacement_revision, default=None)
+        latest = max(matching_relations, key=work_models.planned_replacement_revision, default=None)
         if latest is None or latest.status != work_models.PlannedReplacementStatus.CURRENT:
             return None
         return latest

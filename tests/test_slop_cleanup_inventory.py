@@ -277,7 +277,7 @@ def test_helper() -> None:
     def test_generic_mode_finds_portable_inventory_and_schema_residue(self) -> None:
         report = self.inventory("generic")
 
-        self.assertEqual("slop-cleanup-inventory/v1", report["schema"])
+        self.assertEqual("slop-cleanup-inventory/v2", report["schema"])
         self.assertEqual("generic", report["mode"])
         summary = self.json_object(report["summary"])
         self.assertEqual(
@@ -380,6 +380,41 @@ def test_helper() -> None:
         self.assertEqual("partial", coverage["generic-declarations"])
         self.assertEqual("unsupported", coverage["python-ast"])
         self.assertEqual("unsupported", coverage["semantic-producer-consumer"])
+        self.assertTrue(
+            all(
+                self.json_string(item["disposition_method"])
+                for item in self.json_objects(report["coverage"])
+                if self.json_string(item["status"]) != "complete"
+            )
+        )
+        semantic_disposition = self.json_object(report["semantic_disposition"])
+        self.assertTrue(semantic_disposition["candidate_is_not_defect"])
+        self.assertEqual(
+            {
+                "boundary",
+                "consolidation",
+                "removal",
+                "retained-exception",
+                "supported-root",
+            },
+            set(self.json_strings(semantic_disposition["terminal_dispositions"])),
+        )
+        self.assertEqual(
+            {
+                "cartesian-variant-growth",
+                "colliding-complete-names",
+                "detached-relational-roles",
+                "missing-or-misused-nominal-identifiers",
+                "repeated-invariant-enforcement",
+                "speculative-obligations",
+                "synonymous-representations",
+                "unsupported-compatibility",
+            },
+            {
+                self.json_string(category["category"])
+                for category in self.json_objects(semantic_disposition["categories"])
+            },
+        )
         self.assertEqual([], candidates["trivial_callable_bodies"])
         self.assertEqual([], candidates["equivalent_match_arms"])
         self.assertEqual([], candidates["duplicated_match_structures"])
@@ -388,6 +423,9 @@ def test_helper() -> None:
         generic_report = self.inventory("generic")
         ast_report = self.inventory("python-ast")
 
+        self.assertEqual(generic_report["input_digest"], ast_report["input_digest"])
+        self.assertEqual(generic_report["roots"], ast_report["roots"])
+        self.assertEqual(generic_report["semantic_disposition"], ast_report["semantic_disposition"])
         self.assertEqual(generic_report["schema_objects"], ast_report["schema_objects"])
         ast_families = {
             self.json_string(family["name"]): set(self.json_strings(family["atoms"]))
@@ -480,7 +518,7 @@ def test_helper() -> None:
         receipt = self.inventory_to_file("generic", output)
         report = self.json_object(json.loads(output.read_text(encoding="utf-8")))
 
-        self.assertEqual("slop-cleanup-inventory-receipt/v1", receipt["schema"])
+        self.assertEqual("slop-cleanup-inventory-receipt/v2", receipt["schema"])
         self.assertEqual(str(output.resolve()), receipt["output"])
         self.assertEqual(report["mode"], receipt["mode"])
         self.assertEqual(report["input_digest"], receipt["input_digest"])

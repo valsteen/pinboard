@@ -24,6 +24,8 @@ Technical Writing owns composition for substantial technical documents and human
 
 The repository-care skills are independent guidance owners. Repository Readiness owns unfamiliar-repository assessment, authority mapping, coverage modes, developer navigation, and the storytelling lens. Slop Cleanup owns recursive removal of approved unsupported residue and its deletion fixed point. Maintaining Agent Guidance owns placement and reconciliation of durable AI-facing guidance. They may refer to one another or use Pinboard, but none requires a sibling skill or ledger for its baseline workflow.
 
+`DESIGN_PRINCIPLES.md` owns the reusable supported-reality and canonical-naming rule. Slop Cleanup applies it through a semantic maintenance-cost pass and the bundled generic and Python-AST inventory. Both inventory modes use one ordered declaration of every supported product root plus the separate test root and must report the same input digest. The helper exposes mechanical candidates and explicit coverage limits; a private disposition ledger owns repository-specific producer, consumer, boundary, retained-data, protocol, exception, removal, and consolidation evidence. No count or match mutates production scope by itself.
+
 One work root has three durable roles:
 
 ```text

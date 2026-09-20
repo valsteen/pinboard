@@ -114,6 +114,10 @@ class PlannedReplacement:
     recorded_at: datetime
 
 
+def planned_replacement_revision(value: PlannedReplacement) -> int:
+    return value.relation_revision
+
+
 @dataclass(frozen=True, slots=True)
 class ReplacementDisposition:
     affected_item: ItemId

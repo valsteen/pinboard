@@ -243,7 +243,7 @@ def read_proposals(connection: sqlite3.Connection) -> stored_state.ProposalRecor
 
 
 def read_pending_proposals(connection: sqlite3.Connection) -> stored_state.ProposalRecords:
-    """Read only proposals and child records included in project handover."""
+    """Read only proposals and child records included in project export."""
 
     proposals = _read_proposal_records(connection, pending_only=True)
     evidence = tuple(

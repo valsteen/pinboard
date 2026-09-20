@@ -28,7 +28,7 @@ from pinboard.application import (
     work_briefs,
 )
 from pinboard.application.artifacts import NewArtifact
-from pinboard.application.handover import ProjectHandover
+from pinboard.application.project_export import ProjectExport
 from pinboard.application.work_briefs import (
     canonical_checkpoint_review_package_bytes,
     canonical_completion_review_package_bytes,
@@ -289,7 +289,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             self.assertEqual("candidate\n", (target / "tracked.txt").read_text())
         self.assertEqual(portable_bytes, (fixture.work / package.candidate_snapshot.selector).read_bytes())
         self.run_json_cli(*fixture.common, "validate")
-        self.run_json_cli(*fixture.common, "handover")
+        self.run_json_cli(*fixture.common, "export")
 
     def test_checkpoint_acceptance_preserves_clean_current_head_from_the_accepted_base(self) -> None:
         fixture = self.accepted_package_fixture(candidate_form="current-head")
@@ -303,12 +303,12 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         self.assertEqual(fixture.candidate_bytes, candidate_snapshots.decode_candidate_snapshot(snapshot_bytes).diff)
         self.assertEqual(hashlib.sha256(snapshot_bytes).hexdigest(), candidate.content_sha256)
         self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
-        handover = msgspec.json.decode(
-            self.run_cli(*fixture.common, "handover", "--json")[1],
-            type=ProjectHandover,
+        project_export = msgspec.json.decode(
+            self.run_cli(*fixture.common, "export", "--json")[1],
+            type=ProjectExport,
             strict=True,
         )
-        self.assertEqual(fixture.candidate_revision, handover.checkpoint_packages[0].candidate)
+        self.assertEqual(fixture.candidate_revision, project_export.checkpoint_packages[0].candidate)
 
     def accept_checkpoint_from_immutable_snapshot(self, fixture: CheckpointFixture) -> None:
         action = self.project_action(fixture, "accept-checkpoint:work-a-1")
@@ -697,8 +697,8 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete state used")),
             patch.object(
                 SQLiteWorkStore,
-                "read_handover_batches",
-                side_effect=AssertionError("handover used"),
+                "read_project_export_batches",
+                side_effect=AssertionError("project export used"),
             ),
             patch.object(sqlite_store, "read_operation", wraps=original_read_operation) as transactions,
             patch.object(sqlite_state, "read_history_receipt", wraps=original_receipt_read) as receipt_reads,
@@ -732,11 +732,11 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             for value in diagnostics
             if isinstance(value, dict) and str(value.get("code", "")).startswith("CHECKPOINT_REVIEW_PACKAGE_")
         )
-        handover_result, handover_stdout, handover_stderr = self.run_cli(*fixture.common, "handover", "--json")
-        self.assertEqual(16, handover_result, handover_stderr)
-        handover = self.json_object(json.loads(handover_stdout))
-        self.assertNotIn("checkpoint_packages", handover)
-        return str(package_diagnostic["code"]), str(handover["code"])
+        export_result, export_stdout, export_stderr = self.run_cli(*fixture.common, "export", "--json")
+        self.assertEqual(16, export_result, export_stderr)
+        project_export = self.json_object(json.loads(export_stdout))
+        self.assertNotIn("checkpoint_packages", project_export)
+        return str(package_diagnostic["code"]), str(project_export["code"])
 
     def test_installed_commands_validate_and_export_one_linked_package_without_writes(self) -> None:
         fixture = self.accepted_package_fixture()
@@ -759,27 +759,29 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         self.assertTrue(validation["valid"])
         self.assertEqual(1, snapshot_reads)
 
-        result, stdout, stderr = self.run_cli(*fixture.common, "handover", "--json")
+        result, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
         self.assertEqual(0, result, stderr)
-        handover = msgspec.json.decode(stdout, type=ProjectHandover, strict=True)
-        self.assertEqual("pinboard-project-handover/v7", handover.schema)
-        self.assertEqual((), handover.completion_packages)
-        self.assertEqual(1, len(handover.checkpoint_packages))
-        exported = handover.checkpoint_packages[0]
-        receipt = next(value for value in handover.transitions if value.outcome_schema == "checkpoint-acceptance/v2")
+        project_export = msgspec.json.decode(stdout, type=ProjectExport, strict=True)
+        self.assertEqual("pinboard-project-export/v1", project_export.schema)
+        self.assertEqual((), project_export.completion_packages)
+        self.assertEqual(1, len(project_export.checkpoint_packages))
+        exported = project_export.checkpoint_packages[0]
+        receipt = next(
+            value for value in project_export.transitions if value.outcome_schema == "checkpoint-acceptance/v2"
+        )
         self.assertEqual(
             {"transition-receipt/v1", "checkpoint-acceptance/v2"},
-            {value.outcome_schema for value in handover.transitions},
+            {value.outcome_schema for value in project_export.transitions},
         )
         self.assertEqual(receipt.history_id, exported.history_id)
         self.assertEqual(int(fixture.package_reference.artifact_ref_id), exported.package_artifact_ref_id)
         self.assertEqual(self.package(fixture).candidate, exported.candidate)
         self.assertEqual(
-            {value.artifact_ref_id for value in handover.artifact_references},
-            {value.artifact_ref_id for value in handover.artifact_contents},
+            {value.artifact_ref_id for value in project_export.artifact_references},
+            {value.artifact_ref_id for value in project_export.artifact_contents},
         )
         self.assertIn(
-            exported.package_artifact_ref_id, {value.artifact_ref_id for value in handover.artifact_references}
+            exported.package_artifact_ref_id, {value.artifact_ref_id for value in project_export.artifact_references}
         )
         self.assertEqual(database_before, (fixture.work / "state.sqlite3").read_bytes())
         self.assertEqual(
@@ -795,7 +797,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         fixture = self.accepted_package_fixture(local=True, candidate_form="current-head")
         retained = self.retain_v2_checkpoint(fixture)
         self.run_json_cli(*fixture.common, "validate")
-        before = self.run_json_cli(*fixture.common, "handover")
+        before = self.run_json_cli(*fixture.common, "export")
         before_packages = before["checkpoint_packages"]
         assert isinstance(before_packages, list)
         self.assertEqual(
@@ -852,9 +854,9 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         )
         self.transition_json(fixture, self.project_action(fixture, "complete:work-a-1"), payload)
         self.run_json_cli(*fixture.common, "validate")
-        result, stdout, stderr = self.run_cli(*fixture.common, "handover", "--json")
+        result, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
         self.assertEqual(0, result, stderr)
-        after = msgspec.json.decode(stdout, type=ProjectHandover, strict=True)
+        after = msgspec.json.decode(stdout, type=ProjectExport, strict=True)
         self.assertEqual(2, len(after.checkpoint_packages))
         self.assertEqual(2, len(after.completion_packages[0].checkpoint_coverage))
         legacy_reference = next(
@@ -1009,9 +1011,9 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         self.assertIsNotNone(receipt.artifact_ref_id)
         validation = self.run_json_cli(*fixture.common, "validate")
         self.assertTrue(validation["valid"])
-        handover_result, handover_stdout, handover_stderr = self.run_cli(*fixture.common, "handover", "--json")
-        self.assertEqual(0, handover_result, handover_stderr)
-        portable = msgspec.json.decode(handover_stdout, type=ProjectHandover, strict=True)
+        export_result, export_stdout, export_stderr = self.run_cli(*fixture.common, "export", "--json")
+        self.assertEqual(0, export_result, export_stderr)
+        portable = msgspec.json.decode(export_stdout, type=ProjectExport, strict=True)
         self.assertEqual(1, len(portable.completion_packages))
         self.assertEqual(
             int(checkpoint_receipt.history_id), portable.completion_packages[0].checkpoint_coverage[0].history_id
@@ -1123,8 +1125,8 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                     connection.commit()
                 finally:
                     connection.close()
-                validation_code, handover_code = self.package_failure_codes(fixture)
-                self.assertEqual(validation_code, handover_code)
+                validation_code, export_code = self.package_failure_codes(fixture)
+                self.assertEqual(validation_code, export_code)
         connection = sqlite3.connect(fixture.work / "state.sqlite3")
         try:
             connection.execute(
@@ -1333,7 +1335,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             ),
         )
 
-    def test_validation_and_handover_share_the_package_failure_family(self) -> None:
+    def test_validation_and_export_share_the_package_failure_family(self) -> None:
         cases = (
             "malformed",
             "noncanonical",
@@ -1357,8 +1359,8 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 package = self.package(fixture)
                 if not self.corrupt_package_identity(case, fixture, package):
                     self.corrupt_package_review(case, fixture, package)
-                validation_code, handover_code = self.package_failure_codes(fixture)
-                self.assertEqual(validation_code, handover_code)
+                validation_code, export_code = self.package_failure_codes(fixture)
+                self.assertEqual(validation_code, export_code)
 
     def test_historical_package_survives_current_brief_link_drift(self) -> None:
         fixture = self.accepted_package_fixture()
@@ -1404,20 +1406,20 @@ class CheckpointPackageTest(CheckpointPackageSupport):
 
         validation = self.run_json_cli(*fixture.common, "validate")
         self.assertTrue(validation["valid"])
-        result, stdout, stderr = self.run_cli(*fixture.common, "handover", "--json")
+        result, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
         self.assertEqual(0, result, stderr)
-        handover = msgspec.json.decode(stdout, type=ProjectHandover, strict=True)
-        self.assertEqual(fixture.brief.checkpoint.checkpoint_id, handover.checkpoint_packages[0].checkpoint.id)
+        project_export = msgspec.json.decode(stdout, type=ProjectExport, strict=True)
+        self.assertEqual(fixture.brief.checkpoint.checkpoint_id, project_export.checkpoint_packages[0].checkpoint.id)
 
     def test_local_package_validates_without_a_ready_review(self) -> None:
         fixture = self.accepted_package_fixture(local=True)
 
         validation = self.run_json_cli(*fixture.common, "validate")
         self.assertTrue(validation["valid"])
-        result, stdout, stderr = self.run_cli(*fixture.common, "handover", "--json")
+        result, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
         self.assertEqual(0, result, stderr)
-        handover = msgspec.json.decode(stdout, type=ProjectHandover, strict=True)
-        self.assertEqual("local-package", handover.checkpoint_packages[0].checkpoint.id)
+        project_export = msgspec.json.decode(stdout, type=ProjectExport, strict=True)
+        self.assertEqual("local-package", project_export.checkpoint_packages[0].checkpoint.id)
 
 
 if __name__ == "__main__":

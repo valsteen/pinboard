@@ -67,8 +67,8 @@ from pinboard.adapters.sqlite.proposals import (
 )
 from pinboard.application import candidate_snapshots, queries, query_models, stored_state
 from pinboard.application.artifacts import ArtifactRef
-from pinboard.application.handover import HandoverState
 from pinboard.application.ports import ArtifactReferenceAcceptance
+from pinboard.application.project_export import ProjectExportState
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, ItemId, LeaseId, ProposalId
@@ -355,11 +355,11 @@ class SQLiteWorkStore:
         finally:
             connection.close()
 
-    def read_handover_batches(self) -> tuple[HandoverState, ...]:
+    def read_project_export_batches(self) -> tuple[ProjectExportState, ...]:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
-                return (sqlite_state.read_handover_state(connection),)
+                return (sqlite_state.read_project_export_state(connection),)
         finally:
             connection.close()
 

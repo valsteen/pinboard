@@ -7,13 +7,13 @@ from typing import Protocol
 
 from pinboard.application import query_models, stored_state
 from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
-from pinboard.application.handover import HandoverState
 from pinboard.application.mutation_models import (
     CheckpointMutationAllocation,
     CommittedEffect,
     MutationAllocation,
     StoredStateMutation,
 )
+from pinboard.application.project_export import ProjectExportState
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, ItemId, LeaseId
@@ -130,8 +130,8 @@ class WorkStore(Protocol):
     ) -> query_models.GeneratedViewFacts: ...
 
 
-class HandoverReader(Protocol):
-    def read_handover_batches(self) -> Iterable[HandoverState]: ...
+class ProjectExportReader(Protocol):
+    def read_project_export_batches(self) -> Iterable[ProjectExportState]: ...
 
 
 class ValidatedStateReader(Protocol):

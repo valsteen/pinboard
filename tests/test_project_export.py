@@ -22,7 +22,12 @@ from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.application.artifacts import ArtifactRef, NewArtifact
-from pinboard.application.handover import ContentEncoding, HandoverState, ProjectHandover, merge_handover_batches
+from pinboard.application.project_export import (
+    ContentEncoding,
+    ProjectExport,
+    ProjectExportState,
+    merge_project_export_batches,
+)
 from pinboard.cli.cli_output import RejectedOperationView
 from pinboard.cli.entrypoint import main
 from pinboard.domain import work_models
@@ -61,13 +66,22 @@ def commit_item_after_project_read(
         writer_finished.set()
 
 
-class HandoverTest(unittest.TestCase):
+class ProjectExportTest(unittest.TestCase):
     def run_cli(self, *arguments: str) -> tuple[int, str, str]:
         stdout = io.StringIO()
         stderr = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             result = main(arguments)
         return result, stdout.getvalue(), stderr.getvalue()
+
+    def test_retired_handover_command_is_rejected_before_root_resolution(self) -> None:
+        result, stdout, stderr = self.run_cli("handover", "--json")
+
+        self.assertEqual(2, result)
+        self.assertEqual("", stderr)
+        rejection = msgspec.json.decode(stdout, type=RejectedOperationView)
+        self.assertEqual("CLI_ARGUMENT_INVALID", rejection.code)
+        self.assertFalse(rejection.state_changed)
 
     def accepted_reference(self, identity: int, published: ArtifactRef) -> stored_state.ArtifactReference:
         return stored_state.ArtifactReference(
@@ -116,7 +130,7 @@ class HandoverTest(unittest.TestCase):
         )
         return item, revision
 
-    def complete_handover_state(
+    def complete_project_export_state(
         self,
         artifacts: tuple[stored_state.ArtifactReference, ...],
     ) -> stored_state.StoredWorkState:
@@ -314,16 +328,16 @@ class HandoverTest(unittest.TestCase):
         )
         references = tuple(self.accepted_reference(index, value) for index, value in enumerate(published, start=1))
         store = SQLiteWorkStore(roots.database_path)
-        initialize_store(store, self.complete_handover_state(references))
+        initialize_store(store, self.complete_project_export_state(references))
         views = roots.work_root / "views"
         views.mkdir()
         (views / "sentinel.md").write_text("unchanged\n", encoding="utf-8")
         return project, roots.work_root, store, references
 
-    def decode_handover(self, payload: str) -> ProjectHandover:
-        return msgspec.json.decode(payload, type=ProjectHandover, strict=True)
+    def decode_project_export(self, payload: str) -> ProjectExport:
+        return msgspec.json.decode(payload, type=ProjectExport, strict=True)
 
-    def assert_handover_read_scope(self, statements: list[str]) -> None:
+    def assert_project_export_read_scope(self, statements: list[str]) -> None:
         reads = "\n".join(
             statement.lower() for statement in statements if statement.lstrip().lower().startswith("select")
         )
@@ -339,7 +353,7 @@ class HandoverTest(unittest.TestCase):
         ):
             self.assertNotIn(excluded, reads)
 
-    def run_handover_with_trace(self, common: tuple[str, ...]) -> tuple[int, str, str, list[str]]:
+    def run_project_export_with_trace(self, common: tuple[str, ...]) -> tuple[int, str, str, list[str]]:
         statements: list[str] = []
         original_open_database = sqlite_store.open_database
 
@@ -357,9 +371,9 @@ class HandoverTest(unittest.TestCase):
             result, stdout, stderr = self.run_cli(*common)
         return result, stdout, stderr, statements
 
-    def test_installed_handover_exports_one_strict_complete_read_only_snapshot(self) -> None:  # noqa: PLR0915 - one complete installed handover journey
+    def test_installed_project_export_exports_one_strict_complete_read_only_snapshot(self) -> None:  # noqa: PLR0915 - one complete installed project export journey
         project, work, store, references = self.initialized_project()
-        common = ("--project-root", str(project), "--work-root", str(work), "handover", "--json")
+        common = ("--project-root", str(project), "--work-root", str(work), "export", "--json")
         database_before = (work / "state.sqlite3").read_bytes()
         files_before = {
             str(path.relative_to(work)): path.read_bytes()
@@ -368,27 +382,31 @@ class HandoverTest(unittest.TestCase):
         }
         state_before = store.validated_snapshot()
 
-        result, stdout, stderr, statements = self.run_handover_with_trace(common)
+        result, stdout, stderr, statements = self.run_project_export_with_trace(common)
         self.assertEqual(0, result, stderr)
-        handover = self.decode_handover(stdout)
-        self.assertEqual("pinboard-project-handover/v7", handover.schema)
-        self.assertEqual((), handover.completion_packages)
-        self.assertEqual((), handover.checkpoint_packages)
-        self.assertEqual("sqlite-v6", handover.authority)
-        self.assertEqual(state_before.lifecycle.project.revision, handover.revision)
+        project_export = self.decode_project_export(stdout)
+        self.assertEqual("pinboard-project-export/v1", project_export.schema)
+        self.assertEqual((), project_export.completion_packages)
+        self.assertEqual((), project_export.checkpoint_packages)
+        self.assertEqual("sqlite-v6", project_export.authority)
+        self.assertEqual(state_before.lifecycle.project.revision, project_export.revision)
         with patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")):
             self.assertEqual(stdout, self.run_cli(*common)[1])
 
         self.assertEqual(
             {"done", "superseded", "dropped"},
-            {item.state.value for item in handover.work_items if item.state.value in {"done", "superseded", "dropped"}},
+            {
+                item.state.value
+                for item in project_export.work_items
+                if item.state.value in {"done", "superseded", "dropped"}
+            },
         )
         self.assertEqual(
             [1, 2],
-            [value.revision for value in handover.definition_revisions if value.item_id == "work-a"],
+            [value.revision for value in project_export.definition_revisions if value.item_id == "work-a"],
         )
         latest_definition = next(
-            value for value in handover.definition_revisions if value.item_id == "work-a" and value.revision == 2
+            value for value in project_export.definition_revisions if value.item_id == "work-a" and value.revision == 2
         )
         self.assertEqual("Clarified the export objective.", latest_definition.reason)
         self.assertEqual("definition-owner", latest_definition.source_task_id)
@@ -409,29 +427,29 @@ class HandoverTest(unittest.TestCase):
                 "ContradictionProposalRelation",
                 "ClarificationProposalRelation",
             },
-            {type(value).__name__ for value in handover.proposal_relations},
+            {type(value).__name__ for value in project_export.proposal_relations},
         )
-        self.assertNotIn("proposal-decided", {value.proposal_id for value in handover.proposals})
-        self.assert_handover_read_scope(statements)
-        self.assertIsNone(handover.attempts[0].candidate_revision)
-        self.assertEqual(1, len(handover.planned_replacements))
-        self.assertEqual("terminal-done", handover.planned_replacements[0].replacement_item_id)
-        self.assertEqual(1, len(handover.replacement_dispositions))
+        self.assertNotIn("proposal-decided", {value.proposal_id for value in project_export.proposals})
+        self.assert_project_export_read_scope(statements)
+        self.assertIsNone(project_export.attempts[0].candidate_revision)
+        self.assertEqual(1, len(project_export.planned_replacements))
+        self.assertEqual("terminal-done", project_export.planned_replacements[0].replacement_item_id)
+        self.assertEqual(1, len(project_export.replacement_dispositions))
         self.assertEqual(
-            handover.planned_replacements[0].replacement_cost,
-            handover.replacement_dispositions[0].accepted_cost,
+            project_export.planned_replacements[0].replacement_cost,
+            project_export.replacement_dispositions[0].accepted_cost,
         )
         self.assertEqual(
             [(1, "brief"), (3, "result"), (4, "evidence")],
-            [(value.artifact_ref_id, value.role.value) for value in handover.item_artifact_links],
+            [(value.artifact_ref_id, value.role.value) for value in project_export.item_artifact_links],
         )
-        self.assertEqual(4, len(handover.artifact_references))
-        self.assertEqual(4, len(handover.artifact_contents))
+        self.assertEqual(4, len(project_export.artifact_references))
+        self.assertEqual(4, len(project_export.artifact_contents))
         self.assertEqual(
             [int(value.artifact_ref_id) for value in references],
-            [value.artifact_ref_id for value in handover.artifact_references],
+            [value.artifact_ref_id for value in project_export.artifact_references],
         )
-        contents = {value.artifact_ref_id: value for value in handover.artifact_contents}
+        contents = {value.artifact_ref_id: value for value in project_export.artifact_contents}
         for reference in references:
             content = contents[int(reference.artifact_ref_id)]
             decoded = (
@@ -441,15 +459,15 @@ class HandoverTest(unittest.TestCase):
             )
             self.assertEqual((work / reference.selector).read_bytes(), decoded)
         self.assertEqual(ContentEncoding.BASE64, contents[2].encoding)
-        sparse_item = next(value for value in handover.work_items if value.item_id == "intake-work")
+        sparse_item = next(value for value in project_export.work_items if value.item_id == "intake-work")
         self.assertIsNone(sparse_item.source)
         self.assertIsNone(sparse_item.notes)
-        terminal_item = next(value for value in handover.work_items if value.item_id == "terminal-done")
+        terminal_item = next(value for value in project_export.work_items if value.item_id == "terminal-done")
         self.assertIsNone(terminal_item.queue_position)
-        self.assertEqual({"request": {"mode": "complete"}}, msgspec.json.decode(handover.transitions[0].input))
+        self.assertEqual({"request": {"mode": "complete"}}, msgspec.json.decode(project_export.transitions[0].input))
         self.assertEqual(
             {"accepted": True, "checks": ["targeted", "fresh-store"]},
-            msgspec.json.decode(handover.transitions[0].outcome),
+            msgspec.json.decode(project_export.transitions[0].outcome),
         )
 
         self.assertEqual(database_before, (work / "state.sqlite3").read_bytes())
@@ -467,9 +485,9 @@ class HandoverTest(unittest.TestCase):
         assert isinstance(decoded, dict)
         decoded["unexpected"] = True
         with self.assertRaises(msgspec.DecodeError):
-            msgspec.json.decode(msgspec.json.encode(decoded), type=ProjectHandover, strict=True)
+            msgspec.json.decode(msgspec.json.encode(decoded), type=ProjectExport, strict=True)
 
-    def test_installed_proposal_preserves_accepted_replacement_time_through_reload_and_handover(self) -> None:
+    def test_installed_proposal_preserves_accepted_replacement_time_through_reload_and_project_export(self) -> None:
         project, work, _store, _references = self.initialized_project()
         common = ("--project-root", str(project), "--work-root", str(work))
         creation_time = SQLITE_NOW + timedelta(seconds=1)
@@ -487,14 +505,14 @@ class HandoverTest(unittest.TestCase):
             "why_it_matters": "Relation provenance must survive every stored projection.",
             "relation": {"kind": "planned-replacement", "item": "work-c", "replacement_cost": replacement_cost},
             "effect": "Record the accepted replacement relation unchanged.",
-            "unlock": "Fresh reloads and handover preserve the accepted provenance.",
+            "unlock": "Fresh reloads and project export preserve the accepted provenance.",
             "urgency_evidence": "Creation and commit times are independently meaningful.",
             "freshness_assumptions": ["Work C remains live."],
             "checkout_policy": "coordinator-selected",
             "obligations": [
                 {
                     "obligation_id": "preserve-provenance",
-                    "statement": "Fresh reloads and handover preserve the accepted provenance.",
+                    "statement": "Fresh reloads and project export preserve the accepted provenance.",
                     "deferral_policy": "forbidden",
                 }
             ],
@@ -530,11 +548,11 @@ class HandoverTest(unittest.TestCase):
         )
         self.assertEqual(accepted_relation, reloaded_relation)
 
-        result, stdout, stderr = self.run_cli(*common, "handover", "--json")
+        result, stdout, stderr = self.run_cli(*common, "export", "--json")
         self.assertEqual(0, result, stderr)
         exported_relation = next(
             value
-            for value in self.decode_handover(stdout).planned_replacements
+            for value in self.decode_project_export(stdout).planned_replacements
             if value.replacement_item_id == "provenance-replacement"
         )
         self.assertEqual(
@@ -550,7 +568,7 @@ class HandoverTest(unittest.TestCase):
             ),
         )
 
-    def test_selected_overview_and_handover_reject_a_disposition_with_the_wrong_cost(self) -> None:
+    def test_selected_overview_and_project_export_reject_a_disposition_with_the_wrong_cost(self) -> None:
         _project, work, store, _references = self.initialized_project()
         connection = sqlite3.connect(work / "state.sqlite3")
         try:
@@ -564,9 +582,9 @@ class HandoverTest(unittest.TestCase):
         with self.assertRaises(StorageError):
             store.read_project_overview(SQLITE_NOW)
         with self.assertRaises(StorageError):
-            store.read_handover_batches()
+            store.read_project_export_batches()
 
-    def test_complete_validation_and_handover_reject_a_disposition_on_a_withdrawn_relation(self) -> None:
+    def test_complete_validation_and_project_export_reject_a_disposition_on_a_withdrawn_relation(self) -> None:
         _project, work, store, _references = self.initialized_project()
         connection = sqlite3.connect(work / "state.sqlite3")
         try:
@@ -578,9 +596,9 @@ class HandoverTest(unittest.TestCase):
         with self.assertRaises(StorageError):
             store.validated_snapshot()
         with self.assertRaises(StorageError):
-            store.read_handover_batches()
+            store.read_project_export_batches()
 
-    def test_installed_handover_keeps_one_revision_during_a_concurrent_commit(self) -> None:
+    def test_installed_project_export_keeps_one_revision_during_a_concurrent_commit(self) -> None:
         project, work, store, _references = self.initialized_project()
         database = work / "state.sqlite3"
         before = store.validated_snapshot()
@@ -614,7 +632,7 @@ class HandoverTest(unittest.TestCase):
                     str(project),
                     "--work-root",
                     str(work),
-                    "handover",
+                    "export",
                     "--json",
                 )
         finally:
@@ -623,23 +641,23 @@ class HandoverTest(unittest.TestCase):
         self.assertEqual([], writer_errors)
         self.assertEqual(0, result, stderr)
 
-        handover = self.decode_handover(stdout)
+        project_export = self.decode_project_export(stdout)
         after = store.validated_snapshot()
         self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
         self.assertEqual(
             "committed-between-selects",
             next(value.next_action for value in after.lifecycle.work_items if value.item_id == ItemId("work-a")),
         )
-        self.assertEqual(before.lifecycle.project.revision, handover.revision)
+        self.assertEqual(before.lifecycle.project.revision, project_export.revision)
         self.assertEqual(
             next(value.next_action for value in before.lifecycle.work_items if value.item_id == ItemId("work-a")),
-            next(value.next_action for value in handover.work_items if value.item_id == "work-a"),
+            next(value.next_action for value in project_export.work_items if value.item_id == "work-a"),
         )
 
-    def test_handover_application_boundary_accepts_multiple_batches(self) -> None:
+    def test_project_export_application_boundary_accepts_multiple_batches(self) -> None:
         _project, _work, store, _references = self.initialized_project()
-        state = store.read_handover_batches()[0]
-        first = HandoverState(
+        state = store.read_project_export_batches()[0]
+        first = ProjectExportState(
             replace(
                 state.lifecycle,
                 attempts=(),
@@ -650,7 +668,7 @@ class HandoverTest(unittest.TestCase):
             (),
             (),
         )
-        second = HandoverState(
+        second = ProjectExportState(
             replace(
                 state.lifecycle,
                 work_items=(),
@@ -662,13 +680,13 @@ class HandoverTest(unittest.TestCase):
             state.transition_receipts,
         )
 
-        self.assertEqual(state, merge_handover_batches(iter((first, second))))
+        self.assertEqual(state, merge_project_export_batches(iter((first, second))))
 
     def test_artifact_failure_reports_structured_rejection_and_changes_no_state(self) -> None:
         for failure in ("missing", "digest-mismatch"):
             with self.subTest(failure=failure):
                 project, work, store, references = self.initialized_project()
-                common = ("--project-root", str(project), "--work-root", str(work), "handover", "--json")
+                common = ("--project-root", str(project), "--work-root", str(work), "export", "--json")
                 before = store.validated_snapshot()
                 database_before = (work / "state.sqlite3").read_bytes()
                 artifact = work / references[-1].selector
@@ -701,7 +719,7 @@ class HandoverTest(unittest.TestCase):
         before = store.validated_snapshot()
 
         result, stdout, stderr = self.run_cli(
-            "--project-root", str(project), "--work-root", str(work), "handover", "--json"
+            "--project-root", str(project), "--work-root", str(work), "export", "--json"
         )
 
         self.assertEqual(12, result)

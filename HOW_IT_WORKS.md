@@ -54,6 +54,44 @@ Across those paths, four guarantees stay constant:
 - **Review concerns one candidate.** Findings and acceptance stay bound to the exact result that was examined.
 - **Authoritative changes are atomic.** A rejected or failed transition leaves the previous ledger intact; repairable views cannot silently rewrite accepted state.
 
+## The MCP toolkit keeps each job explicit
+
+Twenty deliberately narrow MCP operations carry that lifecycle. The names below omit the repetitive `pinboard_` wire prefix; adding it back produces the exact registered tool name. Keeping reads, authority, launch preparation, source restoration, and lifecycle changes separate makes each operation's effect visible before an agent uses it.
+
+### What work exists, and what can run next?
+
+- `overview` reads the current authoritative project-wide work overview.
+- `item_status` reads the current status of one work item.
+- `item_definition` reads one complete accepted definition or its bounded revision history.
+- `order` saves a human-authorized complete priority order against the current live order.
+- `parallel_preview` reports structural constraints for selected work or all work that is currently safe to consider in parallel.
+
+### How does accepted direction become an exact brief?
+
+- `proposal_create` preserves one complete structured proposal for later project action.
+- `brief_contract` returns the exact work-brief contract or an unresolved local or cross-boundary starter.
+- `brief_sources` plans and emits verified source batches from the selected checkout.
+- `brief_publish` publishes one canonical brief and accepts its immutable artifact reference.
+- `brief_review` records or reads independently found corrections to an accepted brief without declaring it ready.
+
+### Who may act, and what may they do?
+
+- `actions` discovers the exact legal actions and payload contracts available in the current state.
+- `preparation_authority` reads, acquires, renews, releases, or revokes one preparation lease.
+- `attempt_authority` reads, acquires, renews, releases, or revokes one implementation-attempt lease.
+- `transition` applies one freshly discovered lifecycle action with the required project or lease authority.
+
+### How do workers and reviewers receive exact work?
+
+- `dispatch` publishes verified worker-launch instructions without launching a worker or granting authority.
+- `attempt_inspect` reads one attempt's accepted brief, evidence references, and next continuation.
+- `artifact_verify` verifies an accepted artifact reference against its immutable bytes.
+- `candidate_observe` identifies the actual tracked working-tree candidate and reports omitted untracked paths.
+- `candidate_restore` restores an accepted candidate into an exact clean checkout without changing lifecycle state.
+- `review_job` publishes a candidate-bound reviewer launch using the selected current and historical evidence.
+
+Together, these operations expose the workflow without turning the MCP surface into a second policy engine. The next section follows one representative authority operation through the same layers that serve the rest of the toolkit.
+
 ## One operation moves through the layers
 
 Starting a preparation claim through MCP is one representative operation. The request is decoded, the current definition and claim operation are selected under the same transaction that commits the change, and a pure decision accepts or rejects it. An accepted mutation is committed before replaceable views are refreshed and the result is presented.

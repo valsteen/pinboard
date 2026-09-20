@@ -11,10 +11,6 @@ from pinboard.domain.proposal_models import (
 )
 
 
-def _planned_replacement_revision(relation: work_models.PlannedReplacement) -> int:
-    return relation.relation_revision
-
-
 def decide_proposal_creation(
     snapshot: LedgerSnapshot,
     operation: CreateProposalOperation,
@@ -108,7 +104,7 @@ def decide_proposal_creation(
         matching_relations: tuple[work_models.PlannedReplacement, ...] = tuple(
             relation for relation in snapshot.planned_replacements if relation.affected_item == intake.relation.item
         )
-        latest = max(matching_relations, key=_planned_replacement_revision, default=None)
+        latest = max(matching_relations, key=work_models.planned_replacement_revision, default=None)
         revision = 1 if latest is None else latest.relation_revision + 1
         planned_replacement = work_models.PlannedReplacement(
             intake.relation.item,

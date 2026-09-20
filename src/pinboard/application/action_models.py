@@ -207,8 +207,6 @@ def action_input_model(kind: decision_models.ActionKind) -> InputModel | None:  
             return BlockInputPayload
         case decision_models.ActionKind.CLOSE:
             return CloseInputPayload
-        case decision_models.ActionKind.COMPLETE:
-            return None
         case decision_models.ActionKind.REOPEN:
             return EvidenceInputPayload
         case decision_models.ActionKind.RECORD_REPLACEMENT:
@@ -236,7 +234,8 @@ def action_input_model(kind: decision_models.ActionKind) -> InputModel | None:  
         case decision_models.ActionKind.SUBMIT_REVIEW:
             return SubmitReviewInputPayload
         case (
-            decision_models.ActionKind.CONTINUE
+            decision_models.ActionKind.COMPLETE
+            | decision_models.ActionKind.CONTINUE
             | decision_models.ActionKind.DISPATCH
             | decision_models.ActionKind.INSPECT
             | decision_models.ActionKind.REPORT_BLOCKER

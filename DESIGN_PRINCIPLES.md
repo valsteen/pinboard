@@ -36,6 +36,29 @@ When context must survive several reasoning stages, prefer a strict semantic sca
 
 Use that context to propose affected code, documentation, architecture, and principles. Reviewed authorities and coverage should reveal likely owners without an exhaustive repository scan; read outward when changed meaning exposes another owner. This mapping remains judgment, confirmed by human acceptance and independent review. Add a hard-coded impact map only for a repository-owned deterministic contract, never as a second source of truth.
 
+### Keep one supported reality and canonical name
+
+Machinery is supported only when it traces to a current product root and a real producer and consumer, supported persisted data or an external protocol, or one explicit retained exception. A declaration, textual reference, test, serializer, schema, comment, shared word, duplicated vocabulary, or line count is evidence to inspect, not proof that the machinery belongs or is defective.
+
+Give one durable concept one canonical owner and name. Preserve different complete names for genuinely different product roles, including source and target, affected and replacement, supplied and resolved, observed and locked, current and historical, or input and accepted output. When an independently required wire, storage, presentation, or compatibility shape uses another spelling, keep one named exhaustive conversion at that boundary rather than spreading the duplicate vocabulary through the domain.
+
+A semantic maintenance-cost pass inspects these exact candidate categories:
+
+- synonymous representations of one fact;
+- colliding complete names for different facts;
+- relational roles detached from the relationship that gives them meaning;
+- missing or misused nominal identifiers;
+- repeated enforcement of one invariant;
+- Cartesian growth from independent discriminators and optional payloads;
+- compatibility without retained data or an independently changing consumer; and
+- performance, security, concurrency, or deployment machinery without an observed supported-path consequence or accepted obligation.
+
+For each candidate, record the exact selector, supported root, production producer and consumer, persisted-data or protocol responsibility, accepted authority, and cheapest falsifying observation. Give it one terminal disposition: `supported-root`, `boundary`, `retained-exception`, `removal`, or `consolidation`. Apply removals and consolidations recursively through production, tests, documentation, packaging, dependencies, and tooling.
+
+A retained exception must name its present reason and a falsifiable reopening condition. Valid reasons are an independently required boundary translation, supported retained data, an independently changing external consumer or protocol, or an accepted product or assurance obligation with a current consequence. Historical intent, possible future use, mechanical analyzer limits, and test-only reachability are not retained-exception reasons.
+
+When evidence cannot settle a consequential product distinction, keep the candidate unresolved and stop terminal acceptance for that audit. Do not turn uncertainty into a retention claim. Finish only after a fresh inventory over the same declared roots produces no new in-scope selectors and every recorded selector has a supported disposition.
+
 ### Make architectural limitations explicit
 
 Treat a limitation as an implemented constraint or operating assumption with a practical consequence, not as a synonym for every tradeoff or possible improvement. Classify the condition before deciding what to do:

@@ -17,10 +17,6 @@ from pinboard.domain.identifiers import AttemptId, ItemId, LedgerId, ProposalId,
 from pinboard.domain.ledger import LedgerSnapshot
 
 
-def _planned_replacement_revision(relation: work_models.PlannedReplacement) -> int:
-    return relation.relation_revision
-
-
 @dataclass(frozen=True, slots=True)
 class ActionCapabilityFactory:
     actor: decision_models.ActorAuthority
@@ -1499,7 +1495,7 @@ def _record_replacement(
     matching_relations: tuple[work_models.PlannedReplacement, ...] = tuple(
         relation for relation in snapshot.planned_replacements if relation.affected_item == item.item
     )
-    latest = max(matching_relations, key=_planned_replacement_revision, default=None)
+    latest = max(matching_relations, key=work_models.planned_replacement_revision, default=None)
     observed_revision = 0 if latest is None else latest.relation_revision
     if value.expected_relation_revision != observed_revision:
         return DecisionFailure(

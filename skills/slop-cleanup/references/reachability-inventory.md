@@ -27,6 +27,8 @@ Resolve `../scripts/inventory.py` relative to this reference. Run it through the
 
 Write each full report once to private scratch space with `--output`. The command prints a compact receipt containing the input digest, summary, and candidate counts. Query the saved JSON for individual candidate families instead of printing the complete report or rerunning the helper to extract another section.
 
+The report's `semantic_disposition` contract names the eight semantic candidate categories, their mechanical candidate sources when available, and the required semantic fallback. It also names the only terminal dispositions. The generic and Python-AST reports must carry identical ordered roots, input digest, and semantic disposition contract. A candidate collection is not a defect list.
+
 For a repository containing production Python, run the same tracked revision and roots twice:
 
 ```text
@@ -43,6 +45,8 @@ Coverage is invariant even when the efficient analyzer path is unavailable. For 
 The generic pass deliberately uses conservative text structure rather than language parsers. Its current coverage receipt names the exact recognized forms: declaration-like symbols in Go, Kotlin, Python, Rust, and TypeScript; common enum shapes where available; SQLite `CREATE` objects; literal `CHECK ... IN (...)` vocabularies even when SQL is embedded in another source file; tracked text; and common assets. Pair it with analyzers already declared by the repository. Add no parser or permanent dependency merely to make another language resemble Python.
 
 Read every coverage receipt. `complete` means the named mechanical category completed for the given inputs, `partial` means every matching file was visited but the extraction is heuristic, and `unsupported` leaves a mandatory semantic or repository-specific pass. The helper intentionally leaves producer/consumer meaning, dynamic reachability, repeated traversals, duplicated dispatch, and protocol overlap unsupported. For every partial or unsupported category relevant to an approved removal, add a ledger row naming the inspection method or existing analyzer, exact scope, result count or selectors, and disposition. “Inspected,” “checked manually,” or “all categories covered” without those fields is not a receipt. A run cannot establish the cleanup fixed point while a required category lacks this evidence.
+
+For the semantic categories, the repository-specific pass must record exact selectors and apply the report's disposition method. Cover dynamic registration through the repository's actual entry-point and manifest owners. Cover stored and wire vocabularies through their actual codecs and readers. Cover compatibility through retained data and independent-consumer evidence. Cover speculative obligations through accepted authority or an observed supported-path consequence. A consequential unresolved selector blocks terminal acceptance rather than becoming an automatic retained exception.
 
 ## Generic method
 

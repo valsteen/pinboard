@@ -247,6 +247,11 @@ class DispatchTest(unittest.TestCase):
             payload = msgspec.to_builtins(brief)
             assert isinstance(payload, dict)
             payload["schema"] = "pinboard-work-brief/v2"
+            checkpoint = payload["checkpoint"]
+            assert isinstance(checkpoint, dict)
+            disposition = checkpoint.pop("disposition")
+            assert isinstance(disposition, dict)
+            payload["remaining_work"] = disposition["remaining_work"]
             del payload["checkout_selection"]
             del payload["obligation_correspondence"]
             return msgspec.json.encode(payload, order="sorted") + b"\n"
@@ -277,7 +282,7 @@ class DispatchTest(unittest.TestCase):
                     DispatchErrorCode.DISPATCH_BRIEF_INVALID,
                 )
                 if invalidity == "legacy":
-                    self.assertIn("Legacy work brief", failure.message)
+                    self.assertIn("Retained work brief", failure.message)
                 else:
                     self.assertIn("checkout", failure.message)
                 self.assertEqual(before, store.validated_snapshot())
@@ -546,6 +551,7 @@ class DispatchTest(unittest.TestCase):
             "Local cutover",
             cross.architecture_impact,
             cross.outcome_description,
+            cross.disposition,
             cross.acceptance_criteria,
             cross.verification,
             cross.deferrals,

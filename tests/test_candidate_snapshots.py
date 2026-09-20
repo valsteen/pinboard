@@ -800,7 +800,9 @@ class CandidateSnapshotTest(unittest.TestCase):
             )
             restore.assert_called_once()
 
-    def test_review_snapshot_publication_preserves_partial_effects(self) -> None:
+    @patch.object(lifecycle_artifacts, "current_attempt_work_brief_identity", return_value=None)
+    @patch.object(lifecycle_artifacts, "_read_current_attempt_brief", return_value=object())
+    def test_review_snapshot_publication_preserves_partial_effects(self, *_brief_mocks: object) -> None:
         store = self.initialized_store()
         checkout = Path(tempfile.mkdtemp()).resolve()
         artifacts = ArtifactRepository(resolve_durable_roots(checkout))

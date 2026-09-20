@@ -303,7 +303,7 @@ def prepare_review_job(
         return _review_job_failure(str(brief))
     if (failure := queries.validate_attempt_brief_identity(attempt, brief)) is not None:
         return failure
-    continuation = queries.project_attempt_continuation(attempt, TaskId(brief.owner_task_id))
+    continuation = queries.project_attempt_continuation(attempt, TaskId(brief.owner_task_id), brief)
     if isinstance(continuation, DecisionFailure):
         return continuation
     operation = continuation.next_operation

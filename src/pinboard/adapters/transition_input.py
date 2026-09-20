@@ -157,17 +157,29 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
             return decision_models.CloseCommand(action, work_models.CloseInput(payload.outcome, payload.reason))
         case decision_models.CompleteAction():
             if isinstance(data, msgspec.Struct):
-                covered = isinstance(data, transition_models.CoveredCompleteInputPayload)
+                schema = (
+                    data.schema
+                    if isinstance(
+                        data,
+                        (transition_models.CoveredCompleteInputPayload, transition_models.ReviewedCompleteInputPayload),
+                    )
+                    else None
+                )
             else:
                 try:
                     fields = msgspec.json.decode(data, type=dict[str, msgspec.Raw])
                 except msgspec.DecodeError:
                     fields: dict[str, msgspec.Raw] = {}
-                covered = "schema" in fields
-            if covered:
-                if isinstance(
-                    payload := _decode(data, transition_models.CoveredCompleteInputPayload), TransitionInputFailure
-                ):
+                schema = (
+                    None if (raw_schema := fields.get("schema")) is None else msgspec.json.decode(raw_schema, type=str)
+                )
+            if schema is not None:
+                model = (
+                    transition_models.CoveredCompleteInputPayload
+                    if schema == "pinboard-covered-completion/v1"
+                    else transition_models.ReviewedCompleteInputPayload
+                )
+                if isinstance(payload := _decode(data, model), TransitionInputFailure):
                     return payload
                 return decision_models.CoveredCompleteCommand(
                     action,

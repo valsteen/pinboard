@@ -87,6 +87,7 @@ def validate_attempt_brief_identity(
 def project_attempt_continuation(
     context: query_models.AttemptContextFacts,
     owner_task_id: TaskId | None,
+    brief: work_brief_models.ReadableWorkBrief | None,
 ) -> DecisionResult[query_models.AttemptContinuation]:
     """Select a continuation from one exact named-attempt context.
 
@@ -149,7 +150,13 @@ def project_attempt_continuation(
                 ),
             )
             actions = (*groups.attempt_actions, *groups.item_actions)
-            selected = _next_attempt_operation(context, actions)
+            if brief is None:
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    "A nonterminal attempt requires its verified accepted brief.",
+                    None,
+                )
+            selected = _next_attempt_operation(context, actions, brief)
             if isinstance(selected, DecisionFailure):
                 return selected
             continuation_arguments = (
@@ -179,12 +186,55 @@ def project_attempt_continuation(
             assert_never(unreachable)
 
 
-def _next_attempt_operation(
+def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuation selection
     context: query_models.NonterminalAttemptContextFacts,
     actions: tuple[decision_models.Action, ...],
+    brief: work_brief_models.ReadableWorkBrief,
 ) -> DecisionResult[
     query_models.ActionContinuation | query_models.ReviewContinuation | query_models.DependencyContinuation
 ]:
+    if not isinstance(brief, work_brief_models.WorkBrief):
+        expected_kind = (
+            decision_models.ActionKind.RETURN_FOR_CORRECTION
+            if context.state == work_models.AttemptState.REVIEW
+            else decision_models.ActionKind.REBIND_ATTEMPT
+            if context.state == work_models.AttemptState.ACTIVE
+            else decision_models.ActionKind.RESUME
+        )
+        recovery = (
+            "Return the reviewed candidate for correction first. Then publish and independently review a matching "
+            "pinboard-work-brief/v4, rebind the active attempt, dispatch, and submit a new candidate."
+            if expected_kind == decision_models.ActionKind.RETURN_FOR_CORRECTION
+            else "Publish and independently review a matching pinboard-work-brief/v4, then bind that accepted brief "
+            "through this exact action before dispatch and candidate submission."
+        )
+        for action in actions:
+            if action.kind == expected_kind:
+                return query_models.ActionContinuation(
+                    decision_models.action_id(action),
+                    action.kind,
+                    recovery,
+                )
+    if isinstance(brief, work_brief_models.WorkBrief) and isinstance(
+        brief.checkpoint.disposition, work_brief_models.TerminalCheckpointDisposition
+    ):
+        for action in actions:
+            if isinstance(action, decision_models.CompleteAction):
+                if context.state == work_models.AttemptState.REVIEW:
+                    if context.candidate_revision is None:
+                        return DecisionFailure(
+                            DecisionFailureCode.ACTION_NOT_AVAILABLE, "Review has no protected candidate.", None
+                        )
+                    return query_models.ReviewContinuation(
+                        context.attempt_id,
+                        context.candidate_revision,
+                        "runtime-subagent",
+                    )
+                return query_models.ActionContinuation(
+                    decision_models.action_id(action),
+                    action.kind,
+                    "Discover the focused completion action and follow its candidate-submission recovery.",
+                )
     for action in actions:
         if isinstance(action, decision_models.AcceptCheckpointAction):
             if context.candidate_revision is None:
@@ -201,6 +251,12 @@ def _next_attempt_operation(
                 decision_models.action_id(action), action.kind, "Follow the accepted brief."
             )
     for action in actions:
+        if context.state == work_models.AttemptState.ACTIVE and isinstance(action, decision_models.RebindAttemptAction):
+            return query_models.ActionContinuation(
+                decision_models.action_id(action),
+                action.kind,
+                "Bind a current accepted v4 brief that matches the current definition.",
+            )
         if isinstance(action, decision_models.ReturnForCorrectionAction):
             return query_models.ActionContinuation(
                 decision_models.action_id(action),

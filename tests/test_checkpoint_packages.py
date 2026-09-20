@@ -20,7 +20,13 @@ from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import candidate_snapshots, stored_state, work_brief_models, work_briefs
+from pinboard.application import (
+    candidate_snapshots,
+    stored_state,
+    work_brief_compatibility_models,
+    work_brief_models,
+    work_briefs,
+)
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.handover import ProjectHandover
 from pinboard.application.work_briefs import (
@@ -43,6 +49,106 @@ from tests.support import SQLITE_NOW, JsonObject, JsonValue
 
 
 class CheckpointPackageTest(CheckpointPackageSupport):
+    def test_retained_v3_brief_keeps_cross_boundary_package_provenance(self) -> None:
+        fixture = self.accepted_package_fixture()
+        current = fixture.brief
+        payload = msgspec.to_builtins(current)
+        assert isinstance(payload, dict)
+        payload["schema"] = "pinboard-work-brief/v3"
+        payload["artifact_revision"] = 2
+        checkpoint = payload["checkpoint"]
+        assert isinstance(checkpoint, dict)
+        disposition = checkpoint.pop("disposition")
+        assert isinstance(disposition, dict)
+        payload["remaining_work"] = disposition["remaining_work"]
+        brief_bytes = msgspec.json.encode(payload, order="sorted") + b"\n"
+        retained = msgspec.json.decode(brief_bytes, type=work_brief_compatibility_models.WorkBriefV3)
+        retained_checkpoint = retained.checkpoint
+        assert isinstance(retained_checkpoint, work_brief_compatibility_models.CrossBoundaryCheckpointV3)
+        checkpoint_sha256 = hashlib.sha256(work_briefs.canonical_checkpoint_bytes(retained_checkpoint)).hexdigest()
+        authority_sha256 = hashlib.sha256(
+            work_briefs.canonical_reviewed_authority_set_bytes(retained_checkpoint.reviewed_authorities)
+        ).hexdigest()
+        coverage = retained_checkpoint.coverage[0]
+        review_bytes = canonical_work_brief_review_bytes(
+            work_brief_models.WorkBriefReview(
+                "pinboard-work-brief-review/v3",
+                retained.attempt_id,
+                retained_checkpoint.checkpoint_id,
+                hashlib.sha256(brief_bytes).hexdigest(),
+                checkpoint_sha256,
+                authority_sha256,
+                "retained-v3-reviewer",
+                "complete",
+                "ready",
+                (
+                    work_brief_models.ReviewCoverageResult(
+                        coverage.authority_id,
+                        coverage.family,
+                        coverage.owner,
+                        "covered",
+                        "Retained v3 relationship remains ready.",
+                    ),
+                ),
+            )
+        )
+        roots = resolve_durable_roots(fixture.project)
+
+        def accepted_identity(
+            role: str,
+            kind: work_models.ArtifactKind,
+            key: str,
+            revision: int,
+            content: bytes,
+        ) -> work_brief_models.PortableArtifactIdentity:
+            published = write_revision(roots, NewArtifact(kind, key, revision, ".json", content))
+            accepted = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW)
+            self.assertNotIsInstance(accepted, DecisionFailure)
+            return msgspec.convert(
+                {
+                    "role": role,
+                    "kind": kind.value,
+                    "key": key,
+                    "revision": revision,
+                    "selector": published.selector,
+                    "content_sha256": published.content_sha256,
+                    "size_bytes": published.size_bytes,
+                },
+                type=work_brief_models.PortableArtifactIdentity,
+                strict=True,
+            )
+
+        brief_identity = accepted_identity(
+            "accepted-brief", work_models.ArtifactKind.BRIEF, retained.attempt_id, 2, brief_bytes
+        )
+        review_identity = accepted_identity(
+            "brief-review",
+            work_models.ArtifactKind.EVIDENCE,
+            f"{retained.attempt_id}-brief-review-{hashlib.sha256(brief_bytes).hexdigest()}",
+            1,
+            review_bytes,
+        )
+        package = self.package(fixture)
+        assert isinstance(package, work_brief_models.CheckpointReviewPackageV3)
+        basis = package.review_basis
+        assert isinstance(basis, work_brief_models.CrossBoundaryReviewBasis)
+        self.replace_package(
+            fixture,
+            replace_struct(
+                package,
+                checkpoint=replace_struct(package.checkpoint, sha256=checkpoint_sha256),
+                accepted_brief=brief_identity,
+                review_basis=replace_struct(
+                    basis,
+                    brief_review=review_identity,
+                    checkpoint_sha256=checkpoint_sha256,
+                    reviewed_authority_set_sha256=authority_sha256,
+                ),
+            ),
+        )
+
+        self.run_json_cli(*fixture.common, "validate")
+
     def test_completion_package_round_trips_exact_closed_identities_and_coverage(self) -> None:
         accepted_brief = work_brief_models.AcceptedBriefCompletionIdentity(
             "brief", "attempt-1", 2, "artifacts/briefs/attempt-1/2.json", "a" * 64, 10
@@ -56,7 +162,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         checkpoint_package = work_brief_models.CheckpointPackageCompletionIdentity(
             "evidence", "attempt-1-checkpoint-review-package", 1, "artifacts/evidence/package.json", "d" * 64, 13
         )
-        package = work_brief_models.CompletionReviewPackage(
+        package = work_brief_models.CompletionReviewPackageV1(
             "pinboard-completion-review-package/v1",
             "attempt-1",
             "item-1",
@@ -87,6 +193,60 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         mixed["accepted_brief"]["role"] = "terminal-result"
         self.assertIsInstance(
             decode_canonical_completion_review_package(json.dumps(mixed).encode()), work_brief_models.WorkBriefFailure
+        )
+
+    def test_current_completion_package_round_trips_without_checkpoint_history(self) -> None:
+        retained = work_brief_models.CompletionReviewPackageV1(
+            "pinboard-completion-review-package/v1",
+            "attempt-1",
+            "item-1",
+            "candidate",
+            "accepted",
+            "reviewer-task",
+            work_brief_models.AcceptedScope(2, "e" * 64),
+            work_brief_models.AcceptedBriefCompletionIdentity(
+                "brief", "attempt-1", 2, "artifacts/briefs/attempt-1/2.json", "a" * 64, 10
+            ),
+            work_brief_models.TerminalResultCompletionIdentity(
+                "result", "attempt-1-terminal-result", 1, "artifacts/results/result.md", "b" * 64, 11
+            ),
+            work_brief_models.FinalReviewCompletionIdentity(
+                "evidence", "attempt-1-terminal-review", 1, "artifacts/evidence/review.md", "c" * 64, 12
+            ),
+            (
+                work_brief_models.CompletionCheckpointCoverage(
+                    7,
+                    work_brief_models.CheckpointIdentity("checkpoint-1", "f" * 64),
+                    "checkpoint-candidate",
+                    work_brief_models.CheckpointPackageCompletionIdentity(
+                        "evidence",
+                        "attempt-1-checkpoint-review-package",
+                        1,
+                        "artifacts/evidence/package.json",
+                        "d" * 64,
+                        13,
+                    ),
+                    "revalidated",
+                    "relationship rechecked",
+                ),
+            ),
+        )
+        package = work_brief_models.CompletionReviewPackage(
+            "pinboard-completion-review-package/v2",
+            retained.attempt_id,
+            retained.item_id,
+            retained.candidate,
+            retained.outcome_evidence,
+            retained.reviewer_task_id,
+            retained.accepted_scope,
+            retained.accepted_brief,
+            retained.terminal_result,
+            retained.final_review,
+            (),
+        )
+
+        self.assertEqual(
+            package, decode_canonical_completion_review_package(canonical_completion_review_package_bytes(package))
         )
 
     def test_checkpoint_acceptance_preserves_verified_candidate_diff_in_v3_package(self) -> None:
@@ -665,12 +825,13 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             self.assertEqual(
                 int(checkpoint.history_id), self.json_object(job["prior_checkpoint_package"])["history_id"]
             )
+        fixture = self.terminalize_brief(fixture)
         attempt_root = fixture.work / "attempts" / "work-a-1"
         payload = fixture.project / "mixed-completion.json"
         payload.write_text(
             json.dumps(
                 {
-                    "schema": "pinboard-covered-completion/v1",
+                    "schema": "pinboard-reviewed-completion/v2",
                     "candidate": candidate,
                     "evidence": "Both historical and current evidence close",
                     "reviewer_task_id": "mixed-reviewer",
@@ -716,6 +877,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             connection.commit()
         finally:
             connection.close()
+        fixture = self.terminalize_brief(fixture)
         attempt_root = fixture.work / "attempts" / "work-a-1"
         result_bytes = b"terminal result\n"
         review_bytes = b"terminal independent review\n"
@@ -726,7 +888,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             value for value in state.transition_receipts if value.outcome_schema == "checkpoint-acceptance/v2"
         )
         covered_value: JsonObject = {
-            "schema": "pinboard-covered-completion/v1",
+            "schema": "pinboard-reviewed-completion/v2",
             "candidate": "terminal-candidate",
             "evidence": "all checkpoint evidence remains complete",
             "reviewer_task_id": "terminal-reviewer",
@@ -842,7 +1004,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         receipt = completed.transition_receipts[-1]
         self.assertEqual(work_models.AttemptState.DONE, attempt.state)
         self.assertIsNotNone(attempt.result_artifact_ref_id)
-        self.assertEqual("pinboard-covered-completion/v1", receipt.input_schema)
+        self.assertEqual("pinboard-reviewed-completion/v2", receipt.input_schema)
         self.assertEqual("completion-acceptance/v2", receipt.outcome_schema)
         self.assertIsNotNone(receipt.artifact_ref_id)
         validation = self.run_json_cli(*fixture.common, "validate")

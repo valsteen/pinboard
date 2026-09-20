@@ -8,6 +8,7 @@ from pinboard.application.artifacts import (
     ArtifactPublication,
     ArtifactRef,
     BriefArtifactRef,
+    CurrentAttemptWorkBriefIdentity,
     NewArtifact,
     WorkBriefIdentity,
 )
@@ -107,6 +108,59 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
     """Validate a selected brief identity against exact locked decision facts."""
 
     snapshot = facts.snapshot
+
+    if isinstance(command, (decision_models.AcceptCheckpointCommand, decision_models.CoveredCompleteCommand)):
+        expected_disposition = (
+            "continue" if isinstance(command, decision_models.AcceptCheckpointCommand) else "terminal"
+        )
+        attempt_id = command.action.capability.subject
+        attempt = next((value for value in snapshot.attempts if value.attempt == attempt_id), None)
+        mismatches = (
+            (FailureMismatch("accepted_brief_identity", "current v4 brief", None),)
+            if not isinstance(identity, CurrentAttemptWorkBriefIdentity)
+            else tuple(
+                mismatch
+                for mismatch in (
+                    FailureMismatch(
+                        "brief_artifact_ref_id",
+                        None if attempt is None else attempt.brief_artifact_ref_id,
+                        identity.artifact_ref_id,
+                    ),
+                    FailureMismatch("attempt_id", str(attempt_id), identity.attempt_id),
+                    FailureMismatch(
+                        "item_id",
+                        None if attempt is None else str(attempt.item),
+                        identity.item_id,
+                    ),
+                    FailureMismatch(
+                        "accepted_scope_revision",
+                        None if attempt is None else attempt.accepted_scope_revision,
+                        identity.accepted_scope_revision,
+                    ),
+                    FailureMismatch(
+                        "accepted_scope_digest",
+                        None if attempt is None else attempt.accepted_scope_digest,
+                        identity.accepted_scope_digest,
+                    ),
+                    FailureMismatch("checkpoint_disposition", expected_disposition, identity.disposition),
+                )
+                if mismatch.expected != mismatch.observed
+            )
+        )
+        if mismatches:
+            return DecisionFailure(
+                DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                "The transition requires the same current accepted brief and matching checkpoint disposition under lock.",
+                FailureDetails(
+                    observed=(FailureFact("attempt_id", str(attempt_id)),),
+                    mismatches=mismatches,
+                    retry=RetryDisposition.REFRESH_ACTION,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
+        return None
 
     match command:
         case decision_models.ActivateCommand(action=action, value=value):

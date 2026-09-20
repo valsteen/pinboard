@@ -270,16 +270,20 @@ def _completion_outcome(
 
 def _completion_input(
     receipt: stored_state.StoredTransitionReceipt,
-) -> work_brief_models.WorkBriefResult[action_models.CoveredCompleteInputPayload]:
-    if receipt.input_schema != "pinboard-covered-completion/v1":
+) -> work_brief_models.WorkBriefResult[
+    action_models.CoveredCompleteInputPayload | action_models.ReviewedCompleteInputPayload
+]:
+    if receipt.input_schema not in ("pinboard-covered-completion/v1", "pinboard-reviewed-completion/v2"):
         return _package_provenance_failure(
             f"Completion history {int(receipt.history_id)} does not preserve covered completion input."
         )
     try:
-        value = msgspec.json.decode(
-            bytes(receipt.input_payload),
-            type=action_models.CoveredCompleteInputPayload,
+        model = (
+            action_models.CoveredCompleteInputPayload
+            if receipt.input_schema == "pinboard-covered-completion/v1"
+            else action_models.ReviewedCompleteInputPayload
         )
+        value = msgspec.json.decode(bytes(receipt.input_payload), type=model)
     except msgspec.DecodeError as error:
         return _package_provenance_failure(
             f"Completion history {int(receipt.history_id)} has invalid covered completion input: {error}"
@@ -292,8 +296,8 @@ def _completion_input(
 
 
 def _completion_input_matches_package(
-    value: action_models.CoveredCompleteInputPayload,
-    package: work_brief_models.CompletionReviewPackage,
+    value: action_models.CoveredCompleteInputPayload | action_models.ReviewedCompleteInputPayload,
+    package: work_brief_models.CompletionReviewPackageValue,
 ) -> bool:
     return (
         value.candidate == package.candidate

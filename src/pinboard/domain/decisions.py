@@ -791,6 +791,13 @@ def _complete(
             "The attempt has not accepted the item's current definition.",
             None,
         )
+    replacement = snapshot.current_replacement(item.item)
+    if replacement is not None and snapshot.replacement_disposition(item.item, replacement.relation_revision) is None:
+        return DecisionFailure(
+            DecisionFailureCode.REPLACEMENT_STALE,
+            "Terminal completion requires the current planned replacement to be resolved.",
+            None,
+        )
     if item.item in snapshot.history_items:
         return DecisionFailure(
             DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.item}'.", None
@@ -798,34 +805,16 @@ def _complete(
     authority_change = _fence_retained_attempt_authority(snapshot, attempt_id)
     match command:
         case decision_models.CompleteCommand():
-            value = command.value
-            if snapshot.checkpoint_history_ids:
-                return DecisionFailure(
-                    DecisionFailureCode.TRANSITION_INPUT_INVALID,
-                    "Checkpoint history requires covered completion evidence.",
-                    None,
-                )
-            before = (
-                work_models.AttemptState.REVIEW
-                if item.state == work_models.WorkState.REVIEW
-                else work_models.AttemptState.ACTIVE
-            )
-            change = decision_models.CompletionChange(
-                item.item, item.state, attempt_id, before, value.evidence, authority_change
-            )
-            return _accepted_transition_decision(
-                action,
-                now,
-                change,
-                item=item.item,
-                evidence=value.evidence,
+            return DecisionFailure(
+                DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                "Terminal completion requires a protected candidate and independent review evidence.",
+                None,
             )
         case decision_models.CoveredCompleteCommand():
             value = command.value
             attempt = snapshot.attempt(attempt_id)
             if (
-                not snapshot.checkpoint_history_ids
-                or tuple(row.history_id for row in value.packages) != snapshot.checkpoint_history_ids
+                tuple(row.history_id for row in value.packages) != snapshot.checkpoint_history_ids
                 or item.state != work_models.WorkState.REVIEW
                 or attempt is None
                 or attempt.protected_candidate_revision != value.candidate

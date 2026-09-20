@@ -312,6 +312,29 @@ class ObligationCorrespondence(msgspec.Struct, frozen=True, forbid_unknown_field
     target: ObligationTarget
 
 
+class ContinueCheckpointDisposition(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="continue",
+    tag_field="kind",
+):
+    remaining_work: NonEmptyText
+
+
+class TerminalCheckpointDisposition(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="terminal",
+    tag_field="kind",
+):
+    pass
+
+
+type CheckpointDisposition = ContinueCheckpointDisposition | TerminalCheckpointDisposition
+
+
 class LocalCheckpoint(
     msgspec.Struct,
     frozen=True,
@@ -323,6 +346,7 @@ class LocalCheckpoint(
     title: NonEmptyLine
     architecture_impact: ArchitectureImpact
     outcome_description: NonEmptyText
+    disposition: CheckpointDisposition
     acceptance_criteria: Annotated[tuple[AcceptanceCriterion, ...], msgspec.Meta(min_length=1)]
     verification: Annotated[tuple[VerificationRecord, ...], msgspec.Meta(min_length=1)]
     deferrals: tuple[Deferral, ...]
@@ -340,6 +364,7 @@ class CrossBoundaryCheckpoint(
     architecture_impact: ArchitectureImpact
     outcome: Literal["independently-buildable"]
     outcome_description: NonEmptyText
+    disposition: CheckpointDisposition
     contracts: Annotated[tuple[ContractRecord, ...], msgspec.Meta(min_length=1)]
     acceptance_criteria: Annotated[tuple[AcceptanceCriterion, ...], msgspec.Meta(min_length=1)]
     reviewed_authorities: Annotated[tuple[ReviewedAuthority, ...], msgspec.Meta(min_length=1)]
@@ -509,7 +534,7 @@ def _validate_work_brief(brief: WorkBrief) -> None:  # noqa: PLR0912 - exhaustiv
 
 
 class WorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-work-brief/v3"]
+    schema: Literal["pinboard-work-brief/v4"]
     artifact_revision: PositiveInt
     attempt_id: KebabId
     item_id: KebabId
@@ -527,12 +552,34 @@ class WorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     compatibility: tuple[NonEmptyText, ...]
     non_goals: tuple[NonEmptyText, ...]
     checkpoint: WorkBriefCheckpoint
-    remaining_work: NonEmptyText
     checkout_selection: work_models.CheckoutSelection
     obligation_correspondence: Annotated[tuple[ObligationCorrespondence, ...], msgspec.Meta(min_length=1)]
 
     def __post_init__(self) -> None:
         _validate_work_brief(self)
+
+
+class ReadableCheckpoint(Protocol):
+    @property
+    def checkpoint_id(self) -> str: ...
+
+    @property
+    def title(self) -> str: ...
+
+    @property
+    def architecture_impact(self) -> ArchitectureImpact: ...
+
+    @property
+    def outcome_description(self) -> str: ...
+
+    @property
+    def acceptance_criteria(self) -> tuple[AcceptanceCriterion, ...]: ...
+
+    @property
+    def verification(self) -> tuple[VerificationRecord, ...]: ...
+
+    @property
+    def deferrals(self) -> tuple[Deferral, ...]: ...
 
 
 class ReadableWorkBrief(Protocol):
@@ -588,10 +635,7 @@ class ReadableWorkBrief(Protocol):
     def non_goals(self) -> tuple[str, ...]: ...
 
     @property
-    def checkpoint(self) -> WorkBriefCheckpoint: ...
-
-    @property
-    def remaining_work(self) -> str: ...
+    def checkpoint(self) -> ReadableCheckpoint: ...
 
 
 class ReviewCoverageResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -856,7 +900,7 @@ class CompletionCheckpointCoverage(msgspec.Struct, frozen=True, forbid_unknown_f
     evidence: NonEmptyLine
 
 
-class CompletionReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class CompletionReviewPackageV1(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-completion-review-package/v1"]
     attempt_id: KebabId
     item_id: KebabId
@@ -873,3 +917,25 @@ class CompletionReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields
         history_ids = tuple(row.history_id for row in self.checkpoint_coverage)
         if history_ids != tuple(sorted(set(history_ids))):
             raise ValueError("checkpoint_coverage must be unique and strictly ascending by history_id")
+
+
+class CompletionReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-completion-review-package/v2"]
+    attempt_id: KebabId
+    item_id: KebabId
+    candidate: NonEmptyLine
+    outcome_evidence: NonEmptyLine
+    reviewer_task_id: NonEmptyLine
+    accepted_scope: AcceptedScope
+    accepted_brief: AcceptedBriefCompletionIdentity
+    terminal_result: TerminalResultCompletionIdentity
+    final_review: FinalReviewCompletionIdentity
+    checkpoint_coverage: tuple[CompletionCheckpointCoverage, ...]
+
+    def __post_init__(self) -> None:
+        history_ids = tuple(row.history_id for row in self.checkpoint_coverage)
+        if history_ids != tuple(sorted(set(history_ids))):
+            raise ValueError("checkpoint_coverage must be unique and strictly ascending by history_id")
+
+
+type CompletionReviewPackageValue = CompletionReviewPackage | CompletionReviewPackageV1

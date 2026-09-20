@@ -32,7 +32,7 @@ from pinboard.application import (
     work_briefs,
 )
 from pinboard.application.ports import WorkStore
-from pinboard.domain import decision_models
+from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
     ArtifactAcceptanceAfterPublicationError,
     DecisionFailure,
@@ -666,6 +666,17 @@ def _read_actions(
         action_id=selected_action,
     )
     if isinstance(selected, DecisionFailure):
+        if (
+            selected_action_id is not None
+            and selected_action_id.kind == decision_models.ActionKind.COMPLETE
+            and selected_role == decision_models.Role.PROJECT
+        ):
+            recovery = _unavailable_completion_recovery(store, AttemptId(selected_action_id.subject))
+            if recovery is not None:
+                failure = _completion_recovery_failure(recovery, request.project_root, request.work_root)
+                return common._read_failure(
+                    "pinboard-mcp-actions-result/v1", failure.code.value, failure.message, failure.details
+                )
         return common._read_failure(
             "pinboard-mcp-actions-result/v1",
             selected.code.value,
@@ -675,8 +686,15 @@ def _read_actions(
     token.checkpoint()
     projected_actions: list[JsonValue] = []
     for action in selected:
+        if selected_action is None and isinstance(action, decision_models.CompleteAction):
+            continue
         projected = _mcp_action(
-            action, store, request.project_root, request.work_root, focused=selected_action is not None
+            action,
+            store,
+            request.project_root,
+            request.work_root,
+            focused=selected_action is not None,
+            artifacts=ArtifactRepository(durable),
         )
         if isinstance(projected, DecisionFailure):
             return common._read_failure(
@@ -702,6 +720,7 @@ def _mcp_action(
     work_root: str,
     *,
     focused: bool,
+    artifacts: ArtifactRepository | None = None,
 ) -> DecisionResult[dict[str, JsonValue]]:
     """Project a legal action, reading final evidence only for focused completion."""
     projected = actions.project_action(action, include_input_contract=True)
@@ -709,9 +728,33 @@ def _mcp_action(
         raise RuntimeError("MCP action discovery requires an inline input contract.")
     input_contract = projected.input_contract
     if isinstance(action, decision_models.CompleteAction) and focused:
-        completion = actions.completion_input_contract(store, action, projected.semantics)
+        if artifacts is None:
+            raise RuntimeError("Focused completion requires artifact access.")
+        try:
+            completion = actions.completion_input_contract(store, artifacts, action, projected.semantics)
+        except ArtifactError as error:
+            return DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                f"Accepted attempt brief could not be verified: {error}",
+                FailureDetails(
+                    observed=(FailureFact("attempt_id", str(action.capability.subject)),),
+                    mismatches=(
+                        FailureMismatch(
+                            "accepted_brief_bytes",
+                            "match the accepted selector, size, and SHA-256",
+                            "unreadable or mismatched",
+                        ),
+                    ),
+                    retry=RetryDisposition.DO_NOT_RETRY,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
         if isinstance(completion, query_models.CompletionCandidateRequired):
             return _completion_candidate_failure(completion, project_root, work_root)
+        if isinstance(completion, query_models.CompletionRecoveryRequired):
+            return _completion_recovery_failure(completion, project_root, work_root)
         if isinstance(completion, DecisionFailure):
             return completion
         input_contract = completion
@@ -796,7 +839,7 @@ def _completion_candidate_failure(
     )
     return DecisionFailure(
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
-        "Checkpointed completion requires a protected review candidate. Inspect authority status; acquire only when status permits it, using the worker's trusted task and host identity. Otherwise use only your own current lease. Discover and submit the exact candidate with the fresh receipt, then repeat focused completion discovery. These instructions do not acquire, submit, review, or complete automatically.",
+        "Terminal completion requires a protected review candidate. Inspect authority status; acquire only when status permits it, using the worker's trusted task and host identity. Otherwise use only your own current lease. Discover and submit the exact candidate with the fresh receipt, then repeat focused completion discovery. These instructions do not acquire, submit, review, or complete automatically.",
         FailureDetails(
             observed=(*observations, FailureFact("candidate_payload", '{"candidate":"<exact-candidate-revision>"}')),
             mismatches=(),
@@ -806,6 +849,142 @@ def _completion_candidate_failure(
             alternatives=(),
         ),
     )
+
+
+def _completion_recovery_failure(
+    required: query_models.CompletionRecoveryRequired,
+    project_root: str,
+    work_root: str,
+) -> DecisionFailure:
+    action: dict[str, JsonValue] = {"kind": required.route, "subject": required.route_subject}
+    request: dict[str, JsonValue] = {
+        "request": {
+            "project_root": project_root,
+            "work_root": work_root,
+            "role": "project",
+            "action_id": action,
+        }
+    }
+    roots: dict[str, JsonValue] = {"project_root": project_root, "work_root": work_root}
+    observations = [
+        FailureFact("recovery_action_tool", tool_names.ACTIONS_TOOL),
+        FailureFact("recovery_action_input", msgspec.json.encode(request, order="sorted").decode()),
+    ]
+    if required.alternative_route is not None and required.alternative_subject is not None:
+        alternative: dict[str, JsonValue] = {
+            "request": {
+                **roots,
+                "role": "project",
+                "action_id": {"kind": required.alternative_route, "subject": required.alternative_subject},
+            }
+        }
+        observations.extend(
+            (
+                FailureFact("alternative_recovery_action_tool", tool_names.ACTIONS_TOOL),
+                FailureFact(
+                    "alternative_recovery_action_input", msgspec.json.encode(alternative, order="sorted").decode()
+                ),
+            )
+        )
+    exceptional_action: dict[str, JsonValue] = {
+        "request": {
+            **roots,
+            "role": "project",
+            "action_id": {"kind": "revise-item", "subject": str(required.item_id)},
+        }
+    }
+    rebind_action: dict[str, JsonValue] = {
+        "request": {
+            **roots,
+            "role": "project",
+            "action_id": {"kind": "rebind-attempt", "subject": str(required.attempt_id)},
+        }
+    }
+    review_recovery = required.route == "return-for-correction"
+    observations.extend(
+        (
+            FailureFact(
+                "exceptional_recovery_human_decision",
+                (
+                    "First execute return-for-correction with the scope-supersession reason. Then ask the human to "
+                    "approve the exact definition and checkpoint-disposition change before revising the item."
+                    if review_recovery
+                    else "Ask the human to approve the exact definition and checkpoint-disposition change before "
+                    "revising the item."
+                ),
+            ),
+            FailureFact("exceptional_revision_action_tool", tool_names.ACTIONS_TOOL),
+            FailureFact(
+                "exceptional_revision_action_input", msgspec.json.encode(exceptional_action, order="sorted").decode()
+            ),
+            FailureFact(
+                "exceptional_recovery_after_revision",
+                (
+                    "Publish a matching pinboard-work-brief/v4, obtain its independent brief review, rebind the now-active "
+                    "attempt, dispatch, and submit a new candidate."
+                    if review_recovery
+                    else "Publish a matching pinboard-work-brief/v4, obtain its independent brief review, then discover "
+                    "and execute the exact rebind-attempt action."
+                ),
+            ),
+            FailureFact("exceptional_rebind_action_tool", tool_names.ACTIONS_TOOL),
+            FailureFact("exceptional_rebind_action_input", msgspec.json.encode(rebind_action, order="sorted").decode()),
+        )
+    )
+    return DecisionFailure(
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        required.reason,
+        FailureDetails(
+            observed=tuple(observations),
+            mismatches=(),
+            retry=RetryDisposition.REFRESH_ACTION,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def _unavailable_completion_recovery(
+    store: WorkStore,
+    attempt_id: AttemptId,
+) -> query_models.CompletionRecoveryRequired | None:
+    """Explain why a focused completion action is absent without broad artifact reads."""
+    completion = store.read_completion_context(attempt_id)
+    if completion is None or not isinstance(completion.attempt, query_models.NonterminalAttemptContextFacts):
+        return None
+    attempt = completion.attempt
+    item = attempt.item
+    if not item.replacement_resolved:
+        return query_models.CompletionRecoveryRequired(
+            attempt_id,
+            attempt.item_id,
+            "record-replacement",
+            str(attempt.item_id),
+            "retain-temporarily",
+            str(attempt.item_id),
+            "Completion is withheld until the unresolved replacement is recorded or its temporary cost is explicitly retained.",
+        )
+    if (attempt.accepted_scope_revision, attempt.accepted_scope_digest) != (
+        item.current_definition_revision,
+        item.current_definition_digest,
+    ):
+        route = "return-for-correction" if attempt.state == work_models.AttemptState.REVIEW else "rebind-attempt"
+        return query_models.CompletionRecoveryRequired(
+            attempt_id,
+            attempt.item_id,
+            route,
+            str(attempt_id),
+            None,
+            None,
+            (
+                "Completion is withheld because the reviewed candidate must be returned for correction before the "
+                "stale accepted attempt binding can be replaced."
+                if route == "return-for-correction"
+                else "Completion is withheld because the accepted attempt binding is stale against the current definition."
+            ),
+        )
+    return None
 
 
 def _evidence_reference(path: Path) -> contracts.EvidenceReference:
@@ -1038,6 +1217,7 @@ def _read_attempt_inspection(
     token.checkpoint()
     accepted_brief: contracts.AcceptedBriefIdentity | None = None
     owner_task_id: TaskId | None = None
+    decoded_brief: work_brief_models.ReadableWorkBrief | None = None
     if isinstance(context, query_models.NonterminalAttemptContextFacts):
         reference = context.brief_reference
         try:
@@ -1109,6 +1289,7 @@ def _read_attempt_inspection(
                 ),
             )
         owner_task_id = TaskId(brief.owner_task_id)
+        decoded_brief = brief
         stored_reference = store.read_artifact_reference_by_id(context.brief_artifact_ref_id)
         if stored_reference is None or (
             stored_reference.selector,
@@ -1148,7 +1329,7 @@ def _read_attempt_inspection(
             context.accepted_scope_revision,
             context.accepted_scope_digest,
         )
-    continuation = queries.project_attempt_continuation(context, owner_task_id)
+    continuation = queries.project_attempt_continuation(context, owner_task_id, decoded_brief)
     if isinstance(continuation, DecisionFailure):
         details = continuation.details
         if details is None:

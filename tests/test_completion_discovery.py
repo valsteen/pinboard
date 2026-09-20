@@ -6,53 +6,304 @@ import sqlite3
 import sys
 from unittest.mock import patch
 
+import msgspec
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
+from pinboard.adapters.files.root import read_working_tree_candidate
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import actions, query_models
-from pinboard.domain.identifiers import AttemptId
+from pinboard.domain import history
+from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.identifiers import AttemptId, ItemId
+from pinboard.mcp import contract_schemas
+from pinboard.mcp import execution as mcp_execution
+from pinboard.mcp import read_operations as mcp_reads
+from pinboard.mcp import server as mcp_server
 from pinboard.mcp.contracts import JsonValue
+from tests import test_dispatch
 from tests.checkpoint_support import CheckpointPackageSupport
+from tests.native_support import call_native_tool
+from tests.work_brief_support import ready_review
 
 
 class CompletionDiscoveryTest(CheckpointPackageSupport):
-    def test_active_checkpointed_completion_returns_candidate_recovery_unchanged(self) -> None:
-        fixture, _, _ = self.review_job_fixture()
-        self.return_for_correction(fixture, "Protect the final candidate again.", "completion")
-        before = fixture.store.validated_snapshot()
-        context = fixture.store.read_completion_context(AttemptId("work-a-1"))
-        assert context is not None
-        self.assertEqual(
-            query_models.CompletionCandidateRequired(AttemptId("work-a-1")),
-            actions.completion_candidate_recovery(context),
-        )
+    def test_terminal_attempt_inspection_routes_candidate_protection_then_independent_review(self) -> None:
+        active = self.terminalize_brief(self.checkpoint_fixture())
+        self.return_for_correction(active, "Protect the terminal candidate.", "terminal-routing")
 
-        rejected = self.actions_result(
-            fixture,
+        active_result = call_native_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
             {
-                "role": "project",
-                "action_id": {"kind": "complete", "subject": "work-a-1"},
+                "project_root": str(active.project),
+                "work_root": str(active.work),
+                "attempt_id": "work-a-1",
             },
         )
-        self.assertEqual("rejected", rejected["status"])
-        self.assertFalse(rejected["state_changed"])
-        self.assertEqual(before, fixture.store.validated_snapshot())
+        active_operation = self.json_object(self.json_object(active_result["continuation"])["next_operation"])
+        self.assertEqual("action", active_operation["kind"])
+        self.assertEqual({"target": "attempt", "action_kind": "complete"}, active_operation["action"])
+
+        review = self.terminalize_brief(self.checkpoint_fixture())
+        review_result = call_native_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
+            {
+                "project_root": str(review.project),
+                "work_root": str(review.work),
+                "attempt_id": "work-a-1",
+            },
+        )
+        review_operation = self.json_object(self.json_object(review_result["continuation"])["next_operation"])
+        self.assertEqual("review-subagent", review_operation["kind"])
+        self.assertEqual(review.candidate_revision, review_operation["candidate_revision"])
+
+    def test_brief_review_status_contract_accepts_retained_v3(self) -> None:
+        fixture = self.checkpoint_fixture()
+        payload = msgspec.to_builtins(fixture.brief)
+        assert isinstance(payload, dict)
+        payload["schema"] = "pinboard-work-brief/v3"
+        checkpoint = payload["checkpoint"]
+        assert isinstance(checkpoint, dict)
+        disposition = checkpoint.pop("disposition")
+        assert isinstance(disposition, dict)
+        payload["remaining_work"] = disposition["remaining_work"]
+        context = fixture.store.read_attempt_context(AttemptId("work-a-1"))
+        assert isinstance(context, query_models.NonterminalAttemptContextFacts)
+        reference = fixture.store.read_artifact_reference_by_id(context.brief_artifact_ref_id)
+        assert reference is not None
+        self.replace_artifact_bytes(fixture, reference, msgspec.json.encode(payload, order="sorted") + b"\n")
+
+        result = mcp_reads._brief_review(
+            {
+                "request": {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "operation": "status",
+                    "brief_artifact_ref_id": int(reference.artifact_ref_id),
+                }
+            },
+            mcp_execution.CancellationToken(),
+        )
+
+        self.assertEqual(result.content, contract_schemas.validate_result(mcp_server.BRIEF_REVIEW_TOOL, result.content))
+
+    def test_active_terminal_completion_returns_candidate_recovery_with_or_without_history(self) -> None:
+        fixtures = (
+            ("zero-history", self.terminalize_brief(self.checkpoint_fixture())),
+            ("checkpointed", self.review_job_fixture(terminal=True)[0]),
+        )
+        for label, fixture in fixtures:
+            with self.subTest(label=label):
+                self.return_for_correction(fixture, "Protect the final candidate again.", f"completion-{label}")
+                before = fixture.store.validated_snapshot()
+                context = fixture.store.read_completion_context(AttemptId("work-a-1"))
+                assert context is not None
+                self.assertEqual(
+                    query_models.CompletionCandidateRequired(AttemptId("work-a-1")),
+                    actions.completion_candidate_recovery(context),
+                )
+
+                rejected = self.actions_result(
+                    fixture,
+                    {
+                        "role": "project",
+                        "action_id": {"kind": "complete", "subject": "work-a-1"},
+                    },
+                )
+                self.assertEqual("rejected", rejected["status"])
+                self.assertFalse(rejected["state_changed"])
+                self.assertEqual(before, fixture.store.validated_snapshot())
+
+    def test_retained_brief_review_submission_rejects_before_candidate_publication(self) -> None:  # noqa: PLR0915 - one complete retained-brief recovery journey
+        for schema in ("pinboard-work-brief/v3", "pinboard-work-brief/v2"):
+            with self.subTest(schema=schema):
+                fixture = self.checkpoint_fixture()
+                payload = msgspec.to_builtins(fixture.brief)
+                assert isinstance(payload, dict)
+                payload["schema"] = schema
+                checkpoint = payload["checkpoint"]
+                assert isinstance(checkpoint, dict)
+                disposition = checkpoint.pop("disposition")
+                assert isinstance(disposition, dict)
+                payload["remaining_work"] = disposition["remaining_work"]
+                if schema == "pinboard-work-brief/v2":
+                    del payload["checkout_selection"]
+                    del payload["obligation_correspondence"]
+                context = fixture.store.read_attempt_context(AttemptId("work-a-1"))
+                assert isinstance(context, query_models.NonterminalAttemptContextFacts)
+                reference = fixture.store.read_artifact_reference_by_id(context.brief_artifact_ref_id)
+                assert reference is not None
+                self.replace_artifact_bytes(
+                    fixture,
+                    reference,
+                    msgspec.json.encode(payload, order="sorted") + b"\n",
+                )
+                completion = self.actions_result(
+                    fixture,
+                    {"role": "project", "action_id": {"kind": "complete", "subject": "work-a-1"}},
+                )
+                completion_observed = {
+                    str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
+                    for row in self.json_array(completion["observed"])
+                }
+                self.assertIn('"kind":"return-for-correction"', completion_observed["recovery_action_input"])
+                inspected_review = call_native_tool(
+                    mcp_server.ATTEMPT_INSPECT_TOOL,
+                    {
+                        "project_root": str(fixture.project),
+                        "work_root": str(fixture.work),
+                        "attempt_id": "work-a-1",
+                    },
+                )
+                review_operation = self.json_object(
+                    self.json_object(inspected_review["continuation"])["next_operation"]
+                )
+                self.assertEqual(
+                    {"target": "attempt", "action_kind": "return-for-correction"},
+                    review_operation["action"],
+                )
+                self.assertIn("Then publish and independently review", str(review_operation["condition"]))
+                self.assertIn("rebind the active attempt", str(review_operation["condition"]))
+                self.assertIn("dispatch, and submit a new candidate", str(review_operation["condition"]))
+                self.return_for_correction(fixture, "Bind a current brief before review.", schema.rsplit("/", 1)[-1])
+                (fixture.project / "tracked.txt").write_text(f"{schema}\n", encoding="utf-8")
+                candidate = read_working_tree_candidate(fixture.project).identity
+                lease = self.native_attempt_acquire(fixture, f"legacy-{schema.rsplit('/', 1)[-1]}-worker")
+                selected = self.native_actions(
+                    fixture,
+                    "submit-review",
+                    "work-a-1",
+                    role="worker",
+                    lease=lease,
+                )
+                before = fixture.store.validated_snapshot()
+                artifact_paths = tuple(
+                    sorted(
+                        path.relative_to(fixture.work)
+                        for path in (fixture.work / "artifacts").rglob("*")
+                        if path.is_file()
+                    )
+                )
+
+                rejected = self.transition_result(fixture, selected, {"candidate": candidate})
+
+                self.assertEqual("rejected", rejected["status"])
+                self.assertIn("Retained work brief", str(rejected["message"]))
+                observations = {
+                    str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
+                    for row in self.json_array(rejected["observed"])
+                }
+                self.assertEqual("pinboard_brief_publish", observations["brief_publication_tool"])
+                self.assertIn("pinboard-work-brief/v4", observations["brief_publication_input"])
+                self.assertIn("independent", observations["brief_review_requirement"])
+                self.assertEqual("pinboard_actions", observations["brief_binding_action_tool"])
+                self.assertIn('"kind":"rebind-attempt"', observations["brief_binding_action_input"])
+                self.assertEqual(before, fixture.store.validated_snapshot())
+                self.assertEqual(
+                    artifact_paths,
+                    tuple(
+                        sorted(
+                            path.relative_to(fixture.work)
+                            for path in (fixture.work / "artifacts").rglob("*")
+                            if path.is_file()
+                        )
+                    ),
+                )
+
+                inspected = call_native_tool(
+                    mcp_server.ATTEMPT_INSPECT_TOOL,
+                    {
+                        "project_root": str(fixture.project),
+                        "work_root": str(fixture.work),
+                        "attempt_id": "work-a-1",
+                    },
+                )
+                operation = self.json_object(self.json_object(inspected["continuation"])["next_operation"])
+                self.assertEqual({"target": "attempt", "action_kind": "rebind-attempt"}, operation["action"])
+                self.assertIn("independently review", str(operation["condition"]))
+
+                current = msgspec.structs.replace(fixture.brief, artifact_revision=2)
+                publication = call_native_tool(
+                    mcp_server.BRIEF_PUBLISH_TOOL,
+                    {
+                        "project_root": str(fixture.project),
+                        "work_root": str(fixture.work),
+                        "brief": msgspec.to_builtins(current),
+                    },
+                )
+                self.assertEqual("committed", publication["status"], publication)
+                published_reference = self.json_object(publication["reference"])
+                rebound = self.transition_result(
+                    fixture,
+                    self.project_action(fixture, "rebind-attempt:work-a-1"),
+                    {
+                        "attempt": "work-a-1",
+                        "branch": current.branch,
+                        "base_revision": current.base_revision,
+                        "brief_artifact_ref_id": published_reference["artifact_ref_id"],
+                    },
+                )
+                self.assertEqual("committed", rebound["status"], rebound)
+                dispatch_action = self.project_action(fixture, "dispatch:work-a-1")
+                environment = msgspec.structs.replace(
+                    test_dispatch.DispatchTest().environment(fixture.project),
+                    starting_revision=current.base_revision,
+                )
+                reviewed_dispatch = msgspec.to_builtins(
+                    {
+                        "kind": "reviewed",
+                        "receipt": {
+                            "action_id": {"kind": "dispatch", "subject": "work-a-1"},
+                            "subject_revision": dispatch_action["subject_revision"],
+                        },
+                        "checkpoint_id": current.checkpoint.checkpoint_id,
+                        "environment": environment,
+                        "prompt": None,
+                        "brief_review": msgspec.json.decode(ready_review(current)),
+                        "review_id": f"independent-{schema.rsplit('/', 1)[-1]}-review",
+                    },
+                    enc_hook=test_dispatch.dispatch_environment_enc_hook,
+                )
+                assert isinstance(reviewed_dispatch, dict)
+                dispatched = call_native_tool(
+                    mcp_server.DISPATCH_TOOL,
+                    {
+                        "project_root": str(fixture.project),
+                        "work_root": str(fixture.work),
+                        "dispatch": reviewed_dispatch,
+                    },
+                )
+                self.assertEqual("ready", dispatched["status"], dispatched)
+                self.assertEqual("committed", dispatched["effect"])
+                current_lease = self.native_attempt_acquire(fixture, f"current-{schema.rsplit('/', 1)[-1]}-worker")
+                current_submission = self.native_actions(
+                    fixture,
+                    "submit-review",
+                    "work-a-1",
+                    role="worker",
+                    lease=current_lease,
+                )
+                submitted = self.transition_result(fixture, current_submission, {"candidate": candidate})
+                self.assertEqual("committed", submitted["status"], submitted)
 
     def test_direct_and_covered_discovery_select_exact_input_without_mutation(self) -> None:
         for covered in (False, True):
             with self.subTest(covered=covered):
-                fixture = self.review_job_fixture()[0] if covered else self.checkpoint_fixture()
+                fixture = (
+                    self.review_job_fixture(terminal=True)[0]
+                    if covered
+                    else self.terminalize_brief(self.checkpoint_fixture())
+                )
                 before = fixture.store.validated_snapshot()
                 action = self.project_action(fixture, "complete:work-a-1")
                 contract = self.json_object(action["input_contract"])
                 schema = self.json_object(contract["payload_schema"])
                 self.assertNotIn("oneOf", schema)
                 definitions = self.json_object(schema["$defs"])
-                expected = "CoveredCompleteInputPayload" if covered else "EvidenceInputPayload"
-                self.assertIn(expected, definitions)
-                self.assertNotIn("EvidenceInputPayload" if covered else "CoveredCompleteInputPayload", definitions)
+                self.assertIn("ReviewedCompleteInputPayload", definitions)
+                self.assertNotIn("EvidenceInputPayload", definitions)
+                self.assertNotIn("CoveredCompleteInputPayload", definitions)
                 packages = self.json_array(contract["checkpoint_packages"])
                 receipts = [
                     value for value in before.transition_receipts if value.outcome_schema == "checkpoint-acceptance/v2"
@@ -74,30 +325,140 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
 
     def test_broad_native_discovery_omits_checkpoint_package_enumeration(self) -> None:
 
-        fixture, _, _ = self.review_job_fixture()
-        with patch.object(
-            SQLiteWorkStore, "read_completion_context", side_effect=AssertionError("broad checkpoint enumeration")
+        fixture, _, _ = self.review_job_fixture(terminal=True)
+        with (
+            patch.object(
+                SQLiteWorkStore, "read_completion_context", side_effect=AssertionError("broad checkpoint enumeration")
+            ),
+            patch(
+                "pinboard.adapters.files.artifacts.ArtifactRepository.read",
+                side_effect=AssertionError("broad brief read"),
+            ),
         ):
             result = self.actions_result(fixture, {"role": "project"})
-        completion = next(
-            self.json_object(row)
-            for row in self.json_array(result["actions"])
-            if self.json_object(row)["action_id"] == {"kind": "complete", "subject": "work-a-1"}
+        self.assertFalse(
+            any(
+                self.json_object(row)["action_id"] == {"kind": "complete", "subject": "work-a-1"}
+                for row in self.json_array(result["actions"])
+            )
         )
-        contract = self.json_object(completion["input_contract"])
-        self.assertNotIn("checkpoint_packages", contract)
         self.assertFalse(result["state_changed"])
         self.assertEqual("unchanged", result["effect"])
 
+    def test_nonterminal_completion_returns_checkpoint_or_dispatch_recovery(self) -> None:
+        fixture = self.checkpoint_fixture()
+        reviewed = self.actions_result(
+            fixture,
+            {"role": "project", "action_id": {"kind": "complete", "subject": "work-a-1"}},
+        )
+        reviewed_observed = {
+            str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
+            for row in self.json_array(reviewed["observed"])
+        }
+        self.assertIn('"kind":"accept-checkpoint"', reviewed_observed["recovery_action_input"])
+
+        accepted, _, _ = self.review_job_fixture()
+        self.return_for_correction(accepted, "Continue the accepted work.", "nonterminal-recovery")
+        active = self.actions_result(
+            accepted,
+            {"role": "project", "action_id": {"kind": "complete", "subject": "work-a-1"}},
+        )
+        active_observed = {
+            str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
+            for row in self.json_array(active["observed"])
+        }
+        self.assertIn('"kind":"dispatch"', active_observed["recovery_action_input"])
+        self.assertIn('"kind":"revise-item"', active_observed["exceptional_revision_action_input"])
+        self.assertIn('"kind":"rebind-attempt"', active_observed["exceptional_rebind_action_input"])
+
+    def test_unresolved_replacement_completion_returns_both_exact_disposition_routes(self) -> None:
+        fixture = self.terminalize_brief(self.checkpoint_fixture())
+        action = self.project_action(fixture, "record-replacement:work-a")
+        recorded = self.transition_result(
+            fixture,
+            action,
+            {
+                "schema": "pinboard-planned-replacement/v1",
+                "affected_item": "work-a",
+                "expected_relation_revision": 0,
+                "replacement_item": "work-b",
+                "replacement_cost": "One retained owner.",
+                "status": "current",
+                "recorded_by": "review-owner",
+            },
+        )
+        self.assertEqual("committed", recorded["status"], recorded)
+
+        result = self.actions_result(
+            fixture,
+            {"role": "project", "action_id": {"kind": "complete", "subject": "work-a-1"}},
+        )
+        self.assertEqual("rejected", result["status"])
+        observations = {
+            str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
+            for row in self.json_array(result["observed"])
+        }
+        self.assertIn('"kind":"record-replacement"', observations["recovery_action_input"])
+        self.assertIn('"kind":"retain-temporarily"', observations["alternative_recovery_action_input"])
+        self.assertIn('"kind":"revise-item"', observations["exceptional_revision_action_input"])
+
+    def test_stale_definition_review_completion_returns_correction_before_rebind(self) -> None:
+        fixture = self.terminalize_brief(self.checkpoint_fixture())
+        snapshot = fixture.store.validated_snapshot()
+        definitions = tuple(
+            value for value in snapshot.lifecycle.definition_revisions if value.item_id == ItemId("work-a")
+        )
+        current = definitions[-1]
+        definition_bytes = history.work_item_definition_bytes(current.definition)
+        self.assertNotIsInstance(definition_bytes, DecisionFailure)
+        assert isinstance(definition_bytes, bytes)
+        definition = self.json_object(json.loads(definition_bytes))
+        definition["objective"] = "Exercise focused stale-definition completion recovery."
+        action = self.project_action(fixture, "revise-item:work-a")
+        revised = self.transition_result(
+            fixture,
+            action,
+            {
+                "schema": "pinboard-item-revision/v1",
+                "item_id": "work-a",
+                "expected_revision": current.revision,
+                "expected_digest": current.digest,
+                "source_task": "review-owner",
+                "reason": "Exercise focused stale-definition completion recovery.",
+                "definition": definition,
+            },
+        )
+        self.assertEqual("committed", revised["status"], revised)
+
+        result = self.actions_result(
+            fixture,
+            {"role": "project", "action_id": {"kind": "complete", "subject": "work-a-1"}},
+        )
+        self.assertEqual("rejected", result["status"])
+        observations = {
+            str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
+            for row in self.json_array(result["observed"])
+        }
+        self.assertIn('"kind":"return-for-correction"', observations["recovery_action_input"])
+        self.assertIn('"kind":"revise-item"', observations["exceptional_revision_action_input"])
+        self.assertIn("First execute return-for-correction", observations["exceptional_recovery_human_decision"])
+        self.assertIn("submit a new candidate", observations["exceptional_recovery_after_revision"])
+
     def test_native_discovery_executes_recovery_and_terminal_transition(self) -> None:  # noqa: PLR0915 - one recovery and terminal client journey
 
-        fixture, _, _ = self.review_job_fixture()
+        fixture, _, _ = self.review_job_fixture(terminal=True)
         self.return_for_correction(fixture, "Protect the final candidate again.", "recovery")
         current = self.project_action(fixture, "continue:work-a-1")
         current["action_id"] = {"kind": "complete", "subject": "work-a-1"}
         current["authorization"] = "project"
         rejected = self.transition_result(fixture, current, {"evidence": "cannot bypass checkpoints"})
         self.assertEqual("rejected", rejected["status"])
+        rejected_observations = {
+            str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
+            for row in self.json_array(rejected["observed"])
+        }
+        self.assertEqual("pinboard_actions", rejected_observations["completion_reinspection_tool"])
+        self.assertIn('"kind":"complete"', rejected_observations["completion_reinspection_input"])
         discovered = self.actions_result(
             fixture,
             {
@@ -230,7 +591,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                                 "subject_revision": selected["subject_revision"],
                             },
                             "payload": {
-                                "schema": "pinboard-covered-completion/v1",
+                                "schema": "pinboard-reviewed-completion/v2",
                                 "candidate": contract["candidate"],
                                 "evidence": "All returned checkpoint evidence is covered.",
                                 "reviewer_task_id": "terminal-reviewer",
@@ -253,7 +614,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         self.assertIsNotNone(receipt.artifact_ref_id)
 
     def test_focused_completion_enumerates_only_ordered_same_attempt_packages(self) -> None:
-        fixture, history_id, _ = self.review_job_fixture()
+        fixture, history_id, _ = self.review_job_fixture(terminal=True)
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             next_id = connection.execute("SELECT max(history_id) + 1 FROM transition_history").fetchone()[0]
             next_revision = connection.execute("SELECT max(project_revision) + 1 FROM transition_history").fetchone()[0]

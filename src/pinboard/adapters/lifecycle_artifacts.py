@@ -38,6 +38,7 @@ from pinboard.application.artifacts import (
     BriefArtifactRef,
     CheckpointArtifacts,
     CompletionArtifacts,
+    CurrentAttemptWorkBriefIdentity,
     EvidenceArtifactRef,
     NewArtifact,
     ResultArtifactRef,
@@ -48,6 +49,7 @@ from pinboard.application.work_briefs import (
     canonical_checkpoint_review_package_bytes,
     canonical_completion_review_package_bytes,
     canonical_reviewed_authority_set_bytes,
+    current_attempt_work_brief_identity,
     decode_canonical_work_brief,
     decode_canonical_work_brief_review,
     ready_review_key_sha256,
@@ -246,6 +248,12 @@ def _submit_review(
     operation_time: datetime,
     read_authorization_time: Callable[[], datetime],
 ) -> ArtifactTransitionResult:
+    context = store.read_attempt_context(command.action.capability.subject)
+    if not isinstance(context, query_models.NonterminalAttemptContextFacts):
+        return _unchanged("Review submission requires one current nonterminal attempt.", candidate=None)
+    brief = _read_current_attempt_brief(artifacts, context)
+    if isinstance(brief, DecisionFailure):
+        return brief
     snapshot = _observe_review_candidate(source_checkout, store, command, operation_time)
     if isinstance(snapshot, DecisionFailure):
         return snapshot
@@ -310,6 +318,7 @@ class _CheckpointContext:
     brief: work_brief_models.WorkBrief
     reference: BriefArtifactRef
     review_reference: EvidenceArtifactRef | None
+    identity: CurrentAttemptWorkBriefIdentity
 
 
 def _read_current_attempt_brief(
@@ -322,7 +331,18 @@ def _read_current_attempt_brief(
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _unchanged(f"The accepted brief is invalid: {brief.message}", candidate=None)
     if not isinstance(brief, work_brief_models.WorkBrief):
-        return _unchanged("Legacy work brief v2 cannot authorize checkpoint acceptance.", candidate=None)
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "Retained work brief v3/v2 cannot authorize current lifecycle execution.",
+            FailureDetails(
+                observed=(FailureFact("accepted_brief_schema", brief.schema),),
+                mismatches=(),
+                retry=RetryDisposition.REFRESH_ACTION,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
     if (
         brief.attempt_id,
         brief.item_id,
@@ -355,6 +375,8 @@ def _checkpoint_context(
         return brief
     if brief.checkpoint.checkpoint_id != command.value.checkpoint:
         return _unchanged("Checkpoint acceptance requires the accepted brief checkpoint.", candidate=None)
+    if not isinstance(brief.checkpoint.disposition, work_brief_models.ContinueCheckpointDisposition):
+        return _unchanged("Checkpoint acceptance requires a continue checkpoint disposition.", candidate=None)
     match brief.checkpoint:
         case work_brief_models.LocalCheckpoint():
             review_reference = None
@@ -374,7 +396,12 @@ def _checkpoint_context(
             review_reference = _evidence_reference(stored_review)
         case _ as unreachable:
             assert_never(unreachable)
-    return _CheckpointContext(brief, context.brief_reference, review_reference)
+    return _CheckpointContext(
+        brief,
+        context.brief_reference,
+        review_reference,
+        current_attempt_work_brief_identity(brief, context.brief_artifact_ref_id),
+    )
 
 
 def _publish_checkpoint(
@@ -521,11 +548,13 @@ def _accept_checkpoint(
     operation_time: datetime,
     read_authorization_time: Callable[[], datetime],
 ) -> ArtifactTransitionResult:
-    if (failure := service.preflight_checkpoint_candidate(store, command, operation_time)) is not None:
-        return failure
     context = _checkpoint_context(store, artifacts, command)
     if isinstance(context, DecisionFailure):
         return context
+    if (
+        failure := service.preflight_checkpoint_candidate(store, command, operation_time, context.identity)
+    ) is not None:
+        return failure
     published = _publish_checkpoint(work_root, store, artifacts, command, context)
     if isinstance(published, (DecisionFailure, PublishedTransitionFailure)):
         return published
@@ -539,7 +568,7 @@ def _accept_checkpoint(
             read_authorization_time=read_authorization_time,
             actor_task_id=selected.actor_task_id,
             actor_host_id=selected.actor_host_id,
-            transition_brief_identity=None,
+            transition_brief_identity=context.identity,
         )
     except StorageError as error:
         return _publication_terminal_result(error, created)
@@ -551,9 +580,10 @@ class _CompletionContext:
     brief: work_brief_models.WorkBrief
     reference: BriefArtifactRef
     checkpoint_coverage: tuple[work_brief_models.CompletionCheckpointCoverage, ...]
+    identity: CurrentAttemptWorkBriefIdentity
 
 
-def _completion_context(  # noqa: C901 - one exact completion-closure validation boundary
+def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure validation boundary
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
     command: decision_models.CoveredCompleteCommand,
@@ -565,6 +595,8 @@ def _completion_context(  # noqa: C901 - one exact completion-closure validation
     brief = _read_current_attempt_brief(artifacts, attempt)
     if isinstance(brief, DecisionFailure):
         return brief
+    if not isinstance(brief.checkpoint.disposition, work_brief_models.TerminalCheckpointDisposition):
+        return _unchanged("Completion requires a terminal checkpoint disposition.", candidate=None)
     if str(command.value.reviewer_task_id) == brief.owner_task_id:
         return _unchanged("The completion reviewer must be independent from the attempt owner.", candidate=None)
     if len(selected.checkpoints) != len(command.value.packages):
@@ -632,7 +664,12 @@ def _completion_context(  # noqa: C901 - one exact completion-closure validation
                 supplied.evidence,
             )
         )
-    return _CompletionContext(brief, attempt.brief_reference, tuple(coverage))
+    return _CompletionContext(
+        brief,
+        attempt.brief_reference,
+        tuple(coverage),
+        current_attempt_work_brief_identity(brief, attempt.brief_artifact_ref_id),
+    )
 
 
 def _publish_completion(
@@ -673,7 +710,7 @@ def _publish_completion(
         )
         review = _evidence_reference(review_publication.reference)
         package = work_brief_models.CompletionReviewPackage(
-            "pinboard-completion-review-package/v1",
+            "pinboard-completion-review-package/v2",
             context.brief.attempt_id,
             context.brief.item_id,
             str(command.value.candidate),
@@ -738,6 +775,9 @@ def _complete(
         return _unchanged("Covered completion requires project task and host attribution.", candidate=None)
     if command.value.reviewer_task_id == selected.actor_task_id:
         return _unchanged("The completion reviewer must differ from the invoking task.", candidate=None)
+    context = _completion_context(store, artifacts, command)
+    if isinstance(context, DecisionFailure):
+        return context
     if (
         failure := service.preflight_covered_completion(
             store,
@@ -745,12 +785,10 @@ def _complete(
             operation_time,
             actor_task_id=selected.actor_task_id,
             actor_host_id=selected.actor_host_id,
+            transition_brief_identity=context.identity,
         )
     ) is not None:
         return failure
-    context = _completion_context(store, artifacts, command)
-    if isinstance(context, DecisionFailure):
-        return context
     published = _publish_completion(work_root, artifacts, command, context)
     if isinstance(published, (DecisionFailure, PublishedTransitionFailure)):
         return published
@@ -764,6 +802,7 @@ def _complete(
             read_authorization_time=read_authorization_time,
             actor_task_id=selected.actor_task_id,
             actor_host_id=selected.actor_host_id,
+            transition_brief_identity=context.identity,
         )
     except StorageError as error:
         return _publication_terminal_result(error, created)

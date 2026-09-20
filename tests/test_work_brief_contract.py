@@ -109,11 +109,12 @@ class WorkBriefContractTest(unittest.TestCase):
                 "lifecycle-partition": {"not-applicable", "required"},
                 "checkout-selection": {"main", "isolated"},
                 "obligation-target": {"contract", "criterion", "deferral"},
+                "checkpoint-disposition": {"continue", "terminal"},
             },
             {choice_id: {variant.selector for variant in choice.variants} for choice_id, choice in choices.items()},
         )
         self.assertEqual(
-            {"architecture-impact", "checkout-selection", "obligation-target"},
+            {"architecture-impact", "checkout-selection", "obligation-target", "checkpoint-disposition"},
             {choice.choice_id for choice in contract.local_structural_choices},
         )
         for choice in choices.values():
@@ -151,19 +152,20 @@ class WorkBriefContractTest(unittest.TestCase):
             (
                 contract.local_starter,
                 work_brief_models.LocalCheckpoint,
-                {"pinboard-work-brief/v3", "local", "none", "accepted-scope", "criterion"},
+                {"pinboard-work-brief/v4", "local", "none", "accepted-scope", "criterion", "continue"},
             ),
             (
                 contract.cross_boundary_starter,
                 work_brief_models.CrossBoundaryCheckpoint,
                 {
-                    "pinboard-work-brief/v3",
+                    "pinboard-work-brief/v4",
                     "cross-boundary",
                     "none",
                     "independently-buildable",
                     "accepted-scope",
                     "contract",
                     "not-applicable",
+                    "continue",
                 },
             ),
         ):
@@ -333,6 +335,7 @@ class WorkBriefContractTest(unittest.TestCase):
                 "prohibition-disposition",
                 "unique-lifecycle-operations",
                 "complete-obligation-correspondence",
+                "checkpoint-disposition",
             },
             constraint_ids,
         )

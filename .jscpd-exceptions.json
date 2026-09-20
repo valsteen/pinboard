@@ -3,62 +3,6 @@
   "detector_version": "5.1.2",
   "records": [
     {
-      "identity": {
-        "id": "application-transition-and-checkpoint",
-        "format": "python",
-        "tokens": 88,
-        "lines": 17,
-        "occurrences": [
-          {
-            "endpoint": {
-              "end": 716,
-              "endLoc": {
-                "column": 33,
-                "line": 716,
-                "position": 29564
-              },
-              "name": "application/service.py",
-              "start": 700,
-              "startLoc": {
-                "column": 17,
-                "line": 700,
-                "position": 28843
-              }
-            },
-            "sha256": "daa21b54a0936382e0160d5d302ccfdd48ac2eda0e9555a222d070b927555775"
-          },
-          {
-            "endpoint": {
-              "end": 794,
-              "endLoc": {
-                "column": 33,
-                "line": 794,
-                "position": 32744
-              },
-              "name": "application/service.py",
-              "start": 778,
-              "startLoc": {
-                "column": 45,
-                "line": 778,
-                "position": 32023
-              }
-            },
-            "sha256": "daa21b54a0936382e0160d5d302ccfdd48ac2eda0e9555a222d070b927555775"
-          }
-        ],
-        "owners": [
-          "src/pinboard/application/service.py#decide_and_commit_transition",
-          "src/pinboard/application/service.py#decide_and_commit_checkpoint_acceptance"
-        ],
-        "rationale": "Both entry points visibly own their distinct transaction, allocation and mutation projection. Final fact reread and fresh clock authorization are already consolidated in _read_authorize_and_decide. Folding the remaining typed signatures and transaction-to-projection sequence would require callback-driven allocation/projection or lose checkpoint-specific artifact allocation; those are independently required use-case contracts."
-      },
-      "certification": {
-        "reviewer_task_id": "01a0a970-0a0d-7ba2-a214-20f5c5ac50e5",
-        "reviewed_pair_sha256": "c22daa37635e0eb157da4e4daa7009df00bcb774b7a79bb3ca026b06059341ca",
-        "evidence_sha256": "68886019993d298a909eab5da730270a03c0cedf8a27a25ecde6cfde7e03e947"
-      }
-    },
-    {
       "certification": {
         "evidence_sha256": "7b1828e2ee2d60772dc031436d80c6fbb056035b8a5d83b692b04e657b884562",
         "reviewed_pair_sha256": "a7121a0de9614f84c40153d55af1a576c25e77d81aa094225b5f3b624285d8f2",

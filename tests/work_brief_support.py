@@ -46,6 +46,9 @@ def example_work_brief() -> work_brief_models.WorkBrief:
         ),
         outcome="independently-buildable",
         outcome_description="Dispatch consumes strict JSON and Markdown is a generated view.",
+        disposition=work_brief_models.ContinueCheckpointDisposition(
+            "Resume the separately accepted structural cleanup after this prerequisite."
+        ),
         contracts=(contract,),
         acceptance_criteria=(work_brief_models.AcceptanceCriterion(1, "The typed boundary is strict."),),
         reviewed_authorities=(authority,),
@@ -74,7 +77,7 @@ def example_work_brief() -> work_brief_models.WorkBrief:
         ),
     )
     return work_brief_models.WorkBrief(
-        schema="pinboard-work-brief/v3",
+        schema="pinboard-work-brief/v4",
         artifact_revision=1,
         attempt_id="make-canonical-briefs-typed-json-1",
         item_id="make-canonical-briefs-typed-json",
@@ -92,7 +95,6 @@ def example_work_brief() -> work_brief_models.WorkBrief:
         compatibility=("Do not retain a v1 reader.",),
         non_goals=("Do not change lifecycle legality.",),
         checkpoint=checkpoint,
-        remaining_work="Resume the separately accepted structural cleanup after this prerequisite.",
         checkout_selection=work_models.CheckoutSelection.MAIN,
         obligation_correspondence=(
             work_brief_models.ObligationCorrespondence(
@@ -157,6 +159,7 @@ def work_c_brief() -> work_brief_models.WorkBrief:
         "Activate work C",
         cross.architecture_impact,
         "Activate the recorded attempt with its exact typed brief.",
+        cross.disposition,
         cross.acceptance_criteria,
         (
             replace(

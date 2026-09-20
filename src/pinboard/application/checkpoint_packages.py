@@ -10,6 +10,7 @@ from pinboard.application import (
     candidate_snapshots,
     checkpoint_compatibility_models,
     stored_state,
+    work_brief_compatibility_models,
     work_brief_models,
     work_briefs,
 )
@@ -117,10 +118,14 @@ def _review_basis(
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> work_brief_models.WorkBriefFailure | None:
     match brief.checkpoint, package.review_basis:
-        case work_brief_models.LocalCheckpoint(), work_brief_models.LocalReviewBasis():
+        case (
+            work_brief_models.LocalCheckpoint() | work_brief_compatibility_models.LocalCheckpointV3(),
+            work_brief_models.LocalReviewBasis(),
+        ):
             return None
         case (
-            work_brief_models.CrossBoundaryCheckpoint(reviewed_authorities=authorities),
+            work_brief_models.CrossBoundaryCheckpoint(reviewed_authorities=authorities)
+            | work_brief_compatibility_models.CrossBoundaryCheckpointV3(reviewed_authorities=authorities),
             work_brief_models.CrossBoundaryReviewBasis(
                 brief_review=review_identity,
                 checkpoint_sha256=checkpoint_sha256,

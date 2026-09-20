@@ -82,6 +82,21 @@ class CoveredCompleteInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fi
             raise ValueError("packages must be unique and strictly ascending by history_id")
 
 
+class ReviewedCompleteInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-reviewed-completion/v2"]
+    candidate: NonEmptyLine
+    evidence: NonEmptyLine
+    reviewer_task_id: NonEmptyLine
+    result_sha256: Sha256
+    review_sha256: Sha256
+    packages: tuple[CoveredCompletionPackageInputPayload, ...]
+
+    def __post_init__(self) -> None:
+        history_ids = tuple(row.history_id for row in self.packages)
+        if history_ids != tuple(sorted(set(history_ids))):
+            raise ValueError("packages must be unique and strictly ascending by history_id")
+
+
 class AcceptCheckpointInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     checkpoint: Identity
     candidate: NonEmptyLine
@@ -171,6 +186,7 @@ type InputPayload = (
     | MergeProposalInputPayload
     | ReviseItemInputPayload
     | CoveredCompleteInputPayload
+    | ReviewedCompleteInputPayload
 )
 type InputModel = type[InputPayload]
 
@@ -235,10 +251,11 @@ def action_payload_schema(kind: decision_models.ActionKind) -> JsonSchema | None
 
     if kind == decision_models.ActionKind.COMPLETE:
         direct = msgspec.json.schema(EvidenceInputPayload)
-        covered = msgspec.json.schema(CoveredCompleteInputPayload)
+        retained = msgspec.json.schema(CoveredCompleteInputPayload)
+        reviewed = msgspec.json.schema(ReviewedCompleteInputPayload)
         return {
-            "oneOf": [{"$ref": direct["$ref"]}, {"$ref": covered["$ref"]}],
-            "$defs": {**direct["$defs"], **covered["$defs"]},
+            "oneOf": [{"$ref": direct["$ref"]}, {"$ref": retained["$ref"]}, {"$ref": reviewed["$ref"]}],
+            "$defs": {**direct["$defs"], **retained["$defs"], **reviewed["$defs"]},
         }
     model = action_input_model(kind)
     return None if model is None else msgspec.json.schema(model)
@@ -300,7 +317,7 @@ class CompletionInputContractView(InputContractView, frozen=True, forbid_unknown
             expected.practical_result,
         ):
             raise ValueError("completion input contract semantics must match complete")
-        expected_model = CoveredCompleteInputPayload if self.checkpoint_packages else EvidenceInputPayload
+        expected_model = ReviewedCompleteInputPayload
         if msgspec.json.encode(self.payload_schema, order="sorted") != msgspec.json.encode(
             msgspec.json.schema(expected_model), order="sorted"
         ):

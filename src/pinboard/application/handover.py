@@ -420,7 +420,7 @@ class HandoverCompletionCheckpointCoverage(msgspec.Struct, frozen=True, forbid_u
 class HandoverCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     history_id: int
     package_artifact_ref_id: int
-    schema: Literal["pinboard-completion-review-package/v1"]
+    schema: Literal["pinboard-completion-review-package/v1", "pinboard-completion-review-package/v2"]
     attempt_id: str
     item_id: str
     candidate: str

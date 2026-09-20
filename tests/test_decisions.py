@@ -809,18 +809,35 @@ class LifecycleDecisionTest(unittest.TestCase):
         snapshot = LedgerSnapshot(
             "revision",
             (active,),
-            attempts=(AttemptRecord("target-1", "target", work_models.AttemptState.REVIEW),),
+            attempts=(
+                AttemptRecord(
+                    "target-1",
+                    "target",
+                    work_models.AttemptState.REVIEW,
+                    protected_candidate_revision="candidate",
+                ),
+            ),
         )
 
         completed_action = action(decision_models.CompleteAction, AttemptId("target-1"))
         completed = decide(
             snapshot,
-            decision_models.CompleteCommand(completed_action, work_models.EvidenceInput("review accepted")),
+            decision_models.CoveredCompleteCommand(
+                completed_action,
+                work_models.CoveredCompleteInput(
+                    CandidateId("candidate"),
+                    "review accepted",
+                    TaskId("reviewer"),
+                    "a" * 64,
+                    "b" * 64,
+                    (),
+                ),
+            ),
             NOW,
         )
         self.assertEqual("review accepted", completed.receipt.evidence)
-        self.assertIsInstance(completed.change, decision_models.CompletionChange)
-        assert isinstance(completed.change, decision_models.CompletionChange)
+        self.assertIsInstance(completed.change, decision_models.CoveredCompletionChange)
+        assert isinstance(completed.change, decision_models.CoveredCompletionChange)
         self.assertEqual("review accepted", completed.change.evidence)
 
         intake = LedgerSnapshot("revision", (item("obsolete", work_models.WorkState.INTAKE),))
@@ -864,6 +881,39 @@ class LifecycleDecisionTest(unittest.TestCase):
 
         self.assertIsInstance(direct_with_history, DecisionFailure)
         self.assertIsInstance(covered_without_history, DecisionFailure)
+
+    def test_terminal_completion_always_requires_a_protected_review_candidate(self) -> None:
+        review = item("target", work_models.WorkState.REVIEW, attempt="target-1")
+        attempt = AttemptRecord(
+            "target-1",
+            "target",
+            work_models.AttemptState.REVIEW,
+            protected_candidate_revision="candidate",
+        )
+        complete = action(decision_models.CompleteAction, AttemptId("target-1"))
+        direct = decision_outcome(
+            LedgerSnapshot("revision", (review,), attempts=(attempt,)),
+            decision_models.CompleteCommand(complete, work_models.EvidenceInput("done")),
+            NOW,
+        )
+        reviewed = decision_outcome(
+            LedgerSnapshot("revision", (review,), attempts=(attempt,)),
+            decision_models.CoveredCompleteCommand(
+                complete,
+                work_models.CoveredCompleteInput(
+                    CandidateId("candidate"),
+                    "reviewed",
+                    TaskId("reviewer"),
+                    "a" * 64,
+                    "b" * 64,
+                    (),
+                ),
+            ),
+            NOW,
+        )
+
+        self.assertIsInstance(direct, DecisionFailure)
+        self.assertIsInstance(reviewed, decision_models.CompletionAcceptanceDecision)
 
     def test_changed_semantic_scope_blocks_the_next_attempt_boundary(self) -> None:
         current = definition_anchor("build-map", 2, DIGEST_B)

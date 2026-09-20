@@ -552,6 +552,9 @@ type DirectCompleteTransitionRequest = ProjectTransitionRequest[Literal["complet
 type CoveredCompleteTransitionRequest = ProjectTransitionRequest[
     Literal["complete"], action_models.CoveredCompleteInputPayload
 ]
+type ReviewedCompleteTransitionRequest = ProjectTransitionRequest[
+    Literal["complete"], action_models.ReviewedCompleteInputPayload
+]
 type CloseTransitionRequest = ProjectTransitionRequest[Literal["close"], action_models.CloseInputPayload]
 type DeferTransitionRequest = ProjectTransitionRequest[Literal["defer"], action_models.DeferInputPayload]
 type MarkReadyTransitionRequest = ProjectTransitionRequest[Literal["mark-ready"], action_models.ReasonInputPayload]
@@ -595,6 +598,7 @@ type TransitionRequest = (
     | BlockItemTransitionRequest
     | DirectCompleteTransitionRequest
     | CoveredCompleteTransitionRequest
+    | ReviewedCompleteTransitionRequest
     | CloseTransitionRequest
     | DeferTransitionRequest
     | MarkReadyTransitionRequest
@@ -651,9 +655,14 @@ def decode_transition_request(raw: dict[str, JsonValue]) -> TransitionRequest:  
             request = msgspec.convert(raw, type=TransitionEnvelope[BlockItemTransitionRequest], strict=True).request
         case "complete":
             payload = inner.get("payload") if isinstance(inner, dict) else None
-            if isinstance(payload, dict) and "schema" in payload:
+            schema = payload.get("schema") if isinstance(payload, dict) else None
+            if schema == "pinboard-covered-completion/v1":
                 request = msgspec.convert(
                     raw, type=TransitionEnvelope[CoveredCompleteTransitionRequest], strict=True
+                ).request
+            elif schema == "pinboard-reviewed-completion/v2":
+                request = msgspec.convert(
+                    raw, type=TransitionEnvelope[ReviewedCompleteTransitionRequest], strict=True
                 ).request
             else:
                 request = msgspec.convert(
@@ -1207,9 +1216,12 @@ class NonterminalAttemptContinuationBase(msgspec.Struct, frozen=True, forbid_unk
             if operation.action not in self.legal_actions:
                 raise ValueError("continuation action must be one of its legal actions")
         elif isinstance(operation, ContinuationReview):
-            expected = RelativeActionIdentity("attempt", decision_models.ActionKind.ACCEPT_CHECKPOINT)
-            if expected not in self.legal_actions:
-                raise ValueError("review continuation requires the matching accept-checkpoint action")
+            expected = (
+                RelativeActionIdentity("attempt", decision_models.ActionKind.ACCEPT_CHECKPOINT),
+                RelativeActionIdentity("attempt", decision_models.ActionKind.COMPLETE),
+            )
+            if not any(action in self.legal_actions for action in expected):
+                raise ValueError("review continuation requires a matching checkpoint or completion action")
 
     def _validate_legal_action_kinds(self, allowed: tuple[decision_models.ActionKind, ...]) -> None:
         if any(action.action_kind not in allowed for action in self.legal_actions):
@@ -1229,9 +1241,11 @@ class ActiveAttemptContinuation(
         operation = self.next_operation
         if not isinstance(operation, ContinuationAction) or operation.action.action_kind not in (
             decision_models.ActionKind.CONTINUE,
+            decision_models.ActionKind.REBIND_ATTEMPT,
             decision_models.ActionKind.PAUSE,
+            decision_models.ActionKind.COMPLETE,
         ):
-            raise ValueError("an active continuation requires a continue or pause action")
+            raise ValueError("an active continuation requires a continue, rebind, pause, or completion action")
 
 
 class ReviewAttemptContinuation(
@@ -1249,10 +1263,11 @@ class ReviewAttemptContinuation(
             isinstance(operation, ContinuationReview)
             or (
                 isinstance(operation, ContinuationAction)
-                and operation.action.action_kind == decision_models.ActionKind.RETURN_FOR_CORRECTION
+                and operation.action.action_kind
+                in (decision_models.ActionKind.COMPLETE, decision_models.ActionKind.RETURN_FOR_CORRECTION)
             )
         ):
-            raise ValueError("a review continuation requires review or correction work")
+            raise ValueError("a review continuation requires review, completion, or correction work")
 
 
 class DependencyOrResumeAttemptContinuationBase(NonterminalAttemptContinuationBase, frozen=True):
@@ -2035,6 +2050,11 @@ class LegacyBriefReviewNoEvidence(BriefReviewStatusResult, frozen=True):
     brief: work_brief_compatibility_models.WorkBriefV2
 
 
+class RetainedV3BriefReviewNoEvidence(BriefReviewStatusResult, frozen=True):
+    status: Literal["no-needs-correction-evidence"]
+    brief: work_brief_compatibility_models.WorkBriefV3
+
+
 class BriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
     status: Literal["needs-correction"]
     brief: work_brief_models.WorkBrief
@@ -2045,6 +2065,13 @@ class BriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
 class LegacyBriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
     status: Literal["needs-correction"]
     brief: work_brief_compatibility_models.WorkBriefV2
+    reference: ReviewEvidenceReference
+    review: work_brief_models.WorkBriefReviewNeedsCorrection
+
+
+class RetainedV3BriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
+    status: Literal["needs-correction"]
+    brief: work_brief_compatibility_models.WorkBriefV3
     reference: ReviewEvidenceReference
     review: work_brief_models.WorkBriefReviewNeedsCorrection
 
@@ -2409,8 +2436,10 @@ ITEM_DEFINITION_RESULT_TYPES = (
 BRIEF_REVIEW_RESULT_TYPES = (
     BriefReviewNoEvidence,
     LegacyBriefReviewNoEvidence,
+    RetainedV3BriefReviewNoEvidence,
     BriefReviewNeedsCorrection,
     LegacyBriefReviewNeedsCorrection,
+    RetainedV3BriefReviewNeedsCorrection,
     BriefReviewCommitted,
     BriefReviewUnchanged,
     BriefReviewRejected,
@@ -2597,8 +2626,10 @@ type ResultBoundary = (
     | type[ItemDefinitionRejected]
     | type[BriefReviewNoEvidence]
     | type[LegacyBriefReviewNoEvidence]
+    | type[RetainedV3BriefReviewNoEvidence]
     | type[BriefReviewNeedsCorrection]
     | type[LegacyBriefReviewNeedsCorrection]
+    | type[RetainedV3BriefReviewNeedsCorrection]
     | type[BriefReviewCommitted]
     | type[BriefReviewUnchanged]
     | type[BriefReviewRejected]

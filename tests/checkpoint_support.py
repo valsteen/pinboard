@@ -248,7 +248,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         self.transition_json(fixture, selected, payload)
         return candidate
 
-    def return_for_correction(self, fixture: AcceptedPackageFixture, reason: str, suffix: str) -> int:
+    def return_for_correction(self, fixture: CheckpointFixture, reason: str, suffix: str) -> int:
         payload = fixture.project / f"return-{suffix}.json"
         payload.write_text(json.dumps({"reason": reason}), encoding="utf-8")
         rendered = self.transition_json(
@@ -280,6 +280,7 @@ class CheckpointPackageSupport(unittest.TestCase):
                 "Preserve local evidence",
                 work_brief_models.NoArchitectureImpact("The package owner remains unchanged."),
                 "The local package remains reusable.",
+                candidate.checkpoint.disposition,
                 checkpoint.acceptance_criteria,
                 (
                     work_brief_models.VerificationRecord(
@@ -615,6 +616,40 @@ class CheckpointPackageSupport(unittest.TestCase):
             package_reference,
         )
 
+    def terminalize_brief[T: CheckpointFixture](self, fixture: T) -> T:
+        checkpoint = fixture.brief.checkpoint
+        latest = fixture.store.read_latest_artifact_reference(work_models.ArtifactKind.BRIEF, fixture.brief.attempt_id)
+        revision = fixture.brief.artifact_revision + 1 if latest is None else latest.revision + 1
+        terminal = replace_struct(
+            fixture.brief,
+            artifact_revision=revision,
+            checkpoint=replace_struct(
+                checkpoint,
+                disposition=work_brief_models.TerminalCheckpointDisposition(),
+            ),
+        )
+        roots = resolve_durable_roots(fixture.project, fixture.work)
+        published = write_revision(
+            roots,
+            NewArtifact(
+                work_models.ArtifactKind.BRIEF,
+                terminal.attempt_id,
+                terminal.artifact_revision,
+                ".json",
+                canonical_work_brief_bytes(terminal),
+            ),
+        )
+        accepted = fixture.store.accept_artifact_reference(roots.work_root, published, datetime.now(UTC))
+        if isinstance(accepted, DecisionFailure):
+            self.fail(str(accepted))
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            connection.execute(
+                "UPDATE attempts SET brief_artifact_ref_id = ?, subject_revision = subject_revision + 1 "
+                "WHERE attempt_id = 'work-a-1'",
+                (int(accepted.reference.artifact_ref_id),),
+            )
+        return replace(fixture, brief=terminal)
+
     def package(self, fixture: AcceptedPackageFixture) -> work_briefs.CheckpointPackage:
         package = decode_canonical_checkpoint_review_package(
             (fixture.work / fixture.package_reference.selector).read_bytes()
@@ -623,8 +658,10 @@ class CheckpointPackageSupport(unittest.TestCase):
             self.fail(str(package))
         return package
 
-    def review_job_fixture(self) -> tuple[AcceptedPackageFixture, int, int]:
+    def review_job_fixture(self, *, terminal: bool = False) -> tuple[AcceptedPackageFixture, int, int]:
         fixture = self.accepted_package_fixture()
+        if terminal:
+            fixture = self.terminalize_brief(fixture)
         package_receipt = next(
             value
             for value in fixture.store.validated_snapshot().transition_receipts
@@ -683,7 +720,7 @@ class CheckpointPackageSupport(unittest.TestCase):
 
     def replace_artifact_bytes(
         self,
-        fixture: AcceptedPackageFixture,
+        fixture: CheckpointFixture,
         reference: stored_state.ArtifactReference,
         content: bytes,
     ) -> None:

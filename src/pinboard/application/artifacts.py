@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from pinboard.domain import work_models
+from pinboard.domain.identifiers import ArtifactRefId
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,3 +83,9 @@ class WorkBriefIdentity:
     base_revision: str
     accepted_scope_revision: int
     accepted_scope_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentAttemptWorkBriefIdentity(WorkBriefIdentity):
+    artifact_ref_id: ArtifactRefId
+    disposition: Literal["continue", "terminal"]

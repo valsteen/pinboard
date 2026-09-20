@@ -25,7 +25,6 @@ WORK_DEFINITION_FIELDS = frozenset(
         "supported_production_roots",
         "product_decision_and_provenance",
         "testing_strategy",
-        "remaining_work",
         "bootstrap",
         "obligation_correspondence",
     }
@@ -50,6 +49,7 @@ CHECKPOINT_DETAIL_FIELDS = frozenset(
         "lifecycle_partition",
         "verification",
         "deferrals",
+        "disposition",
     }
 )
 
@@ -118,7 +118,7 @@ DIAGRAM = Diagram(
     boxes=(
         Box(
             "brief",
-            "pinboard-work-brief/v3",
+            "pinboard-work-brief/v4",
             "One accepted artifact",
             ("starter → structural choices → completed brief",),
             ("WorkBriefContract · WorkBrief",),
@@ -156,7 +156,7 @@ DIAGRAM = Diagram(
             (
                 "outcome · scope · non-goals",
                 "compatibility · roots · provenance",
-                "testing · bootstrap · remaining · obligation map",
+                "testing · bootstrap · obligation map",
             ),
             ("definition-bound semantics",),
             655,
@@ -168,7 +168,7 @@ DIAGRAM = Diagram(
             "checkpoint",
             "Checkpoint identity + boundary",
             "What can be built and reviewed together?",
-            ("checkpoint id · title · boundary", "outcome + outcome description"),
+            ("checkpoint id · title · boundary", "outcome · description · disposition"),
             ("CrossBoundaryCheckpoint",),
             35,
             418,

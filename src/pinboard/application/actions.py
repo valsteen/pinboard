@@ -5,7 +5,8 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.application import action_models, ports, query_models
+from pinboard.application import action_models, ports, query_models, work_brief_models, work_briefs
+from pinboard.application.artifact_publication import ArtifactReader
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.decisions import available_actions
 from pinboard.domain.errors import (
@@ -182,9 +183,9 @@ def select_current_actions(
 def completion_candidate_recovery(
     selected: query_models.CompletionContextFacts,
 ) -> query_models.CompletionCandidateRequired | None:
-    """Withhold checkpointed completion until the existing submission route protects a candidate."""
+    """Withhold terminal completion until the existing submission route protects a candidate."""
     attempt = selected.attempt
-    if not selected.checkpoints or (
+    if (
         isinstance(attempt, query_models.NonterminalAttemptContextFacts)
         and attempt.state == work_models.AttemptState.REVIEW
         and attempt.candidate_revision is not None
@@ -195,9 +196,14 @@ def completion_candidate_recovery(
 
 def completion_input_contract(
     reader: ports.WorkStore,
+    artifacts: ArtifactReader,
     action: decision_models.CompleteAction,
     semantics: action_models.ActionSemanticsView,
-) -> DecisionResult[action_models.CompletionInputContractView] | query_models.CompletionCandidateRequired:
+) -> (
+    DecisionResult[action_models.CompletionInputContractView]
+    | query_models.CompletionCandidateRequired
+    | query_models.CompletionRecoveryRequired
+):
     """Read only this attempt's final completion evidence and exact payload leaf."""
     completion = reader.read_completion_context(action.capability.subject)
     if completion is None:
@@ -205,6 +211,41 @@ def completion_input_contract(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             "Completion attempt disappeared; reinspect the focused action.",
             None,
+        )
+    attempt = completion.attempt
+    if not isinstance(attempt, query_models.NonterminalAttemptContextFacts):
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            "Completion requires a current nonterminal attempt.",
+            None,
+        )
+    brief = work_briefs.decode_canonical_work_brief(artifacts.read(attempt.brief_reference))
+    if not isinstance(brief, work_brief_models.WorkBrief):
+        route = "return-for-correction" if attempt.state == work_models.AttemptState.REVIEW else "rebind-attempt"
+        return query_models.CompletionRecoveryRequired(
+            attempt.attempt_id,
+            attempt.item_id,
+            route,
+            str(attempt.attempt_id),
+            None,
+            None,
+            (
+                "Completion requires the retained reviewed candidate to return for correction before binding a "
+                "current v4 work brief with an explicit terminal disposition."
+                if route == "return-for-correction"
+                else "Completion requires a current v4 work brief with an explicit terminal disposition."
+            ),
+        )
+    if not isinstance(brief.checkpoint.disposition, work_brief_models.TerminalCheckpointDisposition):
+        route = "accept-checkpoint" if attempt.state == work_models.AttemptState.REVIEW else "dispatch"
+        return query_models.CompletionRecoveryRequired(
+            attempt.attempt_id,
+            attempt.item_id,
+            route,
+            str(attempt.attempt_id),
+            None,
+            None,
+            "The accepted brief marks this checkpoint as continuing work, so it cannot authorize completion.",
         )
     if (recovery := completion_candidate_recovery(completion)) is not None:
         return recovery
@@ -224,9 +265,8 @@ def completion_input_contract(
                 reference.size_bytes,
             )
         )
-    model = action_models.CoveredCompleteInputPayload if packages else action_models.EvidenceInputPayload
-    attempt = completion.attempt
-    candidate = attempt.candidate_revision if isinstance(attempt, query_models.NonterminalAttemptContextFacts) else None
+    model = action_models.ReviewedCompleteInputPayload
+    candidate = attempt.candidate_revision
     return action_models.CompletionInputContractView(
         action.kind, semantics, msgspec.json.schema(model), candidate, tuple(packages)
     )

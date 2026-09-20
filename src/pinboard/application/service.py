@@ -10,6 +10,7 @@ from pinboard.application.artifact_publication import validate_transition_work_b
 from pinboard.application.artifacts import (
     CheckpointArtifacts,
     CompletionArtifacts,
+    CurrentAttemptWorkBriefIdentity,
     EvidenceArtifactRef,
     WorkBriefIdentity,
 )
@@ -743,6 +744,7 @@ def preflight_checkpoint_candidate(
     store: WorkStore,
     command: decision_models.AcceptCheckpointCommand,
     now: datetime,
+    transition_brief_identity: CurrentAttemptWorkBriefIdentity,
 ) -> DecisionFailure | None:
     """Revalidate action currentness, then reject only candidate mismatch."""
 
@@ -751,6 +753,8 @@ def preflight_checkpoint_candidate(
     if isinstance(actor_authority, DecisionFailure):
         return actor_authority
     if (failure := validate_supplied_action(facts.snapshot, actor_authority, command.action)) is not None:
+        return failure
+    if (failure := validate_transition_work_brief(facts, command, transition_brief_identity)) is not None:
         return failure
     return validate_checkpoint_candidate(facts.snapshot, command)
 
@@ -762,10 +766,13 @@ def preflight_covered_completion(
     *,
     actor_task_id: TaskId,
     actor_host_id: HostId,
+    transition_brief_identity: CurrentAttemptWorkBriefIdentity,
 ) -> DecisionFailure | None:
     """Reject stale authority, wrong lifecycle, candidate, or checkpoint coverage before publication."""
 
-    result = _read_authorize_and_decide(store, command, now, None, actor_task_id, actor_host_id, lambda: now)
+    result = _read_authorize_and_decide(
+        store, command, now, transition_brief_identity, actor_task_id, actor_host_id, lambda: now
+    )
     if isinstance(result, DecisionFailure):
         return result
     return None
@@ -780,7 +787,7 @@ def decide_and_commit_checkpoint_acceptance(
     read_authorization_time: Callable[[], datetime],
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
-    transition_brief_identity: WorkBriefIdentity | None = None,
+    transition_brief_identity: CurrentAttemptWorkBriefIdentity,
 ) -> DecisionResult[CommittedEffect]:
     """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
 
@@ -814,12 +821,19 @@ def decide_and_commit_covered_completion(
     read_authorization_time: Callable[[], datetime],
     actor_task_id: TaskId,
     actor_host_id: HostId,
+    transition_brief_identity: CurrentAttemptWorkBriefIdentity,
 ) -> DecisionResult[CommittedEffect]:
     """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
 
     with store.write() as transaction:
         decision_result = _read_authorize_and_decide(
-            transaction, command, now, None, actor_task_id, actor_host_id, read_authorization_time
+            transaction,
+            command,
+            now,
+            transition_brief_identity,
+            actor_task_id,
+            actor_host_id,
+            read_authorization_time,
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result

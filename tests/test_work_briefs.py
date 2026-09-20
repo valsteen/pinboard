@@ -145,6 +145,11 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         payload = msgspec.to_builtins(current)
         assert isinstance(payload, dict)
         payload["schema"] = "pinboard-work-brief/v2"
+        checkpoint = payload["checkpoint"]
+        assert isinstance(checkpoint, dict)
+        disposition = checkpoint.pop("disposition")
+        assert isinstance(disposition, dict)
+        payload["remaining_work"] = disposition["remaining_work"]
         del payload["checkout_selection"]
         del payload["obligation_correspondence"]
         legacy_bytes = msgspec.json.encode(payload, order="sorted") + b"\n"
@@ -154,17 +159,43 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         self.assertEqual("pinboard-work-brief/v2", legacy.schema)
         self.assertIn(b"authority: pinboard-work-brief/v2", render_work_brief_markdown(legacy))
         current_review = msgspec.json.decode(ready_review(current), type=work_brief_models.WorkBriefReview)
+        legacy_checkpoint = legacy.checkpoint
         review = work_brief_compatibility_models.WorkBriefReviewV2(
             "pinboard-work-brief-review/v2",
             current_review.attempt_id,
             current_review.checkpoint_id,
-            current_review.checkpoint_sha256,
+            hashlib.sha256(canonical_checkpoint_bytes(legacy_checkpoint)).hexdigest(),
             current_review.reviewed_authority_set_sha256,
             current_review.reviewer_task_id,
             current_review.status,
             current_review.verdict,
             current_review.coverage,
         )
+        self.assertIsNone(validate_work_brief_review(review, legacy))
+
+    def test_retained_v3_brief_remains_exactly_readable_reviewable_and_renderable(self) -> None:
+        current = example_work_brief()
+        payload = msgspec.to_builtins(current)
+        assert isinstance(payload, dict)
+        payload["schema"] = "pinboard-work-brief/v3"
+        checkpoint = payload["checkpoint"]
+        assert isinstance(checkpoint, dict)
+        disposition = checkpoint.pop("disposition")
+        assert isinstance(disposition, dict)
+        payload["remaining_work"] = disposition["remaining_work"]
+        legacy_bytes = msgspec.json.encode(payload, order="sorted") + b"\n"
+
+        legacy = expect_work_brief_success(decode_canonical_work_brief(legacy_bytes))
+        current_review = msgspec.json.decode(ready_review(current), type=work_brief_models.WorkBriefReview)
+        review = replace(
+            current_review,
+            accepted_brief_sha256=hashlib.sha256(legacy_bytes).hexdigest(),
+            checkpoint_sha256=hashlib.sha256(canonical_checkpoint_bytes(legacy.checkpoint)).hexdigest(),
+        )
+
+        self.assertEqual("pinboard-work-brief/v3", legacy.schema)
+        self.assertEqual(legacy_bytes, canonical_work_brief_bytes(legacy))
+        self.assertIn(b"authority: pinboard-work-brief/v3", render_work_brief_markdown(legacy))
         self.assertIsNone(validate_work_brief_review(review, legacy))
 
     def test_definition_agreement_requires_complete_ids_and_permitted_checkout_and_deferral(self) -> None:
@@ -316,7 +347,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
 
         self.assertEqual(
-            "a2941d05f3c61a40ca5014af48a095ee919e2cad2fe2d78a09a74a8835693f1f",
+            "bf8217d6c7dc376f24e13851933745ecfbe34e684b74707e4cd5cdadb63de1cc",
             hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest(),
         )
         renamed = replace(checkpoint, title="Renamed title")

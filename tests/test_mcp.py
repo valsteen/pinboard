@@ -943,6 +943,7 @@ class McpTransportTest(unittest.TestCase):
                 brief.checkpoint.title,
                 brief.checkpoint.architecture_impact,
                 brief.checkpoint.outcome_description,
+                brief.checkpoint.disposition,
                 brief.checkpoint.acceptance_criteria,
                 brief.checkpoint.verification,
                 brief.checkpoint.deferrals,

@@ -275,6 +275,26 @@ class _UnresolvedObligationCorrespondence(msgspec.Struct, frozen=True, forbid_un
     target: _UnresolvedObligationTarget
 
 
+class _UnresolvedContinueCheckpointDisposition(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="continue",
+    tag_field="kind",
+):
+    remaining_work: None
+
+
+class _UnresolvedTerminalCheckpointDisposition(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="terminal",
+    tag_field="kind",
+):
+    pass
+
+
 class _UnresolvedLocalCheckpoint(
     msgspec.Struct,
     frozen=True,
@@ -286,6 +306,7 @@ class _UnresolvedLocalCheckpoint(
     title: None
     architecture_impact: _UnresolvedNoArchitectureImpact
     outcome_description: None
+    disposition: _UnresolvedContinueCheckpointDisposition | _UnresolvedTerminalCheckpointDisposition
     acceptance_criteria: tuple[_UnresolvedAcceptanceCriterion, ...]
     verification: tuple[_UnresolvedVerificationRecord, ...]
     deferrals: tuple[None, ...]
@@ -303,6 +324,7 @@ class _UnresolvedCrossBoundaryCheckpoint(
     architecture_impact: _UnresolvedNoArchitectureImpact
     outcome: Literal["independently-buildable"]
     outcome_description: None
+    disposition: _UnresolvedContinueCheckpointDisposition | _UnresolvedTerminalCheckpointDisposition
     contracts: tuple[_UnresolvedContractRecord, ...]
     acceptance_criteria: tuple[_UnresolvedAcceptanceCriterion, ...]
     reviewed_authorities: tuple[_UnresolvedReviewedAuthority, ...]
@@ -316,7 +338,7 @@ type _UnresolvedCheckpoint = _UnresolvedLocalCheckpoint | _UnresolvedCrossBounda
 
 
 class _UnresolvedWorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-work-brief/v3"]
+    schema: Literal["pinboard-work-brief/v4"]
     artifact_revision: None
     attempt_id: None
     item_id: None
@@ -336,12 +358,11 @@ class _UnresolvedWorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     checkpoint: _UnresolvedCheckpoint
     checkout_selection: None
     obligation_correspondence: tuple[_UnresolvedObligationCorrespondence, ...]
-    remaining_work: None
 
 
 def _local_starter() -> _UnresolvedWorkBrief:
     return _UnresolvedWorkBrief(
-        schema="pinboard-work-brief/v3",
+        schema="pinboard-work-brief/v4",
         artifact_revision=None,
         attempt_id=None,
         item_id=None,
@@ -363,6 +384,7 @@ def _local_starter() -> _UnresolvedWorkBrief:
             title=None,
             architecture_impact=_UnresolvedNoArchitectureImpact(None),
             outcome_description=None,
+            disposition=_UnresolvedContinueCheckpointDisposition(None),
             acceptance_criteria=(_UnresolvedAcceptanceCriterion(None, None),),
             verification=(_UnresolvedVerificationRecord(_UnresolvedAcceptedScopeAuthorization(None, None), None),),
             deferrals=(),
@@ -371,7 +393,6 @@ def _local_starter() -> _UnresolvedWorkBrief:
         obligation_correspondence=(
             _UnresolvedObligationCorrespondence(None, _UnresolvedCriterionObligationTarget(None)),
         ),
-        remaining_work=None,
     )
 
 
@@ -382,6 +403,7 @@ def _cross_boundary_starter() -> _UnresolvedWorkBrief:
         architecture_impact=_UnresolvedNoArchitectureImpact(None),
         outcome="independently-buildable",
         outcome_description=None,
+        disposition=_UnresolvedContinueCheckpointDisposition(None),
         contracts=(
             _UnresolvedContractRecord(
                 invariant=None,
@@ -496,6 +518,15 @@ _CHECKOUT_SELECTION_CHOICE = WorkBriefStructuralChoice(
     ),
 )
 
+_CHECKPOINT_DISPOSITION_CHOICE = WorkBriefStructuralChoice(
+    "checkpoint-disposition",
+    ("$.checkpoint.disposition",),
+    (
+        WorkBriefStructuralVariant("continue", _raw(_UnresolvedContinueCheckpointDisposition(None))),
+        WorkBriefStructuralVariant("terminal", _raw(_UnresolvedTerminalCheckpointDisposition())),
+    ),
+)
+
 _OBLIGATION_TARGET_CHOICE = WorkBriefStructuralChoice(
     "obligation-target",
     ("$.obligation_correspondence[*].target",),
@@ -508,11 +539,13 @@ _OBLIGATION_TARGET_CHOICE = WorkBriefStructuralChoice(
 
 _LOCAL_STRUCTURAL_CHOICES = (
     _ARCHITECTURE_CHOICE,
+    _CHECKPOINT_DISPOSITION_CHOICE,
     _CHECKOUT_SELECTION_CHOICE,
     _OBLIGATION_TARGET_CHOICE,
 )
 _CROSS_BOUNDARY_STRUCTURAL_CHOICES = (
     _ARCHITECTURE_CHOICE,
+    _CHECKPOINT_DISPOSITION_CHOICE,
     _AUTHORIZATION_CHOICE,
     _COVERAGE_OWNER_CHOICE,
     _LIFECYCLE_PARTITION_CHOICE,
@@ -537,6 +570,10 @@ _RELATIONAL_CONSTRAINTS = (
     WorkBriefRelationalConstraint(
         "unique-criteria-and-deferrals",
         "Acceptance criterion numbers and deferral identities must each be unique within the checkpoint.",
+    ),
+    WorkBriefRelationalConstraint(
+        "checkpoint-disposition",
+        "Continue disposition requires its sole remaining_work text; terminal disposition carries no remaining work.",
     ),
     WorkBriefRelationalConstraint(
         "unique-authority-families",

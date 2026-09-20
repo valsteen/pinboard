@@ -32,6 +32,8 @@ from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
     EffectDisposition,
+    FailureDetails,
+    FailureFact,
     RetryDisposition,
 )
 from pinboard.domain.identifiers import (
@@ -42,7 +44,7 @@ from pinboard.domain.identifiers import (
     LeaseId,
     TaskId,
 )
-from pinboard.mcp import common, contracts, execution
+from pinboard.mcp import common, contracts, execution, tool_names
 from pinboard.mcp.contracts import JsonValue
 
 
@@ -264,6 +266,114 @@ def _transition_rejected(
     )
 
 
+def _with_completion_reinspection(
+    failure: DecisionFailure,
+    identity: contracts.ActionIdentity,
+    project_root: str,
+    work_root: str,
+) -> DecisionFailure:
+    """Attach the read-only focused route after any rejected completion receipt."""
+    if identity.kind != decision_models.ActionKind.COMPLETE:
+        return failure
+    details = failure.details
+    request: dict[str, JsonValue] = {
+        "request": {
+            "project_root": project_root,
+            "work_root": work_root,
+            "role": "project",
+            "action_id": {"kind": "complete", "subject": identity.subject},
+        }
+    }
+    return DecisionFailure(
+        failure.code,
+        failure.message,
+        FailureDetails(
+            observed=(
+                *(() if details is None else details.observed),
+                FailureFact("completion_reinspection_tool", tool_names.ACTIONS_TOOL),
+                FailureFact("completion_reinspection_input", msgspec.json.encode(request, order="sorted").decode()),
+            ),
+            mismatches=() if details is None else details.mismatches,
+            retry=RetryDisposition.REFRESH_ACTION,
+            effect=EffectDisposition.UNCHANGED if details is None else details.effect,
+            changed_surfaces=() if details is None else details.changed_surfaces,
+            alternatives=() if details is None else details.alternatives,
+        ),
+    )
+
+
+def _with_retained_brief_recovery(
+    failure: DecisionFailure,
+    identity: contracts.ActionIdentity,
+    project_root: str,
+    work_root: str,
+) -> DecisionFailure:
+    """Expose the exact current-brief route after retained-brief submission rejection."""
+    details = failure.details
+    if (
+        identity.kind != decision_models.ActionKind.SUBMIT_REVIEW
+        or details is None
+        or not any(
+            fact.field == "accepted_brief_schema" and fact.value in {"pinboard-work-brief/v2", "pinboard-work-brief/v3"}
+            for fact in details.observed
+        )
+    ):
+        return failure
+    roots: dict[str, JsonValue] = {"project_root": project_root, "work_root": work_root}
+    action: dict[str, JsonValue] = {"kind": "rebind-attempt", "subject": identity.subject}
+    action_request: dict[str, JsonValue] = {"request": {**roots, "role": "project", "action_id": action}}
+    transition_request: dict[str, JsonValue] = {
+        "request": {
+            **roots,
+            "role": "project",
+            "actor_task_id": "<owning-task-id>",
+            "actor_host_id": "<host-id>",
+            "receipt": {"action_id": action, "subject_revision": "<current-subject-revision>"},
+            "payload": {
+                "attempt": identity.subject,
+                "branch": "<accepted-brief-branch>",
+                "base_revision": "<accepted-brief-base-revision>",
+                "brief_artifact_ref_id": "<published-v4-artifact-ref-id>",
+            },
+        }
+    }
+    publication: dict[str, JsonValue] = {
+        **roots,
+        "brief": "<complete-matching-pinboard-work-brief/v4>",
+    }
+    return DecisionFailure(
+        failure.code,
+        failure.message,
+        FailureDetails(
+            observed=(
+                *details.observed,
+                FailureFact("brief_publication_tool", tool_names.BRIEF_PUBLISH_TOOL),
+                FailureFact("brief_publication_input", msgspec.json.encode(publication, order="sorted").decode()),
+                FailureFact(
+                    "brief_review_requirement",
+                    "Obtain an independent ready review of the exact published v4 brief before binding it.",
+                ),
+                FailureFact("brief_binding_action_tool", tool_names.ACTIONS_TOOL),
+                FailureFact("brief_binding_action_input", msgspec.json.encode(action_request, order="sorted").decode()),
+                FailureFact("brief_binding_transition_tool", tool_names.TRANSITION_TOOL),
+                FailureFact(
+                    "brief_binding_transition_input",
+                    msgspec.json.encode(transition_request, order="sorted").decode(),
+                ),
+                FailureFact(
+                    "brief_binding_next_step",
+                    "After rebind, dispatch the reviewed v4 brief and submit a freshly observed candidate through the worker's own lease.",
+                ),
+            ),
+            mismatches=details.mismatches,
+            retry=RetryDisposition.REFRESH_ACTION,
+            effect=details.effect,
+            changed_surfaces=details.changed_surfaces,
+            alternatives=details.alternatives,
+        ),
+    )
+
+
 def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-result boundary
     raw: dict[str, JsonValue],
     token: execution.CancellationToken,
@@ -334,7 +444,10 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
         operation_time,
     )
     if isinstance(selected, DecisionFailure):
-        return _transition_rejected(identity, selected)
+        return _transition_rejected(
+            identity,
+            _with_completion_reinspection(selected, identity, request.project_root, request.work_root),
+        )
     token.checkpoint()
     if isinstance(
         selected.command,
@@ -388,7 +501,15 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
                 "failed-after-publication",
                 None,
             )
-        return _transition_rejected(identity, committed)
+        return _transition_rejected(
+            identity,
+            _with_retained_brief_recovery(
+                _with_completion_reinspection(committed, identity, request.project_root, request.work_root),
+                identity,
+                request.project_root,
+                request.work_root,
+            ),
+        )
     changed_surfaces: list[JsonValue]
     if isinstance(committed, lifecycle_artifacts.ArtifactTransitionSuccess):
         committed_effect = committed.effect

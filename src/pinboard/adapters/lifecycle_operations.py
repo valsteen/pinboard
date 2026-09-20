@@ -84,7 +84,7 @@ def resolve_activation(  # noqa: C901, PLR0912 - one ordered activation boundary
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _input_failure(f"The selected brief artifact is invalid: {brief.message}", ())
     if not isinstance(brief, work_brief_models.WorkBrief):
-        return _input_failure("Legacy work brief v2 is readable but cannot authorize activation.", ())
+        return _input_failure("Retained work brief v3/v2 is readable but cannot authorize activation.", ())
     if (failure := validate_executable_work_brief(store, brief, classify_checkout(source_checkout))) is not None:
         return _input_failure(f"The selected brief cannot authorize activation: {failure.message}", ())
     preparation = action.capability.preparation_authority
@@ -165,7 +165,7 @@ def _validate_replacement_brief(
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _input_failure(f"The selected brief artifact is invalid: {brief.message}", ())
     if not isinstance(brief, work_brief_models.WorkBrief):
-        return _input_failure(f"Legacy work brief v2 is readable but cannot authorize {operation}.", ())
+        return _input_failure(f"Retained work brief v3/v2 is readable but cannot authorize {operation}.", ())
     if (failure := validate_executable_work_brief(store, brief, classify_checkout(source_checkout))) is not None:
         return _input_failure(f"The selected brief cannot authorize {operation}: {failure.message}", ())
     return None

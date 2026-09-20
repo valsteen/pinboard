@@ -237,8 +237,12 @@ class NonterminalAttemptContinuationBase(AttemptContinuationIdentity, frozen=Tru
         elif isinstance(operation, ReviewContinuation):
             if operation.attempt_id != self.attempt_id or not operation.candidate_revision:
                 raise ValueError("review continuation must target its parent attempt and candidate")
-            if f"{decision_models.ActionKind.ACCEPT_CHECKPOINT.value}:{self.attempt_id}" not in self.legal_actions:
-                raise ValueError("review continuation requires the matching accept-checkpoint action")
+            review_actions = (
+                f"{decision_models.ActionKind.ACCEPT_CHECKPOINT.value}:{self.attempt_id}",
+                f"{decision_models.ActionKind.COMPLETE.value}:{self.attempt_id}",
+            )
+            if not any(action in self.legal_actions for action in review_actions):
+                raise ValueError("review continuation requires a matching checkpoint or completion action")
         elif not operation.dependencies or len(set(operation.dependencies)) != len(operation.dependencies):
             raise ValueError("dependency continuations require unique dependencies")
 
@@ -259,9 +263,11 @@ class ActiveAttemptContinuation(
         operation = self.next_operation
         if not isinstance(operation, ActionContinuation) or operation.action_kind not in (
             decision_models.ActionKind.CONTINUE,
+            decision_models.ActionKind.REBIND_ATTEMPT,
             decision_models.ActionKind.PAUSE,
+            decision_models.ActionKind.COMPLETE,
         ):
-            raise ValueError("an active continuation requires a continue or pause action")
+            raise ValueError("an active continuation requires a continue, rebind, pause, or completion action")
 
 
 class ReviewAttemptContinuation(
@@ -282,10 +288,11 @@ class ReviewAttemptContinuation(
             isinstance(operation, ReviewContinuation)
             or (
                 isinstance(operation, ActionContinuation)
-                and operation.action_kind == decision_models.ActionKind.RETURN_FOR_CORRECTION
+                and operation.action_kind
+                in (decision_models.ActionKind.COMPLETE, decision_models.ActionKind.RETURN_FOR_CORRECTION)
             )
         ):
-            raise ValueError("a review continuation requires review or correction work")
+            raise ValueError("a review continuation requires review, completion, or correction work")
 
 
 class PausedAttemptContinuation(
@@ -424,9 +431,28 @@ class CompletionContextFacts:
 
 @dataclass(frozen=True, slots=True)
 class CompletionCandidateRequired:
-    """Checkpointed completion needs the existing protected review candidate."""
+    """Terminal completion needs the existing protected review candidate."""
 
     attempt_id: AttemptId
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionRecoveryRequired:
+    attempt_id: AttemptId
+    item_id: ItemId
+    route: Literal[
+        "accept-checkpoint",
+        "dispatch",
+        "record-replacement",
+        "rebind-attempt",
+        "retain-temporarily",
+        "return-for-correction",
+        "submit-review",
+    ]
+    route_subject: str
+    alternative_route: Literal["retain-temporarily"] | None
+    alternative_subject: str | None
+    reason: str
 
 
 type ItemStatusSchema = Literal["pinboard-item-status/v1"]

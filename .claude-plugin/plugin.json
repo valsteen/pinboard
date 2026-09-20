@@ -1,7 +1,7 @@
 {
   "name": "pinboard",
   "description": "Coordinate repository work with canonical execution briefs and validated state transitions.",
-  "version": "0.1.0",
+  "version": "0.1.0+20260920214055",
   "author": {
     "name": "Vincent Alsteen",
     "url": "https://github.com/valsteen"

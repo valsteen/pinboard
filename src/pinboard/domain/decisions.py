@@ -863,30 +863,10 @@ def _close(
         return DecisionFailure(
             DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.item}'.", None
         )
-    authority_change = None if item.attempt is None else _fence_retained_attempt_authority(snapshot, item.attempt)
-    if item.attempt is None:
-        change: decision_models.NonCheckpointDecisionChange = decision_models.ItemClosureChange(
-            item.item, item.state, value.outcome, value.reason
-        )
-    else:
-        attempt = snapshot.attempts_by_id().get(item.attempt)
-        if attempt is None:
-            return DecisionFailure(
-                DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{item.attempt}' does not exist.", None
-            )
-        change = decision_models.AttemptClosureChange(
-            item.item,
-            item.state,
-            value.outcome,
-            value.reason,
-            item.attempt,
-            attempt.state,
-            authority_change,
-        )
     return _accepted_transition_decision(
         action,
         now,
-        change,
+        decision_models.ItemClosureChange(item.item, item.state, value.outcome, value.reason),
         item=item.item,
         outcome=value.outcome.value,
         evidence=value.reason,

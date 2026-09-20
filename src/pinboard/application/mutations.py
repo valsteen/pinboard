@@ -80,7 +80,6 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                     | decision_models.AttemptStateChange()
                     | decision_models.BlockAttemptChange()
                     | decision_models.BlockItemChange()
-                    | decision_models.AttemptClosureChange()
                     | decision_models.CompletionChange()
                     | decision_models.ItemClosureChange()
                     | decision_models.ItemStateChange()

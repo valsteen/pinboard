@@ -133,7 +133,6 @@ def _mutation_subjects(
                     | decision_models.ReviewAcceptanceChange(item=item, attempt=attempt)
                     | decision_models.ReviewReturnChange(item=item, attempt=attempt)
                     | decision_models.CompletionChange(item=item, attempt=attempt)
-                    | decision_models.AttemptClosureChange(item=item, attempt=attempt)
                     | decision_models.RebindAttemptChange(item=item, attempt=attempt)
                 ):
                     return (item,), (attempt,)
@@ -238,7 +237,6 @@ def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every 
                 case (
                     decision_models.CompletionChange(item=item)
                     | decision_models.CoveredCompletionChange(item=item)
-                    | decision_models.AttemptClosureChange(item=item)
                     | decision_models.ItemClosureChange(item=item)
                     | decision_models.MergedProposalChange(proposal=item)
                     | decision_models.RejectedProposalChange(proposal=item)
@@ -548,37 +546,20 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 return failure
             if (failure := fence_attempt_authority(connection, authority, now)) is not None:
                 return failure
-        case (
-            decision_models.CompletionChange(
-                item=item,
-                item_before=item_before,
-                attempt=attempt,
-                attempt_before=attempt_before,
-                evidence=evidence,
-                authority_change=authority,
-            )
-            | decision_models.AttemptClosureChange(
-                item=item,
-                item_before=item_before,
-                evidence=evidence,
-                attempt=attempt,
-                attempt_before=attempt_before,
-                authority_change=authority,
-            )
-        ) as terminal_change:
-            match terminal_change:
-                case decision_models.CompletionChange():
-                    terminal_item_state = stored_state.StoredWorkItemState.DONE
-                case decision_models.AttemptClosureChange(terminal_state=terminal_state):
-                    terminal_item_state = stored_state.stored_close_outcome(terminal_state)
-                case _ as unreachable:
-                    assert_never(unreachable)
+        case decision_models.CompletionChange(
+            item=item,
+            item_before=item_before,
+            attempt=attempt,
+            attempt_before=attempt_before,
+            evidence=evidence,
+            authority_change=authority,
+        ):
             if (
                 failure := set_item_state(
                     connection,
                     facts.item(item),
                     item_before,
-                    terminal_item_state,
+                    stored_state.StoredWorkItemState.DONE,
                     revision,
                     now,
                     evidence,

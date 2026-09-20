@@ -919,17 +919,6 @@ class ItemClosureChange:
 
 
 @dataclass(frozen=True, slots=True)
-class AttemptClosureChange:
-    item: ItemId
-    item_before: work_models.WorkState
-    terminal_state: work_models.CloseOutcome
-    evidence: str
-    attempt: AttemptId
-    attempt_before: work_models.AttemptState
-    authority_change: AttemptAuthorityChange | None
-
-
-@dataclass(frozen=True, slots=True)
 class AcceptedProposalItem:
     item: ItemId
     state: work_models.AcceptedProposalState
@@ -1020,7 +1009,6 @@ type NonCheckpointDecisionChange = (
     | ReviewAcceptanceChange
     | CompletionChange
     | ItemClosureChange
-    | AttemptClosureChange
     | AcceptedProposalChange
     | MergedProposalChange
     | ReturnedProposalChange

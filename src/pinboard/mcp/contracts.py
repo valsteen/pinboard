@@ -1157,14 +1157,12 @@ _PAUSED_CONTINUATION_ACTION_KINDS = (
     decision_models.ActionKind.RETAIN_TEMPORARILY,
     decision_models.ActionKind.REVISE_ITEM,
     decision_models.ActionKind.RESUME,
-    decision_models.ActionKind.CLOSE,
 )
 _BLOCKED_CONTINUATION_ACTION_KINDS = (
     decision_models.ActionKind.RECORD_REPLACEMENT,
     decision_models.ActionKind.RETAIN_TEMPORARILY,
     decision_models.ActionKind.REVISE_ITEM,
     decision_models.ActionKind.RESUME,
-    decision_models.ActionKind.CLOSE,
 )
 
 

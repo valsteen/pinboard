@@ -2913,6 +2913,18 @@ class McpTransportTest(unittest.TestCase):
                 forbidden,
             )
 
+        resume = contracts.ContinuationAction(
+            contracts.RelativeActionIdentity("item", decision_models.ActionKind.RESUME),
+            "Resume.",
+        )
+        legal_actions = (
+            contracts.RelativeActionIdentity("item", decision_models.ActionKind.RESUME),
+            contracts.RelativeActionIdentity("item", decision_models.ActionKind.CLOSE),
+        )
+        for continuation_type in (contracts.PausedAttemptContinuation, contracts.BlockedAttemptContinuation):
+            with self.subTest(state=continuation_type.__name__), self.assertRaises(ValueError):
+                continuation_type(*common, resume, legal_actions, forbidden)
+
     def test_sdk_stdio_workflow_discovery_and_verification_are_read_only(self) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)

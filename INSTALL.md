@@ -1,6 +1,6 @@
 # Install Pinboard
 
-Pinboard supports macOS and Linux. Codex is the primary, stress-tested integration; Claude Code can load the same local plugin experimentally.
+Pinboard supports macOS and Linux. Codex is the primary, stress-tested integration; Claude Code installs the same plugin through its own marketplace mechanism.
 
 ## Launcher and environment paths
 
@@ -72,19 +72,28 @@ Run the migration only while no other Pinboard command is accessing that project
 
 ## Claude Code
 
-Claude Code support is experimental. Clone this repository, then choose a persistent local installation or a one-session load.
+Choose a persistent installation or a one-session load. Both need one runtime preparation per installed version before Pinboard's MCP server can start; with uv available, the plugin's SessionStart hook performs it during the first session.
 
-### Persistent local installation
+### Persistent installation
+
+Add the GitHub repository as a Claude Code marketplace, then install Pinboard:
 
 ```sh
-git clone https://github.com/valsteen/pinboard.git
-claude plugin marketplace add /path/to/pinboard
+claude plugin marketplace add valsteen/pinboard
 claude plugin install pinboard@pinboard
 ```
 
-Open the target project and ask Claude Code to set up Pinboard there.
+Start Claude Code in the target project. On the first session of an unprepared version, the SessionStart hook runs the same `scripts/pinboard --prepare-runtime` path with uv, which takes a moment and writes only that version's `.pinboard-runtime`. The `pinboard` MCP server starts before the hook finishes, so that first session reports it as failed (`Connection closed`) and the hook tells the agent to reconnect. Reconnect with `/mcp` or restart Claude Code once, then ask Claude Code to set up Pinboard there.
 
-The Claude manifest selects the separate root `mcp-claude.json`. Claude expands `${CLAUDE_PLUGIN_ROOT}` in its command and invokes that root's `scripts/pinboard --mcp`, independent of the target project's current directory. Prepare an installed version deliberately as described above, then use Claude Code's supported reconnect or reload mechanism. A one-session source load uses the prepared source `.venv` when present.
+To avoid that one reconnect, or when uv is not on Claude Code's PATH, prepare the version yourself before the first session:
+
+```sh
+~/.claude/plugins/cache/pinboard/pinboard/*/scripts/pinboard --prepare-runtime
+```
+
+Claude Code copies each installed version to `~/.claude/plugins/cache/pinboard/pinboard/<version>/`, where `<version>` is the plugin version with `+` written as `-`. `claude plugin list --json` reports the exact `installPath`. Each version has its own directory, so a version installed by `claude plugin update pinboard@pinboard` is prepared again on its first session. A local checkout works the same way: `claude plugin marketplace add /path/to/pinboard` registers it as the marketplace source.
+
+The Claude manifest selects the separate root `mcp-claude.json`. Claude expands `${CLAUDE_PLUGIN_ROOT}` in its command and invokes that root's `scripts/pinboard --mcp`, independent of the target project's current directory. When the hook cannot prepare the runtime, because uv is missing, another session holds the preparation lock, or preparation fails, it places the exact manual command in the agent's context instead of preparing anything, so asking Claude Code why Pinboard is unavailable surfaces the next step.
 
 Claude's manual permission mode asks before each MCP tool call by default. To approve Pinboard once for autonomous workflows, merge this server-scoped rule into your user-level `~/.claude/settings.json`:
 
@@ -102,15 +111,19 @@ This rule covers only tools from the installed Pinboard plugin server. It does n
 
 For an autonomous repository-writing run, also use Claude's normal edit-accepting mode and include any selected linked worktree in the session's allowed directories. Pinboard records the intended access but cannot grant it; `dontAsk` may deny an uncovered write instead of asking.
 
-This route uses Claude Code's marketplace mechanism with your local checkout. Pinboard is not published in or installed from Anthropic's official marketplace, and it does not claim live sharing between Codex and Claude Code.
+This route uses Claude Code's marketplace mechanism with this repository as the marketplace. Pinboard is not published in or installed from Anthropic's official marketplace, and it does not claim live sharing between Codex and Claude Code.
 
 ### One session without installation
 
 ```sh
+git clone https://github.com/valsteen/pinboard.git
+/path/to/pinboard/scripts/pinboard --prepare-runtime
 claude plugin validate /path/to/pinboard --strict
 cd /path/to/your-project
 claude --plugin-dir /path/to/pinboard
 ```
+
+The explicit preparation lets the single session connect immediately; without it, the SessionStart hook prepares the checkout and the session needs one `/mcp` reconnect. A checkout already prepared for Pinboard development by `scripts/prepare-worktree` uses its `.venv` instead, so neither step is needed there.
 
 The free Claude chat plan and Claude Code access are separate product surfaces. Check [Anthropic's current authentication options](https://code.claude.com/docs/en/authentication) before an authenticated smoke test because access can change.
 
@@ -141,6 +154,10 @@ Pinboard may also recommend the `model_auto_compact_token_limit_scope` setting f
 For retained CLI mutations, a denied SQLite write reports `SQLITE_READONLY`, the affected location and operation, whether anything changed, and narrow permission recovery. Native tools report their own correlated failure, retry, and changed-surface facts rather than CLI-specific diagnostic prose. A native brief acceptance failure after immutable publication reports `ARTIFACT_ACCEPTANCE_FAILED` and its exact published selector; it does not claim the underlying failure is necessarily a permission error.
 
 For a normal primary checkout, grant only relative `.pinboard`. For a linked worktree or explicit data location, grant only the exact absolute location resolved by Pinboard. The one-time migration additionally needs the exact legacy root, canonical root, compatibility alias, and repository-local Git exclusion named by the command. If an immutable artifact or migration surface was already published, preserve it and inspect current state before selecting supported recovery; do not blindly replay the operation.
+
+### Claude Code reports the pinboard MCP server as failed
+
+`Connection closed` at Claude Code startup means the installed version was not prepared when the session started. On the first session of a version, this is expected: the SessionStart hook prepares the runtime while the session starts, and a `/mcp` reconnect or restart resolves it. If it persists, ask Claude Code why Pinboard is unavailable; the hook's context names the reason (uv missing, a held preparation lock, or a failed preparation whose diagnostics are on the hook's stderr) and the exact manual command from the [Claude Code](#claude-code) section. Run that command against the exact `installPath` from `claude plugin list --json`, then restart Claude Code.
 
 ### The launcher says runtime preparation is required
 

@@ -161,6 +161,7 @@ class ClaudeStartupMatcher(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
 class ClaudeParentStartupCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     type: Literal["command"]
     command: Literal['"${CLAUDE_PLUGIN_ROOT}/scripts/pinboard" --claude-session-start']
+    timeout: Literal[600]
 
 
 class ClaudeParentStartupMatcher(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

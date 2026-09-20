@@ -23,6 +23,7 @@ class LauncherTest(unittest.TestCase):
         return subprocess.run(
             [str(launcher), *arguments],
             env={**os.environ, "PATH": path, **(extra_environment or {})},
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             check=False,
@@ -165,6 +166,101 @@ class LauncherTest(unittest.TestCase):
                 self.assertEqual(64, extra.returncode)
                 self.assertEqual("", extra.stdout)
                 self.assertEqual("unchanged", json.loads(extra.stderr)["effect_disposition"])
+
+    def parent_context(self, result: subprocess.CompletedProcess[str]) -> str:
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, result.stdout.count("\n"))
+        output = json.loads(result.stdout)
+        self.assertEqual({"hookSpecificOutput"}, set(output))
+        context = output["hookSpecificOutput"]
+        self.assertEqual({"hookEventName", "additionalContext"}, set(context))
+        self.assertEqual("SessionStart", context["hookEventName"])
+        self.assertNotIn("\n", context["additionalContext"])
+        return str(context["additionalContext"])
+
+    def prepared_entries_uv_body(self) -> str:
+        return (
+            'mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"\n'
+            "printf '#!/bin/sh\\nexit 0\\n' > \"$UV_PROJECT_ENVIRONMENT/bin/pinboard\"\n"
+            "cat > \"$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-session-start\" <<'ENTRY'\n"
+            "#!/bin/sh\n"
+            'printf \'prepared:%s stdin:%s\\n\' "$PINBOARD_RUNTIME_PREPARED_NOW" "$(cat)"\n'
+            "ENTRY\n"
+            'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-session-start"\n'
+            'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp"\n'
+            'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-subagent-start"\n'
+        )
+
+    def test_parent_context_entry_names_manual_route_without_uv_and_changes_nothing(self) -> None:
+        for path_root in ("plain", 'quote"d back\\slash'):
+            with self.subTest(path_root=path_root), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / path_root
+                root.mkdir()
+                launcher = self.copy_launcher(root)
+                before = tuple(sorted(root.rglob("*")))
+                parent = self.run_launcher(launcher, "--claude-session-start", path="/usr/bin:/bin")
+                context = self.parent_context(parent)
+                self.assertIn("uv is not on PATH", context)
+                self.assertIn(f"{root}/scripts/pinboard --prepare-runtime", context)
+                self.assertIn(f"{root}/.pinboard-runtime", context)
+                self.assertEqual("runtime-preparation-required", json.loads(parent.stderr)["status"])
+                self.assertEqual(before, tuple(sorted(root.rglob("*"))))
+                worker = self.run_launcher(launcher, "--claude-subagent-start", path="/usr/bin:/bin")
+                self.assertEqual(78, worker.returncode)
+                self.assertEqual("", worker.stdout)
+                self.assertEqual("runtime-preparation-required", json.loads(worker.stderr)["status"])
+
+    def test_parent_context_entry_prepares_runtime_once_then_runs_prepared_entry_with_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launcher = self.copy_launcher(root)
+            calls = root / "uv-calls"
+            self.write_uv(root, f'echo "$@" >> "{calls}"\n' + self.prepared_entries_uv_body())
+            parent = subprocess.run(
+                [str(launcher), "--claude-session-start"],
+                input="native-event",
+                env={**os.environ, "PATH": f"{root}:/usr/bin:/bin"},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, parent.returncode, parent.stderr)
+            self.assertEqual("prepared:1 stdin:native-event\n", parent.stdout)
+            self.assertEqual("", parent.stderr)
+            self.assertTrue((root / ".pinboard-runtime" / ".pinboard-ready").exists())
+            self.assertFalse((root / ".pinboard-runtime" / ".preparing").exists())
+            self.assertEqual(1, len(calls.read_text(encoding="utf-8").splitlines()))
+            again = self.run_launcher(launcher, "--claude-session-start", path=f"{root}:/usr/bin:/bin")
+            self.assertEqual(0, again.returncode)
+            self.assertEqual("prepared: stdin:\n", again.stdout)
+            self.assertEqual(1, len(calls.read_text(encoding="utf-8").splitlines()))
+
+    def test_parent_context_entry_reports_failed_or_concurrent_preparation_without_readiness(self) -> None:
+        with self.subTest(state="sync-failed"), tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launcher = self.copy_launcher(root)
+            self.write_uv(root, "echo sensitive-sync-detail >&2\nexit 3\n")
+            parent = self.run_launcher(launcher, "--claude-session-start", path=f"{root}:/usr/bin:/bin")
+            context = self.parent_context(parent)
+            self.assertIn("failed with status runtime-sync-failed", context)
+            self.assertIn(f"{root}/scripts/pinboard --prepare-runtime", context)
+            self.assertNotIn("sensitive-sync-detail", parent.stdout)
+            self.assertIn("sensitive-sync-detail", parent.stderr)
+            self.assertFalse((root / ".pinboard-runtime" / ".pinboard-ready").exists())
+            self.assertFalse((root / ".pinboard-runtime" / ".preparing").exists())
+        with self.subTest(state="locked"), tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launcher = self.copy_launcher(root)
+            lock = root / ".pinboard-runtime" / ".preparing"
+            lock.mkdir(parents=True)
+            sentinel = root / "uv-was-called"
+            self.write_uv(root, f'touch "{sentinel}"\n')
+            parent = self.run_launcher(launcher, "--claude-session-start", path=f"{root}:/usr/bin:/bin")
+            context = self.parent_context(parent)
+            self.assertIn("Another Claude Code session is preparing", context)
+            self.assertIn(str(lock), context)
+            self.assertFalse(sentinel.exists())
+            self.assertTrue(lock.is_dir())
 
     def test_preparation_rejects_previous_ready_runtime_without_parent_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

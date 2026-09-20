@@ -194,12 +194,42 @@ if [ -f "$ready_marker" ] && [ -x "$runtime_executable" ]; then
     exec "$runtime_executable" "$@"
 fi
 
-launcher_result \
-    "runtime-preparation-required" \
-    '["Pinboard has no ready launcher-root runtime."]' \
-    "null" \
-    "run-preparation" \
-    "unchanged" \
-    '[]' \
-    "$preparation_action"
-exit 78
+preparation_required() {
+    launcher_result \
+        "runtime-preparation-required" \
+        '["Pinboard has no ready launcher-root runtime."]' \
+        "null" \
+        "run-preparation" \
+        "unchanged" \
+        '[]' \
+        "$preparation_action"
+}
+if [ "$entry_name" != "pinboard-claude-session-start" ]; then
+    preparation_required
+    exit 78
+fi
+# SessionStart stdout is the agent's context channel, not a protocol stream. The hook is the
+# nearest supported install trigger, so it runs the same explicit preparation path once and
+# otherwise names the exact manual route instead of leaving the failed connection opaque.
+hook_context() {
+    preparation_required
+    escaped=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' "$escaped"
+    exit 0
+}
+manual_route="Run exactly $plugin_root/scripts/pinboard --prepare-runtime once with uv available; it writes only $plugin_root/.pinboard-runtime. When it reports runtime-ready, restart Claude Code or reconnect the pinboard MCP server. Do not substitute another Python environment or an ad hoc uv command."
+failed_start="Claude Code reports the pinboard MCP server as failed (Connection closed) because this plugin version had no prepared private runtime when the session started."
+if ! command -v uv >/dev/null 2>&1; then
+    hook_context "$failed_start Pinboard could not prepare it automatically because uv is not on PATH. Tell the user. $manual_route"
+fi
+preparation_lock="$runtime_root/.preparing"
+if ! mkdir -p "$runtime_root" 2>/dev/null || ! mkdir "$preparation_lock" 2>/dev/null; then
+    hook_context "$failed_start Another Claude Code session is preparing that runtime now, or the lock directory $preparation_lock is stale. Tell the user: when the other session finishes, restart Claude Code or reconnect the pinboard MCP server; if no other session is running, remove that lock directory first. $manual_route"
+fi
+preparation=$("$0" --prepare-runtime </dev/null) || true
+rmdir "$preparation_lock" 2>/dev/null || true
+preparation_status=$(printf '%s' "$preparation" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')
+if [ "$preparation_status" = "runtime-ready" ] && [ -f "$ready_marker" ] && [ -x "$runtime_executable" ]; then
+    PINBOARD_RUNTIME_PREPARED_NOW=1 exec "$runtime_executable"
+fi
+hook_context "$failed_start Pinboard tried to prepare it automatically during this session start and failed with status ${preparation_status:-unknown}; the launcher diagnostics are on this hook's stderr. Tell the user. $manual_route"

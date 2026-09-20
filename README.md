@@ -95,20 +95,21 @@ Start a Codex task in the repository and ask:
 
 ### Claude Code
 
-Claude Code support is experimental. Clone this repository, then install it as a local marketplace plugin:
+Add this repository as a marketplace, then install Pinboard:
 
 ```sh
-git clone https://github.com/valsteen/pinboard.git
-claude plugin marketplace add /path/to/pinboard
+claude plugin marketplace add valsteen/pinboard
 claude plugin install pinboard@pinboard
 ```
 
-Ask Claude Code to set up Pinboard in the opened project.
+Start Claude Code in your project. The first session prepares the installed version's private runtime, which needs [uv](https://docs.astral.sh/uv/). Because the `pinboard` MCP server starts before that preparation finishes, the first session reports it as failed: reconnect it with `/mcp` or restart Claude Code once, then ask Claude Code to set up Pinboard there. Running `~/.claude/plugins/cache/pinboard/pinboard/*/scripts/pinboard --prepare-runtime` yourself before the first session avoids that one reconnect.
 
 <details>
 <summary>Try Pinboard for one Claude Code session without installing it</summary>
 
 ```sh
+git clone https://github.com/valsteen/pinboard.git
+/path/to/pinboard/scripts/pinboard --prepare-runtime
 claude plugin validate /path/to/pinboard --strict
 cd /path/to/your-project
 claude --plugin-dir /path/to/pinboard
@@ -116,7 +117,7 @@ claude --plugin-dir /path/to/pinboard
 
 </details>
 
-The [installation guide](INSTALL.md) covers first setup, Codex permissions, linked worktrees, the experimental Claude Code routes, and troubleshooting.
+The [installation guide](INSTALL.md) covers first setup, Codex permissions, linked worktrees, the Claude Code routes, and troubleshooting.
 
 ## Local data
 

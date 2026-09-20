@@ -1,5 +1,7 @@
+from pinboard.adapters import review_operations
+from pinboard.application import work_brief_models
 from pinboard.domain import decision_models
-from pinboard.interfaces import work_brief_models, work_inspection_models
+from pinboard.mcp import contracts
 
 from .model import Box, Connector, Diagram, Guide, Note, Section
 
@@ -16,9 +18,9 @@ REVIEW_LOOP_ACTIONS = frozenset(
 SOURCE_SYMBOL_NAMES: dict[str, str] = {
     "WorkBrief": work_brief_models.WorkBrief.__name__,
     "WorkBriefReview": work_brief_models.WorkBriefReview.__name__,
-    "ReviewJobView": work_inspection_models.ReviewJobView.__name__,
-    "PriorCheckpointPackage": work_inspection_models.PriorCheckpointPackage.__name__,
-    "CorrectionReviewRound": work_inspection_models.CorrectionReviewRound.__name__,
+    "ReviewJobReady": contracts.ReviewJobReady.__name__,
+    "PriorCheckpointPackage": review_operations.PriorCheckpointPackage.__name__,
+    "CorrectionReviewRound": review_operations.CorrectionReviewRound.__name__,
     "CompletionReviewPackage": work_brief_models.CompletionReviewPackage.__name__,
 }
 
@@ -37,9 +39,13 @@ DIAGRAM = Diagram(
     description=(
         "A published brief receives independent review and bounded corrections before cross-boundary implementation. "
         "Local checkpoints skip the separate brief review. After implementation, the exact candidate and evidence "
-        "are bound with selected checkpoint or correction evidence into context for a separate implementation reviewer. Implementation defects return to the same "
-        "attempt for correction; brief gaps and product decisions return to their owner. A favorable review informs the outcome owner's acceptance decision. "
-        "Review preparation may publish a prompt but leaves the protected candidate and lifecycle unchanged."
+        "are bound with caller-selected checkpoint or correction evidence into context for a separate, "
+        "candidate-read-only implementation reviewer. Publication may change prompt artifacts, accepted references, "
+        "and the ledger, but leaves lifecycle, candidate, and authority unchanged. The reviewer reuses unchanged "
+        "evidence, revalidates changed or unclassified relationships, and widens on concrete escalation conditions. "
+        "Implementation defects return to the same attempt for correction; brief gaps and product decisions return "
+        "to their owner. A favorable review informs the outcome owner's acceptance decision. Covered completion "
+        "preserves accepted checkpoint dispositions."
     ),
     width=1200,
     height=750,
@@ -85,7 +91,7 @@ DIAGRAM = Diagram(
             "Accepted direction",
             "Publish structured brief",
             ("outcome · scope · verification", "authorities for cross-boundary work"),
-            ("pinboard-work-brief/v2",),
+            ("pinboard-work-brief/v3",),
             60,
             150,
             300,
@@ -118,7 +124,7 @@ DIAGRAM = Diagram(
             "Review preparation",
             "Bind candidate + evidence",
             ("brief · result · selected history", "publish exact reviewer prompt"),
-            ("pinboard-review-job/v4",),
+            ("pinboard-mcp-review-job-result/v1",),
             840,
             480,
             300,
@@ -129,7 +135,7 @@ DIAGRAM = Diagram(
             "Implementation review",
             "Independent reviewer",
             ("inspect the candidate against brief", "reuse evidence or revalidate it"),
-            ("widen on changed relationships",),
+            ("candidate-read-only · widen on trigger",),
             440,
             480,
             320,
@@ -150,7 +156,7 @@ DIAGRAM = Diagram(
     notes=(
         Note("LOCAL WORK STILL RECEIVES INDEPENDENT IMPLEMENTATION REVIEW", 600, 675, 12, "middle", True),
         Note(
-            "Prepared context fixes the evidence to inspect; it does not review or accept the candidate.",
+            "Publication may change prompt artifacts, references, and ledger; it neither reviews nor accepts the candidate.",
             600,
             703,
             12,

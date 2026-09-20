@@ -296,6 +296,14 @@ def _race_preparation_and_prerequisite_proposal(
             "The relationship is current.",
             ("source:local",),
             ("Work C remains ready.",),
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("proposal-outcome"),
+                    "A task can evaluate it.",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         )
         barrier.wait()
         result = create_proposal(
@@ -350,6 +358,7 @@ def _activate_same_prepared_item(
         store,
         selected_command,
         SQLITE_NOW + timedelta(seconds=1),
+        read_authorization_time=lambda: SQLITE_NOW + timedelta(seconds=1),
         actor_task_id=None,
         actor_host_id=None,
         transition_brief_identity=identity,

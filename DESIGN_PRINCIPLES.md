@@ -4,13 +4,31 @@ This is the reusable design method for maintainers and coding agents evolving Pi
 
 ## Decisions and evidence
 
+### Validate the premise before changing the rule
+
+When a rule blocks apparently valid work, first verify that the information reaching it accurately represents the situation. Trace what changed, what the decision considers, and what relevant information was omitted or lost.
+
+Correct an incomplete or misleading representation at its owner. Change the rule only when the accurately represented situation demonstrates that the rule itself is wrong.
+
+Include the information needed for the decision—not everything indiscriminately. A checksum, label, or status is evidence about what it represents, not proof that the representation is sufficient.
+
+Before relying on an identity, summary, label, or status to authorize an effect or establish equivalence, name the decision it supports and the distinctions that decision requires.
+
+Challenge the representation with two valid situations that produce the same represented value but require different decisions. Vary relevant surrounding context, not only the information already included in the representation. If such a pair exists, correct the representation or make the missing relationship explicit at its owner before relying on it.
+
+For an enforceable invariant, retain the counterexample as a behavioral regression test. Derive the expected decision from the supported contract, independently of the representation being tested. Keep the challenge focused on the changed decision boundary; it does not require an exhaustive search of unrelated states.
+
 ### Optimize for visible decisions
 
 The primary reader must be able to answer what can happen, under which condition, and with which effect. Put those branches in one explicit owner. Move representation conversion and persistence mechanics aside only when their contract remains obvious at the call site.
 
 Preserve independent conditions on neighboring behavior unless accepted scope changes them. Permission for one operation must not enable, disable, or bypass a sibling with a different condition. Test one mixed counterexample where the new behavior is allowed and the sibling remains forbidden.
 
+Keep correlated facts with the type or decision that makes them true. A schema constraint, effect flag, retry rule, or surface classification may be projected from that owner, but must not depend on a second class-name inventory that developers must update in parallel. Preserve genuinely variable correlations as explicit alternatives instead of forcing them into the fixed classification.
+
 File size and total lines are separate signals, not objectives. A reduction helps only when it concentrates real alternatives or removes repetition without hiding control flow.
+
+Use a module cohesion budget as a review trigger, not a pass/fail metric. At 1,500 source lines or 24 direct imports, inventory the module's top-level responsibilities and import neighborhoods. Split it when two groups can name independent product effects or verbs and each can depend on fewer collaborators. Keep a larger declarative catalog or one closed decision family together when extraction would add re-exports, translation, cycles, or scattered branching. Stop when every remaining module has one thematic owner and another move would increase dependency fan-out.
 
 Agent-facing schemas, values, and entry points are product surfaces when agents can use them to steer work. Unless a public API or CLI already makes the contract obvious, keep the consumer, semantic effect or deliberate non-effect, and owner discoverable from the definition or direct entry point. Remove a surface that survives only because a schema can carry it.
 
@@ -228,6 +246,8 @@ Use a reversible pilot before applying a new decomposition broadly:
 9. Repeat until a fresh pass finds no matching residue.
 
 Stop when another fold would erase a product distinction, scatter one exhaustive decision, create a generic dumping ground, or add more conversion machinery than repeated ownership it removes.
+
+Duplication matches prompt an ownership review, not automatic consolidation. Share repeated behavior only when a reversible pilot gives a real decision, invariant or conversion one clearer owner. Retain an exact independently reviewed occurrence when sharing would weaken a required boundary shape or couple independent decisions. Name the concrete owners, required distinction and falsifying evidence; recompute the matched occurrences and direct residue after the last fold. Byte certification preserves that reviewed occurrence identity, not the truth of the semantic judgment.
 
 ### Evaluate the result on independent axes
 

@@ -3,60 +3,82 @@ import hashlib
 import io
 import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from unittest.mock import patch
 
 import msgspec
+from mcp.server.mcpserver.exceptions import UnexpectedToolError
 from msgspec.structs import replace
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
+from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
-from pinboard.adapters.sqlite.database import translate_database_error
+from pinboard.adapters.sqlite.database import initialize_database, translate_database_error
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.application import checkpoint_compatibility_models, work_brief_compatibility_models, work_brief_models
 from pinboard.application.artifact_publication import validate_transition_work_brief
 from pinboard.application.artifacts import NewArtifact
-from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
-from pinboard.interfaces import checkpoint_compatibility_models, work_brief_models
-from pinboard.interfaces.cli import main
-from pinboard.interfaces.errors import WorkBriefErrorCode, WorkBriefFailure, WorkBriefResult
-from pinboard.interfaces.work_briefs import (
+from pinboard.application.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_checkpoint_review_package_bytes,
     canonical_reviewed_authority_set_bytes,
     canonical_work_brief_bytes,
     canonical_work_brief_review_needs_correction_bytes,
     decode_canonical_checkpoint_review_package,
+    decode_canonical_work_brief,
     decode_canonical_work_brief_review_needs_correction,
     decode_checkpoint_review_package,
     decode_work_brief,
     decode_work_brief_review,
     read_selected_work_brief_identity,
     render_work_brief_markdown,
+    validate_definition_brief_agreement,
     validate_reviewed_authority_digests,
     validate_work_brief_review,
     validate_work_brief_review_needs_correction,
 )
+from pinboard.cli.entrypoint import main
+from pinboard.domain import decision_models, work_models
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.mcp import server
 from tests.artifact_support import write_revision
-from tests.support import SQLITE_NOW, complete_sqlite_state, decision_facts
-from tests.work_brief_support import example_work_brief, needs_correction_review, work_a_brief, work_c_brief
+from tests.native_support import call_native_tool
+from tests.support import (
+    SQLITE_NOW,
+    JsonObject,
+    complete_sqlite_state,
+    decision_facts,
+    initialize_store,
+    test_definition,
+)
+from tests.work_brief_support import (
+    example_work_brief,
+    needs_correction_review,
+    ready_review,
+    work_a_brief,
+    work_c_brief,
+)
 
 
-def expect_work_brief_success[T](result: WorkBriefResult[T]) -> T:
-    if isinstance(result, WorkBriefFailure):
+def expect_work_brief_success[T](result: work_brief_models.WorkBriefResult[T]) -> T:
+    if isinstance(result, work_brief_models.WorkBriefFailure):
         raise AssertionError(str(result))
     return result
 
 
-def expect_work_brief_failure[T](result: WorkBriefResult[T], code: WorkBriefErrorCode) -> WorkBriefFailure:
-    if not isinstance(result, WorkBriefFailure):
+def expect_work_brief_failure[T](
+    result: work_brief_models.WorkBriefResult[T], code: work_brief_models.WorkBriefErrorCode
+) -> work_brief_models.WorkBriefFailure:
+    if not isinstance(result, work_brief_models.WorkBriefFailure):
         raise AssertionError(f"Expected {code.value}, received success: {result!r}")
     if result.code != code:
         raise AssertionError(f"Expected {code.value}, received {result.code.value}: {result.message}")
@@ -77,18 +99,19 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         checkpoint = brief.checkpoint
         assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
 
-        self.assertIsNone(validate_reviewed_authority_digests(project, checkpoint.reviewed_authorities))
+        select_source = partial(select_checkout_brief_source, project)
+        self.assertIsNone(validate_reviewed_authority_digests(select_source, checkpoint.reviewed_authorities))
 
         source = project / "architecture.md"
         source.write_text("# Architecture\n\n## Contract\n\nChanged.\n", encoding="utf-8")
-        stale = validate_reviewed_authority_digests(project, checkpoint.reviewed_authorities)
+        stale = validate_reviewed_authority_digests(select_source, checkpoint.reviewed_authorities)
         self.assertIsInstance(stale, work_brief_models.ReviewedAuthorityDigestMismatch)
         assert isinstance(stale, work_brief_models.ReviewedAuthorityDigestMismatch)
         self.assertEqual("architecture", stale.authority_id)
         self.assertNotEqual(stale.expected_sha256, stale.observed_sha256)
 
         source.unlink()
-        unreadable = validate_reviewed_authority_digests(project, checkpoint.reviewed_authorities)
+        unreadable = validate_reviewed_authority_digests(select_source, checkpoint.reviewed_authorities)
         self.assertIsInstance(unreadable, work_brief_models.ReviewedAuthoritySelectionFailure)
         assert isinstance(unreadable, work_brief_models.ReviewedAuthoritySelectionFailure)
         self.assertEqual("architecture", unreadable.authority_id)
@@ -105,7 +128,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         self.assertTrue(canonical.endswith(b"\n"))
         self.assertEqual(decoded, expect_work_brief_success(decode_work_brief(canonical)))
         expect_work_brief_failure(
-            decode_work_brief(candidate[:-1] + b',"unknown":true}'), WorkBriefErrorCode.BRIEF_INVALID
+            decode_work_brief(candidate[:-1] + b',"unknown":true}'), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
         )
         for field, invalid in (("attempt_id", f"{value.attempt_id}\n"), ("title", f"{value.title}\n")):
             with self.subTest(field=field):
@@ -114,8 +137,96 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     self.fail("work brief JSON must be an object")
                 payload[field] = invalid
                 expect_work_brief_failure(
-                    decode_work_brief(msgspec.json.encode(payload)), WorkBriefErrorCode.BRIEF_INVALID
+                    decode_work_brief(msgspec.json.encode(payload)), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
                 )
+
+    def test_retained_v2_brief_remains_exactly_readable_reviewable_and_renderable(self) -> None:
+        current = example_work_brief()
+        payload = msgspec.to_builtins(current)
+        assert isinstance(payload, dict)
+        payload["schema"] = "pinboard-work-brief/v2"
+        checkpoint = payload["checkpoint"]
+        assert isinstance(checkpoint, dict)
+        disposition = checkpoint.pop("disposition")
+        assert isinstance(disposition, dict)
+        payload["remaining_work"] = disposition["remaining_work"]
+        del payload["checkout_selection"]
+        del payload["obligation_correspondence"]
+        legacy_bytes = msgspec.json.encode(payload, order="sorted") + b"\n"
+
+        legacy = expect_work_brief_success(decode_canonical_work_brief(legacy_bytes))
+
+        self.assertEqual("pinboard-work-brief/v2", legacy.schema)
+        self.assertIn(b"authority: pinboard-work-brief/v2", render_work_brief_markdown(legacy))
+        current_review = msgspec.json.decode(ready_review(current), type=work_brief_models.WorkBriefReview)
+        legacy_checkpoint = legacy.checkpoint
+        review = work_brief_compatibility_models.WorkBriefReviewV2(
+            "pinboard-work-brief-review/v2",
+            current_review.attempt_id,
+            current_review.checkpoint_id,
+            hashlib.sha256(canonical_checkpoint_bytes(legacy_checkpoint)).hexdigest(),
+            current_review.reviewed_authority_set_sha256,
+            current_review.reviewer_task_id,
+            current_review.status,
+            current_review.verdict,
+            current_review.coverage,
+        )
+        self.assertIsNone(validate_work_brief_review(review, legacy))
+
+    def test_retained_v3_brief_remains_exactly_readable_reviewable_and_renderable(self) -> None:
+        current = example_work_brief()
+        payload = msgspec.to_builtins(current)
+        assert isinstance(payload, dict)
+        payload["schema"] = "pinboard-work-brief/v3"
+        checkpoint = payload["checkpoint"]
+        assert isinstance(checkpoint, dict)
+        disposition = checkpoint.pop("disposition")
+        assert isinstance(disposition, dict)
+        payload["remaining_work"] = disposition["remaining_work"]
+        legacy_bytes = msgspec.json.encode(payload, order="sorted") + b"\n"
+
+        legacy = expect_work_brief_success(decode_canonical_work_brief(legacy_bytes))
+        current_review = msgspec.json.decode(ready_review(current), type=work_brief_models.WorkBriefReview)
+        review = replace(
+            current_review,
+            accepted_brief_sha256=hashlib.sha256(legacy_bytes).hexdigest(),
+            checkpoint_sha256=hashlib.sha256(canonical_checkpoint_bytes(legacy.checkpoint)).hexdigest(),
+        )
+
+        self.assertEqual("pinboard-work-brief/v3", legacy.schema)
+        self.assertEqual(legacy_bytes, canonical_work_brief_bytes(legacy))
+        self.assertIn(b"authority: pinboard-work-brief/v3", render_work_brief_markdown(legacy))
+        self.assertIsNone(validate_work_brief_review(review, legacy))
+
+    def test_definition_agreement_requires_complete_ids_and_permitted_checkout_and_deferral(self) -> None:
+        brief = work_a_brief(Path(tempfile.mkdtemp()).resolve())
+        checkpoint = brief.checkpoint
+        assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        definition, _digest = test_definition(ItemId("work-a"))
+        self.assertIsNone(validate_definition_brief_agreement(definition, brief))
+        unknown = replace(
+            brief,
+            obligation_correspondence=(
+                work_brief_models.ObligationCorrespondence(
+                    "unknown-obligation",
+                    work_brief_models.ContractObligationTarget(checkpoint.contracts[0].invariant),
+                ),
+            ),
+        )
+        forbidden = replace(
+            brief,
+            obligation_correspondence=(
+                work_brief_models.ObligationCorrespondence(
+                    "next-decision",
+                    work_brief_models.DeferralObligationTarget("later-work"),
+                ),
+            ),
+        )
+        fixed = dataclass_replace(definition, checkout_policy=work_models.CheckoutPolicy.ISOLATED)
+
+        self.assertIsNotNone(validate_definition_brief_agreement(definition, unknown))
+        self.assertIsNotNone(validate_definition_brief_agreement(definition, forbidden))
+        self.assertIsNotNone(validate_definition_brief_agreement(fixed, brief))
 
     def test_cross_references_are_rejected_at_the_typed_boundary(self) -> None:
         value = example_work_brief()
@@ -130,7 +241,9 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             self.fail("work brief coverage JSON must be a non-empty array of objects")
         coverage[0]["owner"] = {"disposition": "acceptance", "criterion": 99}
 
-        expect_work_brief_failure(decode_work_brief(msgspec.json.encode(payload)), WorkBriefErrorCode.BRIEF_INVALID)
+        expect_work_brief_failure(
+            decode_work_brief(msgspec.json.encode(payload)), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
+        )
 
     def test_checkpoint_identity_may_equal_item_identity(self) -> None:
         value = example_work_brief()
@@ -224,7 +337,9 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 )
 
         invalid = replace(value, owner_task_id=" owner-task ")
-        expect_work_brief_failure(decode_work_brief(msgspec.json.encode(invalid)), WorkBriefErrorCode.BRIEF_INVALID)
+        expect_work_brief_failure(
+            decode_work_brief(msgspec.json.encode(invalid)), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
+        )
 
     def test_checkpoint_and_authority_digests_use_canonical_records(self) -> None:
         value = example_work_brief()
@@ -232,7 +347,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
 
         self.assertEqual(
-            "a2941d05f3c61a40ca5014af48a095ee919e2cad2fe2d78a09a74a8835693f1f",
+            "bf8217d6c7dc376f24e13851933745ecfbe34e684b74707e4cd5cdadb63de1cc",
             hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest(),
         )
         renamed = replace(checkpoint, title="Renamed title")
@@ -263,9 +378,10 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
         coverage = checkpoint.coverage[0]
         review = work_brief_models.WorkBriefReview(
-            schema="pinboard-work-brief-review/v2",
+            schema="pinboard-work-brief-review/v3",
             attempt_id=value.attempt_id,
             checkpoint_id=checkpoint.checkpoint_id,
+            accepted_brief_sha256=hashlib.sha256(canonical_work_brief_bytes(value)).hexdigest(),
             checkpoint_sha256=hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest(),
             reviewed_authority_set_sha256=hashlib.sha256(
                 canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)
@@ -294,21 +410,38 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             self.fail("work brief review coverage JSON must be an array")
         coverage_payload.append(coverage_payload[0])
         expect_work_brief_failure(
-            decode_work_brief_review(msgspec.json.encode(payload)), WorkBriefErrorCode.REVIEW_INVALID
+            decode_work_brief_review(msgspec.json.encode(payload)), work_brief_models.WorkBriefErrorCode.REVIEW_INVALID
         )
         payload = msgspec.json.decode(msgspec.json.encode(review))
         if not isinstance(payload, dict):
             self.fail("work brief review JSON must be an object")
         payload["checkpoint_sha256"] = f"{review.checkpoint_sha256}\n"
         expect_work_brief_failure(
-            decode_work_brief_review(msgspec.json.encode(payload)), WorkBriefErrorCode.REVIEW_INVALID
+            decode_work_brief_review(msgspec.json.encode(payload)), work_brief_models.WorkBriefErrorCode.REVIEW_INVALID
         )
         same_owner = validate_work_brief_review(replace(review, reviewer_task_id=value.owner_task_id), value)
         assert same_owner is not None
-        self.assertEqual(WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT, same_owner.code)
+        self.assertEqual(work_brief_models.WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT, same_owner.code)
         stale = validate_work_brief_review(replace(review, checkpoint_sha256="f" * 64), value)
         assert stale is not None
-        self.assertEqual(WorkBriefErrorCode.REVIEW_STALE, stale.code)
+        self.assertEqual(work_brief_models.WorkBriefErrorCode.REVIEW_STALE, stale.code)
+
+        for changed in (
+            replace(value, checkout_selection=work_models.CheckoutSelection.ISOLATED),
+            replace(
+                value,
+                obligation_correspondence=(
+                    work_brief_models.ObligationCorrespondence(
+                        value.obligation_correspondence[0].obligation_id,
+                        work_brief_models.CriterionObligationTarget(checkpoint.acceptance_criteria[0].number),
+                    ),
+                ),
+            ),
+        ):
+            with self.subTest(changed=changed.checkout_selection):
+                stale = validate_work_brief_review(review, changed)
+                assert stale is not None
+                self.assertEqual(work_brief_models.WorkBriefErrorCode.REVIEW_STALE, stale.code)
 
     def test_needs_correction_review_is_canonical_digest_bound_and_independent(self) -> None:
         value = example_work_brief()
@@ -321,10 +454,10 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             replace(review, reviewer_task_id=value.owner_task_id), value
         )
         assert same_owner is not None
-        self.assertEqual(WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT, same_owner.code)
+        self.assertEqual(work_brief_models.WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT, same_owner.code)
         stale = validate_work_brief_review_needs_correction(replace(review, accepted_brief_sha256="f" * 64), value)
         assert stale is not None
-        self.assertEqual(WorkBriefErrorCode.REVIEW_STALE, stale.code)
+        self.assertEqual(work_brief_models.WorkBriefErrorCode.REVIEW_STALE, stale.code)
 
         payload = msgspec.json.decode(candidate)
         if not isinstance(payload, dict):
@@ -335,12 +468,40 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         findings.append(findings[0])
         expect_work_brief_failure(
             decode_canonical_work_brief_review_needs_correction(msgspec.json.encode(payload)),
-            WorkBriefErrorCode.REVIEW_INVALID,
+            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,
         )
         expect_work_brief_failure(
             decode_canonical_work_brief_review_needs_correction(candidate.rstrip()),
-            WorkBriefErrorCode.REVIEW_NOT_CANONICAL,
+            work_brief_models.WorkBriefErrorCode.REVIEW_NOT_CANONICAL,
         )
+
+    def assert_current_and_retained_role_bindings(
+        self,
+        portable: checkpoint_compatibility_models.CheckpointReviewPackageV2,
+    ) -> None:
+        for schema, candidate in (
+            ("pinboard-checkpoint-review-package/v2", portable.candidate),
+            ("pinboard-checkpoint-review-package/v3", "working-tree-state-sha256:" + "d" * 64),
+        ):
+            valid = msgspec.json.decode(canonical_checkpoint_review_package_bytes(portable))
+            assert isinstance(valid, dict)
+            valid["schema"] = schema
+            valid["candidate"] = candidate
+            encoded = msgspec.json.encode(valid, order="sorted") + b"\n"
+            decoded = expect_work_brief_success(decode_canonical_checkpoint_review_package(encoded))
+            self.assertEqual(encoded, canonical_checkpoint_review_package_bytes(decoded))
+            for field in ("candidate_snapshot", "accepted_brief", "result", "implementation_review"):
+                with self.subTest(schema=schema, malformed_binding=field):
+                    invalid = msgspec.json.decode(encoded)
+                    assert isinstance(invalid, dict)
+                    binding = invalid[field]
+                    assert isinstance(binding, dict)
+                    binding["role"] = "brief-review"
+                    rejected = expect_work_brief_failure(
+                        decode_checkpoint_review_package(msgspec.json.encode(invalid)),
+                        work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
+                    )
+                    self.assertIn("artifact roles and kinds do not match their bindings", rejected.message)
 
     def test_checkpoint_review_package_variants_are_strict_canonical_and_portable(self) -> None:
         value = example_work_brief()
@@ -416,10 +577,10 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 )
                 expect_work_brief_failure(
                     decode_canonical_checkpoint_review_package(encoded[:-1]),
-                    WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
+                    work_brief_models.WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
                 )
 
-        portable = work_brief_models.CheckpointReviewPackageV2(
+        portable = checkpoint_compatibility_models.CheckpointReviewPackageV2(
             value.attempt_id,
             value.item_id,
             f"working-tree-sha256:{candidate_snapshot.content_sha256}",
@@ -443,13 +604,14 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 portable_package,
                 expect_work_brief_success(decode_canonical_checkpoint_review_package(encoded_portable)),
             )
+        self.assert_current_and_retained_role_bindings(portable)
         payload = msgspec.json.decode(canonical_checkpoint_review_package_bytes(cross))
         if not isinstance(payload, dict):
             self.fail("checkpoint review package JSON must be an object")
         payload["unknown"] = True
         expect_work_brief_failure(
             decode_checkpoint_review_package(msgspec.json.encode(payload)),
-            WorkBriefErrorCode.PACKAGE_INVALID,
+            work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
         )
         invalid_payloads = []
         wrong_role = msgspec.json.decode(canonical_checkpoint_review_package_bytes(local))
@@ -478,7 +640,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         for invalid_payload in invalid_payloads:
             expect_work_brief_failure(
                 decode_checkpoint_review_package(msgspec.json.encode(invalid_payload)),
-                WorkBriefErrorCode.PACKAGE_INVALID,
+                work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
             )
 
     def test_markdown_is_a_complete_generated_projection(self) -> None:
@@ -608,7 +770,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 self.assertIn("not a valid canonical typed work brief", invalid_identity.message)
                 with (
                     patch(
-                        "pinboard.interfaces.work_briefs.decode_work_brief_identity",
+                        "pinboard.application.work_briefs.decode_work_brief_identity",
                         side_effect=ValueError("unrelated value failure"),
                     ),
                     self.assertRaisesRegex(ValueError, "unrelated value failure"),
@@ -646,112 +808,133 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 assert failure is not None
                 self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, failure.code)
 
-    def test_installed_publication_is_canonical_scheduling_neutral_and_retryable(self) -> None:
-        project = Path(tempfile.mkdtemp()).resolve()
+    def initialized_publication(self) -> tuple[Path, Path]:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        project = Path(temporary.name).resolve()
+        subprocess.run(("git", "init", "--quiet", str(project)), check=True)
         work = project / ".codex" / "work"
-        common = ("--project-root", str(project), "--work-root", str(work))
-        result, _stdout, stderr = self.run_cli(*common, "init")
-        self.assertEqual(0, result, stderr)
-        candidate = project / "brief.json"
-        candidate.write_bytes(msgspec.json.format(msgspec.json.encode(example_work_brief()), indent=2))
+        initialize_database(resolve_durable_roots(project, work), SQLITE_NOW)
+        initialize_store(SQLiteWorkStore(work / "state.sqlite3"), complete_sqlite_state())
+        return project, work
+
+    def publish(self, project: Path, work: Path, brief: work_brief_models.WorkBrief) -> JsonObject:
+        payload: JsonObject = msgspec.to_builtins(brief)
+        return call_native_tool(
+            server.BRIEF_PUBLISH_TOOL, {"project_root": str(project), "work_root": str(work), "brief": payload}
+        )
+
+    def test_native_publication_is_canonical_scheduling_neutral_retryable_and_collision_safe(self) -> None:
+        project, work = self.initialized_publication()
+        brief = work_a_brief(project)
         before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
-
-        result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
-
-        self.assertEqual(0, result, stderr)
-        receipt = msgspec.json.decode(stdout.encode())
-        self.assertEqual("artifacts/briefs/make-canonical-briefs-typed-json-1/1.json", receipt["selector"])
+        result = self.publish(project, work, brief)
+        self.assertEqual("committed", result["status"])
+        reference = result["reference"]
+        assert isinstance(reference, dict) and isinstance(reference["selector"], str)
+        self.assertEqual("artifacts/briefs/work-a-1/1.json", reference["selector"])
         after = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
         self.assertEqual(before.lifecycle.work_items, after.lifecycle.work_items)
         self.assertEqual(before.authority, after.authority)
         self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
-        artifact = work / receipt["selector"]
-        self.assertEqual(canonical_work_brief_bytes(example_work_brief()), artifact.read_bytes())
-
-        retry_result, retry_stdout, retry_stderr = self.run_cli(
-            *common, "brief", "publish", "--file", str(candidate), "--json"
+        artifact = work / reference["selector"]
+        self.assertEqual(canonical_work_brief_bytes(brief), artifact.read_bytes())
+        reused = self.publish(project, work, brief)
+        self.assertEqual(
+            ("unchanged", False, []), (reused["status"], reused["state_changed"], reused["changed_surfaces"])
         )
-        self.assertEqual(0, retry_result, retry_stderr)
-        self.assertEqual(receipt, msgspec.json.decode(retry_stdout.encode()))
+        self.assertEqual(reference, reused["reference"])
+        self.assertEqual(after, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
+        with self.assertRaises(UnexpectedToolError) as failure:
+            self.publish(project, work, replace(brief, title="Different title"))
+        self.assertIsInstance(failure.exception.__cause__, ArtifactError)
+        cause = failure.exception.__cause__
+        assert isinstance(cause, ArtifactError)
+        self.assertEqual(ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION, cause.code)
+        self.assertEqual(canonical_work_brief_bytes(brief), artifact.read_bytes())
         self.assertEqual(after, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
-        candidate.write_bytes(canonical_work_brief_bytes(replace(example_work_brief(), title="Different title")))
-        collision_result, _collision_stdout, collision_stderr = self.run_cli(
-            *common, "brief", "publish", "--file", str(candidate)
-        )
-        self.assertEqual(12, collision_result)
-        self.assertIn("STORAGE_INVARIANT_VIOLATION", collision_stderr)
-        self.assertEqual(canonical_work_brief_bytes(example_work_brief()), artifact.read_bytes())
-
-    def test_invalid_publication_is_a_stable_typed_cli_rejection(self) -> None:
-        project = Path(tempfile.mkdtemp()).resolve()
-        work = project / ".codex" / "work"
-        common = ("--project-root", str(project), "--work-root", str(work))
-        self.assertEqual(0, self.run_cli(*common, "init")[0])
-        candidate = project / "brief.json"
-        candidate.write_text("{}\n", encoding="utf-8")
+    def test_native_invalid_publication_rejects_before_effects(self) -> None:
+        project, work = self.initialized_publication()
         before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
-
-        result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
-
-        self.assertEqual(16, result)
-        self.assertEqual("", stderr)
-        failure = msgspec.json.decode(stdout.encode())
-        self.assertEqual("pinboard-rejected-operation/v1", failure["schema"])
-        self.assertEqual("rejected", failure["status"])
-        self.assertEqual(WorkBriefErrorCode.BRIEF_INVALID.value, failure["code"])
-        self.assertFalse(failure["state_changed"])
-        self.assertEqual("correct-input", failure["retry"])
+        failure = call_native_tool(
+            server.BRIEF_PUBLISH_TOOL, {"project_root": str(project), "work_root": str(work), "brief": {}}
+        )
+        self.assertEqual(
+            ("rejected", work_brief_models.WorkBriefErrorCode.BRIEF_INVALID.value, False, "correct-input", []),
+            (
+                failure["status"],
+                failure["code"],
+                failure["state_changed"],
+                failure["retry"],
+                failure["changed_surfaces"],
+            ),
+        )
         self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
-    def test_publication_failure_leaves_reusable_verified_orphan(self) -> None:
-        project = Path(tempfile.mkdtemp()).resolve()
-        work = project / ".codex" / "work"
-        common = ("--project-root", str(project), "--work-root", str(work))
-        self.assertEqual(0, self.run_cli(*common, "init")[0])
-        candidate = project / "brief.json"
-        candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
-
+    def test_native_acceptance_fault_matrix_preserves_exact_orphan_and_fresh_store(self) -> None:
         database_failure = StorageError(StorageErrorCode.BUSY, "database failed", retryable=True)
-        with patch.object(SQLiteWorkStore, "accept_artifact_reference", side_effect=database_failure):
-            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
+        verification_failure = ArtifactError(ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION, "store verification failed")
+        readonly = translate_database_error(sqlite3.OperationalError("attempt to write a readonly database"))
+        for target, error in (
+            ("pinboard.adapters.sqlite.store.SQLiteWorkStore.accept_artifact_reference", database_failure),
+            ("pinboard.adapters.sqlite.artifacts.verify_reference", verification_failure),
+            ("pinboard.adapters.sqlite.store.SQLiteWorkStore.accept_artifact_reference", readonly),
+        ):
+            with self.subTest(target=target, code=error.code):
+                project, work = self.initialized_publication()
+                before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+                brief = work_a_brief(project)
+                selector = f"artifacts/briefs/{brief.attempt_id}/1.json"
+                with patch(target, side_effect=error):
+                    failure = self.publish(project, work, brief)
+                self.assertEqual(
+                    (
+                        "failed-after-publication",
+                        "ARTIFACT_ACCEPTANCE_FAILED",
+                        True,
+                        ["immutable-artifact"],
+                        "do-not-retry",
+                        selector,
+                    ),
+                    (
+                        failure["status"],
+                        failure["code"],
+                        failure["state_changed"],
+                        failure["changed_surfaces"],
+                        failure["retry"],
+                        failure["published_selector"],
+                    ),
+                )
+                self.assertEqual(canonical_work_brief_bytes(brief), (work / selector).read_bytes())
+                self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
+                # The caller explicitly selects the already verified orphan; no second publication is claimed.
+                with patch(target, side_effect=error), self.assertRaises(UnexpectedToolError) as retry_failure:
+                    self.publish(project, work, brief)
+                cause = retry_failure.exception.__cause__
+                if isinstance(error, ArtifactError):
+                    self.assertIsInstance(cause, StorageError)
+                    assert isinstance(cause, StorageError)
+                    self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, cause.code)
+                    self.assertIs(error, cause.__cause__)
+                else:
+                    self.assertIs(error, cause)
+                self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
+                recovered = self.publish(project, work, brief)
+                reference = recovered["reference"]
+                assert isinstance(reference, dict)
+                self.assertEqual(selector, reference["selector"])
+                self.assertEqual(["accepted-artifact-reference", "ledger"], recovered["changed_surfaces"])
+                reloaded = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+                self.assertEqual(before.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
+                self.assertEqual(before.lifecycle.work_items, reloaded.lifecycle.work_items)
+                self.assertEqual(before.authority, reloaded.authority)
+                self.assertEqual(len(before.artifact_references) + 1, len(reloaded.artifact_references))
 
-        self.assertEqual(12, result, stderr)
-        committed = msgspec.json.decode(stdout.encode())
-        self.assertEqual("committed-effect", committed["status"])
-        self.assertTrue(committed["state_changed"])
-        self.assertEqual(["immutable-artifact"], committed["changed_surfaces"])
-        self.assertEqual("do-not-retry", committed["retry"])
-        orphan = work / "artifacts" / "briefs" / example_work_brief().attempt_id / "1.json"
-        self.assertEqual(canonical_work_brief_bytes(example_work_brief()), orphan.read_bytes())
-        self.assertEqual((), SQLiteWorkStore(work / "state.sqlite3").validated_snapshot().artifact_references)
-
-        orphan = work / "artifacts" / "briefs" / example_work_brief().attempt_id / "1.json"
-        self.assertEqual(canonical_work_brief_bytes(example_work_brief()), orphan.read_bytes())
-
-        with patch.object(SQLiteWorkStore, "accept_artifact_reference", side_effect=database_failure):
-            retry_result, retry_stdout, retry_stderr = self.run_cli(
-                *common, "brief", "publish", "--file", str(candidate), "--json"
-            )
-        self.assertEqual(12, retry_result, retry_stderr)
-        unchanged = msgspec.json.decode(retry_stdout.encode())
-        self.assertEqual("rejected", unchanged["status"])
-        self.assertFalse(unchanged["state_changed"])
-        self.assertEqual([], unchanged["changed_surfaces"])
-        self.assertEqual("retry-same-input", unchanged["retry"])
-
-        result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate))
-        self.assertEqual(0, result, stderr)
-        self.assertIn("BRIEF_PUBLISHED", stdout)
-
-    def test_post_link_sync_failure_reports_and_reuses_the_published_brief(self) -> None:
-        project = Path(tempfile.mkdtemp()).resolve()
-        work = project / ".codex" / "work"
-        common = ("--project-root", str(project), "--work-root", str(work))
-        self.assertEqual(0, self.run_cli(*common, "init")[0])
-        candidate = project / "brief.json"
-        candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
-        selector = f"artifacts/briefs/{example_work_brief().attempt_id}/1.json"
+    def test_native_post_link_sync_failure_preserves_and_reuses_exact_publication(self) -> None:
+        project, work = self.initialized_publication()
+        brief = work_a_brief(project)
+        selector = f"artifacts/briefs/{brief.attempt_id}/1.json"
         publication = work / selector
         before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
         original_fsync = os.fsync
@@ -762,136 +945,65 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             original_fsync(descriptor)
 
         with patch("pinboard.adapters.files.file_io.os.fsync", side_effect=fail_after_link):
-            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
-
-        self.assertEqual(12, result, stderr)
-        failure = msgspec.json.decode(stdout.encode())
-        self.assertEqual("committed-effect", failure["status"])
-        self.assertEqual("DIRECTORY_SYNC_FAILED", failure["code"])
-        self.assertEqual(["immutable-artifact"], failure["changed_surfaces"])
-        self.assertEqual("do-not-retry", failure["retry"])
+            failure = self.publish(project, work, brief)
         self.assertEqual(
-            [selector],
-            [value["value"] for value in failure["observed"] if value["field"] == "published_artifact_selector"],
+            (
+                "failed-after-publication",
+                "ARTIFACT_ACCEPTANCE_FAILED",
+                ["immutable-artifact"],
+                "do-not-retry",
+                selector,
+            ),
+            (
+                failure["status"],
+                failure["code"],
+                failure["changed_surfaces"],
+                failure["retry"],
+                failure["published_selector"],
+            ),
         )
-        self.assertEqual(canonical_work_brief_bytes(example_work_brief()), publication.read_bytes())
+        self.assertEqual(canonical_work_brief_bytes(brief), publication.read_bytes())
         self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
-
-        retry_result, retry_stdout, retry_stderr = self.run_cli(
-            *common, "brief", "publish", "--file", str(candidate), "--json"
-        )
-        self.assertEqual(0, retry_result, retry_stderr)
-        self.assertEqual(selector, msgspec.json.decode(retry_stdout.encode())["selector"])
-
-    def test_readonly_publication_failure_preserves_artifact_and_database_diagnostics(self) -> None:
-        project = Path(tempfile.mkdtemp()).resolve()
-        work = project / ".codex" / "work"
-        common = ("--project-root", str(project), "--work-root", str(work))
-        self.assertEqual(0, self.run_cli(*common, "init")[0])
-        candidate = project / "brief.json"
-        candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
-        readonly = translate_database_error(sqlite3.OperationalError("attempt to write a readonly database"))
-        readonly = readonly.with_database_path(work / "state.sqlite3")
-
-        with patch.object(SQLiteWorkStore, "accept_artifact_reference", side_effect=readonly):
-            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
-
-        self.assertEqual(12, result, stderr)
-        failure = msgspec.json.decode(stdout.encode())
-        self.assertEqual("committed-effect", failure["status"])
-        self.assertEqual("SQLITE_READONLY", failure["code"])
-        self.assertTrue(failure["state_changed"])
-        self.assertEqual(["immutable-artifact"], failure["changed_surfaces"])
-        self.assertEqual("do-not-retry", failure["retry"])
-        observations = {value["field"]: value["value"] for value in failure["observed"]}
-        self.assertEqual(str(work / "state.sqlite3"), observations["database_path"])
-        self.assertEqual("brief/publish", observations["operation"])
-        self.assertEqual("SQLITE_READONLY", observations["sqlite_error_code"])
-        self.assertIn(str(work), observations["permission_recovery"])
-        self.assertEqual((), SQLiteWorkStore(work / "state.sqlite3").validated_snapshot().artifact_references)
-
-    def test_store_verification_failure_preserves_exact_publication_effect(self) -> None:
-        project = Path(tempfile.mkdtemp()).resolve()
-        work = project / ".codex" / "work"
-        common = ("--project-root", str(project), "--work-root", str(work))
-        self.assertEqual(0, self.run_cli(*common, "init")[0])
-        candidate = project / "brief.json"
-        candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
-        verification_failure = ArtifactError(
-            ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION,
-            "store verification failed",
+        recovered = self.publish(project, work, brief)
+        reference = recovered["reference"]
+        assert isinstance(reference, dict)
+        self.assertEqual(selector, reference["selector"])
+        self.assertEqual(["accepted-artifact-reference", "ledger"], recovered["changed_surfaces"])
+        self.assertEqual(
+            before.lifecycle.project.revision + 1,
+            SQLiteWorkStore(work / "state.sqlite3").validated_snapshot().lifecycle.project.revision,
         )
 
-        with patch(
-            "pinboard.adapters.sqlite.artifacts.verify_reference",
-            side_effect=verification_failure,
-        ):
-            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
-
-        self.assertEqual(12, result, stderr)
-        committed = msgspec.json.decode(stdout.encode())
-        self.assertEqual("committed-effect", committed["status"])
-        self.assertTrue(committed["state_changed"])
-        self.assertEqual(["immutable-artifact"], committed["changed_surfaces"])
-        self.assertEqual("do-not-retry", committed["retry"])
-
-        with patch(
-            "pinboard.adapters.sqlite.artifacts.verify_reference",
-            side_effect=verification_failure,
-        ):
-            retry_result, retry_stdout, retry_stderr = self.run_cli(
-                *common,
-                "brief",
-                "publish",
-                "--file",
-                str(candidate),
-                "--json",
-            )
-
-        self.assertEqual(12, retry_result, retry_stderr)
-        unchanged = msgspec.json.decode(retry_stdout.encode())
-        self.assertEqual("rejected", unchanged["status"])
-        self.assertFalse(unchanged["state_changed"])
-        self.assertEqual([], unchanged["changed_surfaces"])
-        self.assertEqual("do-not-retry", unchanged["retry"])
-        self.assertEqual((), SQLiteWorkStore(work / "state.sqlite3").validated_snapshot().artifact_references)
-
-    def test_store_programming_failures_propagate_after_publication(self) -> None:
-        for programming_failure in (AssertionError("assertion failed"), ValueError("value failed")):
-            with self.subTest(error=type(programming_failure).__name__):
-                project = Path(tempfile.mkdtemp()).resolve()
-                work = project / ".codex" / "work"
-                common = ("--project-root", str(project), "--work-root", str(work))
-                self.assertEqual(0, self.run_cli(*common, "init")[0])
-                candidate = project / "brief.json"
-                candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
-
+    def test_native_programming_failures_remain_exceptional_after_publication(self) -> None:
+        for error in (AssertionError("assertion failed"), ValueError("value failed")):
+            with self.subTest(error=type(error).__name__):
+                project, work = self.initialized_publication()
+                before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+                brief = work_a_brief(project)
                 with (
-                    patch(
-                        "pinboard.adapters.sqlite.artifacts.verify_reference",
-                        side_effect=programming_failure,
-                    ),
-                    self.assertRaises(type(programming_failure)),
+                    patch("pinboard.adapters.sqlite.artifacts.verify_reference", side_effect=error),
+                    self.assertRaises(UnexpectedToolError) as failure,
                 ):
-                    self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
+                    self.publish(project, work, brief)
+                self.assertIs(error, failure.exception.__cause__)
+                selector = f"artifacts/briefs/{brief.attempt_id}/1.json"
+                self.assertEqual(canonical_work_brief_bytes(brief), (work / selector).read_bytes())
+                self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
-    def test_returned_publication_rejection_reports_new_immutable_artifact(self) -> None:
-        project = Path(tempfile.mkdtemp()).resolve()
-        work = project / ".codex" / "work"
-        common = ("--project-root", str(project), "--work-root", str(work))
-        self.assertEqual(0, self.run_cli(*common, "init")[0])
-        candidate = project / "brief.json"
-        candidate.write_bytes(canonical_work_brief_bytes(example_work_brief()))
+    def test_native_returned_rejection_reports_new_immutable_artifact(self) -> None:
+        project, work = self.initialized_publication()
+        before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+        brief = work_a_brief(project)
         rejected = DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "acceptance changed", None)
-
         with patch.object(SQLiteWorkStore, "accept_artifact_reference", return_value=rejected):
-            result, stdout, stderr = self.run_cli(*common, "brief", "publish", "--file", str(candidate), "--json")
-
-        self.assertEqual(11, result, stderr)
-        failure = msgspec.json.decode(stdout.encode())
-        self.assertEqual("committed-effect", failure["status"])
-        self.assertEqual(["immutable-artifact"], failure["changed_surfaces"])
-        self.assertEqual("do-not-retry", failure["retry"])
+            failure = self.publish(project, work, brief)
+        self.assertEqual(
+            ("rejected", "ACTION_NOT_AVAILABLE", ["immutable-artifact"], "do-not-retry"),
+            (failure["status"], failure["code"], failure["changed_surfaces"], failure["retry"]),
+        )
+        selector = f"artifacts/briefs/{brief.attempt_id}/1.json"
+        self.assertEqual(canonical_work_brief_bytes(brief), (work / selector).read_bytes())
+        self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
 
 if __name__ == "__main__":

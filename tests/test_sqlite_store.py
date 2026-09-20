@@ -986,8 +986,8 @@ class SQLiteStoreTest(unittest.TestCase):
         runtime_connection = open_database(path, OpenMode.READ_WRITE)
 
         with (
-            patch("pinboard.adapters.sqlite.store.open_database", return_value=runtime_connection),
-            patch("pinboard.adapters.sqlite.store._persist", side_effect=application_error),
+            patch("pinboard.adapters.sqlite.persistence.open_database", return_value=runtime_connection),
+            patch("pinboard.adapters.sqlite.persistence._persist", side_effect=application_error),
             self.assertRaises(RuntimeError) as propagated,
             store.write() as transaction,
         ):
@@ -1035,7 +1035,7 @@ class SQLiteStoreTest(unittest.TestCase):
         self.assertEqual(len(before.transition_receipts) + 1, len(reopened.transition_receipts))
         self.assertEqual(decision_models.ActionKind.PAUSE, reopened.transition_receipts[-1].action_kind)
 
-    def test_direct_completion_commits_one_domain_decision_atomically(self) -> None:
+    def test_direct_completion_is_rejected_before_sqlite_mutation(self) -> None:
         _path, store = self._store()
         before = store.validated_snapshot()
         snapshot = project_decision_snapshot(before, SQLITE_NOW)
@@ -1046,33 +1046,14 @@ class SQLiteStoreTest(unittest.TestCase):
             value for value in available_actions(snapshot, actor) if value.kind == decision_models.ActionKind.COMPLETE
         )
         assert isinstance(action, decision_models.CompleteAction)
-        decision = decide(
+        decision = decision_outcome(
             snapshot,
             decision_models.CompleteCommand(action, work_models.EvidenceInput("accepted direct completion")),
             SQLITE_NOW + timedelta(seconds=1),
         )
 
-        with store.write() as transaction:
-            receipt = expect_success(
-                transaction.commit(project_transition_mutation(mutation_allocation(before), decision))
-            )
-
-        completed = store.validated_snapshot()
-        item = next(value for value in completed.lifecycle.work_items if value.item_id == ItemId("work-a"))
-        attempt = completed.lifecycle.attempts[0]
-        self.assertEqual(
-            ("complete", "accepted direct completion"),
-            (receipt.receipt.transition.outcome, receipt.receipt.transition.evidence),
-        )
-        self.assertEqual(
-            (stored_state.StoredWorkItemState.DONE, "accepted direct completion"), (item.state, item.outcome_evidence)
-        )
-        self.assertEqual(
-            (work_models.AttemptState.DONE, None, None),
-            (attempt.state, attempt.candidate_revision, attempt.candidate_recorded_at),
-        )
-        self.assertEqual(4, completed.authority.attempt_counters[0].generation_high_water)
-        self.assertEqual(authority_models.AttemptLeaseStatus.REVOKED, completed.authority.attempt_leases[0].state)
+        self.assertIsInstance(decision, DecisionFailure)
+        self.assertEqual(before, store.validated_snapshot())
 
     def test_review_submission_commits_exact_caller_supplied_candidate(self) -> None:
         _path, store = self._store()

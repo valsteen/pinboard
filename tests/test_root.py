@@ -14,13 +14,17 @@ from unittest.mock import patch
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
+    classify_checkout,
     ensure_default_git_exclude,
     observe_checkout_identity,
     read_current_head_candidate,
     resolve_shared_repository_root,
     resolve_source_checkout_root,
 )
-from pinboard.interfaces.cli import main
+from pinboard.cli.entrypoint import main
+from pinboard.domain import work_models
+from pinboard.mcp import server
+from tests.native_support import call_native_tool
 
 
 class RootResolutionTest(unittest.TestCase):
@@ -64,9 +68,13 @@ class RootResolutionTest(unittest.TestCase):
         self.assertEqual(linked.resolve(), resolve_source_checkout_root(linked))
         self.assertEqual(repository.resolve(), resolve_shared_repository_root(repository))
         self.assertEqual(repository.resolve(), resolve_shared_repository_root(linked))
+        self.assertEqual(work_models.CheckoutSelection.MAIN, classify_checkout(repository))
+        self.assertEqual(work_models.CheckoutSelection.ISOLATED, classify_checkout(linked))
         repository_revision = self.run_git(repository, "rev-parse", "HEAD").strip()
         self.assertEqual(("main", repository_revision), observe_checkout_identity(repository))
         self.assertEqual(("linked", repository_revision), observe_checkout_identity(linked))
+        self.run_git(repository, "switch", "-c", "primary-feature")
+        self.assertEqual(work_models.CheckoutSelection.MAIN, classify_checkout(repository))
 
         with chdir(linked):
             result, stdout, stderr = self.run_cli("root")
@@ -188,12 +196,6 @@ class RootResolutionTest(unittest.TestCase):
         project = Path(tempfile.mkdtemp()).resolve()
         source = project / "source.txt"
         source.write_text("selected authority\n", encoding="utf-8")
-        manifest = project / "sources.json"
-        manifest.write_text(
-            '{"schema":"pinboard-brief-sources/v1","sources":['
-            '{"authority_id":"source","selector":"source.txt","families":["contract"]}]}\n',
-            encoding="utf-8",
-        )
         unused_work_root = project / "missing-parent" / "work"
 
         root_result, root_stdout, root_stderr = self.run_cli(
@@ -202,18 +204,24 @@ class RootResolutionTest(unittest.TestCase):
         self.assertEqual(0, root_result, root_stderr)
         self.assertEqual(str(unused_work_root), json.loads(root_stdout)["work_root"])
 
-        source_result, source_stdout, source_stderr = self.run_cli(
-            "--project-root",
-            str(project),
-            "--work-root",
-            str(unused_work_root),
-            "brief-sources",
-            "--file",
-            str(manifest),
-            "--json",
+        self.run_git(project, "init", "--quiet")
+        source_result = call_native_tool(
+            server.BRIEF_SOURCES_TOOL,
+            {
+                "request": {
+                    "project_root": str(project),
+                    "work_root": str(unused_work_root),
+                    "operation": "plan",
+                    "max_batch_bytes": 24_000,
+                    "manifest": {
+                        "schema": "pinboard-brief-sources/v1",
+                        "sources": [{"authority_id": "source", "selector": "source.txt", "families": ["contract"]}],
+                    },
+                }
+            },
         )
-        self.assertEqual(0, source_result, source_stderr)
-        self.assertIn('"schema": "pinboard-brief-source-plan/v1"', source_stdout)
+        self.assertEqual("pinboard-brief-source-plan/v1", source_result["schema"])
+        self.assertFalse(unused_work_root.exists())
 
 
 if __name__ == "__main__":

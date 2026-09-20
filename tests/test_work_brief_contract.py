@@ -2,17 +2,16 @@ import unittest
 
 import msgspec
 
-from pinboard.interfaces import work_brief_models
-from pinboard.interfaces.errors import WorkBriefFailure, WorkBriefResult
-from pinboard.interfaces.work_brief_contract import WorkBriefStructuralChoice, describe_work_brief_contract
-from pinboard.interfaces.work_briefs import decode_work_brief
+from pinboard.application import work_brief_models
+from pinboard.application.work_brief_contract import WorkBriefStructuralChoice, describe_work_brief_contract
+from pinboard.application.work_briefs import decode_work_brief
 from tests.work_brief_support import example_work_brief, work_c_brief
 
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
 
 
-def expect_work_brief_success[T](result: WorkBriefResult[T]) -> T:
-    if isinstance(result, WorkBriefFailure):
+def expect_work_brief_success[T](result: work_brief_models.WorkBriefResult[T]) -> T:
+    if isinstance(result, work_brief_models.WorkBriefFailure):
         raise AssertionError(str(result))
     return result
 
@@ -108,19 +107,25 @@ class WorkBriefContractTest(unittest.TestCase):
                 },
                 "coverage-owner": {"contract", "acceptance", "deferred", "not-applicable"},
                 "lifecycle-partition": {"not-applicable", "required"},
+                "checkout-selection": {"main", "isolated"},
+                "obligation-target": {"contract", "criterion", "deferral"},
+                "checkpoint-disposition": {"continue", "terminal"},
             },
             {choice_id: {variant.selector for variant in choice.variants} for choice_id, choice in choices.items()},
         )
         self.assertEqual(
-            {"architecture-impact"},
+            {"architecture-impact", "checkout-selection", "obligation-target", "checkpoint-disposition"},
             {choice.choice_id for choice in contract.local_structural_choices},
         )
         for choice in choices.values():
             self.assertTrue(choice.selection_paths)
             for variant in choice.variants:
                 template = msgspec.json.decode(bytes(variant.template))
-                self.assertIsInstance(template, dict)
-                self.assertTrue(template)
+                if choice.choice_id == "checkout-selection":
+                    self.assertIsInstance(template, str)
+                else:
+                    self.assertIsInstance(template, dict)
+                    self.assertTrue(template)
 
     def test_contract_exposes_generated_schema_and_complete_unresolved_starter_shapes(self) -> None:
         contract = describe_work_brief_contract()
@@ -147,19 +152,20 @@ class WorkBriefContractTest(unittest.TestCase):
             (
                 contract.local_starter,
                 work_brief_models.LocalCheckpoint,
-                {"pinboard-work-brief/v2", "local", "none", "accepted-scope"},
+                {"pinboard-work-brief/v4", "local", "none", "accepted-scope", "criterion", "continue"},
             ),
             (
                 contract.cross_boundary_starter,
                 work_brief_models.CrossBoundaryCheckpoint,
                 {
-                    "pinboard-work-brief/v2",
+                    "pinboard-work-brief/v4",
                     "cross-boundary",
                     "none",
                     "independently-buildable",
                     "accepted-scope",
                     "contract",
                     "not-applicable",
+                    "continue",
                 },
             ),
         ):
@@ -170,7 +176,7 @@ class WorkBriefContractTest(unittest.TestCase):
             checkpoint = json_object(payload["checkpoint"])
             checkpoint_keys = {field.name for field in msgspec.structs.fields(checkpoint_type)} | {"boundary"}
             self.assertEqual(checkpoint_keys, checkpoint.keys())
-            self.assertIsInstance(decode_work_brief(bytes(starter)), WorkBriefFailure)
+            self.assertIsInstance(decode_work_brief(bytes(starter)), work_brief_models.WorkBriefFailure)
 
         local_payload = json_object(msgspec.json.decode(bytes(contract.local_starter)))
         local_checkpoint = json_object(local_payload["checkpoint"])
@@ -328,6 +334,8 @@ class WorkBriefContractTest(unittest.TestCase):
                 "coverage-owner",
                 "prohibition-disposition",
                 "unique-lifecycle-operations",
+                "complete-obligation-correspondence",
+                "checkpoint-disposition",
             },
             constraint_ids,
         )

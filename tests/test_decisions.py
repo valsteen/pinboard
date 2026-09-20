@@ -112,6 +112,14 @@ def definition_anchor(
             dependencies,
             "Add navigable routes",
             "Reach the next area",
+            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
+            (
+                work_models.WorkObligation(
+                    work_models.ObligationId("reach-next-area"),
+                    "Reach the next area",
+                    work_models.ObligationDeferralPolicy.FORBIDDEN,
+                ),
+            ),
         ),
     )
 
@@ -163,10 +171,10 @@ class LifecycleDecisionTest(unittest.TestCase):
                 DIGEST_A,
                 (),
                 (
-                    "complete:target-1",
                     "return-for-correction:target-1",
                     "accept-checkpoint:target-1",
                     "accept-review-and-continue:target-1",
+                    "complete:target-1",
                     "revise-item:target",
                 ),
             ),
@@ -184,7 +192,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 work_models.AttemptState.PAUSED,
                 DIGEST_A,
                 (ItemId("dependency"),),
-                ("revise-item:target", "rebind-attempt:target-1", "close:target"),
+                ("revise-item:target", "rebind-attempt:target-1"),
             ),
             (
                 "paused-clear",
@@ -192,7 +200,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 work_models.AttemptState.PAUSED,
                 DIGEST_A,
                 (),
-                ("revise-item:target", "rebind-attempt:target-1", "resume:target", "close:target"),
+                ("revise-item:target", "rebind-attempt:target-1", "resume:target"),
             ),
             (
                 "blocked-live-dependencies",
@@ -200,7 +208,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 work_models.AttemptState.BLOCKED,
                 DIGEST_A,
                 (ItemId("dependency"),),
-                ("revise-item:target", "close:target"),
+                ("revise-item:target",),
             ),
             (
                 "blocked-clear",
@@ -208,7 +216,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 work_models.AttemptState.BLOCKED,
                 DIGEST_A,
                 (),
-                ("revise-item:target", "resume:target", "close:target"),
+                ("revise-item:target", "resume:target"),
             ),
         )
         for name, item_state, attempt_state, accepted_digest, live_dependencies, expected in cases:
@@ -272,6 +280,18 @@ class LifecycleDecisionTest(unittest.TestCase):
                 )
                 self.assertEqual(expected, selected_global)
                 self.assertEqual(expected, selected_exact)
+                if name in {"active-current", "review-current"}:
+                    completion = next(
+                        action
+                        for action in groups.attempt_actions
+                        if isinstance(action, decision_models.CompleteAction)
+                    )
+                    self.assertEqual(
+                        "Terminally complete target only after every authorized integration and publication effect, "
+                        "then exact disposable worktree, local branch, and remote branch cleanup, are verified or not "
+                        "applicable",
+                        completion.capability.label,
+                    )
 
     def test_every_action_kind_has_one_complete_domain_semantics_descriptor(self) -> None:
         descriptors = tuple(decision_models.action_semantics(kind) for kind in decision_models.ActionKind)
@@ -291,10 +311,19 @@ class LifecycleDecisionTest(unittest.TestCase):
         self.assertEqual(decision_models.LifecycleEffect.NO_LIFECYCLE_CHANGE, advisory.lifecycle_effect)
         self.assertEqual(decision_models.ActionLifecyclePrecondition.ACTIVE_ATTEMPT, advisory.lifecycle_precondition)
         self.assertEqual(decision_models.LifecycleEffect.CHANGES_LIFECYCLE, review_acceptance.lifecycle_effect)
+        completion = decision_models.action_semantics(decision_models.ActionKind.COMPLETE)
+        self.assertEqual(
+            "Record terminal completion and remove the item from live work. No later repository effect may remain.",
+            completion.practical_result,
+        )
         self.assertEqual(
             decision_models.ActionLifecyclePrecondition.REVIEW_ATTEMPT,
             review_acceptance.lifecycle_precondition,
         )
+        self.assertIn("other accepted work remains", review_acceptance.use_case)
+        completion = decision_models.action_semantics(decision_models.ActionKind.COMPLETE)
+        self.assertIn("no authorized external effect remains", completion.use_case)
+        self.assertIn("No later repository effect may remain", completion.practical_result)
 
     def test_review_continuation_is_a_project_action_and_requires_the_protected_candidate(self) -> None:
         review = item("target", work_models.WorkState.REVIEW, attempt="target-1")
@@ -780,18 +809,35 @@ class LifecycleDecisionTest(unittest.TestCase):
         snapshot = LedgerSnapshot(
             "revision",
             (active,),
-            attempts=(AttemptRecord("target-1", "target", work_models.AttemptState.REVIEW),),
+            attempts=(
+                AttemptRecord(
+                    "target-1",
+                    "target",
+                    work_models.AttemptState.REVIEW,
+                    protected_candidate_revision="candidate",
+                ),
+            ),
         )
 
         completed_action = action(decision_models.CompleteAction, AttemptId("target-1"))
         completed = decide(
             snapshot,
-            decision_models.CompleteCommand(completed_action, work_models.EvidenceInput("review accepted")),
+            decision_models.CoveredCompleteCommand(
+                completed_action,
+                work_models.CoveredCompleteInput(
+                    CandidateId("candidate"),
+                    "review accepted",
+                    TaskId("reviewer"),
+                    "a" * 64,
+                    "b" * 64,
+                    (),
+                ),
+            ),
             NOW,
         )
         self.assertEqual("review accepted", completed.receipt.evidence)
-        self.assertIsInstance(completed.change, decision_models.CompletionChange)
-        assert isinstance(completed.change, decision_models.CompletionChange)
+        self.assertIsInstance(completed.change, decision_models.CoveredCompletionChange)
+        assert isinstance(completed.change, decision_models.CoveredCompletionChange)
         self.assertEqual("review accepted", completed.change.evidence)
 
         intake = LedgerSnapshot("revision", (item("obsolete", work_models.WorkState.INTAKE),))
@@ -835,6 +881,39 @@ class LifecycleDecisionTest(unittest.TestCase):
 
         self.assertIsInstance(direct_with_history, DecisionFailure)
         self.assertIsInstance(covered_without_history, DecisionFailure)
+
+    def test_terminal_completion_always_requires_a_protected_review_candidate(self) -> None:
+        review = item("target", work_models.WorkState.REVIEW, attempt="target-1")
+        attempt = AttemptRecord(
+            "target-1",
+            "target",
+            work_models.AttemptState.REVIEW,
+            protected_candidate_revision="candidate",
+        )
+        complete = action(decision_models.CompleteAction, AttemptId("target-1"))
+        direct = decision_outcome(
+            LedgerSnapshot("revision", (review,), attempts=(attempt,)),
+            decision_models.CompleteCommand(complete, work_models.EvidenceInput("done")),
+            NOW,
+        )
+        reviewed = decision_outcome(
+            LedgerSnapshot("revision", (review,), attempts=(attempt,)),
+            decision_models.CoveredCompleteCommand(
+                complete,
+                work_models.CoveredCompleteInput(
+                    CandidateId("candidate"),
+                    "reviewed",
+                    TaskId("reviewer"),
+                    "a" * 64,
+                    "b" * 64,
+                    (),
+                ),
+            ),
+            NOW,
+        )
+
+        self.assertIsInstance(direct, DecisionFailure)
+        self.assertIsInstance(reviewed, decision_models.CompletionAcceptanceDecision)
 
     def test_changed_semantic_scope_blocks_the_next_attempt_boundary(self) -> None:
         current = definition_anchor("build-map", 2, DIGEST_B)
@@ -934,6 +1013,16 @@ class LifecycleDecisionTest(unittest.TestCase):
                 decision_models.CloseCommand(
                     action(decision_models.CloseAction, ItemId("target")),
                     work_models.CloseInput(work_models.CloseOutcome.DONE, "done"),
+                ),
+                "ACTION_NOT_AVAILABLE",
+            ),
+            (
+                LedgerSnapshot(
+                    "r", (paused,), attempts=(replace(attempt_active, state=work_models.AttemptState.PAUSED),)
+                ),
+                decision_models.CloseCommand(
+                    action(decision_models.CloseAction, ItemId("target")),
+                    work_models.CloseInput(work_models.CloseOutcome.DROPPED, "abandon review"),
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),

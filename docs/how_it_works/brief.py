@@ -1,4 +1,4 @@
-from pinboard.interfaces import work_brief_contract, work_brief_models, work_briefs
+from pinboard.application import work_brief_contract, work_brief_models, work_briefs
 
 from .model import Box, Diagram, Guide, Note, Section
 
@@ -12,6 +12,7 @@ IDENTITY_FIELDS = frozenset(
         "base_revision",
         "branch",
         "title",
+        "checkout_selection",
     }
 )
 
@@ -24,8 +25,8 @@ WORK_DEFINITION_FIELDS = frozenset(
         "supported_production_roots",
         "product_decision_and_provenance",
         "testing_strategy",
-        "remaining_work",
         "bootstrap",
+        "obligation_correspondence",
     }
 )
 
@@ -48,6 +49,7 @@ CHECKPOINT_DETAIL_FIELDS = frozenset(
         "lifecycle_partition",
         "verification",
         "deferrals",
+        "disposition",
     }
 )
 
@@ -116,7 +118,7 @@ DIAGRAM = Diagram(
     boxes=(
         Box(
             "brief",
-            "pinboard-work-brief/v2",
+            "pinboard-work-brief/v4",
             "One accepted artifact",
             ("starter → structural choices → completed brief",),
             ("WorkBriefContract · WorkBrief",),
@@ -129,7 +131,7 @@ DIAGRAM = Diagram(
             "identity",
             "Identity + versioning",
             "Which exact artifact is this?",
-            ("item · attempt · owner", "revision · base · branch"),
+            ("item · attempt · owner", "revision · base · branch", "checkout selection"),
             ("schema · title",),
             35,
             220,
@@ -154,7 +156,7 @@ DIAGRAM = Diagram(
             (
                 "outcome · scope · non-goals",
                 "compatibility · roots · provenance",
-                "testing · bootstrap · remaining work",
+                "testing · bootstrap · obligation map",
             ),
             ("definition-bound semantics",),
             655,
@@ -166,7 +168,7 @@ DIAGRAM = Diagram(
             "checkpoint",
             "Checkpoint identity + boundary",
             "What can be built and reviewed together?",
-            ("checkpoint id · title · boundary", "outcome + outcome description"),
+            ("checkpoint id · title · boundary", "outcome · description · disposition"),
             ("CrossBoundaryCheckpoint",),
             35,
             418,

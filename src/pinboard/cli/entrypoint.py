@@ -1,0 +1,263 @@
+"""Installed command router and process exit boundary.
+
+This module owns the single exhaustive command-family branch and final rendering
+of typed failures. Command grammar and use-case composition live with their
+thematic CLI owners; this root performs no storage or domain work itself.
+"""
+
+import contextlib
+import io
+import sys
+from collections.abc import Sequence
+from typing import assert_never
+
+from pinboard.adapters.files.errors import (
+    ArtifactError,
+    FileIOError,
+    ImmutableFilePublishedError,
+    RootError,
+)
+from pinboard.adapters.sqlite.errors import StorageError
+from pinboard.cli import (
+    cli_commands,
+    cli_output,
+    cli_parser,
+    project_handover,
+    tool_contract,
+    transitions,
+    work_inspection,
+    work_state_commands,
+)
+from pinboard.cli.errors import (
+    CliResult,
+    CommandFailure,
+    InitializationAfterCommittedEffectsError,
+    WorkBriefFailure,
+    initialization_failure_details,
+    storage_failure_details,
+)
+from pinboard.domain.errors import (
+    ArtifactAcceptanceAfterPublicationError,
+    ChangedSurface,
+    DecisionFailureCode,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    RetryDisposition,
+)
+
+build_parser = cli_parser.build_parser
+
+
+def _dispatch(
+    invocation: cli_commands.CliInvocation,
+    roots: cli_commands.ResolvedRoots | None,
+) -> CliResult[int]:
+    if isinstance(invocation.command, cli_commands.ToolContractCommand):
+        return tool_contract.show_tool_contract(invocation.command)
+    if roots is None:
+        raise AssertionError("A rooted command requires resolved project roots.")
+    if isinstance(invocation.command, cli_commands.RootCommand):
+        return work_state_commands.show_roots(roots, invocation.command)
+    durable = work_state_commands.resolve_durable_layout(roots)
+    store = work_state_commands.compose_store(durable)
+    match invocation.command:
+        case cli_commands.ValidateCommand() as command:
+            return work_state_commands.validate_state(roots, durable, store, command)
+        case cli_commands.StatusCommand() as command:
+            return work_inspection.show_status(roots, store, command)
+        case cli_commands.CloseCommand() as command:
+            return transitions.close(durable, store, command)
+        case cli_commands.HandoverCommand() as command:
+            return project_handover.export_project_handover(durable, store, command)
+        case cli_commands.InitializeCommand() as command:
+            return work_state_commands.initialize_state(roots, durable, store, command)
+        case cli_commands.RebuildViewsCommand() as command:
+            return work_state_commands.rebuild_views(durable, store, command)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _parse_arguments(
+    arguments: tuple[str, ...],
+    *,
+    json_requested: bool,
+) -> cli_commands.CliInvocation | int:
+    if not json_requested:
+        return cli_parser.parse_invocation(arguments)
+    parser_stderr = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(parser_stderr):
+            return cli_parser.parse_invocation(arguments)
+    except SystemExit as error:
+        if error.code == 0:
+            raise
+        cli_output.write_argument_rejection(arguments, parser_stderr.getvalue().strip())
+        return 2
+
+
+def _failure_exit_code(result: CliResult[int]) -> int:
+    match result:
+        case int():
+            return result
+        case CommandFailure():
+            return 11
+        case WorkBriefFailure():
+            return 16
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _present_expected_result(
+    result: CliResult[int],
+    operation: str,
+    *,
+    json_requested: bool,
+) -> int:
+    exit_code = _failure_exit_code(result)
+    if isinstance(result, int):
+        return exit_code
+    if json_requested:
+        if isinstance(result, CommandFailure) and result.code == DecisionFailureCode.ITEM_STATUS_INCONSISTENT:
+            cli_output.write_operation_rejection(
+                operation, result.code.value, result.message, result.details, ("pinboard validate",)
+            )
+        else:
+            cli_output.write_rejected_operation(operation, result)
+    else:
+        print(str(result), file=sys.stderr)
+    return exit_code
+
+
+def _run_invocation(  # noqa: C901, PLR0912 - one outer exception-to-process-result boundary
+    invocation: cli_commands.CliInvocation,
+    operation: str,
+    *,
+    json_requested: bool,
+) -> int:
+    roots: cli_commands.ResolvedRoots | None = None
+    try:
+        if not isinstance(invocation.command, cli_commands.ToolContractCommand):
+            roots = work_state_commands.resolve_roots(invocation.roots)
+        return _present_expected_result(
+            _dispatch(invocation, roots),
+            operation,
+            json_requested=json_requested,
+        )
+    except ArtifactAcceptanceAfterPublicationError as error:
+        cause = error.cause
+        code = (
+            cause.code.value
+            if isinstance(cause, (StorageError, ArtifactError, FileIOError))
+            else "ARTIFACT_ACCEPTANCE_FAILED"
+        )
+        changed_surfaces = error.changed_surfaces
+        effect = EffectDisposition.COMMITTED if changed_surfaces else EffectDisposition.UNCHANGED
+        if isinstance(cause, StorageError):
+            details = storage_failure_details(
+                cause,
+                operation,
+                roots,
+                effect,
+                changed_surfaces,
+                (FailureFact("published_artifact_selector", error.selector),),
+            )
+        else:
+            details = FailureDetails(
+                observed=(FailureFact("published_artifact_selector", error.selector),),
+                mismatches=(),
+                retry=(RetryDisposition.DO_NOT_RETRY if changed_surfaces else RetryDisposition.RETRY_SAME_INPUT),
+                effect=effect,
+                changed_surfaces=changed_surfaces,
+                alternatives=(),
+            )
+        if json_requested:
+            cli_output.write_operation_rejection(operation, code, str(cause), details, ())
+        else:
+            suffix = (
+                f"; committed surfaces: {', '.join(surface.value for surface in changed_surfaces)}"
+                if changed_surfaces
+                else ""
+            )
+            print(f"{cause}{suffix}", file=sys.stderr)
+        return 12
+    except InitializationAfterCommittedEffectsError as error:
+        details = initialization_failure_details(error, operation, roots)
+        cause = error.cause
+        if json_requested:
+            cli_output.write_operation_rejection(operation, cause.code.value, str(cause), details, ())
+        else:
+            print(
+                f"{cause}; initialization committed: {', '.join(value.value for value in details.changed_surfaces)}",
+                file=sys.stderr,
+            )
+        return 12
+    except ImmutableFilePublishedError as error:
+        details = FailureDetails(
+            observed=(FailureFact("selected_output_path", str(error.path)),),
+            mismatches=(),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.COMMITTED,
+            changed_surfaces=(ChangedSurface.SELECTED_OUTPUT,),
+            alternatives=(),
+        )
+        if json_requested:
+            cli_output.write_operation_rejection(operation, error.code.value, str(error), details, ())
+        else:
+            print(f"{error}; selected output published at '{error.path}'", file=sys.stderr)
+        return 12
+    except (RootError, OSError) as error:
+        if json_requested:
+            code = error.code.value if isinstance(error, RootError) else "CLI_IO_ERROR"
+            cli_output.write_operation_rejection(
+                operation,
+                code,
+                str(error),
+                FailureDetails(
+                    observed=(),
+                    mismatches=(),
+                    retry=RetryDisposition.CORRECT_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+                (),
+            )
+        else:
+            print(str(error), file=sys.stderr)
+        return 2
+    except (StorageError, ArtifactError, FileIOError) as error:
+        if json_requested:
+            if isinstance(error, StorageError):
+                details = storage_failure_details(error, operation, roots, EffectDisposition.UNCHANGED, (), ())
+                recovery = ()
+            else:
+                details = FailureDetails(
+                    observed=(),
+                    mismatches=(),
+                    retry=RetryDisposition.DO_NOT_RETRY,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                )
+                recovery = ()
+            cli_output.write_operation_rejection(
+                operation,
+                error.code.value,
+                str(error),
+                details,
+                recovery,
+            )
+        else:
+            print(str(error), file=sys.stderr)
+        return 12
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = tuple(sys.argv[1:] if argv is None else argv)
+    json_requested = "--json" in arguments
+    invocation = _parse_arguments(arguments, json_requested=json_requested)
+    if isinstance(invocation, int):
+        return invocation
+    operation = tool_contract.operation_identity(invocation.command)
+    return _run_invocation(invocation, operation, json_requested=json_requested)

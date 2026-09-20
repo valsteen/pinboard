@@ -5,11 +5,10 @@ their operation facts; remaining projections select from an already-loaded compl
 snapshot. These functions never read files, mutate state, or present output.
 """
 
-from dataclasses import replace
 from datetime import datetime
 from typing import assert_never
 
-from pinboard.application import ports, query_models, stored_state
+from pinboard.application import ports, query_models, stored_state, work_brief_models
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import ActionCapabilityFactory, project_attempt_action_groups
 from pinboard.domain.errors import (
@@ -24,34 +23,6 @@ from pinboard.domain.errors import (
 )
 from pinboard.domain.identifiers import AttemptId, CandidateId, HistoryId, ItemId, TaskId
 from pinboard.domain.ledger import LedgerSnapshot
-
-
-def select_attempt_authority_status(
-    reader: ports.AuthorityStatusReader, attempt_id: AttemptId
-) -> DecisionResult[query_models.AttemptAuthorityStatus]:
-    selected = reader.read_attempt_authority_status(attempt_id)
-    if selected is None:
-        return DecisionFailure(
-            DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
-            f"Attempt '{attempt_id}' has no retained authority.",
-            None,
-        )
-    return selected
-
-
-def select_preparation_authority_status(
-    reader: ports.AuthorityStatusReader, item_id: ItemId, observed_at: datetime
-) -> DecisionResult[query_models.PreparationAuthorityStatus]:
-    selected = reader.read_preparation_authority_status(item_id)
-    if selected is None:
-        return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            f"Item '{item_id}' has no preparation claim.",
-            None,
-        )
-    if selected.status == authority_models.PreparationLeaseStatus.ACTIVE and selected.expires_at <= observed_at:
-        return replace(selected, status=authority_models.PreparationLeaseStatus.EXPIRED)
-    return selected
 
 
 def select_attempt_context(
@@ -84,9 +55,39 @@ def select_review_job_context(
     return selected
 
 
+def validate_attempt_brief_identity(
+    context: query_models.NonterminalAttemptContextFacts,
+    brief: work_brief_models.ReadableWorkBrief,
+) -> DecisionFailure | None:
+    """Require one decoded brief to be the exact accepted identity for an attempt."""
+
+    if (
+        brief.attempt_id,
+        brief.item_id,
+        brief.branch,
+        brief.base_revision,
+        brief.accepted_scope.revision,
+        brief.accepted_scope.digest,
+    ) == (
+        context.attempt_id,
+        context.item_id,
+        context.branch,
+        context.base_revision,
+        context.accepted_scope_revision,
+        context.accepted_scope_digest,
+    ):
+        return None
+    return DecisionFailure(
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        "Accepted brief identity differs from the attempt.",
+        None,
+    )
+
+
 def project_attempt_continuation(
     context: query_models.AttemptContextFacts,
     owner_task_id: TaskId | None,
+    brief: work_brief_models.ReadableWorkBrief | None,
 ) -> DecisionResult[query_models.AttemptContinuation]:
     """Select a continuation from one exact named-attempt context.
 
@@ -96,12 +97,11 @@ def project_attempt_continuation(
     """
     match context:
         case query_models.TerminalAttemptContextFacts():
-            return query_models.AttemptContinuation(
+            return query_models.TerminalAttemptContinuation(
                 "pinboard-attempt-continuation/v1",
                 context.attempt_id,
                 context.item_id,
                 context.project_revision,
-                work_models.AttemptState.DONE,
                 None,
                 True,
                 False,
@@ -110,6 +110,12 @@ def project_attempt_continuation(
                 ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
             )
         case query_models.NonterminalAttemptContextFacts():
+            if owner_task_id is None:
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    "A nonterminal attempt requires its verified owner task identity.",
+                    None,
+                )
             item = context.item
             attempt_record = work_models.AttemptRecord(
                 context.attempt_id,
@@ -144,15 +150,20 @@ def project_attempt_continuation(
                 ),
             )
             actions = (*groups.attempt_actions, *groups.item_actions)
-            selected = _next_attempt_operation(context, actions)
+            if brief is None:
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    "A nonterminal attempt requires its verified accepted brief.",
+                    None,
+                )
+            selected = _next_attempt_operation(context, actions, brief)
             if isinstance(selected, DecisionFailure):
                 return selected
-            return query_models.AttemptContinuation(
+            continuation_arguments = (
                 "pinboard-attempt-continuation/v1",
                 context.attempt_id,
                 context.item_id,
                 context.project_revision,
-                context.state,
                 owner_task_id,
                 False,
                 False,
@@ -160,16 +171,70 @@ def project_attempt_continuation(
                 tuple(decision_models.action_id(value) for value in actions),
                 ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
             )
+            match context.state:
+                case work_models.AttemptState.ACTIVE:
+                    return query_models.ActiveAttemptContinuation(*continuation_arguments)
+                case work_models.AttemptState.REVIEW:
+                    return query_models.ReviewAttemptContinuation(*continuation_arguments)
+                case work_models.AttemptState.PAUSED:
+                    return query_models.PausedAttemptContinuation(*continuation_arguments)
+                case work_models.AttemptState.BLOCKED:
+                    return query_models.BlockedAttemptContinuation(*continuation_arguments)
+                case _ as unreachable:
+                    assert_never(unreachable)
         case _ as unreachable:
             assert_never(unreachable)
 
 
-def _next_attempt_operation(
+def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuation selection
     context: query_models.NonterminalAttemptContextFacts,
     actions: tuple[decision_models.Action, ...],
+    brief: work_brief_models.ReadableWorkBrief,
 ) -> DecisionResult[
     query_models.ActionContinuation | query_models.ReviewContinuation | query_models.DependencyContinuation
 ]:
+    if not isinstance(brief, work_brief_models.WorkBrief):
+        expected_kind = (
+            decision_models.ActionKind.RETURN_FOR_CORRECTION
+            if context.state == work_models.AttemptState.REVIEW
+            else decision_models.ActionKind.REBIND_ATTEMPT
+            if context.state == work_models.AttemptState.ACTIVE
+            else decision_models.ActionKind.RESUME
+        )
+        recovery = (
+            "Return the reviewed candidate for correction first. Then publish and independently review a matching "
+            "pinboard-work-brief/v4, rebind the active attempt, dispatch, and submit a new candidate."
+            if expected_kind == decision_models.ActionKind.RETURN_FOR_CORRECTION
+            else "Publish and independently review a matching pinboard-work-brief/v4, then bind that accepted brief "
+            "through this exact action before dispatch and candidate submission."
+        )
+        for action in actions:
+            if action.kind == expected_kind:
+                return query_models.ActionContinuation(
+                    decision_models.action_id(action),
+                    action.kind,
+                    recovery,
+                )
+    if isinstance(brief, work_brief_models.WorkBrief) and isinstance(
+        brief.checkpoint.disposition, work_brief_models.TerminalCheckpointDisposition
+    ):
+        for action in actions:
+            if isinstance(action, decision_models.CompleteAction):
+                if context.state == work_models.AttemptState.REVIEW:
+                    if context.candidate_revision is None:
+                        return DecisionFailure(
+                            DecisionFailureCode.ACTION_NOT_AVAILABLE, "Review has no protected candidate.", None
+                        )
+                    return query_models.ReviewContinuation(
+                        context.attempt_id,
+                        context.candidate_revision,
+                        "runtime-subagent",
+                    )
+                return query_models.ActionContinuation(
+                    decision_models.action_id(action),
+                    action.kind,
+                    "Discover the focused completion action and follow its candidate-submission recovery.",
+                )
     for action in actions:
         if isinstance(action, decision_models.AcceptCheckpointAction):
             if context.candidate_revision is None:
@@ -186,6 +251,12 @@ def _next_attempt_operation(
                 decision_models.action_id(action), action.kind, "Follow the accepted brief."
             )
     for action in actions:
+        if context.state == work_models.AttemptState.ACTIVE and isinstance(action, decision_models.RebindAttemptAction):
+            return query_models.ActionContinuation(
+                decision_models.action_id(action),
+                action.kind,
+                "Bind a current accepted v4 brief that matches the current definition.",
+            )
         if isinstance(action, decision_models.ReturnForCorrectionAction):
             return query_models.ActionContinuation(
                 decision_models.action_id(action),
@@ -215,10 +286,6 @@ def _next_attempt_operation(
 
 def _dependency_key(value: stored_state.ItemDependency) -> tuple[int, str]:
     return value.position, str(value.dependency_id)
-
-
-def _dependency_position(value: stored_state.ItemDependency) -> int:
-    return value.position
 
 
 def _item_key(value: stored_state.StoredWorkItem) -> tuple[int, str]:
@@ -642,7 +709,7 @@ def project_item_status(
 
 def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
     return query_models.WorkItemDefinitionView(
-        "pinboard-work-item-definition/v1",
+        "pinboard-work-item-definition/v2",
         definition.title,
         definition.objective,
         definition.hypothesis,
@@ -653,6 +720,15 @@ def _project_definition(definition: work_models.WorkItemDefinition) -> query_mod
         tuple(definition.dependencies),
         definition.effect,
         definition.unlock,
+        definition.checkout_policy,
+        tuple(
+            query_models.WorkObligationView(
+                obligation.obligation_id,
+                obligation.statement,
+                obligation.deferral_policy,
+            )
+            for obligation in definition.obligations
+        ),
     )
 
 
@@ -762,69 +838,6 @@ def _classify_parallel_exclusion_reasons(
     return ()
 
 
-def _complete_parallel_preview_facts(state: stored_state.StoredWorkState) -> query_models.ParallelPreviewFacts:
-    live = _select_live_items(state)
-    definitions = {value.item_id: value.definition for value in state.lifecycle.definition_revisions}
-    live_ids = frozenset(item.item_id for item, _live_state in live)
-    preparations_by_item = {lease.item_id: lease for lease in state.authority.preparation_leases}
-    open_attempts_by_item: dict[
-        ItemId,
-        tuple[stored_state.StoredAttempt, query_models.NonterminalAttemptState],
-    ] = {}
-    for stored_attempt in state.lifecycle.attempts:
-        match stored_attempt.state:
-            case work_models.AttemptState.DONE:
-                continue
-            case (
-                work_models.AttemptState.ACTIVE
-                | work_models.AttemptState.PAUSED
-                | work_models.AttemptState.BLOCKED
-                | work_models.AttemptState.REVIEW
-            ) as attempt_state:
-                open_attempts_by_item[stored_attempt.item_id] = stored_attempt, attempt_state
-            case _ as unreachable:
-                assert_never(unreachable)
-    attempt_leases_by_attempt = {lease.attempt_id: lease for lease in state.authority.attempt_leases}
-    live_dependency_groups: dict[ItemId, list[ItemId]] = {item.item_id: [] for item, _live_state in live}
-    for link in sorted(state.lifecycle.dependencies, key=_dependency_position):
-        if link.dependency_id in live_ids:
-            live_dependency_groups[link.item_id].append(link.dependency_id)
-    items: list[query_models.ParallelPreviewItemFacts] = []
-    for item, live_state in live:
-        preparation_lease = preparations_by_item.get(item.item_id)
-        preparation = (
-            None
-            if preparation_lease is None
-            else query_models.ParallelPreparationFacts(preparation_lease.state, preparation_lease.expires_at)
-        )
-        stored_attempt_context = open_attempts_by_item.get(item.item_id)
-        attempt = None
-        if stored_attempt_context is not None:
-            stored_attempt, attempt_state = stored_attempt_context
-            attempt_lease = (
-                attempt_leases_by_attempt.get(stored_attempt.attempt_id)
-                if attempt_state == work_models.AttemptState.ACTIVE
-                else None
-            )
-            attempt = query_models.ParallelAttemptFacts(
-                stored_attempt.attempt_id,
-                attempt_state,
-                None if attempt_lease is None else attempt_lease.state,
-                None if attempt_lease is None else attempt_lease.expires_at,
-            )
-        items.append(
-            query_models.ParallelPreviewItemFacts(
-                item.item_id,
-                definitions[item.item_id].title,
-                live_state,
-                tuple(live_dependency_groups[item.item_id]),
-                preparation,
-                attempt,
-            )
-        )
-    return query_models.ParallelPreviewFacts(state.lifecycle.project.revision, tuple(items))
-
-
 def _project_parallel_preview_facts(
     facts: query_models.ParallelPreviewFacts,
     selection: query_models.ParallelSelection,
@@ -851,14 +864,6 @@ def _project_parallel_preview_facts(
         selection == query_models.ParallelSelection.ALL_SAFE
         or not any(isinstance(item, query_models.ExcludedParallelItem) for item in items),
         tuple(sorted(items, key=_parallel_item_key)),
-    )
-
-
-def project_parallel_preview(state: stored_state.StoredWorkState, *, now: datetime) -> query_models.ParallelPreview:
-    return _project_parallel_preview_facts(
-        _complete_parallel_preview_facts(state),
-        query_models.ParallelSelection.ALL_SAFE,
-        now,
     )
 
 
@@ -918,3 +923,35 @@ def select_parallel_preview(
     if facts is None:
         return query_models.ParallelSelectionInvalid("Selected item identities must be current items.")
     return _project_parallel_preview_facts(facts, query_models.ParallelSelection.SELECTED, now)
+
+
+def present_parallel_preview(preview: query_models.ParallelPreview) -> query_models.ParallelPreviewView:
+    """Preserve the neutral v1 launchable/excluded grouping for sibling transports."""
+    launchable: list[query_models.ParallelItemView] = []
+    excluded: list[query_models.ParallelItemView] = []
+    for item in preview.items:
+        match item:
+            case query_models.LaunchableParallelItem():
+                launchable.append(
+                    query_models.ParallelItemView(
+                        item.item_id, item.label, item.state.value, item.attempt_id, "launchable", ()
+                    )
+                )
+            case query_models.ExcludedParallelItem(reasons=reasons):
+                excluded.append(
+                    query_models.ParallelItemView(
+                        item.item_id, item.label, item.state.value, item.attempt_id, "excluded", reasons
+                    )
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
+    match preview.selection:
+        case query_models.ParallelSelection.SELECTED:
+            selection = "selected"
+        case query_models.ParallelSelection.ALL_SAFE:
+            selection = "all-safe"
+        case _ as unreachable:
+            assert_never(unreachable)
+    return query_models.ParallelPreviewView(
+        "pinboard-parallel-preview/v1", preview.revision, selection, preview.safe, tuple(launchable), tuple(excluded)
+    )

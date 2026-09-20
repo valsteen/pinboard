@@ -3,15 +3,16 @@ from pathlib import Path
 
 from msgspec.structs import replace
 
-from pinboard.domain.identifiers import ItemId
-from pinboard.interfaces import work_brief_models
-from pinboard.interfaces.work_briefs import (
+from pinboard.application import work_brief_models
+from pinboard.application.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_reviewed_authority_set_bytes,
     canonical_work_brief_bytes,
     canonical_work_brief_review_bytes,
     canonical_work_brief_review_needs_correction_bytes,
 )
+from pinboard.domain import work_models
+from pinboard.domain.identifiers import ItemId
 from tests.support import SQLITE_DIGEST, test_definition
 
 CHECKPOINT_ID = "typed-json-cutover"
@@ -45,6 +46,9 @@ def example_work_brief() -> work_brief_models.WorkBrief:
         ),
         outcome="independently-buildable",
         outcome_description="Dispatch consumes strict JSON and Markdown is a generated view.",
+        disposition=work_brief_models.ContinueCheckpointDisposition(
+            "Resume the separately accepted structural cleanup after this prerequisite."
+        ),
         contracts=(contract,),
         acceptance_criteria=(work_brief_models.AcceptanceCriterion(1, "The typed boundary is strict."),),
         reviewed_authorities=(authority,),
@@ -73,7 +77,7 @@ def example_work_brief() -> work_brief_models.WorkBrief:
         ),
     )
     return work_brief_models.WorkBrief(
-        schema="pinboard-work-brief/v2",
+        schema="pinboard-work-brief/v4",
         artifact_revision=1,
         attempt_id="make-canonical-briefs-typed-json-1",
         item_id="make-canonical-briefs-typed-json",
@@ -91,7 +95,13 @@ def example_work_brief() -> work_brief_models.WorkBrief:
         compatibility=("Do not retain a v1 reader.",),
         non_goals=("Do not change lifecycle legality.",),
         checkpoint=checkpoint,
-        remaining_work="Resume the separately accepted structural cleanup after this prerequisite.",
+        checkout_selection=work_models.CheckoutSelection.MAIN,
+        obligation_correspondence=(
+            work_brief_models.ObligationCorrespondence(
+                "next-decision",
+                work_brief_models.ContractObligationTarget(contract.invariant),
+            ),
+        ),
     )
 
 
@@ -149,6 +159,7 @@ def work_c_brief() -> work_brief_models.WorkBrief:
         "Activate work C",
         cross.architecture_impact,
         "Activate the recorded attempt with its exact typed brief.",
+        cross.disposition,
         cross.acceptance_criteria,
         (
             replace(
@@ -166,6 +177,12 @@ def work_c_brief() -> work_brief_models.WorkBrief:
         base_revision="candidate-base",
         accepted_scope=replace(candidate.accepted_scope, digest=test_definition(ItemId("work-c"))[1]),
         checkpoint=local,
+        obligation_correspondence=(
+            work_brief_models.ObligationCorrespondence(
+                "next-decision",
+                work_brief_models.CriterionObligationTarget(1),
+            ),
+        ),
     )
 
 
@@ -179,9 +196,10 @@ def ready_review(
     assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
     coverage = checkpoint.coverage[0]
     review = work_brief_models.WorkBriefReview(
-        "pinboard-work-brief-review/v2",
+        "pinboard-work-brief-review/v3",
         value.attempt_id,
         checkpoint.checkpoint_id,
+        hashlib.sha256(canonical_work_brief_bytes(value)).hexdigest(),
         hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest(),
         hashlib.sha256(canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)).hexdigest(),
         reviewer,

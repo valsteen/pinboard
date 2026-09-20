@@ -53,6 +53,8 @@ def decide_proposal_creation(
         dependencies,
         intake.effect,
         intake.unlock,
+        intake.checkout_policy,
+        intake.obligations,
     )
     digest = work_item_definition_digest(definition)
     if isinstance(digest, DecisionFailure):
@@ -81,6 +83,8 @@ def decide_proposal_creation(
                 (*anchor.definition.dependencies, item_id),
                 anchor.definition.effect,
                 anchor.definition.unlock,
+                anchor.definition.checkout_policy,
+                anchor.definition.obligations,
             )
             changed_digest = work_item_definition_digest(changed_definition)
             if isinstance(changed_digest, DecisionFailure):

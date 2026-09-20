@@ -303,7 +303,7 @@ class ArtifactPersistenceTest(unittest.TestCase):
             END
             """
         )
-        with patch("pinboard.adapters.sqlite.store.open_database", return_value=connection):
+        with patch("pinboard.adapters.sqlite.persistence.open_database", return_value=connection):
             result = store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW)
 
         self.assertIsInstance(result, DecisionFailure)

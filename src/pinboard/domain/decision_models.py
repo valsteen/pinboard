@@ -59,7 +59,7 @@ class ActionLifecyclePrecondition(Enum):
     DEFERRED_ITEM = "deferred-item"
     INTAKE_ITEM = "intake-item"
     INTAKE_READY_OR_BLOCKED_UNSTARTED_ITEM = "intake-ready-or-blocked-unstarted-item"
-    ITEM_OUTSIDE_ACTIVE_AND_REVIEW = "item-outside-active-and-review"
+    ITEM_WITHOUT_ATTEMPT = "item-without-attempt"
     NONTERMINAL_ITEM = "nonterminal-item"
     PAUSED_OR_BLOCKED_ITEM_WITHOUT_LIVE_DEPENDENCIES = "paused-or-blocked-item-without-live-dependencies"
     READY_ITEM = "ready-item"
@@ -120,12 +120,12 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.ACCEPT_REVIEW_AND_CONTINUE:
             return ActionSemantics(
-                "Accept a reviewed candidate while continuing the same attempt.",
+                "Accept a reviewed candidate while other accepted work remains in the same attempt.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.REVIEW_ATTEMPT,
-                "Record the accepted review, return the attempt to active, and fence its prior worker authority.",
+                "Record the accepted review, return the attempt to active, and fence its prior worker authority so remaining accepted work can proceed.",
             )
         case ActionKind.ACCEPT_PROPOSAL:
             return ActionSemantics(
@@ -174,20 +174,20 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.COMPLETE:
             return ActionSemantics(
-                "Accept and finish an active or reviewed attempt.",
+                "Terminally finish an active or reviewed attempt only when no authorized external effect remains.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_OR_REVIEW_ATTEMPT_CURRENT_SCOPE,
-                "Record terminal completion and remove the item from live work.",
+                "Record terminal completion and remove the item from live work. No later repository effect may remain.",
             )
         case ActionKind.CLOSE:
             return ActionSemantics(
-                "Record a terminal decision for non-active work.",
+                "Record a terminal decision for eligible live work without an accepted attempt.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
-                ActionLifecyclePrecondition.ITEM_OUTSIDE_ACTIVE_AND_REVIEW,
+                ActionLifecyclePrecondition.ITEM_WITHOUT_ATTEMPT,
                 "Record the done or dropped outcome and remove the item from live work.",
             )
         case ActionKind.CONTINUE:
@@ -919,17 +919,6 @@ class ItemClosureChange:
 
 
 @dataclass(frozen=True, slots=True)
-class AttemptClosureChange:
-    item: ItemId
-    item_before: work_models.WorkState
-    terminal_state: work_models.CloseOutcome
-    evidence: str
-    attempt: AttemptId
-    attempt_before: work_models.AttemptState
-    authority_change: AttemptAuthorityChange | None
-
-
-@dataclass(frozen=True, slots=True)
 class AcceptedProposalItem:
     item: ItemId
     state: work_models.AcceptedProposalState
@@ -1020,7 +1009,6 @@ type NonCheckpointDecisionChange = (
     | ReviewAcceptanceChange
     | CompletionChange
     | ItemClosureChange
-    | AttemptClosureChange
     | AcceptedProposalChange
     | MergedProposalChange
     | ReturnedProposalChange

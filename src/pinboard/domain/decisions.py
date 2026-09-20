@@ -229,16 +229,6 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
                 ),
             )
         )
-    if (
-        context.item_state in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}
-        and not stale
-        and context.replacement_resolved
-    ):
-        attempt_actions.append(
-            decision_models.CompleteAction(
-                factory.make(context.attempt, f"Accept and complete {context.item}", context.attempt_subject_revision)
-            )
-        )
     if context.item_state == work_models.WorkState.REVIEW:
         attempt_actions.append(
             decision_models.ReturnForCorrectionAction(
@@ -263,6 +253,18 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
                         )
                     )
                 )
+    if (
+        context.item_state in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}
+        and not stale
+        and context.replacement_resolved
+    ):
+        label = (
+            f"Terminally complete {context.item} only after every authorized integration and publication effect, "
+            "then exact disposable worktree, local branch, and remote branch cleanup, are verified or not applicable"
+        )
+        attempt_actions.append(
+            decision_models.CompleteAction(factory.make(context.attempt, label, context.attempt_subject_revision))
+        )
 
     item_actions: list[decision_models.Action] = [
         decision_models.RecordReplacementAction(
@@ -291,9 +293,6 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
                 )
             )
         )
-    close = decision_models.CloseAction(
-        factory.make(context.item, f"Record a terminal decision for {context.item}", context.item_subject_revision)
-    )
     if context.item_state == work_models.WorkState.PAUSED:
         item_actions.append(
             decision_models.RebindAttemptAction(
@@ -310,7 +309,6 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
                     factory.make(context.item, f"Return {context.item} to active", context.item_subject_revision)
                 )
             )
-        item_actions.append(close)
     elif context.item_state == work_models.WorkState.BLOCKED:
         if not context.live_dependencies and context.replacement_resolved:
             item_actions.append(
@@ -318,7 +316,6 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
                     factory.make(context.item, f"Return {context.item} to active", context.item_subject_revision)
                 )
             )
-        item_actions.append(close)
     return ProjectAttemptActionGroups(tuple(attempt_actions), tuple(item_actions))
 
 
@@ -789,6 +786,13 @@ def _complete(
             "The attempt has not accepted the item's current definition.",
             None,
         )
+    replacement = snapshot.current_replacement(item.item)
+    if replacement is not None and snapshot.replacement_disposition(item.item, replacement.relation_revision) is None:
+        return DecisionFailure(
+            DecisionFailureCode.REPLACEMENT_STALE,
+            "Terminal completion requires the current planned replacement to be resolved.",
+            None,
+        )
     if item.item in snapshot.history_items:
         return DecisionFailure(
             DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.item}'.", None
@@ -796,34 +800,16 @@ def _complete(
     authority_change = _fence_retained_attempt_authority(snapshot, attempt_id)
     match command:
         case decision_models.CompleteCommand():
-            value = command.value
-            if snapshot.checkpoint_history_ids:
-                return DecisionFailure(
-                    DecisionFailureCode.TRANSITION_INPUT_INVALID,
-                    "Checkpoint history requires covered completion evidence.",
-                    None,
-                )
-            before = (
-                work_models.AttemptState.REVIEW
-                if item.state == work_models.WorkState.REVIEW
-                else work_models.AttemptState.ACTIVE
-            )
-            change = decision_models.CompletionChange(
-                item.item, item.state, attempt_id, before, value.evidence, authority_change
-            )
-            return _accepted_transition_decision(
-                action,
-                now,
-                change,
-                item=item.item,
-                evidence=value.evidence,
+            return DecisionFailure(
+                DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                "Terminal completion requires a protected candidate and independent review evidence.",
+                None,
             )
         case decision_models.CoveredCompleteCommand():
             value = command.value
             attempt = snapshot.attempt(attempt_id)
             if (
-                not snapshot.checkpoint_history_ids
-                or tuple(row.history_id for row in value.packages) != snapshot.checkpoint_history_ids
+                tuple(row.history_id for row in value.packages) != snapshot.checkpoint_history_ids
                 or item.state != work_models.WorkState.REVIEW
                 or attempt is None
                 or attempt.protected_candidate_revision != value.candidate
@@ -860,6 +846,13 @@ def _close(
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE, "Active or review work requires the acceptance path.", None
         )
+    if item.attempt is not None:
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            "An accepted attempt must resume and follow its review path; changing accepted semantics requires item "
+            "revision and rebind.",
+            None,
+        )
     if value.outcome == work_models.CloseOutcome.DROPPED and any(
         item.item in candidate.depends_on for candidate in snapshot.items
     ):
@@ -870,30 +863,10 @@ def _close(
         return DecisionFailure(
             DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.item}'.", None
         )
-    authority_change = None if item.attempt is None else _fence_retained_attempt_authority(snapshot, item.attempt)
-    if item.attempt is None:
-        change: decision_models.NonCheckpointDecisionChange = decision_models.ItemClosureChange(
-            item.item, item.state, value.outcome, value.reason
-        )
-    else:
-        attempt = snapshot.attempts_by_id().get(item.attempt)
-        if attempt is None:
-            return DecisionFailure(
-                DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{item.attempt}' does not exist.", None
-            )
-        change = decision_models.AttemptClosureChange(
-            item.item,
-            item.state,
-            value.outcome,
-            value.reason,
-            item.attempt,
-            attempt.state,
-            authority_change,
-        )
     return _accepted_transition_decision(
         action,
         now,
-        change,
+        decision_models.ItemClosureChange(item.item, item.state, value.outcome, value.reason),
         item=item.item,
         outcome=value.outcome.value,
         evidence=value.reason,

@@ -22,6 +22,7 @@ from pinboard.application.mutation_models import (
     OrderMutation,
     PreparationAuthorityMutation,
     ProposalCreationMutation,
+    ReviewSubmissionMutation,
     StoredStateMutation,
     TransitionMutation,
 )
@@ -64,7 +65,7 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                     outcome=decision.receipt.outcome,
                 ),
             )
-        case TransitionMutation(decision=decision):
+        case TransitionMutation(decision=decision) | ReviewSubmissionMutation(decision=decision):
             candidate = None
             match decision.change:
                 case (
@@ -79,7 +80,6 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                     | decision_models.AttemptStateChange()
                     | decision_models.BlockAttemptChange()
                     | decision_models.BlockItemChange()
-                    | decision_models.AttemptClosureChange()
                     | decision_models.CompletionChange()
                     | decision_models.ItemClosureChange()
                     | decision_models.ItemStateChange()
@@ -281,6 +281,44 @@ def project_transition_mutation(
     )
 
 
+def project_review_submission_mutation(
+    allocation: CheckpointMutationAllocation,
+    decision: decision_models.TransitionDecision,
+    candidate_snapshot: EvidenceArtifactRef,
+) -> ReviewSubmissionMutation:
+    """Project one review submission and its exact snapshot acceptance."""
+
+    if not isinstance(decision.change, decision_models.ReviewSubmissionChange):
+        raise TypeError("review submission mutation requires a review-submission decision")
+    (snapshot_id,) = _artifact_ids(allocation, (candidate_snapshot,))
+    return ReviewSubmissionMutation(
+        decision,
+        _transition_receipt(
+            allocation,
+            decision.action.capability,
+            decision.action.kind,
+            decision.receipt,
+            snapshot_id,
+            None,
+            None,
+            "pinboard-candidate-snapshot/v2"
+            if str(decision.change.protected_candidate_after).startswith("working-tree-state-sha256:")
+            else "pinboard-candidate-snapshot/v1",
+            work_models.CanonicalJson(
+                msgspec.json.encode(
+                    {
+                        "candidate": str(decision.change.protected_candidate_after),
+                        "snapshot_artifact_ref_id": int(snapshot_id),
+                    },
+                    order="sorted",
+                )
+            ),
+        ),
+        candidate_snapshot,
+        snapshot_id,
+    )
+
+
 def project_checkpoint_acceptance_mutation(
     allocation: CheckpointMutationAllocation,
     decision: decision_models.CheckpointAcceptanceDecision,
@@ -344,7 +382,7 @@ def project_completion_acceptance_mutation(
     input_payload = work_models.CanonicalJson(
         msgspec.json.encode(
             {
-                "schema": "pinboard-covered-completion/v1",
+                "schema": "pinboard-reviewed-completion/v2",
                 "candidate": str(value.candidate),
                 "evidence": value.evidence,
                 "reviewer_task_id": str(value.reviewer_task_id),
@@ -373,7 +411,7 @@ def project_completion_acceptance_mutation(
             completion_changes.package_id,
             actor_task_id,
             actor_host_id,
-            "pinboard-covered-completion/v1",
+            "pinboard-reviewed-completion/v2",
             input_payload,
         ),
         completion_changes,

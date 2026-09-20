@@ -78,6 +78,50 @@ class WorktreePreparationTest(unittest.TestCase):
             self.assertEqual("prepare-worktree: missing prerequisite: npm\n", result.stderr)
             self.assertFalse((trace_directory / "uv").exists())
 
+    def test_preparation_repairs_an_incomplete_checkout_environment_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            script = project / "scripts" / "prepare-worktree"
+            script.parent.mkdir()
+            script.write_bytes(PREPARE_WORKTREE.read_bytes())
+            script.chmod(0o755)
+            binary_directory = project / "bin"
+            trace_directory = project / "trace"
+            binary_directory.mkdir()
+            trace_directory.mkdir()
+            uv = binary_directory / "uv"
+            uv.write_text(
+                "#!/bin/sh\n"
+                'printf \'%s\\n\' "$*" >> "$TRACE_DIR/uv"\n'
+                'if [ "$*" = "sync --locked --reinstall" ]; then\n'
+                "  mkdir -p .venv\n"
+                "  : > .venv/pyvenv.cfg\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+            uv.chmod(0o755)
+            self.write_fake(binary_directory, "npm")
+
+            result = subprocess.run(
+                [script],
+                cwd=project,
+                env={
+                    **os.environ,
+                    "PATH": f"{binary_directory}:/usr/bin:/bin",
+                    "TRACE_DIR": str(trace_directory),
+                },
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual((0, "", ""), (result.returncode, result.stdout, result.stderr))
+            self.assertEqual(
+                ["sync --locked", "sync --locked --reinstall"],
+                (trace_directory / "uv").read_text(encoding="utf-8").splitlines(),
+            )
+            self.assertTrue((project / ".venv" / "pyvenv.cfg").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

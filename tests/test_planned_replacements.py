@@ -98,7 +98,7 @@ class PlannedReplacementTests(unittest.TestCase):
             )
         )
         self.assertNotIn("resume:old-work", paused)
-        self.assertIn("close:old-work", paused)
+        self.assertNotIn("close:old-work", paused)
 
         blocked_attempt = self.action_ids(
             self.snapshot(
@@ -108,7 +108,7 @@ class PlannedReplacementTests(unittest.TestCase):
             )
         )
         self.assertNotIn("resume:old-work", blocked_attempt)
-        self.assertIn("close:old-work", blocked_attempt)
+        self.assertNotIn("close:old-work", blocked_attempt)
 
         blocked_unstarted = self.action_ids(self.snapshot(work_models.WorkState.BLOCKED, relation_value=relation()))
         self.assertNotIn("resume:old-work", blocked_unstarted)

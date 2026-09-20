@@ -139,7 +139,7 @@ def _publish_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactPub
 
 @dataclass(frozen=True, slots=True)
 class ArtifactRepository:
-    """Concrete durable artifact access used by interface composition."""
+    """Concrete durable artifact access used by outer composition."""
 
     roots: DurableRoots
 

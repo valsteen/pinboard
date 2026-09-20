@@ -1,6 +1,6 @@
 import tomllib
 from pathlib import Path
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 
 import msgspec
 import yaml
@@ -51,7 +51,10 @@ EXPECTED_SKILL_DISPLAY_NAMES: Final = {
     "technical-writing": "Technical Writing",
 }
 EXPECTED_ENTRY_POINTS: Final = {
-    "pinboard": "pinboard.interfaces.cli:main",
+    "pinboard": "pinboard.cli.entrypoint:main",
+    "pinboard-mcp": "pinboard.mcp.server:main",
+    "pinboard-claude-subagent-start": "pinboard.claude_hook:main",
+    "pinboard-claude-session-start": "pinboard.claude_hook:session_start_main",
 }
 
 type SkillName = Annotated[
@@ -78,7 +81,9 @@ class PluginInterface(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     category: str
     website_url: str = msgspec.field(name="websiteURL")
     capabilities: tuple[str, ...]
-    default_prompt: tuple[str, ...] = msgspec.field(name="defaultPrompt")
+    default_prompt: Annotated[tuple[NonBlankText, ...], msgspec.Meta(min_length=1, max_length=3)] = msgspec.field(
+        name="defaultPrompt"
+    )
 
 
 class PluginManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -91,6 +96,7 @@ class PluginManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     license: str
     keywords: tuple[str, ...]
     skills: str
+    mcp_servers: Literal["./mcp-codex.json"] = msgspec.field(name="mcpServers")
     interface: PluginInterface
 
 
@@ -103,6 +109,76 @@ class ClaudePluginManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     repository: str
     license: str
     keywords: tuple[str, ...]
+    mcp_servers: Literal["./mcp-claude.json"] = msgspec.field(name="mcpServers")
+    hooks: Literal["./hooks/claude-hooks.json"]
+
+
+class CodexMcpServer(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    command: Literal["sh"]
+    args: tuple[str, ...]
+    cwd: Literal["."]
+
+    def __post_init__(self) -> None:
+        if self.args != ("./scripts/pinboard", "--mcp"):
+            raise ValueError("Codex MCP must select the root launcher with only --mcp")
+
+
+class ClaudeMcpServer(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    command: Literal["${CLAUDE_PLUGIN_ROOT}/scripts/pinboard"]
+    args: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.args != ("--mcp",):
+            raise ValueError("Claude MCP must select the root launcher with only --mcp")
+
+
+class CodexMcpServers(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    pinboard: CodexMcpServer
+
+
+class ClaudeMcpServers(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    pinboard: ClaudeMcpServer
+
+
+class CodexMcpConfiguration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    mcp_servers: CodexMcpServers = msgspec.field(name="mcpServers")
+
+
+class ClaudeMcpConfiguration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    mcp_servers: ClaudeMcpServers = msgspec.field(name="mcpServers")
+
+
+class ClaudeStartupCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    type: Literal["command"]
+    command: Literal['"${CLAUDE_PLUGIN_ROOT}/scripts/pinboard" --claude-subagent-start']
+
+
+class ClaudeStartupMatcher(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    matcher: Literal[".*"]
+    hooks: Annotated[tuple[ClaudeStartupCommand, ...], msgspec.Meta(min_length=1, max_length=1)]
+
+
+class ClaudeParentStartupCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    type: Literal["command"]
+    command: Literal['"${CLAUDE_PLUGIN_ROOT}/scripts/pinboard" --claude-session-start']
+
+
+class ClaudeParentStartupMatcher(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    matcher: Literal[".*"]
+    hooks: Annotated[tuple[ClaudeParentStartupCommand, ...], msgspec.Meta(min_length=1, max_length=1)]
+
+
+class ClaudeStartupHooks(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    session_start: Annotated[tuple[ClaudeParentStartupMatcher, ...], msgspec.Meta(min_length=1, max_length=1)] = (
+        msgspec.field(name="SessionStart")
+    )
+    subagent_start: Annotated[tuple[ClaudeStartupMatcher, ...], msgspec.Meta(min_length=1, max_length=1)] = (
+        msgspec.field(name="SubagentStart")
+    )
+
+
+class ClaudeHookConfiguration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    hooks: ClaudeStartupHooks
 
 
 class ProjectMetadata(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -230,6 +306,17 @@ def validate_claude_plugin() -> None:
         raise ValueError("Claude plugin repository or homepage is invalid")
     if not (ROOT / "skills").is_dir():
         raise ValueError("Claude plugin must use the shared repository-root skills directory")
+    if (ROOT / "hooks" / "hooks.json").exists():
+        raise ValueError("Claude-only startup hooks must not use shared default hook discovery")
+    msgspec.json.decode((ROOT / value.hooks).read_bytes(), type=ClaudeHookConfiguration)
+
+
+def validate_mcp_configuration() -> None:
+    msgspec.json.decode((ROOT / "mcp-codex.json").read_bytes(), type=CodexMcpConfiguration)
+    msgspec.json.decode((ROOT / "mcp-claude.json").read_bytes(), type=ClaudeMcpConfiguration)
+    launcher = ROOT / "scripts" / "pinboard"
+    if not launcher.is_file() or not launcher.stat().st_mode & 0o111:
+        raise ValueError("configured MCP launcher must exist and be executable")
 
 
 def validate_project_metadata() -> None:
@@ -249,10 +336,12 @@ def validate_project_metadata() -> None:
         raise ValueError("distribution identity, readme, or license publication is invalid")
     if project.requires_python != ">=3.14,<3.15":
         raise ValueError("distribution must preserve Python 3.14-only compatibility")
-    if project.dependencies != ("msgspec>=0.21.1",):
-        raise ValueError("msgspec must remain the sole runtime dependency")
+    if project.dependencies != ("mcp==2.2.0", "msgspec>=0.21.1"):
+        raise ValueError("runtime dependencies must be exact and limited to MCP plus msgspec")
     if project.scripts != EXPECTED_ENTRY_POINTS:
-        raise ValueError("pinboard must be the only project entry point to the current engine")
+        raise ValueError(
+            "project entry points must expose exactly the CLI, local-stdio MCP and Claude startup boundaries"
+        )
 
 
 def validate_codex_marketplace() -> None:
@@ -311,6 +400,7 @@ def main() -> None:
         raise ValueError("repository license must exactly match the canonical MIT license text")
     validate_plugin()
     validate_claude_plugin()
+    validate_mcp_configuration()
     validate_project_metadata()
     validate_codex_marketplace()
     validate_claude_marketplace()

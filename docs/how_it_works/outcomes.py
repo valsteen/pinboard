@@ -1,13 +1,11 @@
 from dataclasses import fields
 
-from pinboard.application import service
+from pinboard.application import authority_operations, service
 from pinboard.application.mutation_models import CommittedEffect, PreparationStart
 from pinboard.domain import authority_models
 from pinboard.domain.authority_decisions import decide_preparation_authority
 from pinboard.domain.errors import DecisionFailure, FailureDetails
-from pinboard.interfaces import cli_commands, preparation_authority
-from pinboard.interfaces.cli_output import RejectedOperationView, write_operation_rejection
-from pinboard.interfaces.errors import storage_failure_details
+from pinboard.mcp import contracts
 
 from .model import Box, Connector, Diagram, Guide, Note, Section
 
@@ -26,25 +24,26 @@ DECISION_FAILURE_FIELDS = frozenset({"code", "message", "details"})
 PREPARATION_START_FIELDS = frozenset({"effect", "authority"})
 COMMITTED_EFFECT_FIELDS = frozenset({"receipt", "item_ids", "attempt_ids", "continuation_attempt_id"})
 
-REJECTED_OPERATION_FIELDS = frozenset(
+PREPARATION_REJECTION_FIELDS = frozenset(
     {
         "schema",
         "status",
-        "operation",
+        "item_id",
         "code",
         "message",
+        "conflict",
         "state_changed",
+        "effect",
+        "retry",
         "changed_surfaces",
         "observed",
         "mismatches",
-        "retry",
-        "next_actions",
     }
 )
 
 SOURCE_SYMBOL_NAMES: dict[str, str] = {
-    "PreparationStartCommand": cli_commands.PreparationStartCommand.__name__,
-    "start_preparation": preparation_authority.start_preparation.__name__,
+    "PreparationAuthorityStartRequest": contracts.PreparationAuthorityStartRequest.__name__,
+    "start_preparation_authority": authority_operations.start_preparation_authority.__name__,
     "application.start_preparation": service.start_preparation.__name__,
     "decide_preparation_authority": decide_preparation_authority.__name__,
     "PreparationAuthorityDecision": authority_models.PreparationAuthorityDecision.__name__,
@@ -52,9 +51,8 @@ SOURCE_SYMBOL_NAMES: dict[str, str] = {
     "CommittedEffect": CommittedEffect.__name__,
     "DecisionFailure": DecisionFailure.__name__,
     "FailureDetails": FailureDetails.__name__,
-    "RejectedOperationView": RejectedOperationView.__name__,
-    "write_operation_rejection": write_operation_rejection.__name__,
-    "storage_failure_details": storage_failure_details.__name__,
+    "PreparationAuthorityCommitted": contracts.PreparationAuthorityCommitted.__name__,
+    "PreparationAuthorityRejected": contracts.PreparationAuthorityRejected.__name__,
 }
 
 
@@ -66,20 +64,20 @@ def validate() -> None:
     decision_failure_fields = frozenset(field.name for field in fields(DecisionFailure))
     preparation_start_fields = frozenset(field.name for field in fields(PreparationStart))
     committed_effect_fields = frozenset(field.name for field in fields(CommittedEffect))
-    rejected_fields = frozenset(RejectedOperationView.__struct_fields__)
+    rejected_fields = frozenset(contracts.PreparationAuthorityRejected.__struct_fields__)
     if (
         failure_fields != FAILURE_DETAIL_FIELDS
         or decision_failure_fields != DECISION_FAILURE_FIELDS
         or preparation_start_fields != PREPARATION_START_FIELDS
         or committed_effect_fields != COMMITTED_EFFECT_FIELDS
-        or rejected_fields != REJECTED_OPERATION_FIELDS
+        or rejected_fields != PREPARATION_REJECTION_FIELDS
     ):
         drifted = sorted(
             failure_fields ^ FAILURE_DETAIL_FIELDS
             | decision_failure_fields ^ DECISION_FAILURE_FIELDS
             | preparation_start_fields ^ PREPARATION_START_FIELDS
             | committed_effect_fields ^ COMMITTED_EFFECT_FIELDS
-            | rejected_fields ^ REJECTED_OPERATION_FIELDS
+            | rejected_fields ^ PREPARATION_REJECTION_FIELDS
         )
         raise ValueError(f"outcome visual and structured failure contract differ: {', '.join(drifted)}")
 
@@ -88,9 +86,9 @@ DIAGRAM = Diagram(
     slug="outcomes",
     title="Precise outcomes cross intact layer boundaries",
     description=(
-        "A preparation start crosses stable interface, application, domain, and adapter boundaries. Accepted "
+        "A preparation start crosses stable MCP, application, domain, and adapter boundaries. Accepted "
         "decisions, expected rejections, attempted effects, infrastructure failures, and later view warnings keep "
-        "their distinct facts. The interface alone turns those facts into presentation and bounded follow-ups."
+        "their distinct facts. MCP alone turns those facts into presentation and bounded follow-ups."
     ),
     width=1400,
     height=820,
@@ -134,10 +132,10 @@ DIAGRAM = Diagram(
     boxes=(
         Box(
             "request",
-            "INTERFACE INPUT",
+            "MCP INPUT",
             "Decode an exact request",
             ("item · task · host · TTL",),
-            ("PreparationStartCommand",),
+            ("PreparationAuthorityStartRequest",),
             160,
             90,
             250,
@@ -148,7 +146,7 @@ DIAGRAM = Diagram(
             "APPLICATION",
             "Select current state",
             ("definition · claim · dependencies",),
-            ("start_preparation",),
+            ("start_preparation_authority",),
             470,
             90,
             270,
@@ -206,14 +204,14 @@ DIAGRAM = Diagram(
         ),
         Box(
             "guidance",
-            "INTERFACE PRESENTATION",
+            "MCP PRESENTATION",
             "Translate facts into guidance",
             (
                 "facts → observations · mismatches",
                 "effect → state · surfaces · retry",
                 "alternatives → bounded actions",
             ),
-            ("RejectedOperationView · lease output",),
+            ("PreparationAuthorityRejected · Committed",),
             645,
             650,
             510,

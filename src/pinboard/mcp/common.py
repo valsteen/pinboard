@@ -29,8 +29,6 @@ from pinboard.domain.errors import (
 from pinboard.mcp import contracts, execution, tool_names
 from pinboard.mcp.contracts import JsonValue
 
-type IntegerBoundaryValue = bool | int | float | str | None
-
 
 def _item_status_failure(
     code: str,

@@ -18,7 +18,7 @@ from pinboard.domain.errors import (
     RetryDisposition,
 )
 
-type MutationClass = Literal["read-only", "mutates-ledger", "repairs-derived-views"]
+type MutationClass = Literal["read-only", "mutates-ledger", "repairs-derived-views", "migrates-work-root"]
 type DataScope = Literal["static", "focused", "current-project", "explicit-project-wide"]
 
 
@@ -149,6 +149,16 @@ def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContra
             subject = "work-root"
             precondition = "source-checkout-resolvable"
             postcondition = "Return work_root, resumed state, and optional next guidance; default initialization also owns its exact local Git exclusion."
+            retry = "inspect-current-state-before-retry"
+        case "migrate-work-root":
+            purpose = "Move verified legacy project state to .pinboard and install its compatibility alias."
+            mutation = "migrates-work-root"
+            scope = "explicit-project-wide"
+            roles = ("local-caller",)
+            authority = "filesystem-and-repository-git-exclude-access"
+            subject = "work-root"
+            precondition = "default-root-state-is-legacy-current-or-exact-compatibility-alias"
+            postcondition = "Preserve ledger and artifact bytes while establishing .pinboard and the exact relative compatibility alias."
             retry = "inspect-current-state-before-retry"
         case "close":
             purpose = "Record a terminal decision for eligible live work without an accepted attempt."

@@ -93,5 +93,12 @@ jobs:
           smoke_repository=$(mktemp -d)
           git -C "$smoke_repository" init
           uv run --isolated --no-project --with ./dist/*.whl pinboard --project-root "$smoke_repository" init
-          test -f "$smoke_repository/.codex/pinboard/state.sqlite3"
-          git -C "$smoke_repository" check-ignore -q .codex/pinboard/state.sqlite3
+          test -f "$smoke_repository/.pinboard/state.sqlite3"
+          git -C "$smoke_repository" check-ignore -q .pinboard/state.sqlite3
+          legacy_repository=$(mktemp -d)
+          git -C "$legacy_repository" init
+          uv run --isolated --no-project --with ./dist/*.whl pinboard --project-root "$legacy_repository" --work-root "$legacy_repository/.codex/pinboard" init
+          uv run --isolated --no-project --with ./dist/*.whl pinboard --project-root "$legacy_repository" migrate-work-root
+          test "$(readlink "$legacy_repository/.codex/pinboard")" = "../.pinboard"
+          test -f "$legacy_repository/.pinboard/state.sqlite3"
+          git -C "$legacy_repository" check-ignore -q .codex/pinboard

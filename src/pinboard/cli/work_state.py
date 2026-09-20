@@ -15,7 +15,7 @@ import msgspec
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, ensure_directory_chain
-from pinboard.adapters.files.root import ensure_default_git_exclude
+from pinboard.adapters.files.root import ensure_git_exclude
 from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_facts
 from pinboard.adapters.sqlite.database import initialize_database, open_database, reconcile_database_publication
 from pinboard.adapters.sqlite.errors import StorageError
@@ -53,7 +53,7 @@ def initialize_work_state(
     store: ports.GeneratedViewSetReader,
     now: datetime | None = None,
 ) -> work_brief_models.WorkBriefResult[InitReceipt]:
-    git_exclude_path = ensure_default_git_exclude(shared_repository_root) if default_work_root else None
+    git_exclude_path = ensure_git_exclude(shared_repository_root, b"/.pinboard/") if default_work_root else None
     database_path: Path | None = None
     try:
         database_already_exists = roots.database_path.exists()

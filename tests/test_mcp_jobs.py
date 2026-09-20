@@ -110,7 +110,7 @@ class McpJobsTest(CheckpointPackageSupport):
         self.assertEqual("committed", returned["status"])
         (fixture.project / "GREETING.md").write_text("Hello\n", encoding="utf-8")
         (fixture.project / "unrelated-note.md").write_text("Private note\n", encoding="utf-8")
-        (fixture.project / ".git" / "info" / "exclude").write_text("/.codex/pinboard/\nignored\n", encoding="utf-8")
+        (fixture.project / ".git" / "info" / "exclude").write_text("/.pinboard/\nignored\n", encoding="utf-8")
         (fixture.project / "ignored").write_text("Ignored\n", encoding="utf-8")
         roots = {"project_root": str(fixture.project), "work_root": str(fixture.work), "attempt_id": "work-a-1"}
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
@@ -332,7 +332,7 @@ class McpJobsTest(CheckpointPackageSupport):
                         capture_output=True,
                     )
                 self.run_json_cli("--project-root", str(target), "init")
-                other_store = SQLiteWorkStore(clone / ".codex" / "pinboard" / "state.sqlite3")
+                other_store = SQLiteWorkStore(clone / ".pinboard" / "state.sqlite3")
                 other_before = other_store.validated_snapshot()
                 arguments["project_root"] = str(target)
 

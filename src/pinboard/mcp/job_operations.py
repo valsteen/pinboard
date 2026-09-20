@@ -187,7 +187,13 @@ def _job_publication_surface(surface: ChangedSurface) -> contracts.JobPublicatio
             return "accepted-artifact-reference"
         case ChangedSurface.LEDGER:
             return "ledger"
-        case ChangedSurface.REPOSITORY_GIT_EXCLUDE | ChangedSurface.SELECTED_OUTPUT | ChangedSurface.SOURCE_CHECKOUT:
+        case (
+            ChangedSurface.REPOSITORY_GIT_EXCLUDE
+            | ChangedSurface.WORK_ROOT
+            | ChangedSurface.COMPATIBILITY_ALIAS
+            | ChangedSurface.SELECTED_OUTPUT
+            | ChangedSurface.SOURCE_CHECKOUT
+        ):
             raise AssertionError("Job publication changed an unsupported surface.")
         case _ as unreachable:
             assert_never(unreachable)

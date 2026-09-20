@@ -65,3 +65,14 @@ class InitializationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     resumed: bool
     optional_next_skills: tuple[str, ...]
     configuration_recommendation: str | None
+
+
+class WorkRootMigrationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-work-root-migration/v1"]
+    status: Literal["migrated", "unchanged"]
+    work_root: str
+    compatibility_alias: str
+    state_changed: bool
+    effect: Literal["committed", "unchanged"]
+    retry: Literal["do-not-retry", "safe-to-repeat"]
+    changed_surfaces: tuple[str, ...]

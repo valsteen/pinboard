@@ -68,6 +68,10 @@ class InitializeCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     json: bool = False
 
 
+class MigrateWorkRootCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    json: bool = False
+
+
 class RebuildViewsCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     pass
 
@@ -80,6 +84,7 @@ type CliCommand = (
     | ToolContractCommand
     | HandoverCommand
     | InitializeCommand
+    | MigrateWorkRootCommand
     | RebuildViewsCommand
 )
 

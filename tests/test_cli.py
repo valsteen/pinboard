@@ -222,8 +222,8 @@ class CliTest(unittest.TestCase):
                 "permission_recovery": (
                     "For routine Pinboard commands, select a Codex permission profile extending ':workspace' whose "
                     f"narrow filesystem write rule grants access to '{permission_work_root}', the effective work root "
-                    "for this command. A normal checkout uses the relative '.codex/pinboard' rule; a linked worktree "
-                    "uses only the resolved absolute shared-repository '.codex/pinboard' directory; an explicit "
+                    "for this command. A normal checkout uses the relative '.pinboard' rule; a linked worktree "
+                    "uses only the resolved absolute shared-repository '.pinboard' directory; an explicit "
                     "'--work-root' uses that exact directory. Remove legacy 'sandbox_mode' and "
                     "'sandbox_workspace_write' settings because they override permission profiles. For fresh default "
                     "initialization, approve the exact 'pinboard init' command once so it can also update "
@@ -241,11 +241,12 @@ class CliTest(unittest.TestCase):
     def test_readonly_mutation_at_default_root_reports_relative_permission_and_unchanged_ledger(self) -> None:
         project, work, store = self.initialized_state(complete_sqlite_state())
 
-        self.assert_readonly_human_closure(("--project-root", str(project)), work, store, ".codex/pinboard")
+        self.assert_readonly_human_closure(("--project-root", str(project)), work, store, ".pinboard")
 
     def test_readonly_mutation_at_explicit_work_root_reports_exact_permission_and_unchanged_ledger(self) -> None:
         project, default_work, _store = self.initialized_state(complete_sqlite_state())
         work = project / ".codex" / "custom-pinboard"
+        work.parent.mkdir()
         default_work.rename(work)
 
         self.assert_readonly_human_closure(

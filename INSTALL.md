@@ -41,24 +41,34 @@ default_permissions = "pinboard"
 extends = ":workspace"
 
 [permissions.pinboard.filesystem.":workspace_roots"]
-".codex/pinboard" = "write"
+".pinboard" = "write"
 ```
 
 Remove legacy `sandbox_mode` and `sandbox_workspace_write` settings before relying on this profile because they override permission profiles.
 
 ### First setup
 
-The first default initialization adds only `/.codex/pinboard/` to the repository's local `.git/info/exclude`, then creates the Pinboard data directory. Approve that exact initialization once; it needs the narrow Git-metadata write only for this setup. Pinboard does not edit `.gitignore`, and sibling `.codex` paths remain visible to Git.
+The first default initialization adds only `/.pinboard/` to the repository's local `.git/info/exclude`, then creates the Pinboard data directory. Approve that exact initialization once; it needs the narrow Git-metadata write only for this setup. Pinboard does not edit `.gitignore`, and `.codex` remains available for unrelated project configuration.
 
 Linked worktrees share the same repository-local exclusion, so repeating setup remains idempotent. If setup stops after making a durable change, Pinboard reports which surface changed so the coding agent can inspect it before retrying.
 
 ### Linked worktrees and custom data locations
 
-A linked worktree uses the shared repository's Pinboard data, which is outside the linked checkout. Run `<launcher-root>/scripts/pinboard root` to obtain the exact resolved location, then add a direct write rule for only that absolute `.codex/pinboard` directory under `[permissions.pinboard.filesystem]`.
+A linked worktree uses the shared repository's Pinboard data, which is outside the linked checkout. Run `<launcher-root>/scripts/pinboard root` to obtain the exact resolved location, then add a direct write rule for only that absolute `.pinboard` directory under `[permissions.pinboard.filesystem]`.
 
 Do not add the shared repository as a workspace root. Do not grant access to its `.git` directory, sibling `.codex` paths, or the installed plugin cache.
 
 If you deliberately use `--work-root`, add a direct write rule for only that exact selected directory.
+
+### Move an existing project from `.codex/pinboard`
+
+Default commands do not create a second board when they find only the legacy `.codex/pinboard` location. They return the exact recovery command instead:
+
+```sh
+<launcher-root>/scripts/pinboard --project-root /path/to/managed-project migrate-work-root --json
+```
+
+Run the migration only while no other Pinboard command is accessing that project. It verifies the current SQLite schema, adds the neutral Git exclusion, moves the directory without rewriting SQLite or artifact bytes, and creates the relative `.codex/pinboard -> ../.pinboard` compatibility alias. It keeps unrelated `.codex` content and any existing legacy exclusion. On a partial failure, inspect the reported changed surfaces before running the command again.
 
 ## Claude Code
 
@@ -130,7 +140,7 @@ Pinboard may also recommend the `model_auto_compact_token_limit_scope` setting f
 
 For retained CLI mutations, a denied SQLite write reports `SQLITE_READONLY`, the affected location and operation, whether anything changed, and narrow permission recovery. Native tools report their own correlated failure, retry, and changed-surface facts rather than CLI-specific diagnostic prose. A native brief acceptance failure after immutable publication reports `ARTIFACT_ACCEPTANCE_FAILED` and its exact published selector; it does not claim the underlying failure is necessarily a permission error.
 
-For a normal primary checkout, grant only relative `.codex/pinboard`. For a linked worktree or explicit data location, grant only the exact absolute location resolved by Pinboard. If an immutable artifact was already published, preserve it and inspect current state and artifact identity before selecting supported recovery; do not blindly replay the operation.
+For a normal primary checkout, grant only relative `.pinboard`. For a linked worktree or explicit data location, grant only the exact absolute location resolved by Pinboard. The one-time migration additionally needs the exact legacy root, canonical root, compatibility alias, and repository-local Git exclusion named by the command. If an immutable artifact or migration surface was already published, preserve it and inspect current state before selecting supported recovery; do not blindly replay the operation.
 
 ### The launcher says runtime preparation is required
 

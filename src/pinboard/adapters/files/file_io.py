@@ -26,6 +26,8 @@ class DurableRoots:
 
 
 def _verified_directory(path: Path, *, label: str) -> Path:
+    if path.is_symlink():
+        raise FileIOError(FileIOErrorCode.DIRECTORY_INVALID, f"{label} is a symbolic link: {path}")
     try:
         resolved = path.resolve(strict=True)
     except OSError as error:
@@ -35,22 +37,48 @@ def _verified_directory(path: Path, *, label: str) -> Path:
     return resolved
 
 
+def _reject_symlinked_descendant(base: Path, descendant: Path, *, label: str) -> None:
+    try:
+        components = descendant.relative_to(base).parts
+    except ValueError:
+        return
+    current = base
+    for component in components:
+        current /= component
+        if current.is_symlink():
+            raise FileIOError(FileIOErrorCode.DIRECTORY_INVALID, f"{label} contains a symbolic link: {current}")
+
+
 def _validate_component(component: str) -> None:
     if component in {"", ".", ".."} or "/" in component or os.sep in component:
         raise FileIOError(FileIOErrorCode.DIRECTORY_INVALID, f"Invalid durable-root component: {component!r}")
 
 
 def resolve_durable_roots(shared_repository_root: Path, external_work_root: Path | None = None) -> DurableRoots:
-    local_work_root = shared_repository_root.absolute() / ".codex" / "pinboard"
+    shared_root = shared_repository_root.absolute()
+    local_work_root = shared_root / ".pinboard"
     if external_work_root is None or external_work_root.absolute() == local_work_root:
         anchor = _verified_directory(shared_repository_root, label="Shared repository root")
-        return DurableRoots(anchor, (".codex", "pinboard"))
+        return DurableRoots(anchor, (".pinboard",))
 
     external = external_work_root.absolute()
     _validate_component(external.name)
-    if external.parent == local_work_root.parent:
+    compatibility_alias = shared_root / ".codex" / "pinboard"
+    if external == compatibility_alias and external.is_symlink():
+        try:
+            exact_alias = (
+                external.readlink() == Path("../.pinboard") and external.resolve(strict=True) == local_work_root
+            )
+        except OSError:
+            exact_alias = False
+        if exact_alias and local_work_root.is_dir():
+            anchor = _verified_directory(shared_repository_root, label="Shared repository root")
+            return DurableRoots(anchor, (".pinboard",))
+    if external.parent == shared_root / ".codex":
         anchor = _verified_directory(shared_repository_root, label="Shared repository root")
+        _reject_symlinked_descendant(shared_root, external.parent, label="External work-root parent")
         return DurableRoots(anchor, (".codex", external.name))
+    _reject_symlinked_descendant(shared_root, external.parent, label="External work-root parent")
     anchor = _verified_directory(external.parent, label="External work-root parent")
     return DurableRoots(anchor, (external.name,))
 

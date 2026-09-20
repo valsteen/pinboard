@@ -1345,7 +1345,7 @@ class DispatchTest(unittest.TestCase):
             assert isinstance(reference, dict)
             prompt = (roots.work_root / str(reference["selector"])).read_text()
             shared_database_exists = (roots.work_root / "state.sqlite3").is_file()
-            duplicate_ledger_exists = (linked / ".codex" / "pinboard").exists()
+            duplicate_ledger_exists = (linked / ".pinboard").exists()
             linked_checkout = str(linked)
 
         self.assertIn(f"Checkout: {linked_checkout}", prompt)

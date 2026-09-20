@@ -239,10 +239,10 @@ class SQLiteValidationTest(unittest.TestCase):
         first = expect_work_brief_success(self.initialize_work_state(project))
         second = expect_work_brief_success(self.initialize_work_state(project))
 
-        self.assertEqual(project / ".codex" / "pinboard", first.work_root)
+        self.assertEqual(project / ".pinboard", first.work_root)
         self.assertEqual(first.work_root, second.work_root)
-        self.assertEqual(original_exclude + b"/.codex/pinboard/\n", exclude.read_bytes())
-        self.assertEqual(1, exclude.read_text(encoding="utf-8").splitlines().count("/.codex/pinboard/"))
+        self.assertEqual(original_exclude + b"/.pinboard/\n", exclude.read_bytes())
+        self.assertEqual(1, exclude.read_text(encoding="utf-8").splitlines().count("/.pinboard/"))
         self.assertEqual(original_gitignore, gitignore.read_bytes())
         self.assertEqual("", self.run_git(project, "status", "--short", "--untracked-files=all"))
 
@@ -251,7 +251,7 @@ class SQLiteValidationTest(unittest.TestCase):
         self.run_git(project, "init", "-b", "main")
         exclude = project / ".git" / "info" / "exclude"
         original_exclude = exclude.read_bytes()
-        database = project / ".codex" / "pinboard" / "state.sqlite3"
+        database = project / ".pinboard" / "state.sqlite3"
         failure = StorageError(StorageErrorCode.IO_ERROR, "injected database publication failure")
 
         with (
@@ -263,7 +263,7 @@ class SQLiteValidationTest(unittest.TestCase):
         self.assertIs(failure, raised.exception.cause)
         self.assertEqual(exclude, raised.exception.git_exclude_path)
         self.assertIsNone(raised.exception.database_path)
-        self.assertEqual(original_exclude + b"/.codex/pinboard/\n", exclude.read_bytes())
+        self.assertEqual(original_exclude + b"/.pinboard/\n", exclude.read_bytes())
         self.assertFalse(database.exists())
 
         with patch(
@@ -282,14 +282,14 @@ class SQLiteValidationTest(unittest.TestCase):
 
         receipt = expect_work_brief_success(self.initialize_work_state(project))
         self.assertEqual(database, receipt.database_path)
-        self.assertEqual(1, exclude.read_text(encoding="utf-8").splitlines().count("/.codex/pinboard/"))
+        self.assertEqual(1, exclude.read_text(encoding="utf-8").splitlines().count("/.pinboard/"))
 
     def test_default_initialization_reports_committed_exclusion_when_database_publication_fails(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         self.run_git(project, "init", "-b", "main")
         exclude = project / ".git" / "info" / "exclude"
         original_exclude = exclude.read_bytes()
-        database = project / ".codex" / "pinboard" / "state.sqlite3"
+        database = project / ".pinboard" / "state.sqlite3"
 
         with patch(
             "pinboard.cli.work_state.initialize_database",
@@ -308,15 +308,15 @@ class SQLiteValidationTest(unittest.TestCase):
         self.assertEqual(
             {
                 "git_exclude_path": str(exclude),
-                "git_exclude_entry": "/.codex/pinboard/",
+                "git_exclude_entry": "/.pinboard/",
                 "database_path": str(database),
                 "operation": "init",
                 "sqlite_error_code": "SQLITE_READONLY",
                 "permission_recovery": (
                     "For routine Pinboard commands, select a Codex permission profile extending ':workspace' whose "
-                    "narrow filesystem write rule grants access to '.codex/pinboard', the effective work root for "
-                    "this command. A normal checkout uses the relative '.codex/pinboard' rule; a linked worktree "
-                    "uses only the resolved absolute shared-repository '.codex/pinboard' directory; an explicit "
+                    "narrow filesystem write rule grants access to '.pinboard', the effective work root for "
+                    "this command. A normal checkout uses the relative '.pinboard' rule; a linked worktree "
+                    "uses only the resolved absolute shared-repository '.pinboard' directory; an explicit "
                     "'--work-root' uses that exact directory. Remove legacy 'sandbox_mode' and "
                     "'sandbox_workspace_write' settings because they override permission profiles. For fresh default "
                     "initialization, approve the exact 'pinboard init' command once so it can also update "
@@ -325,7 +325,7 @@ class SQLiteValidationTest(unittest.TestCase):
             },
             {observation["field"]: observation["value"] for observation in failure["observed"]},
         )
-        self.assertEqual(original_exclude + b"/.codex/pinboard/\n", exclude.read_bytes())
+        self.assertEqual(original_exclude + b"/.pinboard/\n", exclude.read_bytes())
         self.assertFalse(database.exists())
 
     def test_default_initialization_reports_every_surface_before_view_refresh_failure(self) -> None:
@@ -333,8 +333,8 @@ class SQLiteValidationTest(unittest.TestCase):
         self.run_git(project, "init", "-b", "main")
         exclude = project / ".git" / "info" / "exclude"
         original_exclude = exclude.read_bytes()
-        work_root = project / ".codex" / "pinboard"
-        work_root.mkdir(parents=True)
+        work_root = project / ".pinboard"
+        work_root.mkdir()
         (work_root / "views").write_text("blocks generated views\n", encoding="utf-8")
         database = work_root / "state.sqlite3"
 
@@ -351,12 +351,12 @@ class SQLiteValidationTest(unittest.TestCase):
         self.assertEqual(
             {
                 "git_exclude_path": str(exclude),
-                "git_exclude_entry": "/.codex/pinboard/",
+                "git_exclude_entry": "/.pinboard/",
                 "database_path": str(database),
             },
             {observation["field"]: observation["value"] for observation in failure["observed"]},
         )
-        self.assertEqual(original_exclude + b"/.codex/pinboard/\n", exclude.read_bytes())
+        self.assertEqual(original_exclude + b"/.pinboard/\n", exclude.read_bytes())
         self.assertTrue(database.exists())
 
         repeated_result, repeated_stdout, repeated_stderr = self.run_cli(
@@ -371,7 +371,7 @@ class SQLiteValidationTest(unittest.TestCase):
         self.assertFalse(repeated_failure["state_changed"])
         self.assertEqual([], repeated_failure["changed_surfaces"])
         self.assertEqual([], repeated_failure["observed"])
-        self.assertEqual(1, exclude.read_text(encoding="utf-8").splitlines().count("/.codex/pinboard/"))
+        self.assertEqual(1, exclude.read_text(encoding="utf-8").splitlines().count("/.pinboard/"))
         self.assertTrue(database.exists())
 
     def test_explicit_work_root_preserves_its_path_without_changing_git_excludes(self) -> None:

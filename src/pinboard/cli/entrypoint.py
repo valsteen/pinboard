@@ -22,7 +22,7 @@ from pinboard.cli import (
     cli_commands,
     cli_output,
     cli_parser,
-    project_handover,
+    project_export,
     tool_contract,
     transitions,
     work_inspection,
@@ -73,8 +73,8 @@ def _dispatch(
             return work_inspection.show_status(roots, store, command)
         case cli_commands.CloseCommand() as command:
             return transitions.close(durable, store, command)
-        case cli_commands.HandoverCommand() as command:
-            return project_handover.export_project_handover(durable, store, command)
+        case cli_commands.ExportCommand() as command:
+            return project_export.export_project(durable, store, command)
         case cli_commands.InitializeCommand() as command:
             return work_state_commands.initialize_state(roots, durable, store, command)
         case cli_commands.RebuildViewsCommand() as command:

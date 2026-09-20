@@ -1,4 +1,4 @@
-"""Read-only composition for the complete portable project handover."""
+"""Read-only composition for the complete portable project export."""
 
 import base64
 from pathlib import PurePosixPath
@@ -6,7 +6,7 @@ from pathlib import PurePosixPath
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.application import candidate_snapshots, handover, ports, work_brief_models
+from pinboard.application import candidate_snapshots, ports, project_export, work_brief_models
 from pinboard.cli import cli_commands, work_state
 from pinboard.cli.cli_output import write_json
 from pinboard.domain.identifiers import ArtifactRefId
@@ -21,28 +21,28 @@ MEDIA_TYPE_BY_SUFFIX = {
 }
 
 
-def _encode_artifact_content(reference_id: int, value: bytes) -> handover.HandoverArtifactContent:
+def _encode_artifact_content(reference_id: int, value: bytes) -> project_export.ProjectExportArtifactContent:
     try:
         content = value.decode("utf-8")
     except UnicodeDecodeError:
-        return handover.HandoverArtifactContent(
+        return project_export.ProjectExportArtifactContent(
             reference_id,
-            handover.ContentEncoding.BASE64,
+            project_export.ContentEncoding.BASE64,
             base64.b64encode(value).decode("ascii"),
         )
-    return handover.HandoverArtifactContent(reference_id, handover.ContentEncoding.UTF8, content)
+    return project_export.ProjectExportArtifactContent(reference_id, project_export.ContentEncoding.UTF8, content)
 
 
 def _read_and_encode_artifacts(
-    state: handover.HandoverState,
+    state: project_export.ProjectExportState,
     artifacts: ArtifactRepository,
 ) -> tuple[
-    tuple[handover.HandoverArtifactReference, ...],
-    tuple[handover.HandoverArtifactContent, ...],
+    tuple[project_export.ProjectExportArtifactReference, ...],
+    tuple[project_export.ProjectExportArtifactContent, ...],
     dict[ArtifactRefId, bytes],
 ]:
-    projected_references: list[handover.HandoverArtifactReference] = []
-    encoded_contents: list[handover.HandoverArtifactContent] = []
+    projected_references: list[project_export.ProjectExportArtifactReference] = []
+    encoded_contents: list[project_export.ProjectExportArtifactContent] = []
     verified_artifacts: dict[ArtifactRefId, bytes] = {}
     for reference in state.artifact_references:
         suffix = PurePosixPath(reference.selector).suffix.lower()
@@ -55,15 +55,15 @@ def _read_and_encode_artifacts(
             ) from error
         verified_bytes = artifacts.read(reference)
         verified_artifacts[reference.artifact_ref_id] = verified_bytes
-        projected_references.append(handover.project_artifact_reference(reference, media_type=media_type))
+        projected_references.append(project_export.project_artifact_reference(reference, media_type=media_type))
         encoded_contents.append(_encode_artifact_content(int(reference.artifact_ref_id), verified_bytes))
     return tuple(projected_references), tuple(encoded_contents), verified_artifacts
 
 
-def export_project_handover(
-    durable: DurableRoots, store: ports.HandoverReader, _command: cli_commands.HandoverCommand
+def export_project(
+    durable: DurableRoots, store: ports.ProjectExportReader, _command: cli_commands.ExportCommand
 ) -> work_brief_models.WorkBriefResult[int]:
-    captured_state = handover.merge_handover_batches(store.read_handover_batches())
+    captured_state = project_export.merge_project_export_batches(store.read_project_export_batches())
     artifact_repository = ArtifactRepository(durable)
     projected_references, encoded_contents, verified_artifacts = _read_and_encode_artifacts(
         captured_state, artifact_repository
@@ -92,7 +92,7 @@ def export_project_handover(
     )
     if isinstance(completion_packages, work_brief_models.WorkBriefFailure):
         return completion_packages
-    portable_package = handover.project_handover_from_state(
+    portable_package = project_export.project_export_from_state(
         captured_state,
         projected_references,
         encoded_contents,

@@ -25,8 +25,8 @@ from pinboard.application import (
     candidate_snapshots,
     checkpoint_compatibility_models,
     checkpoint_packages,
-    handover,
     ports,
+    project_export,
     stored_state,
     work_brief_models,
     work_briefs,
@@ -146,7 +146,7 @@ def _validate_one_checkpoint_package(
     definition_digests: Mapping[tuple[str, int], str],
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefResult[handover.HandoverCheckpointPackageValue]:
+) -> work_brief_models.WorkBriefResult[project_export.ProjectExportCheckpointPackageValue]:
     selected = checkpoint_packages.validate_selected_checkpoint_review_package(
         receipt,
         package_reference,
@@ -181,11 +181,15 @@ def _validate_one_checkpoint_package(
     }
     match package:
         case work_brief_models.CheckpointReviewPackageV3():
-            return msgspec.convert(packaged, type=handover.HandoverCheckpointPackageV3, strict=True)
+            return msgspec.convert(packaged, type=project_export.ProjectExportCheckpointPackageV3, strict=True)
         case checkpoint_compatibility_models.CheckpointReviewPackageV2():
-            return msgspec.convert(packaged, type=handover.CompatibilityHandoverCheckpointPackageV2, strict=True)
+            return msgspec.convert(
+                packaged, type=project_export.CompatibilityProjectExportCheckpointPackageV2, strict=True
+            )
         case checkpoint_compatibility_models.CheckpointReviewPackage():
-            return msgspec.convert(packaged, type=handover.CompatibilityHandoverCheckpointPackage, strict=True)
+            return msgspec.convert(
+                packaged, type=project_export.CompatibilityProjectExportCheckpointPackage, strict=True
+            )
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -195,7 +199,7 @@ def validate_checkpoint_review_packages(
     artifact_references: tuple[stored_state.ArtifactReference, ...],
     transition_receipts: tuple[stored_state.StoredTransitionReceipt, ...],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefResult[tuple[handover.HandoverCheckpointPackageValue, ...]]:
+) -> work_brief_models.WorkBriefResult[tuple[project_export.ProjectExportCheckpointPackageValue, ...]]:
     """Validate historical package provenance from one loaded state and verified bytes."""
 
     references_by_id = {value.artifact_ref_id: value for value in artifact_references}
@@ -206,7 +210,7 @@ def validate_checkpoint_review_packages(
         (str(value.item_id), value.revision): value.digest for value in lifecycle.definition_revisions
     }
     linked_package_ids: set[ArtifactRefId] = set()
-    packages: list[handover.HandoverCheckpointPackageValue] = []
+    packages: list[project_export.ProjectExportCheckpointPackageValue] = []
     for receipt in transition_receipts:
         if receipt.outcome_schema != "checkpoint-acceptance/v2":
             continue
@@ -349,17 +353,17 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
     artifact_references: tuple[stored_state.ArtifactReference, ...],
     transition_receipts: tuple[stored_state.StoredTransitionReceipt, ...],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-    checkpoint_packages: tuple[handover.HandoverCheckpointPackageValue, ...],
-) -> work_brief_models.WorkBriefResult[tuple[handover.HandoverCompletionReviewPackage, ...]]:
+    checkpoint_packages: tuple[project_export.ProjectExportCheckpointPackageValue, ...],
+) -> work_brief_models.WorkBriefResult[tuple[project_export.ProjectExportCompletionReviewPackage, ...]]:
     references_by_id = {value.artifact_ref_id: value for value in artifact_references}
     references = {(value.kind.value, value.key, value.revision): value for value in artifact_references}
     attempts = {str(value.attempt_id): value for value in lifecycle.attempts}
     definitions = {(str(value.item_id), value.revision): value.digest for value in lifecycle.definition_revisions}
-    checkpoints_by_attempt: dict[str, list[handover.HandoverCheckpointPackageValue]] = {}
+    checkpoints_by_attempt: dict[str, list[project_export.ProjectExportCheckpointPackageValue]] = {}
     for checkpoint in checkpoint_packages:
         checkpoints_by_attempt.setdefault(checkpoint.attempt_id, []).append(checkpoint)
     linked_package_ids: set[ArtifactRefId] = set()
-    completed: list[handover.HandoverCompletionReviewPackage] = []
+    completed: list[project_export.ProjectExportCompletionReviewPackage] = []
     for receipt in transition_receipts:
         if receipt.outcome_schema != "completion-acceptance/v2":
             continue
@@ -463,7 +467,7 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
                     "package_artifact_ref_id": int(receipt.artifact_ref_id),
                     **msgspec.to_builtins(package),
                 },
-                type=handover.HandoverCompletionReviewPackage,
+                type=project_export.ProjectExportCompletionReviewPackage,
                 strict=True,
             )
         )

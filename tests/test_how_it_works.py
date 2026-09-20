@@ -26,7 +26,7 @@ class HowItWorksDocumentationTests(unittest.TestCase):
                 Path("assets/how-it-works/journey.svg"),
                 Path("assets/how-it-works/outcomes.svg"),
                 Path("assets/how-it-works/database.svg"),
-                Path("assets/how-it-works/handover.svg"),
+                Path("assets/how-it-works/project-export.svg"),
                 Path("assets/how-it-works/brief.svg"),
                 Path("assets/how-it-works/review-loop.svg"),
                 Path("assets/how-it-works/product-dark.svg"),
@@ -34,7 +34,7 @@ class HowItWorksDocumentationTests(unittest.TestCase):
                 Path("assets/how-it-works/journey-dark.svg"),
                 Path("assets/how-it-works/outcomes-dark.svg"),
                 Path("assets/how-it-works/database-dark.svg"),
-                Path("assets/how-it-works/handover-dark.svg"),
+                Path("assets/how-it-works/project-export-dark.svg"),
                 Path("assets/how-it-works/brief-dark.svg"),
                 Path("assets/how-it-works/review-loop-dark.svg"),
             },
@@ -43,7 +43,7 @@ class HowItWorksDocumentationTests(unittest.TestCase):
         guide = outputs[Path("HOW_IT_WORKS.md")]
         self.assertEqual(8, guide.count("<picture>"))
         self.assertEqual(8, guide.count('media="(prefers-color-scheme: dark)"'))
-        for slug in ("product", "layers", "journey", "outcomes", "database", "handover", "brief", "review-loop"):
+        for slug in ("product", "layers", "journey", "outcomes", "database", "project-export", "brief", "review-loop"):
             self.assertIn(f'srcset="assets/how-it-works/{slug}-dark.svg"', guide)
             self.assertIn(f'src="assets/how-it-works/{slug}.svg"', guide)
 
@@ -76,7 +76,7 @@ class HowItWorksDocumentationTests(unittest.TestCase):
                 self.assertNotIn("linearGradient", svg)
                 self.assertNotIn("feDropShadow", svg)
 
-        for slug in ("product", "layers", "journey", "outcomes", "database", "handover", "brief", "review-loop"):
+        for slug in ("product", "layers", "journey", "outcomes", "database", "project-export", "brief", "review-loop"):
             day = outputs[Path(f"assets/how-it-works/{slug}.svg")]
             night = outputs[Path(f"assets/how-it-works/{slug}-dark.svg")]
             with self.subTest(slug=slug):

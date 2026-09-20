@@ -2,7 +2,7 @@ import argparse
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from . import brief, database, handover, journey, layers, outcomes, product, review_loop
+from . import brief, database, journey, layers, outcomes, product, project_export, review_loop
 from .model import DAY_PALETTE, NIGHT_PALETTE, Diagram, render_svg
 
 OUTPUT_PATHS = {
@@ -12,7 +12,7 @@ OUTPUT_PATHS = {
     "journey": Path("assets/how-it-works/journey.svg"),
     "outcomes": Path("assets/how-it-works/outcomes.svg"),
     "database": Path("assets/how-it-works/database.svg"),
-    "handover": Path("assets/how-it-works/handover.svg"),
+    "project-export": Path("assets/how-it-works/project-export.svg"),
     "brief": Path("assets/how-it-works/brief.svg"),
     "review-loop": Path("assets/how-it-works/review-loop.svg"),
 }
@@ -156,11 +156,11 @@ SQLite is the authority. Accepted briefs, results, and reviews are immutable art
 
 This local record supports recovery and review, but it is not a defense against a hostile user with the same filesystem access. Pinboard is designed for one trusted local developer authority and for failures such as stale actions, invalid input, interrupted publication, and ordinary concurrency.
 
-## Handover carries facts, not control
+## Project export carries facts, not control
 
-When work must move to another tool, Pinboard can assemble the admitted work, accepted definitions, attempts, proposals, relationships, decisions, and verified evidence into one portable package.
+When work must move to another tool, Pinboard can export the admitted work, accepted definitions, attempts, proposals, relationships, decisions, and verified evidence as one portable package.
 
-{_picture("handover", "Exported Pinboard project facts and verified artifacts becoming one portable JSON package while live authority stays local")}
+{_picture("project-export", "Exported Pinboard project facts and verified artifacts becoming one portable JSON package while live authority stays local")}
 
 The package captures one coherent project revision. It does not export live worker authority, mutate Pinboard, choose how the receiving tool represents the facts, or write into that tool. A human or the receiving system owns that mapping.
 
@@ -196,7 +196,7 @@ def build_outputs(root: Path) -> dict[Path, str]:
     journey.validate()
     outcomes.validate()
     database.validate(root)
-    handover.validate()
+    project_export.validate()
     brief.validate()
     review_loop.validate()
     diagrams: tuple[Diagram, ...] = (
@@ -205,7 +205,7 @@ def build_outputs(root: Path) -> dict[Path, str]:
         journey.DIAGRAM,
         outcomes.DIAGRAM,
         database.DIAGRAM,
-        handover.DIAGRAM,
+        project_export.DIAGRAM,
         brief.DIAGRAM,
         review_loop.DIAGRAM,
     )

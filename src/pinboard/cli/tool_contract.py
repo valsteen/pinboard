@@ -128,8 +128,8 @@ def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContra
             precondition = "source-checkout-resolvable"
             postcondition = "Return integrity and projection diagnostics without repairing state."
             retry = "safe-to-repeat"
-        case "handover":
-            purpose = "Export one complete tool-neutral project handover."
+        case "export":
+            purpose = "Export one complete tool-neutral project package."
             mutation = "read-only"
             scope = "explicit-project-wide"
             roles = ("observer",)

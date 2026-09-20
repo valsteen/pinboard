@@ -19,7 +19,7 @@ from pinboard.adapters.sqlite.database import decode_row
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import read_lifecycle
 from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
-from pinboard.application import handover, stored_state
+from pinboard.application import project_export, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import (
@@ -319,7 +319,7 @@ def read_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
     return state
 
 
-def read_handover_state(connection: sqlite3.Connection) -> handover.HandoverState:
+def read_project_export_state(connection: sqlite3.Connection) -> project_export.ProjectExportState:
     """Read every exported relation while excluding local-only authority history."""
 
     project = _read_project(connection)
@@ -330,7 +330,7 @@ def read_handover_state(connection: sqlite3.Connection) -> handover.HandoverStat
         {value.item_id for value in lifecycle.work_items},
         StorageErrorCode.INVALID_STATE,
     )
-    return handover.HandoverState(
+    return project_export.ProjectExportState(
         lifecycle,
         read_pending_proposals(connection),
         replacements,

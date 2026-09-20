@@ -1,29 +1,29 @@
-from pinboard.application import handover as application_handover
+from pinboard.application import project_export as application_project_export
 from pinboard.application import stored_state
-from pinboard.cli import cli_commands, project_handover
+from pinboard.cli import cli_commands, project_export
 
 from .model import Box, Connector, Diagram, Guide, Note, Section
 
 SOURCE_SYMBOL_NAMES: dict[str, str] = {
     "StoredWorkState": stored_state.StoredWorkState.__name__,
-    "HandoverCommand": cli_commands.HandoverCommand.__name__,
-    "export_project_handover": project_handover.export_project_handover.__name__,
-    "ProjectHandover": application_handover.ProjectHandover.__name__,
-    "project_handover_from_state": application_handover.project_handover_from_state.__name__,
+    "ExportCommand": cli_commands.ExportCommand.__name__,
+    "export_project": project_export.export_project.__name__,
+    "ProjectExport": application_project_export.ProjectExport.__name__,
+    "project_export_from_state": application_project_export.project_export_from_state.__name__,
 }
 
 
 def validate() -> None:
     renamed = tuple(name for name, actual_name in SOURCE_SYMBOL_NAMES.items() if actual_name != name)
     if renamed:
-        raise ValueError(f"handover visual references renamed source symbols: {', '.join(renamed)}")
+        raise ValueError(f"project-export visual references renamed source symbols: {', '.join(renamed)}")
 
 
 DIAGRAM = Diagram(
-    slug="handover",
+    slug="project-export",
     title="One project-facts package crosses a read-only boundary",
     description=(
-        "The handover command captures one SQLite revision, projects the supported project facts, verifies every "
+        "The export command captures one SQLite revision, projects the supported project facts, verifies every "
         "referenced accepted artifact, validates checkpoint and covered-completion provenance, and emits one "
         "revision-stamped portable JSON package with typed reusable evidence. Live preparation and "
         "attempt authority stay local. A human or another tool decides how to use the package; export changes no "
@@ -33,7 +33,7 @@ DIAGRAM = Diagram(
     height=560,
     sections=(
         Section("Pinboard authority", "project facts and accepted evidence", 28, 54),
-        Section("Read-only handover", "complete before any output", 420, 54),
+        Section("Read-only project export", "complete before any output", 420, 54),
         Section("Portable boundary", "the recipient owns the next step", 760, 54),
     ),
     guides=(
@@ -74,7 +74,7 @@ DIAGRAM = Diagram(
             "Read-only command",
             "Build exported package",
             ("project facts from revision", "verify every evidence closure"),
-            ("pinboard handover --json",),
+            ("pinboard export --json",),
             420,
             170,
             250,
@@ -85,7 +85,7 @@ DIAGRAM = Diagram(
             "Portable output",
             "One JSON package",
             ("revision-stamped", "typed accepted evidence"),
-            ("pinboard-project-handover/v6",),
+            ("pinboard-project-export/v1",),
             740,
             170,
             230,

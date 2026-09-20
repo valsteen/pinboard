@@ -56,12 +56,12 @@ class ToolContractCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     json: bool = False
 
 
-class HandoverCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ExportCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     json: bool
 
     def __post_init__(self) -> None:
         if not self.json:
-            raise ValueError("handover output must be JSON")
+            raise ValueError("export output must be JSON")
 
 
 class InitializeCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -82,7 +82,7 @@ type CliCommand = (
     | StatusCommand
     | CloseCommand
     | ToolContractCommand
-    | HandoverCommand
+    | ExportCommand
     | InitializeCommand
     | MigrateWorkRootCommand
     | RebuildViewsCommand

@@ -140,13 +140,13 @@ SQLite is the authority. Accepted briefs, results, and reviews are immutable art
 
 This local record supports recovery and review, but it is not a defense against a hostile user with the same filesystem access. Pinboard is designed for one trusted local developer authority and for failures such as stale actions, invalid input, interrupted publication, and ordinary concurrency.
 
-## Handover carries facts, not control
+## Project export carries facts, not control
 
-When work must move to another tool, Pinboard can assemble the admitted work, accepted definitions, attempts, proposals, relationships, decisions, and verified evidence into one portable package.
+When work must move to another tool, Pinboard can export the admitted work, accepted definitions, attempts, proposals, relationships, decisions, and verified evidence as one portable package.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works/handover-dark.svg">
-  <img src="assets/how-it-works/handover.svg" alt="Exported Pinboard project facts and verified artifacts becoming one portable JSON package while live authority stays local">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works/project-export-dark.svg">
+  <img src="assets/how-it-works/project-export.svg" alt="Exported Pinboard project facts and verified artifacts becoming one portable JSON package while live authority stays local">
 </picture>
 
 The package captures one coherent project revision. It does not export live worker authority, mutate Pinboard, choose how the receiving tool represents the facts, or write into that tool. A human or the receiving system owns that mapping.

@@ -637,7 +637,9 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         before = (fixture.work / "state.sqlite3").read_bytes()
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("full ledger read")),
-            patch.object(SQLiteWorkStore, "read_handover_batches", side_effect=AssertionError("handover read")),
+            patch.object(
+                SQLiteWorkStore, "read_project_export_batches", side_effect=AssertionError("project_export read")
+            ),
             patch.object(sqlite_state, "read_history_receipt", wraps=sqlite_state.read_history_receipt) as reads,
         ):
             action = self.project_action(fixture, "complete:work-a-1")

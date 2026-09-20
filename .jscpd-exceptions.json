@@ -4,57 +4,57 @@
   "records": [
     {
       "certification": {
-        "evidence_sha256": "7b1828e2ee2d60772dc031436d80c6fbb056035b8a5d83b692b04e657b884562",
-        "reviewed_pair_sha256": "a7121a0de9614f84c40153d55af1a576c25e77d81aa094225b5f3b624285d8f2",
-        "reviewer_task_id": "01a0ac23-e40f-72f0-8c76-9f6a4d02890c"
+        "evidence_sha256": "e19bb3a3ce006ef4dedc5bdcfdb4ad094dfeead1385e9874189b555639c6baa7",
+        "reviewed_pair_sha256": "e8665ba6270c811658c0462815e38f7bdfb4e723678b625d6c711262a4554c36",
+        "reviewer_task_id": "01a0c09a-f2e0-7f81-ab27-de6c8d9c2424"
       },
       "identity": {
         "format": "python",
-        "id": "handover-versioned-checkpoint-export-shapes",
+        "id": "project-export-versioned-checkpoint-export-shapes",
         "lines": 19,
         "occurrences": [
           {
             "endpoint": {
               "end": 336,
               "endLoc": {
-                "column": 37,
+                "column": 42,
                 "line": 336,
-                "position": 8466
+                "position": 8663
               },
-              "name": "application/handover.py",
+              "name": "application/project_export.py",
               "start": 318,
               "startLoc": {
                 "column": 47,
                 "line": 318,
-                "position": 7883
+                "position": 8045
               }
             },
-            "sha256": "7f4c548c5fa0c3e5d9b95ae75a56b66405b8be1987ce268c1dbae84c0f481190"
+            "sha256": "00452974893fb58602aa7d7eb228b0f51beb78a37efea081579b85903a54b835"
           },
           {
             "endpoint": {
               "end": 359,
               "endLoc": {
-                "column": 37,
+                "column": 42,
                 "line": 359,
-                "position": 9154
+                "position": 9391
               },
-              "name": "application/handover.py",
+              "name": "application/project_export.py",
               "start": 341,
               "startLoc": {
                 "column": 47,
                 "line": 341,
-                "position": 8571
+                "position": 8773
               }
             },
-            "sha256": "7f4c548c5fa0c3e5d9b95ae75a56b66405b8be1987ce268c1dbae84c0f481190"
+            "sha256": "00452974893fb58602aa7d7eb228b0f51beb78a37efea081579b85903a54b835"
           }
         ],
         "owners": [
-          "src/pinboard/application/handover.py#CompatibilityHandoverCheckpointPackageV2",
-          "src/pinboard/application/handover.py#HandoverCheckpointPackageV3"
+          "src/pinboard/application/project_export.py#CompatibilityProjectExportCheckpointPackageV2",
+          "src/pinboard/application/project_export.py#ProjectExportCheckpointPackageV3"
         ],
-        "rationale": "Retained patch-only v2 and current complete-state v3 are independently required exact tagged export records. The match repeats required frozen strict fields, not behavior; shared portable identities and the explicit tagged union already own common representation. An inherited field base would couple independent schema meanings without consolidating a decision or invariant, while precise validated version conversion must remain explicit.",
+        "rationale": "Retained patch-only v2 and current complete-state v3 are independently required exact tagged project-export records. The match repeats required frozen strict fields, not behavior; their distinct schema tags and explicit tagged union preserve independently owned version semantics. Sharing fields through inheritance would couple those schemas solely to suppress analyzer output. Revisit only if v2 is retired or both versions gain one accepted schema owner without changing tags, strictness, field order, validation, or dependency direction.",
         "tokens": 60
       }
     },

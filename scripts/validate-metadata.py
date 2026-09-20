@@ -298,10 +298,14 @@ def validate_plugin() -> None:
 def validate_claude_plugin() -> None:
     path = ROOT / ".claude-plugin" / "plugin.json"
     value = msgspec.json.decode(path.read_bytes(), type=ClaudePluginManifest)
-    if (value.name, value.version) != (PLUGIN_NAME, PROJECT_VERSION):
+    cachebuster_prefix = f"{PROJECT_VERSION}+claude."
+    cachebuster = value.version.removeprefix(cachebuster_prefix)
+    if value.name != PLUGIN_NAME or not value.version.startswith(cachebuster_prefix):
         raise ValueError("Claude plugin manifest identity or version is invalid")
     if value.license != "MIT" or value.author.name != "Vincent Alsteen":
         raise ValueError("Claude plugin author or license is invalid")
+    if len(cachebuster) != 14 or not cachebuster.isdecimal():
+        raise ValueError("plugin manifest cachebuster must be a UTC timestamp")
     if value.repository != "https://github.com/valsteen/pinboard" or value.homepage != f"{value.repository}#readme":
         raise ValueError("Claude plugin repository or homepage is invalid")
     if not (ROOT / "skills").is_dir():

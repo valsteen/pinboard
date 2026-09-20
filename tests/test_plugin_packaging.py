@@ -162,7 +162,7 @@ class PluginPackagingTests(unittest.TestCase):
 
     def test_parent_hook_adds_reconnect_note_only_when_launcher_prepared_runtime_now(self) -> None:
         for value, expected in ((None, False), ("", False), ("0", False), ("1", True)):
-            environment = {} if value is None else {"PINBOARD_RUNTIME_PREPARED_NOW": value}
+            environment: dict[str, str] = {} if value is None else {"PINBOARD_RUNTIME_PREPARED_NOW": value}
             with (
                 self.subTest(value=value),
                 patch.dict(os.environ, environment, clear=False),

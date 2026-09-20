@@ -524,7 +524,6 @@ class SubmitReviewAction:
     kind: ActionKind = field(init=False, default=ActionKind.SUBMIT_REVIEW)
 
 
-type AdvisoryAction = ContinueAction | DispatchAction | InspectAction | ReportBlockerAction
 type LifecycleAction = (
     AcceptCheckpointAction
     | AcceptReviewAndContinueAction
@@ -573,7 +572,7 @@ type NonCheckpointTransitionAction = (
     | ReviseItemAction
     | SubmitReviewAction
 )
-type Action = TransitionAction | AdvisoryAction
+type Action = TransitionAction | ContinueAction | DispatchAction | InspectAction | ReportBlockerAction
 
 
 def action_id(action: Action) -> ActionId:

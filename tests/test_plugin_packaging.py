@@ -269,7 +269,7 @@ class PluginPackagingTests(unittest.TestCase):
                                 "pinboard_proposal_create",
                                 {
                                     "project_root": str(project),
-                                    "work_root": str(project / ".codex" / "pinboard"),
+                                    "work_root": str(project / ".pinboard"),
                                     "proposal": proposal,
                                     "actor_task_id": "claude-session",
                                     "actor_host_id": "local",
@@ -282,7 +282,7 @@ class PluginPackagingTests(unittest.TestCase):
                             "pinboard_item_status",
                             {
                                 "project_root": str(project),
-                                "work_root": str(project / ".codex" / "pinboard"),
+                                "work_root": str(project / ".pinboard"),
                                 "item_id": "packaged-proposal",
                             },
                         )
@@ -676,7 +676,7 @@ class PluginPackagingTests(unittest.TestCase):
             reopened = run("init")
             self.assertTrue(validation["valid"])
             self.assertNotIn("Optional next steps", reopened.stdout)
-            self.assertTrue((project / ".codex" / "pinboard" / "state.sqlite3").is_file())
+            self.assertTrue((project / ".pinboard" / "state.sqlite3").is_file())
             self.assertEqual(before, tree_fingerprint(plugin_root))
             self.assertEqual(
                 managed_dependency_bytes,

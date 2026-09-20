@@ -1231,6 +1231,27 @@ class McpTransportTest(unittest.TestCase):
         )
         return temporary, project, roots
 
+    def test_legacy_default_roots_require_migration_before_mcp_access(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory).resolve()
+            subprocess.run(("git", "init", "--quiet", str(project)), check=True)
+            legacy = project / ".codex" / "pinboard"
+            initialize_database(resolve_durable_roots(project, legacy), SQLITE_NOW)
+
+            shim = project / "shim"
+            shim.mkdir()
+
+            for label, work_root in (
+                ("legacy", legacy),
+                ("current", project / ".pinboard"),
+                ("legacy-dot", project / ".codex" / "." / "pinboard"),
+                ("current-dot", project / "." / ".pinboard"),
+                ("legacy-dot-dot", shim / ".." / ".codex" / "pinboard"),
+                ("current-dot-dot", shim / ".." / ".pinboard"),
+            ):
+                with self.subTest(label=label), self.assertRaisesRegex(ValueError, "migrate-work-root"):
+                    mcp_common._require_initialized_durable(project, work_root)
+
     def test_stdio_authority_and_transition_tools_persist_exact_lifecycle_results(self) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
@@ -1522,7 +1543,7 @@ class McpTransportTest(unittest.TestCase):
                 text=True,
             ).stdout.strip()
 
-        (project / ".git" / "info" / "exclude").write_text(".codex/\n", encoding="utf-8")
+        (project / ".git" / "info" / "exclude").write_text(".pinboard/\n", encoding="utf-8")
         (project / "product.txt").write_text("Accepted base\n", encoding="utf-8")
         git("add", "product.txt", "architecture.md")
         git("commit", "-m", "Accepted base")

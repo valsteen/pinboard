@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
+from pinboard.adapters.files.legacy_storage import StorageLocation, observe_storage_location
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.files.views import refresh_facts
@@ -175,9 +176,19 @@ def _committed_authority_fields(effect: CommittedEffect, warning: ViewWarning | 
 
 
 def _require_initialized_durable(shared_repository: Path, work_root: Path) -> DurableRoots:
+    default_work_root = shared_repository / ".pinboard"
+    legacy_work_root = shared_repository / ".codex" / "pinboard"
     durable = resolve_durable_roots(shared_repository, work_root)
+    if durable.work_root in (default_work_root, legacy_work_root):
+        location = observe_storage_location(shared_repository)
+        if location == StorageLocation.LEGACY:
+            raise ValueError(
+                "Legacy Pinboard work state is unchanged; run 'pinboard migrate-work-root', then retry this tool "
+                f"with work_root {default_work_root}."
+            )
+        if location == StorageLocation.CONFLICT:
+            raise ValueError("The legacy and canonical work-root entries conflict; inspect both paths before retrying.")
     if not durable.database_path.is_file():
-        default_work_root = shared_repository / ".codex" / "pinboard"
         raise ValueError(
             f"Pinboard work state is unavailable at {durable.work_root}; use the exact initialized work root. "
             f"The default for this repository is {default_work_root}."

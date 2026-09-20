@@ -83,7 +83,7 @@ class RootResolutionTest(unittest.TestCase):
             {
                 "source_checkout_root": str(linked.resolve()),
                 "shared_repository_root": str(repository.resolve()),
-                "work_root": str(repository.resolve() / ".codex" / "pinboard"),
+                "work_root": str(repository.resolve() / ".pinboard"),
             },
             json.loads(stdout),
         )
@@ -94,10 +94,10 @@ class RootResolutionTest(unittest.TestCase):
         exclude = repository / ".git" / "info" / "exclude"
         exclude_mtime = exclude.stat().st_mtime_ns
         self.assertEqual(0, main(("--project-root", str(linked), "init")))
-        self.assertTrue((repository / ".codex" / "pinboard" / "state.sqlite3").is_file())
-        self.assertFalse((linked / ".codex" / "pinboard").exists())
+        self.assertTrue((repository / ".pinboard" / "state.sqlite3").is_file())
+        self.assertFalse((linked / ".pinboard").exists())
         self.assertEqual(
-            original_exclude + b"/.codex/pinboard/\n",
+            original_exclude + b"/.pinboard/\n",
             exclude.read_bytes(),
         )
         self.assertEqual(exclude_mtime, exclude.stat().st_mtime_ns)
@@ -144,7 +144,7 @@ class RootResolutionTest(unittest.TestCase):
         repository = Path(tempfile.mkdtemp()).resolve()
         self.run_git(repository, "init", "-b", "main")
         exclude = repository / ".git" / "info" / "exclude"
-        exclude.write_bytes(b"/.codex/pinboard/\n")
+        exclude.write_bytes(b"/.pinboard/\n")
         exclude.chmod(0o400)
         try:
             self.assertIsNone(ensure_default_git_exclude(repository))
@@ -190,7 +190,7 @@ class RootResolutionTest(unittest.TestCase):
 
         self.assertEqual(1, results.count(exclude))
         self.assertEqual(1, results.count(None))
-        self.assertEqual(1, exclude.read_text(encoding="utf-8").splitlines().count("/.codex/pinboard/"))
+        self.assertEqual(1, exclude.read_text(encoding="utf-8").splitlines().count("/.pinboard/"))
 
     def test_store_free_routes_do_not_validate_an_unused_external_work_root(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

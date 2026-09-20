@@ -26,6 +26,7 @@ from pinboard.cli import (
     tool_contract,
     transitions,
     work_inspection,
+    work_root_migration,
     work_state_commands,
 )
 from pinboard.cli.errors import (
@@ -59,6 +60,10 @@ def _dispatch(
         raise AssertionError("A rooted command requires resolved project roots.")
     if isinstance(invocation.command, cli_commands.RootCommand):
         return work_state_commands.show_roots(roots, invocation.command)
+    if isinstance(invocation.command, cli_commands.MigrateWorkRootCommand):
+        return work_root_migration.migrate_work_root(roots)
+    if (root_failure := work_root_migration.require_current_work_root(roots)) is not None:
+        return root_failure
     durable = work_state_commands.resolve_durable_layout(roots)
     store = work_state_commands.compose_store(durable)
     match invocation.command:

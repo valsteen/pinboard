@@ -22,6 +22,8 @@ class ChangedSurface(Enum):
     ACCEPTED_ARTIFACT_REFERENCE = "accepted-artifact-reference"
     LEDGER = "ledger"
     REPOSITORY_GIT_EXCLUDE = "repository-git-exclude"
+    WORK_ROOT = "work-root"
+    COMPATIBILITY_ALIAS = "compatibility-alias"
     SELECTED_OUTPUT = "selected-output"
     SOURCE_CHECKOUT = "source-checkout"
 
@@ -102,6 +104,9 @@ class DecisionFailureCode(Enum):
     REPLACEMENT_INVALID = "REPLACEMENT_INVALID"
     REPLACEMENT_STALE = "REPLACEMENT_STALE"
     TRANSITION_INPUT_INVALID = "TRANSITION_INPUT_INVALID"
+    WORK_ROOT_MIGRATION_REQUIRED = "WORK_ROOT_MIGRATION_REQUIRED"
+    WORK_ROOT_MIGRATION_INVALID = "WORK_ROOT_MIGRATION_INVALID"
+    WORK_ROOT_MIGRATION_FAILED = "WORK_ROOT_MIGRATION_FAILED"
 
 
 @dataclass(frozen=True, slots=True)

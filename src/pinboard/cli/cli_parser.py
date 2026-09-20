@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     status = commands.add_parser("status", help="Show bounded current work facts.")
     status.add_argument("--json", action="store_true")
     _select_command(status, cli_commands.StatusCommand)
-    close = commands.add_parser("close", help="Record a terminal decision for non-active work.")
+    close = commands.add_parser("close", help="Record a terminal decision for live work without an accepted attempt.")
     close.add_argument("item_id")
     close.add_argument("--outcome", choices=tuple(outcome.value for outcome in work_models.CloseOutcome), required=True)
     close.add_argument("--reason", required=True)

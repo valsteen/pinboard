@@ -151,13 +151,13 @@ def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContra
             postcondition = "Return work_root, resumed state, and optional next guidance; default initialization also owns its exact local Git exclusion."
             retry = "inspect-current-state-before-retry"
         case "close":
-            purpose = "Record a terminal decision for eligible non-active work."
+            purpose = "Record a terminal decision for eligible live work without an accepted attempt."
             mutation = "mutates-ledger"
             scope = "focused"
             roles = ("project",)
             authority = "direct-project-operation-with-task-host-attribution"
             subject = "item"
-            precondition = "item-outside-active-and-review"
+            precondition = "item-without-attempt"
             postcondition = (
                 "Commit exactly one legal close with invoking actor attribution and return its committed revision."
             )

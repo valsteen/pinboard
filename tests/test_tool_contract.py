@@ -67,6 +67,7 @@ class ToolContractTest(unittest.TestCase):
         self.assertIsInstance(command, cli_commands.CloseCommand)
         self.assertEqual("focused", detail.data_scope)
         self.assertEqual("mutates-ledger", detail.mutation_class)
+        self.assertEqual("item-without-attempt", detail.lifecycle_precondition)
         value = msgspec.to_builtins(command)
         assert isinstance(value, dict)
         with self.assertRaises(msgspec.ValidationError):

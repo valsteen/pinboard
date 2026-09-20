@@ -258,6 +258,35 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assertEqual(0, repaired, f"{stdout}\\n{stderr}")
         self.assertEqual(committed, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
 
+    def test_paused_attempt_close_returns_review_recovery_without_an_escape_action(self) -> None:
+        fixture = self.active_fixture()
+        pause = self.project_action(fixture, "pause:work-a-1")
+        paused = self.transition_result(fixture, pause, {"reason": "Preserve the accepted attempt."})
+        self.assertEqual("committed", paused["status"])
+
+        rejected, stdout, stderr = self.run_cli(
+            *fixture.common,
+            "close",
+            "work-a",
+            "--outcome",
+            "dropped",
+            "--reason",
+            "Bypass review.",
+            "--task-id",
+            "human-owner",
+            "--host-id",
+            "human-host",
+            "--json",
+        )
+
+        self.assertEqual(11, rejected, f"{stdout}\n{stderr}")
+        failure = self.json_object(msgspec.json.decode(stdout))
+        self.assertEqual("ACTION_NOT_AVAILABLE", failure["code"])
+        actions = {self.json_object(value)["action_id"] for value in self.json_array(failure["next_actions"])}
+        self.assertIn("rebind-attempt:work-a-1", actions)
+        self.assertIn("revise-item:work-a", actions)
+        self.assertNotIn("close:work-a", actions)
+
     def test_retained_human_close_rejects_selected_subject_change_under_shared_lock(self) -> None:
         fixture = self.active_fixture()
         competing = self.project_action(fixture, "defer:work-c")

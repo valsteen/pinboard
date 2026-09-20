@@ -59,7 +59,7 @@ class ActionLifecyclePrecondition(Enum):
     DEFERRED_ITEM = "deferred-item"
     INTAKE_ITEM = "intake-item"
     INTAKE_READY_OR_BLOCKED_UNSTARTED_ITEM = "intake-ready-or-blocked-unstarted-item"
-    ITEM_OUTSIDE_ACTIVE_AND_REVIEW = "item-outside-active-and-review"
+    ITEM_WITHOUT_ATTEMPT = "item-without-attempt"
     NONTERMINAL_ITEM = "nonterminal-item"
     PAUSED_OR_BLOCKED_ITEM_WITHOUT_LIVE_DEPENDENCIES = "paused-or-blocked-item-without-live-dependencies"
     READY_ITEM = "ready-item"
@@ -183,11 +183,11 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.CLOSE:
             return ActionSemantics(
-                "Record a terminal decision for non-active work.",
+                "Record a terminal decision for eligible live work without an accepted attempt.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
-                ActionLifecyclePrecondition.ITEM_OUTSIDE_ACTIVE_AND_REVIEW,
+                ActionLifecyclePrecondition.ITEM_WITHOUT_ATTEMPT,
                 "Record the done or dropped outcome and remove the item from live work.",
             )
         case ActionKind.CONTINUE:

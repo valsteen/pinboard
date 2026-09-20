@@ -293,9 +293,6 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
                 )
             )
         )
-    close = decision_models.CloseAction(
-        factory.make(context.item, f"Record a terminal decision for {context.item}", context.item_subject_revision)
-    )
     if context.item_state == work_models.WorkState.PAUSED:
         item_actions.append(
             decision_models.RebindAttemptAction(
@@ -312,7 +309,6 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
                     factory.make(context.item, f"Return {context.item} to active", context.item_subject_revision)
                 )
             )
-        item_actions.append(close)
     elif context.item_state == work_models.WorkState.BLOCKED:
         if not context.live_dependencies and context.replacement_resolved:
             item_actions.append(
@@ -320,7 +316,6 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
                     factory.make(context.item, f"Return {context.item} to active", context.item_subject_revision)
                 )
             )
-        item_actions.append(close)
     return ProjectAttemptActionGroups(tuple(attempt_actions), tuple(item_actions))
 
 
@@ -850,6 +845,13 @@ def _close(
     if item.state in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE, "Active or review work requires the acceptance path.", None
+        )
+    if item.attempt is not None:
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            "An accepted attempt must resume and follow its review path; changing accepted semantics requires item "
+            "revision and rebind.",
+            None,
         )
     if value.outcome == work_models.CloseOutcome.DROPPED and any(
         item.item in candidate.depends_on for candidate in snapshot.items

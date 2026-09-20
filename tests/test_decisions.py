@@ -192,7 +192,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 work_models.AttemptState.PAUSED,
                 DIGEST_A,
                 (ItemId("dependency"),),
-                ("revise-item:target", "rebind-attempt:target-1", "close:target"),
+                ("revise-item:target", "rebind-attempt:target-1"),
             ),
             (
                 "paused-clear",
@@ -200,7 +200,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 work_models.AttemptState.PAUSED,
                 DIGEST_A,
                 (),
-                ("revise-item:target", "rebind-attempt:target-1", "resume:target", "close:target"),
+                ("revise-item:target", "rebind-attempt:target-1", "resume:target"),
             ),
             (
                 "blocked-live-dependencies",
@@ -208,7 +208,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 work_models.AttemptState.BLOCKED,
                 DIGEST_A,
                 (ItemId("dependency"),),
-                ("revise-item:target", "close:target"),
+                ("revise-item:target",),
             ),
             (
                 "blocked-clear",
@@ -216,7 +216,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 work_models.AttemptState.BLOCKED,
                 DIGEST_A,
                 (),
-                ("revise-item:target", "resume:target", "close:target"),
+                ("revise-item:target", "resume:target"),
             ),
         )
         for name, item_state, attempt_state, accepted_digest, live_dependencies, expected in cases:
@@ -1013,6 +1013,16 @@ class LifecycleDecisionTest(unittest.TestCase):
                 decision_models.CloseCommand(
                     action(decision_models.CloseAction, ItemId("target")),
                     work_models.CloseInput(work_models.CloseOutcome.DONE, "done"),
+                ),
+                "ACTION_NOT_AVAILABLE",
+            ),
+            (
+                LedgerSnapshot(
+                    "r", (paused,), attempts=(replace(attempt_active, state=work_models.AttemptState.PAUSED),)
+                ),
+                decision_models.CloseCommand(
+                    action(decision_models.CloseAction, ItemId("target")),
+                    work_models.CloseInput(work_models.CloseOutcome.DROPPED, "abandon review"),
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),

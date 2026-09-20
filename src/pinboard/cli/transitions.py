@@ -15,7 +15,7 @@ from pinboard.cli.cli_output import write_json
 from pinboard.cli.errors import CommandFailure, CommandResult
 from pinboard.domain import decision_models
 from pinboard.domain.errors import DecisionFailure, EffectDisposition, FailureAction, FailureDetails, RetryDisposition
-from pinboard.domain.identifiers import ActionId
+from pinboard.domain.identifiers import ActionId, ItemId
 
 
 class CloseView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -27,15 +27,17 @@ class CloseView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 def _with_close_alternatives(
     store: ports.WorkStore,
-    selected_action: decision_models.CloseAction,
+    item_id: ItemId,
     failure: CommandFailure,
 ) -> CommandFailure:
-    item_ids, attempt_ids, proposal_ids = actions.action_subject_ids(selected_action)
+    snapshot = store.read_decision_facts(
+        query_models.DecisionScope((item_id,), (), (), (), (), (), (), ()),
+        datetime.now(UTC),
+    ).snapshot
+    item = snapshot.item(item_id)
+    subjects = {item_id} if item is None or item.attempt is None else {item_id, item.attempt}
     current = actions.discover_current_actions(
-        store.read_decision_facts(
-            query_models.DecisionScope(item_ids, (), (), (), attempt_ids, proposal_ids, (), ()),
-            datetime.now(UTC),
-        ).snapshot,
+        snapshot,
         decision_models.Role.PROJECT,
         lease_id=None,
         generation=0,
@@ -57,7 +59,7 @@ def _with_close_alternatives(
         )
         for value in current
         if isinstance(value.capability, decision_models.MutationActionCapability)
-        and value.capability.subject == selected_action.capability.subject
+        and value.capability.subject in subjects
         and not isinstance(value, decision_models.CompleteAction)
     )
     details = failure.details
@@ -89,7 +91,11 @@ def close(
         action_id=ActionId(f"close:{command.item_id}"),
     )
     if isinstance(selected, DecisionFailure):
-        return CommandFailure(selected.code, selected.message, selected.details)
+        return _with_close_alternatives(
+            store,
+            ItemId(command.item_id),
+            CommandFailure(selected.code, selected.message, selected.details),
+        )
     selected_action = selected[0]
     if not isinstance(selected_action, decision_models.CloseAction):
         raise AssertionError("The exact close identity must select a close action.")
@@ -109,7 +115,7 @@ def close(
     )
     if isinstance(committed, DecisionFailure):
         return _with_close_alternatives(
-            store, selected_action, CommandFailure(committed.code, committed.message, committed.details)
+            store, ItemId(command.item_id), CommandFailure(committed.code, committed.message, committed.details)
         )
     views = work_views.refresh_effect(durable, store, committed, datetime.now(UTC))
     if views.warning is not None:

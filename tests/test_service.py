@@ -54,7 +54,7 @@ from tests.decision_support import (
     project_decision_snapshot,
     project_inactive_attempt_authority,
 )
-from tests.domain_support import expect_transition_command
+from tests.domain_support import action, expect_transition_command
 from tests.support import (
     SQLITE_DIGEST,
     SQLITE_NOW,
@@ -774,7 +774,7 @@ class ServiceTest(unittest.TestCase):
         )
         self.assertNotIn(b'"checkpoint"', receipt.outcome_payload)
 
-    def test_retained_attempt_closure_fences_authority_and_reloads_from_fresh_store(self) -> None:
+    def test_retained_attempt_cannot_escape_review_through_close(self) -> None:
         state = complete_sqlite_state()
         lifecycle = state.lifecycle
         state = replace(
@@ -796,26 +796,28 @@ class ServiceTest(unittest.TestCase):
             ),
         )
         store, database_path = self._store_with_state(state)
-        close_action = self._project_action(store, decision_models.CloseAction, "work-a")
         close = non_checkpoint_command(
             decision_models.CloseCommand(
-                close_action,
+                action(decision_models.CloseAction, ItemId("work-a")),
                 work_models.CloseInput(work_models.CloseOutcome.DROPPED, "The retained attempt is no longer needed."),
             )
         )
 
         closed = self._commit_transition(store, close, SQLITE_NOW + timedelta(seconds=1))
 
-        self.assertNotIsInstance(closed, DecisionFailure)
+        self.assertIsInstance(closed, DecisionFailure)
+        assert isinstance(closed, DecisionFailure)
+        self.assertEqual(DecisionFailureCode.ACTION_NOT_AVAILABLE, closed.code)
+        self.assertEqual("Action 'close:work-a' is no longer legal.", closed.message)
         reloaded = SQLiteWorkStore(database_path).validated_snapshot()
         item = next(value for value in reloaded.lifecycle.work_items if value.item_id == ItemId("work-a"))
         attempt = next(value for value in reloaded.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
         authority = reloaded.authority.attempt_leases[0]
-        self.assertEqual(stored_state.StoredWorkItemState.DROPPED, item.state)
-        self.assertEqual("The retained attempt is no longer needed.", item.outcome_evidence)
-        self.assertEqual(work_models.AttemptState.DONE, attempt.state)
-        self.assertEqual(authority_models.AttemptLeaseStatus.REVOKED, authority.state)
-        self.assertEqual(4, authority.generation)
+        self.assertEqual(stored_state.StoredWorkItemState.PAUSED, item.state)
+        self.assertIsNone(item.outcome_evidence)
+        self.assertEqual(work_models.AttemptState.PAUSED, attempt.state)
+        self.assertEqual(authority_models.AttemptLeaseStatus.ACTIVE, authority.state)
+        self.assertEqual(3, authority.generation)
 
     def test_attempt_authority_renewal_and_release_persist_exact_generation(self) -> None:
         state = complete_sqlite_state()

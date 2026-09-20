@@ -3874,6 +3874,43 @@ class McpTransportTest(unittest.TestCase):
         finally:
             executor.shutdown()
 
+    def test_fixed_result_classification_rejects_contradictory_runtime_values(self) -> None:
+        empty_json_list: list[contracts.JsonValue] = []
+        cases = (
+            (
+                contracts.ExecutorBusyResult,
+                {
+                    "schema": "pinboard-mcp-execution-result/v1",
+                    "status": "busy",
+                    "code": "EXECUTOR_BUSY",
+                    "message": "Busy.",
+                    "state_changed": True,
+                    "effect": "unchanged",
+                    "retry": "retry-same-input",
+                    "changed_surfaces": empty_json_list,
+                    "observed": empty_json_list,
+                    "mismatches": empty_json_list,
+                },
+            ),
+            (
+                contracts.BriefSourcesPublishedFailure,
+                {
+                    "schema": "pinboard-mcp-brief-sources-result/v1",
+                    "status": "committed-effect",
+                    "code": "DIRECTORY_SYNC_FAILED",
+                    "message": "Published before sync failed.",
+                    "destination": "/tmp/plan.json",
+                    "state_changed": False,
+                    "effect": "committed",
+                    "retry": "do-not-retry",
+                    "changed_surfaces": ["selected-output"],
+                },
+            ),
+        )
+        for result_type, content in cases:
+            with self.subTest(result_type=result_type.__name__), self.assertRaises(ValueError):
+                msgspec.convert(content, type=result_type, strict=True)
+
     def test_sdk_stdio_negotiates_discovers_reads_and_rejects_unknown_tool(self) -> None:  # noqa: PLR0915
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)

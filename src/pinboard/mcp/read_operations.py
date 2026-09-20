@@ -1,4 +1,4 @@
-"""State-independent and read-only MCP use-case composition."""
+"""Agent coordination, preparation, and read-only MCP use-case composition."""
 
 from __future__ import annotations
 

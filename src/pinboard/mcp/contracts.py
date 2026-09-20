@@ -49,16 +49,40 @@ type PublicationSurfaces = tuple[
 type JobPublicationSurface = Literal["immutable-artifact", "accepted-artifact-reference", "ledger"]
 
 
-class _ChangedResult:
+class _FixedStateChangedResult:
+    @property
+    def state_changed(self) -> bool:
+        raise NotImplementedError
+
+    def __post_init__(self) -> None:
+        _require_fixed_state_changed(self)
+
+
+class _ChangedResult(_FixedStateChangedResult):
     pass
 
 
-class _UnchangedResult:
+class _UnchangedResult(_FixedStateChangedResult):
     pass
 
 
 class _VariableStateChangedResult:
     pass
+
+
+def _fixed_state_changed(result_type: type[Any]) -> bool | None:
+    if issubclass(result_type, _ChangedResult):
+        return True
+    if issubclass(result_type, _UnchangedResult):
+        return False
+    return None
+
+
+def _require_fixed_state_changed(result: _FixedStateChangedResult) -> None:
+    expected = _fixed_state_changed(type(result))
+    if expected is None:
+        raise TypeError("A fixed result must declare changed or unchanged classification.")
+    _require_state_changed(result.state_changed, expected)
 
 
 def _require_state_changed(actual: bool, expected: bool) -> None:
@@ -207,9 +231,6 @@ class BriefContractRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbi
     retry: Literal["correct-input"]
     changed_surfaces: Empty
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
-
 
 class BriefSourcesRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-sources-result/v1"]
@@ -241,9 +262,6 @@ class BriefSourcesRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid
     effect: Literal["unchanged"]
     retry: Literal["correct-input"]
     changed_surfaces: Empty
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
 
 
 class BriefSourceBatchResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -286,9 +304,6 @@ class BriefSourcesPublishedFailure(_ChangedResult, msgspec.Struct, frozen=True, 
     effect: Literal["committed"]
     retry: Literal["do-not-retry"]
     changed_surfaces: tuple[Literal["selected-output"]]
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
 
 
 class ItemDefinitionCurrentRequest(
@@ -878,9 +893,6 @@ class ItemStatusInvalid(_UnchangedResult, msgspec.Struct, frozen=True, forbid_un
     observed: Empty
     mismatches: Empty
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
-
 
 class ItemStatusUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-item-status-result/v1"]
@@ -893,9 +905,6 @@ class ItemStatusUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, forbi
     changed_surfaces: Empty
     observed: Empty
     mismatches: Empty
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
 
 
 class ItemStatusInconsistent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -910,9 +919,6 @@ class ItemStatusInconsistent(_UnchangedResult, msgspec.Struct, frozen=True, forb
     observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
     mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
-
 
 class OverviewRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-overview-result/v1"]
@@ -926,9 +932,6 @@ class OverviewRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unk
     observed: Empty
     mismatches: Empty
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
-
 
 class RejectedReadResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     status: Literal["rejected"]
@@ -936,9 +939,6 @@ class RejectedReadResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_u
     state_changed: bool
     effect: Literal["unchanged"]
     changed_surfaces: Empty
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
 
 
 class ActionsInvalid(RejectedReadResult, frozen=True):
@@ -1063,9 +1063,6 @@ class ActionsSuccess(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unkno
     effect: Literal["unchanged"]
     retry: Literal["safe-to-repeat"]
     changed_surfaces: Empty
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
 
 
 class CompletionActionView(ActionView, frozen=True, forbid_unknown_fields=True):
@@ -1366,9 +1363,6 @@ class TerminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, frozen=
     retry: Literal["safe-to-repeat"]
     changed_surfaces: Empty
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
-
 
 class NonterminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
@@ -1383,9 +1377,6 @@ class NonterminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, froz
     effect: Literal["unchanged"]
     retry: Literal["safe-to-repeat"]
     changed_surfaces: Empty
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
 
 
 class ArtifactVerified(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1402,7 +1393,7 @@ class ArtifactVerified(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unk
     changed_surfaces: Empty
 
     def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
+        _require_fixed_state_changed(self)
         if not self.verified:
             raise ValueError("verified must be true for a verified artifact result.")
 
@@ -1418,9 +1409,6 @@ class ExecutorBusyResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_u
     changed_surfaces: Empty
     observed: Empty
     mismatches: Empty
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
 
 
 class WarningResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1457,7 +1445,7 @@ class OrderCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown
     state_changed: bool
 
     def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
+        _require_fixed_state_changed(self)
         if (self.status == "committed-with-warning") != (self.warning is not None):
             raise ValueError("Order terminal status must agree with its view-repair warning.")
 
@@ -1478,7 +1466,7 @@ class ParallelPreviewSuccess(_UnchangedResult, query_models.ParallelPreviewView,
     changed_surfaces: Empty
 
     def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
+        _require_fixed_state_changed(self)
 
 
 def _committed_transition_surfaces(kind: decision_models.ActionKind) -> tuple[tuple[str, ...], ...]:
@@ -1544,7 +1532,7 @@ class TransitionCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_un
     warning: WarningResult | None
 
     def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
+        _require_fixed_state_changed(self)
         if (self.status == "committed-with-warning") != (self.warning is not None):
             raise ValueError("committed-with-warning must carry one warning")
         if self.changed_surfaces not in _committed_transition_surfaces(self.action_id.kind):
@@ -1564,9 +1552,6 @@ class TransitionRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_u
     observed: tuple[FailureObservation, ...]
     mismatches: tuple[FailureMismatch, ...]
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
-
 
 class PublishedFailureResult(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """Publication already changed durable bytes; exact result leaves own identity and code."""
@@ -1577,9 +1562,6 @@ class PublishedFailureResult(_ChangedResult, msgspec.Struct, frozen=True, forbid
     changed_surfaces: ArtifactSurface
     observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
     mismatches: tuple[FailureMismatch, ...]
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
 
 
 class TransitionFailedAfterPublication(PublishedFailureResult, frozen=True):
@@ -1626,9 +1608,6 @@ class PreparationAuthorityStatusPresent(_UnchangedResult, msgspec.Struct, frozen
     retry: Literal["safe-to-repeat"]
     changed_surfaces: Empty
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
-
 
 class PreparationAuthorityStatusAbsent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
@@ -1638,9 +1617,6 @@ class PreparationAuthorityStatusAbsent(_UnchangedResult, msgspec.Struct, frozen=
     effect: Literal["unchanged"]
     retry: Literal["safe-to-repeat"]
     changed_surfaces: Empty
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
 
 
 class AuthorityCommittedResult[StatusT](_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1663,7 +1639,7 @@ class AuthorityCommittedResult[StatusT](_ChangedResult, msgspec.Struct, frozen=T
     warning: WarningResult | None
 
     def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
+        _require_fixed_state_changed(self)
         if (self.status == "committed-with-warning") != (self.warning is not None):
             raise ValueError("committed-with-warning must carry one warning")
 
@@ -1689,9 +1665,6 @@ class PreparationAuthorityRejected(_UnchangedResult, msgspec.Struct, frozen=True
     observed: tuple[FailureObservation, ...]
     mismatches: tuple[FailureMismatch, ...]
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
-
 
 class AttemptAuthorityStatusPresent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-attempt-authority-result/v1"]
@@ -1709,9 +1682,6 @@ class AttemptAuthorityStatusPresent(_UnchangedResult, msgspec.Struct, frozen=Tru
     retry: Literal["safe-to-repeat"]
     changed_surfaces: Empty
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
-
 
 class AttemptAuthorityStatusAbsent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-attempt-authority-result/v1"]
@@ -1721,9 +1691,6 @@ class AttemptAuthorityStatusAbsent(_UnchangedResult, msgspec.Struct, frozen=True
     effect: Literal["unchanged"]
     retry: Literal["safe-to-repeat"]
     changed_surfaces: Empty
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
 
 
 class AttemptAuthorityCommitted(AuthorityCommittedResult[authority_models.AttemptLeaseStatus], frozen=True):
@@ -1746,9 +1713,6 @@ class AttemptAuthorityRejected(_UnchangedResult, msgspec.Struct, frozen=True, fo
     observed: tuple[FailureObservation, ...]
     mismatches: tuple[FailureMismatch, ...]
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
-
 
 class ProposalCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-proposal-result/v1"]
@@ -1765,9 +1729,6 @@ class ProposalCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unkn
     continuation: NonEmptyText
     warning: None
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
-
 
 class ProposalCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-proposal-result/v1"]
@@ -1783,9 +1744,6 @@ class ProposalCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=True, 
     changed_surfaces: LedgerSurface
     continuation: NonEmptyText
     warning: WarningResult
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
 
 
 class ProposalRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1807,9 +1765,6 @@ class ProposalRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unk
     mismatches: Empty
     recovery: None
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
-
 
 class ProposalDuplicate(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-proposal-result/v1"]
@@ -1823,9 +1778,6 @@ class ProposalDuplicate(_UnchangedResult, msgspec.Struct, frozen=True, forbid_un
     observed: Empty
     mismatches: Empty
     recovery: NonEmptyText
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
 
 
 class ArtifactReferenceResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1850,9 +1802,6 @@ class BriefCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown
     continuation: NonEmptyText
     warning: None
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
-
 
 class BriefReferenceCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
@@ -1864,9 +1813,6 @@ class BriefReferenceCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbi
     changed_surfaces: ReferenceSurfaces
     continuation: NonEmptyText
     warning: None
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
 
 
 class BriefArtifactCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1880,9 +1826,6 @@ class BriefArtifactCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid
     continuation: NonEmptyText
     warning: None
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
-
 
 class BriefCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
@@ -1894,9 +1837,6 @@ class BriefCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=True, for
     changed_surfaces: PublicationSurfaces
     continuation: NonEmptyText
     warning: WarningResult
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
 
 
 class BriefReferenceCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1910,9 +1850,6 @@ class BriefReferenceCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=
     continuation: NonEmptyText
     warning: WarningResult
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
-
 
 class BriefArtifactCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
@@ -1924,9 +1861,6 @@ class BriefArtifactCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=T
     changed_surfaces: ArtifactSurface
     continuation: NonEmptyText
     warning: WarningResult
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
 
 
 class BriefUnchanged(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1940,9 +1874,6 @@ class BriefUnchanged(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unkno
     continuation: NonEmptyText
     warning: None
 
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
-
 
 class BriefUnchangedWithWarning(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
@@ -1954,9 +1885,6 @@ class BriefUnchangedWithWarning(_UnchangedResult, msgspec.Struct, frozen=True, f
     changed_surfaces: Empty
     continuation: NonEmptyText
     warning: WarningResult
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
 
 
 class BriefRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1970,9 +1898,6 @@ class BriefRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknow
     changed_surfaces: Empty
     observed: Empty
     mismatches: Empty
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
 
 
 class BriefPublishedRejection(PublishedFailureResult, frozen=True):
@@ -1994,9 +1919,6 @@ class PublicationAcceptanceFailureResult(_ChangedResult, msgspec.Struct, frozen=
     mismatches: Empty
     published_selector: NonEmptyText
     recovery: NonEmptyText
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
 
 
 class BriefPublicationAcceptanceFailure(PublicationAcceptanceFailureResult, frozen=True):
@@ -2035,9 +1957,6 @@ class BriefReviewStatusResult(_UnchangedResult, msgspec.Struct, frozen=True, for
     state_changed: bool
     effect: Literal["unchanged"]
     changed_surfaces: Empty
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
 
 
 class BriefReviewNoEvidence(BriefReviewStatusResult, frozen=True):
@@ -2087,7 +2006,7 @@ class BriefReviewCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_u
     correction: BriefReviewCorrection
 
     def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
+        _require_fixed_state_changed(self)
         _require_publication_surfaces(self.changed_surfaces)
 
 
@@ -2100,9 +2019,6 @@ class BriefReviewUnchanged(_UnchangedResult, msgspec.Struct, frozen=True, forbid
     retry: Literal["retry-same-input"]
     changed_surfaces: Empty
     correction: BriefReviewCorrection
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
 
 
 class BriefReviewRejected(RejectedReadResult, frozen=True):
@@ -2286,7 +2202,7 @@ class JobFailedAfterPublication(_ChangedResult, msgspec.Struct, frozen=True, for
     mismatches: tuple[FailureMismatch, ...]
 
     def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
+        _require_fixed_state_changed(self)
         _require_publication_surfaces(self.changed_surfaces)
 
 
@@ -2379,7 +2295,7 @@ class CandidateRestoreFailed(_ChangedResult, msgspec.Struct, frozen=True, forbid
     mismatches: tuple[FailureMismatch, ...]
 
     def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, True)
+        _require_fixed_state_changed(self)
 
 
 CANDIDATE_RESTORE_RESULT_TYPES = (
@@ -2407,9 +2323,6 @@ class CandidateObserved(_UnchangedResult, msgspec.Struct, frozen=True, forbid_un
     effect: Literal["unchanged"]
     retry: Literal["safe-to-repeat"]
     changed_surfaces: Empty
-
-    def __post_init__(self) -> None:
-        _require_state_changed(self.state_changed, False)
 
 
 class CandidateObservationRejected(RejectedReadResult, frozen=True):

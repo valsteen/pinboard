@@ -54,9 +54,11 @@ def _violations(source_root: Path) -> list[str]:
     return violations
 
 
-def _cli_cycles(source_root: Path = SOURCE_ROOT) -> tuple[tuple[str, ...], ...]:
-    cli_root = source_root / "cli"
-    modules = {f"pinboard.cli.{path.stem}": path for path in cli_root.glob("*.py") if path.name != "__init__.py"}
+def _package_cycles(package: str, source_root: Path = SOURCE_ROOT) -> tuple[tuple[str, ...], ...]:
+    package_root = source_root / package
+    modules = {
+        f"pinboard.{package}.{path.stem}": path for path in package_root.glob("*.py") if path.name != "__init__.py"
+    }
     edges = {
         module: tuple(sorted(value for value in _imports(path, source_root) if value in modules))
         for module, path in modules.items()
@@ -147,7 +149,7 @@ class ArchitectureDependencyTest(unittest.TestCase):
 
     def test_cli_composition_is_acyclic_and_the_entrypoint_only_routes(self) -> None:
         self.assertFalse((SOURCE_ROOT / "interfaces").exists())
-        self.assertEqual((), _cli_cycles())
+        self.assertEqual((), _package_cycles("cli"))
         allowed_non_cli = (
             "pinboard.adapters.files.errors",
             "pinboard.adapters.sqlite.errors",
@@ -183,6 +185,7 @@ class ArchitectureDependencyTest(unittest.TestCase):
         )
         self.assertEqual((), cli_imports)
         self.assertEqual((), mcp_imports)
+        self.assertEqual((), _package_cycles("mcp"))
 
     def test_sqlite_location_and_store_composition_have_one_explicit_owner(self) -> None:
         self.assertEqual((Path("adapters/files/file_io.py"),), _database_location_literals())

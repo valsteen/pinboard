@@ -12,4 +12,12 @@ project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$project_root"
 
 uv sync --locked
+if [ ! -f .venv/pyvenv.cfg ]; then
+    rm -rf -- .venv
+    uv sync --locked --reinstall
+fi
+if [ ! -f .venv/pyvenv.cfg ]; then
+    printf 'prepare-worktree: uv left an incomplete .venv after one clean retry\n' >&2
+    exit 1
+fi
 npm ci --prefer-offline --no-audit --no-fund

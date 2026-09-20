@@ -101,10 +101,8 @@ from pinboard.mcp.contracts import (
     TransitionCommitted,
     TransitionFailedAfterPublication,
     TransitionRejected,
-    _ChangedResult,
     _committed_transition_surfaces,
-    _UnchangedResult,
-    _VariableStateChangedResult,
+    _fixed_state_changed,
 )
 
 
@@ -154,13 +152,8 @@ def _apply_result_state_constraints(
     definitions: dict[str, JsonSchemaValue], boundary_types: tuple[ResultBoundary, ...]
 ) -> None:
     for boundary_type in boundary_types:
-        if issubclass(boundary_type, _ChangedResult):
-            state_changed = True
-        elif issubclass(boundary_type, _UnchangedResult):
-            state_changed = False
-        elif issubclass(boundary_type, _VariableStateChangedResult):
-            continue
-        else:
+        state_changed = _fixed_state_changed(boundary_type)
+        if state_changed is None:
             continue
         name = boundary_type.__name__
         definition = definitions.get(name)

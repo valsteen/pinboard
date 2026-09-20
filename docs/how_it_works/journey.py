@@ -54,8 +54,8 @@ DIAGRAM = Diagram(
     ),
     connectors=(
         Connector(((320, 130), (350, 130)), "request", "command", "decode", (335, 76)),
-        Connector(((520, 130), (550, 130)), "command", "observed", "sample", (535, 76)),
-        Connector(((730, 130), (760, 130)), "observed", "requested", "parameters", (745, 76)),
+        Connector(((520, 130), (536, 130)), "command", "observed", "sample", (528, 76)),
+        Connector(((744, 130), (760, 130)), "observed", "requested", "parameters", (752, 76)),
         Connector(
             ((855, 172), (855, 214), (670, 214), (670, 244)), "requested", "locked", "open transaction", (786, 202)
         ),
@@ -87,7 +87,7 @@ DIAGRAM = Diagram(
             170,
             84,
         ),
-        Box("observed", "Operation time", "Boundary sample", (), ("expiry semantics",), 550, 88, 180, 84),
+        Box("observed", "Operation time", "Time captured at entry", (), ("expiry semantics",), 536, 88, 208, 84),
         Box(
             "requested",
             "Start input",

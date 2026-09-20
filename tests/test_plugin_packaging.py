@@ -160,6 +160,24 @@ class PluginPackagingTests(unittest.TestCase):
         self.assertEqual(len(valid), len(outputs))
         self.assertEqual(1, len(set(outputs)))
 
+    def test_parent_hook_adds_reconnect_note_only_when_launcher_prepared_runtime_now(self) -> None:
+        for value, expected in ((None, False), ("", False), ("0", False), ("1", True)):
+            environment = {} if value is None else {"PINBOARD_RUNTIME_PREPARED_NOW": value}
+            with (
+                self.subTest(value=value),
+                patch.dict(os.environ, environment, clear=False),
+                patch.object(sys, "argv", ["pinboard-claude-session-start"]),
+                patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(session_start_event()).encode()))),
+                patch.object(socket, "gethostname", return_value="machine"),
+                redirect_stdout(io.StringIO()) as stdout,
+            ):
+                if value is None:
+                    os.environ.pop("PINBOARD_RUNTIME_PREPARED_NOW", None)
+                self.assertEqual(0, claude_hook.session_start_main())
+                context = json.loads(stdout.getvalue())["hookSpecificOutput"]["additionalContext"]
+                self.assertEqual(expected, "reconnect it with /mcp or restart Claude Code" in context)
+                self.assertIn(json.dumps("actual-local-parent"), context)
+
     def test_parent_hook_samples_machine_for_each_current_session_and_rejects_unavailable_machine(self) -> None:
         for session_id, hostname in (("first-session", "first-machine"), ("second-session", 'machine-"quoted"-é')):
             with (

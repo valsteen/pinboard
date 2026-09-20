@@ -1,5 +1,6 @@
 """Claude-native startup context only; no project reads, authority or lifecycle effects."""
 
+import os
 import socket
 import sys
 from typing import Annotated, Literal
@@ -87,6 +88,12 @@ def session_start_main() -> int:
         "They are attribution, not authority or authenticated credentials, and grant no permissions or lease. "
         "A launched worker instead uses its own SubagentStart agent_id and verified dispatch host."
     )
+    if os.environ.get("PINBOARD_RUNTIME_PREPARED_NOW") == "1":
+        context += (
+            " Pinboard prepared this plugin version's private runtime during this session start, after the pinboard "
+            "MCP server had already failed to connect; tell the user to reconnect it with /mcp or restart Claude Code "
+            "before using Pinboard tools."
+        )
     output = HookOutput(StartupContext("SessionStart", context))
     print(msgspec.json.encode(output).decode())
     return 0

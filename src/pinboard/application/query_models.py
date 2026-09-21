@@ -114,6 +114,102 @@ class PreparationAuthorityStatus:
     status: authority_models.PreparationLeaseStatus
 
 
+class IntegrationRelation(Enum):
+    CANDIDATE_INTEGRATED = "candidate-integrated"
+    CANDIDATE_PENDING_ON_ACCEPTED_BASE = "candidate-pending-on-accepted-base"
+    CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE = "candidate-pending-on-squash-equivalent-base"
+    CANDIDATE_RESIDUAL = "candidate-residual"
+    DIVERGED = "diverged"
+    TARGET_STALE = "target-stale"
+
+
+class RepositoryPhase(Enum):
+    DISPOSITION = "disposition"
+    CLEANUP = "cleanup"
+    TERMINAL = "terminal"
+    CORRECTION = "correction"
+    REFRESH = "refresh"
+
+
+class RuntimeEffect(Enum):
+    SOURCE_CHECKOUT = "source-checkout"
+    SHARED_WORK_ROOT = "shared-work-root"
+    GIT_METADATA = "git-metadata"
+
+
+class RuntimeEffectStatus(Enum):
+    ALLOWED = "allowed"
+    DENIED = "denied"
+    UNKNOWN = "unknown"
+    NOT_REQUIRED = "not-required"
+
+
+class RuntimeEffectObservation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    effect: RuntimeEffect
+    status: RuntimeEffectStatus
+
+
+type RuntimeEffectObservations = tuple[
+    RuntimeEffectObservation,
+    RuntimeEffectObservation,
+    RuntimeEffectObservation,
+]
+
+
+def _validate_reconciliation_phase(relation: IntegrationRelation, phase: RepositoryPhase) -> None:
+    match relation:
+        case (
+            IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE
+            | IntegrationRelation.CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE
+        ):
+            valid = phase == RepositoryPhase.DISPOSITION
+        case IntegrationRelation.CANDIDATE_INTEGRATED:
+            valid = phase in (RepositoryPhase.CLEANUP, RepositoryPhase.TERMINAL)
+        case IntegrationRelation.CANDIDATE_RESIDUAL | IntegrationRelation.DIVERGED:
+            valid = phase == RepositoryPhase.CORRECTION
+        case IntegrationRelation.TARGET_STALE:
+            valid = phase == RepositoryPhase.REFRESH
+        case _ as unreachable:
+            assert_never(unreachable)
+    if not valid:
+        raise ValueError("integration relation and repository phase do not describe one legal continuation")
+
+
+def _required_runtime_effects(phase: RepositoryPhase) -> tuple[bool, bool, bool]:
+    match phase:
+        case RepositoryPhase.DISPOSITION:
+            return True, True, True
+        case RepositoryPhase.CLEANUP:
+            return True, False, True
+        case RepositoryPhase.TERMINAL:
+            return False, True, False
+        case RepositoryPhase.CORRECTION | RepositoryPhase.REFRESH:
+            return False, False, False
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+class AttemptReconciliation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    target_revision: str
+    relation: IntegrationRelation
+    phase: RepositoryPhase
+    effects: RuntimeEffectObservations
+
+    def __post_init__(self) -> None:
+        if not self.target_revision:
+            raise ValueError("reconciliation target revision must be nonempty")
+        if tuple(value.effect for value in self.effects) != (
+            RuntimeEffect.SOURCE_CHECKOUT,
+            RuntimeEffect.SHARED_WORK_ROOT,
+            RuntimeEffect.GIT_METADATA,
+        ):
+            raise ValueError("runtime effects must be source-checkout, shared-work-root, and git-metadata in order")
+        _validate_reconciliation_phase(self.relation, self.phase)
+        for observation, needed in zip(self.effects, _required_runtime_effects(self.phase), strict=True):
+            if needed == (observation.status == RuntimeEffectStatus.NOT_REQUIRED):
+                raise ValueError("runtime effect status does not match whether the repository phase requires it")
+
+
 class ActionContinuation(msgspec.Struct, tag="action", tag_field="kind", frozen=True, forbid_unknown_fields=True):
     action_id: str
     action_kind: decision_models.ActionKind
@@ -136,6 +232,55 @@ class DependencyContinuation(
     msgspec.Struct, tag="wait-for-dependencies", tag_field="kind", frozen=True, forbid_unknown_fields=True
 ):
     dependencies: tuple[str, ...]
+
+
+class RefreshTargetContinuation(
+    msgspec.Struct, tag="refresh-target", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    target_revision: str
+
+
+class PermissionRecoveryContinuation(
+    msgspec.Struct, tag="permission-recovery", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    target_revision: str
+    effect: RuntimeEffect
+    status: RuntimeEffectStatus
+
+    def __post_init__(self) -> None:
+        if self.status not in (RuntimeEffectStatus.DENIED, RuntimeEffectStatus.UNKNOWN):
+            raise ValueError("permission recovery requires a denied or unknown runtime effect")
+
+
+class RepositoryDispositionContinuation(
+    msgspec.Struct, tag="repository-disposition", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    target_revision: str
+    relation: IntegrationRelation
+
+    def __post_init__(self) -> None:
+        if self.relation not in (
+            IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE,
+            IntegrationRelation.CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE,
+        ):
+            raise ValueError("repository disposition requires a pending candidate relation")
+
+
+class RepositoryCleanupContinuation(
+    msgspec.Struct, tag="repository-cleanup", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    target_revision: str
+
+
+type ReconciliationContinuation = (
+    RefreshTargetContinuation
+    | PermissionRecoveryContinuation
+    | RepositoryDispositionContinuation
+    | RepositoryCleanupContinuation
+)
+type NonterminalContinuationOperation = (
+    ActionContinuation | ReviewContinuation | DependencyContinuation | ReconciliationContinuation
+)
 
 
 type NonterminalAttemptState = Literal[
@@ -210,7 +355,7 @@ class NonterminalAttemptContinuationBase(AttemptContinuationIdentity, frozen=Tru
     owner_task_id: str
     terminal: bool
     user_input_required: bool
-    next_operation: ActionContinuation | ReviewContinuation | DependencyContinuation
+    next_operation: NonterminalContinuationOperation
     legal_actions: tuple[str, ...]
     forbidden_routes: tuple[Literal["create-user-task", "wake-user-task", "return-ownership-to-parent"], ...]
 
@@ -243,7 +388,9 @@ class NonterminalAttemptContinuationBase(AttemptContinuationIdentity, frozen=Tru
             )
             if not any(action in self.legal_actions for action in review_actions):
                 raise ValueError("review continuation requires a matching checkpoint or completion action")
-        elif not operation.dependencies or len(set(operation.dependencies)) != len(operation.dependencies):
+        elif isinstance(operation, DependencyContinuation) and (
+            not operation.dependencies or len(set(operation.dependencies)) != len(operation.dependencies)
+        ):
             raise ValueError("dependency continuations require unique dependencies")
 
 
@@ -285,7 +432,16 @@ class ReviewAttemptContinuation(
         self._validate_common()
         operation = self.next_operation
         if not (
-            isinstance(operation, ReviewContinuation)
+            isinstance(
+                operation,
+                (
+                    ReviewContinuation,
+                    RefreshTargetContinuation,
+                    PermissionRecoveryContinuation,
+                    RepositoryDispositionContinuation,
+                    RepositoryCleanupContinuation,
+                ),
+            )
             or (
                 isinstance(operation, ActionContinuation)
                 and operation.action_kind
@@ -398,6 +554,7 @@ type AttemptContextFacts = TerminalAttemptContextFacts | NonterminalAttemptConte
 class ReviewJobContextFacts:
     attempt: AttemptContextFacts
     candidate_snapshot: CandidateSnapshotContextFacts | None
+    candidate_review_reference: stored_state.ArtifactReference | None
     checkpoint_receipt: stored_state.StoredTransitionReceipt | None
     checkpoint_package_reference: stored_state.ArtifactReference | None
     checkpoint_candidate_reference: stored_state.ArtifactReference | None

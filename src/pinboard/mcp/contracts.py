@@ -393,6 +393,7 @@ class AttemptInspectRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     project_root: RootPath
     work_root: RootPath
     attempt_id: PathComponent
+    reconciliation: query_models.AttemptReconciliation | None
 
 
 class CandidateObserveRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -497,7 +498,21 @@ class PackageCorrectionRecoveryReviewChoice(
     candidate_patch: bytes
 
 
-type ReviewChoice = (
+class RecordReadyReviewChoice(
+    msgspec.Struct, tag="record-ready", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: PathComponent
+    candidate_revision: NonEmptyText
+    candidate_snapshot_sha256: Sha256
+    accepted_brief_sha256: Sha256
+    result_sha256: Sha256
+    review_sha256: Sha256
+    reviewer_task_id: RuntimeIdentity
+    verdict: Literal["ready"]
+    acceptance_evidence: NonEmptyText
+
+
+type ReviewLaunchChoice = (
     InitialReviewChoice
     | PackageInitialReviewChoice
     | CorrectionReviewChoice
@@ -505,6 +520,7 @@ type ReviewChoice = (
     | PackageInitialRecoveryReviewChoice
     | PackageCorrectionRecoveryReviewChoice
 )
+type ReviewChoice = ReviewLaunchChoice | RecordReadyReviewChoice
 
 
 class ReviewJobRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1097,6 +1113,21 @@ class EvidencePresent(msgspec.Struct, tag="present", tag_field="kind", frozen=Tr
 type EvidenceReference = EvidenceAbsent | EvidencePresent
 
 
+class CandidateReviewAbsent(msgspec.Struct, tag="absent", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    pass
+
+
+class CandidateReviewPresent(msgspec.Struct, tag="present", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    artifact_ref_id: PositiveInt
+    selector: NonEmptyText
+    sha256: Sha256
+    size_bytes: PositiveInt
+    accepted_revision: PositiveInt
+
+
+type CandidateReviewReference = CandidateReviewAbsent | CandidateReviewPresent
+
+
 class RelativeActionIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     target: Literal["attempt", "item"]
     action_kind: decision_models.ActionKind
@@ -1128,7 +1159,53 @@ class ContinuationDependencies(
             raise ValueError("dependency continuations require unique dependencies")
 
 
-type ContinuationOperation = ContinuationAction | ContinuationReview | ContinuationDependencies
+class ContinuationRefreshTarget(
+    msgspec.Struct, tag="refresh-target", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    target_revision: NonEmptyText
+
+
+class ContinuationPermissionRecovery(
+    msgspec.Struct, tag="permission-recovery", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    target_revision: NonEmptyText
+    effect: query_models.RuntimeEffect
+    status: query_models.RuntimeEffectStatus
+
+    def __post_init__(self) -> None:
+        if self.status not in (query_models.RuntimeEffectStatus.DENIED, query_models.RuntimeEffectStatus.UNKNOWN):
+            raise ValueError("permission recovery requires a denied or unknown runtime effect")
+
+
+class ContinuationRepositoryDisposition(
+    msgspec.Struct, tag="repository-disposition", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    target_revision: NonEmptyText
+    relation: query_models.IntegrationRelation
+
+    def __post_init__(self) -> None:
+        if self.relation not in (
+            query_models.IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE,
+            query_models.IntegrationRelation.CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE,
+        ):
+            raise ValueError("repository disposition requires a pending candidate relation")
+
+
+class ContinuationRepositoryCleanup(
+    msgspec.Struct, tag="repository-cleanup", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    target_revision: NonEmptyText
+
+
+type ReconciliationContinuation = (
+    ContinuationRefreshTarget
+    | ContinuationPermissionRecovery
+    | ContinuationRepositoryDisposition
+    | ContinuationRepositoryCleanup
+)
+type ContinuationOperation = (
+    ContinuationAction | ContinuationReview | ContinuationDependencies | ReconciliationContinuation
+)
 
 
 _ACTIVE_CONTINUATION_ACTION_KINDS = (
@@ -1255,7 +1332,16 @@ class ReviewAttemptContinuation(
         self._validate_legal_action_kinds(_REVIEW_CONTINUATION_ACTION_KINDS)
         operation = self.next_operation
         if not (
-            isinstance(operation, ContinuationReview)
+            isinstance(
+                operation,
+                (
+                    ContinuationReview,
+                    ContinuationRefreshTarget,
+                    ContinuationPermissionRecovery,
+                    ContinuationRepositoryDisposition,
+                    ContinuationRepositoryCleanup,
+                ),
+            )
             or (
                 isinstance(operation, ContinuationAction)
                 and operation.action.action_kind
@@ -1367,6 +1453,7 @@ class NonterminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, froz
     status: Literal["ok"]
     continuation: NonterminalAttemptContinuation
     candidate_recovery: CandidateRecovery
+    candidate_review: CandidateReviewReference
     accepted_brief: AcceptedBriefIdentity
     result: EvidenceReference
     review: EvidenceReference
@@ -2106,6 +2193,33 @@ class ReviewJobReady(PublishedJobReady, frozen=True):
             raise ValueError("Review job and protected snapshot must identify the same candidate.")
 
 
+class CandidateReviewRecorded(_VariableStateChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-review-job-result/v1"]
+    status: Literal["recorded"]
+    attempt_id: PathComponent
+    candidate_revision: NonEmptyText
+    candidate_review: CandidateReviewPresent
+    state_changed: bool
+    effect: Literal["unchanged", "committed"]
+    retry: Literal["safe-to-repeat", "do-not-retry"]
+    changed_surfaces: tuple[JobPublicationSurface, ...]
+
+    def __post_init__(self) -> None:
+        surfaces = self.changed_surfaces
+        if surfaces not in (
+            (),
+            ("accepted-artifact-reference", "ledger"),
+            ("immutable-artifact", "accepted-artifact-reference", "ledger"),
+        ):
+            raise ValueError("Candidate review publication must expose exact immutable/reference/ledger surfaces.")
+        changed = bool(surfaces)
+        _require_state_changed(self.state_changed, changed)
+        if self.effect != ("committed" if changed else "unchanged") or self.retry != (
+            "do-not-retry" if changed else "safe-to-repeat"
+        ):
+            raise ValueError("Candidate review effect and retry must match its publication surfaces.")
+
+
 class DispatchInvalid(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-dispatch-result/v1"]
     code: Literal["DISPATCH_INVALID"]
@@ -2234,6 +2348,7 @@ DISPATCH_RESULT_TYPES = (
 )
 REVIEW_JOB_RESULT_TYPES = (
     ReviewJobReady,
+    CandidateReviewRecorded,
     ReviewJobInvalid,
     ReviewJobRejected,
     ReviewJobCandidateRequired,
@@ -2522,6 +2637,7 @@ type ResultBoundary = (
     | type[DispatchRejected]
     | type[DispatchFailedAfterPublication]
     | type[ReviewJobReady]
+    | type[CandidateReviewRecorded]
     | type[ReviewJobInvalid]
     | type[ReviewJobRejected]
     | type[ReviewJobCandidateRequired]

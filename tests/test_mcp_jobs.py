@@ -219,7 +219,7 @@ class McpJobsTest(CheckpointPackageSupport):
                     candidate_form="current-head" if form == "current-head" else "working-tree"
                 )
                 first_inspection = mcp_reads._read_attempt_inspection(
-                    str(fixture.project), str(fixture.work), "work-a-1", mcp_execution.CancellationToken()
+                    str(fixture.project), str(fixture.work), "work-a-1", None, mcp_execution.CancellationToken()
                 )
                 previously_inspected_candidate = str(
                     self.json_object(first_inspection.content["candidate_recovery"])["candidate"]
@@ -298,7 +298,7 @@ class McpJobsTest(CheckpointPackageSupport):
                     (fixture.work / context.reference.selector).unlink()
                     self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
                 inspected = mcp_reads._read_attempt_inspection(
-                    str(fixture.project), str(fixture.work), "work-a-1", mcp_execution.CancellationToken()
+                    str(fixture.project), str(fixture.work), "work-a-1", None, mcp_execution.CancellationToken()
                 )
                 recovery = self.json_object(inspected.content["candidate_recovery"])
                 invocation = self.json_object(recovery["restore"])

@@ -17,6 +17,7 @@ from pinboard.application.queries import (
     select_item_definition,
     select_item_definition_history,
     select_parallel_preview,
+    select_resumed_review_operation,
 )
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
@@ -550,6 +551,173 @@ class SQLiteQueriesTest(unittest.TestCase):
         for invalid in (invalid_active, invalid_legal, invalid_review, invalid_forbidden):
             with self.assertRaises((msgspec.ValidationError, ValueError)):
                 msgspec.convert(invalid, type=query_models.AttemptContinuation, strict=True)
+
+    def test_resume_reconciliation_exhausts_relations_phases_and_effect_statuses(self) -> None:
+        capability = decision_models.MutationActionCapability(AttemptId("attempt-1"), "Review action", "1")
+        actions: tuple[decision_models.Action, ...] = (
+            decision_models.CompleteAction(capability),
+            decision_models.ReturnForCorrectionAction(capability),
+        )
+        order = (
+            query_models.RuntimeEffect.SOURCE_CHECKOUT,
+            query_models.RuntimeEffect.SHARED_WORK_ROOT,
+            query_models.RuntimeEffect.GIT_METADATA,
+        )
+        required = {
+            query_models.RepositoryPhase.DISPOSITION: (True, True, True),
+            query_models.RepositoryPhase.CLEANUP: (True, False, True),
+            query_models.RepositoryPhase.TERMINAL: (False, True, False),
+            query_models.RepositoryPhase.CORRECTION: (False, False, False),
+            query_models.RepositoryPhase.REFRESH: (False, False, False),
+        }
+
+        def observations(
+            phase: query_models.RepositoryPhase,
+            override: tuple[int, query_models.RuntimeEffectStatus] | None = None,
+        ) -> tuple[
+            query_models.RuntimeEffectObservation,
+            query_models.RuntimeEffectObservation,
+            query_models.RuntimeEffectObservation,
+        ]:
+            statuses = [
+                query_models.RuntimeEffectStatus.ALLOWED if needed else query_models.RuntimeEffectStatus.NOT_REQUIRED
+                for needed in required[phase]
+            ]
+            if override is not None:
+                statuses[override[0]] = override[1]
+            return (
+                query_models.RuntimeEffectObservation(order[0], statuses[0]),
+                query_models.RuntimeEffectObservation(order[1], statuses[1]),
+                query_models.RuntimeEffectObservation(order[2], statuses[2]),
+            )
+
+        legal = (
+            (
+                query_models.IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE,
+                query_models.RepositoryPhase.DISPOSITION,
+                query_models.RepositoryDispositionContinuation,
+            ),
+            (
+                query_models.IntegrationRelation.CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE,
+                query_models.RepositoryPhase.DISPOSITION,
+                query_models.RepositoryDispositionContinuation,
+            ),
+            (
+                query_models.IntegrationRelation.CANDIDATE_INTEGRATED,
+                query_models.RepositoryPhase.CLEANUP,
+                query_models.RepositoryCleanupContinuation,
+            ),
+            (
+                query_models.IntegrationRelation.CANDIDATE_INTEGRATED,
+                query_models.RepositoryPhase.TERMINAL,
+                query_models.ActionContinuation,
+            ),
+            (
+                query_models.IntegrationRelation.CANDIDATE_RESIDUAL,
+                query_models.RepositoryPhase.CORRECTION,
+                query_models.ActionContinuation,
+            ),
+            (
+                query_models.IntegrationRelation.DIVERGED,
+                query_models.RepositoryPhase.CORRECTION,
+                query_models.ActionContinuation,
+            ),
+            (
+                query_models.IntegrationRelation.TARGET_STALE,
+                query_models.RepositoryPhase.REFRESH,
+                query_models.RefreshTargetContinuation,
+            ),
+        )
+        legal_pairs = {(relation, phase) for relation, phase, _ in legal}
+        for relation, phase, expected in legal:
+            reconciliation = query_models.AttemptReconciliation("target-revision", relation, phase, observations(phase))
+            selected = select_resumed_review_operation(
+                reconciliation,
+                attempt_id="attempt-1",
+                candidate_revision="candidate-1",
+                ready_review=True,
+                actions=actions,
+            )
+            with self.subTest(relation=relation.value, phase=phase.value):
+                self.assertIsInstance(selected, expected)
+
+        for relation in query_models.IntegrationRelation:
+            for phase in query_models.RepositoryPhase:
+                if (relation, phase) in legal_pairs:
+                    continue
+                with (
+                    self.subTest(invalid_relation=relation.value, invalid_phase=phase.value),
+                    self.assertRaises(ValueError),
+                ):
+                    query_models.AttemptReconciliation("target-revision", relation, phase, observations(phase))
+
+        for phase, phase_required in required.items():
+            relation = {
+                query_models.RepositoryPhase.DISPOSITION: (
+                    query_models.IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE
+                ),
+                query_models.RepositoryPhase.CLEANUP: query_models.IntegrationRelation.CANDIDATE_INTEGRATED,
+                query_models.RepositoryPhase.TERMINAL: query_models.IntegrationRelation.CANDIDATE_INTEGRATED,
+                query_models.RepositoryPhase.CORRECTION: query_models.IntegrationRelation.CANDIDATE_RESIDUAL,
+                query_models.RepositoryPhase.REFRESH: query_models.IntegrationRelation.TARGET_STALE,
+            }[phase]
+            for index, effect_required in enumerate(phase_required):
+                for status in query_models.RuntimeEffectStatus:
+                    valid = (
+                        status != query_models.RuntimeEffectStatus.NOT_REQUIRED
+                        if effect_required
+                        else status == query_models.RuntimeEffectStatus.NOT_REQUIRED
+                    )
+                    with self.subTest(phase=phase.value, effect=order[index].value, status=status.value):
+                        if not valid:
+                            with self.assertRaises(ValueError):
+                                query_models.AttemptReconciliation(
+                                    "target-revision", relation, phase, observations(phase, (index, status))
+                                )
+                            continue
+                        reconciliation = query_models.AttemptReconciliation(
+                            "target-revision", relation, phase, observations(phase, (index, status))
+                        )
+                        selected = select_resumed_review_operation(
+                            reconciliation,
+                            attempt_id="attempt-1",
+                            candidate_revision="candidate-1",
+                            ready_review=True,
+                            actions=actions,
+                        )
+                        if status in (
+                            query_models.RuntimeEffectStatus.DENIED,
+                            query_models.RuntimeEffectStatus.UNKNOWN,
+                        ):
+                            self.assertEqual(order[index], selected.effect)
+
+        representative = query_models.AttemptReconciliation(
+            "squash-equivalent-head",
+            query_models.IntegrationRelation.CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE,
+            query_models.RepositoryPhase.DISPOSITION,
+            observations(
+                query_models.RepositoryPhase.DISPOSITION,
+                (2, query_models.RuntimeEffectStatus.DENIED),
+            ),
+        )
+        selected = select_resumed_review_operation(
+            representative,
+            attempt_id="attempt-1",
+            candidate_revision="candidate-1",
+            ready_review=True,
+            actions=actions,
+        )
+        self.assertEqual(query_models.RuntimeEffect.GIT_METADATA, selected.effect)
+        self.assertIsInstance(
+            select_resumed_review_operation(
+                representative,
+                attempt_id="attempt-1",
+                candidate_revision="candidate-1",
+                ready_review=False,
+                actions=actions,
+            ),
+            query_models.ReviewContinuation,
+        )
 
 
 if __name__ == "__main__":

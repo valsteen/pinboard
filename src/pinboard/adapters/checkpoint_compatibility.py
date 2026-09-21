@@ -38,7 +38,9 @@ def prepare_recovered_review_job(  # noqa: C901 - one cohesive selected remedy a
     correction_history_id: HistoryId | None,
     patch: bytes,
 ) -> errors.DecisionResult[review_operations.PreparedReviewJob]:
-    facts = queries.select_review_job_context(store, attempt_id, checkpoint_history_id, correction_history_id)
+    facts = queries.select_review_job_context(
+        store, attempt_id, checkpoint_history_id, correction_history_id, None, None
+    )
     if isinstance(facts, errors.DecisionFailure):
         return facts
     receipt, reference = facts.checkpoint_receipt, facts.checkpoint_package_reference

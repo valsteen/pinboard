@@ -725,7 +725,12 @@ class AuthorityStatusReadTest(unittest.TestCase):
             ) as snapshots,
             self.record_store_reads() as attempt_reads,
         ):
-            stdout = self.native(mcp_server.ATTEMPT_INSPECT_TOOL, str(project), str(work), {"attempt_id": "work-a-1"})
+            stdout = self.native(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                str(project),
+                str(work),
+                {"attempt_id": "work-a-1", "reconciliation": None},
+            )
 
         self.assertNotIn("code", stdout)
         self.assertEqual("work-a-1", self.json_object(stdout["continuation"])["attempt_id"])
@@ -843,7 +848,12 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
         project, work, store = self.initialized_attempt_context(legacy)
 
-        stdout = self.native(mcp_server.ATTEMPT_INSPECT_TOOL, str(project), str(work), {"attempt_id": "work-a-1"})
+        stdout = self.native(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
+            str(project),
+            str(work),
+            {"attempt_id": "work-a-1", "reconciliation": None},
+        )
 
         self.assertNotIn("code", stdout)
         self.assertEqual("absent", self.json_object(stdout["candidate_recovery"])["kind"])
@@ -881,7 +891,12 @@ class AuthorityStatusReadTest(unittest.TestCase):
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
             self.record_store_reads() as reads,
         ):
-            stdout = self.native(mcp_server.ATTEMPT_INSPECT_TOOL, str(project), str(work), {"attempt_id": "work-a-1"})
+            stdout = self.native(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                str(project),
+                str(work),
+                {"attempt_id": "work-a-1", "reconciliation": None},
+            )
 
         self.assertNotIn("code", stdout)
         self.assertTrue(self.json_object(stdout["continuation"])["terminal"])
@@ -903,7 +918,12 @@ class AuthorityStatusReadTest(unittest.TestCase):
         finally:
             raw.close()
 
-        stdout = self.native(mcp_server.ATTEMPT_INSPECT_TOOL, str(project), str(work), {"attempt_id": "work-a-1"})
+        stdout = self.native(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
+            str(project),
+            str(work),
+            {"attempt_id": "work-a-1", "reconciliation": None},
+        )
         self.assertNotIn("code", stdout)
         self.assertEqual("work-a-1", self.json_object(stdout["continuation"])["attempt_id"])
         validation, validation_stdout, _validation_stderr = self.run_cli(*common, "validate")
@@ -922,7 +942,10 @@ class AuthorityStatusReadTest(unittest.TestCase):
             raw.close()
         with self.rejected_storage():
             self.native(
-                mcp_server.ATTEMPT_INSPECT_TOOL, str(selected_project), str(selected_work), {"attempt_id": "work-a-1"}
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                str(selected_project),
+                str(selected_work),
+                {"attempt_id": "work-a-1", "reconciliation": None},
             )
 
         missing_project, missing_work, _missing_store = self.initialized_attempt_context(state)
@@ -935,7 +958,10 @@ class AuthorityStatusReadTest(unittest.TestCase):
             raw.close()
         with self.rejected_storage():
             self.native(
-                mcp_server.ATTEMPT_INSPECT_TOOL, str(missing_project), str(missing_work), {"attempt_id": "work-a-1"}
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                str(missing_project),
+                str(missing_work),
+                {"attempt_id": "work-a-1", "reconciliation": None},
             )
 
     def test_item_status_rejects_selected_corruption_and_ignores_unrelated_corruption(self) -> None:

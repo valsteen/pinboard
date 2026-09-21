@@ -65,7 +65,7 @@ from pinboard.adapters.sqlite.persistence import accept_artifact_reference as pe
 from pinboard.adapters.sqlite.proposals import (
     read_proposal,
 )
-from pinboard.application import candidate_snapshots, queries, query_models, stored_state
+from pinboard.application import candidate_snapshots, queries, query_models, stored_state, work_briefs
 from pinboard.application.artifacts import ArtifactRef
 from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.application.project_export import ProjectExportState
@@ -641,6 +641,8 @@ class SQLiteWorkStore:
         attempt_id: AttemptId,
         checkpoint_history_id: HistoryId | None,
         correction_history_id: HistoryId | None,
+        result_sha256: str | None,
+        review_sha256: str | None,
     ) -> query_models.ReviewJobContextFacts | None:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
@@ -648,6 +650,28 @@ class SQLiteWorkStore:
                 attempt = _read_attempt_context_facts(connection, attempt_id)
                 if attempt is None:
                     return None
+                candidate_snapshot = _read_candidate_snapshot_context_facts(connection, attempt_id)
+                candidate_review_reference = None
+                if (
+                    isinstance(attempt, query_models.NonterminalAttemptContextFacts)
+                    and attempt.candidate_revision is not None
+                    and candidate_snapshot is not None
+                    and result_sha256 is not None
+                    and review_sha256 is not None
+                ):
+                    candidate_review_reference = read_artifact_reference(
+                        connection,
+                        work_models.ArtifactKind.EVIDENCE,
+                        work_briefs.candidate_review_key(
+                            str(attempt.attempt_id),
+                            attempt.candidate_revision,
+                            candidate_snapshot.reference.content_sha256,
+                            attempt.brief_reference.content_sha256,
+                            result_sha256,
+                            review_sha256,
+                        ),
+                        1,
+                    )
                 checkpoint_receipt = (
                     None
                     if checkpoint_history_id is None
@@ -682,7 +706,8 @@ class SQLiteWorkStore:
                 )
                 return query_models.ReviewJobContextFacts(
                     attempt,
-                    _read_candidate_snapshot_context_facts(connection, attempt_id),
+                    candidate_snapshot,
+                    candidate_review_reference,
                     checkpoint_receipt,
                     checkpoint_package_reference,
                     checkpoint_candidate_reference,

@@ -11,6 +11,7 @@ from typing import assert_never
 
 import msgspec
 
+from pinboard.adapters import review_operations
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, ImmutableFilePublishedError, RootError
@@ -995,6 +996,48 @@ def _evidence_reference(path: Path) -> contracts.EvidenceReference:
     return contracts.EvidencePresent(str(path), hashlib.sha256(content).hexdigest(), len(content))
 
 
+def _current_candidate_review(
+    durable: DurableRoots,
+    store: WorkStore,
+    context: query_models.AttemptContextFacts,
+    brief: work_brief_models.ReadableWorkBrief | None,
+    result: contracts.EvidenceReference,
+    review: contracts.EvidenceReference,
+) -> tuple[review_operations.CurrentCandidateReview | None, contracts.CandidateReviewReference]:
+    if not (
+        isinstance(context, query_models.NonterminalAttemptContextFacts)
+        and context.state == work_models.AttemptState.REVIEW
+        and context.candidate_revision is not None
+        and brief is not None
+        and isinstance(result, contracts.EvidencePresent)
+        and isinstance(review, contracts.EvidencePresent)
+    ):
+        return None, contracts.CandidateReviewAbsent()
+    snapshot = store.read_candidate_snapshot_context(AttemptId(context.attempt_id))
+    if snapshot is None:
+        return None, contracts.CandidateReviewAbsent()
+    current = review_operations.read_current_candidate_review(
+        store,
+        ArtifactRepository(durable),
+        brief=brief,
+        candidate_revision=context.candidate_revision,
+        candidate_snapshot=snapshot.reference,
+        accepted_brief=context.brief_reference,
+        result_sha256=result.sha256,
+        review_sha256=review.sha256,
+    )
+    if current is None:
+        return None, contracts.CandidateReviewAbsent()
+    reference = current.reference
+    return current, contracts.CandidateReviewPresent(
+        int(reference.artifact_ref_id),
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+        reference.accepted_revision,
+    )
+
+
 def _relative_action(action_id: str, attempt_id: str, item_id: str) -> contracts.RelativeActionIdentity:
     kind_value, separator, subject = action_id.partition(":")
     if not separator:
@@ -1016,7 +1059,7 @@ def _relative_action(action_id: str, attempt_id: str, item_id: str) -> contracts
 
 
 def _continuation_operation(
-    operation: query_models.ActionContinuation | query_models.ReviewContinuation | query_models.DependencyContinuation,
+    operation: query_models.NonterminalContinuationOperation,
     attempt_id: str,
     item_id: str,
 ) -> contracts.ContinuationOperation:
@@ -1030,6 +1073,14 @@ def _continuation_operation(
             return contracts.ContinuationReview(candidate, capability)
         case query_models.DependencyContinuation(dependencies=dependencies):
             return contracts.ContinuationDependencies(dependencies)
+        case query_models.RefreshTargetContinuation(target_revision=target_revision):
+            return contracts.ContinuationRefreshTarget(target_revision)
+        case query_models.PermissionRecoveryContinuation(target_revision=target_revision, effect=effect, status=status):
+            return contracts.ContinuationPermissionRecovery(target_revision, effect, status)
+        case query_models.RepositoryDispositionContinuation(target_revision=target_revision, relation=relation):
+            return contracts.ContinuationRepositoryDisposition(target_revision, relation)
+        case query_models.RepositoryCleanupContinuation(target_revision=target_revision):
+            return contracts.ContinuationRepositoryCleanup(target_revision)
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -1096,6 +1147,7 @@ def _mcp_attempt_continuation(
 def _attempt_inspection_success(
     continuation: query_models.AttemptContinuation,
     candidate_recovery: contracts.CandidateRecovery,
+    candidate_review: contracts.CandidateReviewReference,
     accepted_brief: contracts.AcceptedBriefIdentity | None,
     result: contracts.EvidenceReference,
     review: contracts.EvidenceReference,
@@ -1132,6 +1184,7 @@ def _attempt_inspection_success(
             "ok",
             presented_continuation,
             candidate_recovery,
+            candidate_review,
             accepted_brief,
             result,
             review,
@@ -1188,12 +1241,18 @@ def _read_attempt_inspection(
     project_root: str,
     work_root: str,
     attempt_id: str,
+    reconciliation: dict[str, JsonValue] | None,
     token: execution.CancellationToken,
 ) -> execution.OperationResult:
     token.checkpoint()
     try:
         request = msgspec.convert(
-            {"project_root": project_root, "work_root": work_root, "attempt_id": attempt_id},
+            {
+                "project_root": project_root,
+                "work_root": work_root,
+                "attempt_id": attempt_id,
+                "reconciliation": reconciliation,
+            },
             type=contracts.AttemptInspectRequest,
             strict=True,
         )
@@ -1329,24 +1388,6 @@ def _read_attempt_inspection(
             context.accepted_scope_revision,
             context.accepted_scope_digest,
         )
-    continuation = queries.project_attempt_continuation(context, owner_task_id, decoded_brief)
-    if isinstance(continuation, DecisionFailure):
-        details = continuation.details
-        if details is None:
-            details = FailureDetails(
-                observed=(FailureFact("attempt_id", request.attempt_id),),
-                mismatches=(FailureMismatch("continuation", "currently legal action", "unavailable"),),
-                retry=RetryDisposition.REFRESH_ACTION,
-                effect=EffectDisposition.UNCHANGED,
-                changed_surfaces=(),
-                alternatives=(),
-            )
-        return common._read_failure(
-            "pinboard-mcp-attempt-inspection-result/v1",
-            "ACTION_NOT_AVAILABLE",
-            continuation.message,
-            details,
-        )
     attempt_root = durable.work_root / "attempts" / request.attempt_id
     try:
         result = _evidence_reference(attempt_root / "result.md")
@@ -1370,7 +1411,40 @@ def _read_attempt_inspection(
     recovery = _mcp_candidate_recovery(durable, store, context, request.attempt_id)
     if isinstance(recovery, execution.OperationResult):
         return recovery
-    content = _attempt_inspection_success(continuation, recovery, accepted_brief, result, review, blocker)
+    current_review, candidate_review = _current_candidate_review(durable, store, context, decoded_brief, result, review)
+    continuation = queries.project_attempt_continuation(
+        context,
+        owner_task_id,
+        decoded_brief,
+        request.reconciliation,
+        current_review is not None,
+    )
+    if isinstance(continuation, DecisionFailure):
+        details = continuation.details
+        if details is None:
+            details = FailureDetails(
+                observed=(FailureFact("attempt_id", request.attempt_id),),
+                mismatches=(FailureMismatch("continuation", "currently legal action", "unavailable"),),
+                retry=RetryDisposition.REFRESH_ACTION,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            )
+        return common._read_failure(
+            "pinboard-mcp-attempt-inspection-result/v1",
+            "ACTION_NOT_AVAILABLE",
+            continuation.message,
+            details,
+        )
+    content = _attempt_inspection_success(
+        continuation,
+        recovery,
+        candidate_review,
+        accepted_brief,
+        result,
+        review,
+        blocker,
+    )
     return execution.OperationResult(content, "ok", str(context.project_revision))
 
 

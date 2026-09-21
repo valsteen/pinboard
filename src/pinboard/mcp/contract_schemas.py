@@ -59,6 +59,7 @@ from pinboard.mcp.contracts import (
     CandidateRestoreInvalid,
     CandidateRestoreReady,
     CandidateRestoreRejected,
+    CandidateReviewRecorded,
     CompletionActionsSuccess,
     DispatchFailedAfterPublication,
     DispatchInvalid,
@@ -445,6 +446,7 @@ def _apply_job_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
     for name in (
         "DispatchReady",
         "ReviewJobReady",
+        "CandidateReviewRecorded",
         "DispatchFailedAfterPublication",
         "ReviewJobFailedAfterPublication",
     ):
@@ -452,8 +454,13 @@ def _apply_job_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
         if not isinstance(definition, dict):
             continue
         failed = name.endswith("FailedAfterPublication")
+        supported_publications = (
+            ((), ("accepted-artifact-reference", "ledger"), publication_sets[-1])
+            if name == "CandidateReviewRecorded"
+            else publication_sets
+        )
         alternatives: list[JsonSchemaValue] = []
-        for surfaces in publication_sets:
+        for surfaces in supported_publications:
             if failed and not surfaces:
                 continue
             surface_constraint: dict[str, JsonSchemaValue] = {
@@ -469,7 +476,7 @@ def _apply_job_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
                 "effect": {"const": "committed" if surfaces else "unchanged"},
                 "retry": {"const": "do-not-retry" if surfaces else "safe-to-repeat"},
             }
-            if not failed:
+            if not failed and name != "CandidateReviewRecorded":
                 reference_properties: dict[str, JsonSchemaValue] = {}
                 if "immutable-artifact" not in surfaces:
                     reference_properties["artifact_created"] = {"const": False}
@@ -640,6 +647,8 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     elif tool_name == "pinboard_review_job":
         if status == "ready":
             result_type = ReviewJobReady
+        elif status == "recorded":
+            result_type = CandidateReviewRecorded
         elif status == "failed-after-publication":
             result_type = ReviewJobFailedAfterPublication
         elif code == "REVIEW_JOB_INVALID":

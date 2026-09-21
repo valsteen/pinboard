@@ -516,7 +516,7 @@ def _validate_correction_history(
     subject_revision: str,
     correction_history_id: HistoryId,
 ) -> DispatchFailure | None:
-    facts = store.read_review_job_context(attempt_id, None, correction_history_id)
+    facts = store.read_review_job_context(attempt_id, None, correction_history_id, None, None)
     receipt = None if facts is None else facts.correction_receipt
     if receipt is None:
         return DispatchFailure(
@@ -586,7 +586,7 @@ def _read_correction_start(
             f"Correction starting snapshot is invalid: {error}",
             _fresh_review_details((), ()),
         )
-    facts = store.read_review_job_context(AttemptId(brief.attempt_id), None, choice.correction_history_id)
+    facts = store.read_review_job_context(AttemptId(brief.attempt_id), None, choice.correction_history_id, None, None)
     receipt = None if facts is None else facts.correction_receipt
     assert receipt is not None  # selected current canonical return was checked before this operation
     if isinstance(snapshot, candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot):

@@ -222,6 +222,113 @@ def canonical_correction_source_review_bytes(review: work_brief_models.Correctio
     return _canonical_bytes(review) + b"\n"
 
 
+def canonical_candidate_review_bytes(review: work_brief_models.CandidateReview) -> bytes:
+    return _canonical_bytes(review) + b"\n"
+
+
+def decode_canonical_candidate_review(
+    data: bytes,
+) -> work_brief_models.WorkBriefResult[work_brief_models.CandidateReview]:
+    try:
+        review = msgspec.json.decode(data, type=work_brief_models.CandidateReview)
+    except (msgspec.DecodeError, ValueError) as error:
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,
+            f"Cannot decode canonical candidate review: {error}",
+        )
+    if data != canonical_candidate_review_bytes(review):
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_NOT_CANONICAL,
+            "Accepted candidate review bytes are not the canonical msgspec encoding.",
+        )
+    return review
+
+
+def candidate_review_key(
+    attempt_id: str,
+    candidate: str,
+    candidate_snapshot_sha256: str,
+    accepted_brief_sha256: str,
+    result_sha256: str,
+    review_sha256: str,
+) -> str:
+    identity = _canonical_bytes(
+        (
+            attempt_id,
+            candidate,
+            candidate_snapshot_sha256,
+            accepted_brief_sha256,
+            result_sha256,
+            review_sha256,
+        )
+    )
+    return f"candidate-review-{hashlib.sha256(identity).hexdigest()}"
+
+
+def validate_candidate_review(
+    review: work_brief_models.CandidateReview,
+    *,
+    brief: work_brief_models.ReadableWorkBrief,
+    candidate: str,
+    candidate_snapshot: stored_state.ArtifactReference,
+    accepted_brief: stored_state.ArtifactReference | BriefArtifactRef,
+    result_sha256: str,
+    review_sha256: str,
+) -> work_brief_models.WorkBriefFailure | None:
+    snapshot = review.candidate_snapshot
+    selected_brief = review.accepted_brief
+    if (
+        review.attempt_id,
+        review.item_id,
+        review.candidate,
+        review.result_sha256,
+        review.review_sha256,
+    ) != (
+        brief.attempt_id,
+        brief.item_id,
+        candidate,
+        result_sha256,
+        review_sha256,
+    ):
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_STALE,
+            "Candidate review is not bound to the current attempt, candidate, result, and review bytes.",
+        )
+    if review.reviewer_task_id == brief.owner_task_id:
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT,
+            "The candidate reviewer must be a different task from the attempt owner.",
+        )
+    if (
+        snapshot.key,
+        snapshot.revision,
+        snapshot.selector,
+        snapshot.content_sha256,
+        snapshot.size_bytes,
+        selected_brief.key,
+        selected_brief.revision,
+        selected_brief.selector,
+        selected_brief.content_sha256,
+        selected_brief.size_bytes,
+    ) != (
+        candidate_snapshot.key,
+        candidate_snapshot.revision,
+        candidate_snapshot.selector,
+        candidate_snapshot.content_sha256,
+        candidate_snapshot.size_bytes,
+        accepted_brief.key,
+        accepted_brief.revision,
+        accepted_brief.selector,
+        accepted_brief.content_sha256,
+        accepted_brief.size_bytes,
+    ):
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_STALE,
+            "Candidate review is not bound to the current accepted candidate snapshot and brief.",
+        )
+    return None
+
+
 def decode_canonical_work_brief_review(
     data: bytes,
 ) -> work_brief_models.WorkBriefResult[WorkBriefReviewValue]:

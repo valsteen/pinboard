@@ -247,16 +247,25 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
 
     @server.tool(
         name=ATTEMPT_INSPECT_TOOL,
-        description="Inspect one exact Pinboard attempt, its accepted brief, evidence references, and continuation.",
+        description=(
+            "Inspect one exact Pinboard attempt, its accepted brief, evidence references, and continuation. "
+            "Supply reconciliation:null for ordinary inspection or exact outer-owned repository observations "
+            "for one resumed reviewed-work continuation."
+        ),
     )
-    async def attempt_inspect(project_root: str, work_root: str, attempt_id: str) -> dict[str, JsonValue]:
+    async def attempt_inspect(
+        project_root: str,
+        work_root: str,
+        attempt_id: str,
+        reconciliation: dict[str, JsonValue] | None,
+    ) -> dict[str, JsonValue]:
         return await execution._run_request(
             executor,
             diagnostics,
             next(request_ids),
             ATTEMPT_INSPECT_TOOL,
             project_root,
-            partial(read_operations._read_attempt_inspection, project_root, work_root, attempt_id),
+            partial(read_operations._read_attempt_inspection, project_root, work_root, attempt_id, reconciliation),
         )
 
     @server.tool(
@@ -426,8 +435,9 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
     @server.tool(
         name=REVIEW_JOB_TOOL,
         description=(
-            "Publish one candidate-bound reviewer launch with exact caller-selected historical evidence. "
-            "Every review leaf requires runtime:'codex' or 'claude-code' and background:<boolean>. Run separate "
+            "Publish one candidate-bound reviewer launch with exact caller-selected historical evidence, or record "
+            "one exact favorable candidate review with kind:'record-ready'. Launch leaves require runtime:'codex' "
+            "or 'claude-code' and background:<boolean>; record-ready takes neither and returns no native launch. Run separate "
             "full CLI validation before package reuse. On ready, call the exact returned native_launch.tool "
             "with exactly native_launch.arguments; do not add, remove or rewrite an argument. A rejection "
             "publishes no reviewer prompt: correct its precondition and never synthesize a substitute launch."

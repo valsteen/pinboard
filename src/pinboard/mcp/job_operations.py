@@ -6,7 +6,7 @@ import hashlib
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import assert_never
+from typing import Literal, assert_never
 from uuid import uuid4
 
 import msgspec
@@ -20,6 +20,7 @@ from pinboard.adapters import (
 from pinboard.adapters.files import root as git_root
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import RootError
+from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.application import (
     actions,
@@ -27,6 +28,7 @@ from pinboard.application import (
     queries,
     query_models,
 )
+from pinboard.application.ports import WorkStore
 from pinboard.domain import decision_models
 from pinboard.domain.errors import (
     ArtifactAcceptanceAfterPublicationError,
@@ -206,6 +208,75 @@ def _job_publication_surfaces(surfaces: tuple[ChangedSurface, ...]) -> tuple[con
     )
 
 
+def _record_ready_review(
+    durable: DurableRoots,
+    store: WorkStore,
+    choice: contracts.RecordReadyReviewChoice,
+    schema: Literal["pinboard-mcp-review-job-result/v1"],
+    token: execution.CancellationToken,
+) -> execution.OperationResult:
+    token.checkpoint()
+    try:
+        recorded = review_operations.record_ready_candidate_review(
+            durable.work_root,
+            store,
+            ArtifactRepository(durable),
+            AttemptId(choice.attempt_id),
+            choice.candidate_revision,
+            choice.candidate_snapshot_sha256,
+            choice.accepted_brief_sha256,
+            choice.result_sha256,
+            choice.review_sha256,
+            choice.reviewer_task_id,
+            choice.acceptance_evidence,
+        )
+    except ArtifactAcceptanceAfterPublicationError as error:
+        return _job_publication_exception(schema, choice.attempt_id, error)
+    if isinstance(recorded, DecisionFailure):
+        return _job_failure(schema, choice.attempt_id, recorded.code.value, recorded.message, recorded.details)
+    reference = recorded.reference
+    surfaces = _job_publication_surfaces(recorded.changed_surfaces)
+    content = msgspec.to_builtins(
+        contracts.CandidateReviewRecorded(
+            schema,
+            "recorded",
+            choice.attempt_id,
+            choice.candidate_revision,
+            contracts.CandidateReviewPresent(
+                int(reference.artifact_ref_id),
+                reference.selector,
+                reference.content_sha256,
+                reference.size_bytes,
+                reference.accepted_revision,
+            ),
+            bool(surfaces),
+            "committed" if surfaces else "unchanged",
+            "do-not-retry" if surfaces else "safe-to-repeat",
+            surfaces,
+        )
+    )
+    assert isinstance(content, dict)
+    return execution.OperationResult(
+        content, "committed" if surfaces else "unchanged", str(reference.accepted_revision)
+    )
+
+
+def _review_histories(
+    choice: contracts.ReviewLaunchChoice,
+) -> tuple[HistoryId | None, HistoryId | None]:
+    match choice:
+        case contracts.InitialReviewChoice():
+            return None, None
+        case contracts.PackageInitialReviewChoice() | contracts.PackageInitialRecoveryReviewChoice():
+            return HistoryId(choice.checkpoint_history_id), None
+        case contracts.CorrectionReviewChoice():
+            return None, HistoryId(choice.correction_history_id)
+        case contracts.PackageCorrectionReviewChoice() | contracts.PackageCorrectionRecoveryReviewChoice():
+            return HistoryId(choice.checkpoint_history_id), HistoryId(choice.correction_history_id)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _dispatch_job(
     project_root: str, work_root: str, dispatch: dict[str, JsonValue], token: execution.CancellationToken
 ) -> execution.OperationResult:
@@ -320,21 +391,10 @@ def _review_job(
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return common._read_failure(schema, "REVIEW_JOB_INVALID", f"Cannot decode review-job request: {error}", None)
     choice = request.review
-    match choice:
-        case contracts.InitialReviewChoice():
-            checkpoint_history_id, correction_history_id = None, None
-        case contracts.PackageInitialReviewChoice() | contracts.PackageInitialRecoveryReviewChoice():
-            checkpoint_history_id, correction_history_id = HistoryId(choice.checkpoint_history_id), None
-        case contracts.CorrectionReviewChoice():
-            checkpoint_history_id, correction_history_id = None, HistoryId(choice.correction_history_id)
-        case contracts.PackageCorrectionReviewChoice() | contracts.PackageCorrectionRecoveryReviewChoice():
-            checkpoint_history_id, correction_history_id = (
-                HistoryId(choice.checkpoint_history_id),
-                HistoryId(choice.correction_history_id),
-            )
-        case _ as unreachable:
-            assert_never(unreachable)
     store = common.compose_store(durable)
+    if isinstance(choice, contracts.RecordReadyReviewChoice):
+        return _record_ready_review(durable, store, choice, schema, token)
+    checkpoint_history_id, correction_history_id = _review_histories(choice)
     token.checkpoint()
     # Cancellation cannot turn an entered publication into an unchanged/replayable result.
     try:
@@ -418,7 +478,7 @@ def _review_job(
 def _review_candidate_required(
     source_checkout: Path,
     work_root: Path,
-    choice: contracts.ReviewChoice,
+    choice: contracts.ReviewLaunchChoice,
     required: review_operations.CompatibilityCandidateRequired,
     correction_history_id: HistoryId | None,
 ) -> execution.OperationResult:

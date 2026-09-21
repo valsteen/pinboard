@@ -89,6 +89,8 @@ class WorkStore(Protocol):
         attempt_id: AttemptId,
         checkpoint_history_id: HistoryId | None,
         correction_history_id: HistoryId | None,
+        result_sha256: str | None,
+        review_sha256: str | None,
     ) -> query_models.ReviewJobContextFacts | None: ...
 
     def read_completion_context(self, attempt_id: AttemptId) -> query_models.CompletionContextFacts | None: ...
@@ -162,6 +164,8 @@ class ReviewJobContextReader(Protocol):
         attempt_id: AttemptId,
         checkpoint_history_id: HistoryId | None,
         correction_history_id: HistoryId | None,
+        result_sha256: str | None,
+        review_sha256: str | None,
     ) -> query_models.ReviewJobContextFacts | None: ...
 
 

@@ -205,7 +205,7 @@ DIAGRAM = Diagram(
             12,
         ),
         Note(
-            "Preparation and attempt authority are item-scoped; project actions rely on SQLite transactions.",
+            "Preparation authority is item-scoped; attempt authority is attempt-scoped. Project actions rely on SQLite transactions.",
             28,
             834,
             12,

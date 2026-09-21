@@ -21,43 +21,44 @@ class HowItWorksDocumentationTests(unittest.TestCase):
         self.assertEqual(
             {
                 Path("HOW_IT_WORKS.md"),
+                Path("assets/how-it-works/ambiguity-closure.svg"),
                 Path("assets/how-it-works/product.svg"),
                 Path("assets/how-it-works/layers.svg"),
                 Path("assets/how-it-works/journey.svg"),
-                Path("assets/how-it-works/outcomes.svg"),
                 Path("assets/how-it-works/database.svg"),
-                Path("assets/how-it-works/project-export.svg"),
                 Path("assets/how-it-works/brief.svg"),
-                Path("assets/how-it-works/review-loop.svg"),
+                Path("assets/how-it-works/ambiguity-closure-dark.svg"),
                 Path("assets/how-it-works/product-dark.svg"),
                 Path("assets/how-it-works/layers-dark.svg"),
                 Path("assets/how-it-works/journey-dark.svg"),
-                Path("assets/how-it-works/outcomes-dark.svg"),
                 Path("assets/how-it-works/database-dark.svg"),
-                Path("assets/how-it-works/project-export-dark.svg"),
                 Path("assets/how-it-works/brief-dark.svg"),
-                Path("assets/how-it-works/review-loop-dark.svg"),
             },
             outputs.keys(),
         )
         guide = outputs[Path("HOW_IT_WORKS.md")]
-        self.assertEqual(8, guide.count("<picture>"))
-        self.assertEqual(8, guide.count('media="(prefers-color-scheme: dark)"'))
-        for slug in ("product", "layers", "journey", "outcomes", "database", "project-export", "brief", "review-loop"):
+        self.assertEqual(6, guide.count("<picture>"))
+        self.assertEqual(6, guide.count('media="(prefers-color-scheme: dark)"'))
+        for slug in ("ambiguity-closure", "brief", "product", "layers", "journey", "database"):
             self.assertIn(f'srcset="assets/how-it-works/{slug}-dark.svg"', guide)
             self.assertIn(f'src="assets/how-it-works/{slug}.svg"', guide)
 
-    def test_outcome_diagram_follows_the_operation_journey(self) -> None:
+    def test_guide_follows_the_accepted_three_movement_arc(self) -> None:
         guide = render.build_outputs(ROOT)[Path("HOW_IT_WORKS.md")]
 
         self.assertLess(
-            guide.index('src="assets/how-it-works/journey.svg"'),
-            guide.index('src="assets/how-it-works/outcomes.svg"'),
+            guide.index('src="assets/how-it-works/ambiguity-closure.svg"'),
+            guide.index('src="assets/how-it-works/brief.svg"'),
         )
         self.assertLess(
-            guide.index('src="assets/how-it-works/outcomes.svg"'),
-            guide.index("## The repository keeps the memory"),
+            guide.index('src="assets/how-it-works/brief.svg"'),
+            guide.index("## The codebase preserves those boundaries"),
         )
+        self.assertLess(
+            guide.index('src="assets/how-it-works/layers.svg"'),
+            guide.index('src="assets/how-it-works/database.svg"'),
+        )
+        self.assertNotIn("project-export", guide)
 
     def test_diagrams_use_the_approved_reading_surfaces(self) -> None:
         outputs = render.build_outputs(ROOT)
@@ -76,7 +77,7 @@ class HowItWorksDocumentationTests(unittest.TestCase):
                 self.assertNotIn("linearGradient", svg)
                 self.assertNotIn("feDropShadow", svg)
 
-        for slug in ("product", "layers", "journey", "outcomes", "database", "project-export", "brief", "review-loop"):
+        for slug in ("ambiguity-closure", "brief", "product", "layers", "journey", "database"):
             day = outputs[Path(f"assets/how-it-works/{slug}.svg")]
             night = outputs[Path(f"assets/how-it-works/{slug}-dark.svg")]
             with self.subTest(slug=slug):

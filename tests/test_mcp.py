@@ -4235,7 +4235,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         attempt = fixture.store.read_attempt_context(AttemptId("work-a-1"))
         assert snapshot is not None and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
         attempt_root = fixture.work / "attempts" / "work-a-1"
-        review = {
+        review: dict[str, contracts.JsonValue] = {
             "kind": "record-ready",
             "attempt_id": "work-a-1",
             "candidate_revision": fixture.candidate_revision,
@@ -4324,7 +4324,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         self.assertEqual("ACTION_NOT_AVAILABLE", unreconciled["code"])
         self.assertNotIn("native_launch", unreconciled)
 
-        reconciliation = {
+        reconciliation: dict[str, contracts.JsonValue] = {
             "target_revision": "squash-equivalent-head",
             "relation": "candidate-pending-on-squash-equivalent-base",
             "phase": "disposition",

@@ -2,19 +2,17 @@ import argparse
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from . import brief, database, journey, layers, outcomes, product, project_export, review_loop
+from . import ambiguity_closure, brief, database, journey, layers, product
 from .model import DAY_PALETTE, NIGHT_PALETTE, Diagram, render_svg
 
 OUTPUT_PATHS = {
     "guide": Path("HOW_IT_WORKS.md"),
+    "ambiguity-closure": Path("assets/how-it-works/ambiguity-closure.svg"),
     "product": Path("assets/how-it-works/product.svg"),
     "layers": Path("assets/how-it-works/layers.svg"),
     "journey": Path("assets/how-it-works/journey.svg"),
-    "outcomes": Path("assets/how-it-works/outcomes.svg"),
     "database": Path("assets/how-it-works/database.svg"),
-    "project-export": Path("assets/how-it-works/project-export.svg"),
     "brief": Path("assets/how-it-works/brief.svg"),
-    "review-loop": Path("assets/how-it-works/review-loop.svg"),
 }
 
 DARK_OUTPUT_PATHS = {
@@ -36,33 +34,42 @@ def _guide() -> str:
 
 # How Pinboard works
 
-Pinboard keeps long-running coding-agent work attached to the decisions that shaped it. It adds a repository-local record of proposed ideas, accepted work, implementation attempts, and review evidence without asking you to maintain a parallel ticket system.
+Pinboard keeps long-running coding-agent work attached to the decisions that shaped it. It adds a repository-local record of accepted work, implementation attempts, and review evidence without asking you to maintain a parallel ticket system.
 
 For a short disposable change, working directly with a coding agent is often enough. Pinboard becomes useful when work crosses conversations, interruptions, reviewers, or parallel tasks and the latest chat is no longer a reliable account of why the code looks the way it does.
 
-## One accepted direction anchors the loop
+## Ambiguity closes around one accepted brief
 
-A coding agent already works through interpretation: it reads a request, changes the repository, reviews the result, and turns findings into another pass. As the loop grows, a plausible implementation detail or reviewer suggestion can quietly become the new target.
+Work begins with structured intake and discussion, not an implementation prompt assembled from the latest message. The human and agent make the outcome, constraints, evidence, and material unknowns explicit enough to form an inspectable agreement.
 
-{_picture("review-loop", "Published brief, independent brief review for cross-boundary work, implementation, prepared review context, and independent implementation review, with separate correction paths")}
+{_picture("ambiguity-closure", "Structured intake and discussion becoming a reviewed brief that anchors implementation and exact-candidate review, with defects returning for correction and discoveries outside delegated authority returning to a human decision")}
 
-Pinboard anchors that loop to one accepted direction. Cross-boundary work receives an independent review of its published brief before implementation. Findings lead to bounded corrections, republication, and another check of the corrected brief. Local work uses a lighter brief and skips this separate brief review.
+The accepted brief anchors both implementation and review. Cross-boundary work receives an independent review of the brief before implementation; local work uses a lighter brief and skips that separate review. The worker then implements the accepted scope, verifies it, and submits one exact candidate with its evidence. A separate reviewer evaluates that candidate against the same brief.
 
-After implementation, Pinboard prepares review context that binds the accepted brief, exact candidate, result, and any selected earlier evidence. A separate reviewer then examines that candidate against the brief. Preparing the context is not the review: it may publish an immutable prompt, but it neither judges nor accepts the implementation. Implementation defects return to the same attempt for correction and another review. A gap in the brief or an unresolved product decision goes back to its owner before implementation continues.
+Implementation defects return to the same attempt for bounded correction and another review. A discovery that changes product scope, architecture, compatibility, or another delegated boundary returns to the human. If the agreement changes, Pinboard replaces the complete definition and brief before affected implementation resumes; it does not reinterpret the old candidate as satisfying a new request.
 
-The human still decides what belongs in the product, which tradeoffs are acceptable, and what should happen to reviewed repository changes. Pinboard preserves those decisions and returns material choices in ordinary language.
+The human still decides what belongs in the product, which tradeoffs are acceptable, and what happens to reviewed repository changes. Structure keeps those choices visible; it does not make them automatically correct.
 
-## The brief makes the agreement inspectable
+## The brief makes delegation inspectable
 
-Before implementation, Pinboard turns accepted direction into a structured brief. It separates the desired outcome from scope, exclusions, compatibility constraints, evidence, verification, and work deliberately left for later. Cross-boundary work also names the project authorities and relationships the implementation and review must preserve.
+Before implementation, Pinboard turns accepted direction into a strict structured brief. The artifact identifies the item, attempt, owner, branch, base revision, checkout, and exact accepted-scope revision and digest. Its whole-work definition records the outcome, scope, non-goals, compatibility, supported roots, provenance, testing strategy, bootstrap, and the mapping from accepted obligations to evidence.
 
 {_picture("brief", "The canonical work brief organized into artifact identity, accepted scope, whole-work definition, and a checkpoint containing criteria, architecture impact, reviewed authorities, contracts, coverage, lifecycle distinctions, verification, and deferrals")}
 
-The diagram expands the cross-boundary form. A local checkpoint retains acceptance criteria, architecture impact, verification, and deferrals without the additional authority, contract, coverage, and lifecycle records. It applies only when ownership, dependency direction, stored and wire identities, and independent consumers remain unchanged and one entry point exposes the complete change.
+Each checkpoint states its outcome, acceptance criteria, architecture impact, required verification, deferrals, and whether accepted work continues or terminates. A cross-boundary checkpoint also binds reviewed authorities, contracts, consumer coverage, and lifecycle distinctions. A local checkpoint is valid only while ownership, dependency direction, stored and wire identities, and independent consumers remain unchanged and one entry point exposes the complete change.
 
-The structure prevents important kinds of information from disappearing into a paragraph. It does not decide what the project should want or prove that every claim is true. People and coding agents still interpret the evidence; Pinboard checks that they are discussing the same accepted scope and that required distinctions have not been omitted.
+This structure gives an agent a bounded job and gives the reviewer the same checklist. It keeps exclusions, evidence limits, work deliberately deferred, and unresolved decisions from disappearing into prose. Pinboard validates shape, identity, references, and canonical bytes; people and language models still judge whether the facts and choices are sound.
 
-Assurance follows that accepted product evidence. A defect against promised behavior remains blocking. A broader security, compatibility, durability, or platform guarantee does not become mandatory merely because an agent can imagine it.
+### Agent actions stay explicit and bounded
+
+The native MCP surface separates reading, authority, immutable publication, candidate observation, and lifecycle change. A few representative operations show how the brief governs the work:
+
+- `proposal_create`, `brief_contract`, `brief_sources`, `brief_publish`, and `brief_review` preserve direction, construct the exact brief, select source evidence, and record independent brief findings.
+- `actions` exposes only legal current operations and their exact payloads. `preparation_authority` and `attempt_authority` fence who may prepare or implement; `dispatch` publishes verified launch instructions without granting that authority.
+- `artifact_verify` checks immutable accepted bytes. `candidate_observe` identifies the actual tracked working-tree candidate, and `review_job` binds that candidate, brief, result, and selected history into a separate reviewer launch.
+- `attempt_inspect` exposes one attempt's current continuation. `candidate_restore` can restore its accepted candidate into an exact clean checkout, while `transition` alone applies a freshly discovered lifecycle mutation.
+
+The complete surface also contains focused project and definition reads, priority and parallel planning, and status operations. The point is not the inventory: each operation has one advertised data scope and effect, so an agent cannot treat a convenient read, prompt publication, or stale receipt as mutation authority.
 
 ## Work survives its current execution
 
@@ -70,7 +77,7 @@ A **work item** is the durable project decision. An **attempt** is one execution
 
 {_picture("product", "A work item lifecycle above the legal branches of an active attempt, with related facts shown separately")}
 
-Ideas can be preserved before they are accepted or scheduled. Accepted work can wait for dependencies, move through implementation and review, pause at a useful checkpoint, return for correction, continue, or finish. A proposed replacement remains a related decision rather than becoming a hidden state: Pinboard keeps obsolete work from advancing until the human chooses whether to replace it or retain it temporarily.
+Ideas can be preserved before they are accepted or scheduled. Accepted work can wait for dependencies, move through implementation and review, pause at a useful checkpoint, return for correction, continue, or finish. A proposed replacement remains a separate decision rather than silently changing the active target.
 
 Across those paths, four guarantees stay constant:
 
@@ -79,108 +86,37 @@ Across those paths, four guarantees stay constant:
 - **Review concerns one candidate.** Findings and acceptance stay bound to the exact result that was examined.
 - **Authoritative changes are atomic.** A rejected or failed transition leaves the previous ledger intact; repairable views cannot silently rewrite accepted state.
 
-## The MCP toolkit keeps each job explicit
-
-Twenty deliberately narrow MCP operations carry that lifecycle. The names below omit the repetitive `pinboard_` wire prefix; adding it back produces the exact registered tool name. Keeping reads, authority, launch preparation, source restoration, and lifecycle changes separate makes each operation's effect visible before an agent uses it.
-
-### What work exists, and what can run next?
-
-- `overview` reads the current authoritative project-wide work overview.
-- `item_status` reads the current status of one work item.
-- `item_definition` reads one complete accepted definition or its bounded revision history.
-- `order` saves a human-authorized complete priority order against the current live order.
-- `parallel_preview` reports structural constraints for selected work or all work that is currently safe to consider in parallel.
-
-### How does accepted direction become an exact brief?
-
-- `proposal_create` preserves one complete structured proposal for later project action.
-- `brief_contract` returns the exact work-brief contract or an unresolved local or cross-boundary starter.
-- `brief_sources` plans and emits verified source batches from the selected checkout.
-- `brief_publish` publishes one canonical brief and accepts its immutable artifact reference.
-- `brief_review` records or reads independently found corrections to an accepted brief without declaring it ready.
-
-### Who may act, and what may they do?
-
-- `actions` discovers the exact legal actions and payload contracts available in the current state.
-- `preparation_authority` reads, acquires, renews, releases, or revokes one preparation lease.
-- `attempt_authority` reads, acquires, renews, releases, or revokes one implementation-attempt lease.
-- `transition` applies one freshly discovered lifecycle action with the required project or lease authority.
-
-### How do workers and reviewers receive exact work?
-
-- `dispatch` publishes verified worker-launch instructions without launching a worker or granting authority.
-- `attempt_inspect` reads one attempt's accepted brief, evidence references, and next continuation.
-- `artifact_verify` verifies an accepted artifact reference against its immutable bytes.
-- `candidate_observe` identifies the actual tracked working-tree candidate and reports omitted untracked paths.
-- `candidate_restore` restores an accepted candidate into an exact clean checkout without changing lifecycle state.
-- `review_job` publishes a candidate-bound reviewer launch using the selected current and historical evidence.
-
-Together, these operations expose the workflow without turning the MCP surface into a second policy engine. The next section follows one representative authority operation through the same layers that serve the rest of the toolkit.
-
-## One operation moves through the layers
-
-Starting a preparation claim through MCP is one representative operation. The request is decoded, the current definition and claim operation are selected under the same transaction that commits the change, and a pure decision accepts or rejects it. An accepted mutation is committed before replaceable views are refreshed and the result is presented.
-
-{_picture("journey", "An ordinary preparation start selecting the current definition and claim operation against locked state, then committing, refreshing, and presenting it")}
-
-The same separation keeps a failed view refresh from undoing an accepted transaction. Preparation, implementation, and review use these boundaries while preserving the accepted work and its evidence.
-
-If accepted direction changes late, Pinboard does not reinterpret the old candidate as satisfying the new request. The complete definition and brief are replaced before another candidate and review. If work pauses or a worker disappears, the same attempt can resume from its accepted Git lineage and recorded evidence without retelling the project history.
-
-The extra steps make a first delivery slower. Their return appears when the work needs another revision, conversation, reviewer, or task: the decision, implementation, and evidence remain connected.
-
-## Precise outcomes cross intact boundaries
-
-Pinboard's layers pass typed outcomes upward instead of flattening a result into an opaque message. Each layer keeps its own responsibility while giving the next layer the facts it needs.
-
-The preparation-start path follows those boundaries:
-
-- MCP decodes an exact `PreparationAuthorityStartRequest`.
-- The application selects the current definition, claim, and dependencies.
-- The domain's preparation-authority decision returns either an accepted decision or an expected `DecisionFailure`.
-- The storage adapter attempts only the mutation described by an accepted decision.
-
-{_picture("outcomes", "Preparation start crossing MCP, application, domain, and adapter boundaries while domain rejection, stale-persistence rejection, successful commit, infrastructure failure, and view-warning facts stay distinct for MCP-owned presentation")}
-
-Outcomes are broader than errors. An accepted decision describes the proposed lease, an expected rejection returns `DecisionFailure`, and an attempted effect returns either `CommittedEffect` or a separate stale-persistence rejection. Infrastructure failures remain exceptions. A later view-refresh warning remains separate from a committed success.
-
-MCP owns presentation. It returns structured observations, mismatches, changed surfaces, retry disposition, and bounded recovery without parsing message text or inventing missing facts.
-
-## The repository keeps the memory
-
-Pinboard stores project coordination data beside the repository. The relational ledger groups current work, accepted scope and dependencies, discoveries, immutable knowledge, current execution authority, and history.
-
-{_picture("database", "Six groups of SQLite tables showing current work, scope, discovery, durable knowledge, mutation ownership, and history")}
-
-SQLite is the authority. Accepted briefs, results, and reviews are immutable artifacts referenced by that ledger. Human-readable Markdown views are replaceable projections for inspection; if refreshing one fails, the accepted transaction remains authoritative and the view can be rebuilt.
-
-This local record supports recovery and review, but it is not a defense against a hostile user with the same filesystem access. Pinboard is designed for one trusted local developer authority and for failures such as stale actions, invalid input, interrupted publication, and ordinary concurrency.
-
-## Project export carries facts, not control
-
-When work must move to another tool, Pinboard can export the admitted work, accepted definitions, attempts, proposals, relationships, decisions, and verified evidence as one portable package.
-
-{_picture("project-export", "Exported Pinboard project facts and verified artifacts becoming one portable JSON package while live authority stays local")}
-
-The package captures one coherent project revision. It does not export live worker authority, mutate Pinboard, choose how the receiving tool represents the facts, or write into that tool. A human or the receiving system owns that mapping.
-
-## Responsibility stays visible
+## The codebase preserves those boundaries
 
 Pinboard keeps product decisions, operation sequencing, persistence, and external presentation in four package layers.
 
 {_picture("layers", "Four package layers showing interfaces, application, domain, and adapters, connected by package dependencies")}
 
-Every arrow means “may depend on.” Interfaces make outside input exact and present results. Application code coordinates complete operations through explicit capabilities. The domain decides legality without reading files or issuing SQL. Adapters store and recover accepted facts without deciding workflow policy.
+Every arrow means “may depend on.” Interfaces make outside input exact and present results. Application code coordinates complete operations through explicit capabilities. The domain decides legality without reading files or issuing SQL. Adapters store and recover accepted facts without deciding workflow policy. The CLI and MCP are sibling interfaces over those same inner contracts, not fallback implementations of each other.
 
-MCP owns agent intake, brief preparation, authority, implementation transitions, dispatch, and review. The CLI serves human setup, summary status, validation, view repair, portable export, direct closure, and its own diagnostics. It does not provide a second agent workflow when MCP is unavailable.
+### One operation proves the path
 
-That separation is why a storage failure cannot redefine a product decision, a renderer cannot become the source of truth, and an interface cannot silently invent lifecycle policy.
+Starting a preparation claim through MCP is one representative path through the layers. The interface decodes an exact request and samples operation time. The application opens the transaction and selects the current definition and claim operation. A pure domain decision accepts or rejects the change. The adapter commits only the accepted mutation, after which the interface refreshes replaceable views and presents the exact result.
+
+{_picture("journey", "An ordinary preparation start selecting the current definition and claim operation against locked state, then committing, refreshing, and presenting it")}
+
+Expected rejections retain their code, observations, mismatches, retry disposition, and legal alternatives. A stale persistence guard remains distinct from a domain rejection; infrastructure failures remain exceptions. If view refresh fails after commit, the committed ledger result remains authoritative and the response names the repairable surface. This is the same distinction the guide's opening relies on: an accepted decision, a durable effect, and a human-readable presentation are related but not interchangeable.
+
+### Durable state supports review and recovery
+
+Pinboard stores coordination data beside the repository. The relational ledger groups current work, accepted definitions and dependencies, discoveries, immutable knowledge, current mutation authority, and committed history.
+
+{_picture("database", "Six groups of SQLite tables showing current work, definitions and relationships, discovery, accepted artifacts, mutation ownership, and integrity and time")}
+
+SQLite is the source of truth for lifecycle, accepted scope, authority, and history. Accepted briefs, candidate snapshots, results, and reviews are immutable artifacts referenced by that ledger. Human-readable Markdown views are replaceable projections: a failed refresh cannot undo the accepted transaction, and the views can be rebuilt from authoritative state and verified artifact bytes.
+
+That durable binding lets a later worker recover the same attempt and lets a reviewer resolve the exact candidate and agreement without reconstructing either from chat. It also marks a deliberate boundary: Pinboard assumes one trusted local developer authority over the repository, checkout, work root, SQLite database, artifacts, and local MCP client. It handles stale actions, invalid input, interrupted publication, and ordinary concurrency; it is not a defense against a hostile actor with the same filesystem access.
 
 For installation and the product overview, return to the [README](README.md). Maintainers can continue with the exact [architecture map](ARCHITECTURE.md) and the [design principles](DESIGN_PRINCIPLES.md).
 
 ---
 
-<sub>This guide and its eight SVG diagrams are generated from the executable seeds in <code>docs/how_it_works/</code>. Edit the seeds and regenerate the outputs; do not edit this file directly.</sub>
+<sub>This guide and its six SVG diagrams are generated from the executable seeds in <code>docs/how_it_works/</code>. Edit the seeds and regenerate the outputs; do not edit this file directly.</sub>
 """
 
 
@@ -191,23 +127,19 @@ def _output_path(item: tuple[Path, str]) -> str:
 def build_outputs(root: Path) -> dict[Path, str]:
     """Validate the complete guide and raise if no coherent output set can be built."""
 
+    ambiguity_closure.validate()
     product.validate()
     layers.validate(root)
     journey.validate()
-    outcomes.validate()
     database.validate(root)
-    project_export.validate()
     brief.validate()
-    review_loop.validate()
     diagrams: tuple[Diagram, ...] = (
+        ambiguity_closure.DIAGRAM,
+        brief.DIAGRAM,
         product.DIAGRAM,
         layers.DIAGRAM,
         journey.DIAGRAM,
-        outcomes.DIAGRAM,
         database.DIAGRAM,
-        project_export.DIAGRAM,
-        brief.DIAGRAM,
-        review_loop.DIAGRAM,
     )
     outputs: dict[Path, str] = {}
     for diagram in diagrams:

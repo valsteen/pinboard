@@ -390,6 +390,11 @@ def _apply_attempt_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
             "ReviewAttemptContinuation",
             (
                 {"$ref": "#/$defs/ContinuationReview"},
+                {"$ref": "#/$defs/ContinuationRefreshTarget"},
+                {"$ref": "#/$defs/ContinuationPermissionRecovery"},
+                {"$ref": "#/$defs/ContinuationRepositoryDisposition"},
+                {"$ref": "#/$defs/ContinuationRepositoryCleanup"},
+                _action_continuation(decision_models.ActionKind.COMPLETE),
                 _action_continuation(decision_models.ActionKind.RETURN_FOR_CORRECTION),
             ),
             _REVIEW_CONTINUATION_ACTION_KINDS,

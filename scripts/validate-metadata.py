@@ -55,6 +55,7 @@ EXPECTED_ENTRY_POINTS: Final = {
     "pinboard-mcp": "pinboard.mcp.server:main",
     "pinboard-claude-subagent-start": "pinboard.claude_hook:main",
     "pinboard-claude-session-start": "pinboard.claude_hook:session_start_main",
+    "pinboard-claude-pre-tool-use": "pinboard.claude_hook:pre_tool_use_main",
 }
 
 type SkillName = Annotated[
@@ -169,17 +170,30 @@ class ClaudeParentStartupMatcher(msgspec.Struct, frozen=True, forbid_unknown_fie
     hooks: Annotated[tuple[ClaudeParentStartupCommand, ...], msgspec.Meta(min_length=1, max_length=1)]
 
 
-class ClaudeStartupHooks(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ClaudePermissionCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    type: Literal["command"]
+    command: Literal['"${CLAUDE_PLUGIN_ROOT}/scripts/pinboard" --claude-pre-tool-use']
+
+
+class ClaudePermissionMatcher(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    matcher: Literal["mcp__plugin_pinboard_pinboard__.*"]
+    hooks: Annotated[tuple[ClaudePermissionCommand, ...], msgspec.Meta(min_length=1, max_length=1)]
+
+
+class ClaudeHooks(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     session_start: Annotated[tuple[ClaudeParentStartupMatcher, ...], msgspec.Meta(min_length=1, max_length=1)] = (
         msgspec.field(name="SessionStart")
     )
     subagent_start: Annotated[tuple[ClaudeStartupMatcher, ...], msgspec.Meta(min_length=1, max_length=1)] = (
         msgspec.field(name="SubagentStart")
     )
+    pre_tool_use: Annotated[tuple[ClaudePermissionMatcher, ...], msgspec.Meta(min_length=1, max_length=1)] = (
+        msgspec.field(name="PreToolUse")
+    )
 
 
 class ClaudeHookConfiguration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    hooks: ClaudeStartupHooks
+    hooks: ClaudeHooks
 
 
 class ProjectMetadata(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -312,7 +326,7 @@ def validate_claude_plugin() -> None:
     if not (ROOT / "skills").is_dir():
         raise ValueError("Claude plugin must use the shared repository-root skills directory")
     if (ROOT / "hooks" / "hooks.json").exists():
-        raise ValueError("Claude-only startup hooks must not use shared default hook discovery")
+        raise ValueError("Claude-only hooks must not use shared default hook discovery")
     msgspec.json.decode((ROOT / value.hooks).read_bytes(), type=ClaudeHookConfiguration)
 
 
@@ -344,9 +358,7 @@ def validate_project_metadata() -> None:
     if project.dependencies != ("mcp==2.2.0", "msgspec>=0.21.1"):
         raise ValueError("runtime dependencies must be exact and limited to MCP plus msgspec")
     if project.scripts != EXPECTED_ENTRY_POINTS:
-        raise ValueError(
-            "project entry points must expose exactly the CLI, local-stdio MCP and Claude startup boundaries"
-        )
+        raise ValueError("project entry points must expose exactly the CLI, local-stdio MCP and Claude hook boundaries")
 
 
 def validate_codex_marketplace() -> None:

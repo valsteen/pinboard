@@ -39,6 +39,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                 "project_root": str(active.project),
                 "work_root": str(active.work),
                 "attempt_id": "work-a-1",
+                "reconciliation": None,
             },
         )
         active_operation = self.json_object(self.json_object(active_result["continuation"])["next_operation"])
@@ -52,6 +53,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                 "project_root": str(review.project),
                 "work_root": str(review.work),
                 "attempt_id": "work-a-1",
+                "reconciliation": None,
             },
         )
         review_operation = self.json_object(self.json_object(review_result["continuation"])["next_operation"])
@@ -154,6 +156,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                         "project_root": str(fixture.project),
                         "work_root": str(fixture.work),
                         "attempt_id": "work-a-1",
+                        "reconciliation": None,
                     },
                 )
                 review_operation = self.json_object(
@@ -217,6 +220,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                         "project_root": str(fixture.project),
                         "work_root": str(fixture.work),
                         "attempt_id": "work-a-1",
+                        "reconciliation": None,
                     },
                 )
                 operation = self.json_object(self.json_object(inspected["continuation"])["next_operation"])

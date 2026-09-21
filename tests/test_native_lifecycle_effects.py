@@ -848,7 +848,12 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         ):
             inspected = call_native_tool(
                 mcp_server.ATTEMPT_INSPECT_TOOL,
-                {"project_root": str(fixture.project), "work_root": str(fixture.work), "attempt_id": "work-a-1"},
+                {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "attempt_id": "work-a-1",
+                    "reconciliation": None,
+                },
             )
         continuation = self.json_object(inspected["continuation"])
         self.assertEqual("paused", continuation["state"])

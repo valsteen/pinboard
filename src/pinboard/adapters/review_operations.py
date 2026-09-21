@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -27,9 +28,10 @@ from pinboard.application import (
     work_brief_models,
     work_briefs,
 )
-from pinboard.application.artifacts import BriefArtifactRef
+from pinboard.application.artifact_publication import publish_accepted_artifact
+from pinboard.application.artifacts import BriefArtifactRef, NewArtifact
 from pinboard.domain import work_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.errors import ChangedSurface, DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import AttemptId, HistoryId, TaskId
 
 
@@ -83,6 +85,19 @@ class PreparedReviewJob:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordedCandidateReview:
+    reference: stored_state.ArtifactReference
+    review: work_brief_models.CandidateReview
+    changed_surfaces: tuple[ChangedSurface, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentCandidateReview:
+    reference: stored_state.ArtifactReference
+    review: work_brief_models.CandidateReview
+
+
+@dataclass(frozen=True, slots=True)
 class CompatibilityCandidateRequired(DecisionFailure):
     """Captured v1 facts needed by explicit sibling remedies; this owner never repairs."""
 
@@ -103,6 +118,231 @@ def _read_required_evidence(path: Path, label: str) -> DecisionResult[tuple[str,
     if not evidence_bytes.strip():
         return _review_job_failure(f"Current {label} is empty.")
     return str(path), sha256(evidence_bytes).hexdigest()
+
+
+def _portable(
+    role: Literal["candidate", "accepted-brief"],
+    reference: stored_state.ArtifactReference | BriefArtifactRef,
+) -> work_brief_models.PortableArtifactIdentity:
+    match reference.kind:
+        case work_models.ArtifactKind.BRIEF:
+            kind = "brief"
+        case work_models.ArtifactKind.EVIDENCE:
+            kind = "evidence"
+        case work_models.ArtifactKind.RESULT:
+            kind = "result"
+        case work_models.ArtifactKind.REQUIREMENTS:
+            raise ValueError("candidate reviews cannot reference requirements artifacts")
+        case _ as unreachable:
+            assert_never(unreachable)
+    return work_brief_models.PortableArtifactIdentity(
+        role,
+        kind,
+        reference.key,
+        reference.revision,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+    )
+
+
+def _candidate_review_record(
+    work_root: Path,
+    store: ports.WorkStore,
+    attempt_id: AttemptId,
+    candidate_revision: str,
+    candidate_snapshot_sha256: str,
+    accepted_brief_sha256: str,
+    result_sha256: str,
+    review_sha256: str,
+    reviewer_task_id: str,
+    acceptance_evidence: str,
+) -> DecisionResult[work_brief_models.CandidateReview]:
+    unavailable = _review_job_failure("Ready review requires the current review attempt and exact protected candidate.")
+    facts = queries.select_review_job_context(store, attempt_id, None, None, result_sha256, review_sha256)
+    if isinstance(facts, DecisionFailure):
+        return unavailable
+    attempt = facts.attempt
+    if (
+        not isinstance(attempt, query_models.NonterminalAttemptContextFacts)
+        or attempt.state != work_models.AttemptState.REVIEW
+        or attempt.candidate_revision != candidate_revision
+        or facts.candidate_snapshot is None
+    ):
+        return unavailable
+    brief = work_briefs.decode_canonical_work_brief(read_reference(work_root, attempt.brief_reference))
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
+        return _review_job_failure(brief.message)
+    if (failure := queries.validate_attempt_brief_identity(attempt, brief)) is not None:
+        return failure
+    candidate = candidate_evidence.read_candidate_evidence_from_context(
+        work_root, facts.candidate_snapshot, candidate_revision
+    )
+    if isinstance(candidate, DecisionFailure):
+        return candidate
+    result = _read_required_evidence(work_root / "attempts" / attempt_id / "result.md", "result.md")
+    if isinstance(result, DecisionFailure):
+        return result
+    implementation_review = _read_required_evidence(work_root / "attempts" / attempt_id / "review.md", "review.md")
+    if isinstance(implementation_review, DecisionFailure):
+        return implementation_review
+    if (
+        candidate.reference.content_sha256,
+        attempt.brief_reference.content_sha256,
+        result[1],
+        implementation_review[1],
+    ) != (
+        candidate_snapshot_sha256,
+        accepted_brief_sha256,
+        result_sha256,
+        review_sha256,
+    ):
+        return _review_job_failure("Ready review digests differ from the current candidate, brief, result, or review.")
+    review = work_brief_models.CandidateReview(
+        "pinboard-candidate-review/v1",
+        str(attempt.attempt_id),
+        str(attempt.item_id),
+        candidate_revision,
+        _portable("candidate", candidate.reference),
+        _portable("accepted-brief", attempt.brief_reference),
+        result_sha256,
+        review_sha256,
+        reviewer_task_id,
+        "ready",
+        acceptance_evidence,
+    )
+    failure = work_briefs.validate_candidate_review(
+        review,
+        brief=brief,
+        candidate=candidate_revision,
+        candidate_snapshot=candidate.reference,
+        accepted_brief=attempt.brief_reference,
+        result_sha256=result_sha256,
+        review_sha256=review_sha256,
+    )
+    return review if failure is None else _review_job_failure(failure.message)
+
+
+def record_ready_candidate_review(
+    work_root: Path,
+    store: ports.WorkStore,
+    artifacts: dispatch_models.DispatchArtifactPort,
+    attempt_id: AttemptId,
+    candidate_revision: str,
+    candidate_snapshot_sha256: str,
+    accepted_brief_sha256: str,
+    result_sha256: str,
+    review_sha256: str,
+    reviewer_task_id: str,
+    acceptance_evidence: str,
+) -> DecisionResult[RecordedCandidateReview]:
+    arguments = (
+        work_root,
+        store,
+        attempt_id,
+        candidate_revision,
+        candidate_snapshot_sha256,
+        accepted_brief_sha256,
+        result_sha256,
+        review_sha256,
+        reviewer_task_id,
+        acceptance_evidence,
+    )
+    review = _candidate_review_record(*arguments)
+    if isinstance(review, DecisionFailure):
+        return review
+    revalidated = _candidate_review_record(*arguments)
+    if isinstance(revalidated, DecisionFailure):
+        return revalidated
+    if revalidated != review:
+        return _review_job_failure("Ready review identity changed during recording.")
+    key = work_briefs.candidate_review_key(
+        review.attempt_id,
+        review.candidate,
+        review.candidate_snapshot.content_sha256,
+        review.accepted_brief.content_sha256,
+        review.result_sha256,
+        review.review_sha256,
+    )
+    canonical = work_briefs.canonical_candidate_review_bytes(review)
+    existing = store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, key, 1)
+    if existing is not None:
+        if artifacts.read(existing) == canonical:
+            return RecordedCandidateReview(existing, review, ())
+        return _review_job_failure("A different candidate review is already accepted for the current evidence.")
+    publication = publish_accepted_artifact(
+        store,
+        artifacts,
+        NewArtifact(work_models.ArtifactKind.EVIDENCE, key, 1, ".json", canonical),
+        datetime.now(UTC),
+    )
+    if isinstance(publication, DecisionFailure):
+        return publication
+    surfaces = (
+        *((ChangedSurface.IMMUTABLE_ARTIFACT,) if publication.artifact_created else ()),
+        *((ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE, ChangedSurface.LEDGER) if publication.ledger_changed else ()),
+    )
+    return RecordedCandidateReview(publication.reference, review, surfaces)
+
+
+def read_current_candidate_review(
+    store: ports.WorkStore,
+    artifacts: dispatch_models.DispatchArtifactPort,
+    *,
+    brief: work_brief_models.ReadableWorkBrief,
+    candidate_revision: str,
+    candidate_snapshot: stored_state.ArtifactReference,
+    accepted_brief: stored_state.ArtifactReference | BriefArtifactRef,
+    result_sha256: str,
+    review_sha256: str,
+) -> CurrentCandidateReview | None:
+    key = work_briefs.candidate_review_key(
+        brief.attempt_id,
+        candidate_revision,
+        candidate_snapshot.content_sha256,
+        accepted_brief.content_sha256,
+        result_sha256,
+        review_sha256,
+    )
+    reference = store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, key, 1)
+    return _current_candidate_review_from_reference(
+        reference,
+        artifacts,
+        brief=brief,
+        candidate_revision=candidate_revision,
+        candidate_snapshot=candidate_snapshot,
+        accepted_brief=accepted_brief,
+        result_sha256=result_sha256,
+        review_sha256=review_sha256,
+    )
+
+
+def _current_candidate_review_from_reference(
+    reference: stored_state.ArtifactReference | None,
+    artifacts: dispatch_models.DispatchArtifactPort,
+    *,
+    brief: work_brief_models.ReadableWorkBrief,
+    candidate_revision: str,
+    candidate_snapshot: stored_state.ArtifactReference,
+    accepted_brief: stored_state.ArtifactReference | BriefArtifactRef,
+    result_sha256: str,
+    review_sha256: str,
+) -> CurrentCandidateReview | None:
+    if reference is None:
+        return None
+    review = work_briefs.decode_canonical_candidate_review(artifacts.read(reference))
+    if isinstance(review, work_brief_models.WorkBriefFailure):
+        return None
+    failure = work_briefs.validate_candidate_review(
+        review,
+        brief=brief,
+        candidate=candidate_revision,
+        candidate_snapshot=candidate_snapshot,
+        accepted_brief=accepted_brief,
+        result_sha256=result_sha256,
+        review_sha256=review_sha256,
+    )
+    return None if failure is not None else CurrentCandidateReview(reference, review)
 
 
 def _candidate_reconstruction(
@@ -280,7 +520,7 @@ def _select_review_round(
     return round_view, prompt
 
 
-def prepare_review_job(
+def prepare_review_job(  # noqa: C901 - one ordered candidate-bound review publication
     work_root: Path,
     store: ports.WorkStore,
     artifacts: dispatch_models.DispatchArtifactPort,
@@ -290,7 +530,21 @@ def prepare_review_job(
     correction_history_id: HistoryId | None,
 ) -> DecisionResult[PreparedReviewJob]:
     unavailable = _review_job_failure("Review job requires the current review attempt and exact protected candidate.")
-    facts = queries.select_review_job_context(store, attempt_id, checkpoint_history_id, correction_history_id)
+    result_path = work_root / "attempts" / attempt_id / "result.md"
+    result_evidence = _read_required_evidence(result_path, "result.md")
+    if isinstance(result_evidence, DecisionFailure):
+        return result_evidence
+    rendered_result_path, digest = result_evidence
+    review_evidence = _read_required_evidence(work_root / "attempts" / attempt_id / "review.md", "review.md")
+    review_sha256 = None if isinstance(review_evidence, DecisionFailure) else review_evidence[1]
+    facts = queries.select_review_job_context(
+        store,
+        attempt_id,
+        checkpoint_history_id,
+        correction_history_id,
+        digest,
+        review_sha256,
+    )
     if isinstance(facts, DecisionFailure):
         return unavailable
     attempt = facts.attempt
@@ -303,13 +557,9 @@ def prepare_review_job(
         return _review_job_failure(str(brief))
     if (failure := queries.validate_attempt_brief_identity(attempt, brief)) is not None:
         return failure
-    continuation = queries.project_attempt_continuation(attempt, TaskId(brief.owner_task_id), brief)
-    if isinstance(continuation, DecisionFailure):
-        return continuation
-    operation = continuation.next_operation
     if (
-        not isinstance(operation, query_models.ReviewContinuation)
-        or operation.candidate_revision != candidate_revision
+        attempt.state != work_models.AttemptState.REVIEW
+        or attempt.candidate_revision != candidate_revision
         or facts.candidate_snapshot is None
     ):
         return unavailable
@@ -318,11 +568,26 @@ def prepare_review_job(
     )
     if isinstance(candidate, DecisionFailure):
         return candidate
-    result_path = work_root / "attempts" / attempt_id / "result.md"
-    result_evidence = _read_required_evidence(result_path, "result.md")
-    if isinstance(result_evidence, DecisionFailure):
-        return result_evidence
-    rendered_result_path, digest = result_evidence
+    ready_review = (
+        not isinstance(review_evidence, DecisionFailure)
+        and _current_candidate_review_from_reference(
+            facts.candidate_review_reference,
+            artifacts,
+            brief=brief,
+            candidate_revision=candidate_revision,
+            candidate_snapshot=facts.candidate_snapshot.reference,
+            accepted_brief=reference,
+            result_sha256=digest,
+            review_sha256=review_evidence[1],
+        )
+        is not None
+    )
+    continuation = queries.project_attempt_continuation(attempt, TaskId(brief.owner_task_id), brief, None, ready_review)
+    if isinstance(continuation, DecisionFailure):
+        return continuation
+    operation = continuation.next_operation
+    if not isinstance(operation, query_models.ReviewContinuation) or operation.candidate_revision != candidate_revision:
+        return unavailable
     brief_path = work_root / reference.selector
     selected_package = _select_prior_checkpoint_package(work_root, facts, attempt_id, attempt, checkpoint_history_id)
     if isinstance(selected_package, DecisionFailure):

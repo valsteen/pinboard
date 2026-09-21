@@ -10,6 +10,7 @@ from collections.abc import Callable, Coroutine, Mapping
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
@@ -60,7 +61,9 @@ from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import mutation_operations as mcp_mutations
 from pinboard.mcp import read_operations as mcp_reads
 from pinboard.mcp import server as mcp_server
+from tests.checkpoint_support import CheckpointPackageSupport
 from tests.domain_support import action
+from tests.native_support import call_native_tool
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.test_proposals import proposal as proposal_input
 from tests.work_brief_support import example_work_brief, needs_correction_review, work_a_brief, work_c_brief
@@ -1726,7 +1729,10 @@ class McpTransportTest(unittest.TestCase):
                     row for row in snapshot.lifecycle.attempts if row.attempt_id == AttemptId("proposal-1-1")
                 )
                 self.assertEqual(candidate, attempt.candidate_revision)
-                inspected = await call(mcp_server.ATTEMPT_INSPECT_TOOL, {"attempt_id": "proposal-1-1"})
+                inspected = await call(
+                    mcp_server.ATTEMPT_INSPECT_TOOL,
+                    {"attempt_id": "proposal-1-1", "reconciliation": None},
+                )
                 continuation = inspected["continuation"]
                 assert isinstance(continuation, dict)
                 self.assertEqual("review", continuation["state"])
@@ -2546,6 +2552,7 @@ class McpTransportTest(unittest.TestCase):
             "ok",
             presented_continuation,
             contracts.CandidateRecoveryAbsent(),
+            contracts.CandidateReviewAbsent(),
             contracts.AcceptedBriefIdentity(
                 1, "/work/brief.json", "artifacts/briefs/a/1.json", "a" * 64, 1, 1, 1, "b" * 64
             ),
@@ -2811,7 +2818,7 @@ class McpTransportTest(unittest.TestCase):
             )
         )
         attempt_result = msgspec.json.decode(
-            msgspec.json.encode(mcp_reads._read_attempt_inspection(*common, "work-a-1", token).content)
+            msgspec.json.encode(mcp_reads._read_attempt_inspection(*common, "work-a-1", None, token).content)
         )
         assert isinstance(action_result, dict)
         assert isinstance(attempt_result, dict)
@@ -3016,7 +3023,7 @@ class McpTransportTest(unittest.TestCase):
                     ),
                     await session.call_tool(
                         mcp_server.ATTEMPT_INSPECT_TOOL,
-                        common | {"attempt_id": "work-a-1"},
+                        common | {"attempt_id": "work-a-1", "reconciliation": None},
                     ),
                     await session.call_tool(
                         mcp_server.ARTIFACT_VERIFY_TOOL,
@@ -3194,15 +3201,15 @@ class McpTransportTest(unittest.TestCase):
             ),
             (
                 mcp_server.ATTEMPT_INSPECT_TOOL,
-                mcp_reads._read_attempt_inspection(*common, "work-a-1", token),
+                mcp_reads._read_attempt_inspection(*common, "work-a-1", None, token),
             ),
             (
                 mcp_server.ATTEMPT_INSPECT_TOOL,
-                mcp_reads._read_attempt_inspection(*common, "missing-attempt", token),
+                mcp_reads._read_attempt_inspection(*common, "missing-attempt", None, token),
             ),
             (
                 mcp_server.ATTEMPT_INSPECT_TOOL,
-                mcp_reads._read_attempt_inspection(*common, "", token),
+                mcp_reads._read_attempt_inspection(*common, "", None, token),
             ),
             (
                 mcp_server.ARTIFACT_VERIFY_TOOL,
@@ -4219,6 +4226,164 @@ class McpTransportTest(unittest.TestCase):
         self.assertIn("commit=", stderr)
         self.assertNotIn("proposal-1", stderr)
         self.assertNotIn(brief_value.title, stderr)
+
+
+class ResumedReviewReconciliationTest(CheckpointPackageSupport):
+    def test_recorded_ready_review_resumes_at_git_metadata_recovery_without_launch(self) -> None:
+        fixture = self.checkpoint_fixture(candidate_form="current-head")
+        snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        attempt = fixture.store.read_attempt_context(AttemptId("work-a-1"))
+        assert snapshot is not None and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        review = {
+            "kind": "record-ready",
+            "attempt_id": "work-a-1",
+            "candidate_revision": fixture.candidate_revision,
+            "candidate_snapshot_sha256": snapshot.reference.content_sha256,
+            "accepted_brief_sha256": attempt.brief_reference.content_sha256,
+            "result_sha256": sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
+            "review_sha256": sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
+            "reviewer_task_id": "independent-reviewer",
+            "verdict": "ready",
+            "acceptance_evidence": "The exact candidate satisfies the accepted checkpoint.",
+        }
+
+        for field, value in (
+            ("candidate_revision", "0" * 40),
+            ("candidate_snapshot_sha256", "0" * 64),
+            ("accepted_brief_sha256", "0" * 64),
+            ("result_sha256", "0" * 64),
+            ("review_sha256", "0" * 64),
+            ("reviewer_task_id", fixture.brief.owner_task_id),
+            ("verdict", "not-ready"),
+            ("runtime", "codex"),
+        ):
+            rejected = call_native_tool(
+                mcp_server.REVIEW_JOB_TOOL,
+                {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "review": review | {field: value},
+                },
+            )
+            with self.subTest(stale_identity=field):
+                self.assertEqual("rejected", rejected["status"], rejected)
+                self.assertFalse(rejected["state_changed"])
+                self.assertEqual([], rejected["changed_surfaces"])
+
+        recorded = call_native_tool(
+            mcp_server.REVIEW_JOB_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "review": review,
+            },
+        )
+        self.assertEqual("recorded", recorded["status"], recorded)
+        self.assertNotIn("native_launch", recorded)
+        self.assertEqual("present", self.json_object(recorded["candidate_review"])["kind"])
+        repeated = call_native_tool(
+            mcp_server.REVIEW_JOB_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "review": review,
+            },
+        )
+        self.assertEqual("recorded", repeated["status"], repeated)
+        self.assertFalse(repeated["state_changed"])
+
+        relaunch = call_native_tool(
+            mcp_server.REVIEW_JOB_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "review": {
+                    "kind": "initial",
+                    "attempt_id": "work-a-1",
+                    "candidate_revision": fixture.candidate_revision,
+                    "runtime": "codex",
+                    "background": False,
+                },
+            },
+        )
+        self.assertEqual("rejected", relaunch["status"], relaunch)
+        self.assertEqual("ACTION_NOT_AVAILABLE", relaunch["code"])
+        self.assertNotIn("native_launch", relaunch)
+
+        unreconciled = call_native_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "reconciliation": None,
+            },
+        )
+        self.assertEqual("rejected", unreconciled["status"], unreconciled)
+        self.assertEqual("ACTION_NOT_AVAILABLE", unreconciled["code"])
+        self.assertNotIn("native_launch", unreconciled)
+
+        reconciliation = {
+            "target_revision": "squash-equivalent-head",
+            "relation": "candidate-pending-on-squash-equivalent-base",
+            "phase": "disposition",
+            "effects": [
+                {"effect": "source-checkout", "status": "allowed"},
+                {"effect": "shared-work-root", "status": "allowed"},
+                {"effect": "git-metadata", "status": "denied"},
+            ],
+        }
+        inspected = call_native_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "reconciliation": reconciliation,
+            },
+        )
+        continuation = self.json_object(inspected["continuation"])
+        operation = self.json_object(continuation["next_operation"])
+        self.assertEqual(
+            {
+                "kind": "permission-recovery",
+                "target_revision": "squash-equivalent-head",
+                "effect": "git-metadata",
+                "status": "denied",
+            },
+            operation,
+        )
+        self.assertEqual("present", self.json_object(inspected["candidate_review"])["kind"])
+        self.assertNotIn("native_launch", inspected)
+
+        stale = dict(review)
+        stale["result_sha256"] = "0" * 64
+        rejected = call_native_tool(
+            mcp_server.REVIEW_JOB_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "review": stale,
+            },
+        )
+        self.assertEqual("rejected", rejected["status"], rejected)
+        self.assertFalse(rejected["state_changed"])
+        self.assertEqual([], rejected["changed_surfaces"])
+
+        (attempt_root / "review.md").write_text("changed review bytes\n", encoding="utf-8")
+        changed = call_native_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "reconciliation": reconciliation,
+            },
+        )
+        changed_operation = self.json_object(self.json_object(changed["continuation"])["next_operation"])
+        self.assertEqual("review-subagent", changed_operation["kind"])
+        self.assertEqual("absent", self.json_object(changed["candidate_review"])["kind"])
 
 
 if __name__ == "__main__":

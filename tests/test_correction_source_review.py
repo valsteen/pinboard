@@ -296,7 +296,9 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             )["status"],
         )
         reloaded = SQLiteWorkStore(fixture.work / "state.sqlite3")
-        fresh_context = reloaded.read_review_job_context(AttemptId("work-a-1"), None, HistoryId(new_history))
+        fresh_context = reloaded.read_review_job_context(
+            AttemptId("work-a-1"), None, HistoryId(new_history), None, None
+        )
         assert fresh_context is not None and fresh_context.correction_receipt is not None
         self.assertEqual(new_history, int(fresh_context.correction_receipt.history_id))
         self.assertEqual(fresh_verdict, (fixture.work / "attempts" / "work-a-1" / "review.md").read_bytes())

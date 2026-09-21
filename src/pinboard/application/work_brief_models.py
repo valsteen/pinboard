@@ -726,6 +726,34 @@ class PortableArtifactIdentity(msgspec.Struct, frozen=True, forbid_unknown_field
     size_bytes: NonNegativeInt
 
 
+class CandidateReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-candidate-review/v1"]
+    attempt_id: KebabId
+    item_id: KebabId
+    candidate: NonEmptyLine
+    candidate_snapshot: PortableArtifactIdentity
+    accepted_brief: PortableArtifactIdentity
+    result_sha256: Sha256
+    review_sha256: Sha256
+    reviewer_task_id: NonEmptyLine
+    verdict: Literal["ready"]
+    acceptance_evidence: NonEmptyText
+
+    def __post_init__(self) -> None:
+        if (
+            self.candidate_snapshot.role,
+            self.candidate_snapshot.kind,
+            self.accepted_brief.role,
+            self.accepted_brief.kind,
+        ) != ("candidate", "evidence", "accepted-brief", "brief"):
+            raise ValueError("Candidate review artifact roles do not match their bindings.")
+        if (
+            re.fullmatch(r"working-tree-state-sha256:[0-9a-f]{64}", self.candidate) is None
+            and GIT_COMMIT_REVISION.fullmatch(self.candidate) is None
+        ):
+            raise ValueError("Candidate review requires a complete working-tree state or full Git commit revision.")
+
+
 class CorrectionSourceReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """Independent assessment of an exact accepted starting candidate and proposed fix."""
 

@@ -44,8 +44,12 @@ def select_review_job_context(
     attempt_id: AttemptId,
     checkpoint_history_id: HistoryId | None,
     correction_history_id: HistoryId | None,
+    result_sha256: str | None,
+    review_sha256: str | None,
 ) -> DecisionResult[query_models.ReviewJobContextFacts]:
-    selected = reader.read_review_job_context(attempt_id, checkpoint_history_id, correction_history_id)
+    selected = reader.read_review_job_context(
+        attempt_id, checkpoint_history_id, correction_history_id, result_sha256, review_sha256
+    )
     if selected is None:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
@@ -88,6 +92,8 @@ def project_attempt_continuation(
     context: query_models.AttemptContextFacts,
     owner_task_id: TaskId | None,
     brief: work_brief_models.ReadableWorkBrief | None,
+    reconciliation: query_models.AttemptReconciliation | None,
+    ready_review: bool,
 ) -> DecisionResult[query_models.AttemptContinuation]:
     """Select a continuation from one exact named-attempt context.
 
@@ -156,7 +162,7 @@ def project_attempt_continuation(
                     "A nonterminal attempt requires its verified accepted brief.",
                     None,
                 )
-            selected = _next_attempt_operation(context, actions, brief)
+            selected = _next_attempt_operation(context, actions, brief, reconciliation, ready_review)
             if isinstance(selected, DecisionFailure):
                 return selected
             continuation_arguments = (
@@ -186,13 +192,74 @@ def project_attempt_continuation(
             assert_never(unreachable)
 
 
+def select_resumed_review_operation(
+    reconciliation: query_models.AttemptReconciliation,
+    *,
+    attempt_id: str,
+    candidate_revision: str,
+    ready_review: bool,
+    actions: tuple[decision_models.Action, ...],
+) -> DecisionResult[
+    query_models.ActionContinuation | query_models.ReviewContinuation | query_models.ReconciliationContinuation
+]:
+    """Select the sole remaining reviewed-candidate operation from caller-observed repository facts."""
+
+    if not ready_review:
+        return query_models.ReviewContinuation(attempt_id, candidate_revision, "runtime-subagent")
+    relation = reconciliation.relation
+    if relation == query_models.IntegrationRelation.TARGET_STALE:
+        return query_models.RefreshTargetContinuation(reconciliation.target_revision)
+    if relation in (query_models.IntegrationRelation.CANDIDATE_RESIDUAL, query_models.IntegrationRelation.DIVERGED):
+        for action in actions:
+            if isinstance(action, decision_models.ReturnForCorrectionAction):
+                return query_models.ActionContinuation(
+                    decision_models.action_id(action),
+                    action.kind,
+                    "Return the reviewed candidate for correction against the current integration target.",
+                )
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            "Reviewed candidate correction is not currently available.",
+            None,
+        )
+    for observation in reconciliation.effects:
+        if observation.status in (
+            query_models.RuntimeEffectStatus.DENIED,
+            query_models.RuntimeEffectStatus.UNKNOWN,
+        ):
+            return query_models.PermissionRecoveryContinuation(
+                reconciliation.target_revision,
+                observation.effect,
+                observation.status,
+            )
+    if relation in (
+        query_models.IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE,
+        query_models.IntegrationRelation.CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE,
+    ):
+        return query_models.RepositoryDispositionContinuation(reconciliation.target_revision, relation)
+    if reconciliation.phase == query_models.RepositoryPhase.CLEANUP:
+        return query_models.RepositoryCleanupContinuation(reconciliation.target_revision)
+    for action in actions:
+        if isinstance(action, decision_models.CompleteAction):
+            return query_models.ActionContinuation(
+                decision_models.action_id(action),
+                action.kind,
+                "Complete after the integrated candidate and required repository effects are verified.",
+            )
+    return DecisionFailure(
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        "Reviewed candidate completion is not currently available.",
+        None,
+    )
+
+
 def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuation selection
     context: query_models.NonterminalAttemptContextFacts,
     actions: tuple[decision_models.Action, ...],
     brief: work_brief_models.ReadableWorkBrief,
-) -> DecisionResult[
-    query_models.ActionContinuation | query_models.ReviewContinuation | query_models.DependencyContinuation
-]:
+    reconciliation: query_models.AttemptReconciliation | None,
+    ready_review: bool,
+) -> DecisionResult[query_models.NonterminalContinuationOperation]:
     if not isinstance(brief, work_brief_models.WorkBrief):
         expected_kind = (
             decision_models.ActionKind.RETURN_FOR_CORRECTION
@@ -215,6 +282,23 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                     action.kind,
                     recovery,
                 )
+    if isinstance(brief, work_brief_models.WorkBrief) and context.state == work_models.AttemptState.REVIEW:
+        if context.candidate_revision is None:
+            return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Review has no protected candidate.", None)
+        if reconciliation is not None:
+            return select_resumed_review_operation(
+                reconciliation,
+                attempt_id=str(context.attempt_id),
+                candidate_revision=context.candidate_revision,
+                ready_review=ready_review,
+                actions=actions,
+            )
+        if ready_review:
+            return DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                "A ready review requires current repository reconciliation.",
+                None,
+            )
     if isinstance(brief, work_brief_models.WorkBrief) and isinstance(
         brief.checkpoint.disposition, work_brief_models.TerminalCheckpointDisposition
     ):

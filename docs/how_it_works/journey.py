@@ -32,19 +32,20 @@ def validate() -> None:
 
 DIAGRAM = Diagram(
     slug="journey",
-    title="One preparation claim moves through the four layers",
+    title="One preparation claim carries the workflow through code",
     description=(
-        "An ordinary preparation start is decoded, samples its operation time, selects the current definition and "
-        "initial acquisition or inactive transfer against locked state, commits the targeted mutation atomically, "
-        "then refreshes repairable views and presents the exact committed claim."
+        "An ordinary preparation start becomes an exact command, samples its operation time, and reaches application "
+        "orchestration. A pure domain decision selects initial acquisition or inactive transfer against locked facts. "
+        "Adapters then commit the targeted mutation and refresh repairable views before the interface presents a "
+        "typed result."
     ),
     width=1400,
     height=820,
     sections=(
-        Section("Interface", "decode / sample time\npresent", 28, 118),
-        Section("Application", "lock / select / project", 28, 298),
-        Section("Domain", "decide / reject", 28, 478),
-        Section("Adapter", "commit / write projections", 28, 658),
+        Section("Interface", "decode exact input\npresent typed result", 28, 118),
+        Section("Application", "orchestrate / lock / project", 28, 298),
+        Section("Domain", "decide legality / preserve facts", 28, 478),
+        Section("Adapters", "commit SQLite / refresh views", 28, 658),
     ),
     guides=(
         Guide((150, 48), (150, 764)),
@@ -100,11 +101,11 @@ DIAGRAM = Diagram(
             84,
         ),
         Box("latest", "Committed claim", "Transaction result", (), ("authoritative",), 990, 88, 200, 84),
-        Box("result", "Presented result", "Return status", (), ("exact claim",), 1210, 88, 170, 84),
+        Box("result", "Typed result", "Present outcome", (), ("effect · next action",), 1210, 88, 170, 84),
         Box(
             "locked",
-            "Application use case",
-            "Read and select",
+            "Application command",
+            "Orchestrate",
             ("definition + claim operation",),
             ("authoritative",),
             560,
@@ -114,8 +115,8 @@ DIAGRAM = Diagram(
         ),
         Box(
             "mutation",
-            "Targeted mutation",
-            "Project accepted facts",
+            "Accepted change",
+            "Project targeted facts",
             ("receipt + authority delta",),
             ("targeted delta",),
             800,
@@ -125,10 +126,10 @@ DIAGRAM = Diagram(
         ),
         Box(
             "rejection",
-            "Expected rejection",
-            "No stored change",
-            ("code · facts · retry",),
-            ("fresh alternatives",),
+            "Typed failure",
+            "Preserve facts",
+            ("code · observations · retry",),
+            ("mismatches · conflict",),
             220,
             430,
             210,
@@ -137,8 +138,8 @@ DIAGRAM = Diagram(
         ),
         Box(
             "decision",
+            "Domain decision",
             "Decide legality",
-            "Use selected change",
             ("accept or reject",),
             ("pure decision",),
             520,
@@ -148,8 +149,8 @@ DIAGRAM = Diagram(
         ),
         Box(
             "transaction",
-            "Guarded commit",
-            "Persist mutation",
+            "SQLite adapter",
+            "Commit mutation",
             ("commit or roll back",),
             ("SQLite write",),
             775,
@@ -159,8 +160,8 @@ DIAGRAM = Diagram(
         ),
         Box(
             "views",
-            "File adapter",
-            "Write projections",
+            "Filesystem adapter",
+            "Refresh views",
             ("warning is repairable",),
             ("replaceable",),
             1000,
@@ -172,7 +173,7 @@ DIAGRAM = Diagram(
     ),
     notes=(
         Note(
-            "Locked selection rejects with fresh alternatives. Accepted SQLite changes precede repairable view refresh and exact presentation.",
+            "Typed outcomes keep concrete next-action facts. SQLite commit precedes repairable view refresh and presentation.",
             190,
             783,
             12,

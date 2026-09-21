@@ -1,5 +1,4 @@
 import re
-import shutil
 import tempfile
 import tomllib
 import unittest
@@ -8,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 from xml.etree import ElementTree
 
-from docs.how_it_works import layers, product, render
+from docs.how_it_works import journey, product, render
 from docs.how_it_works.model import DAY_PALETTE, NIGHT_PALETTE, Box, Connector, Diagram, Note, Palette, render_svg
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -16,35 +15,31 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class HowItWorksDocumentationTests(unittest.TestCase):
     def test_source_model_builds_the_complete_visitor_guide(self) -> None:
-        outputs = render.build_outputs(ROOT)
+        outputs = render.build_outputs()
 
         self.assertEqual(
             {
                 Path("HOW_IT_WORKS.md"),
                 Path("assets/how-it-works/ambiguity-closure.svg"),
                 Path("assets/how-it-works/product.svg"),
-                Path("assets/how-it-works/layers.svg"),
                 Path("assets/how-it-works/journey.svg"),
-                Path("assets/how-it-works/database.svg"),
                 Path("assets/how-it-works/brief.svg"),
                 Path("assets/how-it-works/ambiguity-closure-dark.svg"),
                 Path("assets/how-it-works/product-dark.svg"),
-                Path("assets/how-it-works/layers-dark.svg"),
                 Path("assets/how-it-works/journey-dark.svg"),
-                Path("assets/how-it-works/database-dark.svg"),
                 Path("assets/how-it-works/brief-dark.svg"),
             },
             outputs.keys(),
         )
         guide = outputs[Path("HOW_IT_WORKS.md")]
-        self.assertEqual(6, guide.count("<picture>"))
-        self.assertEqual(6, guide.count('media="(prefers-color-scheme: dark)"'))
-        for slug in ("ambiguity-closure", "brief", "product", "layers", "journey", "database"):
+        self.assertEqual(4, guide.count("<picture>"))
+        self.assertEqual(4, guide.count('media="(prefers-color-scheme: dark)"'))
+        for slug in ("ambiguity-closure", "brief", "product", "journey"):
             self.assertIn(f'srcset="assets/how-it-works/{slug}-dark.svg"', guide)
             self.assertIn(f'src="assets/how-it-works/{slug}.svg"', guide)
 
-    def test_guide_follows_the_accepted_three_movement_arc(self) -> None:
-        guide = render.build_outputs(ROOT)[Path("HOW_IT_WORKS.md")]
+    def test_guide_orders_workflow_detail_and_code_path(self) -> None:
+        guide = render.build_outputs()[Path("HOW_IT_WORKS.md")]
 
         self.assertLess(
             guide.index('src="assets/how-it-works/ambiguity-closure.svg"'),
@@ -52,16 +47,15 @@ class HowItWorksDocumentationTests(unittest.TestCase):
         )
         self.assertLess(
             guide.index('src="assets/how-it-works/brief.svg"'),
-            guide.index("## The codebase preserves those boundaries"),
+            guide.index('src="assets/how-it-works/product.svg"'),
         )
         self.assertLess(
-            guide.index('src="assets/how-it-works/layers.svg"'),
-            guide.index('src="assets/how-it-works/database.svg"'),
+            guide.index('src="assets/how-it-works/product.svg"'),
+            guide.index('src="assets/how-it-works/journey.svg"'),
         )
-        self.assertNotIn("project-export", guide)
 
     def test_diagrams_use_the_approved_reading_surfaces(self) -> None:
-        outputs = render.build_outputs(ROOT)
+        outputs = render.build_outputs()
 
         for path, svg in outputs.items():
             if path.suffix != ".svg":
@@ -77,7 +71,7 @@ class HowItWorksDocumentationTests(unittest.TestCase):
                 self.assertNotIn("linearGradient", svg)
                 self.assertNotIn("feDropShadow", svg)
 
-        for slug in ("ambiguity-closure", "brief", "product", "layers", "journey", "database"):
+        for slug in ("ambiguity-closure", "brief", "product", "journey"):
             day = outputs[Path(f"assets/how-it-works/{slug}.svg")]
             night = outputs[Path(f"assets/how-it-works/{slug}-dark.svg")]
             with self.subTest(slug=slug):
@@ -87,7 +81,7 @@ class HowItWorksDocumentationTests(unittest.TestCase):
                 )
 
     def test_diagrams_expose_accessible_names_and_descriptions(self) -> None:
-        outputs = render.build_outputs(ROOT)
+        outputs = render.build_outputs()
         namespace = {"svg": "http://www.w3.org/2000/svg"}
 
         for path, svg in outputs.items():
@@ -136,7 +130,7 @@ class HowItWorksDocumentationTests(unittest.TestCase):
             self.assertIn(color, svg)
 
     def test_renderer_keeps_text_above_geometry_and_protects_canvas_labels(self) -> None:
-        svg = render_svg(layers.DIAGRAM, NIGHT_PALETTE)
+        svg = render_svg(journey.DIAGRAM, NIGHT_PALETTE)
         root = ElementTree.fromstring(svg)
         text_started = False
 
@@ -265,7 +259,7 @@ class HowItWorksDocumentationTests(unittest.TestCase):
             )
 
     def test_write_and_stale_check_round_trip(self) -> None:
-        outputs = render.build_outputs(ROOT)
+        outputs = render.build_outputs()
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory)
             render.write_outputs(destination, outputs)
@@ -280,20 +274,10 @@ class HowItWorksDocumentationTests(unittest.TestCase):
             changed.write_text("stale\n", encoding="utf-8")
             self.assertEqual((Path("HOW_IT_WORKS.md"),), render.stale_outputs(destination, outputs))
 
-    def test_authority_edit_without_output_change_does_not_churn_assets(self) -> None:
-        baseline = render.build_outputs(ROOT)
-        with tempfile.TemporaryDirectory() as directory:
-            destination = Path(directory) / "repository"
-            shutil.copytree(ROOT, destination, ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__"))
-            architecture = destination / "ARCHITECTURE.md"
-            architecture.write_text(architecture.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-
-            self.assertEqual(baseline, render.build_outputs(destination))
-
     def test_semantic_seed_change_is_stale_until_outputs_are_regenerated(self) -> None:
         changed_diagram = replace(product.DIAGRAM, title="Changed visitor-facing title")
         with patch.object(product, "DIAGRAM", changed_diagram):
-            stale = render.stale_outputs(ROOT, render.build_outputs(ROOT))
+            stale = render.stale_outputs(ROOT, render.build_outputs())
 
         self.assertEqual(
             {
@@ -304,7 +288,7 @@ class HowItWorksDocumentationTests(unittest.TestCase):
         )
 
     def test_committed_outputs_match_their_sources(self) -> None:
-        outputs = render.build_outputs(ROOT)
+        outputs = render.build_outputs()
         stale = render.stale_outputs(ROOT, outputs)
 
         self.assertEqual(

@@ -2568,6 +2568,32 @@ class McpTransportTest(unittest.TestCase):
         assert isinstance(inspection_result, dict)
         contract_schemas.validate_result(mcp_server.ATTEMPT_INSPECT_TOOL, inspection_result)
 
+        resumed_review = replace_struct(
+            inspection,
+            continuation=mcp_reads._mcp_attempt_continuation(
+                query_models.ReviewAttemptContinuation(
+                    "pinboard-attempt-continuation/v1",
+                    "attempt-1",
+                    "item-1",
+                    1,
+                    "owner-task",
+                    False,
+                    False,
+                    query_models.PermissionRecoveryContinuation(
+                        "target-head",
+                        query_models.RuntimeEffect.GIT_METADATA,
+                        query_models.RuntimeEffectStatus.DENIED,
+                    ),
+                    ("complete:attempt-1", "return-for-correction:attempt-1"),
+                    ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
+                )
+            ),
+            candidate_review=contracts.CandidateReviewPresent(2, "artifacts/evidence/review/1.json", "c" * 64, 1, 1),
+        )
+        resumed_review_result = msgspec.json.decode(msgspec.json.encode(resumed_review))
+        assert isinstance(resumed_review_result, dict)
+        contract_schemas.validate_result(mcp_server.ATTEMPT_INSPECT_TOOL, resumed_review_result)
+
         for field, value in (
             (
                 "next_operation",
@@ -2610,6 +2636,10 @@ class McpTransportTest(unittest.TestCase):
                 ClientSession(*streams) as session,
             ):
                 await session.initialize()
+                await session.validate_tool_result(
+                    mcp_server.ATTEMPT_INSPECT_TOOL,
+                    CallToolResult(content=[], structured_content=resumed_review_result),
+                )
                 for tool_name, invalid in (
                     (mcp_server.ACTIONS_TOOL, wrong_payload),
                     (mcp_server.ACTIONS_TOOL, wrong_identity),

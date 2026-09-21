@@ -2,7 +2,7 @@
   "mcpServers": {
     "pinboard": {
       "command": "sh",
-      "args": ["./scripts/pinboard", "--mcp"],
+      "args": ["-c", "./scripts/pinboard --prepare-runtime >&2 && exec ./scripts/pinboard --mcp"],
       "cwd": "."
     }
   }

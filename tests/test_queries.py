@@ -689,6 +689,8 @@ class SQLiteQueriesTest(unittest.TestCase):
                             query_models.RuntimeEffectStatus.DENIED,
                             query_models.RuntimeEffectStatus.UNKNOWN,
                         ):
+                            self.assertIsInstance(selected, query_models.PermissionRecoveryContinuation)
+                            assert isinstance(selected, query_models.PermissionRecoveryContinuation)
                             self.assertEqual(order[index], selected.effect)
 
         representative = query_models.AttemptReconciliation(
@@ -707,6 +709,8 @@ class SQLiteQueriesTest(unittest.TestCase):
             ready_review=True,
             actions=actions,
         )
+        self.assertIsInstance(selected, query_models.PermissionRecoveryContinuation)
+        assert isinstance(selected, query_models.PermissionRecoveryContinuation)
         self.assertEqual(query_models.RuntimeEffect.GIT_METADATA, selected.effect)
         self.assertIsInstance(
             select_resumed_review_operation(

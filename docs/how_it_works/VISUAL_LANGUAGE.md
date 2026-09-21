@@ -9,7 +9,7 @@ The generated diagrams are static reading aids for a visitor who is scrolling th
 - Position must carry meaning. A row, column, lane, or change in elevation needs a domain or ownership reason.
 - Visual emphasis must be earned by information importance. Decorative numerals, curves, framing, or slogans do not earn attention by themselves.
 - Separation should make distinct responsibilities visible without adding labels that merely say they are distinct.
-- The relational-ledger view is the density test. A visual grammar that only works for a short linear workflow is not sufficient.
+- The representative operation is the route-density test. A visual grammar that only works for sparse cards is not sufficient.
 
 ## Stable grammar
 
@@ -37,15 +37,15 @@ The day canvas uses a warm paper tone; the night canvas uses muted navy selected
 ## Source ownership
 
 - `model.py` owns the reusable primitives, named day and night palettes, soft-elbow rendering, and mechanically checkable geometry rules. Rendering receives one complete palette rather than selecting or hardcoding theme colors inside drawing helpers.
-- `ambiguity_closure.py`, `brief.py`, `product.py`, `layers.py`, `journey.py`, and `database.py` own the semantic inventory and authored composition of their diagrams.
+- `ambiguity_closure.py`, `brief.py`, `product.py`, and `journey.py` own the semantic inventory and authored composition of their diagrams.
 - `render.py` owns the guide text, output paths, dependency validation, and content-based freshness command.
 - `HOW_IT_WORKS.md`, the day `assets/how-it-works/*.svg` files, and their `*-dark.svg` counterparts are generated projections and are never edited directly.
 
-The composition is deliberately authored rather than delegated to a general graph layout engine. Automatic placement may be introduced only if it preserves the same semantic axes, stable ports, label clearance, and routing quality on the relational-ledger density test.
+The composition is deliberately authored rather than delegated to a general graph layout engine. Automatic placement may be introduced only if it preserves the same semantic axes, stable ports, label clearance, and routing quality on the representative operation.
 
 ## Updating or varying the diagrams
 
-Change the relevant semantic seed when product scope, architecture, a representative flow, or the database schema changes. Change the renderer or its named palettes when the shared visual language changes. Every diagram is rendered from the same semantic seed and geometry in both palettes; a theme variation must not carry different content, layout, typography, routes, or emphasis semantics. Keep style tokens separate from semantic content so another document can vary the palette, type, or surface without discarding the evaluation criteria and connector grammar.
+Change the relevant semantic seed when product scope, architecture, or a representative flow changes. Change the renderer or its named palettes when the shared visual language changes. Every diagram is rendered from the same semantic seed and geometry in both palettes; a theme variation must not carry different content, layout, typography, routes, or emphasis semantics. Keep style tokens separate from semantic content so another document can vary the palette, type, or surface without discarding the evaluation criteria and connector grammar.
 
 Freshness is the exact generated content, not a checksum of every related authority. The source validators reject relevant package, architecture, symbol, and schema drift. If a source edit passes those validators without changing visitor-facing output, regeneration leaves the committed guide and diagrams untouched.
 
@@ -55,7 +55,7 @@ Generate the outputs with:
 uv run --locked python -m docs.how_it_works.render
 ```
 
-Inspect the generated guide in both day and night modes at its normal reading width, including the relational ledger. Then verify freshness with:
+Inspect the generated guide in both day and night modes at its normal reading width, including the ambiguity-closure and representative-operation diagrams. Then verify freshness with:
 
 ```console
 uv run --locked python -m docs.how_it_works.render --check

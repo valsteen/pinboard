@@ -2,16 +2,14 @@ import argparse
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from . import ambiguity_closure, brief, database, journey, layers, product
+from . import ambiguity_closure, brief, journey, product
 from .model import DAY_PALETTE, NIGHT_PALETTE, Diagram, render_svg
 
 OUTPUT_PATHS = {
     "guide": Path("HOW_IT_WORKS.md"),
     "ambiguity-closure": Path("assets/how-it-works/ambiguity-closure.svg"),
     "product": Path("assets/how-it-works/product.svg"),
-    "layers": Path("assets/how-it-works/layers.svg"),
     "journey": Path("assets/how-it-works/journey.svg"),
-    "database": Path("assets/how-it-works/database.svg"),
     "brief": Path("assets/how-it-works/brief.svg"),
 }
 
@@ -86,37 +84,21 @@ Across those paths, four guarantees stay constant:
 - **Review concerns one candidate.** Findings and acceptance stay bound to the exact result that was examined.
 - **Authoritative changes are atomic.** A rejected or failed transition leaves the previous ledger intact; repairable views cannot silently rewrite accepted state.
 
-## The codebase preserves those boundaries
+## The same workflow, viewed through the codebase
 
-Pinboard keeps product decisions, operation sequencing, persistence, and external presentation in four package layers.
+Starting a preparation claim through MCP is one representative path through the same design. The interface decodes an exact request and samples operation time. Application code opens the transaction, reads the current definition and authority facts, and selects the claim operation. A pure domain decision accepts or rejects that requested change without reading files or issuing SQL. The application projects an accepted decision into a targeted mutation; the SQLite adapter commits it, and the filesystem adapter refreshes replaceable views before the interface presents the result.
 
-{_picture("layers", "Four package layers showing interfaces, application, domain, and adapters, connected by package dependencies")}
+{_picture("journey", "An ordinary preparation claim moving from an exact MCP request through application orchestration and a pure domain decision to SQLite commit, replaceable view refresh, and a typed result")}
 
-Every arrow means “may depend on.” Interfaces make outside input exact and present results. Application code coordinates complete operations through explicit capabilities. The domain decides legality without reading files or issuing SQL. Adapters store and recover accepted facts without deciding workflow policy. The CLI and MCP are sibling interfaces over those same inner contracts, not fallback implementations of each other.
+The separation preserves facts that the next agent can act on. A successful operation returns its receipt, effect, and changed surfaces. An expected rejection retains its code, observations, mismatches, retry disposition, and current conflict facts when present. A stale persistence guard remains distinct from a domain rejection, while infrastructure failures remain exceptions. If view refresh fails after commit, the SQLite result remains authoritative and the response identifies the repairable surface. The agent can therefore correct input, refresh an action, reacquire authority, repair a projection, or stop without inferring what happened from prose.
 
-### One operation proves the path
-
-Starting a preparation claim through MCP is one representative path through the layers. The interface decodes an exact request and samples operation time. The application opens the transaction and selects the current definition and claim operation. A pure domain decision accepts or rejects the change. The adapter commits only the accepted mutation, after which the interface refreshes replaceable views and presents the exact result.
-
-{_picture("journey", "An ordinary preparation start selecting the current definition and claim operation against locked state, then committing, refreshing, and presenting it")}
-
-Expected rejections retain their code, observations, mismatches, retry disposition, and legal alternatives. A stale persistence guard remains distinct from a domain rejection; infrastructure failures remain exceptions. If view refresh fails after commit, the committed ledger result remains authoritative and the response names the repairable surface. This is the same distinction the guide's opening relies on: an accepted decision, a durable effect, and a human-readable presentation are related but not interchangeable.
-
-### Durable state supports review and recovery
-
-Pinboard stores coordination data beside the repository. The relational ledger groups current work, accepted definitions and dependencies, discoveries, immutable knowledge, current mutation authority, and committed history.
-
-{_picture("database", "Six groups of SQLite tables showing current work, definitions and relationships, discovery, accepted artifacts, mutation ownership, and integrity and time")}
-
-SQLite is the source of truth for lifecycle, accepted scope, authority, and history. Accepted briefs, candidate snapshots, results, and reviews are immutable artifacts referenced by that ledger. Human-readable Markdown views are replaceable projections: a failed refresh cannot undo the accepted transaction, and the views can be rebuilt from authoritative state and verified artifact bytes.
-
-That durable binding lets a later worker recover the same attempt and lets a reviewer resolve the exact candidate and agreement without reconstructing either from chat. It also marks a deliberate boundary: Pinboard assumes one trusted local developer authority over the repository, checkout, work root, SQLite database, artifacts, and local MCP client. It handles stale actions, invalid input, interrupted publication, and ordinary concurrency; it is not a defense against a hostile actor with the same filesystem access.
+This operation is the opening workflow in code: exact input becomes an explicit requested change, one owner decides it, effects preserve the accepted facts, and presentation reports what happened. The boundaries matter because an accepted decision, a durable commit, and a human-readable projection are related but not interchangeable.
 
 For installation and the product overview, return to the [README](README.md). Maintainers can continue with the exact [architecture map](ARCHITECTURE.md) and the [design principles](DESIGN_PRINCIPLES.md).
 
 ---
 
-<sub>This guide and its six SVG diagrams are generated from the executable seeds in <code>docs/how_it_works/</code>. Edit the seeds and regenerate the outputs; do not edit this file directly.</sub>
+<sub>This guide and its four SVG diagrams are generated from the executable seeds in <code>docs/how_it_works/</code>. Edit the seeds and regenerate the outputs; do not edit this file directly.</sub>
 """
 
 
@@ -124,22 +106,18 @@ def _output_path(item: tuple[Path, str]) -> str:
     return item[0].as_posix()
 
 
-def build_outputs(root: Path) -> dict[Path, str]:
+def build_outputs() -> dict[Path, str]:
     """Validate the complete guide and raise if no coherent output set can be built."""
 
     ambiguity_closure.validate()
     product.validate()
-    layers.validate(root)
     journey.validate()
-    database.validate(root)
     brief.validate()
     diagrams: tuple[Diagram, ...] = (
         ambiguity_closure.DIAGRAM,
         brief.DIAGRAM,
         product.DIAGRAM,
-        layers.DIAGRAM,
         journey.DIAGRAM,
-        database.DIAGRAM,
     )
     outputs: dict[Path, str] = {}
     for diagram in diagrams:
@@ -172,7 +150,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true", help="fail when committed outputs are stale")
     options = parser.parse_args(arguments)
     root = Path(__file__).resolve().parents[2]
-    outputs = build_outputs(root)
+    outputs = build_outputs()
     if options.check:
         stale = stale_outputs(root, outputs)
         if stale:

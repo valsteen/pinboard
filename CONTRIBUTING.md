@@ -29,6 +29,8 @@ uv run --locked coverage report
 uv run --locked python scripts/validate-metadata.py
 ```
 
+The pyrefly configuration deliberately ignores Git ignore files and pyrefly's default exclusion heuristics so that linked worktrees under `.claude/worktrees/` check the same files as the main checkout; a `No Python files matched patterns` result from `pyrefly check` is a misconfiguration, not a pass.
+
 The repository uses `unittest`. The metadata validator is the supported check for plugin and skill discovery consistency. `HOW_IT_WORKS.md` and its diagrams are generated from `docs/how_it_works/`; update their sources and rerun the renderer instead of editing the generated guide directly.
 
 Run the project-local duplication checks after changing production Python:

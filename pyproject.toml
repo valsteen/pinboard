@@ -67,6 +67,12 @@ known-first-party = ["pinboard", "tests"]
 python-version = "3.14"
 project-includes = ["src", "tests", "docs/how_it_works", "scripts/check_duplication.py"]
 search-path = ["."]
+# Linked worktrees live under `.claude/worktrees/`, which the shared repository's
+# `.git/info/exclude` ignores and Pyrefly's default exclusion heuristics also skip.
+# Keep exclusions explicit so a worktree checks the same files as the main checkout.
+use-ignore-files = false
+disable-project-excludes-heuristics = true
+project-excludes = ["**/node_modules", "**/__pycache__", "**/.venv/**"]
 preset = "strict"
 min-severity = "warn"
 

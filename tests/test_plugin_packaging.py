@@ -44,6 +44,16 @@ def session_start_event() -> dict[str, str]:
     }
 
 
+def pre_tool_use_event(cwd: Path) -> dict[str, str]:
+    return {
+        "cwd": str(cwd),
+        "hook_event_name": "PreToolUse",
+        "session_id": "sensitive-parent-session",
+        "tool_name": "mcp__plugin_pinboard_pinboard__pinboard_overview",
+        "transcript_path": "/sensitive/native-transcript.jsonl",
+    }
+
+
 def copied_repository_payload(source_root: Path, destination: Path) -> None:
     listed = subprocess.run(
         ["git", "ls-files", "-z"],
@@ -98,6 +108,113 @@ class PluginPackagingTests(unittest.TestCase):
         ):
             with self.subTest(value=value), self.assertRaises(msgspec.ValidationError):
                 msgspec.json.decode(json.dumps(value), type=claude_hook.HookOutput)
+        decision: JsonObject = {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": "reason",
+        }
+        for value in (
+            {"hookSpecificOutput": decision, "unknown": True},
+            {"hookSpecificOutput": {**decision, "unknown": True}},
+            {"hookSpecificOutput": {**decision, "hookEventName": "SessionStart"}},
+            {"hookSpecificOutput": {**decision, "permissionDecision": "deny"}},
+            {"hookSpecificOutput": {**decision, "permissionDecision": "ask"}},
+            {"hookSpecificOutput": {**decision, "permissionDecision": "defer"}},
+            {"hookSpecificOutput": context},
+        ):
+            with self.subTest(value=value), self.assertRaises(msgspec.ValidationError):
+                msgspec.json.decode(json.dumps(value), type=claude_hook.PermissionHookOutput)
+        with self.assertRaises(msgspec.ValidationError):
+            msgspec.json.decode(json.dumps({"hookSpecificOutput": decision}), type=claude_hook.HookOutput)
+
+    def run_permission_hook(
+        self, payload: str, home: Path, cwd: Path, *arguments: str
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(ROOT / "scripts" / "pinboard"), "--claude-pre-tool-use", *arguments],
+            input=payload,
+            cwd=cwd,
+            env={**os.environ, "HOME": str(home)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def assert_permission_decision(self, result: subprocess.CompletedProcess[str], decision: str) -> str:
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, result.stdout.count("\n"))
+        output = json.loads(result.stdout)
+        self.assertEqual({"hookSpecificOutput"}, set(output))
+        context = output["hookSpecificOutput"]
+        self.assertEqual({"hookEventName", "permissionDecision", "permissionDecisionReason"}, set(context))
+        self.assertEqual("PreToolUse", context["hookEventName"])
+        self.assertEqual(decision, context["permissionDecision"])
+        return str(context["permissionDecisionReason"])
+
+    def test_installed_permission_hook_allows_own_tools_without_reading_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sandbox = Path(directory).resolve()
+            home = sandbox / "home"
+            project = sandbox / "project"
+            for path in (home / ".claude", project / ".claude"):
+                path.mkdir(parents=True)
+            event = pre_tool_use_event(project)
+            payload = json.dumps(
+                {**event, "tool_input": {"project_root": "/sensitive/root"}, "permission_mode": "default"}
+            )
+            fresh = self.run_permission_hook(payload, home, project)
+            self.assert_permission_decision(fresh, "allow")
+            self.assertEqual("", fresh.stderr)
+            for sensitive in ("sensitive-parent-session", "/sensitive/", "permission_mode"):
+                self.assertNotIn(sensitive, fresh.stdout)
+            # Saved rules are Claude Code's to enforce; the hook neither reads them nor changes its answer.
+            restrictive = json.dumps({"permissions": {"deny": ["mcp__plugin_pinboard_pinboard__*"], "ask": ["*"]}})
+            for path in (
+                home / ".claude" / "settings.json",
+                project / ".claude" / "settings.json",
+                project / ".claude" / "settings.local.json",
+            ):
+                path.write_text(restrictive, encoding="utf-8")
+            saved = self.run_permission_hook(payload, home, project)
+            self.assert_permission_decision(saved, "allow")
+            self.assertEqual("", saved.stderr)
+
+    def test_installed_permission_hook_never_allows_foreign_tools_invalid_events_or_extra_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sandbox = Path(directory).resolve()
+            home = sandbox / "home"
+            project = sandbox / "project"
+            home.mkdir()
+            project.mkdir()
+            event = pre_tool_use_event(project)
+            required = {key: value for key, value in event.items() if key != "transcript_path"}
+            invalid: list[JsonObject | list[str]] = [
+                [],
+                {**event, "tool_name": "mcp__other_server__pinboard_overview"},
+                {**event, "tool_name": "mcp__plugin_pinboard_pinboardx__overview"},
+                {**event, "tool_name": "Bash"},
+                {**event, "tool_name": "mcp__plugin_pinboard_pinboard__"},
+                {**event, "tool_name": "mcp__plugin_pinboard_pinboard__pinboard_overview\u0000"},
+                {**event, "hook_event_name": "SessionStart"},
+                {**event, "hook_event_name": "PostToolUse"},
+                {**event, "cwd": ""},
+            ]
+            invalid.extend({key: value for key, value in event.items() if key != missing} for missing in required)
+            invalid.extend({**event, key: 47} for key in required)
+            for index, invalid_payload in enumerate([*(json.dumps(value) for value in invalid), "{", ""]):
+                with self.subTest(index=index):
+                    result = self.run_permission_hook(invalid_payload, home, project)
+                    self.assertEqual(1, result.returncode, result.stderr)
+                    self.assertEqual("", result.stdout)
+                    self.assertLess(len(result.stderr), 256)
+                    self.assertNotIn("sensitive", result.stderr)
+            self.assert_permission_decision(self.run_permission_hook(json.dumps(required), home, project), "allow")
+            for argument in ("--claude-session-start", "--mcp", "--version", ""):
+                with self.subTest(argument=argument):
+                    result = self.run_permission_hook(json.dumps(event), home, project, argument)
+                    self.assertEqual(64, result.returncode)
+                    self.assertEqual("", result.stdout)
+                    self.assertEqual("invalid-startup-arguments", json.loads(result.stderr)["status"])
 
     def test_installed_parent_hook_delivers_current_session_and_machine_without_forwarding_payload(self) -> None:
         event = session_start_event()
@@ -348,6 +465,8 @@ class PluginPackagingTests(unittest.TestCase):
         parent_command = parent_matcher["hooks"][0]
         worker_matcher = hooks["SubagentStart"][0]
         worker_command = worker_matcher["hooks"][0]
+        permission_matcher = hooks["PreToolUse"][0]
+        permission_command = permission_matcher["hooks"][0]
         changes = (
             (
                 codex_manifest_path,
@@ -459,6 +578,73 @@ class PluginPackagingTests(unittest.TestCase):
                         "hooks": {
                             **hooks,
                             "SubagentStart": [{**worker_matcher, "hooks": [{**worker_command, "async": True}]}],
+                        }
+                    }
+                ),
+            ),
+            ("hooks/claude-hooks.json", json.dumps({"hooks": {**hooks, "PreToolUse": []}})),
+            ("hooks/claude-hooks.json", json.dumps({"hooks": {k: v for k, v in hooks.items() if k != "PreToolUse"}})),
+            (
+                "hooks/claude-hooks.json",
+                json.dumps({"hooks": {**hooks, "PreToolUse": [{**permission_matcher, "matcher": ".*"}]}}),
+            ),
+            (
+                "hooks/claude-hooks.json",
+                json.dumps(
+                    {"hooks": {**hooks, "PreToolUse": [{**permission_matcher, "matcher": "mcp__plugin_pinboard_.*"}]}}
+                ),
+            ),
+            (
+                "hooks/claude-hooks.json",
+                json.dumps(
+                    {
+                        "hooks": {
+                            **hooks,
+                            "PreToolUse": [
+                                {
+                                    **permission_matcher,
+                                    "hooks": [
+                                        {**permission_command, "command": permission_command["command"] + " --mcp"}
+                                    ],
+                                }
+                            ],
+                        }
+                    }
+                ),
+            ),
+            (
+                "hooks/claude-hooks.json",
+                json.dumps(
+                    {
+                        "hooks": {
+                            **hooks,
+                            "PreToolUse": [{**permission_matcher, "hooks": [permission_command, permission_command]}],
+                        }
+                    }
+                ),
+            ),
+            (
+                "hooks/claude-hooks.json",
+                json.dumps({"hooks": {**hooks, "PreToolUse": [permission_matcher, permission_matcher]}}),
+            ),
+            (
+                "hooks/claude-hooks.json",
+                json.dumps(
+                    {
+                        "hooks": {
+                            **hooks,
+                            "PreToolUse": [{**permission_matcher, "hooks": [{**permission_command, "async": True}]}],
+                        }
+                    }
+                ),
+            ),
+            (
+                "hooks/claude-hooks.json",
+                json.dumps(
+                    {
+                        "hooks": {
+                            **hooks,
+                            "PreToolUse": [{**permission_matcher, "hooks": [{**permission_command, "type": "prompt"}]}],
                         }
                     }
                 ),
@@ -623,6 +809,25 @@ class PluginPackagingTests(unittest.TestCase):
                 self.assertNotIn(event[key], result.stdout)
             self.assertNotIn("sensitive-prompt", result.stdout)
             self.assertEqual("", result.stderr)
+        permission_command = hooks["PreToolUse"][0]["hooks"][0]["command"].replace(
+            "${CLAUDE_PLUGIN_ROOT}", str(plugin_root)
+        )
+        result = subprocess.run(
+            permission_command,
+            shell=True,
+            input=json.dumps({**pre_tool_use_event(project), "tool_input": {"root": "sensitive-input"}}),
+            cwd=project,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("", result.stderr)
+        decision = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual("PreToolUse", decision["hookEventName"])
+        self.assertEqual("allow", decision["permissionDecision"])
+        self.assertNotIn("sensitive", result.stdout)
 
     def test_copied_plugin_launcher_runs_complete_no_model_workflow_without_mutating_plugin_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

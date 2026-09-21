@@ -83,6 +83,7 @@ class LauncherTest(unittest.TestCase):
             ("--mcp", "pinboard-mcp"),
             ("--claude-subagent-start", "pinboard-claude-subagent-start"),
             ("--claude-session-start", "pinboard-claude-session-start"),
+            ("--claude-pre-tool-use", "pinboard-claude-pre-tool-use"),
         ):
             for runtime in (".venv", ".pinboard-runtime/environment"):
                 with self.subTest(selector=selector, runtime=runtime), tempfile.TemporaryDirectory() as temporary:
@@ -167,6 +168,70 @@ class LauncherTest(unittest.TestCase):
                 self.assertEqual("", extra.stdout)
                 self.assertEqual("unchanged", json.loads(extra.stderr)["effect_disposition"])
 
+    def test_permission_entry_preserves_independent_mcp_gate_and_rejects_extra_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launcher = self.copy_launcher(root)
+            missing = self.run_launcher(launcher, "--claude-pre-tool-use", path="/usr/bin:/bin")
+            self.assertEqual(78, missing.returncode)
+            self.assertEqual("", missing.stdout)
+            self.assertEqual("runtime-preparation-required", json.loads(missing.stderr)["status"])
+            executable = root / ".pinboard-runtime" / "environment" / "bin" / "pinboard-claude-pre-tool-use"
+            executable.parent.mkdir(parents=True)
+            executable.write_text('#!/bin/sh\nprintf "permission-decision\\n"\n', encoding="utf-8")
+            executable.chmod(0o755)
+            (root / ".pinboard-runtime" / ".pinboard-ready").touch()
+            permission = self.run_launcher(launcher, "--claude-pre-tool-use", path="/usr/bin:/bin")
+            self.assertEqual(0, permission.returncode)
+            self.assertEqual("permission-decision\n", permission.stdout)
+            mcp = self.run_launcher(launcher, "--mcp", path="/usr/bin:/bin")
+            self.assertEqual(78, mcp.returncode)
+            self.assertEqual("", mcp.stdout)
+            self.assertEqual("runtime-preparation-required", json.loads(mcp.stderr)["status"])
+            for argument in ("--prepare-runtime", "--mcp", "--claude-session-start", "--version", ""):
+                extra = self.run_launcher(launcher, "--claude-pre-tool-use", argument, path="/usr/bin:/bin")
+                self.assertEqual(64, extra.returncode)
+                self.assertEqual("", extra.stdout)
+                self.assertEqual("invalid-startup-arguments", json.loads(extra.stderr)["status"])
+                self.assertEqual("unchanged", json.loads(extra.stderr)["effect_disposition"])
+
+    def test_preparation_rejects_previous_ready_runtime_without_permission_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launcher = self.copy_launcher(root)
+            runtime = root / ".pinboard-runtime" / "environment" / "bin"
+            runtime.mkdir(parents=True)
+            previous_entries = (
+                "pinboard",
+                "pinboard-mcp",
+                "pinboard-claude-subagent-start",
+                "pinboard-claude-session-start",
+            )
+            for entry in previous_entries:
+                executable = runtime / entry
+                executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                executable.chmod(0o755)
+            (root / ".pinboard-runtime" / ".pinboard-ready").touch()
+            stale = self.run_launcher(launcher, "--claude-pre-tool-use", path="/usr/bin:/bin")
+            self.assertEqual(78, stale.returncode)
+            self.assertEqual("", stale.stdout)
+            self.assertEqual("runtime-preparation-required", json.loads(stale.stderr)["status"])
+            self.write_uv(
+                root,
+                'mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"\n'
+                "printf '#!/bin/sh\\nexit 0\\n' > \"$UV_PROJECT_ENVIRONMENT/bin/pinboard\"\n"
+                'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n'
+                + "".join(
+                    f'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/{entry}"\n'
+                    for entry in previous_entries[1:]
+                ),
+            )
+            result = self.run_launcher(launcher, "--prepare-runtime", path=f"{root}:/usr/bin:/bin")
+            self.assertEqual(78, result.returncode)
+            self.assertEqual("runtime-entrypoint-invalid", json.loads(result.stdout)["status"])
+            self.assertIn("pinboard-claude-pre-tool-use", result.stderr)
+            self.assertFalse((root / ".pinboard-runtime" / ".pinboard-ready").exists())
+
     def parent_context(self, result: subprocess.CompletedProcess[str]) -> str:
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(1, result.stdout.count("\n"))
@@ -189,6 +254,7 @@ class LauncherTest(unittest.TestCase):
             'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-session-start"\n'
             'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp"\n'
             'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-subagent-start"\n'
+            'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-pre-tool-use"\n'
         )
 
     def test_parent_context_entry_names_manual_route_without_uv_and_changes_nothing(self) -> None:
@@ -466,7 +532,8 @@ class LauncherTest(unittest.TestCase):
                 'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n'
                 'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp"\n'
                 'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-subagent-start"\n'
-                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-session-start"\n',
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-session-start"\n'
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-pre-tool-use"\n',
             )
 
             result = self.run_launcher(launcher, "--prepare-runtime", path=f"{root}:/usr/bin:/bin")
@@ -496,7 +563,8 @@ class LauncherTest(unittest.TestCase):
                 'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n'
                 'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp"\n'
                 'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-subagent-start"\n'
-                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-session-start"\n',
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-session-start"\n'
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-pre-tool-use"\n',
             )
 
             result = self.run_launcher(
@@ -607,7 +675,8 @@ class LauncherTest(unittest.TestCase):
                 "printf '#!/bin/sh\\nexit 99\\n' > \"$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp\"\n"
                 'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp"\n'
                 'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-subagent-start"\n'
-                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-session-start"\n',
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-session-start"\n'
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-pre-tool-use"\n',
             )
             environment = {"TRACE_FILE": str(trace)}
 

@@ -104,6 +104,8 @@ claude plugin install pinboard@pinboard
 
 Start Claude Code in your project. The first session prepares the installed version's private runtime, which needs [uv](https://docs.astral.sh/uv/). Because the `pinboard` MCP server starts before that preparation finishes, the first session reports it as failed: reconnect it with `/mcp` or restart Claude Code once, then ask Claude Code to set up Pinboard there. Running `~/.claude/plugins/cache/pinboard/pinboard/*/scripts/pinboard --prepare-runtime` yourself before the first session avoids that one reconnect.
 
+Once prepared, the plugin approves its own MCP tool calls automatically, so Pinboard does not prompt for each tool while your saved deny and ask rules still apply. The [installation guide](INSTALL.md#permissions) explains how to be asked instead and the settings-rule fallback.
+
 <details>
 <summary>Try Pinboard for one Claude Code session without installing it</summary>
 
@@ -117,15 +119,15 @@ claude --plugin-dir /path/to/pinboard
 
 </details>
 
-The [installation guide](INSTALL.md) covers first setup, Codex permissions, linked worktrees, the Claude Code routes, and troubleshooting.
+The [installation guide](INSTALL.md) covers first setup, Codex and Claude Code permissions, linked worktrees, the Claude Code routes, local data, and troubleshooting.
 
 ## Local data
 
-By default, Pinboard keeps project decisions and evidence in the managed repository's ignored `.pinboard` directory. Primary and linked worktrees share that location. Existing projects that still use `.codex/pinboard` run `pinboard migrate-work-root` once while no other Pinboard process is accessing the project; the command preserves the existing bytes and leaves a compatibility alias. Agent workflows use local stdio MCP tools for intake, briefs, inspection, authority, lifecycle changes, worker dispatch, and candidate-bound review publication. The CLI remains available through `<launcher-root>/scripts/pinboard` for root discovery, setup, storage migration, summary status, validation, view repair, portable human export, direct human closure, and its own diagnostics. It is not an agent-workflow fallback. An installed plugin keeps its private Python environment at `<launcher-root>/.pinboard-runtime/environment`, while Pinboard source development uses `<pinboard-source>/.venv`. Neither environment is created in or borrowed from the managed project.
+Pinboard keeps project decisions and evidence in the managed repository's ignored `.pinboard` directory, shared by primary and linked worktrees, and never creates or borrows a Python environment in your project. The [Local data](INSTALL.md#local-data) section of the installation guide covers the exact locations, the CLI's role, and migrating an older `.codex/pinboard` layout.
 
 ## Learn more
 
 - [How Pinboard works](HOW_IT_WORKS.md) follows the workflow from an idea to an accepted, reviewed change.
-- [Install Pinboard](INSTALL.md) covers advanced setup, permissions, linked worktrees, Claude Code support, and troubleshooting.
+- [Install Pinboard](INSTALL.md) covers advanced setup, Codex and Claude Code permissions, linked worktrees, local data, and troubleshooting.
 - [Contributing](CONTRIBUTING.md) covers the development environment, checks, tests, and packaging.
 - [Architecture](ARCHITECTURE.md) describes system ownership, boundaries, limitations, and failure semantics.

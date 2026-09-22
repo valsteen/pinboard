@@ -226,6 +226,34 @@ preparation_required() {
         '[]' \
         "$preparation_action"
 }
+if [ "$entry_name" = "pinboard-mcp" ]; then
+    preparation_lock="$runtime_root/.preparing"
+    if ! command -v uv >/dev/null 2>&1; then
+        preparation_exit_code=0
+        preparation=$("$0" --prepare-runtime </dev/null) || preparation_exit_code=$?
+        printf '%s\n' "$preparation" >&2
+        exit "$preparation_exit_code"
+    fi
+    if ! mkdir -p "$runtime_root" 2>/dev/null || ! mkdir "$preparation_lock" 2>/dev/null; then
+        preparation_required
+        exit 78
+    fi
+    preparation_exit_code=0
+    preparation=$("$0" --prepare-runtime </dev/null) || preparation_exit_code=$?
+    rmdir "$preparation_lock" 2>/dev/null || true
+    printf '%s\n' "$preparation" >&2
+    preparation_status=$(printf '%s' "$preparation" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')
+    if [ "$preparation_status" = "runtime-ready" ] || [ "$preparation_status" = "runtime-already-ready" ]; then
+        if [ -f "$ready_marker" ] && [ -x "$runtime_executable" ]; then
+            exec "$runtime_executable" "$@"
+        fi
+    fi
+    if [ "$preparation_exit_code" -eq 0 ]; then
+        preparation_required
+        exit 78
+    fi
+    exit "$preparation_exit_code"
+fi
 if [ "$entry_name" != "pinboard-claude-session-start" ]; then
     preparation_required
     exit 78

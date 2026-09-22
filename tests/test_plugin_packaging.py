@@ -497,6 +497,10 @@ class PluginPackagingTests(unittest.TestCase):
             ),
             (
                 "mcp-codex.json",
+                '{"mcpServers":{"pinboard":{"command":"sh","args":["-c","./scripts/pinboard --prepare-runtime >&2 && exec ./scripts/pinboard --mcp"],"cwd":"."}}}',
+            ),
+            (
+                "mcp-codex.json",
                 '{"mcpServers":{"pinboard":{"command":"sh","args":["./scripts/pinboard","--mcp"],"cwd":".."}}}',
             ),
             (

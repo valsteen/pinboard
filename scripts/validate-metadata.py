@@ -120,11 +120,8 @@ class CodexMcpServer(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     cwd: Literal["."]
 
     def __post_init__(self) -> None:
-        if self.args != (
-            "-c",
-            "./scripts/pinboard --prepare-runtime >&2 && exec ./scripts/pinboard --mcp",
-        ):
-            raise ValueError("Codex MCP must prepare the private runtime before starting the root launcher")
+        if self.args != ("./scripts/pinboard", "--mcp"):
+            raise ValueError("Codex MCP must select the root launcher with only --mcp")
 
 
 class ClaudeMcpServer(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

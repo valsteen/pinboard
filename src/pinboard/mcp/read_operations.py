@@ -1246,7 +1246,11 @@ def _candidate_lineage_for_disposition(
     ready_review: bool,
     reconciliation: query_models.AttemptReconciliation | None,
 ) -> query_models.CandidateLineage | execution.OperationResult | None:
-    if reconciliation is None or not ready_review or not isinstance(context, query_models.NonterminalAttemptContextFacts):
+    if (
+        reconciliation is None
+        or not ready_review
+        or not isinstance(context, query_models.NonterminalAttemptContextFacts)
+    ):
         return None
     evidence = candidate_evidence.read_candidate_evidence(
         durable.work_root, store, AttemptId(attempt_id), context.candidate_revision

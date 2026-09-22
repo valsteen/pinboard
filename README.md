@@ -8,7 +8,7 @@ Working with a coding agent can stay fluid: follow an idea, ask for the change, 
 
 Pinboard helps you keep that backlog useful through the conversation you already have with your coding agent. It records tasks, priorities, dependencies, and the decisions behind them beside the repository.
 
-That context carries into delivery. Accepted direction becomes a precise brief that guides implementation and a separate review. Later sessions can continue from the recorded scope, progress, and evidence, helping you and the agent avoid building on forgotten choices or assumptions neither of you meant to make.
+That context carries into delivery. Accepted direction becomes a precise brief for implementation and a separate review: defects return for correction, while choices that change scope or behavior return to you instead of silently reshaping the request. Later sessions continue from recorded scope, progress, and evidence rather than forgotten choices or assumptions.
 
 <br clear="right">
 <br>

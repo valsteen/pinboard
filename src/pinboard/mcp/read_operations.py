@@ -11,7 +11,7 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.adapters import review_operations
+from pinboard.adapters import candidate_evidence, review_operations
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, ImmutableFilePublishedError, RootError
@@ -1237,7 +1237,48 @@ def _mcp_candidate_recovery(
     return common._candidate_recovery_view(durable, evidence)
 
 
-def _read_attempt_inspection(
+def _candidate_lineage_for_disposition(
+    project_root: str,
+    durable: DurableRoots,
+    store: WorkStore,
+    context: query_models.AttemptContextFacts,
+    attempt_id: str,
+    ready_review: bool,
+    reconciliation: query_models.AttemptReconciliation | None,
+) -> query_models.CandidateLineage | execution.OperationResult | None:
+    if reconciliation is None or not ready_review or not isinstance(context, query_models.NonterminalAttemptContextFacts):
+        return None
+    evidence = candidate_evidence.read_candidate_evidence(
+        durable.work_root, store, AttemptId(attempt_id), context.candidate_revision
+    )
+    if isinstance(evidence, DecisionFailure):
+        return common._read_failure(
+            "pinboard-mcp-attempt-inspection-result/v1",
+            "ATTEMPT_BRIEF_INVALID",
+            f"Accepted candidate snapshot could not be revalidated: {evidence.message}",
+            evidence.details,
+        )
+    try:
+        source_checkout = resolve_source_checkout_root(Path(project_root))
+        lineage = candidate_evidence.observe_candidate_lineage(source_checkout, evidence)
+    except RootError as error:
+        return common._read_failure(
+            "pinboard-mcp-attempt-inspection-result/v1",
+            "ATTEMPT_BRIEF_INVALID",
+            f"Cannot reobserve the protected candidate checkout: {error}",
+            None,
+        )
+    if isinstance(lineage, DecisionFailure):
+        return common._read_failure(
+            "pinboard-mcp-attempt-inspection-result/v1",
+            "ATTEMPT_BRIEF_INVALID",
+            lineage.message,
+            lineage.details,
+        )
+    return lineage
+
+
+def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independent evidence and failure gates
     project_root: str,
     work_root: str,
     attempt_id: str,
@@ -1412,11 +1453,23 @@ def _read_attempt_inspection(
     if isinstance(recovery, execution.OperationResult):
         return recovery
     current_review, candidate_review = _current_candidate_review(durable, store, context, decoded_brief, result, review)
+    candidate_lineage = _candidate_lineage_for_disposition(
+        project_root,
+        durable,
+        store,
+        context,
+        request.attempt_id,
+        current_review is not None,
+        request.reconciliation,
+    )
+    if isinstance(candidate_lineage, execution.OperationResult):
+        return candidate_lineage
     continuation = queries.project_attempt_continuation(
         context,
         owner_task_id,
         decoded_brief,
         request.reconciliation,
+        candidate_lineage,
         current_review is not None,
     )
     if isinstance(continuation, DecisionFailure):

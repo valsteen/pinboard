@@ -144,6 +144,12 @@ class RuntimeEffectStatus(Enum):
     NOT_REQUIRED = "not-required"
 
 
+class CandidateLineage(Enum):
+    COMMIT_CURRENT = "commit-current"
+    WORKING_TREE_CURRENT = "working-tree-current"
+    DRIFTED = "drifted"
+
+
 class RuntimeEffectObservation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     effect: RuntimeEffect
     status: RuntimeEffectStatus

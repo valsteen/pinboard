@@ -53,6 +53,40 @@ def read_candidate_evidence_from_context(
         return DecisionFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, str(error), None)
 
 
+def observe_candidate_lineage(
+    source_checkout: Path,
+    evidence: candidate_snapshots.CandidateSnapshotEvidence,
+) -> DecisionResult[query_models.CandidateLineage]:
+    snapshot = evidence.snapshot
+    try:
+        branch, _ = root.observe_checkout_identity(source_checkout)
+        if branch != snapshot.branch:
+            return query_models.CandidateLineage.DRIFTED
+        match snapshot:
+            case candidate_snapshots.WorkingTreeCandidateSnapshot():
+                current = root.read_working_tree_candidate(source_checkout)
+                if current.preimage_revision == snapshot.preimage_revision and current.diff == snapshot.diff:
+                    return query_models.CandidateLineage.WORKING_TREE_CURRENT
+                return query_models.CandidateLineage.DRIFTED
+            case candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot():
+                return query_models.CandidateLineage.DRIFTED
+            case candidate_snapshots.CommitCandidateSnapshot():
+                current = root.read_current_head_candidate(
+                    source_checkout, snapshot.candidate, snapshot.accepted_base_revision
+                )
+                if isinstance(current, root.CurrentHeadCandidate) and current.diff == snapshot.diff:
+                    return query_models.CandidateLineage.COMMIT_CURRENT
+                return query_models.CandidateLineage.DRIFTED
+            case _ as unreachable:
+                assert_never(unreachable)
+    except RootError as error:
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            f"Cannot reobserve the protected candidate checkout: {error}",
+            None,
+        )
+
+
 def restore_candidate(
     source_checkout: Path,
     work_root: Path,

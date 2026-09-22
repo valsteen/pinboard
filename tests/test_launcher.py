@@ -411,7 +411,7 @@ class LauncherTest(unittest.TestCase):
                 "      printf '#!/bin/sh\\nexit 0\\n' > \"$bin/$entry\"\n"
                 '      chmod +x "$bin/$entry"\n'
                 "    done\n"
-                '    printf \'#!/bin/sh\\nprintf \\"mcp-started\\\\n\\"\\n\' > "$bin/pinboard-mcp"\n'
+                '    printf \'#!/bin/sh\\nprintf "%%s\\\\n" mcp-started\\n\' > "$bin/pinboard-mcp"\n'
                 '    chmod +x "$bin/pinboard-mcp"\n'
                 '    : > "$runtime_root/.pinboard-ready"\n'
                 "    ;;\n"

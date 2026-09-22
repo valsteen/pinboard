@@ -7,7 +7,7 @@ Pinboard supports macOS and Linux. Codex is the primary, stress-tested integrati
 Pinboard uses these terms consistently:
 
 - `<launcher-root>` is the directory that contains `scripts/pinboard`. Direct CLI commands invoke this launcher; the plugin's MCP declaration invokes the same launcher with `--mcp`.
-- `<launcher-root>/.pinboard-runtime/environment` is the installed private runtime. One explicit `--prepare-runtime` command uses uv to create it for an installed plugin version; ordinary installed commands use neither uv nor its cache.
+- `<launcher-root>/.pinboard-runtime/environment` is the installed private runtime. The first installed MCP connection lazily invokes the same `--prepare-runtime` path; later installed commands use the prepared runtime without uv or its cache.
 - `<pinboard-source>/.venv` is the development environment for a prepared Pinboard source checkout. Repository-owned `uv sync` and `uv run` commands create or use this environment only for Pinboard development; `uv build` may use uv's isolated build environment.
 - `<managed-project>` is the repository whose work Pinboard coordinates. CLI callers select it with `--project-root <managed-project>`; native tool requests carry explicit `project_root` and `work_root` fields. Pinboard never uses the managed project's Python environment, `.venv`, or dependency files.
 
@@ -28,7 +28,7 @@ Start a Codex task in the repository where you want to use Pinboard and ask:
 
 The plugin manifest selects `mcp-codex.json` at the plugin root. Codex resolves its `cwd` to that root and starts `sh ./scripts/pinboard --mcp`. The connected Pinboard tools take explicit project and work roots for each request; they do not use the client's current directory as a board selection.
 
-An installed version needs deliberate runtime preparation before its first connection. If startup reports a preparation requirement, discover `<launcher-root>` relative to the active Pinboard skill and run `<launcher-root>/scripts/pinboard --prepare-runtime` once with uv available. Request write access only to that version's `.pinboard-runtime` when needed. Then reconnect through the client's supported MCP reconnect mechanism or start a new task/session that reloads the plugin. Startup itself never prepares or changes the plugin. Later connections and CLI commands use the prepared runtime without uv or its cache.
+On the first connection for an unprepared installed version, when uv is available, the launcher acquires its version-local preparation lock, runs `<launcher-root>/scripts/pinboard --prepare-runtime` once, and starts Pinboard only after the ready marker and entry point are valid. Request write access only to that version's `.pinboard-runtime` when needed. If uv is missing, another preparation is in progress, or preparation fails, the launcher writes the unchanged `pinboard-launcher-result/v1` recovery result to stderr, keeps MCP stdout empty, and names the same `--prepare-runtime` retry. Reconnect through the client's supported MCP reconnect mechanism after preparation succeeds. Codex does not use plugin data or a SessionStart hook for this boundary; those alternatives remain outside this contract.
 
 ### Allow routine project-data writes
 

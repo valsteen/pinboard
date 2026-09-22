@@ -4259,7 +4259,7 @@ class McpTransportTest(unittest.TestCase):
 
 
 class ResumedReviewReconciliationTest(CheckpointPackageSupport):
-    def test_recorded_ready_review_resumes_at_git_metadata_recovery_without_launch(self) -> None:
+    def test_recorded_ready_review_resumes_at_git_metadata_recovery_without_launch(self) -> None:  # noqa: PLR0915 - exercises the complete resumed-review sequence
         fixture = self.checkpoint_fixture(candidate_form="current-head")
         snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
         attempt = fixture.store.read_attempt_context(AttemptId("work-a-1"))
@@ -4386,6 +4386,45 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         )
         self.assertEqual("present", self.json_object(inspected["candidate_review"])["kind"])
         self.assertNotIn("native_launch", inspected)
+
+        ready_reconciliation: dict[str, contracts.JsonValue] = {
+            "target_revision": "squash-equivalent-head",
+            "relation": "candidate-pending-on-squash-equivalent-base",
+            "phase": "disposition",
+            "effects": [
+                {"effect": "source-checkout", "status": "allowed"},
+                {"effect": "shared-work-root", "status": "allowed"},
+                {"effect": "git-metadata", "status": "allowed"},
+            ]
+        }
+        ready_inspected = call_native_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "reconciliation": ready_reconciliation,
+            },
+        )
+        ready_operation = self.json_object(self.json_object(ready_inspected["continuation"])["next_operation"])
+        self.assertEqual("repository-disposition", ready_operation["kind"])
+
+        tracked = fixture.project / "tracked.txt"
+        tracked.write_text("changed after review\n", encoding="utf-8")
+        drifted = call_native_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "reconciliation": ready_reconciliation,
+            },
+        )
+        drifted_operation = self.json_object(self.json_object(drifted["continuation"])["next_operation"])
+        self.assertEqual("action", drifted_operation["kind"])
+        drifted_action = self.json_object(drifted_operation["action"])
+        self.assertEqual("return-for-correction", drifted_action["action_kind"])
+        tracked.write_text("candidate\n", encoding="utf-8")
 
         stale = dict(review)
         stale["result_sha256"] = "0" * 64

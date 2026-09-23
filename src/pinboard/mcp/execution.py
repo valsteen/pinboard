@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import secrets
 import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import suppress
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import TextIO
+from pathlib import Path
+from typing import Literal, TextIO
 
+import msgspec
 from mcp.server.mcpserver.exceptions import ToolError
 
 from pinboard import __version__
+from pinboard.adapters.files.errors import FileIOError, ImmutableFilePublishedError
+from pinboard.adapters.files.file_io import create_immutable
 from pinboard.domain.errors import (
     EffectDisposition,
     RetryDisposition,
@@ -29,6 +36,118 @@ class OperationResult:
     content: dict[str, JsonValue]
     classification: str
     commit_reference: str | None
+
+
+class CapturedValueIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    sha256: str
+    size_bytes: int
+
+
+class CapturedResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    availability: Literal["available"]
+    value: dict[str, JsonValue]
+    identity: CapturedValueIdentity
+
+
+class UnavailableCapturedResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    availability: Literal["unavailable"]
+    reason: Literal["interrupted", "callback-rejected", "callback-error", "result-validation-error"]
+    classification: str
+    commit_reference: str | None
+
+
+type InvocationCaptureResult = CapturedResult | UnavailableCapturedResult
+
+
+class McpInvocationCapture(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-invocation-capture/v1"]
+    capture_id: str
+    operation: str
+    request: dict[str, JsonValue]
+    request_identity: CapturedValueIdentity
+    result: InvocationCaptureResult
+    transport_bytes: Literal["unavailable"]
+    pre_callback_events: Literal["unavailable"]
+    accepted_evidence: Literal[False]
+
+
+class SemanticCapture:
+    """Publish exact decoded MCP request and validated result values to a selected private directory."""
+
+    def __init__(self, directory: Path) -> None:
+        try:
+            selected = directory.resolve(strict=True)
+        except OSError as error:
+            raise ValueError(f"Capture directory could not be verified: {directory}") from error
+        if not selected.is_dir():
+            raise ValueError(f"Capture destination must be an existing directory: {directory}")
+        probe = selected / f".pinboard-capture-probe-{secrets.token_hex(16)}"
+        try:
+            create_immutable(probe, b"")
+        except ImmutableFilePublishedError as error:
+            with suppress(OSError):
+                error.path.unlink()
+            raise ValueError(f"Capture directory could not be synchronized: {directory}") from error
+        except FileIOError as error:
+            raise ValueError(f"Capture directory is not writable: {directory}") from error
+        try:
+            probe.unlink()
+        except OSError as error:
+            raise ValueError(f"Capture directory preflight could not be removed: {directory}") from error
+        self._directory = selected
+
+    @staticmethod
+    def _identity(content: bytes) -> CapturedValueIdentity:
+        return CapturedValueIdentity(hashlib.sha256(content).hexdigest(), len(content))
+
+    def _publish(
+        self,
+        operation: str,
+        arguments: dict[str, JsonValue],
+        result: InvocationCaptureResult,
+    ) -> None:
+        capture_id = secrets.token_hex(16)
+        request_bytes = msgspec.json.encode(arguments)
+        record = McpInvocationCapture(
+            "pinboard-mcp-invocation-capture/v1",
+            capture_id,
+            operation,
+            arguments,
+            self._identity(request_bytes),
+            result,
+            "unavailable",
+            "unavailable",
+            False,
+        )
+        content = msgspec.json.encode(record) + b"\n"
+        identity = self._identity(content)
+        create_immutable(
+            self._directory / f"pinboard-mcp-{capture_id}-{identity.sha256}-{identity.size_bytes}.json",
+            content,
+        )
+
+    def available(
+        self,
+        operation: str,
+        arguments: dict[str, JsonValue],
+        result: dict[str, JsonValue],
+    ) -> None:
+        content = msgspec.json.encode(result)
+        self._publish(operation, arguments, CapturedResult("available", result, self._identity(content)))
+
+    def unavailable(
+        self,
+        operation: str,
+        arguments: dict[str, JsonValue],
+        reason: Literal["interrupted", "callback-rejected", "callback-error", "result-validation-error"],
+        classification: str,
+        commit_reference: str | None,
+    ) -> None:
+        self._publish(
+            operation,
+            arguments,
+            UnavailableCapturedResult("unavailable", reason, classification, commit_reference),
+        )
 
 
 class ExecutorBusy(RuntimeError):
@@ -121,7 +240,7 @@ class BoundedExecutor:
 
 
 class Diagnostics:
-    """Emit a fixed number of short, metadata-only stderr records."""
+    """Emit fixed bounded channels of short, metadata-only stderr records."""
 
     def __init__(self, stream: TextIO, *, event_limit: int, line_limit: int) -> None:
         if event_limit < 1 or line_limit < 2:
@@ -130,6 +249,7 @@ class Diagnostics:
         self._event_limit = event_limit
         self._line_limit = line_limit
         self._events = 0
+        self._capture_failure_events = 0
         self._lock = threading.Lock()
 
     def emit(
@@ -142,8 +262,11 @@ class Diagnostics:
         duration_ms: int | None,
         classification: str | None,
         commit_reference: str | None,
+        capture_selector: str | None,
     ) -> None:
         fields = ["pinboard_mcp", f"version={__version__}", f"event={event}"]
+        if capture_selector is not None:
+            fields.append(f"capture_selector={capture_selector}")
         if request_id is not None:
             fields.append(f"request_id={request_id}")
         if operation is not None:
@@ -158,9 +281,14 @@ class Diagnostics:
             fields.append(f"commit={commit_reference}")
         line = " ".join(fields)
         with self._lock:
-            if self._events >= self._event_limit:
+            capture_failure = event in {"capture-unavailable", "capture-committed-with-warning"}
+            event_count = self._capture_failure_events if capture_failure else self._events
+            if event_count >= self._event_limit:
                 return
-            self._events += 1
+            if capture_failure:
+                self._capture_failure_events += 1
+            else:
+                self._events += 1
             self._stream.write(line[: self._line_limit - 1] + "\n")
             self._stream.flush()
 
@@ -172,25 +300,53 @@ async def _run_request(
     operation: str,
     project_root: str,
     callback: Callable[[CancellationToken], OperationResult],
+    *,
+    arguments: dict[str, JsonValue],
+    capture: SemanticCapture | None,
 ) -> dict[str, JsonValue]:
+    captured_arguments = deepcopy(arguments) if capture is not None else arguments
     project_id = hashlib.sha256(project_root.encode()).hexdigest()[:12]
     started = time.monotonic_ns()
 
-    def emit(classification: str, commit_reference: str | None) -> None:
+    def emit_request_event(event: str, classification: str, commit_reference: str | None) -> None:
         diagnostics.emit(
-            event="result",
+            event=event,
             request_id=request_id,
             operation=operation,
             project_id=project_id,
             duration_ms=(time.monotonic_ns() - started) // 1_000_000,
             classification=classification,
             commit_reference=commit_reference,
+            capture_selector=None,
         )
+
+    def capture_effect(
+        effect: Callable[[SemanticCapture], None],
+        classification: str,
+        commit_reference: str | None,
+    ) -> None:
+        if capture is None:
+            return
+        try:
+            effect(capture)
+        except ImmutableFilePublishedError as error:
+            diagnostics.emit(
+                event="capture-committed-with-warning",
+                request_id=None,
+                operation=None,
+                project_id=None,
+                duration_ms=None,
+                classification=classification,
+                commit_reference=commit_reference,
+                capture_selector=error.path.name,
+            )
+        except FileIOError:
+            emit_request_event("capture-unavailable", classification, commit_reference)
 
     try:
         execution = executor.submit(callback)
     except ExecutorBusy:
-        emit("busy", None)
+        emit_request_event("result", "busy", None)
         busy: dict[str, JsonValue] = {
             "schema": "pinboard-mcp-execution-result/v1",
             "status": "busy",
@@ -203,20 +359,67 @@ async def _run_request(
             "observed": [],
             "mismatches": [],
         }
-        return contract_schemas.validate_result(operation, busy)
+        validated_busy = contract_schemas.validate_result(operation, busy)
+        capture_effect(
+            lambda selected: selected.available(operation, captured_arguments, validated_busy),
+            "busy",
+            None,
+        )
+        return validated_busy
     try:
         result = await execution.result()
     except asyncio.CancelledError:
-        emit("cancelled", None)
+        capture_effect(
+            lambda selected: selected.unavailable(operation, captured_arguments, "interrupted", "cancelled", None),
+            "cancelled",
+            None,
+        )
+        emit_request_event("result", "cancelled", None)
         raise
     except OperationCancelled as error:
-        emit("cancelled", None)
+        capture_effect(
+            lambda selected: selected.unavailable(operation, captured_arguments, "interrupted", "cancelled", None),
+            "cancelled",
+            None,
+        )
+        emit_request_event("result", "cancelled", None)
         raise ToolError("The request was cancelled at a cooperative checkpoint.") from error
     except ToolError:
-        emit("rejected", None)
+        capture_effect(
+            lambda selected: selected.unavailable(operation, captured_arguments, "callback-rejected", "rejected", None),
+            "rejected",
+            None,
+        )
+        emit_request_event("result", "rejected", None)
         raise
     except Exception:
-        emit("error", None)
+        capture_effect(
+            lambda selected: selected.unavailable(operation, captured_arguments, "callback-error", "error", None),
+            "error",
+            None,
+        )
+        emit_request_event("result", "error", None)
         raise
-    emit(result.classification, result.commit_reference)
-    return contract_schemas.validate_result(operation, result.content)
+    try:
+        validated = contract_schemas.validate_result(operation, result.content)
+    except Exception:
+        capture_effect(
+            lambda selected: selected.unavailable(
+                operation,
+                captured_arguments,
+                "result-validation-error",
+                result.classification,
+                result.commit_reference,
+            ),
+            result.classification,
+            result.commit_reference,
+        )
+        emit_request_event("result-validation-error", result.classification, result.commit_reference)
+        raise
+    capture_effect(
+        lambda selected: selected.available(operation, captured_arguments, validated),
+        result.classification,
+        result.commit_reference,
+    )
+    emit_request_event("result", result.classification, result.commit_reference)
+    return validated

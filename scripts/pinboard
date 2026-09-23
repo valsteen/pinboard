@@ -16,17 +16,218 @@ launcher_result() {
         "$1" "$2" "$3" "$4" "$5" "$6" "$7" >&"$result_output_fd"
 }
 
+invalid_capture_arguments() {
+    launcher_result \
+        "invalid-capture-arguments" \
+        '["Exact capture requires a caller-selected destination and --safe-to-persist-exactly."]' \
+        "null" "correct-input" "unchanged" '[]' "null"
+    exit 64
+}
+
+capture_flag_present() {
+    for argument in "$@"; do
+        case "$argument" in
+            --capture-evidence|--capture-evidence=*|--capture-evidence-dir|--capture-evidence-dir=*|--safe-to-persist-exactly|--safe-to-persist-exactly=*)
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+capture_sha256() {
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
+capture_bytes_json() {
+    capture_byte_size=$(wc -c < "$1" | tr -d '[:space:]')
+    capture_byte_sha256=$(capture_sha256 "$1") || return 1
+    capture_byte_hex=$(od -An -v -tx1 "$1" | tr -d '[:space:]')
+    printf '{"encoding":"hex","sha256":"%s","size_bytes":%s,"data":"%s"}' \
+        "$capture_byte_sha256" "$capture_byte_size" "$capture_byte_hex"
+}
+
+write_capture_argv() {
+    capture_argv_output=$1
+    shift
+    capture_argv_temporary=$1
+    shift
+    : > "$capture_argv_output"
+    capture_separator=
+    for capture_argument in "$@"; do
+        printf '%s' "$capture_argument" > "$capture_argv_temporary"
+        printf '%s' "$capture_separator" >> "$capture_argv_output"
+        capture_bytes_json "$capture_argv_temporary" >> "$capture_argv_output"
+        capture_separator=,
+    done
+}
+
+capture_cleanup() {
+    if [ -n "${capture_stage:-}" ]; then
+        rm -f "$capture_stage" 2>/dev/null || :
+    fi
+    if [ -n "${capture_temporary:-}" ]; then
+        rm -rf "$capture_temporary" 2>/dev/null || :
+    fi
+}
+
+capture_interrupt() {
+    capture_interrupted_status=$2
+    if [ -n "${capture_child:-}" ]; then
+        kill -"$1" "$capture_child" 2>/dev/null || :
+    fi
+}
+
+capture_publication_failed() {
+    cat "$capture_stdout"
+    cat "$capture_stderr" >&2
+    result_output_fd=2
+    launcher_result \
+        "capture-publication-failed" \
+        '["The target ran once, but its exact capture could not be published. Do not replay a mutation to recover it."]' \
+        "$capture_exit_status" "do-not-retry" "potentially-changed" '["target"]' "null"
+    trap - EXIT HUP INT TERM
+    capture_cleanup
+    if [ -n "$capture_interrupted_status" ]; then
+        exit "$capture_interrupted_status"
+    fi
+    exit 74
+}
+
+write_cli_capture() {
+    {
+        printf '{"schema":"pinboard-cli-invocation-capture/v1","selector":' &&
+            capture_bytes_json "$capture_selector" &&
+            printf ',"argv":[' &&
+            cat "$capture_argv" &&
+            printf '],"outcome":"%s","exit_status":%s,"stdout":' "$capture_outcome" "$capture_exit_status" &&
+            capture_bytes_json "$capture_stdout" &&
+            printf ',"stderr":' &&
+            capture_bytes_json "$capture_stderr" &&
+            printf ',"environment":"not-captured","presentation":"outer-presentation-unavailable","accepted_evidence":false}\n'
+    } > "$capture_stage" || return 1
+    chmod 600 "$capture_stage" || return 1
+    ln "$capture_stage" "$capture_destination" 2>/dev/null || return 1
+    return 0
+}
+
+capture_cli_invocation() {
+    capture_selected_path=$1
+    shift
+    capture_parent=$(dirname -- "$capture_selected_path")
+    capture_name=$(basename -- "$capture_selected_path")
+    if [ "$capture_name" = "." ] || [ "$capture_name" = ".." ] || [ -z "$capture_name" ]; then
+        invalid_capture_arguments
+    fi
+    if ! capture_parent=$(CDPATH= cd -- "$capture_parent" 2>/dev/null && pwd -P); then
+        invalid_capture_arguments
+    fi
+    capture_destination="$capture_parent/$capture_name"
+    if [ -e "$capture_destination" ] || [ -L "$capture_destination" ]; then
+        invalid_capture_arguments
+    fi
+    if ! command -v mktemp >/dev/null 2>&1 || ! command -v od >/dev/null 2>&1 || \
+        ! command -v awk >/dev/null 2>&1 || ! command -v tr >/dev/null 2>&1 || \
+        ! command -v wc >/dev/null 2>&1 || ! command -v ln >/dev/null 2>&1 || \
+        (! command -v shasum >/dev/null 2>&1 && ! command -v sha256sum >/dev/null 2>&1); then
+        invalid_capture_arguments
+    fi
+    if ! capture_temporary=$(mktemp -d "$capture_parent/.pinboard-capture.XXXXXXXX"); then
+        invalid_capture_arguments
+    fi
+    capture_stage=
+    capture_child=
+    capture_interrupted_status=
+    trap capture_cleanup EXIT
+    umask 077
+    if ! capture_stage=$(mktemp "$capture_parent/.pinboard-capture-stage.XXXXXXXX"); then
+        invalid_capture_arguments
+    fi
+    trap 'capture_interrupt HUP 129' HUP
+    trap 'capture_interrupt INT 130' INT
+    trap 'capture_interrupt TERM 143' TERM
+    capture_stdout="$capture_temporary/stdout"
+    capture_stderr="$capture_temporary/stderr"
+    capture_argv="$capture_temporary/argv"
+    capture_argument="$capture_temporary/argument"
+    capture_selector="$capture_temporary/selector"
+    write_capture_argv \
+        "$capture_argv" \
+        "$capture_argument" \
+        "$0" \
+        "--capture-evidence" \
+        "$capture_selected_path" \
+        "--safe-to-persist-exactly" \
+        "--" \
+        "$@"
+    printf '%s' "$capture_selected_path" > "$capture_selector"
+    "$0" "$@" > "$capture_stdout" 2> "$capture_stderr" &
+    capture_child=$!
+    if wait "$capture_child"; then
+        capture_exit_status=0
+    else
+        capture_exit_status=$?
+    fi
+    if [ -n "$capture_interrupted_status" ]; then
+        wait "$capture_child" 2>/dev/null || :
+        capture_exit_status=$capture_interrupted_status
+    fi
+    capture_child=
+    capture_outcome=completed
+    if [ "$capture_exit_status" -ge 128 ]; then
+        capture_outcome=interrupted
+    fi
+    if ! write_cli_capture; then
+        capture_publication_failed
+    fi
+    rm -f "$capture_stage" 2>/dev/null || :
+    capture_stage=
+    cat "$capture_stdout"
+    cat "$capture_stderr" >&2
+    capture_cleanup
+    trap - EXIT HUP INT TERM
+    exit "$capture_exit_status"
+}
+
+if [ "$#" -ge 1 ] && [ "$1" = "--capture-evidence" ]; then
+    if [ "$#" -lt 5 ] || [ "$3" != "--safe-to-persist-exactly" ] || [ "$4" != "--" ]; then
+        invalid_capture_arguments
+    fi
+    case "$5" in
+        --mcp|--claude-session-start|--claude-subagent-start)
+            invalid_capture_arguments
+            ;;
+    esac
+    capture_selected_path=$2
+    shift 4
+    capture_cli_invocation "$capture_selected_path" "$@"
+fi
+
 if [ "$#" -ge 1 ] && [ "$1" = "--mcp" ]; then
     entry_name=pinboard-mcp
     result_output_fd=2
     shift
-    if [ "$#" -ne 0 ]; then
+    if [ "$#" -eq 3 ] && [ "$1" = "--capture-evidence-dir" ] && [ "$3" = "--safe-to-persist-exactly" ]; then
+        if [ ! -d "$2" ]; then
+            invalid_capture_arguments
+        fi
+    elif capture_flag_present "$@"; then
+        invalid_capture_arguments
+    elif [ "$#" -ne 0 ]; then
         launcher_result \
             "invalid-startup-arguments" \
-            '["MCP startup accepts only scripts/pinboard --mcp; project and work roots belong to tool requests."]' \
+            '["MCP startup accepts scripts/pinboard --mcp with only the optional complete capture declaration; project and work roots belong to tool requests."]' \
             "null" "correct-environment" "unchanged" '[]' "null"
         exit 64
     fi
+elif capture_flag_present "$@"; then
+    invalid_capture_arguments
 fi
 if [ "$#" -ge 1 ] && [ "$1" = "--claude-subagent-start" ]; then
     entry_name=pinboard-claude-subagent-start

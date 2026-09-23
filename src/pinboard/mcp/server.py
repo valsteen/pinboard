@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import itertools
 import sys
+from collections.abc import Sequence
 from functools import partial
+from pathlib import Path
 
 import anyio
 from mcp.server.mcpserver import MCPServer
@@ -50,7 +52,11 @@ LOCAL_AUTHORITY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
 )
 
 
-def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Diagnostics) -> MCPServer:  # noqa: C901 - explicit installed SDK tool registration
+def create_server(  # noqa: C901 - explicit installed SDK tool registration
+    executor: execution.BoundedExecutor,
+    diagnostics: execution.Diagnostics,
+    capture: execution.SemanticCapture | None = None,
+) -> MCPServer:
     server = MCPServer(
         "pinboard",
         version=__version__,
@@ -88,6 +94,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             ORDER_TOOL,
             str(request.get("project_root", "")),
             partial(read_operations._order, {"request": request}),
+            arguments={"request": request},
+            capture=capture,
         )
 
     @server.tool(
@@ -102,6 +110,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             PARALLEL_PREVIEW_TOOL,
             str(request.get("project_root", "")),
             partial(read_operations._parallel_preview, {"request": request}),
+            arguments={"request": request},
+            capture=capture,
         )
 
     @server.tool(
@@ -116,6 +126,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             BRIEF_CONTRACT_TOOL,
             str(request.get("project_root", "")),
             partial(read_operations._brief_contract, {"request": request}),
+            arguments={"request": request},
+            capture=capture,
         )
 
     @server.tool(
@@ -130,6 +142,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             BRIEF_SOURCES_TOOL,
             str(request.get("project_root", "")),
             partial(read_operations._brief_sources, {"request": request}),
+            arguments={"request": request},
+            capture=capture,
         )
 
     @server.tool(
@@ -144,6 +158,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             ITEM_DEFINITION_TOOL,
             str(request.get("project_root", "")),
             partial(read_operations._read_item_definition, {"request": request}),
+            arguments={"request": request},
+            capture=capture,
         )
 
     @server.tool(
@@ -158,6 +174,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             BRIEF_REVIEW_TOOL,
             str(request.get("project_root", "")),
             partial(read_operations._brief_review, {"request": request}),
+            arguments={"request": request},
+            capture=capture,
         )
 
     @server.tool(
@@ -172,6 +190,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             ITEM_STATUS_TOOL,
             project_root,
             partial(read_operations._read_item_status, project_root, work_root, item_id),
+            arguments={"project_root": project_root, "work_root": work_root, "item_id": item_id},
+            capture=capture,
         )
 
     @server.tool(
@@ -194,6 +214,14 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             partial(
                 mutation_operations._proposal_created, project_root, work_root, proposal, actor_task_id, actor_host_id
             ),
+            arguments={
+                "project_root": project_root,
+                "work_root": work_root,
+                "proposal": proposal,
+                "actor_task_id": actor_task_id,
+                "actor_host_id": actor_host_id,
+            },
+            capture=capture,
         )
 
     @server.tool(
@@ -212,6 +240,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             BRIEF_PUBLISH_TOOL,
             project_root,
             partial(mutation_operations._brief_published, project_root, work_root, brief),
+            arguments={"project_root": project_root, "work_root": work_root, "brief": brief},
+            capture=capture,
         )
 
     @server.tool(
@@ -227,6 +257,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             OVERVIEW_TOOL,
             project_root,
             partial(read_operations._read_overview, project_root, work_root),
+            arguments={"project_root": project_root, "work_root": work_root},
+            capture=capture,
         )
 
     @server.tool(
@@ -243,6 +275,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             ACTIONS_TOOL,
             str(request.get("project_root", "")),
             partial(read_operations._read_actions, {"request": request}),
+            arguments={"request": request},
+            capture=capture,
         )
 
     @server.tool(
@@ -266,6 +300,13 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             ATTEMPT_INSPECT_TOOL,
             project_root,
             partial(read_operations._read_attempt_inspection, project_root, work_root, attempt_id, reconciliation),
+            arguments={
+                "project_root": project_root,
+                "work_root": work_root,
+                "attempt_id": attempt_id,
+                "reconciliation": reconciliation,
+            },
+            capture=capture,
         )
 
     @server.tool(
@@ -295,6 +336,15 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
                 sha256,
                 size_bytes,
             ),
+            arguments={
+                "project_root": project_root,
+                "work_root": work_root,
+                "artifact_ref_id": artifact_ref_id,
+                "selector": selector,
+                "sha256": sha256,
+                "size_bytes": size_bytes,
+            },
+            capture=capture,
         )
 
     @server.tool(
@@ -312,6 +362,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             PREPARATION_AUTHORITY_TOOL,
             str(request.get("project_root", "")),
             partial(mutation_operations._preparation_authority, {"request": request}),
+            arguments={"request": request},
+            capture=capture,
         )
 
     @server.tool(
@@ -329,6 +381,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             ATTEMPT_AUTHORITY_TOOL,
             str(request.get("project_root", "")),
             partial(mutation_operations._attempt_authority, {"request": request}),
+            arguments={"request": request},
+            capture=capture,
         )
 
     @server.tool(
@@ -345,6 +399,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             TRANSITION_TOOL,
             str(request.get("project_root", "")),
             partial(mutation_operations._transition, {"request": request}),
+            arguments={"request": request},
+            capture=capture,
         )
 
     @server.tool(
@@ -406,6 +462,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             DISPATCH_TOOL,
             project_root,
             partial(job_operations._dispatch_job, project_root, work_root, dispatch),
+            arguments={"project_root": project_root, "work_root": work_root, "dispatch": dispatch},
+            capture=capture,
         )
 
     @server.tool(
@@ -420,6 +478,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             CANDIDATE_OBSERVE_TOOL,
             project_root,
             partial(job_operations._observe_candidate, project_root, work_root, attempt_id),
+            arguments={"project_root": project_root, "work_root": work_root, "attempt_id": attempt_id},
+            capture=capture,
         )
 
     @server.tool(
@@ -436,6 +496,13 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             CANDIDATE_RESTORE_TOOL,
             project_root,
             partial(job_operations._candidate_restore, project_root, work_root, attempt_id, candidate),
+            arguments={
+                "project_root": project_root,
+                "work_root": work_root,
+                "attempt_id": attempt_id,
+                "candidate": candidate,
+            },
+            capture=capture,
         )
 
     @server.tool(
@@ -457,6 +524,8 @@ def create_server(executor: execution.BoundedExecutor, diagnostics: execution.Di
             REVIEW_JOB_TOOL,
             project_root,
             partial(job_operations._review_job, project_root, work_root, review),
+            arguments={"project_root": project_root, "work_root": work_root, "review": review},
+            capture=capture,
         )
 
     _install_boundary_contracts(server)
@@ -577,9 +646,22 @@ def _install_boundary_contracts(server: MCPServer) -> None:
         tool.fn_metadata.arg_model.model_rebuild(force=True)
 
 
+def _capture_from_arguments(arguments: Sequence[str]) -> execution.SemanticCapture | None:
+    if not arguments:
+        return None
+    if len(arguments) != 3 or arguments[0] != "--capture-evidence-dir" or arguments[2] != "--safe-to-persist-exactly":
+        raise ValueError("MCP capture requires --capture-evidence-dir <existing-directory> --safe-to-persist-exactly.")
+    return execution.SemanticCapture(Path(arguments[1]))
+
+
 def main() -> None:
+    try:
+        capture = _capture_from_arguments(tuple(sys.argv[1:]))
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(64) from error
     executor = execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
-    diagnostics = execution.Diagnostics(sys.stderr, event_limit=32, line_limit=256)
+    diagnostics = execution.Diagnostics(sys.stderr, event_limit=32, line_limit=512)
     diagnostics.emit(
         event="startup",
         request_id=None,
@@ -588,8 +670,9 @@ def main() -> None:
         duration_ms=None,
         classification="ready",
         commit_reference=None,
+        capture_selector=None,
     )
     try:
-        anyio.run(create_server(executor, diagnostics).run_stdio_async)
+        anyio.run(create_server(executor, diagnostics, capture).run_stdio_async)
     finally:
         executor.shutdown()

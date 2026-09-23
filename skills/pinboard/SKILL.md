@@ -352,6 +352,24 @@ When an active attempt discovers a prerequisite:
 
 Never absorb the prerequisite silently into the current attempt.
 
+### Capture and reconcile consequential invocation evidence
+
+Use exact capture only when the caller selected a private destination and explicitly affirmed that the invocation and expected output are safe to persist without redaction. CLI capture uses `<launcher-root>/scripts/pinboard --capture-evidence <file> --safe-to-persist-exactly -- <normal arguments>` and cannot wrap MCP or Claude hook startup. MCP capture requires a dedicated process started as `<launcher-root>/scripts/pinboard --mcp --capture-evidence-dir <existing-directory> --safe-to-persist-exactly`; startup proves writable immutable publication before accepting callbacks. An incomplete declaration rejects before the target starts. Ordinary invocations remain uncaptured, and capture records no environment values.
+
+Treat captured files as private evidence, not accepted ledger truth. CLI records preserve the complete launcher argv, original stdout and stderr bytes, and exit status. MCP records preserve the exact SDK-decoded argument object and strictly validated result value; transport bytes and pre-callback client events remain unavailable. A strict result-validation failure instead preserves an unavailable record with the callback classification and commit reference before the error is re-raised. Distinguish a pre-publication `capture-unavailable` result from `capture-committed-with-warning`, whose selected filename retains the published digest and size after directory synchronization fails. Their fixed diagnostic budget is separate from routine result diagnostics. Never replay a mutation to replace missing, interrupted or externally truncated evidence.
+
+Reconcile evidence at a natural task or review boundary, not after every successful call. Consolidate recurrence and keep one compact record for each distinct consequential observation with:
+
+- attempted outcome;
+- observed behavior and exact evidence selector when available;
+- recovery outcome;
+- measured command, time or token cost when available, without inventing absent measurements;
+- classification as Pinboard product behavior or discovery, evidence handling, caller or harness error, runtime or environment constraint, external client behavior, or model limitation;
+- disposition and rationale;
+- observable reopening condition for deferred or accepted friction.
+
+Use one explicit disposition: fixed and verified in authorized scope; incorporated into an exact admitted item whose accepted definition covers it; admitted separately with saved priority; deferred because cost, uncertainty or an external constraint prevents a useful remedy; accepted friction with proportionate demonstrated recovery; or unresolved because evidence is insufficient. An actionable Pinboard-owned or project-owned observation is not disposed until it is fixed and verified or an exact admitted item owns it with a saved priority decision. When that ownership needs human authority, ask one admission or priority question at the existing result or review boundary instead of leaving a TODO or creating another workflow stage.
+
 ## Review and completion
 
 Report repository publication and local review as separate facts. Name review as not started, underway, favorable, blocked, or returned for correction according to fresh attempt state and actual reviewer evidence. A published PR does not make review favorable or the Pinboard item complete. If the human explicitly chooses to proceed before review, name that choice and retain the pending review status. A locally matching protected commit does not verify the remote PR, push, merge, or hosted-CI head; state remote head identity as unverified unless an authoritative remote observation established it.

@@ -317,12 +317,21 @@ def _canonical_prompt(
     attempt_id: str,
     checkpoint_id: str,
     environment: DispatchEnvironment,
+    choice: DispatchPreparationChoice,
 ) -> str:
     permissions = ", ".join(sorted(permission.value for permission in environment.permissions)) or "none"
     result_path = work_root / "attempts" / attempt_id / "result.md"
     blocker_path = work_root / "attempts" / attempt_id / "blocker.md"
     brief_sha256 = hashlib.sha256(accepted_brief_bytes).hexdigest()
     brief_text = accepted_brief_bytes.decode()
+    correction_context = (
+        "Correction context:\n"
+        f"- Selected return history ID: {choice.correction_history_id}\n"
+        f"- Canonical return reason (JSON string): {msgspec.json.encode(choice.review.correction_input.reason).decode()}\n"
+        f"- Read current review evidence before editing: {work_root / 'attempts' / attempt_id / 'review.md'}\n\n"
+        if isinstance(choice, CorrectionDispatch)
+        else ""
+    )
     return (
         "Use $pinboard-deliver for this repository attempt.\n\n"
         f"Attempt: {attempt_id}\n"
@@ -336,6 +345,7 @@ def _canonical_prompt(
         "----- BEGIN CANONICAL PINBOARD BRIEF -----\n"
         f"{brief_text}"
         "----- END CANONICAL PINBOARD BRIEF -----\n\n"
+        f"{correction_context}"
         "Execution environment declaration:\n"
         f"- Checkout: {environment.checkout}\n"
         f"- Branch: {environment.branch}\n"
@@ -810,10 +820,13 @@ def _render_dispatch_prompt(
     environment: DispatchEnvironment,
     accepted_review: bytes | None,
     supplied_prompt: bytes | None,
+    choice: DispatchPreparationChoice,
 ) -> DispatchResult[str]:
     if (failure := _validate_accepted_review(brief, accepted_review)) is not None:
         return failure
-    prompt = _canonical_prompt(work_root, attempt_path, accepted_brief_bytes, brief.attempt_id, checkpoint, environment)
+    prompt = _canonical_prompt(
+        work_root, attempt_path, accepted_brief_bytes, brief.attempt_id, checkpoint, environment, choice
+    )
     if supplied_prompt is not None and supplied_prompt != prompt.encode():
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_PROMPT_NOT_CANONICAL,
@@ -978,6 +991,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
         environment,
         accepted_review_bytes,
         supplied_prompt,
+        choice,
     )
     if isinstance(rendered_prompt, DispatchFailure):
         return _after_publication_failure(

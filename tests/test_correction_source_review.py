@@ -428,15 +428,24 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         initial_reference = fixture.store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, initial_key, 1)
         assert initial_reference is not None
         initial_bytes = (fixture.work / initial_reference.selector).read_bytes()
-        _, first = self.submit_and_return(fixture, "first-test", committed=False)
-        self.assertEqual("ready", self.dispatch_native(fixture, first)["status"])
+        first_history, first = self.submit_and_return(fixture, "first-test", committed=False)
+        first_dispatch = self.dispatch_native(fixture, first)
+        self.assertEqual("ready", first_dispatch["status"])
+        first_reference = self.json_object(first_dispatch["prompt_reference"])
+        first_prompt = (fixture.work / str(first_reference["selector"])).read_text()
+        self.assertIn(f"Selected return history ID: {first_history}", first_prompt)
+        self.assertIn('Canonical return reason (JSON string): "Repair the test-only candidate."', first_prompt)
+        self.assertIn(
+            f"Read current review evidence before editing: {fixture.work / 'attempts' / 'work-a-1' / 'review.md'}",
+            first_prompt,
+        )
         first_state = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         first_reviews = {value.key for value in first_state.artifact_references if "-brief-review-" in value.key}
         replay = mcp_jobs._dispatch_job(
             str(fixture.project), str(fixture.work), first, mcp_execution.CancellationToken()
         )
         self.assertEqual("unchanged", replay.content["effect"], replay.content)
-        _, second = self.submit_and_return(fixture, "second-test", committed=False)
+        second_history, second = self.submit_and_return(fixture, "second-test", committed=False)
         self.assertEqual(
             self.json_object(first["brief_review"])["contract_review"],
             self.json_object(second["brief_review"])["contract_review"],
@@ -445,6 +454,10 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             str(fixture.project), str(fixture.work), second, mcp_execution.CancellationToken()
         )
         self.assertEqual("ready", ready.content["status"], ready.content)
+        second_reference = self.json_object(ready.content["prompt_reference"])
+        second_prompt = (fixture.work / str(second_reference["selector"])).read_text()
+        self.assertIn(f"Selected return history ID: {second_history}", second_prompt)
+        self.assertNotIn(f"Selected return history ID: {first_history}", second_prompt)
         second_state = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         second_reviews = {value.key for value in second_state.artifact_references if "-brief-review-" in value.key}
         self.assertEqual(1, len(second_reviews - first_reviews))

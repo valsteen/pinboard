@@ -302,7 +302,7 @@ def _dispatch_job(
             preparation_choice = dispatch_operations.OrdinaryDispatch()
         case contracts.ReviewedDispatchChoice():
             preparation_choice = dispatch_operations.ReviewedDispatch(choice.brief_review, ReviewId(choice.review_id))
-        case contracts.CorrectionDispatchChoice():
+        case contracts.CorrectionDispatchChoice() | contracts.LocalCorrectionDispatchChoice():
             preparation_choice = dispatch_operations.CorrectionDispatch(
                 choice.brief_review, ReviewId(choice.review_id), HistoryId(choice.correction_history_id)
             )

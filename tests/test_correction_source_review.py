@@ -139,6 +139,131 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
         ).content
 
+    def test_local_return_dispatches_and_corrected_commit_reaches_disposition(self) -> None:  # noqa: PLR0915 - one native recovery journey
+        fixture = self.checkpoint_fixture(local=True)
+        context = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        assert context is not None
+        reason = "Submit a clean commit for repository disposition."
+        history_id = self.return_for_correction(fixture, reason, "local")
+        reference = context.reference
+        review = work_brief_models.LocalCorrectionSourceReview(
+            "pinboard-local-correction-source-review/v1",
+            hashlib.sha256(work_briefs.canonical_work_brief_bytes(fixture.brief)).hexdigest(),
+            "independent-local-reviewer",
+            work_brief_models.PortableArtifactIdentity(
+                "candidate", "evidence", reference.key, reference.revision, reference.selector,
+                reference.content_sha256, reference.size_bytes,
+            ),
+            action_models.ReasonInputPayload(reason),
+            "The accepted working-tree snapshot is complete and the clean commit preserves local scope.",
+        )
+        action = self.project_action(fixture, "dispatch:work-a-1")
+        environment = msgspec.structs.replace(
+            test_dispatch.DispatchTest().environment(fixture.project),
+            branch=fixture.brief.branch,
+            starting_revision=fixture.brief.base_revision,
+        )
+        choice = msgspec.to_builtins(
+            {
+                "kind": "local-correction",
+                "receipt": {
+                    "action_id": {"kind": "dispatch", "subject": "work-a-1"},
+                    "subject_revision": action["subject_revision"],
+                },
+                "checkpoint_id": fixture.brief.checkpoint.checkpoint_id,
+                "environment": environment,
+                "prompt": None,
+                "brief_review": review,
+                "review_id": "local-correction-review",
+                "correction_history_id": history_id,
+            },
+            enc_hook=test_dispatch.dispatch_environment_enc_hook,
+        )
+        assert isinstance(choice, dict)
+        before = fixture.store.validated_snapshot()
+        for changed, code in (
+            ({"accepted_brief_sha256": "f" * 64}, "DISPATCH_BRIEF_REVIEW_STALE"),
+            ({"reviewer_task_id": fixture.brief.owner_task_id}, "DISPATCH_BRIEF_REVIEW_NOT_INDEPENDENT"),
+        ):
+            invalid = deepcopy(choice)
+            self.json_object(invalid["brief_review"]).update(changed)
+            rejected = self.dispatch_native(fixture, invalid)
+            self.assertEqual(code, rejected["code"], rejected)
+            self.assertEqual("unchanged", rejected["effect"])
+            self.assertEqual(before, fixture.store.validated_snapshot())
+        wrong_shape = self.dispatch_native(fixture, choice | {"kind": "correction"})
+        self.assertEqual("DISPATCH_INVALID", wrong_shape["code"])
+        wrong_snapshot = deepcopy(choice)
+        self.json_object(self.json_object(wrong_snapshot["brief_review"])["starting_candidate"])["content_sha256"] = "f" * 64
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", self.dispatch_native(fixture, wrong_snapshot)["code"])
+        stale_return = self.dispatch_native(fixture, choice | {"correction_history_id": history_id + 999})
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", stale_return["code"])
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        (fixture.project / "tracked.txt").write_text("drift\n", encoding="utf-8")
+        drifted = self.dispatch_native(fixture, choice)
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", drifted["code"])
+        self.assertEqual("unchanged", drifted["effect"])
+        (fixture.project / "tracked.txt").write_text("candidate\n", encoding="utf-8")
+        dispatched = call_native_tool(
+            server.DISPATCH_TOOL,
+            {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
+        )
+        self.assertEqual("ready", dispatched["status"], dispatched)
+
+        (fixture.project / "tracked.txt").write_text("corrected\n", encoding="utf-8")
+        candidate = self.commit_all(fixture.project, "corrected local candidate")
+        lease = self.native_attempt_acquire(fixture, "local-correction-worker")
+        submit = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
+        payload = fixture.work / "submit-local.json"
+        payload.write_text(json.dumps({"candidate": candidate}), encoding="utf-8")
+        self.transition_json(fixture, submit, payload)
+        review_job = call_native_tool(
+            server.REVIEW_JOB_TOOL,
+            {
+                "project_root": str(fixture.project), "work_root": str(fixture.work),
+                "review": {"kind": "correction", "attempt_id": "work-a-1", "candidate_revision": candidate,
+                           "correction_history_id": history_id, "runtime": "codex", "background": False},
+            },
+        )
+        self.assertEqual("ready", review_job["status"], review_job)
+        snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        attempt = fixture.store.read_attempt_context(AttemptId("work-a-1"))
+        assert snapshot is not None and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        recorded = call_native_tool(
+            server.REVIEW_JOB_TOOL,
+            {
+                "project_root": str(fixture.project), "work_root": str(fixture.work),
+                "review": {
+                    "kind": "record-ready", "attempt_id": "work-a-1", "candidate_revision": candidate,
+                    "candidate_snapshot_sha256": snapshot.reference.content_sha256,
+                    "accepted_brief_sha256": attempt.brief_reference.content_sha256,
+                    "result_sha256": hashlib.sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
+                    "review_sha256": hashlib.sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
+                    "reviewer_task_id": "independent-candidate-reviewer", "verdict": "ready",
+                    "acceptance_evidence": "The corrected commit satisfies the same accepted local brief.",
+                },
+            },
+        )
+        self.assertEqual("recorded", recorded["status"], recorded)
+        inspected = call_native_tool(
+            server.ATTEMPT_INSPECT_TOOL,
+            {
+                "project_root": str(fixture.project), "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "reconciliation": {
+                    "target_revision": "accepted-base", "relation": "candidate-pending-on-accepted-base",
+                    "phase": "disposition",
+                    "effects": [
+                        {"effect": name, "status": "allowed"}
+                        for name in ("source-checkout", "shared-work-root", "git-metadata")
+                    ],
+                },
+            },
+        )
+        operation = self.json_object(self.json_object(inspected["continuation"])["next_operation"])
+        self.assertEqual("repository-disposition", operation["kind"], inspected)
+
     def test_replacement_brief_uses_historical_findings_but_requires_a_new_current_return(self) -> None:
         with (
             patch("pinboard.mcp.job_operations.datetime", wraps=datetime) as boundary_clock,

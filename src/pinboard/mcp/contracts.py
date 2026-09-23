@@ -450,7 +450,13 @@ class CorrectionDispatchChoice(DispatchChoiceBase, tag="correction", tag_field="
     correction_history_id: PositiveInt
 
 
-type DispatchChoice = OrdinaryDispatchChoice | ReviewedDispatchChoice | CorrectionDispatchChoice
+class LocalCorrectionDispatchChoice(DispatchChoiceBase, tag="local-correction", tag_field="kind", frozen=True):
+    brief_review: work_brief_models.LocalCorrectionSourceReview
+    review_id: PathComponent
+    correction_history_id: PositiveInt
+
+
+type DispatchChoice = OrdinaryDispatchChoice | ReviewedDispatchChoice | CorrectionDispatchChoice | LocalCorrectionDispatchChoice
 
 
 class DispatchRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

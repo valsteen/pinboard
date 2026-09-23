@@ -50,6 +50,7 @@ from pinboard.application.work_briefs import (
     decode_canonical_work_brief_review,
     ready_review_key_sha256,
     validate_executable_work_brief,
+    validate_local_correction_source_review,
     validate_reviewed_authority_digests,
     validate_work_brief_review,
 )
@@ -121,7 +122,7 @@ class OrdinaryDispatch:
 
 @dataclass(frozen=True, slots=True)
 class CorrectionDispatch:
-    review: work_brief_models.CorrectionSourceReview
+    review: work_brief_models.CorrectionSourceReview | work_brief_models.LocalCorrectionSourceReview
     review_id: ReviewId
     correction_history_id: HistoryId
 
@@ -672,16 +673,25 @@ def _read_correction_start(
 
 
 def _correction_review_subject(
-    review: work_brief_models.CorrectionSourceReview,
+    review: work_brief_models.CorrectionSourceReview | work_brief_models.LocalCorrectionSourceReview,
     snapshot: candidate_snapshots.CandidateSnapshot,
 ) -> str:
     # Recording/receipt identities are provenance, not new semantic subjects.
+    match review:
+        case work_brief_models.CorrectionSourceReview(contract_review=contract_review):
+            brief_binding = (
+                contract_review.accepted_brief_sha256,
+                contract_review.checkpoint_sha256,
+                contract_review.reviewed_authority_set_sha256,
+            )
+        case work_brief_models.LocalCorrectionSourceReview(accepted_brief_sha256=accepted_brief_sha256):
+            brief_binding = (accepted_brief_sha256,)
+        case _ as unreachable:
+            assert_never(unreachable)
     return hashlib.sha256(
         msgspec.json.encode(
             (
-                review.contract_review.accepted_brief_sha256,
-                review.contract_review.checkpoint_sha256,
-                review.contract_review.reviewed_authority_set_sha256,
+                *brief_binding,
                 snapshot.attempt_id,
                 snapshot.item_id,
                 snapshot.candidate,
@@ -701,12 +711,8 @@ def _effective_correction_brief(
     brief: work_brief_models.WorkBrief,
 ) -> DispatchResult[work_brief_models.WorkBrief]:
     checkpoint = brief.checkpoint
-    if not isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
-        return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
-            "Correction dispatch source review is only valid for a cross-boundary checkpoint.",
-            None,
-        )
+    if isinstance(checkpoint, work_brief_models.LocalCheckpoint):
+        return brief
     refreshed: list[work_brief_models.ReviewedAuthority] = []
     for authority in checkpoint.reviewed_authorities:
         selected = select_checkout_brief_source(source_checkout_root, authority_selector(authority.selector), True)
@@ -723,7 +729,7 @@ def _effective_correction_brief(
     return msgspec.structs.replace(brief, checkpoint=effective_checkpoint)
 
 
-def _select_dispatch_review(
+def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispatch-family choices
     brief: work_brief_models.WorkBrief,
     choice: DispatchPreparationChoice,
 ) -> DispatchResult[DispatchReviewChoice | None]:
@@ -732,6 +738,12 @@ def _select_dispatch_review(
             match choice:
                 case OrdinaryDispatch():
                     return None
+                case CorrectionDispatch(review=work_brief_models.LocalCorrectionSourceReview() as review):
+                    if (failure := validate_local_correction_source_review(review, brief)) is not None:
+                        return review_failure(failure)
+                    return PublishSuppliedDispatchReview(
+                        ready_review_key_sha256(brief), canonical_correction_source_review_bytes(review), choice.review_id
+                    )
                 case ReviewedDispatch() | CorrectionDispatch():
                     return DispatchFailure(
                         DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
@@ -747,6 +759,12 @@ def _select_dispatch_review(
                 case ReviewedDispatch():
                     review = choice.review
                 case CorrectionDispatch():
+                    if not isinstance(choice.review, work_brief_models.CorrectionSourceReview):
+                        return DispatchFailure(
+                            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
+                            "Cross-boundary correction requires a contract review.",
+                            None,
+                        )
                     review = choice.review.contract_review
                 case _ as unreachable:
                     assert_never(unreachable)
@@ -946,13 +964,21 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
             assert_never(unreachable)
     if isinstance(choice, CorrectionDispatch):
         assert accepted_review_bytes == canonical_correction_source_review_bytes(choice.review)
-        accepted_review_bytes = canonical_work_brief_review_bytes(choice.review.contract_review)
         checkpoint_value = validated_brief.checkpoint
-        assert isinstance(checkpoint_value, work_brief_models.CrossBoundaryCheckpoint)
-        failure = validate_reviewed_authority_digests(
-            partial(select_checkout_brief_source, source_checkout_root),
-            checkpoint_value.reviewed_authorities,
-        )
+        if isinstance(choice.review, work_brief_models.LocalCorrectionSourceReview):
+            if (failure := validate_local_correction_source_review(choice.review, validated_brief)) is not None:
+                return _after_publication_failure(
+                    review_failure(failure).code, failure.message, review_publication_surfaces, None
+                )
+            accepted_review_bytes = None
+            failure = None
+        else:
+            accepted_review_bytes = canonical_work_brief_review_bytes(choice.review.contract_review)
+            assert isinstance(checkpoint_value, work_brief_models.CrossBoundaryCheckpoint)
+            failure = validate_reviewed_authority_digests(
+                partial(select_checkout_brief_source, source_checkout_root),
+                checkpoint_value.reviewed_authorities,
+            )
         match failure:
             case None:
                 pass

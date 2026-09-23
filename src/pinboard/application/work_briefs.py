@@ -218,8 +218,32 @@ def canonical_work_brief_review_bytes(review: WorkBriefReviewValue) -> bytes:
     return _canonical_bytes(review) + b"\n"
 
 
-def canonical_correction_source_review_bytes(review: work_brief_models.CorrectionSourceReview) -> bytes:
+def canonical_correction_source_review_bytes(
+    review: work_brief_models.CorrectionSourceReview | work_brief_models.LocalCorrectionSourceReview,
+) -> bytes:
     return _canonical_bytes(review) + b"\n"
+
+
+def validate_local_correction_source_review(
+    review: work_brief_models.LocalCorrectionSourceReview,
+    brief: work_brief_models.WorkBrief,
+) -> work_brief_models.WorkBriefFailure | None:
+    if not isinstance(brief.checkpoint, work_brief_models.LocalCheckpoint):
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,
+            "Local correction review requires a local checkpoint.",
+        )
+    if review.reviewer_task_id == brief.owner_task_id:
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT,
+            "The local correction reviewer must be a different task from the attempt owner.",
+        )
+    if review.accepted_brief_sha256 != hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest():
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_STALE,
+            "Local correction review is not bound to the exact accepted brief.",
+        )
+    return None
 
 
 def canonical_candidate_review_bytes(review: work_brief_models.CandidateReview) -> bytes:

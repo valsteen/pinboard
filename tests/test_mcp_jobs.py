@@ -725,6 +725,23 @@ class McpJobsTest(CheckpointPackageSupport):
         stale_review["contract_review"] = msgspec.json.decode(ready_review(fixture.brief))
         stale_choice = choice | {"brief_review": stale_review}
         before = fixture.store.validated_snapshot()
+        cross_review = self.json_object(actual_choice["brief_review"])
+        local_shape = choice | {
+            "kind": "local-correction",
+            "brief_review": {
+                "schema": "pinboard-local-correction-source-review/v1",
+                "accepted_brief_sha256": sha256(work_briefs.canonical_work_brief_bytes(fixture.brief)).hexdigest(),
+                "reviewer_task_id": "independent-local-reviewer",
+                "starting_candidate": cross_review["starting_candidate"],
+                "correction_input": cross_review["correction_input"],
+                "assessment": "The exact accepted candidate has been independently assessed.",
+            },
+        }
+        wrong_family = mcp_jobs._dispatch_job(
+            str(fixture.project), str(fixture.work), local_shape, mcp_execution.CancellationToken()
+        )
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", wrong_family.content["code"])
+        self.assertEqual(before, fixture.store.validated_snapshot())
         stale = mcp_jobs._dispatch_job(
             str(fixture.project), str(fixture.work), stale_choice, mcp_execution.CancellationToken()
         )

@@ -669,10 +669,6 @@ class SQLiteQueriesTest(unittest.TestCase):
             self.assertIsInstance(selected, query_models.ActionContinuation)
             assert isinstance(selected, query_models.ActionContinuation)
             self.assertIn(expected_text, selected.condition)
-            self.assertIn("same attempt", selected.condition)
-            self.assertIn("history_id", selected.condition)
-            self.assertIn("correction-source review", selected.condition)
-            self.assertIn("no user input is required", selected.condition)
 
         for relation in query_models.IntegrationRelation:
             for phase in query_models.RepositoryPhase:

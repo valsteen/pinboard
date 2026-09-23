@@ -4387,6 +4387,24 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         self.assertEqual("present", self.json_object(inspected["candidate_review"])["kind"])
         self.assertNotIn("native_launch", inspected)
 
+        with patch(
+            "pinboard.mcp.read_operations.candidate_evidence.read_candidate_evidence",
+            side_effect=AssertionError("candidate reinspection must not run before permission recovery"),
+        ):
+            permission_first = call_native_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "attempt_id": "work-a-1",
+                    "reconciliation": reconciliation,
+                },
+            )
+        permission_operation = self.json_object(
+            self.json_object(permission_first["continuation"])["next_operation"]
+        )
+        self.assertEqual("permission-recovery", permission_operation["kind"])
+
         ready_reconciliation: dict[str, contracts.JsonValue] = {
             "target_revision": "squash-equivalent-head",
             "relation": "candidate-pending-on-squash-equivalent-base",
@@ -4408,6 +4426,33 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         )
         ready_operation = self.json_object(self.json_object(ready_inspected["continuation"])["next_operation"])
         self.assertEqual("repository-disposition", ready_operation["kind"])
+
+        target_refresh: dict[str, contracts.JsonValue] = {
+            "target_revision": "new-target-head",
+            "relation": "target-stale",
+            "phase": "refresh",
+            "effects": [
+                {"effect": "source-checkout", "status": "not-required"},
+                {"effect": "shared-work-root", "status": "not-required"},
+                {"effect": "git-metadata", "status": "not-required"},
+            ],
+        }
+        with patch(
+            "pinboard.mcp.read_operations.candidate_evidence.read_candidate_evidence",
+            side_effect=AssertionError("candidate reinspection must not run before target refresh"),
+        ):
+            refreshed = call_native_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "attempt_id": "work-a-1",
+                    "reconciliation": target_refresh,
+                },
+            )
+        refreshed_operation = self.json_object(self.json_object(refreshed["continuation"])["next_operation"])
+        self.assertEqual("refresh-target", refreshed_operation["kind"])
+        self.assertEqual("new-target-head", refreshed_operation["target_revision"])
 
         tracked = fixture.project / "tracked.txt"
         tracked.write_text("changed after review\n", encoding="utf-8")

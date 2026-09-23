@@ -1250,6 +1250,19 @@ def _candidate_lineage_for_disposition(
         reconciliation is None
         or not ready_review
         or not isinstance(context, query_models.NonterminalAttemptContextFacts)
+        or reconciliation.relation
+        not in (
+            query_models.IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE,
+            query_models.IntegrationRelation.CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE,
+        )
+        or any(
+            effect.status
+            in (
+                query_models.RuntimeEffectStatus.DENIED,
+                query_models.RuntimeEffectStatus.UNKNOWN,
+            )
+            for effect in reconciliation.effects
+        )
     ):
         return None
     evidence = candidate_evidence.read_candidate_evidence(

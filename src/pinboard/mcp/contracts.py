@@ -456,7 +456,9 @@ class LocalCorrectionDispatchChoice(DispatchChoiceBase, tag="local-correction", 
     correction_history_id: PositiveInt
 
 
-type DispatchChoice = OrdinaryDispatchChoice | ReviewedDispatchChoice | CorrectionDispatchChoice | LocalCorrectionDispatchChoice
+type DispatchChoice = (
+    OrdinaryDispatchChoice | ReviewedDispatchChoice | CorrectionDispatchChoice | LocalCorrectionDispatchChoice
+)
 
 
 class DispatchRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

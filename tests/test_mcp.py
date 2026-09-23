@@ -4447,9 +4447,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
                     "reconciliation": reconciliation,
                 },
             )
-        permission_operation = self.json_object(
-            self.json_object(permission_first["continuation"])["next_operation"]
-        )
+        permission_operation = self.json_object(self.json_object(permission_first["continuation"])["next_operation"])
         self.assertEqual("permission-recovery", permission_operation["kind"])
 
         ready_reconciliation: dict[str, contracts.JsonValue] = {

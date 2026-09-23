@@ -163,7 +163,9 @@ def project_attempt_continuation(
                     "A nonterminal attempt requires its verified accepted brief.",
                     None,
                 )
-            selected = _next_attempt_operation(context, actions, brief, reconciliation, candidate_lineage, ready_review)
+            selected = _next_attempt_operation(
+                context, actions, brief, reconciliation, candidate_lineage, ready_review
+            )
             if isinstance(selected, DecisionFailure):
                 return selected
             continuation_arguments = (
@@ -203,15 +205,11 @@ def _select_repository_disposition(
     for action in actions:
         if isinstance(action, decision_models.ReturnForCorrectionAction):
             condition = (
-                "The protected candidate no longer matches the checkout. Apply return-for-correction to the same "
-                "attempt with this lineage mismatch as the reason, preserve its history_id, obtain correction-source "
-                "review, then dispatch correction work that submits a current clean commit candidate; no user input "
-                "is required."
+                "The protected candidate no longer matches the checkout; return it for correction before "
+                "repository disposition."
                 if candidate_lineage == query_models.CandidateLineage.DRIFTED
-                else "Repository disposition requires a current clean commit candidate. Apply return-for-correction "
-                "to the same attempt with this requirement as the reason, preserve its history_id, obtain "
-                "correction-source review, then dispatch correction work that commits and resubmits the candidate; "
-                "no user input is required."
+                else "Repository disposition requires a current clean commit candidate; return the "
+                "working-tree candidate for correction."
             )
             return query_models.ActionContinuation(decision_models.action_id(action), action.kind, condition)
     return DecisionFailure(

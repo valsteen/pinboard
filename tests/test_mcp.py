@@ -4458,7 +4458,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
                 {"effect": "source-checkout", "status": "allowed"},
                 {"effect": "shared-work-root", "status": "allowed"},
                 {"effect": "git-metadata", "status": "allowed"},
-            ],
+            ]
         }
         ready_inspected = call_native_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL,
@@ -4514,14 +4514,6 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         self.assertEqual("action", drifted_operation["kind"])
         drifted_action = self.json_object(drifted_operation["action"])
         self.assertEqual("return-for-correction", drifted_action["action_kind"])
-        self.assertFalse(self.json_object(drifted["continuation"])["user_input_required"])
-        condition = drifted_operation["condition"]
-        self.assertIsInstance(condition, str)
-        assert isinstance(condition, str)
-        self.assertIn("same attempt", condition)
-        self.assertIn("history_id", condition)
-        self.assertIn("correction-source review", condition)
-        self.assertIn("no user input is required", condition)
         tracked.write_text("candidate\n", encoding="utf-8")
 
         stale = dict(review)

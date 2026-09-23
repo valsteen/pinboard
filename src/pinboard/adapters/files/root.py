@@ -166,6 +166,28 @@ def observe_checkout_identity(cwd: Path) -> tuple[str, str]:
     return branch, revision
 
 
+def observe_candidate_checkout_identity(cwd: Path) -> tuple[str | None, str]:
+    """Treat a readable detached HEAD as drift while preserving Git read failures."""
+
+    revision = _git_text(cwd, "rev-parse", "--verify", "HEAD")
+    result = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 1:
+        return None, revision
+    branch = result.stdout.strip()
+    if result.returncode != 0 or not branch:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            result.stderr.strip() or f"Cannot observe Git checkout at '{cwd}'.",
+        )
+    return branch, revision
+
+
 def read_working_tree_candidate(cwd: Path) -> WorkingTreeCandidate:
     """Read actual full HEAD and its exact binary diff without changing Git state."""
 

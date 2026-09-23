@@ -100,6 +100,8 @@ Before review:
 
 A stable candidate has one of two accepted forms. A working-tree candidate is the `working-tree-state-sha256:<digest>` identity of the actual full `HEAD` revision and exact binary diff from that revision. Its immutable snapshot preserves both inputs. A committed candidate is the full current `HEAD` revision, accepted only while the working tree is clean; its immutable snapshot is the binary diff from the accepted brief base to that revision. Retained `working-tree-sha256:<digest>` evidence identifies only historical patch bytes and cannot authorize a new correction start. Prepare the candidate before observing and submitting its identity. Candidate observation itself is read-only and must truthfully describe the resulting Git state.
 
+Use a clean committed candidate when the intended disposition publishes repository changes. A matching working-tree candidate remains eligible for local-only checkpoint or terminal acceptance; publication does not retroactively turn that snapshot into a commit candidate.
+
 Obtain a working-tree identity through `pinboard_candidate_observe` with exact roots and attempt. Inspect its omitted untracked paths: intended new files must participate through separately authorized exact Git preparation, while unrelated files remain untouched. Reobserve after preparation or any source change, then submit the observed candidate through your own current lease and fresh action. Do not recreate the checksum algorithm or treat a draft report as a frozen candidate. Follow the runtime adapter's [candidate observation contract](../pinboard/references/runtime-adapters.md#current-mcp-request-shapes).
 
 When acceptance requires CI on an exact pushed head, use one unchanged commit throughout:

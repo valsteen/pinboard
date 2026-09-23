@@ -21,6 +21,8 @@ Implementation defects return to the same attempt for bounded correction and ano
 
 The human still decides what belongs in the product, which tradeoffs are acceptable, and what happens to reviewed repository changes. Structure keeps those choices visible; it does not make them automatically correct.
 
+A published pull request and Pinboard review are separate facts. If publication happens first, the owning task inspects the attempt, protects the exact local candidate, and starts review by a separate coding agent when the required actions are available. Until then, it reports review as not started or blocked; while review runs, it reports that work as underway; afterward, it reports a favorable verdict or a return for correction. A human may explicitly choose to proceed without waiting, and that choice does not create review evidence. Pinboard checks the selected local commit before recommending repository disposition; the remote published head remains unverified unless separately observed through an authoritative source.
+
 ## The brief makes delegation inspectable
 
 Before implementation, Pinboard turns accepted direction into a strict structured brief. The artifact identifies the item, attempt, owner, branch, base revision, checkout, and exact accepted-scope revision and digest. Its whole-work definition records the outcome, scope, non-goals, compatibility, supported roots, provenance, testing strategy, bootstrap, and the mapping from accepted obligations to evidence.

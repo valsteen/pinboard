@@ -25,7 +25,7 @@ from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters import lifecycle_artifacts
 from pinboard.adapters.files.artifacts import ArtifactRepository
-from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode
+from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode, RootError, RootErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
 from pinboard.adapters.sqlite.database import initialize_database
@@ -4306,7 +4306,7 @@ class McpTransportTest(unittest.TestCase):
 
 
 class ResumedReviewReconciliationTest(CheckpointPackageSupport):
-    def test_recorded_ready_review_resumes_at_git_metadata_recovery_without_launch(self) -> None:
+    def test_recorded_ready_review_resumes_at_git_metadata_recovery_without_launch(self) -> None:  # noqa: PLR0915 - exercises the complete resumed-review sequence
         fixture = self.checkpoint_fixture(candidate_form="current-head")
         snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
         attempt = fixture.store.read_attempt_context(AttemptId("work-a-1"))
@@ -4433,6 +4433,128 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         )
         self.assertEqual("present", self.json_object(inspected["candidate_review"])["kind"])
         self.assertNotIn("native_launch", inspected)
+
+        with patch(
+            "pinboard.adapters.candidate_evidence.root.observe_candidate_checkout_identity",
+            side_effect=RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "git unavailable"),
+        ):
+            permission_first = call_native_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "attempt_id": "work-a-1",
+                    "reconciliation": reconciliation,
+                },
+            )
+        permission_operation = self.json_object(
+            self.json_object(permission_first["continuation"])["next_operation"]
+        )
+        self.assertEqual("permission-recovery", permission_operation["kind"])
+
+        refresh_reconciliation: dict[str, contracts.JsonValue] = {
+            "target_revision": "new-target",
+            "relation": "target-stale",
+            "phase": "refresh",
+            "effects": [
+                {"effect": "source-checkout", "status": "not-required"},
+                {"effect": "shared-work-root", "status": "not-required"},
+                {"effect": "git-metadata", "status": "not-required"},
+            ],
+        }
+        with patch(
+            "pinboard.adapters.candidate_evidence.root.observe_candidate_checkout_identity",
+            side_effect=RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "git unavailable"),
+        ):
+            refresh_first = call_native_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "attempt_id": "work-a-1",
+                    "reconciliation": refresh_reconciliation,
+                },
+            )
+        refresh_operation = self.json_object(self.json_object(refresh_first["continuation"])["next_operation"])
+        self.assertEqual("refresh-target", refresh_operation["kind"])
+
+        ready_reconciliation: dict[str, contracts.JsonValue] = {
+            "target_revision": "squash-equivalent-head",
+            "relation": "candidate-pending-on-squash-equivalent-base",
+            "phase": "disposition",
+            "effects": [
+                {"effect": "source-checkout", "status": "allowed"},
+                {"effect": "shared-work-root", "status": "allowed"},
+                {"effect": "git-metadata", "status": "allowed"},
+            ],
+        }
+        ready_inspected = call_native_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "reconciliation": ready_reconciliation,
+            },
+        )
+        ready_operation = self.json_object(self.json_object(ready_inspected["continuation"])["next_operation"])
+        self.assertEqual("repository-disposition", ready_operation["kind"])
+
+        with patch(
+            "pinboard.adapters.candidate_evidence.root.observe_candidate_checkout_identity",
+            side_effect=RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "git unavailable"),
+        ):
+            failed = call_native_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "attempt_id": "work-a-1",
+                    "reconciliation": ready_reconciliation,
+                },
+            )
+        self.assertEqual("rejected", failed["status"])
+        self.assertEqual("ATTEMPT_BRIEF_INVALID", failed["code"])
+
+        subprocess.run(["git", "switch", "--detach", "HEAD"], cwd=fixture.project, check=True, capture_output=True)
+        detached = call_native_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "reconciliation": ready_reconciliation,
+            },
+        )
+        self.assertEqual("ok", detached["status"])
+        detached_operation = self.json_object(self.json_object(detached["continuation"])["next_operation"])
+        self.assertEqual("return-for-correction", self.json_object(detached_operation["action"])["action_kind"])
+        subprocess.run(["git", "switch", snapshot.branch], cwd=fixture.project, check=True, capture_output=True)
+
+        tracked = fixture.project / "tracked.txt"
+        tracked.write_text("changed after review\n", encoding="utf-8")
+        drifted = call_native_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "reconciliation": ready_reconciliation,
+            },
+        )
+        drifted_operation = self.json_object(self.json_object(drifted["continuation"])["next_operation"])
+        self.assertEqual("action", drifted_operation["kind"])
+        drifted_action = self.json_object(drifted_operation["action"])
+        self.assertEqual("return-for-correction", drifted_action["action_kind"])
+        self.assertFalse(self.json_object(drifted["continuation"])["user_input_required"])
+        condition = drifted_operation["condition"]
+        self.assertIsInstance(condition, str)
+        assert isinstance(condition, str)
+        self.assertIn("same attempt", condition)
+        self.assertIn("history_id", condition)
+        self.assertIn("correction-source review", condition)
+        self.assertIn("no user input is required", condition)
+        tracked.write_text("candidate\n", encoding="utf-8")
 
         stale = dict(review)
         stale["result_sha256"] = "0" * 64

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Literal, assert_never
+from typing import Annotated, Literal, assert_never
 
 import msgspec
 
@@ -155,10 +155,9 @@ class RuntimeEffectObservation(msgspec.Struct, frozen=True, forbid_unknown_field
     status: RuntimeEffectStatus
 
 
-type RuntimeEffectObservations = tuple[
-    RuntimeEffectObservation,
-    RuntimeEffectObservation,
-    RuntimeEffectObservation,
+type RuntimeEffectObservations = Annotated[
+    tuple[RuntimeEffectObservation, ...],
+    msgspec.Meta(min_length=3, max_length=3),
 ]
 
 

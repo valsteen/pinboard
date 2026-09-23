@@ -666,6 +666,17 @@ class McpTransportTest(unittest.TestCase):
                 with self.subTest(tool=tool.name):
                     self.assertEqual("object", tool.input_schema["type"])
                     self.assertFalse({"anyOf", "oneOf", "allOf"} & tool.input_schema.keys())
+            inspect_tool = next(tool for tool in tools if tool.name == mcp_server.ATTEMPT_INSPECT_TOOL)
+            definitions = inspect_tool.input_schema["$defs"]
+            effects = definitions["AttemptReconciliation"]["properties"]["effects"]
+            self.assertEqual("array", effects["type"])
+            self.assertEqual(3, effects["minItems"])
+            self.assertEqual(3, effects["maxItems"])
+            self.assertEqual({"$ref": "#/$defs/RuntimeEffectObservation"}, effects["items"])
+            self.assertNotIn("prefixItems", effects)
+            observation = definitions["RuntimeEffectObservation"]
+            self.assertEqual("object", observation["type"])
+            self.assertEqual({"effect", "status"}, set(observation["required"]))
             temporary, project, roots = self._project()
             self.addCleanup(temporary.cleanup)
             result = await server.call_tool(
@@ -682,6 +693,42 @@ class McpTransportTest(unittest.TestCase):
             assert isinstance(result, CallToolResult) and isinstance(result.structured_content, dict)
             self.assertEqual("present", result.structured_content["status"])
             self.assertFalse(result.structured_content["state_changed"])
+            common = {"project_root": str(project), "work_root": str(roots.work_root)}
+            ordinary = await server.call_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                common | {"attempt_id": "work-a-1", "reconciliation": None},
+            )
+            assert isinstance(ordinary, CallToolResult) and isinstance(ordinary.structured_content, dict)
+            self.assertEqual("ok", ordinary.structured_content["status"])
+            reconciliation: dict[str, contracts.JsonValue] = {
+                "target_revision": "target",
+                "relation": "candidate-pending-on-accepted-base",
+                "phase": "disposition",
+                "effects": [
+                    {"effect": "source-checkout", "status": "allowed"},
+                    {"effect": "shared-work-root", "status": "allowed"},
+                    {"effect": "git-metadata", "status": "allowed"},
+                ],
+            }
+            accepted = await server.call_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                common | {"attempt_id": "missing-attempt", "reconciliation": reconciliation},
+            )
+            assert isinstance(accepted, CallToolResult) and isinstance(accepted.structured_content, dict)
+            self.assertEqual("ATTEMPT_NOT_FOUND", accepted.structured_content["code"])
+            malformed = await server.call_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                common
+                | {
+                    "attempt_id": "missing-attempt",
+                    "reconciliation": reconciliation
+                    | {"effects": ["source-checkout", "shared-work-root", "git-metadata"]},
+                },
+            )
+            assert isinstance(malformed, CallToolResult) and isinstance(malformed.structured_content, dict)
+            self.assertEqual("ATTEMPT_INSPECT_INVALID", malformed.structured_content["code"])
+            self.assertFalse(malformed.structured_content["state_changed"])
+            self.assertEqual([], malformed.structured_content["changed_surfaces"])
 
         _run_async(scenario())
 

@@ -136,6 +136,7 @@ The result must record:
 - any material test removal and its replacement evidence;
 - production-entry-point evidence for lifecycle claims;
 - for a cross-boundary checkpoint, startup reviewed-source count and bytes, each changed contract's concrete implementation source set, every on-demand read and trigger, accepted-decision coverage, discovered defects, implementation outcome, and the separate final-review outcome or its pending status;
+- when exact invocation capture informed the work, one compact reconciliation per distinct consequential observation with its evidence selector, recovery, available cost, classification, disposition, rationale and reopening condition; consolidate recurrence and omit routine successful calls;
 - preserved unrelated changes;
 - new concerns or exact unknowns;
 - whether the attempt is ready for review or blocked.

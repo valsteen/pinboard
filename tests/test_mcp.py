@@ -3454,6 +3454,7 @@ class McpTransportTest(unittest.TestCase):
             duration_ms: int | None,
             classification: str | None,
             commit_reference: str | None,
+            capture_selector: str | None,
         ) -> None:
             nonlocal cancellation_count
             original_emit(
@@ -3464,6 +3465,7 @@ class McpTransportTest(unittest.TestCase):
                 duration_ms=duration_ms,
                 classification=classification,
                 commit_reference=commit_reference,
+                capture_selector=capture_selector,
             )
             if classification == "cancelled":
                 with cancellations_lock:

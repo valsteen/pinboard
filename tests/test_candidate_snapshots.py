@@ -194,6 +194,73 @@ class CandidateSnapshotTest(unittest.TestCase):
         with self.assertRaises(msgspec.DecodeError):
             decode_candidate_snapshot(canonical_candidate_snapshot_bytes(short_preimage))
 
+    def test_candidate_lineage_distinguishes_current_working_tree_legacy_and_drift(self) -> None:
+        source, base = self.repository()
+        (source / "tracked.txt").write_text("candidate\n", encoding="utf-8")
+        observed = read_working_tree_candidate(source)
+        _snapshot, context, _encoded = self.snapshot_context()
+        snapshot = WorkingTreeCandidateSnapshot(
+            "pinboard-candidate-snapshot/v2",
+            "attempt-1",
+            "item-1",
+            observed.identity,
+            "main",
+            base,
+            base,
+            SQLITE_NOW.isoformat(),
+            observed.diff,
+        )
+        evidence = CandidateSnapshotEvidence(snapshot, context.reference, context.receipt)
+
+        self.assertEqual(
+            query_models.CandidateLineage.WORKING_TREE_CURRENT,
+            candidate_evidence.observe_candidate_lineage(source, evidence),
+        )
+        (source / "tracked.txt").write_text("drifted\n", encoding="utf-8")
+        self.assertEqual(
+            query_models.CandidateLineage.DRIFTED,
+            candidate_evidence.observe_candidate_lineage(source, evidence),
+        )
+
+        self.git(source, "switch", "--detach", "HEAD")
+        self.assertEqual(
+            query_models.CandidateLineage.DRIFTED,
+            candidate_evidence.observe_candidate_lineage(source, evidence),
+        )
+        self.git(source, "switch", "-c", "other")
+        self.assertEqual(
+            query_models.CandidateLineage.DRIFTED,
+            candidate_evidence.observe_candidate_lineage(source, evidence),
+        )
+
+        legacy = candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot(
+            "pinboard-candidate-snapshot/v1",
+            snapshot.attempt_id,
+            snapshot.item_id,
+            f"working-tree-sha256:{hashlib.sha256(snapshot.diff).hexdigest()}",
+            snapshot.branch,
+            snapshot.preimage_revision,
+            snapshot.accepted_base_revision,
+            snapshot.recorded_at,
+            snapshot.diff,
+        )
+        self.assertEqual(
+            query_models.CandidateLineage.DRIFTED,
+            candidate_evidence.observe_candidate_lineage(
+                source,
+                CandidateSnapshotEvidence(legacy, context.reference, context.receipt),
+            ),
+        )
+
+        with patch(
+            "pinboard.adapters.candidate_evidence.root.observe_candidate_checkout_identity",
+            side_effect=RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "unavailable"),
+        ):
+            failed = candidate_evidence.observe_candidate_lineage(source, evidence)
+        self.assertIsInstance(failed, DecisionFailure)
+        assert isinstance(failed, DecisionFailure)
+        self.assertIn("Cannot reobserve", failed.message)
+
     def test_legacy_review_receipts_remain_valid_with_exact_live_correlation(self) -> None:
         state = complete_sqlite_state()
         candidate = "working-tree-sha256:" + "0" * 64
@@ -551,6 +618,18 @@ class CandidateSnapshotTest(unittest.TestCase):
             diff,
         )
         self.assertEqual(snapshot, decode_candidate_snapshot(canonical_candidate_snapshot_bytes(snapshot)))
+        _working_snapshot, context, _encoded = self.snapshot_context()
+        evidence = CandidateSnapshotEvidence(snapshot, context.reference, context.receipt)
+        self.assertEqual(
+            query_models.CandidateLineage.COMMIT_CURRENT,
+            candidate_evidence.observe_candidate_lineage(source, evidence),
+        )
+        (source / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+        self.assertEqual(
+            query_models.CandidateLineage.DRIFTED,
+            candidate_evidence.observe_candidate_lineage(source, evidence),
+        )
+        (source / "tracked.txt").write_text("candidate\n", encoding="utf-8")
 
         target = Path(tempfile.mkdtemp()).resolve()
         self.git(source, "worktree", "add", "--detach", str(target), base)
@@ -564,6 +643,12 @@ class CandidateSnapshotTest(unittest.TestCase):
             diff=diff,
         )
         self.assertIsInstance(rejected, CandidateRestoreRejection)
+
+        self.git(source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "later")
+        self.assertEqual(
+            query_models.CandidateLineage.DRIFTED,
+            candidate_evidence.observe_candidate_lineage(source, evidence),
+        )
 
     def test_commit_restore_rejects_every_unsafe_candidate_shape(self) -> None:
         source, base = self.repository()

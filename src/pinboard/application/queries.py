@@ -93,6 +93,7 @@ def project_attempt_continuation(
     owner_task_id: TaskId | None,
     brief: work_brief_models.ReadableWorkBrief | None,
     reconciliation: query_models.AttemptReconciliation | None,
+    candidate_lineage: query_models.CandidateLineage | None,
     ready_review: bool,
 ) -> DecisionResult[query_models.AttemptContinuation]:
     """Select a continuation from one exact named-attempt context.
@@ -162,7 +163,7 @@ def project_attempt_continuation(
                     "A nonterminal attempt requires its verified accepted brief.",
                     None,
                 )
-            selected = _next_attempt_operation(context, actions, brief, reconciliation, ready_review)
+            selected = _next_attempt_operation(context, actions, brief, reconciliation, candidate_lineage, ready_review)
             if isinstance(selected, DecisionFailure):
                 return selected
             continuation_arguments = (
@@ -192,11 +193,40 @@ def project_attempt_continuation(
             assert_never(unreachable)
 
 
+def _select_repository_disposition(
+    reconciliation: query_models.AttemptReconciliation,
+    candidate_lineage: query_models.CandidateLineage | None,
+    actions: tuple[decision_models.Action, ...],
+) -> DecisionResult[query_models.ActionContinuation | query_models.RepositoryDispositionContinuation]:
+    if candidate_lineage == query_models.CandidateLineage.COMMIT_CURRENT:
+        return query_models.RepositoryDispositionContinuation(reconciliation.target_revision, reconciliation.relation)
+    for action in actions:
+        if isinstance(action, decision_models.ReturnForCorrectionAction):
+            condition = (
+                "The protected candidate no longer matches the checkout. Apply return-for-correction to the same "
+                "attempt with this lineage mismatch as the reason, preserve its history_id, obtain correction-source "
+                "review, then dispatch correction work that submits a current clean commit candidate; no user input "
+                "is required."
+                if candidate_lineage == query_models.CandidateLineage.DRIFTED
+                else "Repository disposition requires a current clean commit candidate. Apply return-for-correction "
+                "to the same attempt with this requirement as the reason, preserve its history_id, obtain "
+                "correction-source review, then dispatch correction work that commits and resubmits the candidate; "
+                "no user input is required."
+            )
+            return query_models.ActionContinuation(decision_models.action_id(action), action.kind, condition)
+    return DecisionFailure(
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        "Candidate lineage correction is not currently available.",
+        None,
+    )
+
+
 def select_resumed_review_operation(
     reconciliation: query_models.AttemptReconciliation,
     *,
     attempt_id: str,
     candidate_revision: str,
+    candidate_lineage: query_models.CandidateLineage | None,
     ready_review: bool,
     actions: tuple[decision_models.Action, ...],
 ) -> DecisionResult[
@@ -236,7 +266,7 @@ def select_resumed_review_operation(
         query_models.IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE,
         query_models.IntegrationRelation.CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE,
     ):
-        return query_models.RepositoryDispositionContinuation(reconciliation.target_revision, relation)
+        return _select_repository_disposition(reconciliation, candidate_lineage, actions)
     if reconciliation.phase == query_models.RepositoryPhase.CLEANUP:
         return query_models.RepositoryCleanupContinuation(reconciliation.target_revision)
     for action in actions:
@@ -258,6 +288,7 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
     actions: tuple[decision_models.Action, ...],
     brief: work_brief_models.ReadableWorkBrief,
     reconciliation: query_models.AttemptReconciliation | None,
+    candidate_lineage: query_models.CandidateLineage | None,
     ready_review: bool,
 ) -> DecisionResult[query_models.NonterminalContinuationOperation]:
     if not isinstance(brief, work_brief_models.WorkBrief):
@@ -290,6 +321,7 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 reconciliation,
                 attempt_id=str(context.attempt_id),
                 candidate_revision=context.candidate_revision,
+                candidate_lineage=candidate_lineage,
                 ready_review=ready_review,
                 actions=actions,
             )

@@ -552,7 +552,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             with self.assertRaises((msgspec.ValidationError, ValueError)):
                 msgspec.convert(invalid, type=query_models.AttemptContinuation, strict=True)
 
-    def test_resume_reconciliation_exhausts_relations_phases_and_effect_statuses(self) -> None:  # noqa: C901 - exhaustive closed relation/phase matrix
+    def test_resume_reconciliation_exhausts_relations_phases_and_effect_statuses(self) -> None:
         capability = decision_models.MutationActionCapability(AttemptId("attempt-1"), "Review action", "1")
         actions: tuple[decision_models.Action, ...] = (
             decision_models.CompleteAction(capability),
@@ -635,40 +635,11 @@ class SQLiteQueriesTest(unittest.TestCase):
                 reconciliation,
                 attempt_id="attempt-1",
                 candidate_revision="candidate-1",
-                candidate_lineage=query_models.CandidateLineage.COMMIT_CURRENT,
                 ready_review=True,
                 actions=actions,
             )
             with self.subTest(relation=relation.value, phase=phase.value):
                 self.assertIsInstance(selected, expected)
-
-        pending = query_models.AttemptReconciliation(
-            "target-revision",
-            query_models.IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE,
-            query_models.RepositoryPhase.DISPOSITION,
-            observations(query_models.RepositoryPhase.DISPOSITION),
-        )
-        for lineage, expected_text in (
-            (
-                query_models.CandidateLineage.WORKING_TREE_CURRENT,
-                "current clean commit candidate",
-            ),
-            (
-                query_models.CandidateLineage.DRIFTED,
-                "no longer matches the checkout",
-            ),
-        ):
-            selected = select_resumed_review_operation(
-                pending,
-                attempt_id="attempt-1",
-                candidate_revision="candidate-1",
-                candidate_lineage=lineage,
-                ready_review=True,
-                actions=actions,
-            )
-            self.assertIsInstance(selected, query_models.ActionContinuation)
-            assert isinstance(selected, query_models.ActionContinuation)
-            self.assertIn(expected_text, selected.condition)
 
         for relation in query_models.IntegrationRelation:
             for phase in query_models.RepositoryPhase:
@@ -711,7 +682,6 @@ class SQLiteQueriesTest(unittest.TestCase):
                             reconciliation,
                             attempt_id="attempt-1",
                             candidate_revision="candidate-1",
-                            candidate_lineage=query_models.CandidateLineage.COMMIT_CURRENT,
                             ready_review=True,
                             actions=actions,
                         )
@@ -736,7 +706,6 @@ class SQLiteQueriesTest(unittest.TestCase):
             representative,
             attempt_id="attempt-1",
             candidate_revision="candidate-1",
-            candidate_lineage=query_models.CandidateLineage.COMMIT_CURRENT,
             ready_review=True,
             actions=actions,
         )
@@ -748,7 +717,6 @@ class SQLiteQueriesTest(unittest.TestCase):
                 representative,
                 attempt_id="attempt-1",
                 candidate_revision="candidate-1",
-                candidate_lineage=query_models.CandidateLineage.COMMIT_CURRENT,
                 ready_review=False,
                 actions=actions,
             ),

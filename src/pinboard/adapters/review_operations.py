@@ -582,9 +582,7 @@ def prepare_review_job(  # noqa: C901 - one ordered candidate-bound review publi
         )
         is not None
     )
-    continuation = queries.project_attempt_continuation(
-        attempt, TaskId(brief.owner_task_id), brief, None, None, ready_review
-    )
+    continuation = queries.project_attempt_continuation(attempt, TaskId(brief.owner_task_id), brief, None, ready_review)
     if isinstance(continuation, DecisionFailure):
         return continuation
     operation = continuation.next_operation

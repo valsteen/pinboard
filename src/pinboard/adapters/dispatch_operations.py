@@ -742,7 +742,9 @@ def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispa
                     if (failure := validate_local_correction_source_review(review, brief)) is not None:
                         return review_failure(failure)
                     return PublishSuppliedDispatchReview(
-                        ready_review_key_sha256(brief), canonical_correction_source_review_bytes(review), choice.review_id
+                        ready_review_key_sha256(brief),
+                        canonical_correction_source_review_bytes(review),
+                        choice.review_id,
                     )
                 case ReviewedDispatch() | CorrectionDispatch():
                     return DispatchFailure(

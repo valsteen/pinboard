@@ -151,8 +151,13 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             hashlib.sha256(work_briefs.canonical_work_brief_bytes(fixture.brief)).hexdigest(),
             "independent-local-reviewer",
             work_brief_models.PortableArtifactIdentity(
-                "candidate", "evidence", reference.key, reference.revision, reference.selector,
-                reference.content_sha256, reference.size_bytes,
+                "candidate",
+                "evidence",
+                reference.key,
+                reference.revision,
+                reference.selector,
+                reference.content_sha256,
+                reference.size_bytes,
             ),
             action_models.ReasonInputPayload(reason),
             "The accepted working-tree snapshot is complete and the clean commit preserves local scope.",
@@ -194,7 +199,9 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         wrong_shape = self.dispatch_native(fixture, choice | {"kind": "correction"})
         self.assertEqual("DISPATCH_INVALID", wrong_shape["code"])
         wrong_snapshot = deepcopy(choice)
-        self.json_object(self.json_object(wrong_snapshot["brief_review"])["starting_candidate"])["content_sha256"] = "f" * 64
+        self.json_object(self.json_object(wrong_snapshot["brief_review"])["starting_candidate"])["content_sha256"] = (
+            "f" * 64
+        )
         self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", self.dispatch_native(fixture, wrong_snapshot)["code"])
         stale_return = self.dispatch_native(fixture, choice | {"correction_history_id": history_id + 999})
         self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", stale_return["code"])
@@ -220,9 +227,16 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         review_job = call_native_tool(
             server.REVIEW_JOB_TOOL,
             {
-                "project_root": str(fixture.project), "work_root": str(fixture.work),
-                "review": {"kind": "correction", "attempt_id": "work-a-1", "candidate_revision": candidate,
-                           "correction_history_id": history_id, "runtime": "codex", "background": False},
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "review": {
+                    "kind": "correction",
+                    "attempt_id": "work-a-1",
+                    "candidate_revision": candidate,
+                    "correction_history_id": history_id,
+                    "runtime": "codex",
+                    "background": False,
+                },
             },
         )
         self.assertEqual("ready", review_job["status"], review_job)
@@ -233,14 +247,18 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         recorded = call_native_tool(
             server.REVIEW_JOB_TOOL,
             {
-                "project_root": str(fixture.project), "work_root": str(fixture.work),
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
                 "review": {
-                    "kind": "record-ready", "attempt_id": "work-a-1", "candidate_revision": candidate,
+                    "kind": "record-ready",
+                    "attempt_id": "work-a-1",
+                    "candidate_revision": candidate,
                     "candidate_snapshot_sha256": snapshot.reference.content_sha256,
                     "accepted_brief_sha256": attempt.brief_reference.content_sha256,
                     "result_sha256": hashlib.sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
                     "review_sha256": hashlib.sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
-                    "reviewer_task_id": "independent-candidate-reviewer", "verdict": "ready",
+                    "reviewer_task_id": "independent-candidate-reviewer",
+                    "verdict": "ready",
                     "acceptance_evidence": "The corrected commit satisfies the same accepted local brief.",
                 },
             },
@@ -249,10 +267,12 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         inspected = call_native_tool(
             server.ATTEMPT_INSPECT_TOOL,
             {
-                "project_root": str(fixture.project), "work_root": str(fixture.work),
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
                 "attempt_id": "work-a-1",
                 "reconciliation": {
-                    "target_revision": "accepted-base", "relation": "candidate-pending-on-accepted-base",
+                    "target_revision": "accepted-base",
+                    "relation": "candidate-pending-on-accepted-base",
                     "phase": "disposition",
                     "effects": [
                         {"effect": name, "status": "allowed"}

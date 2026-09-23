@@ -17,6 +17,7 @@ from pinboard.adapters.dispatch_operations import (
     DispatchErrorCode,
     DispatchFailure,
     DispatchResult,
+    OrdinaryDispatch,
     ReviewedDispatch,
     _read_dispatch_brief,
     _render_dispatch_prompt,
@@ -123,6 +124,7 @@ def prepare_dispatch_from_artifact(
         environment,
         accepted_review,
         supplied_prompt,
+        OrdinaryDispatch(),
     )
 
 
@@ -837,6 +839,7 @@ class DispatchTest(unittest.TestCase):
             supplied_environment: DispatchEnvironment,
             accepted_review: bytes | None,
             supplied_prompt: bytes | None,
+            choice: dispatch_brief.DispatchPreparationChoice,
         ) -> DispatchResult[str]:
             rendered = render_prompt(
                 brief,
@@ -847,6 +850,7 @@ class DispatchTest(unittest.TestCase):
                 supplied_environment,
                 accepted_review,
                 supplied_prompt,
+                choice,
             )
             expect_success(
                 store.accept_artifact_reference(
@@ -963,6 +967,7 @@ class DispatchTest(unittest.TestCase):
         reference = ready["prompt_reference"]
         assert isinstance(reference, dict)
         prompt = (roots.work_root / str(reference["selector"])).read_text()
+        self.assertNotIn("Correction context:", prompt)
         verified = self.native_dispatch(
             project,
             roots,
@@ -1050,6 +1055,7 @@ class DispatchTest(unittest.TestCase):
                 environment,
                 ready_review(value),
                 None,
+                OrdinaryDispatch(),
             )
         )
         prompt_bytes = rendered.encode()
@@ -1120,6 +1126,7 @@ class DispatchTest(unittest.TestCase):
                 environment,
                 ready_review(value),
                 None,
+                OrdinaryDispatch(),
             )
         )
         prompt_bytes = rendered.encode()

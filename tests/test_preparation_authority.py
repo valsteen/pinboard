@@ -159,6 +159,62 @@ class PreparationAuthorityTest(unittest.TestCase):
             expires_at,
         )
 
+    def test_paused_item_with_retained_preparation_rejects_ordinary_start_unchanged(self) -> None:
+        state = complete_sqlite_state()
+        definition = next(value for value in state.lifecycle.definition_revisions if value.item_id == ItemId("work-a"))
+        paused = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=tuple(
+                    replace(value, state=stored_state.StoredWorkItemState.PAUSED)
+                    if value.item_id == ItemId("work-a")
+                    else value
+                    for value in state.lifecycle.work_items
+                ),
+                attempts=(replace(state.lifecycle.attempts[0], state=work_models.AttemptState.PAUSED),),
+            ),
+            authority=replace(
+                state.authority,
+                preparation_counters=(stored_state.PreparationLeaseCounter(ItemId("work-a"), 1),),
+                preparation_generations=(
+                    stored_state.PreparationLeaseGeneration(
+                        ItemId("work-a"), 1, LeaseId("old-preparation"), TaskId("old-preparer"), HostId("host-a")
+                    ),
+                ),
+                preparation_leases=(
+                    stored_state.StoredPreparationLease(
+                        ItemId("work-a"),
+                        1,
+                        definition.revision,
+                        definition.digest,
+                        SQLITE_NOW - timedelta(minutes=2),
+                        SQLITE_NOW - timedelta(minutes=1),
+                        authority_models.PreparationLeaseStatus.RELEASED,
+                    ),
+                ),
+            ),
+        )
+        store, database_path = self._store(paused)
+        before = store.validated_snapshot()
+
+        rejected = service.start_preparation(
+            store,
+            item_id=ItemId("work-a"),
+            task_id=TaskId("new-preparer"),
+            host_id=HostId("host-a"),
+            lease_id=LeaseId("new-preparation"),
+            acquired_at=SQLITE_NOW,
+            expires_at=SQLITE_NOW + timedelta(minutes=1),
+        )
+
+        self.assertIsInstance(rejected, DecisionFailure)
+        assert isinstance(rejected, DecisionFailure)
+        self.assertEqual(DecisionFailureCode.ACTION_NOT_AVAILABLE, rejected.code)
+        self.assertIn("existing attempt", rejected.message)
+        self.assertLess(rejected.message.index("rebind"), rejected.message.index("resume"))
+        self.assertEqual(before, SQLiteWorkStore(database_path).validated_snapshot())
+
     def test_initial_acquisition_pins_ready_item_definition_and_keeps_item_ready(self) -> None:
         snapshot = project_decision_snapshot(complete_sqlite_state(), SQLITE_NOW)
         item = snapshot.item(ItemId("work-c"))

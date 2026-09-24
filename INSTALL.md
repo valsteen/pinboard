@@ -159,6 +159,8 @@ The free Claude chat plan and Claude Code access are separate product surfaces. 
 
 By default, Pinboard keeps project decisions and evidence in the managed repository's ignored `.pinboard` directory, created by the [first setup](#first-setup). Primary and linked worktrees share that location; [Linked worktrees and custom data locations](#linked-worktrees-and-custom-data-locations) explains how to find and authorize it. Existing projects that still use `.codex/pinboard` run the one-time migration described in [Move an existing project from `.codex/pinboard`](#move-an-existing-project-from-codexpinboard); it preserves the existing bytes and leaves a compatibility alias.
 
+Contributors can opt into private exact invocation traces during ordinary work. The setting, item overrides, secret risk, retention, and diagnosis procedure are in [Diagnose Pinboard invocations during contributor work](CONTRIBUTING.md#diagnose-pinboard-invocations-during-contributor-work).
+
 Agent workflows use local stdio MCP tools for intake, briefs, inspection, authority, lifecycle changes, worker dispatch, and candidate-bound review publication. The CLI remains available through `<launcher-root>/scripts/pinboard` for root discovery, setup, storage migration, summary status, validation, view repair, portable human export, direct human closure, and its own diagnostics. It is not an agent-workflow fallback.
 
 An installed plugin keeps its private Python environment at `<launcher-root>/.pinboard-runtime/environment`, while Pinboard source development uses `<pinboard-source>/.venv`. Neither environment is created in or borrowed from the managed project.

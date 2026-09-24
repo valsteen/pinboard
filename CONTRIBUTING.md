@@ -33,6 +33,21 @@ The pyrefly configuration deliberately ignores Git ignore files and pyrefly's de
 
 The repository uses `unittest`. The metadata validator is the supported check for plugin and skill discovery consistency. `HOW_IT_WORKS.md` and its diagrams are generated from `docs/how_it_works/`; update their sources and rerun the renderer instead of editing the generated guide directly.
 
+## Diagnose Pinboard invocations during contributor work
+
+An initialized project gets an ignored `<managed-project>/.pinboard/contributor-traces.config` file on its first normal Pinboard CLI or MCP invocation, including a CLI call that needs runtime preparation. Its explicit default is:
+
+```gitconfig
+[pinboard "unsafe_persist_exact_pinboard_traces"]
+    mode = off
+```
+
+Change the project `mode` to `on` to capture normal supported Pinboard CLI and MCP calls without adding capture arguments to each call. Add `[item "my-item"]` with `mode = on` or `mode = off` to override that project value; `mode = inherit` follows it. A call without an identifiable item uses the project value. The file belongs to the primary repository's ignored `.pinboard` directory, so linked worktrees and Codex tasks share it. Edit either value while work continues; the next supported invocation reads it again. Restore project `mode = off` or remove an item override to stop future automatic capture. Invalid settings or a trace destination that cannot be used privately reject before the target call.
+
+The name is deliberately blunt: **on means exact values may be persisted with secrets.** Pinboard does not detect or redact them. Set it only when the expected arguments and output are safe to keep on this computer. Automatic files live in `.pinboard/invocation-traces/` with directory mode `0700` and file mode `0600`; Pinboard retains the newest 100 automatic files and removes older automatic files. Check and delete sensitive traces yourself when they are no longer needed. The files are local diagnostic evidence, not accepted ledger evidence, and Pinboard records no environment snapshot. CLI files preserve the original invocation argv, stdout, stderr, and exit status; MCP files preserve strict decoded request and result values, while transport bytes and events before the callback remain unavailable. A failure after the target runs never authorizes replay.
+
+The existing one-off `--capture-evidence ... --safe-to-persist-exactly --` CLI form and dedicated MCP capture startup still work. Those manual captures use the caller's selected destination and retention. During ordinary work on an enabled project or item, investigate consequential Pinboard anomalies using the relevant trace selector. Report the attempted outcome, observed behavior, recovery, confidence, available cost, and precise disposition without pasting raw secret-bearing values. Keep routine successful calls quiet. Fix and verify an actionable issue within authorized scope, or confirm an exact admitted item covers it and has saved priority. If neither authority exists, ask one admission or priority question at the task result boundary.
+
 Run the project-local duplication checks after changing production Python:
 
 ```sh

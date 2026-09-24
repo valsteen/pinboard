@@ -17,7 +17,15 @@ from pinboard.application import (
     proposal_models,
     work_brief_models,
 )
-from pinboard.mcp import contract_schemas, contracts, execution, job_operations, mutation_operations, read_operations
+from pinboard.mcp import (
+    common,
+    contract_schemas,
+    contracts,
+    execution,
+    job_operations,
+    mutation_operations,
+    read_operations,
+)
 from pinboard.mcp.contracts import JsonValue
 from pinboard.mcp.tool_names import (
     ACTIONS_TOOL,
@@ -55,7 +63,7 @@ LOCAL_AUTHORITY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
 def create_server(  # noqa: C901 - explicit installed SDK tool registration
     executor: execution.BoundedExecutor,
     diagnostics: execution.Diagnostics,
-    capture: execution.SemanticCapture | None = None,
+    capture: execution.SemanticCapture | execution.AutomaticCapture | None = None,
 ) -> MCPServer:
     server = MCPServer(
         "pinboard",
@@ -656,10 +664,14 @@ def _capture_from_arguments(arguments: Sequence[str]) -> execution.SemanticCaptu
 
 def main() -> None:
     try:
-        capture = _capture_from_arguments(tuple(sys.argv[1:]))
+        capture: execution.SemanticCapture | execution.AutomaticCapture | None = _capture_from_arguments(
+            tuple(sys.argv[1:])
+        )
     except ValueError as error:
         print(str(error), file=sys.stderr)
         raise SystemExit(64) from error
+    if capture is None:
+        capture = execution.AutomaticCapture(common.select_capture_item)
     executor = execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
     diagnostics = execution.Diagnostics(sys.stderr, event_limit=32, line_limit=512)
     diagnostics.emit(

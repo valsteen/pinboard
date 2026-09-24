@@ -157,17 +157,29 @@ capture_cli_invocation() {
     capture_argv="$capture_temporary/argv"
     capture_argument="$capture_temporary/argument"
     capture_selector="$capture_temporary/selector"
-    write_capture_argv \
-        "$capture_argv" \
-        "$capture_argument" \
-        "$0" \
-        "--capture-evidence" \
-        "$capture_selected_path" \
-        "--safe-to-persist-exactly" \
-        "--" \
-        "$@"
+    if [ "${capture_mode:-manual}" = automatic ]; then
+        write_capture_argv "$capture_argv" "$capture_argument" "$0" "$@"
+    else
+        write_capture_argv \
+            "$capture_argv" \
+            "$capture_argument" \
+            "$0" \
+            "--capture-evidence" \
+            "$capture_selected_path" \
+            "--safe-to-persist-exactly" \
+            "--" \
+            "$@"
+    fi
     printf '%s' "$capture_selected_path" > "$capture_selector"
-    "$0" "$@" > "$capture_stdout" 2> "$capture_stderr" &
+    if [ "${capture_mode:-manual}" = automatic ]; then
+        if [ -n "$capture_target_executable" ]; then
+            "$capture_target_executable" "$@" > "$capture_stdout" 2> "$capture_stderr" &
+        else
+            PINBOARD_CAPTURE_WRAPPED=1 "$0" "$@" > "$capture_stdout" 2> "$capture_stderr" &
+        fi
+    else
+        PINBOARD_CAPTURE_WRAPPED=1 "$0" "$@" > "$capture_stdout" 2> "$capture_stderr" &
+    fi
     capture_child=$!
     if wait "$capture_child"; then
         capture_exit_status=0
@@ -185,6 +197,17 @@ capture_cli_invocation() {
     fi
     if ! write_cli_capture; then
         capture_publication_failed
+    fi
+    if [ "${capture_mode:-manual}" = automatic ]; then
+        if [ -n "$capture_target_executable" ]; then
+            "$capture_target_executable" --contributor-capture-prune "$capture_destination" >/dev/null || \
+                printf 'Pinboard automatic trace was published but retention cleanup failed.\n' >&2
+        else
+            if ! (ls -1t "$capture_parent"/pinboard-auto-*.json 2>/dev/null | sed -n '101,$p' | \
+                while IFS= read -r old_trace; do rm -f "$old_trace" || exit 1; done); then
+                printf 'Pinboard automatic trace was published but retention cleanup failed.\n' >&2
+            fi
+        fi
     fi
     rm -f "$capture_stage" 2>/dev/null || :
     capture_stage=
@@ -410,11 +433,126 @@ if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
     fi
 fi
 
+select_unprepared_cli_capture() {
+    selected_project=$PWD
+    selected_item=
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --project-root|--work-root)
+                [ "$#" -ge 2 ] || break
+                if [ "$1" = --project-root ]; then selected_project=$2; fi
+                shift 2
+                ;;
+            --project-root=*) selected_project=${1#*=}; shift ;;
+            --work-root=*) shift ;;
+            *) break ;;
+        esac
+    done
+    if [ "${1:-}" = close ] && [ "$#" -ge 2 ]; then selected_item=$2; fi
+    common_dir=$(git -C "$selected_project" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || {
+        printf 'off\n'
+        return 0
+    }
+    [ "${common_dir##*/}" = .git ] || { printf 'off\n'; return 0; }
+    shared_project=${common_dir%/.git}
+    [ -d "$shared_project/.pinboard" ] || { printf 'off\n'; return 0; }
+    settings="$shared_project/.pinboard/contributor-traces.config"
+    if ! git -C "$shared_project" check-ignore -q -- .pinboard/contributor-traces.config; then
+        if [ -e "$settings" ] || [ -L "$settings" ]; then
+            printf 'Contributor trace settings must be Git-ignored before Pinboard can use them.\n' >&2
+            return 1
+        fi
+        printf 'off\n'
+        return 0
+    fi
+    if [ ! -e "$settings" ] && [ ! -L "$settings" ]; then
+        (umask 077; set -C; printf '[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = off\n' > "$settings") 2>/dev/null || :
+    fi
+    if [ ! -f "$settings" ] || [ -L "$settings" ]; then
+        printf 'Contributor trace settings must be a regular file.\n' >&2
+        return 1
+    fi
+    listing=$(git config --file "$settings" --list) || {
+        printf 'Contributor trace settings are invalid or unreadable.\n' >&2
+        return 1
+    }
+    listed_lines=$(git config --file "$settings" --list | wc -l)
+    key_lines=$(git config --file "$settings" --name-only --list | wc -l)
+    if [ "$listed_lines" -ne "$key_lines" ]; then
+        printf 'Contributor trace settings contain a multiline value.\n' >&2
+        return 1
+    fi
+    project_mode=
+    item_mode=inherit
+    seen_keys=
+    while IFS= read -r entry; do
+        key=${entry%%=*}
+        value=${entry#*=}
+        if [ "$entry" = "$key" ] || printf '%s\n' "$seen_keys" | grep -Fxq -- "$key"; then
+            printf 'Contributor trace settings are invalid or duplicated.\n' >&2
+            return 1
+        fi
+        seen_keys="$seen_keys
+$key"
+        case "$key" in
+            pinboard.unsafe_persist_exact_pinboard_traces.mode)
+                case "$value" in on|off) project_mode=$value ;; *) return 1 ;; esac
+                ;;
+            item.*.mode)
+                case "$value" in on|off|inherit) : ;; *) return 1 ;; esac
+                [ "$key" != item..mode ] || return 1
+                if [ -n "$selected_item" ] && [ "$key" = "item.$selected_item.mode" ]; then item_mode=$value; fi
+                ;;
+            *)
+                printf 'Contributor trace settings contain an unknown key.\n' >&2
+                return 1
+                ;;
+        esac
+    done <<EOF
+$listing
+EOF
+    [ -n "$project_mode" ] || return 1
+    effective_mode=$project_mode
+    if [ "$item_mode" != inherit ]; then effective_mode=$item_mode; fi
+    if [ "$effective_mode" = off ]; then printf 'off\n'; return 0; fi
+    if ! git -C "$shared_project" check-ignore -q -- .pinboard/invocation-traces/; then
+        printf 'Contributor trace directory must be Git-ignored before Pinboard can use it.\n' >&2
+        return 1
+    fi
+    trace_directory="$shared_project/.pinboard/invocation-traces"
+    if [ ! -e "$trace_directory" ] && [ ! -L "$trace_directory" ]; then mkdir -m 700 "$trace_directory" || return 1; fi
+    if [ -L "$trace_directory" ] || [ "$(find "$trace_directory" -prune -type d -perm 0700 -print)" != "$trace_directory" ]; then
+        printf 'Contributor trace directory must be a real private directory (0700).\n' >&2
+        return 1
+    fi
+    trace_nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]') || return 1
+    printf '%s/pinboard-auto-cli-%s.json\n' "$trace_directory" "$trace_nonce"
+}
+
+selected_executable=
 if [ -x "$plugin_root/.venv/bin/$entry_name" ]; then
-    exec "$plugin_root/.venv/bin/$entry_name" "$@"
+    selected_executable="$plugin_root/.venv/bin/$entry_name"
+elif [ -f "$ready_marker" ] && [ -x "$runtime_executable" ]; then
+    selected_executable="$runtime_executable"
 fi
-if [ -f "$ready_marker" ] && [ -x "$runtime_executable" ]; then
-    exec "$runtime_executable" "$@"
+if [ -n "$selected_executable" ]; then
+    if [ "$entry_name" = pinboard ] && [ "${PINBOARD_CAPTURE_WRAPPED:-}" != 1 ]; then
+        automatic_capture_path=$("$selected_executable" --contributor-capture-select "$@") || exit 64
+        if [ "$automatic_capture_path" != off ]; then
+            capture_mode=automatic
+            capture_target_executable="$selected_executable"
+            capture_cli_invocation "$automatic_capture_path" "$@"
+        fi
+    fi
+    exec "$selected_executable" "$@"
+fi
+if [ "$entry_name" = pinboard ] && [ "${PINBOARD_CAPTURE_WRAPPED:-}" != 1 ]; then
+    automatic_capture_path=$(select_unprepared_cli_capture "$@") || exit 64
+    if [ "$automatic_capture_path" != off ]; then
+        capture_mode=automatic
+        capture_target_executable=
+        capture_cli_invocation "$automatic_capture_path" "$@"
+    fi
 fi
 
 preparation_required() {

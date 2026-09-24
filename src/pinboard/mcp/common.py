@@ -26,6 +26,7 @@ from pinboard.domain.errors import (
     FailureDetails,
     RetryDisposition,
 )
+from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import contracts, execution, tool_names
 from pinboard.mcp.contracts import JsonValue
 
@@ -78,6 +79,48 @@ def _resolve_durable(project_root: str, work_root: str) -> DurableRoots:
 
 def compose_store(durable: DurableRoots) -> SQLiteWorkStore:
     return SQLiteWorkStore(durable.database_path)
+
+
+def select_capture_item(  # noqa: C901 - one MCP boundary interprets its supported item and attempt selectors
+    shared_repository: Path, work_root: str | None, arguments: dict[str, JsonValue]
+) -> str | None:
+    request = arguments.get("request")
+    selected = request if isinstance(request, dict) else arguments
+    item_id = selected.get("item_id")
+    if isinstance(item_id, str):
+        return item_id
+    for field in ("brief", "proposal"):
+        value = arguments.get(field)
+        if isinstance(value, dict):
+            item_id = value.get("item_id")
+            if isinstance(item_id, str):
+                return item_id
+            relation = value.get("relation")
+            if isinstance(relation, dict) and isinstance(relation.get("item"), str):
+                return relation["item"]
+    attempt_id = selected.get("attempt_id")
+    if not isinstance(attempt_id, str):
+        review = arguments.get("review")
+        if isinstance(review, dict):
+            attempt_id = review.get("attempt_id")
+    action = selected.get("action_id") or selected.get("receipt")
+    dispatch = arguments.get("dispatch")
+    if action is None and isinstance(dispatch, dict):
+        action = dispatch.get("receipt")
+    subject: str | None = None
+    if isinstance(action, dict):
+        nested_action = action.get("action_id")
+        action_id = nested_action if isinstance(nested_action, dict) else action
+        subject_value = action_id.get("subject")
+        if isinstance(subject_value, str):
+            subject = subject_value
+            attempt_id = subject_value
+    if isinstance(attempt_id, str) and work_root is not None:
+        durable = resolve_durable_roots(shared_repository, Path(work_root))
+        context = compose_store(durable).read_attempt_context(AttemptId(attempt_id))
+        if context is not None:
+            return str(context.item_id)
+    return subject
 
 
 def _candidate_recovery_view(

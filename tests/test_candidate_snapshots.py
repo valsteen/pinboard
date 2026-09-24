@@ -644,7 +644,17 @@ class CandidateSnapshotTest(unittest.TestCase):
         )
         self.assertIsInstance(rejected, CandidateRestoreRejection)
 
-        self.git(source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "later")
+        self.git(
+            source,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "later",
+        )
         self.assertEqual(
             query_models.CandidateLineage.DRIFTED,
             candidate_evidence.observe_candidate_lineage(source, evidence),

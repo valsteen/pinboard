@@ -497,7 +497,10 @@ class LauncherTest(unittest.TestCase):
             launcher = self.copy_launcher(root)
             executable = root / ".venv" / "bin" / "pinboard"
             executable.parent.mkdir(parents=True)
-            executable.write_text('#!/bin/sh\nprintf "source:%s\\n" "$*"\n', encoding="utf-8")
+            executable.write_text(
+                '#!/bin/sh\nif [ "$1" = "--contributor-capture-select" ]; then printf "off\\n"; exit 0; fi\nprintf "source:%s\\n" "$*"\n',
+                encoding="utf-8",
+            )
             executable.chmod(0o755)
             self.write_uv(root, 'printf "uv:%s\\n" "$*"\n')
 
@@ -748,6 +751,7 @@ class LauncherTest(unittest.TestCase):
                 'printf "%s\\n%s\\n%s\\n" "$*" "$UV_PROJECT_ENVIRONMENT" "$PYTHONDONTWRITEBYTECODE" > "$TRACE_FILE"\n'
                 'mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"\n'
                 'printf \'#!/bin/sh\\nif [ "$1" = "--version" ]; then printf "pinboard 0.1.0\\n"; exit 0; fi\\n'
+                'if [ "$1" = "--contributor-capture-select" ]; then printf "off\\n"; exit 0; fi\\n'
                 'printf "private:%%s\\n" "$*"\\n\' > "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n'
                 'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n'
                 "printf '#!/bin/sh\\nexit 99\\n' > \"$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp\"\n"

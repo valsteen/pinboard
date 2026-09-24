@@ -1,14 +1,17 @@
 """Installed work-root resolution, initialization, validation, and repair commands."""
 
 import os
+import sys
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pinboard.adapters.files import contributor_traces
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode, RootError, RootErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
+from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import ports, work_brief_models
 from pinboard.cli import cli_commands, work_views
@@ -29,6 +32,21 @@ from pinboard.cli.work_state_models import (
     ValidationView,
 )
 from pinboard.domain.identifiers import AttemptId
+
+
+def contributor_capture_control(arguments: Sequence[str]) -> int:
+    try:
+        if arguments[0] == "--contributor-capture-select":
+            selected = contributor_traces.select_cli_trace(tuple(arguments[1:]))
+            print("off" if selected is None else selected)
+        else:
+            if len(arguments) != 2:
+                raise ValueError("Automatic trace pruning requires the selected destination.")
+            contributor_traces.prune_cli_traces(Path(arguments[1]))
+    except (ValueError, OSError, FileIOError, StorageError) as error:
+        print(f"Contributor trace setup failed before Pinboard ran: {error}", file=sys.stderr)
+        return 64
+    return 0
 
 
 def resolve_roots(selection: cli_commands.RootSelection) -> cli_commands.ResolvedRoots:

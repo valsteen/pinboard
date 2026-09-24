@@ -19,8 +19,10 @@ import msgspec
 from mcp.server.mcpserver.exceptions import ToolError
 
 from pinboard import __version__
-from pinboard.adapters.files.errors import FileIOError, ImmutableFilePublishedError
+from pinboard.adapters.files import contributor_traces
+from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
 from pinboard.adapters.files.file_io import create_immutable
+from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.domain.errors import (
     EffectDisposition,
     RetryDisposition,
@@ -74,7 +76,7 @@ class McpInvocationCapture(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
 class SemanticCapture:
     """Publish exact decoded MCP request and validated result values to a selected private directory."""
 
-    def __init__(self, directory: Path) -> None:
+    def __init__(self, directory: Path, *, automatic: bool = False) -> None:
         try:
             selected = directory.resolve(strict=True)
         except OSError as error:
@@ -95,6 +97,7 @@ class SemanticCapture:
         except OSError as error:
             raise ValueError(f"Capture directory preflight could not be removed: {directory}") from error
         self._directory = selected
+        self._automatic = automatic
 
     @staticmethod
     def _identity(content: bytes) -> CapturedValueIdentity:
@@ -121,10 +124,17 @@ class SemanticCapture:
         )
         content = msgspec.json.encode(record) + b"\n"
         identity = self._identity(content)
-        create_immutable(
-            self._directory / f"pinboard-mcp-{capture_id}-{identity.sha256}-{identity.size_bytes}.json",
-            content,
-        )
+        prefix = "pinboard-auto-mcp" if self._automatic else "pinboard-mcp"
+        path = self._directory / f"{prefix}-{capture_id}-{identity.sha256}-{identity.size_bytes}.json"
+        create_immutable(path, content)
+        if self._automatic:
+            try:
+                contributor_traces.prune_traces(self._directory)
+            except OSError as error:
+                raise ImmutableFilePublishedError(
+                    path,
+                    FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "Automatic trace retention cleanup failed."),
+                ) from error
 
     def available(
         self,
@@ -148,6 +158,34 @@ class SemanticCapture:
             arguments,
             UnavailableCapturedResult("unavailable", reason, classification, commit_reference),
         )
+
+
+class AutomaticCapture:
+    """Resolve the current project and item mode before every MCP callback."""
+
+    def __init__(self, select_item: Callable[[Path, str | None, dict[str, JsonValue]], str | None]) -> None:
+        self._select_item = select_item
+
+    def resolve(self, project_root: str, arguments: dict[str, JsonValue]) -> SemanticCapture | None:
+        request = arguments.get("request")
+        selected = request if isinstance(request, dict) else arguments
+        work_root = selected.get("work_root")
+        try:
+            state = contributor_traces.read_project_trace_settings(Path(project_root))
+            if state is None:
+                return None
+            data_root, settings = state
+            item_id = (
+                self._select_item(data_root.parent, work_root if isinstance(work_root, str) else None, arguments)
+                if settings.item_overrides
+                else None
+            )
+            directory = contributor_traces.automatic_trace_directory(data_root, settings, item_id)
+            return None if directory is None else SemanticCapture(directory, automatic=True)
+        except (ValueError, OSError, FileIOError, StorageError) as error:
+            raise ToolError(
+                "Automatic Pinboard trace settings or destination are unavailable; the target did not run."
+            ) from error
 
 
 class ExecutorBusy(RuntimeError):
@@ -293,7 +331,7 @@ class Diagnostics:
             self._stream.flush()
 
 
-async def _run_request(
+async def _run_request(  # noqa: C901 - one execution boundary owns callback and capture aftermath
     executor: BoundedExecutor,
     diagnostics: Diagnostics,
     request_id: int,
@@ -302,8 +340,10 @@ async def _run_request(
     callback: Callable[[CancellationToken], OperationResult],
     *,
     arguments: dict[str, JsonValue],
-    capture: SemanticCapture | None,
+    capture: SemanticCapture | AutomaticCapture | None,
 ) -> dict[str, JsonValue]:
+    if isinstance(capture, AutomaticCapture):
+        capture = capture.resolve(project_root, arguments)
     captured_arguments = deepcopy(arguments) if capture is not None else arguments
     project_id = hashlib.sha256(project_root.encode()).hexdigest()[:12]
     started = time.monotonic_ns()

@@ -260,6 +260,8 @@ def _run_invocation(  # noqa: C901, PLR0912 - one outer exception-to-process-res
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = tuple(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] in {"--contributor-capture-select", "--contributor-capture-prune"}:
+        return work_state_commands.contributor_capture_control(arguments)
     json_requested = "--json" in arguments
     invocation = _parse_arguments(arguments, json_requested=json_requested)
     if isinstance(invocation, int):

@@ -1272,8 +1272,7 @@ def _candidate_lineage_for_disposition(
             query_models.IntegrationRelation.CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE,
         )
         or any(
-            observation.status
-            in (query_models.RuntimeEffectStatus.DENIED, query_models.RuntimeEffectStatus.UNKNOWN)
+            observation.status in (query_models.RuntimeEffectStatus.DENIED, query_models.RuntimeEffectStatus.UNKNOWN)
             for observation in reconciliation.effects
         )
     ):

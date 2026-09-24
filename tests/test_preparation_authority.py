@@ -594,22 +594,32 @@ class PreparationAuthorityTest(unittest.TestCase):
             retained.expires_at,
             retained.state,
         )
-        transferred = decide_preparation_authority(
-            retained,
-            2,
-            authority_models.TransferPreparationAuthority(
-                inactive,
-                TaskId("preparer-b"),
-                HostId("host-b"),
-                LeaseId("preparation-b"),
-                SQLITE_NOW,
-                SQLITE_NOW + timedelta(minutes=1),
-            ),
-            snapshot,
+        request = authority_models.TransferPreparationAuthority(
+            inactive,
+            TaskId("preparer-b"),
+            HostId("host-b"),
+            LeaseId("preparation-b"),
             SQLITE_NOW,
+            SQLITE_NOW + timedelta(minutes=1),
         )
+        transferred = decide_preparation_authority(retained, 2, request, snapshot, SQLITE_NOW)
         self.assertNotIsInstance(transferred, DecisionFailure)
         assert not isinstance(transferred, DecisionFailure)
+        item = snapshot.item(ItemId("work-c"))
+        assert item is not None
+        paused = replace(
+            snapshot,
+            items=tuple(
+                replace(value, state=work_models.WorkState.PAUSED) if value.item == item.item else value
+                for value in snapshot.items
+            ),
+        )
+        rejected = decide_preparation_authority(retained, 2, request, paused, SQLITE_NOW)
+        self.assertIsInstance(rejected, DecisionFailure)
+        assert isinstance(rejected, DecisionFailure)
+        self.assertEqual(DecisionFailureCode.ACTION_NOT_AVAILABLE, rejected.code)
+        self.assertIn("paused", rejected.message)
+        self.assertIn("resume", rejected.message)
         revoked = decide_preparation_authority(
             transferred.proposed_replacement,
             transferred.counter_after,

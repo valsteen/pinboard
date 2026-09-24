@@ -451,6 +451,13 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                 return failure
             item_value = snapshot.item(retained.item)
             definition = snapshot.definition(retained.item)
+            if item_value is not None and item_value.state == work_models.WorkState.PAUSED:
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    f"Item '{retained.item}' is paused, not ready for preparation. Continue its existing attempt: "
+                    "replace and rebind the brief first if scope or Git lineage changed, then resume when available.",
+                    None,
+                )
             if (
                 item_value is None
                 or item_value.state != work_models.WorkState.READY

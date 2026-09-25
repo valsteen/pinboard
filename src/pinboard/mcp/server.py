@@ -13,6 +13,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from pinboard import __version__
+from pinboard.adapters.files.user_config import read_mcp_omit_regex_lookarounds
 from pinboard.application import (
     proposal_models,
     work_brief_models,
@@ -64,6 +65,8 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
     executor: execution.BoundedExecutor,
     diagnostics: execution.Diagnostics,
     capture: execution.SemanticCapture | execution.AutomaticCapture | None = None,
+    *,
+    omit_regex_lookarounds: bool,
 ) -> MCPServer:
     server = MCPServer(
         "pinboard",
@@ -536,11 +539,11 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             capture=capture,
         )
 
-    _install_boundary_contracts(server)
+    _install_boundary_contracts(server, omit_regex_lookarounds)
     return server
 
 
-def _install_boundary_contracts(server: MCPServer) -> None:
+def _install_boundary_contracts(server: MCPServer, omit_regex_lookarounds: bool) -> None:
     """Install exact schemas through the pinned SDK's mutable tool metadata seam."""
     definitions = (
         (
@@ -648,6 +651,8 @@ def _install_boundary_contracts(server: MCPServer) -> None:
         tool = server._tool_manager.get_tool(name)
         if tool is None:
             raise RuntimeError(f"MCP tool '{name}' was not registered.")
+        if omit_regex_lookarounds:
+            contract_schemas.omit_regex_lookarounds(input_schema)
         tool.parameters = input_schema
         tool.fn_metadata.output_schema = output_schema
         tool.fn_metadata.arg_model.model_config["extra"] = "forbid"
@@ -670,6 +675,11 @@ def main() -> None:
     except ValueError as error:
         print(str(error), file=sys.stderr)
         raise SystemExit(64) from error
+    try:
+        omit_regex_lookarounds = read_mcp_omit_regex_lookarounds()
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(64) from error
     if capture is None:
         capture = execution.AutomaticCapture(common.select_capture_item)
     executor = execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
@@ -685,6 +695,8 @@ def main() -> None:
         capture_selector=None,
     )
     try:
-        anyio.run(create_server(executor, diagnostics, capture).run_stdio_async)
+        anyio.run(
+            create_server(executor, diagnostics, capture, omit_regex_lookarounds=omit_regex_lookarounds).run_stdio_async
+        )
     finally:
         executor.shutdown()

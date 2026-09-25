@@ -88,7 +88,9 @@ class AuthorityStatusReadTest(unittest.TestCase):
     def native(self, tool: str, project: str, work: str, request: dict[str, JsonValue]) -> JsonObject:
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
+            omit_regex_lookarounds=True,
         )
         arguments = {"project_root": project, "work_root": work, **request}
         if tool in {

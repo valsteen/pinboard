@@ -656,7 +656,9 @@ class McpTransportTest(unittest.TestCase):
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
         server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
+            omit_regex_lookarounds=True,
         )
 
         def patterns(value: contracts.JsonSchemaValue) -> list[str]:
@@ -752,27 +754,30 @@ class McpTransportTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
-        server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
-        )
         common = {"project_root": str(project), "work_root": str(roots.work_root)}
 
         async def scenario() -> None:
-            accepted = await server.call_tool(mcp_server.ITEM_STATUS_TOOL, common | {"item_id": "work-a"})
-            invalid_path = await server.call_tool(mcp_server.ITEM_STATUS_TOOL, common | {"item_id": ".."})
-            invalid_identity = await server.call_tool(
-                mcp_server.ACTIONS_TOOL,
-                {"request": common | {"role": "worker", "lease_id": "lease ", "generation": 1}},
-            )
-            assert isinstance(accepted, CallToolResult) and isinstance(accepted.structured_content, dict)
-            self.assertEqual("pinboard-item-status/v1", accepted.structured_content["schema"])
-            for result, code in (
-                (invalid_path, "ITEM_STATUS_INVALID"),
-                (invalid_identity, "ACTIONS_INVALID"),
-            ):
-                assert isinstance(result, CallToolResult) and isinstance(result.structured_content, dict)
-                self.assertEqual("rejected", result.structured_content["status"])
-                self.assertEqual(code, result.structured_content["code"])
+            for omit in (True, False):
+                server = mcp_server.create_server(
+                    executor,
+                    mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
+                    omit_regex_lookarounds=omit,
+                )
+                accepted = await server.call_tool(mcp_server.ITEM_STATUS_TOOL, common | {"item_id": "work-a"})
+                invalid_path = await server.call_tool(mcp_server.ITEM_STATUS_TOOL, common | {"item_id": ".."})
+                invalid_identity = await server.call_tool(
+                    mcp_server.ACTIONS_TOOL,
+                    {"request": common | {"role": "worker", "lease_id": "lease ", "generation": 1}},
+                )
+                assert isinstance(accepted, CallToolResult) and isinstance(accepted.structured_content, dict)
+                self.assertEqual("pinboard-item-status/v1", accepted.structured_content["schema"])
+                for result, code in (
+                    (invalid_path, "ITEM_STATUS_INVALID"),
+                    (invalid_identity, "ACTIONS_INVALID"),
+                ):
+                    assert isinstance(result, CallToolResult) and isinstance(result.structured_content, dict)
+                    self.assertEqual("rejected", result.structured_content["status"])
+                    self.assertEqual(code, result.structured_content["code"])
 
         _run_async(scenario())
 
@@ -782,7 +787,9 @@ class McpTransportTest(unittest.TestCase):
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
         server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
+            omit_regex_lookarounds=True,
         )
         explicit_roots = {"project_root": str(project), "work_root": str(roots.work_root)}
         brief = work_a_brief(project)
@@ -1096,7 +1103,9 @@ class McpTransportTest(unittest.TestCase):
             executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
             self.addCleanup(executor.shutdown)
             server = mcp_server.create_server(
-                executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=2, line_limit=256)
+                executor,
+                mcp_execution.Diagnostics(io.StringIO(), event_limit=2, line_limit=256),
+                omit_regex_lookarounds=True,
             )
             _run_async(
                 server.call_tool(
@@ -2094,7 +2103,9 @@ class McpTransportTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
+            omit_regex_lookarounds=True,
         )
         common: dict[str, contracts.JsonValue] = {
             "project_root": str(project),
@@ -2442,7 +2453,9 @@ class McpTransportTest(unittest.TestCase):
         executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         self.addCleanup(executor.shutdown)
         server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=1, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=1, line_limit=256),
+            omit_regex_lookarounds=True,
         )
         for family in ("attempt", "preparation"):
             for operation in ("renew", "release", "revoke"):
@@ -3442,7 +3455,7 @@ class McpTransportTest(unittest.TestCase):
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=2)
         diagnostics_stream = io.StringIO()
         diagnostics = mcp_execution.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256)
-        server = mcp_server.create_server(executor, diagnostics)
+        server = mcp_server.create_server(executor, diagnostics, omit_regex_lookarounds=True)
         original_emit = diagnostics.emit
         running_started = threading.Event()
         running_release = threading.Event()
@@ -3599,7 +3612,9 @@ class McpTransportTest(unittest.TestCase):
         executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         diagnostics_stream = io.StringIO()
         server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256),
+            omit_regex_lookarounds=True,
         )
         committed = threading.Event()
         release = threading.Event()
@@ -3663,7 +3678,7 @@ class McpTransportTest(unittest.TestCase):
         self.addCleanup(second_temporary.cleanup)
         executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=2)
         diagnostics = mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
-        server = mcp_server.create_server(executor, diagnostics)
+        server = mcp_server.create_server(executor, diagnostics, omit_regex_lookarounds=True)
         barrier = threading.Barrier(2)
         stores: list[tuple[int, Path, SQLiteWorkStore]] = []
         stores_lock = threading.Lock()
@@ -3715,7 +3730,9 @@ class McpTransportTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
+            omit_regex_lookarounds=True,
         )
         store = SQLiteWorkStore(roots.database_path)
         before = store.validated_snapshot()
@@ -3774,7 +3791,9 @@ class McpTransportTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
+            omit_regex_lookarounds=True,
         )
         before = SQLiteWorkStore(roots.database_path).validated_snapshot()
 
@@ -3815,7 +3834,9 @@ class McpTransportTest(unittest.TestCase):
     def test_invalid_roots_are_rejected_before_durable_state_resolution(self) -> None:
         executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
+            omit_regex_lookarounds=True,
         )
         requests = (
             (
@@ -3876,6 +3897,7 @@ class McpTransportTest(unittest.TestCase):
                 server = mcp_server.create_server(
                     executor,
                     mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
+                    omit_regex_lookarounds=True,
                 )
                 if operation == mcp_server.PROPOSAL_CREATE_TOOL:
                     arguments = {
@@ -3915,7 +3937,9 @@ class McpTransportTest(unittest.TestCase):
         executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         diagnostics_stream = io.StringIO()
         server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256),
+            omit_regex_lookarounds=True,
         )
         brief = work_a_brief(project)
         references_before = SQLiteWorkStore(roots.database_path).validated_snapshot().artifact_references
@@ -3963,7 +3987,9 @@ class McpTransportTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
+            omit_regex_lookarounds=True,
         )
         warning = ViewRefreshResult(
             12,
@@ -3997,7 +4023,9 @@ class McpTransportTest(unittest.TestCase):
     def test_server_rejects_an_internal_result_that_violates_its_advertised_contract(self) -> None:
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=8, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=8, line_limit=256),
+            omit_regex_lookarounds=True,
         )
 
         def contradictory_result(

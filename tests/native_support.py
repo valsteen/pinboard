@@ -12,7 +12,9 @@ from tests.support import JsonObject
 
 def call_native_tool(tool: str, arguments: JsonObject) -> JsonObject:
     executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
-    server = mcp_server.create_server(executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256))
+    server = mcp_server.create_server(
+        executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256), omit_regex_lookarounds=True
+    )
     try:
         result = asyncio.run(server.call_tool(tool, arguments))
         assert isinstance(result, CallToolResult) and isinstance(result.structured_content, dict)

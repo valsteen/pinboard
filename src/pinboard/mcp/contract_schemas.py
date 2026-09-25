@@ -107,7 +107,7 @@ from pinboard.mcp.contracts import (
 )
 
 
-def _advertised_request_schema(schema: dict[str, JsonSchemaValue]) -> dict[str, JsonSchemaValue]:
+def omit_regex_lookarounds(schema: dict[str, JsonSchemaValue]) -> None:
     """Temporarily omit lookarounds rejected on a reported Claude Code → LiteLLM → OpenAI route.
 
     The rejecting component is unknown. Remove this projection when the affected
@@ -126,7 +126,6 @@ def _advertised_request_schema(schema: dict[str, JsonSchemaValue]) -> dict[str, 
                 visit(child)
 
     visit(schema)
-    return schema
 
 
 def schema_for(boundary_type: RequestBoundary) -> dict[str, JsonSchemaValue]:
@@ -143,7 +142,7 @@ def schema_for(boundary_type: RequestBoundary) -> dict[str, JsonSchemaValue]:
     definition = definitions.get(reference.removeprefix("#/$defs/"))
     if not isinstance(definition, dict):
         raise TypeError("The MCP request schema root must be an object definition.")
-    return _advertised_request_schema({**definition, **schema})
+    return {**definition, **schema}
 
 
 def actions_request_schema() -> dict[str, JsonSchemaValue]:
@@ -162,15 +161,13 @@ def attempt_authority_request_schema() -> dict[str, JsonSchemaValue]:
 
 def transition_request_schema() -> dict[str, JsonSchemaValue]:
     schemas, definitions = msgspec.json.schema_components(TRANSITION_REQUEST_TYPES)
-    return _advertised_request_schema(
-        {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["request"],
-            "properties": {"request": {"oneOf": list[JsonSchemaValue](schemas)}},
-            "$defs": definitions,
-        }
-    )
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["request"],
+        "properties": {"request": {"oneOf": list[JsonSchemaValue](schemas)}},
+        "$defs": definitions,
+    }
 
 
 def _apply_result_state_constraints(

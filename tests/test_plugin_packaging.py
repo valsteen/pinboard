@@ -833,6 +833,30 @@ class PluginPackagingTests(unittest.TestCase):
         self.assertEqual("allow", decision["permissionDecision"])
         self.assertNotIn("sensitive", result.stdout)
 
+    def test_copied_plugin_first_mcp_connection_prepares_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sandbox = Path(directory).resolve()
+            plugin_root = sandbox / "copied plugin"
+            plugin_root.mkdir()
+            copied_repository_payload(ROOT, plugin_root)
+            launcher = plugin_root / "scripts" / "pinboard"
+            environment = {**os.environ, "PINBOARD_RUNTIME": "claude"}
+
+            result = subprocess.run(
+                [str(launcher), "--mcp"],
+                cwd=sandbox,
+                env=environment,
+                input="",
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("", result.stdout)
+            self.assertIn('"status":"runtime-ready"', result.stderr)
+            self.assertTrue((plugin_root / ".pinboard-runtime" / ".pinboard-ready").is_file())
+
     def test_copied_plugin_launcher_runs_complete_no_model_workflow_without_mutating_plugin_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             sandbox = Path(directory).resolve()
@@ -882,7 +906,6 @@ class PluginPackagingTests(unittest.TestCase):
                 ],
             }
             launcher, environment, before = self.prepare_copied_launcher(sandbox, plugin_root, project)
-            self.assert_registered_startup_context(plugin_root, project, environment)
 
             def run(*arguments: str) -> subprocess.CompletedProcess[str]:
                 result = subprocess.run(
@@ -899,6 +922,7 @@ class PluginPackagingTests(unittest.TestCase):
             initialized = run("init")
             self.assertNotIn("model_auto_compact_token_limit_scope", initialized.stdout)
             self.assert_configured_mcp_reads(sandbox, plugin_root, project, environment, proposal)
+            self.assert_registered_startup_context(plugin_root, project, environment)
             validation = json.loads(run("validate", "--json").stdout)
             reopened = run("init")
             self.assertTrue(validation["valid"])

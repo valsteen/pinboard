@@ -54,7 +54,9 @@ class McpJobsTest(CheckpointPackageSupport):
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
         transport = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
+            omit_regex_lookarounds=True,
         )
         for name in (mcp_server.PREPARATION_AUTHORITY_TOOL, mcp_server.ATTEMPT_AUTHORITY_TOOL):
             with self.subTest(name=name):
@@ -116,7 +118,9 @@ class McpJobsTest(CheckpointPackageSupport):
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
         server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=8, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=8, line_limit=256),
+            omit_regex_lookarounds=True,
         )
 
         def observe() -> dict[str, contracts.JsonValue]:
@@ -195,7 +199,9 @@ class McpJobsTest(CheckpointPackageSupport):
     def test_dispatch_and_review_are_installed_strict_tools(self) -> None:
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         server = mcp_server.create_server(
-            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=8, line_limit=256)
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=8, line_limit=256),
+            omit_regex_lookarounds=True,
         )
         try:
             tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}

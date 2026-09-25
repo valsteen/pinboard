@@ -107,8 +107,30 @@ from pinboard.mcp.contracts import (
 )
 
 
+def _advertised_request_schema(schema: dict[str, JsonSchemaValue]) -> dict[str, JsonSchemaValue]:
+    """Temporarily omit lookarounds rejected on a reported Claude Code → LiteLLM → OpenAI route.
+
+    The rejecting component is unknown. Remove this projection when the affected
+    route accepts the original schemas; runtime request validation stays strict.
+    """
+
+    def visit(value: JsonSchemaValue) -> None:
+        if isinstance(value, dict):
+            pattern = value.get("pattern")
+            if isinstance(pattern, str) and any(marker in pattern for marker in ("(?=", "(?!", "(?<=", "(?<!")):
+                del value["pattern"]
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(schema)
+    return schema
+
+
 def schema_for(boundary_type: RequestBoundary) -> dict[str, JsonSchemaValue]:
-    """Return the exact msgspec schema for one MCP request."""
+    """Return one host-facing MCP request schema from a strict msgspec record."""
     schema: dict[str, JsonSchemaValue] = msgspec.json.schema(
         boundary_type, schema_hook=dispatch_models.dispatch_environment_schema_hook
     )
@@ -121,7 +143,7 @@ def schema_for(boundary_type: RequestBoundary) -> dict[str, JsonSchemaValue]:
     definition = definitions.get(reference.removeprefix("#/$defs/"))
     if not isinstance(definition, dict):
         raise TypeError("The MCP request schema root must be an object definition.")
-    return {**definition, **schema}
+    return _advertised_request_schema({**definition, **schema})
 
 
 def actions_request_schema() -> dict[str, JsonSchemaValue]:
@@ -140,13 +162,15 @@ def attempt_authority_request_schema() -> dict[str, JsonSchemaValue]:
 
 def transition_request_schema() -> dict[str, JsonSchemaValue]:
     schemas, definitions = msgspec.json.schema_components(TRANSITION_REQUEST_TYPES)
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["request"],
-        "properties": {"request": {"oneOf": list[JsonSchemaValue](schemas)}},
-        "$defs": definitions,
-    }
+    return _advertised_request_schema(
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["request"],
+            "properties": {"request": {"oneOf": list[JsonSchemaValue](schemas)}},
+            "$defs": definitions,
+        }
+    )
 
 
 def _apply_result_state_constraints(

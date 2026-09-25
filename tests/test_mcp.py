@@ -659,6 +659,14 @@ class McpTransportTest(unittest.TestCase):
             executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
         )
 
+        def patterns(value: contracts.JsonSchemaValue) -> list[str]:
+            if isinstance(value, dict):
+                found = [pattern] if isinstance(pattern := value.get("pattern"), str) else []
+                return found + [pattern for child in value.values() for pattern in patterns(child)]
+            if isinstance(value, list):
+                return [pattern for child in value for pattern in patterns(child)]
+            return []
+
         async def scenario() -> None:
             tools = await server.list_tools()
             self.assertEqual(20, len(tools))
@@ -666,6 +674,13 @@ class McpTransportTest(unittest.TestCase):
                 with self.subTest(tool=tool.name):
                     self.assertEqual("object", tool.input_schema["type"])
                     self.assertFalse({"anyOf", "oneOf", "allOf"} & tool.input_schema.keys())
+                    self.assertFalse(
+                        any(
+                            marker in pattern
+                            for pattern in patterns(tool.input_schema)
+                            for marker in ("(?=", "(?!", "(?<=", "(?<!")
+                        )
+                    )
             inspect_tool = next(tool for tool in tools if tool.name == mcp_server.ATTEMPT_INSPECT_TOOL)
             definitions = inspect_tool.input_schema["$defs"]
             effects = definitions["AttemptReconciliation"]["properties"]["effects"]
@@ -729,6 +744,35 @@ class McpTransportTest(unittest.TestCase):
             self.assertEqual("ATTEMPT_INSPECT_INVALID", malformed.structured_content["code"])
             self.assertFalse(malformed.structured_content["state_changed"])
             self.assertEqual([], malformed.structured_content["changed_surfaces"])
+
+        _run_async(scenario())
+
+    def test_advertised_schema_projection_preserves_strict_request_decoding(self) -> None:
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        server = mcp_server.create_server(
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+        )
+        common = {"project_root": str(project), "work_root": str(roots.work_root)}
+
+        async def scenario() -> None:
+            accepted = await server.call_tool(mcp_server.ITEM_STATUS_TOOL, common | {"item_id": "work-a"})
+            invalid_path = await server.call_tool(mcp_server.ITEM_STATUS_TOOL, common | {"item_id": ".."})
+            invalid_identity = await server.call_tool(
+                mcp_server.ACTIONS_TOOL,
+                {"request": common | {"role": "worker", "lease_id": "lease ", "generation": 1}},
+            )
+            assert isinstance(accepted, CallToolResult) and isinstance(accepted.structured_content, dict)
+            self.assertEqual("pinboard-item-status/v1", accepted.structured_content["schema"])
+            for result, code in (
+                (invalid_path, "ITEM_STATUS_INVALID"),
+                (invalid_identity, "ACTIONS_INVALID"),
+            ):
+                assert isinstance(result, CallToolResult) and isinstance(result.structured_content, dict)
+                self.assertEqual("rejected", result.structured_content["status"])
+                self.assertEqual(code, result.structured_content["code"])
 
         _run_async(scenario())
 
@@ -4158,7 +4202,7 @@ class McpTransportTest(unittest.TestCase):
             self.assertIn("anyOf", tool.output_schema)
             self.assertIn("$defs", tool.output_schema)
         item_schema = tools_by_name[mcp_server.ITEM_STATUS_TOOL].input_schema
-        self.assertEqual(r"\A(?!\.{1,2}\z)[^/\r\n\x00]+\z", item_schema["properties"]["item_id"]["pattern"])
+        self.assertNotIn("pattern", item_schema["properties"]["item_id"])
         proposal_schema = tools_by_name[mcp_server.PROPOSAL_CREATE_TOOL].input_schema
         self.assertEqual("#/$defs/Proposal", proposal_schema["properties"]["proposal"]["$ref"])
         self.assertFalse(proposal_schema["$defs"]["Proposal"]["additionalProperties"])

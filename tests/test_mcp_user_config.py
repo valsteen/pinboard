@@ -63,14 +63,14 @@ class McpUserConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"XDG_CONFIG_HOME": temporary}):
             path = Path(temporary) / "pinboard" / "config"
             self.assertTrue(read_mcp_omit_regex_lookarounds())
-            self.assertEqual("[mcp]\n\tomitRegexLookarounds = true\n", path.read_text())
+            first_use = path.read_text()
+            self.assertEqual("[mcp]\n\tomitRegexLookarounds = true\n", first_use)
             path.write_text("[mcp]\n\tomitRegexLookarounds = false\n")
             self.assertFalse(read_mcp_omit_regex_lookarounds())
             self.assertEqual("[mcp]\n\tomitRegexLookarounds = false\n", path.read_text())
             path.write_text("[other]\n\tvalue = kept\n")
             self.assertTrue(read_mcp_omit_regex_lookarounds())
-            self.assertIn("value = kept", path.read_text())
-            self.assertIn("omitRegexLookarounds = true", path.read_text())
+            self.assertEqual("[other]\n\tvalue = kept\n" + first_use, path.read_text())
 
     def test_invalid_or_unwritable_config_stops_mcp_startup(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"XDG_CONFIG_HOME": temporary}):

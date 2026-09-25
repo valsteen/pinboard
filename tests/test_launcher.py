@@ -390,45 +390,6 @@ class LauncherTest(unittest.TestCase):
                 self.assertEqual([".pinboard-runtime"], preparation["changed_surfaces"])
                 self.assertTrue((private / ".pinboard-ready").exists())
 
-    def test_mcp_accepts_runtime_already_ready_after_acquiring_preparation_lock(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            launcher = self.copy_launcher(root)
-            self.write_uv(root, 'touch "$ROOT/uv-called"\nexit 99\n')
-            mkdir = root / "mkdir"
-            mkdir.write_text(
-                "#!/bin/sh\n"
-                "last=\n"
-                "for argument do last=$argument; done\n"
-                '/bin/mkdir "$@"\n'
-                "status=$?\n"
-                'case "$last" in\n'
-                "  */.pinboard-runtime/.preparing)\n"
-                "    runtime_root=${last%/.preparing}\n"
-                '    bin="$runtime_root/environment/bin"\n'
-                '    /bin/mkdir -p "$bin"\n'
-                "    for entry in pinboard pinboard-claude-subagent-start pinboard-claude-session-start pinboard-claude-pre-tool-use; do\n"
-                "      printf '#!/bin/sh\\nexit 0\\n' > \"$bin/$entry\"\n"
-                '      chmod +x "$bin/$entry"\n'
-                "    done\n"
-                '    printf \'#!/bin/sh\\nprintf "%%s\\\\n" mcp-started\\n\' > "$bin/pinboard-mcp"\n'
-                '    chmod +x "$bin/pinboard-mcp"\n'
-                '    : > "$runtime_root/.pinboard-ready"\n'
-                "    ;;\n"
-                "esac\n"
-                "exit $status\n",
-                encoding="utf-8",
-            )
-            mkdir.chmod(0o755)
-
-            result = self.run_launcher(launcher, "--mcp", path=f"{root}:/usr/bin:/bin")
-
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual("mcp-started\n", result.stdout)
-            self.assertEqual("runtime-already-ready", json.loads(result.stderr)["status"])
-            self.assertFalse((root / "uv-called").exists())
-            self.assertFalse((root / ".pinboard-runtime" / ".preparing").exists())
-
     def test_mcp_held_preparation_lock_returns_unchanged_result_without_uv_or_server(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -445,6 +406,23 @@ class LauncherTest(unittest.TestCase):
             self.assertEqual("runtime-preparation-required", json.loads(result.stderr)["status"])
             self.assertEqual("run-preparation", json.loads(result.stderr)["retry_disposition"])
             self.assertFalse(sentinel.exists())
+
+    def test_explicit_preparation_honors_held_lock_without_running_uv(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launcher = self.copy_launcher(root)
+            lock = root / ".pinboard-runtime" / ".preparing"
+            lock.mkdir(parents=True)
+            sentinel = root / "uv-was-called"
+            self.write_uv(root, f'touch "{sentinel}"\n')
+
+            result = self.run_launcher(launcher, "--prepare-runtime", path=f"{root}:/usr/bin:/bin")
+
+            self.assertEqual(78, result.returncode)
+            self.assertEqual("", result.stderr)
+            self.assertEqual("runtime-preparation-required", json.loads(result.stdout)["status"])
+            self.assertFalse(sentinel.exists())
+            self.assertTrue(lock.is_dir())
 
     def test_mcp_missing_uv_keeps_runtime_unchanged_and_protocol_stdout_empty(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

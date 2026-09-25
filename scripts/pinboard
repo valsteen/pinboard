@@ -8,6 +8,7 @@ entry_name=pinboard
 result_output_fd=1
 ready_marker="$runtime_root/.pinboard-ready"
 diagnostics="$runtime_root/.preparation-output"
+preparation_lock="$runtime_root/.preparing"
 preparation_action='{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["uv and write access to launcher-root .pinboard-runtime"]}'
 export PYTHONDONTWRITEBYTECODE=1
 
@@ -302,6 +303,20 @@ runtime_write_failure() {
     exit 78
 }
 
+preparation_required() {
+    launcher_result \
+        "runtime-preparation-required" \
+        '["Pinboard has no ready launcher-root private runtime."]' \
+        "null" "run-preparation" "unchanged" '[]' "$preparation_action"
+}
+
+release_preparation_lock() {
+    if [ "${preparation_lock_held:-0}" = 1 ]; then
+        rmdir "$preparation_lock" 2>/dev/null || :
+        preparation_lock_held=0
+    fi
+}
+
 if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
     if [ -f "$ready_marker" ] && [ -x "$runtime_executable" ] && [ -x "$runtime_environment/bin/pinboard-mcp" ] && [ -x "$runtime_environment/bin/pinboard-claude-subagent-start" ] && [ -x "$runtime_environment/bin/pinboard-claude-session-start" ] && [ -x "$runtime_environment/bin/pinboard-claude-pre-tool-use" ]; then
         launcher_result \
@@ -331,6 +346,12 @@ if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
         printf 'launcher-root private runtime path is not a directory: %s\n' "$runtime_root" >&2
         runtime_write_failure 1
     fi
+    if ! mkdir -p "$runtime_root" 2>/dev/null || ! mkdir "$preparation_lock" 2>/dev/null; then
+        preparation_required
+        exit 78
+    fi
+    preparation_lock_held=1
+    trap release_preparation_lock EXIT
     if mkdir -p "$runtime_root" && rm -rf "$runtime_environment" "$ready_marker" "$diagnostics"; then
         :
     else
@@ -555,31 +576,9 @@ if [ "$entry_name" = pinboard ] && [ "${PINBOARD_CAPTURE_WRAPPED:-}" != 1 ]; the
     fi
 fi
 
-preparation_required() {
-    launcher_result \
-        "runtime-preparation-required" \
-        '["Pinboard has no ready launcher-root runtime."]' \
-        "null" \
-        "run-preparation" \
-        "unchanged" \
-        '[]' \
-        "$preparation_action"
-}
 if [ "$entry_name" = "pinboard-mcp" ]; then
-    preparation_lock="$runtime_root/.preparing"
-    if ! command -v uv >/dev/null 2>&1; then
-        preparation_exit_code=0
-        preparation=$("$0" --prepare-runtime </dev/null) || preparation_exit_code=$?
-        printf '%s\n' "$preparation" >&2
-        exit "$preparation_exit_code"
-    fi
-    if ! mkdir -p "$runtime_root" 2>/dev/null || ! mkdir "$preparation_lock" 2>/dev/null; then
-        preparation_required
-        exit 78
-    fi
     preparation_exit_code=0
     preparation=$("$0" --prepare-runtime </dev/null) || preparation_exit_code=$?
-    rmdir "$preparation_lock" 2>/dev/null || true
     printf '%s\n' "$preparation" >&2
     preparation_status=$(printf '%s' "$preparation" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')
     if [ "$preparation_status" = "runtime-ready" ] || [ "$preparation_status" = "runtime-already-ready" ]; then
@@ -611,14 +610,12 @@ failed_start="Claude Code reports the pinboard MCP server as failed (Connection 
 if ! command -v uv >/dev/null 2>&1; then
     hook_context "$failed_start Pinboard could not prepare it automatically because uv is not on PATH. Tell the user. $manual_route"
 fi
-preparation_lock="$runtime_root/.preparing"
-if ! mkdir -p "$runtime_root" 2>/dev/null || ! mkdir "$preparation_lock" 2>/dev/null; then
-    hook_context "$failed_start Another Claude Code session is preparing that runtime now, or the lock directory $preparation_lock is stale. Tell the user: when the other session finishes, restart Claude Code or reconnect the pinboard MCP server; if no other session is running, remove that lock directory first. $manual_route"
-fi
 preparation=$("$0" --prepare-runtime </dev/null) || true
-rmdir "$preparation_lock" 2>/dev/null || true
 preparation_status=$(printf '%s' "$preparation" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')
 if [ "$preparation_status" = "runtime-ready" ] && [ -f "$ready_marker" ] && [ -x "$runtime_executable" ]; then
     PINBOARD_RUNTIME_PREPARED_NOW=1 exec "$runtime_executable"
+fi
+if [ "$preparation_status" = "runtime-preparation-required" ]; then
+    hook_context "$failed_start Another Claude Code session is preparing that runtime now, or the lock directory $preparation_lock is stale. Tell the user: when the other session finishes, restart Claude Code or reconnect the pinboard MCP server; if no other session is running, remove that lock directory first. $manual_route"
 fi
 hook_context "$failed_start Pinboard tried to prepare it automatically during this session start and failed with status ${preparation_status:-unknown}; the launcher diagnostics are on this hook's stderr. Tell the user. $manual_route"

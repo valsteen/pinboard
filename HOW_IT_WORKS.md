@@ -2,23 +2,21 @@
 
 # How Pinboard works
 
-Pinboard helps a person and a coding agent complete suitable development work while keeping its purpose and decisions understandable. The person chooses the outcome, priority, material tradeoffs, and what happens to a reviewed change. The agent preserves context, prepares and carries out authorized work, brings consequential choices back to the person, and arranges separate review.
+Pinboard helps you save development work and return to it later. When you ask your coding agent to start, it follows your saved decisions, brings changes to the goal back to you, and arranges review by a separate coding agent. You decide what happens to the reviewed change.
 
-Today's supported workflow is local to a Git-backed repository: Pinboard records accepted work, attempts, and evidence beside that repository. The wider product direction is to support suitable agentic work without making people learn Pinboard's internal workflow; it is not a claim that other kinds of projects are supported today.
+Today, Pinboard works with local Git-backed repositories.
 
 For a short disposable change, working directly with a coding agent is often enough. Pinboard becomes useful when work crosses conversations, interruptions, reviewers, or parallel tasks and the latest chat is no longer a reliable account of why the code looks the way it does.
 
 ## What a saved item means
 
-A **proposal** is a suggestion to preserve work. Saving it creates a **work item** under the same identity, with its original reason and evidence attached. The item records an **agreed outcome**: what should change, what is outside scope, and how the result will be judged. Saving an item does not start an attempt.
+A saved **work item** records the goal, boundaries, and evidence for work you may want later. Saving it does not begin implementation. An **attempt** is one run of work on that item; it can pause, be corrected, or continue with another agent.
 
-An item can be ready while current dependencies or holds still prevent a start. The agent checks **eligibility**, prepares the current definition and brief, and obtains **start authorization** before activation creates an attempt. These are separate steps. A **concern** names a possible gap or conflict; a **decision** settles a material choice with the person when it exceeds the agent's authority. **Evidence** records observations and supports a claim, but does not replace required independent review. **Delivery** is the candidate and its result for that review. **Completion** means the accepted outcome and required review are satisfied, the chosen repository disposition is handled when applicable, and Pinboard records the terminal result.
+When you ask the agent to start an item, it checks dependencies and holds, then prepares a brief from your decisions. During the work, it brings material choices back to you. A separate coding agent reviews the exact proposed change. You choose any repository action, and Pinboard records completion after the agreed goal and required review are satisfied.
 
-Here, **saved item** and **work item** name the same durable record. A proposal keeps its identity when saved, but it is not an active attempt. A ready item can still be ineligible to start. Brief review checks the delegated request; candidate review checks the exact change; a human review of a published pull request is a separate choice.
+## From your request to a reviewed change
 
-## Ambiguity closes around one accepted brief
-
-Work begins with structured intake and discussion, not an implementation prompt assembled from the latest message. The human and agent make the outcome, constraints, evidence, and material unknowns explicit enough to form an inspectable agreement.
+Before implementation, the agent resolves material open questions with you and prepares an inspectable brief.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works/ambiguity-closure-dark.svg">
@@ -55,7 +53,7 @@ The native MCP surface separates reading, authority, immutable publication, cand
 - `artifact_verify` checks immutable accepted bytes. `candidate_observe` identifies the actual tracked working-tree candidate, and `review_job` binds that candidate, brief, result, and selected history into a separate reviewer launch.
 - `attempt_inspect` exposes one attempt's current continuation. `candidate_restore` can restore its accepted candidate into an exact clean checkout, while `transition` alone applies a freshly discovered lifecycle mutation.
 
-The complete surface also contains focused project and definition reads, priority and parallel planning, and status operations. The point is not the inventory: each operation has one advertised data scope and effect, so an agent cannot treat a convenient read, prompt publication, or stale receipt as mutation authority.
+The complete surface also contains focused project and definition reads, priority and parallel planning, and status operations. Preparation and attempt authority are time-limited claims identifying which agent may prepare or work on an item. They prevent a former worker from acting after replacement; they do not authorize a change to the agreed goal. Each operation has one advertised data scope and effect, so an agent cannot treat a convenient read, prompt publication, or stale receipt as mutation authority.
 
 ## Work survives its current execution
 

@@ -6,11 +6,11 @@
 
 Working with a coding agent can stay fluid: follow an idea, ask for the change, and keep moving. But the backlog grows. Ideas lose their context, priorities become unclear, and unfinished work gets harder to pick up.
 
-Pinboard helps you keep that backlog useful through the conversation you already have with your coding agent. It records tasks, priorities, dependencies, and the decisions behind them beside the repository.
+Pinboard helps you save work through the conversation you already have with your coding agent. It keeps the goal and decisions available when you return to them later.
 
 Today, Pinboard supports this work in a local Git-backed repository. Its broader goal is to help people complete suitable agentic work without learning the workflow behind it.
 
-That context carries into delivery. Accepted direction becomes a precise brief for implementation and a separate review: defects return for correction, while choices that change scope or behavior return to you instead of silently reshaping the request. Later sessions continue from recorded scope, progress, and evidence rather than forgotten choices or assumptions.
+When you ask the agent to start a saved task, it works from the agreed goal and asks you about choices that would change it. A separate coding agent reviews the proposed change. You choose what happens to the reviewed change, and later sessions can pick up from the recorded progress and evidence.
 
 <br clear="right">
 <br>
@@ -22,19 +22,19 @@ That context carries into delivery. Accepted direction becomes a precise brief f
 
 ## What Pinboard does
 
-You decide what belongs in the product. You can start, merge, or reject saved proposals, settle choices that change scope or behavior, and choose what happens to a reviewed change in the repository.
+You decide what belongs in the product. You can save an idea, ask the agent to start it, settle choices that change its scope or behavior, and choose what happens to a reviewed change in the repository.
 
 Pinboard keeps those decisions attached to the work. It:
 
 - preserves ideas without quietly starting them;
 - saves your explicit priority order and dependencies;
-- turns accepted direction into a stable brief;
-- carries that direction through implementation and a separate review of both the request and the change; and
+- turns the agreed goal into a clear brief;
+- carries that goal through implementation and review by a separate coding agent; and
 - restores the decision, current work, and evidence after an interruption.
 
 The coding agent operates that workflow and brings material choices back to you in ordinary language.
 
-A saved proposal becomes a work item under the same identity. It preserves the agreed outcome and evidence without starting an attempt; the agent checks current dependencies and obtains start authorization before work begins. [How Pinboard works](HOW_IT_WORKS.md) follows that item through a reviewed change, your repository decision, and recorded completion.
+You can save an idea as a work item without starting it. When you ask the agent to begin, it checks whether the work can start. [How Pinboard works](HOW_IT_WORKS.md) follows that request through a reviewed change, your repository decision, and recorded completion.
 
 ## Explore your backlog in conversation
 

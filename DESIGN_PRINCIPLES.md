@@ -133,6 +133,8 @@ Do not make one hot file, hidden cache, log, or projection accumulate without a 
 
 Make production code and tests readable by the next coding agent. Names, structure, and local contracts must expose purpose, input provenance, decisions, effects, expected failures, important constraints, and the next owner without author coaching or delivery history. Leave established findings at their owning code or contract, not only in an audit or conversation.
 
+Describe the current supported contract in production code, comments, and product documentation. Explain what happens now in terms a new reader can use without knowing a removed workflow or the change that introduced the current one. Keep historical explanation only at a named supported compatibility or migration boundary, decision record, or evidence artifact with a real reader; identify the retained responsibility and its removal condition where one applies.
+
 Repair misleading names and hidden control flow before adding prose. Comments are for verified invariants or reasons structure cannot express. Dynamic dispatch, selection tables, callbacks, and exceptions must reveal their wiring, supported alternatives, and exits at the responsible owner; preserve a genuinely open boundary. Consequential unresolved intent stays a human question, not a documented guess.
 
 Reviewers trace the changed path's purpose, decisions, effects, and exits from local implementation and named authorities. Tests name the observable guarantee and violating regression. Prefer fixed inputs and behavioral outcomes; interaction counts require a supported requirement that depends on those interactions and must not preserve obsolete production work.

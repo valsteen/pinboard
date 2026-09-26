@@ -25,9 +25,9 @@ from pinboard.application import (
     work_brief_models,
     work_briefs,
 )
+from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.domain import decision_models
 from pinboard.domain.errors import (
-    ArtifactAcceptanceAfterPublicationError,
     ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
@@ -237,30 +237,41 @@ def _brief_published(
     store = common.compose_store(durable)
     token.checkpoint()
     now = datetime.now(UTC)
-    try:
-        publication = work_briefs.publish_work_brief(store, ArtifactRepository(durable), decoded, now)
-    except ArtifactAcceptanceAfterPublicationError as error:
-        changed_surfaces = [surface.value for surface in error.changed_surfaces]
+    publication = work_briefs.publish_work_brief(store, ArtifactRepository(durable), decoded, now)
+    if isinstance(publication, (DecisionFailure, work_brief_models.WorkBriefFailure)):
+        return _brief_failure(publication)
+    if isinstance(publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+        acceptance_failed = isinstance(publication, ArtifactAcceptanceFailure)
         return execution.OperationResult(
             {
                 "schema": "pinboard-mcp-brief-publication-result/v1",
-                "status": "failed-after-publication",
-                "code": "ARTIFACT_ACCEPTANCE_FAILED",
-                "message": "The brief was published, but its accepted reference could not be committed.",
-                "state_changed": True,
-                "effect": EffectDisposition.COMMITTED.value,
-                "retry": RetryDisposition.DO_NOT_RETRY.value,
-                "changed_surfaces": changed_surfaces,
+                "status": (
+                    "failed-after-publication"
+                    if publication.details.effect == EffectDisposition.COMMITTED
+                    else "infrastructure-failure"
+                ),
+                "code": "ARTIFACT_ACCEPTANCE_FAILED" if acceptance_failed else "ARTIFACT_PUBLICATION_FAILED",
+                "message": (
+                    "The brief's accepted reference could not be committed."
+                    if acceptance_failed
+                    else "The brief's immutable publication could not be completed."
+                ),
+                "state_changed": publication.details.effect == EffectDisposition.COMMITTED,
+                "effect": publication.details.effect.value,
+                "retry": publication.details.retry.value,
+                "changed_surfaces": [surface.value for surface in publication.details.changed_surfaces],
                 "observed": [],
                 "mismatches": [],
-                "published_selector": error.selector,
-                "recovery": "Preserve the published selector and repair artifact-reference acceptance before continuing.",
+                "published_selector": publication.selector,
+                "recovery": (
+                    "Preserve the published selector and repair artifact-reference acceptance before continuing."
+                    if acceptance_failed
+                    else "Inspect the published selector and repair immutable publication before continuing."
+                ),
             },
             "infrastructure-failure",
-            error.selector,
+            publication.selector,
         )
-    if isinstance(publication, (DecisionFailure, work_brief_models.WorkBriefFailure)):
-        return _brief_failure(publication)
     view_result = common._refresh_affected_views(durable, store, AffectedViews((), (), ()), now)
     warning = view_result.warning
     changed_surfaces: list[JsonValue] = [

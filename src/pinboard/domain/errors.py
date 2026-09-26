@@ -28,25 +28,6 @@ class ChangedSurface(Enum):
     SOURCE_CHECKOUT = "source-checkout"
 
 
-class ArtifactAcceptanceAfterPublicationError(RuntimeError):
-    """Infrastructure failed while accepting immutable bytes after exact prior effects."""
-
-    selector: str
-    cause: Exception
-    changed_surfaces: tuple[ChangedSurface, ...]
-
-    def __init__(
-        self,
-        selector: str,
-        cause: Exception,
-        changed_surfaces: tuple[ChangedSurface, ...],
-    ) -> None:
-        self.selector = selector
-        self.cause = cause
-        self.changed_surfaces = changed_surfaces
-        super().__init__(str(cause))
-
-
 @dataclass(frozen=True, slots=True)
 class FailureFact:
     field: str

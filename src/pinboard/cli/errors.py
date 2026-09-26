@@ -77,30 +77,20 @@ class CommandFailure:
 type CommandResult[T] = T | CommandFailure
 
 
-type InitializationFailure = StorageError | ArtifactError | FileIOError | work_brief_models.WorkBriefFailure
+type InitializationCause = StorageError | ArtifactError | FileIOError | work_brief_models.WorkBriefFailure
 
 
-class InitializationAfterCommittedEffectsError(RuntimeError):
+@dataclass(frozen=True, slots=True)
+class InitializationAfterCommittedEffects:
     """Initialization failed after this invocation durably changed named surfaces."""
 
     git_exclude_path: Path | None
     database_path: Path | None
-    cause: InitializationFailure
-
-    def __init__(
-        self,
-        git_exclude_path: Path | None,
-        database_path: Path | None,
-        cause: InitializationFailure,
-    ) -> None:
-        self.git_exclude_path = git_exclude_path
-        self.database_path = database_path
-        self.cause = cause
-        super().__init__(str(cause))
+    cause: InitializationCause
 
 
 def initialization_failure_details(
-    error: InitializationAfterCommittedEffectsError,
+    error: InitializationAfterCommittedEffects,
     operation: str,
     roots: cli_commands.ResolvedRoots | None,
 ) -> FailureDetails:
@@ -144,5 +134,5 @@ def initialization_failure_details(
     )
 
 
-type CliFailure = CommandFailure | WorkBriefFailure
+type CliFailure = CommandFailure | WorkBriefFailure | InitializationAfterCommittedEffects
 type CliResult[T] = T | CliFailure

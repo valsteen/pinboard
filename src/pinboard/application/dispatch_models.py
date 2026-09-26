@@ -8,8 +8,10 @@ import msgspec
 
 from pinboard.application.artifact_publication import (
     AcceptedArtifactPublication,
+    ArtifactAcceptanceFailure,
     ArtifactPublisher,
     ArtifactReader,
+    ArtifactWriteFailure,
     publish_accepted_artifact,
 )
 from pinboard.application.artifacts import NewArtifact
@@ -183,7 +185,7 @@ def publish_agent_prompt(
     attempt_id: str,
     prompt: str,
     accepted_at: datetime,
-) -> DecisionResult[PublishedAgentPrompt]:
+) -> DecisionResult[PublishedAgentPrompt | ArtifactAcceptanceFailure | ArtifactWriteFailure]:
     content = prompt.encode()
     digest = hashlib.sha256(content).hexdigest()
     accepted = publish_accepted_artifact(
@@ -198,7 +200,7 @@ def publish_agent_prompt(
         ),
         accepted_at,
     )
-    if isinstance(accepted, DecisionFailure):
+    if isinstance(accepted, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         return accepted
     reference = _reference_view(accepted)
     changed_surfaces = (

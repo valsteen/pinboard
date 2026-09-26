@@ -28,10 +28,10 @@ from pinboard.application import (
     queries,
     query_models,
 )
+from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.ports import WorkStore
 from pinboard.domain import decision_models
 from pinboard.domain.errors import (
-    ArtifactAcceptanceAfterPublicationError,
     ChangedSurface,
     DecisionFailure,
     EffectDisposition,
@@ -142,6 +142,7 @@ def _job_failure(
     code: str,
     message: str,
     details: FailureDetails | None,
+    infrastructure: bool,
 ) -> execution.OperationResult:
     rendered = common._details_json(details)
     if details is not None:
@@ -150,34 +151,19 @@ def _job_failure(
     return execution.OperationResult(
         {
             "schema": schema,
-            "status": "failed-after-publication" if committed else "rejected",
+            "status": "failed-after-publication"
+            if committed
+            else "infrastructure-failure"
+            if infrastructure
+            else "rejected",
             "attempt_id": attempt_id,
             "code": code,
             "message": message,
             "state_changed": committed,
             **rendered,
         },
-        "committed-failure" if committed else "rejected",
+        "committed-failure" if committed else "infrastructure-failure" if infrastructure else "rejected",
         None,
-    )
-
-
-def _job_publication_exception(
-    schema: str, attempt_id: str, error: ArtifactAcceptanceAfterPublicationError
-) -> execution.OperationResult:
-    return _job_failure(
-        schema,
-        attempt_id,
-        "ARTIFACT_ACCEPTANCE_FAILED",
-        str(error),
-        FailureDetails(
-            observed=(FailureFact("published_artifact_selector", error.selector),),
-            mismatches=(),
-            retry=RetryDisposition.DO_NOT_RETRY,
-            effect=EffectDisposition.COMMITTED,
-            changed_surfaces=error.changed_surfaces,
-            alternatives=(),
-        ),
     )
 
 
@@ -216,24 +202,32 @@ def _record_ready_review(
     token: execution.CancellationToken,
 ) -> execution.OperationResult:
     token.checkpoint()
-    try:
-        recorded = review_operations.record_ready_candidate_review(
-            durable.work_root,
-            store,
-            ArtifactRepository(durable),
-            AttemptId(choice.attempt_id),
-            choice.candidate_revision,
-            choice.candidate_snapshot_sha256,
-            choice.accepted_brief_sha256,
-            choice.result_sha256,
-            choice.review_sha256,
-            choice.reviewer_task_id,
-            choice.acceptance_evidence,
-        )
-    except ArtifactAcceptanceAfterPublicationError as error:
-        return _job_publication_exception(schema, choice.attempt_id, error)
+    recorded = review_operations.record_ready_candidate_review(
+        durable.work_root,
+        store,
+        ArtifactRepository(durable),
+        AttemptId(choice.attempt_id),
+        choice.candidate_revision,
+        choice.candidate_snapshot_sha256,
+        choice.accepted_brief_sha256,
+        choice.result_sha256,
+        choice.review_sha256,
+        choice.reviewer_task_id,
+        choice.acceptance_evidence,
+    )
     if isinstance(recorded, DecisionFailure):
-        return _job_failure(schema, choice.attempt_id, recorded.code.value, recorded.message, recorded.details)
+        return _job_failure(schema, choice.attempt_id, recorded.code.value, recorded.message, recorded.details, False)
+    if isinstance(recorded, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+        return _job_failure(
+            schema,
+            choice.attempt_id,
+            "ARTIFACT_ACCEPTANCE_FAILED"
+            if isinstance(recorded, ArtifactAcceptanceFailure)
+            else "ARTIFACT_PUBLICATION_FAILED",
+            str(recorded.cause),
+            recorded.details,
+            True,
+        )
     reference = recorded.reference
     surfaces = _job_publication_surfaces(recorded.changed_surfaces)
     content = msgspec.to_builtins(
@@ -319,7 +313,7 @@ def _dispatch_job(
         action_id=ActionId(f"dispatch:{attempt_id}"),
     )
     if isinstance(selected, DecisionFailure):
-        return _job_failure(schema, attempt_id, selected.code.value, selected.message, selected.details)
+        return _job_failure(schema, attempt_id, selected.code.value, selected.message, selected.details, False)
     action = selected[0]
     if not isinstance(action, decision_models.DispatchAction):
         raise AssertionError("Exact dispatch discovery returned a different action.")
@@ -328,21 +322,29 @@ def _dispatch_job(
     )
     token.checkpoint()
     # Publication has entered its commit section: finish terminal effects before honoring cancellation.
-    try:
-        publication = dispatch_operations.prepare_dispatch(
-            store,
-            ArtifactRepository(durable),
-            source_checkout,
-            supplied_action,
-            choice.checkpoint_id,
-            choice.environment,
-            None if choice.prompt is None else choice.prompt.encode(),
-            preparation_choice,
-        )
-    except ArtifactAcceptanceAfterPublicationError as error:
-        return _job_publication_exception(schema, attempt_id, error)
+    publication = dispatch_operations.prepare_dispatch(
+        store,
+        ArtifactRepository(durable),
+        source_checkout,
+        supplied_action,
+        choice.checkpoint_id,
+        choice.environment,
+        None if choice.prompt is None else choice.prompt.encode(),
+        preparation_choice,
+    )
     if isinstance(publication, dispatch_operations.DispatchFailure):
-        return _job_failure(schema, attempt_id, publication.code.value, publication.message, publication.details)
+        return _job_failure(schema, attempt_id, publication.code.value, publication.message, publication.details, False)
+    if isinstance(publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+        return _job_failure(
+            schema,
+            attempt_id,
+            "ARTIFACT_ACCEPTANCE_FAILED"
+            if isinstance(publication, ArtifactAcceptanceFailure)
+            else "ARTIFACT_PUBLICATION_FAILED",
+            str(publication.cause),
+            publication.details,
+            True,
+        )
     surfaces = _job_publication_surfaces(publication.changed_surfaces)
     content = msgspec.to_builtins(
         contracts.DispatchReady(
@@ -397,39 +399,58 @@ def _review_job(
     checkpoint_history_id, correction_history_id = _review_histories(choice)
     token.checkpoint()
     # Cancellation cannot turn an entered publication into an unchanged/replayable result.
-    try:
-        if isinstance(
-            choice, (contracts.PackageInitialRecoveryReviewChoice, contracts.PackageCorrectionRecoveryReviewChoice)
-        ):
-            assert checkpoint_history_id is not None
-            prepared = checkpoint_compatibility.prepare_recovered_review_job(
-                durable.work_root,
-                store,
-                ArtifactRepository(durable),
-                AttemptId(choice.attempt_id),
-                choice.candidate_revision,
-                checkpoint_history_id,
-                correction_history_id,
-                choice.candidate_patch,
-            )
-        else:
-            prepared = review_operations.prepare_review_job(
-                durable.work_root,
-                store,
-                ArtifactRepository(durable),
-                AttemptId(choice.attempt_id),
-                choice.candidate_revision,
-                checkpoint_history_id,
-                correction_history_id,
-            )
-    except ArtifactAcceptanceAfterPublicationError as error:
-        return _job_publication_exception(schema, choice.attempt_id, error)
+    if isinstance(
+        choice, (contracts.PackageInitialRecoveryReviewChoice, contracts.PackageCorrectionRecoveryReviewChoice)
+    ):
+        assert checkpoint_history_id is not None
+        prepared = checkpoint_compatibility.prepare_recovered_review_job(
+            durable.work_root,
+            store,
+            ArtifactRepository(durable),
+            AttemptId(choice.attempt_id),
+            choice.candidate_revision,
+            checkpoint_history_id,
+            correction_history_id,
+            choice.candidate_patch,
+        )
+    else:
+        prepared = review_operations.prepare_review_job(
+            durable.work_root,
+            store,
+            ArtifactRepository(durable),
+            AttemptId(choice.attempt_id),
+            choice.candidate_revision,
+            checkpoint_history_id,
+            correction_history_id,
+        )
     if isinstance(prepared, DecisionFailure):
         if isinstance(prepared, review_operations.CompatibilityCandidateRequired):
             return _review_candidate_required(
                 source_checkout, durable.work_root, choice, prepared, correction_history_id
             )
-        return _job_failure(schema, choice.attempt_id, prepared.code.value, prepared.message, prepared.details)
+        return _job_failure(schema, choice.attempt_id, prepared.code.value, prepared.message, prepared.details, False)
+    if isinstance(prepared, checkpoint_compatibility.RecoveredReviewPreparationFailure):
+        return _job_failure(
+            schema,
+            choice.attempt_id,
+            prepared.code,
+            str(prepared.cause),
+            prepared.details,
+            True,
+        )
+    if isinstance(prepared, review_operations.ReviewPromptPublicationFailure):
+        raise prepared.cause
+    if isinstance(prepared, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+        return _job_failure(
+            schema,
+            choice.attempt_id,
+            "ARTIFACT_ACCEPTANCE_FAILED"
+            if isinstance(prepared, ArtifactAcceptanceFailure)
+            else "ARTIFACT_PUBLICATION_FAILED",
+            str(prepared.cause),
+            prepared.details,
+            True,
+        )
     publication = prepared.published_prompt
     recovery = common._candidate_recovery_view(durable, prepared.candidate_evidence)
     reference = prepared.brief_reference
@@ -490,6 +511,7 @@ def _review_candidate_required(
             required.code.value,
             "Selected historical candidate has no recoverable patch identity.",
             required.details,
+            False,
         )
     if correction_history_id is None:
         template = contracts.InitialRecoveryTemplate(
@@ -516,6 +538,7 @@ def _review_candidate_required(
         required.code.value,
         "Selected retained-v1 patch bytes are missing; supply exact historical patch bytes in the native recovery request.",
         required.details,
+        False,
     )
     failure.content["recovery"] = msgspec.to_builtins(
         contracts.ReviewRecoveryInvocation(

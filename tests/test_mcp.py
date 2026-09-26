@@ -1,5 +1,6 @@
 import asyncio
 import io
+import os
 import shlex
 import subprocess
 import sys
@@ -38,7 +39,11 @@ from pinboard.application import (
     work_brief_models,
     work_briefs,
 )
-from pinboard.application.artifact_publication import ArtifactPublication
+from pinboard.application.artifact_publication import (
+    ArtifactAcceptanceFailure,
+    ArtifactPublication,
+    ArtifactWriteFailure,
+)
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.ports import WorkStore, WorkStoreError
@@ -924,6 +929,8 @@ class McpTransportTest(unittest.TestCase):
                 reopened, ArtifactRepository(roots), corrected, SQLITE_NOW
             )
             assert not isinstance(accepted_corrected, DecisionFailure)
+            assert not isinstance(accepted_corrected, ArtifactAcceptanceFailure)
+            assert not isinstance(accepted_corrected, ArtifactWriteFailure)
             assert not isinstance(accepted_corrected, work_brief_models.WorkBriefFailure)
             corrected_status = await call(
                 mcp_server.BRIEF_REVIEW_TOOL,
@@ -1058,6 +1065,8 @@ class McpTransportTest(unittest.TestCase):
         )
         published_local = work_briefs.publish_work_brief(store, ArtifactRepository(roots), local, SQLITE_NOW)
         assert not isinstance(published_local, DecisionFailure)
+        assert not isinstance(published_local, ArtifactAcceptanceFailure)
+        assert not isinstance(published_local, ArtifactWriteFailure)
         assert not isinstance(published_local, work_brief_models.WorkBriefFailure)
         for operation in ("status", "publish"):
             request: dict[str, contracts.JsonValue] = {
@@ -1123,6 +1132,41 @@ class McpTransportTest(unittest.TestCase):
         with self.assertRaises(ArtifactError):
             mcp_reads._brief_review({"request": {**base, "operation": "status"}}, mcp_execution.CancellationToken())
 
+    def test_negative_review_post_link_sync_reports_publication_phase(self) -> None:
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        review = msgspec.json.decode(
+            needs_correction_review(work_a_brief(project)), type=work_brief_models.WorkBriefReviewNeedsCorrection
+        )
+        before = SQLiteWorkStore(roots.database_path).validated_snapshot()
+        original_fsync = os.fsync
+
+        def fail_after_link(descriptor: int) -> None:
+            if any("brief-review-" in path.parent.name for path in roots.artifacts_root.rglob("1.json")):
+                raise OSError("injected review directory sync failure")
+            original_fsync(descriptor)
+
+        with patch("pinboard.adapters.files.file_io.os.fsync", side_effect=fail_after_link):
+            failed = call_native_tool(
+                mcp_server.BRIEF_REVIEW_TOOL,
+                {
+                    "request": {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "operation": "publish",
+                        "brief_artifact_ref_id": 1,
+                        "review": msgspec.to_builtins(review),
+                    }
+                },
+            )
+        self.assertEqual("failed-after-publication", failed["status"])
+        self.assertEqual("ARTIFACT_PUBLICATION_FAILED", failed["code"])
+        self.assertEqual(["immutable-artifact"], failed["changed_surfaces"])
+        selector = failed["published_selector"]
+        assert isinstance(selector, str)
+        self.assertTrue((roots.work_root / selector).is_file())
+        self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
+
     def test_independent_review_preserves_semantically_narrower_correspondence_as_blocking_evidence(self) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
@@ -1143,6 +1187,8 @@ class McpTransportTest(unittest.TestCase):
             SQLiteWorkStore(roots.database_path), ArtifactRepository(roots), narrowed, SQLITE_NOW
         )
         assert not isinstance(published, DecisionFailure)
+        assert not isinstance(published, ArtifactAcceptanceFailure)
+        assert not isinstance(published, ArtifactWriteFailure)
         assert not isinstance(published, work_brief_models.WorkBriefFailure)
         reference = published.reference
         review = msgspec.json.decode(
@@ -1298,11 +1344,11 @@ class McpTransportTest(unittest.TestCase):
         roots = resolve_durable_roots(project)
         initialize_database(roots, SQLITE_NOW)
         brief_bytes = canonical_work_brief_bytes(work_a_brief(project))
-        published = (
-            ArtifactRepository(roots)
-            .publish(NewArtifact(work_models.ArtifactKind.BRIEF, "work-a-brief", 1, ".opaque", brief_bytes))
-            .reference
+        publication = ArtifactRepository(roots).publish(
+            NewArtifact(work_models.ArtifactKind.BRIEF, "work-a-brief", 1, ".opaque", brief_bytes)
         )
+        assert isinstance(publication, ArtifactPublication)
+        published = publication.reference
         state = complete_sqlite_state()
         observed_at = datetime.now(UTC)
         authority = replace(
@@ -1574,9 +1620,11 @@ class McpTransportTest(unittest.TestCase):
 
         def publish_then_expire(repository: ArtifactRepository, artifact: NewArtifact) -> ArtifactPublication:
             nonlocal publication, decision_time
-            publication = original_publish(repository, artifact)
+            published = original_publish(repository, artifact)
+            assert isinstance(published, ArtifactPublication)
+            publication = published
             decision_time = SQLITE_NOW + timedelta(minutes=5, seconds=1)
-            return publication
+            return published
 
         def current_time(_timezone: timezone) -> datetime:
             return decision_time

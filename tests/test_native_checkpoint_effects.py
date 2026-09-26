@@ -16,6 +16,7 @@ from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode, Fil
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
+from pinboard.application.artifact_publication import ArtifactWriteFailure
 from pinboard.application.artifacts import ArtifactPublication, NewArtifact
 from pinboard.domain import work_models
 from pinboard.mcp import execution as mcp_execution
@@ -103,7 +104,9 @@ class NativeCheckpointEffectsTest(CheckpointPackageSupport):
         before = fixture.store.validated_snapshot()
         publish = ArtifactRepository.publish
 
-        def fail_package(repository: ArtifactRepository, artifact: NewArtifact) -> ArtifactPublication:
+        def fail_package(
+            repository: ArtifactRepository, artifact: NewArtifact
+        ) -> ArtifactPublication | ArtifactWriteFailure:
             if artifact.key.endswith("-review-package"):
                 raise ArtifactError(ArtifactErrorCode.STORAGE_IO_ERROR, "controlled package publication failure")
             return publish(repository, artifact)
@@ -401,7 +404,9 @@ class NativeCheckpointEffectsTest(CheckpointPackageSupport):
         original_publish = ArtifactRepository.publish
         relation_state: list[stored_state.StoredWorkState] = []
 
-        def publish_then_record(repository: ArtifactRepository, artifact: NewArtifact) -> ArtifactPublication:
+        def publish_then_record(
+            repository: ArtifactRepository, artifact: NewArtifact
+        ) -> ArtifactPublication | ArtifactWriteFailure:
             publication = original_publish(repository, artifact)
             if artifact.key.endswith("-review-package") and not relation_state:
                 recorded = self.transition_result(fixture, replacement_action, relation)

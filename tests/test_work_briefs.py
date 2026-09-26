@@ -872,13 +872,11 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
-    def test_native_acceptance_fault_matrix_preserves_exact_orphan_and_fresh_store(self) -> None:
+    def test_native_operational_acceptance_faults_preserve_exact_orphan_and_fresh_store(self) -> None:
         database_failure = StorageError(StorageErrorCode.BUSY, "database failed", retryable=True)
-        verification_failure = ArtifactError(ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION, "store verification failed")
         readonly = translate_database_error(sqlite3.OperationalError("attempt to write a readonly database"))
         for target, error in (
             ("pinboard.adapters.sqlite.store.SQLiteWorkStore.accept_artifact_reference", database_failure),
-            ("pinboard.adapters.sqlite.artifacts.verify_reference", verification_failure),
             ("pinboard.adapters.sqlite.store.SQLiteWorkStore.accept_artifact_reference", readonly),
         ):
             with self.subTest(target=target, code=error.code):
@@ -908,17 +906,17 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 )
                 self.assertEqual(canonical_work_brief_bytes(brief), (work / selector).read_bytes())
                 self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
-                # The caller explicitly selects the already verified orphan; no second publication is claimed.
-                with patch(target, side_effect=error), self.assertRaises(UnexpectedToolError) as retry_failure:
-                    self.publish(project, work, brief)
-                cause = retry_failure.exception.__cause__
-                if isinstance(error, ArtifactError):
-                    self.assertIsInstance(cause, StorageError)
-                    assert isinstance(cause, StorageError)
-                    self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, cause.code)
-                    self.assertIs(error, cause.__cause__)
-                else:
-                    self.assertIs(error, cause)
+                # The already verified orphan is reused; reference acceptance remains an unchanged failure.
+                with patch(target, side_effect=error):
+                    reused_failure = self.publish(project, work, brief)
+                self.assertEqual("infrastructure-failure", reused_failure["status"])
+                self.assertEqual("ARTIFACT_ACCEPTANCE_FAILED", reused_failure["code"])
+                self.assertEqual("unchanged", reused_failure["effect"])
+                self.assertEqual([], reused_failure["changed_surfaces"])
+                self.assertEqual(
+                    "retry-same-input" if isinstance(error, StorageError) and error.retryable else "do-not-retry",
+                    reused_failure["retry"],
+                )
                 self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
                 recovered = self.publish(project, work, brief)
                 reference = recovered["reference"]
@@ -930,6 +928,25 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 self.assertEqual(before.lifecycle.work_items, reloaded.lifecycle.work_items)
                 self.assertEqual(before.authority, reloaded.authority)
                 self.assertEqual(len(before.artifact_references) + 1, len(reloaded.artifact_references))
+
+    def test_native_store_verification_invariant_keeps_traceback_after_publication(self) -> None:
+        project, work = self.initialized_publication()
+        before = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
+        brief = work_a_brief(project)
+        selector = f"artifacts/briefs/{brief.attempt_id}/1.json"
+        invariant = ArtifactError(ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION, "store verification failed")
+        with (
+            patch("pinboard.adapters.sqlite.artifacts.verify_reference", side_effect=invariant),
+            self.assertRaises(UnexpectedToolError) as raised,
+        ):
+            self.publish(project, work, brief)
+        storage_cause = raised.exception.__cause__
+        self.assertIsInstance(storage_cause, StorageError)
+        assert isinstance(storage_cause, StorageError)
+        self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, storage_cause.code)
+        self.assertIs(invariant, storage_cause.__cause__)
+        self.assertEqual(canonical_work_brief_bytes(brief), (work / selector).read_bytes())
+        self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
     def test_native_post_link_sync_failure_preserves_and_reuses_exact_publication(self) -> None:
         project, work = self.initialized_publication()
@@ -949,7 +966,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         self.assertEqual(
             (
                 "failed-after-publication",
-                "ARTIFACT_ACCEPTANCE_FAILED",
+                "ARTIFACT_PUBLICATION_FAILED",
                 ["immutable-artifact"],
                 "do-not-retry",
                 selector,

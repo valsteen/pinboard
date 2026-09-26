@@ -15,7 +15,6 @@ from pinboard.application.artifacts import (
 from pinboard.application.ports import WorkStore, WorkStoreError
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
-    ArtifactAcceptanceAfterPublicationError,
     ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
@@ -32,7 +31,7 @@ class ArtifactPublisher(Protocol):
     @property
     def work_root(self) -> Path: ...
 
-    def publish(self, artifact: NewArtifact) -> ArtifactPublication: ...
+    def publish(self, artifact: NewArtifact) -> ArtifactPublication | ArtifactWriteFailure: ...
 
 
 class ArtifactReader(Protocol):
@@ -44,6 +43,23 @@ class AcceptedArtifactPublication:
     reference: stored_state.ArtifactReference
     artifact_created: bool
     ledger_changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactAcceptanceFailure:
+    selector: str
+    cause: WorkStoreError
+    details: FailureDetails
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactWriteFailure:
+    selector: str
+    cause: Exception
+    details: FailureDetails
+
+
+type ArtifactPublicationFailure = ArtifactAcceptanceFailure | ArtifactWriteFailure
 
 
 def _committed_artifact_details(
@@ -68,27 +84,38 @@ def publish_accepted_artifact(
     publisher: ArtifactPublisher,
     artifact: NewArtifact,
     accepted_at: datetime,
-) -> DecisionResult[AcceptedArtifactPublication]:
+) -> DecisionResult[AcceptedArtifactPublication | ArtifactAcceptanceFailure | ArtifactWriteFailure]:
     """Publish immutable bytes, then accept their verified reference in SQLite.
 
-    A newly published immutable artifact cannot be rolled back if SQLite acceptance fails, so that
-    infrastructure sequence retains ``ArtifactAcceptanceAfterPublicationError`` rather than presenting
-    an unchanged-result failure.
+    A newly published immutable artifact cannot be rolled back if SQLite acceptance fails.
     """
 
     publication = publisher.publish(artifact)
+    if isinstance(publication, ArtifactWriteFailure):
+        return publication
     published_reference = publication.reference
     artifact_created = publication.created
     try:
         accepted = store.accept_artifact_reference(publisher.work_root, published_reference, accepted_at)
     except WorkStoreError as error:
-        if artifact_created:
-            raise ArtifactAcceptanceAfterPublicationError(
-                published_reference.selector,
-                error,
-                (ChangedSurface.IMMUTABLE_ARTIFACT,),
-            ) from error
-        raise
+        if error.invariant_violation:
+            raise
+        return ArtifactAcceptanceFailure(
+            published_reference.selector,
+            error,
+            FailureDetails(
+                observed=(FailureFact("published_artifact_selector", published_reference.selector),),
+                mismatches=(),
+                retry=(
+                    RetryDisposition.DO_NOT_RETRY
+                    if artifact_created or not error.retryable
+                    else RetryDisposition.RETRY_SAME_INPUT
+                ),
+                effect=EffectDisposition.COMMITTED if artifact_created else EffectDisposition.UNCHANGED,
+                changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,) if artifact_created else (),
+                alternatives=(),
+            ),
+        )
     if isinstance(accepted, DecisionFailure):
         if artifact_created:
             return DecisionFailure(

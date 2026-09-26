@@ -38,7 +38,7 @@ from pinboard.application.work_briefs import (
     decode_canonical_work_brief,
 )
 from pinboard.cli.errors import (
-    InitializationAfterCommittedEffectsError,
+    InitializationAfterCommittedEffects,
 )
 from pinboard.cli.work_state_models import Diagnostic, Severity, ValidationReport
 from pinboard.domain import decision_models, history, work_models
@@ -52,7 +52,7 @@ def initialize_work_state(
     default_work_root: bool,
     store: ports.GeneratedViewSetReader,
     now: datetime | None = None,
-) -> work_brief_models.WorkBriefResult[InitReceipt]:
+) -> work_brief_models.WorkBriefResult[InitReceipt | InitializationAfterCommittedEffects]:
     git_exclude_path = ensure_git_exclude(shared_repository_root, b"/.pinboard/") if default_work_root else None
     database_path: Path | None = None
     try:
@@ -73,7 +73,7 @@ def initialize_work_state(
         if isinstance(rendered_attempt_briefs, work_brief_models.WorkBriefFailure):
             if git_exclude_path is None and database_path is None:
                 return rendered_attempt_briefs
-            raise InitializationAfterCommittedEffectsError(
+            return InitializationAfterCommittedEffects(
                 git_exclude_path,
                 database_path,
                 rendered_attempt_briefs,
@@ -82,9 +82,11 @@ def initialize_work_state(
         if rebuild_result.warning is not None:
             raise FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, rebuild_result.warning.message)
     except (StorageError, ArtifactError, FileIOError) as error:
+        if isinstance(error, StorageError) and error.invariant_violation:
+            raise
         if git_exclude_path is None and database_path is None:
             raise
-        raise InitializationAfterCommittedEffectsError(git_exclude_path, database_path, error) from error
+        return InitializationAfterCommittedEffects(git_exclude_path, database_path, error)
     return InitReceipt(
         roots.work_root,
         roots.database_path,

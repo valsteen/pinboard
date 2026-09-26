@@ -184,6 +184,8 @@ class AutomaticCapture:
             directory = contributor_traces.automatic_trace_directory(data_root, settings, item_id)
             return None if directory is None else SemanticCapture(directory, automatic=True)
         except (ValueError, OSError, FileIOError, StorageError) as error:
+            if isinstance(error, StorageError) and error.invariant_violation:
+                raise
             raise ToolError(
                 "Automatic Pinboard trace settings or destination are unavailable; the target did not run."
             ) from error

@@ -16,7 +16,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import ports, work_brief_models
 from pinboard.cli import cli_commands, work_views
 from pinboard.cli.cli_output import write_json
-from pinboard.cli.errors import CliResult
+from pinboard.cli.errors import CliResult, InitializationAfterCommittedEffects
 from pinboard.cli.work_state import (
     initialize_work_state,
     read_state_for_validation,
@@ -44,6 +44,8 @@ def contributor_capture_control(arguments: Sequence[str]) -> int:
                 raise ValueError("Automatic trace pruning requires the selected destination.")
             contributor_traces.prune_cli_traces(Path(arguments[1]))
     except (ValueError, OSError, FileIOError, StorageError) as error:
+        if isinstance(error, StorageError) and error.invariant_violation:
+            raise
         print(f"Contributor trace setup failed before Pinboard ran: {error}", file=sys.stderr)
         return 64
     return 0
@@ -182,7 +184,7 @@ def initialize_state(
         store=store,
         now=operation_time,
     )
-    if isinstance(receipt, work_brief_models.WorkBriefFailure):
+    if isinstance(receipt, (work_brief_models.WorkBriefFailure, InitializationAfterCommittedEffects)):
         return receipt
     optional_next_skills = (
         () if receipt.resumed else ("repository-readiness", "slop-cleanup", "maintaining-agent-guidance")

@@ -12,7 +12,7 @@ from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from pinboard.adapters import checkpoint_compatibility, review_operations
-from pinboard.adapters.files.errors import ArtifactError
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import candidate_snapshots, checkpoint_compatibility_models, stored_state, work_brief_models
@@ -26,6 +26,52 @@ from tests.checkpoint_support import AcceptedPackageFixture, CheckpointPackageSu
 
 
 class CheckpointCompatibilityTest(CheckpointPackageSupport):
+    def test_recovery_preparation_invariant_after_publication_keeps_traceback(self) -> None:
+        fixture, history_id, _correction_id, patch_bytes = self.compatibility_review_fixture()
+        choice: dict[str, contracts.JsonValue] = {
+            "kind": "package-initial-recovery",
+            "attempt_id": "work-a-1",
+            "candidate_revision": "b" * 40,
+            "runtime": "codex",
+            "background": False,
+            "checkpoint_history_id": history_id,
+            "candidate_patch": base64.b64encode(patch_bytes).decode(),
+        }
+        before = fixture.store.validated_snapshot()
+        invariant = StorageError(StorageErrorCode.INVALID_STATE, "persisted review context is inconsistent")
+        with (
+            patch.object(checkpoint_compatibility.review_operations, "prepare_review_job", side_effect=invariant),
+            self.assertRaises(StorageError) as raised,
+        ):
+            mcp_jobs._review_job(str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken())
+        self.assertIs(invariant, raised.exception)
+        self.assertEqual(
+            before.lifecycle.project.revision + 1, fixture.store.validated_snapshot().lifecycle.project.revision
+        )
+
+    def test_recovery_file_invariant_after_publication_keeps_traceback(self) -> None:
+        fixture, history_id, _correction_id, patch_bytes = self.compatibility_review_fixture()
+        choice: dict[str, contracts.JsonValue] = {
+            "kind": "package-initial-recovery",
+            "attempt_id": "work-a-1",
+            "candidate_revision": "b" * 40,
+            "runtime": "codex",
+            "background": False,
+            "checkpoint_history_id": history_id,
+            "candidate_patch": base64.b64encode(patch_bytes).decode(),
+        }
+        before = fixture.store.validated_snapshot()
+        invariant = ArtifactError(ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION, "immutable prompt conflict")
+        with (
+            patch.object(checkpoint_compatibility.review_operations, "prepare_review_job", side_effect=invariant),
+            self.assertRaises(ArtifactError) as raised,
+        ):
+            mcp_jobs._review_job(str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken())
+        self.assertIs(invariant, raised.exception)
+        self.assertEqual(
+            before.lifecycle.project.revision + 1, fixture.store.validated_snapshot().lifecycle.project.revision
+        )
+
     def test_successful_historical_patch_remedy_cannot_authorize_new_correction_start(self) -> None:
         fixture, history_id, _correction_id, patch_bytes = self.compatibility_review_fixture()
         remedy: dict[str, contracts.JsonValue] = {
@@ -306,9 +352,12 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
                 self.assertEqual(before.authority, after.authority)
                 self.assertEqual("failed-after-publication", outcome.content["status"], outcome.content)
                 self.assertEqual(
-                    "ACTION_NOT_AVAILABLE"
-                    if boundary in ("missing-result", "bad-correction")
-                    else "ARTIFACT_ACCEPTANCE_FAILED",
+                    {
+                        "missing-result": "ACTION_NOT_AVAILABLE",
+                        "bad-correction": "ACTION_NOT_AVAILABLE",
+                        "context-reread": "REVIEW_JOB_PREPARATION_FAILED",
+                        "prompt-publication": "REVIEW_PROMPT_PUBLICATION_FAILED",
+                    }[boundary],
                     outcome.content["code"],
                 )
                 self.assertEqual(

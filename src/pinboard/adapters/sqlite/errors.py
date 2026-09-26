@@ -19,10 +19,12 @@ class StorageErrorCode(Enum):
 class StorageError(WorkStoreError):
     code: StorageErrorCode
     retryable: bool
+    invariant_violation: bool
 
     def __init__(self, code: StorageErrorCode, message: str, *, retryable: bool = False) -> None:
         self.code = code
         self.retryable = retryable
+        self.invariant_violation = code in (StorageErrorCode.INVARIANT_VIOLATION, StorageErrorCode.INVALID_STATE)
         super().__init__(f"{code.value}: {message}")
 
     def with_database_path(self, database_path: Path) -> StorageError:

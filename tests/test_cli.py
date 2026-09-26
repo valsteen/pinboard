@@ -21,6 +21,7 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import persistence as sqlite_persistence
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.database import initialize_database
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state, work_brief_models
@@ -47,6 +48,15 @@ from .work_brief_support import (
 
 
 class CliTest(unittest.TestCase):
+    def test_cli_persisted_state_invariant_keeps_traceback(self) -> None:
+        invariant = StorageError(StorageErrorCode.INVARIANT_VIOLATION, "stored state is inconsistent")
+        with (
+            patch("pinboard.cli.work_state_commands.resolve_roots", side_effect=invariant),
+            self.assertRaises(StorageError) as raised,
+        ):
+            self.run_cli("status", "--json")
+        self.assertIs(invariant, raised.exception)
+
     def assert_repository_care_pointer(self, output: str, *, present: bool) -> None:
         expected_count = 1 if present else 0
         for skill in ("$repository-readiness", "$slop-cleanup", "$maintaining-agent-guidance"):

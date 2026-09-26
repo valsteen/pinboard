@@ -3,7 +3,11 @@ from datetime import datetime
 
 from pinboard.application import query_models, stored_state
 from pinboard.application.actions import discover_current_actions
-from pinboard.application.artifact_publication import publish_accepted_artifact
+from pinboard.application.artifact_publication import (
+    ArtifactAcceptanceFailure,
+    ArtifactWriteFailure,
+    publish_accepted_artifact,
+)
 from pinboard.application.artifacts import BriefArtifactRef, NewArtifact
 from pinboard.application.dispatch_models import (
     DispatchArtifactPort,
@@ -159,7 +163,7 @@ def publish_dispatch_review(
     candidate: bytes,
     review_id: ReviewId,
     accepted_at: datetime,
-) -> DispatchResult[AcceptedDispatchReview]:
+) -> DispatchResult[AcceptedDispatchReview] | ArtifactAcceptanceFailure | ArtifactWriteFailure:
     key = f"{attempt_id}-brief-review-{review_key_sha256}"
     existing = _find_ready_review_reference(store, attempt_id, review_key_sha256)
     if existing is not None:
@@ -171,6 +175,8 @@ def publish_dispatch_review(
             NewArtifact(work_models.ArtifactKind.EVIDENCE, f"{key}-rejected-{review_id}", 1, ".json", candidate),
             accepted_at,
         )
+        if isinstance(rejected_acceptance, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+            return rejected_acceptance
         if isinstance(rejected_acceptance, DecisionFailure):
             return DispatchFailure(
                 DispatchRejectionCode.STALE_ACTION,
@@ -207,6 +213,8 @@ def publish_dispatch_review(
         NewArtifact(work_models.ArtifactKind.EVIDENCE, key, 1, ".json", candidate),
         accepted_at,
     )
+    if isinstance(accepted_publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+        return accepted_publication
     if isinstance(accepted_publication, DecisionFailure):
         return DispatchFailure(
             DispatchRejectionCode.STALE_ACTION,

@@ -446,36 +446,13 @@ def _brief_review(raw: dict[str, JsonValue], token: execution.CancellationToken)
                 datetime.now(UTC),
             )
             if isinstance(publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
-                acceptance_failed = isinstance(publication, ArtifactAcceptanceFailure)
-                return execution.OperationResult(
-                    {
-                        "schema": schema,
-                        "status": (
-                            "failed-after-publication"
-                            if publication.details.effect == EffectDisposition.COMMITTED
-                            else "infrastructure-failure"
-                        ),
-                        "code": "ARTIFACT_ACCEPTANCE_FAILED" if acceptance_failed else "ARTIFACT_PUBLICATION_FAILED",
-                        "message": (
-                            "The review's accepted reference could not be committed."
-                            if acceptance_failed
-                            else "The review's immutable publication could not be completed."
-                        ),
-                        "state_changed": publication.details.effect == EffectDisposition.COMMITTED,
-                        "effect": publication.details.effect.value,
-                        "retry": publication.details.retry.value,
-                        "changed_surfaces": [surface.value for surface in publication.details.changed_surfaces],
-                        "observed": [],
-                        "mismatches": [],
-                        "published_selector": publication.selector,
-                        "recovery": (
-                            "Inspect the accepted reference before continuing."
-                            if acceptance_failed
-                            else "Inspect the published artifact and repair immutable publication before continuing."
-                        ),
-                    },
-                    "infrastructure-failure",
-                    publication.selector,
+                return common._artifact_publication_failure(
+                    schema,
+                    publication,
+                    acceptance_message="The review's accepted reference could not be committed.",
+                    publication_message="The review's immutable publication could not be completed.",
+                    acceptance_recovery="Inspect the accepted reference before continuing.",
+                    publication_recovery="Inspect the published artifact and repair immutable publication before continuing.",
                 )
             if isinstance(publication, work_brief_models.WorkBriefFailure):
                 return common._read_failure(schema, publication.code.value, publication.message, None)

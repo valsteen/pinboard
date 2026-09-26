@@ -18,6 +18,7 @@ from pinboard.application import (
     work_brief_models,
     work_briefs,
 )
+from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.ports import GeneratedViewReader
 from pinboard.domain.errors import (
@@ -164,6 +165,40 @@ def _details_json(details: FailureDetails | None) -> dict[str, JsonValue]:
             for mismatch in details.mismatches
         ],
     }
+
+
+def _artifact_publication_failure(
+    schema: str,
+    failure: ArtifactAcceptanceFailure | ArtifactWriteFailure,
+    *,
+    acceptance_message: str,
+    publication_message: str,
+    acceptance_recovery: str,
+    publication_recovery: str,
+) -> execution.OperationResult:
+    acceptance_failed = isinstance(failure, ArtifactAcceptanceFailure)
+    return execution.OperationResult(
+        {
+            "schema": schema,
+            "status": (
+                "failed-after-publication"
+                if failure.details.effect == EffectDisposition.COMMITTED
+                else "infrastructure-failure"
+            ),
+            "code": "ARTIFACT_ACCEPTANCE_FAILED" if acceptance_failed else "ARTIFACT_PUBLICATION_FAILED",
+            "message": acceptance_message if acceptance_failed else publication_message,
+            "state_changed": failure.details.effect == EffectDisposition.COMMITTED,
+            "effect": failure.details.effect.value,
+            "retry": failure.details.retry.value,
+            "changed_surfaces": [surface.value for surface in failure.details.changed_surfaces],
+            "observed": [],
+            "mismatches": [],
+            "published_selector": failure.selector,
+            "recovery": acceptance_recovery if acceptance_failed else publication_recovery,
+        },
+        "infrastructure-failure",
+        failure.selector,
+    )
 
 
 def _refresh_affected_views(

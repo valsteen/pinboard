@@ -676,7 +676,7 @@ def main() -> None:
         print(str(error), file=sys.stderr)
         raise SystemExit(64) from error
     try:
-        omit_regex_lookarounds = read_mcp_omit_regex_lookarounds()
+        omit_regex_lookarounds = read_mcp_omit_regex_lookarounds().value
     except ValueError as error:
         print(str(error), file=sys.stderr)
         raise SystemExit(64) from error

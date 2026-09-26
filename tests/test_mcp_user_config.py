@@ -14,6 +14,8 @@ from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp_types import Tool
 
+from pinboard.adapters.files import git_config
+from pinboard.adapters.files.setting_resolution import SettingResolutionError
 from pinboard.adapters.files.user_config import read_mcp_omit_regex_lookarounds
 from pinboard.mcp import contracts, server
 
@@ -62,14 +64,25 @@ class McpUserConfigTest(unittest.TestCase):
     def test_first_use_materializes_and_preserves_explicit_choice(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"XDG_CONFIG_HOME": temporary}):
             path = Path(temporary) / "pinboard" / "config"
-            self.assertTrue(read_mcp_omit_regex_lookarounds())
+            first = read_mcp_omit_regex_lookarounds()
+            self.assertTrue(first.value)
+            self.assertEqual(path, first.path)
+            self.assertEqual("unconfirmed", first.effects.parent_creation)
+            self.assertEqual(("unconfirmed", "acknowledged"), (first.effects.file_creation, first.effects.key_write))
             first_use = path.read_text()
             self.assertEqual("[mcp]\n\tomitRegexLookarounds = true\n", first_use)
             path.write_text("[mcp]\n\tomitRegexLookarounds = false\n")
-            self.assertFalse(read_mcp_omit_regex_lookarounds())
+            stored = read_mcp_omit_regex_lookarounds()
+            self.assertFalse(stored.value)
+            self.assertEqual("none", stored.effects.parent_creation)
+            self.assertEqual(("none", "none"), (stored.effects.file_creation, stored.effects.key_write))
             self.assertEqual("[mcp]\n\tomitRegexLookarounds = false\n", path.read_text())
             path.write_text("[other]\n\tvalue = kept\n")
-            self.assertTrue(read_mcp_omit_regex_lookarounds())
+            missing_key = read_mcp_omit_regex_lookarounds()
+            self.assertTrue(missing_key.value)
+            self.assertEqual(
+                ("none", "acknowledged"), (missing_key.effects.file_creation, missing_key.effects.key_write)
+            )
             self.assertEqual("[other]\n\tvalue = kept\n" + first_use, path.read_text())
 
     def test_invalid_or_unwritable_config_stops_mcp_startup(self) -> None:
@@ -77,8 +90,8 @@ class McpUserConfigTest(unittest.TestCase):
             path = Path(temporary) / "pinboard" / "config"
             path.parent.mkdir()
             path.write_text("[mcp]\n\tomitRegexLookarounds = perhaps\n")
-            for expected in ("Invalid Pinboard MCP config", "Cannot read or write Pinboard MCP config"):
-                if expected.startswith("Cannot"):
+            for expected in ("Cannot read Pinboard MCP config", "Cannot read or write Pinboard MCP config"):
+                if expected.startswith("Cannot read or write"):
                     path.unlink()
                     path.parent.rmdir()
                     path.parent.write_text("not a directory")
@@ -102,3 +115,56 @@ class McpUserConfigTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Invalid Pinboard MCP config"):
                 read_mcp_omit_regex_lookarounds()
             self.assertEqual(content, path.read_text())
+
+    def test_failed_reads_and_writes_report_confirmed_and_uncertain_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"XDG_CONFIG_HOME": temporary}):
+            path = Path(temporary) / "pinboard" / "config"
+            with (
+                patch.object(
+                    git_config,
+                    "get_all",
+                    return_value=git_config.ReadFailed(path, "get-all", "mcp.omitRegexLookarounds", "read failed"),
+                ),
+                self.assertRaises(SettingResolutionError) as failed_read,
+            ):
+                read_mcp_omit_regex_lookarounds()
+            self.assertIn("read failed", str(failed_read.exception))
+            self.assertEqual("none", failed_read.exception.effects.parent_creation)
+            self.assertFalse(path.parent.exists())
+
+            with (
+                patch.object(
+                    git_config,
+                    "add",
+                    return_value=git_config.WriteUnconfirmed(path, "mcp.omitRegexLookarounds", "write failed"),
+                ),
+                self.assertRaises(SettingResolutionError) as failed,
+            ):
+                read_mcp_omit_regex_lookarounds()
+            self.assertEqual(path, failed.exception.path)
+            self.assertEqual("unconfirmed", failed.exception.effects.parent_creation)
+            self.assertEqual(
+                ("unconfirmed", "unconfirmed"),
+                (failed.exception.effects.file_creation, failed.exception.effects.key_write),
+            )
+            self.assertFalse(hasattr(failed.exception, "value"))
+
+            with (
+                patch.object(
+                    git_config,
+                    "get_all",
+                    side_effect=[
+                        git_config.Missing(path, "mcp.omitRegexLookarounds"),
+                        git_config.ReadFailed(path, "get-all", "mcp.omitRegexLookarounds", "read failed"),
+                    ],
+                ),
+                self.assertRaises(SettingResolutionError) as failed_reread,
+            ):
+                read_mcp_omit_regex_lookarounds()
+            self.assertTrue(path.is_file())
+            self.assertEqual("none", failed_reread.exception.effects.parent_creation)
+            self.assertEqual(
+                ("unconfirmed", "acknowledged"),
+                (failed_reread.exception.effects.file_creation, failed_reread.exception.effects.key_write),
+            )
+            self.assertIn("read failed", str(failed_reread.exception))

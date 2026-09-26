@@ -174,7 +174,8 @@ class AutomaticCapture:
             state = contributor_traces.read_project_trace_settings(Path(project_root))
             if state is None:
                 return None
-            data_root, settings = state
+            data_root, resolution = state
+            settings = resolution.value
             item_id = (
                 self._select_item(data_root.parent, work_root if isinstance(work_root, str) else None, arguments)
                 if settings.item_overrides

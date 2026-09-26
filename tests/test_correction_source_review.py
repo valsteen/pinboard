@@ -1,3 +1,4 @@
+import base64
 import dataclasses
 import hashlib
 import json
@@ -652,6 +653,71 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         )
         self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", rejected.content["code"])
         self.assertEqual(before, fixture.store.validated_snapshot())
+
+    def test_native_correction_context_binds_fresh_review_before_dispatch(self) -> None:
+        fixture = self.correction_fixture()
+        (fixture.project / "architecture.md").write_text(
+            "# Architecture\n\n## Contract\n\nTyped JSON stays canonical after correction.\n", encoding="utf-8"
+        )
+        history_id, choice = self.submit_and_return(fixture, "changed-source", committed=True)
+        before = fixture.store.validated_snapshot()
+        artifact_files = {
+            path.relative_to(fixture.work): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (fixture.work / "artifacts").rglob("*")
+            if path.is_file()
+        }
+        context = call_native_tool(
+            server.CORRECTION_CONTEXT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "correction_history_id": history_id,
+            },
+        )
+        self.assertEqual("ready", context["status"], context)
+        identity = self.json_object(context["starting_candidate"])
+        snapshot_bytes = (fixture.work / str(identity["selector"])).read_bytes()
+        self.assertEqual(identity["content_sha256"], hashlib.sha256(snapshot_bytes).hexdigest())
+        accepted_snapshot = candidate_snapshots.decode_candidate_snapshot(snapshot_bytes)
+        snapshot = self.json_object(context["starting_snapshot"])
+        self.assertEqual(accepted_snapshot.candidate, snapshot["candidate"])
+        self.assertEqual(accepted_snapshot.diff, base64.b64decode(str(snapshot["diff_base64"]), validate=True))
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        self.assertEqual(
+            artifact_files,
+            {
+                path.relative_to(fixture.work): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in (fixture.work / "artifacts").rglob("*")
+                if path.is_file()
+            },
+        )
+        effective = msgspec.convert(context["effective_brief"], type=work_brief_models.WorkBrief, strict=True)
+        self.assertEqual(
+            context["effective_brief_sha256"],
+            hashlib.sha256(work_briefs.canonical_work_brief_bytes(effective)).hexdigest(),
+        )
+        self.assertNotEqual(
+            context["effective_brief_sha256"],
+            hashlib.sha256(work_briefs.canonical_work_brief_bytes(fixture.brief)).hexdigest(),
+        )
+        review = self.json_object(choice["brief_review"])
+        review["contract_review"] = msgspec.json.decode(ready_review(effective))
+        review["starting_candidate"] = context["starting_candidate"]
+        review["correction_input"] = {"reason": context["correction_reason"]}
+        stale = deepcopy(choice)
+        self.json_object(stale["brief_review"])["contract_review"] = msgspec.json.decode(ready_review(fixture.brief))
+        rejected = self.dispatch_native(fixture, stale)
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", rejected["code"])
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        wrong_snapshot = deepcopy(choice)
+        self.json_object(self.json_object(wrong_snapshot["brief_review"])["starting_candidate"])["content_sha256"] = (
+            "f" * 64
+        )
+        rejected = self.dispatch_native(fixture, wrong_snapshot)
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", rejected["code"])
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        self.assertEqual("ready", self.dispatch_native(fixture, choice)["status"])
 
     def test_dirty_commit_and_late_checkout_change_preserve_truthful_effects(self) -> None:
         fixture = self.correction_fixture()

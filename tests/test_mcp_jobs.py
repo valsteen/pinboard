@@ -205,7 +205,7 @@ class McpJobsTest(CheckpointPackageSupport):
         )
         try:
             tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
-            self.assertEqual(20, len(tools))
+            self.assertEqual(21, len(tools))
             for name in (
                 "pinboard_dispatch",
                 "pinboard_review_job",

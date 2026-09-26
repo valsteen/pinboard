@@ -709,6 +709,28 @@ class SQLiteWorkStore:
                     if correction_history_id is None
                     else sqlite_state.read_history_receipt(connection, correction_history_id)
                 )
+                returned_candidate_reference = None
+                if (
+                    correction_receipt is not None
+                    and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
+                    and attempt.state == work_models.AttemptState.ACTIVE
+                ):
+                    submission_row = connection.execute(
+                        """
+                        SELECT history_id FROM transition_history
+                        WHERE subject_id = ? AND action_kind = 'submit-review' AND project_revision < ?
+                        ORDER BY project_revision DESC LIMIT 1
+                        """,
+                        (attempt_id, correction_receipt.project_revision),
+                    ).fetchone()
+                    if submission_row is not None:
+                        submission = sqlite_state.read_history_receipt(
+                            connection, decode_row(submission_row, HistoryIdRow).history_id
+                        )
+                        if submission is not None and submission.artifact_ref_id is not None:
+                            returned_candidate_reference = read_artifact_reference_by_id(
+                                connection, submission.artifact_ref_id
+                            )
                 return query_models.ReviewJobContextFacts(
                     attempt,
                     candidate_snapshot,
@@ -717,6 +739,7 @@ class SQLiteWorkStore:
                     checkpoint_package_reference,
                     checkpoint_candidate_reference,
                     correction_receipt,
+                    returned_candidate_reference,
                 )
         finally:
             connection.close()

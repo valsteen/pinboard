@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import shlex
 from datetime import UTC, datetime
@@ -11,7 +12,7 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.adapters import candidate_evidence, review_operations
+from pinboard.adapters import candidate_evidence, dispatch_operations, review_operations
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, ImmutableFilePublishedError, RootError
@@ -49,6 +50,7 @@ from pinboard.domain.identifiers import (
     ActionId,
     ArtifactRefId,
     AttemptId,
+    HistoryId,
     HostId,
     ItemId,
     LeaseId,
@@ -122,6 +124,83 @@ def _read_item_status(
         return common._item_status_failure(projected.code.value, projected.message, projected.details)
     token.checkpoint()
     return execution.OperationResult(_item_status_json(projected), "ok", projected.revision)
+
+
+def _read_correction_context(
+    project_root: str,
+    work_root: str,
+    attempt_id: str,
+    correction_history_id: IntegerBoundaryValue,
+    token: execution.CancellationToken,
+) -> execution.OperationResult:
+    """Expose the dispatcher's effective review subject without publishing it."""
+    token.checkpoint()
+    try:
+        request = msgspec.convert(
+            {
+                "project_root": project_root,
+                "work_root": work_root,
+                "attempt_id": attempt_id,
+                "correction_history_id": correction_history_id,
+            },
+            type=contracts.CorrectionContextRequest,
+            strict=True,
+        )
+        durable = common._resolve_durable(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        return common._read_failure("pinboard-correction-context/v1", "CORRECTION_CONTEXT_INVALID", str(error), None)
+    token.checkpoint()
+    context = dispatch_operations.read_correction_context(
+        common.compose_store(durable),
+        ArtifactRepository(durable),
+        resolve_source_checkout_root(Path(request.project_root)),
+        AttemptId(request.attempt_id),
+        HistoryId(request.correction_history_id),
+    )
+    if isinstance(context, dispatch_operations.DispatchFailure):
+        return common._read_failure(
+            "pinboard-correction-context/v1", context.code.value, context.message, context.details
+        )
+    brief = context.effective_brief
+    checkpoint = brief.checkpoint
+    reviewed_set_sha256 = (
+        hashlib.sha256(work_briefs.canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)).hexdigest()
+        if isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        else None
+    )
+    snapshot = context.starting_snapshot
+    result = contracts.CorrectionContextReady(
+        "pinboard-correction-context/v1",
+        "ready",
+        request.attempt_id,
+        request.correction_history_id,
+        context.correction_reason,
+        brief,
+        hashlib.sha256(work_briefs.canonical_work_brief_bytes(brief)).hexdigest(),
+        hashlib.sha256(work_briefs.canonical_checkpoint_bytes(checkpoint)).hexdigest(),
+        reviewed_set_sha256,
+        context.starting_candidate,
+        contracts.CorrectionSnapshot(
+            snapshot.schema,
+            candidate_snapshots.candidate_kind(snapshot),
+            snapshot.attempt_id,
+            snapshot.item_id,
+            snapshot.candidate,
+            snapshot.branch,
+            snapshot.preimage_revision,
+            snapshot.accepted_base_revision,
+            snapshot.recorded_at,
+            base64.b64encode(snapshot.diff).decode("ascii"),
+        ),
+        False,
+        "unchanged",
+        "safe-to-repeat",
+        (),
+    )
+    token.checkpoint()
+    content = msgspec.to_builtins(result)
+    assert isinstance(content, dict)
+    return execution.OperationResult(content, "read", None)
 
 
 def _brief_preparation_failure(schema: str, code: str, message: str) -> execution.OperationResult:

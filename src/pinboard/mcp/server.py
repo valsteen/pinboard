@@ -39,6 +39,7 @@ from pinboard.mcp.tool_names import (
     BRIEF_SOURCES_TOOL,
     CANDIDATE_OBSERVE_TOOL,
     CANDIDATE_RESTORE_TOOL,
+    CORRECTION_CONTEXT_TOOL,
     DISPATCH_TOOL,
     ITEM_DEFINITION_TOOL,
     ITEM_STATUS_TOOL,
@@ -316,6 +317,38 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
                 "work_root": work_root,
                 "attempt_id": attempt_id,
                 "reconciliation": reconciliation,
+            },
+            capture=capture,
+        )
+
+    @server.tool(
+        name=CORRECTION_CONTEXT_TOOL,
+        description="Read the exact effective correction brief and accepted starting snapshot for a current returned candidate; does not dispatch or change state.",
+    )
+    async def correction_context(
+        project_root: str,
+        work_root: str,
+        attempt_id: str,
+        correction_history_id: IntegerBoundaryValue,
+    ) -> dict[str, JsonValue]:
+        return await execution._run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            CORRECTION_CONTEXT_TOOL,
+            project_root,
+            partial(
+                read_operations._read_correction_context,
+                project_root,
+                work_root,
+                attempt_id,
+                correction_history_id,
+            ),
+            arguments={
+                "project_root": project_root,
+                "work_root": work_root,
+                "attempt_id": attempt_id,
+                "correction_history_id": correction_history_id,
             },
             capture=capture,
         )
@@ -605,6 +638,11 @@ def _install_boundary_contracts(server: MCPServer, omit_regex_lookarounds: bool)
             ATTEMPT_INSPECT_TOOL,
             contract_schemas.schema_for(contracts.AttemptInspectRequest),
             contract_schemas.union_schema_for(contracts.ATTEMPT_INSPECTION_RESULT_TYPES),
+        ),
+        (
+            CORRECTION_CONTEXT_TOOL,
+            contract_schemas.schema_for(contracts.CorrectionContextRequest),
+            contract_schemas.union_schema_for(contracts.CORRECTION_CONTEXT_RESULT_TYPES),
         ),
         (
             ARTIFACT_VERIFY_TOOL,

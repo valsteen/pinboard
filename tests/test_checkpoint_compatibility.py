@@ -173,7 +173,7 @@ class CheckpointCompatibilityTest(CheckpointPackageSupport):
                     async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
                         await session.initialize()
                         negotiated = await session.list_tools()
-                        self.assertEqual(20, len(negotiated.tools))
+                        self.assertEqual(21, len(negotiated.tools))
                         missing = await session.call_tool("pinboard_review_job", roots | {"review": choice})
                         self.assertFalse(missing.is_error, missing.content)
                         assert isinstance(missing.structured_content, dict)

@@ -22,6 +22,8 @@ from pinboard.application import (
     candidate_snapshot_compatibility_models,
     candidate_snapshots,
     checkpoint_packages,
+    queries,
+    query_models,
     work_brief_models,
 )
 from pinboard.application.brief_source_models import BriefSourceFailure, authority_selector
@@ -124,6 +126,15 @@ class OrdinaryDispatch:
 class CorrectionDispatch:
     review: work_brief_models.CorrectionSourceReview | work_brief_models.LocalCorrectionSourceReview
     review_id: ReviewId
+    correction_history_id: HistoryId
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectionContext:
+    effective_brief: work_brief_models.WorkBrief
+    starting_candidate: work_brief_models.PortableArtifactIdentity
+    starting_snapshot: candidate_snapshots.CandidateSnapshot
+    correction_reason: str
     correction_history_id: HistoryId
 
 
@@ -568,16 +579,17 @@ def _validate_correction_history(
     return None
 
 
-def _read_correction_start(
+def _read_correction_snapshot(
     store: WorkStore,
     artifacts: DispatchArtifactPort,
     source_checkout_root: Path,
     brief: work_brief_models.WorkBrief,
-    choice: CorrectionDispatch,
+    correction_history_id: HistoryId,
+    identity: work_brief_models.PortableArtifactIdentity,
+    reason: str,
 ) -> DispatchResult[candidate_snapshots.CandidateSnapshot]:
     """Verify selected accepted bytes, canonical return and the actual checkout; no effects."""
 
-    identity = choice.review.starting_candidate
     reference = store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, identity.key, identity.revision)
     if reference is None or (reference.selector, reference.content_sha256, reference.size_bytes) != (
         identity.selector,
@@ -597,7 +609,7 @@ def _read_correction_start(
             f"Correction starting snapshot is invalid: {error}",
             _fresh_review_details((), ()),
         )
-    facts = store.read_review_job_context(AttemptId(brief.attempt_id), None, choice.correction_history_id, None, None)
+    facts = store.read_review_job_context(AttemptId(brief.attempt_id), None, correction_history_id, None, None)
     receipt = None if facts is None else facts.correction_receipt
     assert receipt is not None  # selected current canonical return was checked before this operation
     if isinstance(snapshot, candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot):
@@ -619,7 +631,7 @@ def _read_correction_start(
             FailureMismatch("snapshot_branch", brief.branch, snapshot.branch),
             FailureMismatch("snapshot_base", brief.base_revision, snapshot.accepted_base_revision),
             FailureMismatch("snapshot_candidate", outcome.candidate, snapshot.candidate),
-            FailureMismatch("correction_reason", outcome.evidence, choice.review.correction_input.reason),
+            FailureMismatch("correction_reason", outcome.evidence, reason),
         )
         if value.expected != value.observed
     )
@@ -670,6 +682,94 @@ def _read_correction_start(
             _fresh_review_details((), mismatches),
         )
     return snapshot
+
+
+def _read_correction_start(
+    store: WorkStore,
+    artifacts: DispatchArtifactPort,
+    source_checkout_root: Path,
+    brief: work_brief_models.WorkBrief,
+    choice: CorrectionDispatch,
+) -> DispatchResult[candidate_snapshots.CandidateSnapshot]:
+    return _read_correction_snapshot(
+        store,
+        artifacts,
+        source_checkout_root,
+        brief,
+        choice.correction_history_id,
+        choice.review.starting_candidate,
+        choice.review.correction_input.reason,
+    )
+
+
+def read_correction_context(  # noqa: C901 - one read binds current return, brief and accepted snapshot
+    store: WorkStore,
+    artifacts: DispatchArtifactPort,
+    source_checkout_root: Path,
+    attempt_id: AttemptId,
+    correction_history_id: HistoryId,
+) -> DispatchResult[CorrectionContext]:
+    """Read the exact effective source and returned candidate before independent review."""
+    facts = store.read_review_job_context(attempt_id, None, correction_history_id, None, None)
+    if facts is None or not isinstance(facts.attempt, query_models.NonterminalAttemptContextFacts):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_ATTEMPT_NOT_ACTIVE, "Attempt is unavailable for correction.", None
+        )
+    attempt = facts.attempt
+    if attempt.state != work_models.AttemptState.ACTIVE:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_ATTEMPT_NOT_ACTIVE, "Attempt is not active for correction.", None
+        )
+    if (
+        failure := _validate_correction_history(store, attempt_id, attempt.subject_revision, correction_history_id)
+    ) is not None:
+        return failure
+    if facts.returned_candidate_reference is None or facts.correction_receipt is None:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE, "Accepted correction snapshot is unavailable.", None
+        )
+    outcome = checkpoint_packages.decode_correction_outcome(facts.correction_receipt, attempt_id)
+    if isinstance(outcome, DecisionFailure):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID, outcome.message, outcome.details
+        )
+    if outcome.evidence is None:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID, "Correction reason is unavailable.", None
+        )
+    try:
+        brief = decode_canonical_work_brief(artifacts.read(attempt.brief_reference))
+    except ArtifactError as error:
+        return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, str(error), None)
+    if not isinstance(brief, work_brief_models.WorkBrief):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_INVALID, "Current canonical work brief is unavailable.", None
+        )
+    if (failure := queries.validate_attempt_brief_identity(attempt, brief)) is not None:
+        return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, failure.message, failure.details)
+    if (
+        failure := validate_executable_work_brief(store, brief, root.classify_checkout(source_checkout_root))
+    ) is not None:
+        return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, failure.message, None)
+    effective_brief = _effective_correction_brief(source_checkout_root, brief)
+    if isinstance(effective_brief, DispatchFailure):
+        return effective_brief
+    reference = facts.returned_candidate_reference
+    identity = work_brief_models.PortableArtifactIdentity(
+        "candidate",
+        "evidence",
+        reference.key,
+        reference.revision,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+    )
+    snapshot = _read_correction_snapshot(
+        store, artifacts, source_checkout_root, effective_brief, correction_history_id, identity, outcome.evidence
+    )
+    if isinstance(snapshot, DispatchFailure):
+        return snapshot
+    return CorrectionContext(effective_brief, identity, snapshot, outcome.evidence, correction_history_id)
 
 
 def _correction_review_subject(

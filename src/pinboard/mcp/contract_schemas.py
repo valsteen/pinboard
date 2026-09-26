@@ -61,6 +61,8 @@ from pinboard.mcp.contracts import (
     CandidateRestoreRejected,
     CandidateReviewRecorded,
     CompletionActionsSuccess,
+    CorrectionContextReady,
+    CorrectionContextRejected,
     DispatchFailedAfterPublication,
     DispatchInvalid,
     DispatchReady,
@@ -746,6 +748,10 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         state = continuation.get("state") if isinstance(continuation, dict) else None
         result_type = TerminalAttemptInspectionSuccess if state == "done" else NonterminalAttemptInspectionSuccess
         msgspec.convert(content, type=result_type, strict=True)
+    elif tool_name == "pinboard_correction_context":
+        msgspec.convert(
+            content, type=CorrectionContextReady if status == "ready" else CorrectionContextRejected, strict=True
+        )
     elif tool_name == "pinboard_artifact_verify" and schema == "pinboard-verified-artifact-reference/v1":
         msgspec.convert(content, type=ArtifactVerified, strict=True)
     elif tool_name == "pinboard_overview":

@@ -396,6 +396,13 @@ class AttemptInspectRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     reconciliation: query_models.AttemptReconciliation | None
 
 
+class CorrectionContextRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    attempt_id: PathComponent
+    correction_history_id: PositiveInt
+
+
 class CandidateObserveRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     project_root: RootPath
     work_root: RootPath
@@ -1449,6 +1456,45 @@ class NonterminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, froz
     changed_surfaces: Empty
 
 
+class CorrectionSnapshot(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-candidate-snapshot/v1", "pinboard-candidate-snapshot/v2"]
+    candidate_kind: Literal["working-tree", "commit"]
+    attempt_id: NonEmptyText
+    item_id: NonEmptyText
+    candidate: NonEmptyText
+    branch: NonEmptyText
+    preimage_revision: NonEmptyText
+    accepted_base_revision: NonEmptyText
+    recorded_at: NonEmptyText
+    diff_base64: str
+
+
+class CorrectionContextReady(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-correction-context/v1"]
+    status: Literal["ready"]
+    attempt_id: PathComponent
+    correction_history_id: PositiveInt
+    correction_reason: NonEmptyText
+    effective_brief: work_brief_models.WorkBrief
+    effective_brief_sha256: Sha256
+    checkpoint_sha256: Sha256
+    reviewed_authority_set_sha256: Sha256 | None
+    starting_candidate: work_brief_models.PortableArtifactIdentity
+    starting_snapshot: CorrectionSnapshot
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+
+class CorrectionContextRejected(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-correction-context/v1"]
+    code: NonEmptyText
+    retry: Literal["correct-input", "refresh-action", "do-not-retry"]
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+
 class ArtifactVerified(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-verified-artifact-reference/v1"]
     artifact_ref_id: PositiveInt
@@ -1479,6 +1525,9 @@ class ExecutorBusyResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_u
     changed_surfaces: Empty
     observed: Empty
     mismatches: Empty
+
+
+CORRECTION_CONTEXT_RESULT_TYPES = (CorrectionContextReady, CorrectionContextRejected, ExecutorBusyResult)
 
 
 class WarningResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -2540,6 +2589,7 @@ type RequestBoundary = (
     | type[BriefPublishRequest]
     | type[OverviewRequest]
     | type[AttemptInspectRequest]
+    | type[CorrectionContextRequest]
     | type[CandidateObserveRequest]
     | type[CandidateRestoreRequest]
     | type[ArtifactVerifyRequest]
@@ -2602,6 +2652,8 @@ type ResultBoundary = (
     | type[CompletionActionsSuccess]
     | type[TerminalAttemptInspectionSuccess]
     | type[NonterminalAttemptInspectionSuccess]
+    | type[CorrectionContextReady]
+    | type[CorrectionContextRejected]
     | type[ArtifactVerified]
     | type[PreparationAuthorityStatusPresent]
     | type[PreparationAuthorityStatusAbsent]

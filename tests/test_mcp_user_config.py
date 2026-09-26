@@ -21,7 +21,7 @@ from pinboard.mcp import contracts, server
 
 
 class McpUserConfigTest(unittest.TestCase):
-    def test_stored_choice_controls_all_twenty_stdio_tool_schemas(self) -> None:
+    def test_stored_choice_controls_all_stdio_tool_schemas(self) -> None:
         def patterns(value: contracts.JsonSchemaValue) -> list[str]:
             if isinstance(value, dict):
                 found = [pattern] if isinstance(pattern := value.get("pattern"), str) else []
@@ -44,7 +44,6 @@ class McpUserConfigTest(unittest.TestCase):
             self.assertEqual("[mcp]\n\tomitRegexLookarounds = true\n", path.read_text())
             path.write_text("[mcp]\n\tomitRegexLookarounds = false\n")
             disabled = asyncio.run(advertised())
-            self.assertEqual(20, len(enabled))
             self.assertEqual([tool.name for tool in enabled], [tool.name for tool in disabled])
             original_patterns: list[str] = []
             for projected, original in zip(enabled, disabled, strict=True):

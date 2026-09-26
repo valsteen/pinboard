@@ -20,7 +20,7 @@ from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state
+from pinboard.application import released_v6_compatibility, stored_state
 from pinboard.application.artifacts import ArtifactRef, NewArtifact
 from pinboard.application.project_export import (
     ContentEncoding,
@@ -220,7 +220,7 @@ class ProjectExportTest(unittest.TestCase):
                 "No pending effect.",
                 "Already handled.",
                 "None.",
-                work_models.AcceptedProposalDisposition(ItemId("work-c"), SQLITE_NOW),
+                released_v6_compatibility.HistoricalAcceptedProposalDisposition(ItemId("work-c"), SQLITE_NOW),
                 5,
             )
         )

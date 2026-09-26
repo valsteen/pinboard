@@ -21,9 +21,6 @@ from pinboard.domain.identifiers import (
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from tests.domain_support import (
-    accept_proposal_input as AcceptProposalInput,
-)
-from tests.domain_support import (
     action,
     expect_success,
     replace,
@@ -629,7 +626,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             item("target", work_models.WorkState.ACTIVE, attempt="target-1"),
             depends_on=(ItemId("prerequisite"),),
         )
-        intake = item("unstarted", work_models.WorkState.INTAKE)
+        intake = item("unstarted", work_models.WorkState.READY)
         prerequisite = item("prerequisite", work_models.WorkState.READY)
         snapshot = LedgerSnapshot(
             "revision",
@@ -691,14 +688,14 @@ class LifecycleDecisionTest(unittest.TestCase):
                 ),
             ),
             decision_models.ActionKind.BLOCK_ITEM: (
-                "block-item:unstarted",
-                "Block unstarted work item unstarted",
+                "block-item:prerequisite",
+                "Block unstarted work item prerequisite",
                 (
-                    "Stop unstarted intake work on dependencies already accepted in its definition.",
+                    "Stop unstarted work on dependencies already accepted in its definition.",
                     "mutating",
                     ("project",),
                     "item",
-                    "intake-item",
+                    "ready-item",
                     "Move the item to blocked without changing accepted dependencies or creating an attempt.",
                 ),
             ),
@@ -721,13 +718,6 @@ class LifecycleDecisionTest(unittest.TestCase):
                         descriptor.practical_result,
                     ),
                 )
-
-        proposal_semantics = decision_models.action_semantics(decision_models.ActionKind.ACCEPT_PROPOSAL)
-        self.assertEqual(
-            decision_models.ActionLifecyclePrecondition.INTAKE_PROPOSAL,
-            proposal_semantics.lifecycle_precondition,
-        )
-        self.assertEqual("intake-proposal", proposal_semantics.lifecycle_precondition.value)
 
         block_action = selected[decision_models.ActionKind.BLOCK]
         assert isinstance(block_action, decision_models.BlockAttemptAction)
@@ -781,13 +771,13 @@ class LifecycleDecisionTest(unittest.TestCase):
         self.assertEqual(
             "Return blocked-unstarted to ready", actions[ActionId("resume:blocked-unstarted")].capability.label
         )
-        self.assertEqual("Reopen deferred for intake", actions[ActionId("reopen:deferred")].capability.label)
+        self.assertEqual("Reopen deferred to ready", actions[ActionId("reopen:deferred")].capability.label)
         self.assertEqual(
             "Return paused or blocked work to active when an attempt exists, otherwise ready.",
             decision_models.action_semantics(decision_models.ActionKind.RESUME).practical_result,
         )
         self.assertEqual(
-            "Return deferred work to intake.",
+            "Return deferred work to ready.",
             decision_models.action_semantics(decision_models.ActionKind.REOPEN).practical_result,
         )
 
@@ -840,7 +830,7 @@ class LifecycleDecisionTest(unittest.TestCase):
         assert isinstance(completed.change, decision_models.CoveredCompletionChange)
         self.assertEqual("review accepted", completed.change.evidence)
 
-        intake = LedgerSnapshot("revision", (item("obsolete", work_models.WorkState.INTAKE),))
+        intake = LedgerSnapshot("revision", (item("obsolete", work_models.WorkState.READY),))
         closed = decide(
             intake,
             decision_models.CloseCommand(
@@ -961,7 +951,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 "ITEM_NOT_FOUND",
             ),
             (
-                LedgerSnapshot("r", (item("target", work_models.WorkState.INTAKE),)),
+                LedgerSnapshot("r", (item("target", work_models.WorkState.READY),)),
                 decision_models.ActivateCommand(
                     action(decision_models.ActivateAction, ItemId("target")),
                     work_models.ActivateInput(AttemptId("target-1"), "branch", "base", "owner", ArtifactRefId(1)),
@@ -1089,7 +1079,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 "ACTION_NOT_AVAILABLE",
             ),
             (
-                LedgerSnapshot("r", (item("target", work_models.WorkState.INTAKE),)),
+                LedgerSnapshot("r", (item("target", work_models.WorkState.READY),)),
                 decision_models.ReopenCommand(
                     action(decision_models.ReopenAction, ItemId("target")), work_models.EvidenceInput("reopen")
                 ),
@@ -1102,30 +1092,6 @@ class LifecycleDecisionTest(unittest.TestCase):
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),
-            (
-                LedgerSnapshot("r", ()),
-                decision_models.AcceptProposalCommand(
-                    action(decision_models.AcceptProposalAction, ProposalId("proposal")),
-                    AcceptProposalInput(
-                        item="new-item", state=work_models.AcceptedProposalState.READY, next_action="start"
-                    ),
-                ),
-                "PROPOSAL_NOT_FOUND",
-            ),
-            (
-                LedgerSnapshot(
-                    "r",
-                    (ready, item("proposal", work_models.WorkState.INTAKE)),
-                    proposals=(ProposalRecord("proposal", "p1"),),
-                ),
-                decision_models.AcceptProposalCommand(
-                    action(decision_models.AcceptProposalAction, ProposalId("proposal")),
-                    AcceptProposalInput(
-                        item="target", state=work_models.AcceptedProposalState.READY, next_action="start"
-                    ),
-                ),
-                "TRANSITION_INPUT_INVALID",
-            ),
         )
         for snapshot, command, code in cases:
             with self.subTest(kind=command.action.kind.value, code=code):
@@ -1133,34 +1099,23 @@ class LifecycleDecisionTest(unittest.TestCase):
                 self.assertIsInstance(rejected, DecisionFailure)
                 self.assertEqual(DecisionFailureCode(code), rejected.code)
 
-    def test_proposal_rejections_use_intake_vocabulary(self) -> None:
+    def test_proposal_rejections_use_unstarted_vocabulary(self) -> None:
         proposal = ProposalRecord("proposal", "p1")
         missing_item = LedgerSnapshot("r", (), proposals=(proposal,))
         cases: tuple[tuple[decision_models.TransitionCommand, str], ...] = (
-            (
-                decision_models.AcceptProposalCommand(
-                    action(decision_models.AcceptProposalAction, ProposalId("proposal")),
-                    AcceptProposalInput(
-                        item="proposal",
-                        state=work_models.AcceptedProposalState.READY,
-                        next_action="start",
-                    ),
-                ),
-                "Only a current intake proposal can be accepted.",
-            ),
             (
                 decision_models.MergeProposalCommand(
                     action(decision_models.MergeProposalAction, ProposalId("proposal")),
                     work_models.MergeProposalInput(ItemId("target")),
                 ),
-                "Only a current intake proposal can be merged.",
+                "Only a current unstarted proposal can be merged.",
             ),
             (
                 decision_models.RejectProposalCommand(
                     action(decision_models.RejectProposalAction, ProposalId("proposal")),
                     work_models.ReasonInput("obsolete"),
                 ),
-                "Only a current intake proposal can be returned or rejected.",
+                "Only a current unstarted proposal can be rejected.",
             ),
         )
         for command, message in cases:
@@ -1170,26 +1125,48 @@ class LifecycleDecisionTest(unittest.TestCase):
                 assert isinstance(rejected, DecisionFailure)
                 self.assertEqual(message, rejected.message)
 
-        mismatched_identity = LedgerSnapshot(
+    def test_held_unstarted_proposals_can_resolve_but_started_proposals_cannot(self) -> None:
+        proposal = ProposalRecord("proposal", "p1")
+        actor = decision_models.ActorAuthority(
+            decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
+        )
+        for state in (work_models.WorkState.READY, work_models.WorkState.BLOCKED, work_models.WorkState.DEFERRED):
+            with self.subTest(state=state):
+                snapshot = LedgerSnapshot(
+                    "r", (item("proposal", state), item("target", work_models.WorkState.READY)), proposals=(proposal,)
+                )
+                actions = available_actions(snapshot, actor)
+                merge = next(value for value in actions if isinstance(value, decision_models.MergeProposalAction))
+                reject = next(value for value in actions if isinstance(value, decision_models.RejectProposalAction))
+                self.assertIsInstance(
+                    decide(
+                        snapshot,
+                        decision_models.MergeProposalCommand(merge, work_models.MergeProposalInput(ItemId("target"))),
+                        NOW,
+                    ).change,
+                    decision_models.MergedProposalChange,
+                )
+                self.assertIsInstance(
+                    decide(
+                        snapshot,
+                        decision_models.RejectProposalCommand(reject, work_models.ReasonInput("obsolete")),
+                        NOW,
+                    ).change,
+                    decision_models.RejectedProposalChange,
+                )
+
+        started = LedgerSnapshot(
             "r",
-            (item("proposal", work_models.WorkState.INTAKE),),
+            (item("proposal", work_models.WorkState.ACTIVE, attempt="proposal-1"),),
+            attempts=(AttemptRecord("proposal-1", "proposal", work_models.AttemptState.ACTIVE),),
             proposals=(proposal,),
         )
-        rejected = decision_outcome(
-            mismatched_identity,
-            decision_models.AcceptProposalCommand(
-                action(decision_models.AcceptProposalAction, ProposalId("proposal")),
-                AcceptProposalInput(
-                    item="other-item",
-                    state=work_models.AcceptedProposalState.READY,
-                    next_action="start",
-                ),
-            ),
-            NOW,
+        self.assertFalse(
+            any(
+                isinstance(value, decision_models.MergeProposalAction | decision_models.RejectProposalAction)
+                for value in available_actions(started, actor)
+            )
         )
-        self.assertIsInstance(rejected, DecisionFailure)
-        assert isinstance(rejected, DecisionFailure)
-        self.assertEqual("An intake proposal must be accepted with its same work-item identity.", rejected.message)
 
 
 if __name__ == "__main__":

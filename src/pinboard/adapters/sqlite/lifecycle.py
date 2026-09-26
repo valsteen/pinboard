@@ -693,6 +693,8 @@ def set_item_state(
     outcome_evidence: str | None = None,
 ) -> DecisionFailure | None:
     item_id = current.item_id
+    if stored_state.live_work_state(current.state) != before_state:
+        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "The targeted item mutation is stale.", None)
     terminal = after_state in {
         stored_state.StoredWorkItemState.DONE,
         stored_state.StoredWorkItemState.SUPERSEDED,
@@ -715,7 +717,7 @@ def set_item_state(
                     now.isoformat(),
                     None if terminal else current.queue_position,
                     item_id,
-                    before_state.value,
+                    current.state.value,
                     current.subject_revision,
                 ),
             ),

@@ -8,7 +8,7 @@ from typing import Literal, assert_never
 
 import msgspec
 
-from pinboard.application import query_models, stored_state
+from pinboard.application import query_models, released_v6_compatibility, stored_state
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.identifiers import ProposalId
 
@@ -204,7 +204,7 @@ class ProjectExportTransition(msgspec.Struct, frozen=True, forbid_unknown_fields
     history_id: int
     project_revision: int
     action_id: str
-    action_kind: decision_models.ActionKind
+    action_kind: str
     subject_id: str
     artifact_ref_id: int | None
     authorization: decision_models.AuthorizationKind
@@ -215,6 +215,9 @@ class ProjectExportTransition(msgspec.Struct, frozen=True, forbid_unknown_fields
     outcome_schema: str
     outcome: msgspec.Raw
     committed_at: str
+
+    def __post_init__(self) -> None:
+        released_v6_compatibility.decode_released_v6_action_kind(self.action_kind)
 
 
 class ProjectExportItemArtifactLink(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -748,7 +751,7 @@ def project_export_from_state(
                 int(value.history_id),
                 value.project_revision,
                 str(value.action_id),
-                value.action_kind,
+                value.action_kind.value,
                 str(value.subject_id),
                 None if value.artifact_ref_id is None else int(value.artifact_ref_id),
                 value.authorization,

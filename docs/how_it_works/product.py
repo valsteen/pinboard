@@ -3,8 +3,7 @@ from pinboard.domain import decision_models, work_models
 from .model import Box, Connector, Diagram, Guide, Section
 
 WORK_STATE_ROLES: dict[work_models.WorkState, str] = {
-    work_models.WorkState.INTAKE: "unstarted work awaiting a decision",
-    work_models.WorkState.READY: "accepted and schedulable",
+    work_models.WorkState.READY: "saved and startable when eligible",
     work_models.WorkState.ACTIVE: "currently being attempted",
     work_models.WorkState.PAUSED: "preserved interruption",
     work_models.WorkState.BLOCKED: "waiting on a condition",
@@ -23,7 +22,6 @@ ATTEMPT_STATE_ROLES: dict[work_models.AttemptState, str] = {
 ACTION_GROUPS: dict[decision_models.ActionKind, str] = {
     decision_models.ActionKind.ACCEPT_CHECKPOINT: "review",
     decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE: "review",
-    decision_models.ActionKind.ACCEPT_PROPOSAL: "proposal",
     decision_models.ActionKind.ACTIVATE: "lifecycle",
     decision_models.ActionKind.BLOCK: "lifecycle",
     decision_models.ActionKind.BLOCK_ITEM: "lifecycle",
@@ -33,7 +31,6 @@ ACTION_GROUPS: dict[decision_models.ActionKind, str] = {
     decision_models.ActionKind.DEFER: "lifecycle",
     decision_models.ActionKind.DISPATCH: "advisory",
     decision_models.ActionKind.INSPECT: "advisory",
-    decision_models.ActionKind.MARK_READY: "lifecycle",
     decision_models.ActionKind.MERGE_PROPOSAL: "proposal",
     decision_models.ActionKind.PAUSE: "lifecycle",
     decision_models.ActionKind.REJECT_PROPOSAL: "proposal",
@@ -44,7 +41,6 @@ ACTION_GROUPS: dict[decision_models.ActionKind, str] = {
     decision_models.ActionKind.REVISE_ITEM: "definition",
     decision_models.ActionKind.RESUME: "lifecycle",
     decision_models.ActionKind.RETURN_FOR_CORRECTION: "review",
-    decision_models.ActionKind.RETURN_PROPOSAL: "proposal",
     decision_models.ActionKind.RETAIN_TEMPORARILY: "relation",
     decision_models.ActionKind.SUBMIT_REVIEW: "review",
 }
@@ -80,11 +76,10 @@ DIAGRAM = Diagram(
         Guide((300, 746), (1172, 746)),
     ),
     connectors=(
-        Connector(((250, 125), (270, 125)), "intake", "ready"),
-        Connector(((420, 125), (480, 125)), "ready", "active"),
+        Connector(((250, 125), (480, 125)), "ready", "active", "prepare + activate", (365, 108)),
         Connector(((650, 125), (720, 125)), "active", "review"),
         Connector(((940, 125), (960, 125)), "review", "terminal"),
-        Connector(((130, 170), (130, 250)), "intake", "deferred", "defer", (158, 216)),
+        Connector(((130, 170), (130, 250)), "ready", "deferred", "defer", (158, 216)),
         Connector(((530, 170), (530, 250)), "active", "paused", "pause", (558, 216)),
         Connector(
             ((620, 170), (620, 210), (830, 210), (830, 250)),
@@ -99,8 +94,7 @@ DIAGRAM = Diagram(
         Connector(((860, 515), (970, 515)), "attempt-review", "attempt-done", "complete", (915, 503)),
     ),
     boxes=(
-        Box("intake", "Intake", "Awaiting a decision", (), ("WorkState.INTAKE",), 60, 80, 190, 90),
-        Box("ready", "Ready", "Accepted work", (), ("WorkState.READY",), 270, 80, 150, 90),
+        Box("ready", "Ready", "Saved work", (), ("WorkState.READY",), 60, 80, 190, 90),
         Box("active", "Active", "Attempt underway", (), ("WorkState.ACTIVE",), 480, 80, 170, 90),
         Box("review", "Review", "Exact candidate held", (), ("return · accept + continue",), 720, 80, 220, 90),
         Box(
@@ -119,7 +113,7 @@ DIAGRAM = Diagram(
             "deferred",
             "Deferred",
             "Saved for later",
-            ("defer from unstarted work", "reopen → intake"),
+            ("defer from unstarted work", "reopen → ready"),
             (),
             60,
             250,
@@ -143,7 +137,7 @@ DIAGRAM = Diagram(
             "blocked",
             "Blocked",
             "Named condition",
-            ("block from active or intake", "resume → active or ready"),
+            ("block from active or ready", "resume → active or ready"),
             (),
             730,
             250,
@@ -209,7 +203,7 @@ DIAGRAM = Diagram(
         Box(
             "proposal",
             "Proposal facts",
-            "Why intake work was raised",
+            "Why saved work was raised",
             ("stored with same-identity work",),
             ("trigger · evidence · effect",),
             50,

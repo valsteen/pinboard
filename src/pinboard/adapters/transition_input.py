@@ -121,21 +121,6 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
             return decision_models.AcceptReviewAndContinueCommand(
                 action, work_models.AcceptReviewAndContinueInput(CandidateId(payload.candidate), payload.evidence)
             )
-        case decision_models.AcceptProposalAction():
-            if isinstance(
-                payload := _decode(data, transition_models.AcceptProposalInputPayload), TransitionInputFailure
-            ):
-                return payload
-            return decision_models.AcceptProposalCommand(
-                action,
-                work_models.AcceptProposalInput(
-                    ItemId(payload.item),
-                    payload.state,
-                    payload.next_action,
-                    payload.timing,
-                    tuple(ItemId(value) for value in payload.depends_on),
-                ),
-            )
         case decision_models.ActivateAction():
             if isinstance(payload := _decode(data, transition_models.ActivateInputPayload), TransitionInputFailure):
                 return payload
@@ -247,25 +232,19 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
                 action, work_models.DeferInput(payload.timing, payload.reopen_condition)
             )
         case (
-            decision_models.MarkReadyAction()
-            | decision_models.PauseAction()
+            decision_models.PauseAction()
             | decision_models.RejectProposalAction()
             | decision_models.ReturnForCorrectionAction()
-            | decision_models.ReturnProposalAction()
         ):
             if isinstance(payload := _decode(data, transition_models.ReasonInputPayload), TransitionInputFailure):
                 return payload
             match action:
-                case decision_models.MarkReadyAction():
-                    return decision_models.MarkReadyCommand(action, work_models.ReasonInput(payload.reason))
                 case decision_models.PauseAction():
                     return decision_models.PauseCommand(action, work_models.ReasonInput(payload.reason))
                 case decision_models.RejectProposalAction():
                     return decision_models.RejectProposalCommand(action, work_models.ReasonInput(payload.reason))
                 case decision_models.ReturnForCorrectionAction():
                     return decision_models.ReturnForCorrectionCommand(action, work_models.ReasonInput(payload.reason))
-                case decision_models.ReturnProposalAction():
-                    return decision_models.ReturnProposalCommand(action, work_models.ReasonInput(payload.reason))
                 case _ as unreachable:
                     assert_never(unreachable)
         case decision_models.MergeProposalAction():

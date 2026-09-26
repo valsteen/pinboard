@@ -141,19 +141,6 @@ class DeferInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     reopen_condition: NonEmptyLine
 
 
-class AcceptProposalInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True, kw_only=True):
-    item: Identity
-    state: work_models.AcceptedProposalState
-    next_action: NonEmptyLine
-    timing: work_models.Timing | None = None
-    depends_on: tuple[Identity, ...] = ()
-
-    def __post_init__(self) -> None:
-        _require_unique_dependencies(self.depends_on)
-        if self.item in self.depends_on:
-            raise ValueError("depends_on must not contain the accepted item")
-
-
 class MergeProposalInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     target: Identity
 
@@ -182,7 +169,6 @@ type InputPayload = (
     | RetainTemporarilyInputPayload
     | CloseInputPayload
     | DeferInputPayload
-    | AcceptProposalInputPayload
     | MergeProposalInputPayload
     | ReviseItemInputPayload
     | CoveredCompleteInputPayload
@@ -199,8 +185,6 @@ def action_input_model(kind: decision_models.ActionKind) -> InputModel | None:  
             return AcceptCheckpointInputPayload
         case decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE:
             return AcceptReviewAndContinueInputPayload
-        case decision_models.ActionKind.ACCEPT_PROPOSAL:
-            return AcceptProposalInputPayload
         case decision_models.ActionKind.ACTIVATE:
             return ActivateInputPayload
         case decision_models.ActionKind.BLOCK | decision_models.ActionKind.BLOCK_ITEM:
@@ -216,11 +200,9 @@ def action_input_model(kind: decision_models.ActionKind) -> InputModel | None:  
         case decision_models.ActionKind.DEFER:
             return DeferInputPayload
         case (
-            decision_models.ActionKind.MARK_READY
-            | decision_models.ActionKind.PAUSE
+            decision_models.ActionKind.PAUSE
             | decision_models.ActionKind.REJECT_PROPOSAL
             | decision_models.ActionKind.RETURN_FOR_CORRECTION
-            | decision_models.ActionKind.RETURN_PROPOSAL
         ):
             return ReasonInputPayload
         case decision_models.ActionKind.MERGE_PROPOSAL:

@@ -8,7 +8,7 @@ import msgspec
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import query_models, stored_state
+from pinboard.application import query_models, released_v6_compatibility, stored_state
 from pinboard.application.actions import discover_current_actions
 from pinboard.application.queries import (
     project_current_overview,
@@ -65,7 +65,9 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertEqual((4, False, ("work-c",)), (proposal.position, proposal.eligible, proposal.depends_on))
         self.assertEqual("work-c", proposal.dependency_reasons[0].item_id)
         self.assertIn("Follow-up to work-c", proposal.dependency_reasons[0].reason)
-        self.assertEqual((), proposal.review_flags)
+        self.assertIsNotNone(proposal.proposal_origin)
+        assert proposal.proposal_origin is not None
+        self.assertEqual("source-task", proposal.proposal_origin.source_task_id)
         self.assertNotIn("zz-proposal-a", overview.immediate_options)
 
     def test_overview_exposes_duplicate_contradiction_and_clarification_for_review(self) -> None:
@@ -93,15 +95,19 @@ class SQLiteQueriesTest(unittest.TestCase):
                 item = project_overview(store.validated_snapshot(), SQLITE_NOW).items[-1]
                 self.assertEqual((), item.depends_on)
                 self.assertTrue(item.eligible)
-                self.assertEqual(relation.kind, item.review_flags[0].kind)
-                self.assertEqual(None if relation.item is None else "work-c", item.review_flags[0].related_item)
+                self.assertIsNotNone(item.proposal_origin)
+                assert item.proposal_origin is not None
+                self.assertEqual(relation.kind, item.proposal_origin.relation_kind)
+                self.assertEqual(None if relation.item is None else "work-c", item.proposal_origin.related_item)
 
-    def test_focused_overview_preserves_returned_proposal_review_flags(self) -> None:
+    def test_focused_overview_preserves_historical_returned_proposal_origin(self) -> None:
         state = complete_sqlite_state()
         proposal = state.proposals.proposals[0]
         returned = replace(
             proposal,
-            disposition=work_models.ReturnedProposalDisposition("Clarify the retained boundary.", SQLITE_NOW),
+            disposition=released_v6_compatibility.HistoricalReturnedProposalDisposition(
+                "Clarify the retained boundary.", SQLITE_NOW
+            ),
         )
         store = self._store(replace(state, proposals=replace(state.proposals, proposals=(returned,))))
 
@@ -109,7 +115,9 @@ class SQLiteQueriesTest(unittest.TestCase):
         focused = project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW)
 
         self.assertEqual(full, focused)
-        self.assertEqual("Clarify the retained boundary.", focused.items[-1].review_flags[0].reason)
+        self.assertIsNotNone(focused.items[-1].proposal_origin)
+        assert focused.items[-1].proposal_origin is not None
+        self.assertEqual("Clarify the retained boundary.", focused.items[-1].proposal_origin.disposition_reason)
 
     def test_overview_supplies_definition_context_and_explicit_replacement_warning_in_one_read(self) -> None:
         state = complete_sqlite_state()
@@ -346,7 +354,12 @@ class SQLiteQueriesTest(unittest.TestCase):
 
             self.assertIsInstance(status, query_models.ItemStatus)
             assert isinstance(status, query_models.ItemStatus)
-            self.assertEqual(item_state, status.state)
+            expected_state = (
+                stored_state.StoredWorkItemState.READY
+                if item_state == stored_state.StoredWorkItemState.INTAKE
+                else item_state
+            )
+            self.assertEqual(expected_state, status.state)
             self.assertEqual(0 if attempt_state is None else 1, len(status.attempts))
 
     def test_item_status_rejects_both_selected_item_attempt_mismatch_directions_with_complete_facts(self) -> None:

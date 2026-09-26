@@ -53,7 +53,7 @@ def _proposal_failure(failure: proposal_models.ProposalFailure | DecisionFailure
     if failure.details is None and failure.code == DecisionFailureCode.PROPOSAL_ALREADY_EXISTS:
         details["retry"] = RetryDisposition.DO_NOT_RETRY.value
     content: dict[str, JsonValue] = {
-        "schema": "pinboard-mcp-proposal-result/v1",
+        "schema": "pinboard-mcp-proposal-result/v2",
         "status": "rejected",
         "code": failure.code.value,
         "message": failure.message,
@@ -137,7 +137,7 @@ def _proposal_created(
         raise RuntimeError("Committed proposal status did not reload exactly.")
     warning = view_result.warning
     content: dict[str, JsonValue] = {
-        "schema": "pinboard-mcp-proposal-result/v1",
+        "schema": "pinboard-mcp-proposal-result/v2",
         "status": "committed" if warning is None else "committed-with-warning",
         "proposal_id": decoded.proposal_id,
         "position": status.item.queue_position,

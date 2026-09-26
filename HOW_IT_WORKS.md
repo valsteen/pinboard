@@ -56,7 +56,7 @@ A **work item** is the durable project decision. An **attempt** is one execution
   <img src="assets/how-it-works/product.svg" alt="A work item lifecycle above the legal branches of an active attempt, with related facts shown separately">
 </picture>
 
-Ideas can be preserved before they are accepted or scheduled. Accepted work can wait for dependencies, move through implementation and review, pause at a useful checkpoint, return for correction, continue, or finish. A proposed replacement remains a separate decision rather than silently changing the active target.
+Saving a proposal creates a ready work item with its original facts attached. Eligible ready work can move directly through preparation and activation; dependencies, holds, and stale receipts still prevent an unlawful start. Work can then move through implementation and review, pause at a useful checkpoint, return for correction, continue, or finish. A proposed replacement remains a separate decision rather than silently changing the active target.
 
 Across those paths, four guarantees stay constant:
 

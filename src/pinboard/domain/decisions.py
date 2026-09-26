@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import assert_never, overload
 
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.definition_decisions import decide_definition_revision, introduces_dependency_cycle
+from pinboard.domain.definition_decisions import decide_definition_revision
 from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
@@ -12,7 +12,6 @@ from pinboard.domain.errors import (
     FailureDetails,
     RetryDisposition,
 )
-from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, ItemId, LedgerId, ProposalId, SubjectId
 from pinboard.domain.ledger import LedgerSnapshot
 
@@ -349,19 +348,11 @@ def _item_actions(
     close = decision_models.CloseAction(
         factory.make(item.item, f"Record a terminal decision for {item.item}", subject_revision)
     )
-    if item.state == work_models.WorkState.INTAKE:
+    if item.state == work_models.WorkState.READY:
         return [
-            decision_models.MarkReadyAction(factory.make(item.item, f"Mark {item.item} ready", subject_revision)),
             decision_models.BlockItemAction(
                 factory.make(item.item, f"Block unstarted work item {item.item}", subject_revision)
             ),
-            decision_models.DeferAction(
-                factory.make(item.item, f"Defer {item.item} with a reopen condition", subject_revision)
-            ),
-            close,
-        ]
-    if item.state == work_models.WorkState.READY:
-        return [
             decision_models.DeferAction(
                 factory.make(item.item, f"Defer {item.item} with a reopen condition", subject_revision)
             ),
@@ -386,7 +377,7 @@ def _item_actions(
         return [close]
     if item.state == work_models.WorkState.DEFERRED:
         return [
-            decision_models.ReopenAction(factory.make(item.item, f"Reopen {item.item} for intake", subject_revision)),
+            decision_models.ReopenAction(factory.make(item.item, f"Reopen {item.item} to ready", subject_revision)),
             close,
         ]
     return []
@@ -447,16 +438,23 @@ def _project_role_actions(
         )
         result.extend(_item_actions(snapshot, item, factory))
     for proposal in snapshot.proposals:
+        item = snapshot.item(ItemId(proposal.proposal))
+        if (
+            item is None
+            or item.state
+            not in {
+                work_models.WorkState.READY,
+                work_models.WorkState.BLOCKED,
+                work_models.WorkState.DEFERRED,
+            }
+            or item.attempt is not None
+            or any(authority.item == item.item for authority in snapshot.command_preparation_authorities)
+        ):
+            continue
         result.extend(
             (
-                decision_models.AcceptProposalAction(
-                    factory.make(proposal.proposal, f"Accept proposal {proposal.proposal}", proposal.revision)
-                ),
                 decision_models.MergeProposalAction(
                     factory.make(proposal.proposal, f"Merge proposal {proposal.proposal}", proposal.revision)
-                ),
-                decision_models.ReturnProposalAction(
-                    factory.make(proposal.proposal, f"Return proposal {proposal.proposal}", proposal.revision)
                 ),
                 decision_models.RejectProposalAction(
                     factory.make(proposal.proposal, f"Reject proposal {proposal.proposal}", proposal.revision)
@@ -970,8 +968,7 @@ def _rebind_attempt(
         case work_models.WorkState.PAUSED:
             expected_attempt_state = work_models.AttemptState.PAUSED
         case (
-            work_models.WorkState.INTAKE
-            | work_models.WorkState.READY
+            work_models.WorkState.READY
             | work_models.WorkState.BLOCKED
             | work_models.WorkState.DEFERRED
             | work_models.WorkState.REVIEW
@@ -1237,7 +1234,7 @@ def _block_item(
     item = _require_item(snapshot, item_id)
     if isinstance(item, DecisionFailure):
         return item
-    if item.state != work_models.WorkState.INTAKE:
+    if item.state != work_models.WorkState.READY:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             f"Item '{item.item}' cannot perform '{action.kind.value}' now.",
@@ -1254,33 +1251,24 @@ def _block_item(
     )
 
 
-def _simple_item_transition(
+def _reopen(
     snapshot: LedgerSnapshot,
-    command: decision_models.ReopenCommand | decision_models.MarkReadyCommand,
+    command: decision_models.ReopenCommand,
     now: datetime,
 ) -> DecisionResult[decision_models.TransitionDecision]:
     action = command.action
-    match command:
-        case decision_models.ReopenCommand():
-            expected = (work_models.WorkState.DEFERRED,)
-            target = work_models.WorkState.INTAKE
-        case decision_models.MarkReadyCommand():
-            expected = (work_models.WorkState.INTAKE,)
-            target = work_models.WorkState.READY
-        case _ as unreachable:
-            assert_never(unreachable)
     item_id = action.capability.subject
     item = _require_item(snapshot, item_id)
     if isinstance(item, DecisionFailure):
         return item
-    if item.state not in expected:
+    if item.state != work_models.WorkState.DEFERRED:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             f"Item '{item.item}' cannot perform '{action.kind.value}' now.",
             None,
         )
     return _accepted_transition_decision(
-        action, now, decision_models.ItemStateChange(item.item, item.state, target), item=item.item
+        action, now, decision_models.ItemStateChange(item.item, item.state, work_models.WorkState.READY), item=item.item
     )
 
 
@@ -1292,10 +1280,7 @@ def _defer(
     item = _require_item(snapshot, item_id)
     if isinstance(item, DecisionFailure):
         return item
-    if (
-        item.state not in {work_models.WorkState.INTAKE, work_models.WorkState.READY, work_models.WorkState.BLOCKED}
-        or item.attempt is not None
-    ):
+    if item.state not in {work_models.WorkState.READY, work_models.WorkState.BLOCKED} or item.attempt is not None:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.item}' cannot be deferred now.", None
         )
@@ -1307,7 +1292,7 @@ def _defer(
     )
 
 
-def _require_current_intake_proposal(
+def _require_unstarted_proposal(
     snapshot: LedgerSnapshot,
     proposal_id: ProposalId,
     unavailable_message: str,
@@ -1318,77 +1303,19 @@ def _require_current_intake_proposal(
             DecisionFailureCode.PROPOSAL_NOT_FOUND, f"Proposal '{proposal_id}' does not exist.", None
         )
     item = snapshot.item(ItemId(proposal_id))
-    if item is None or item.state != work_models.WorkState.INTAKE or item.attempt is not None:
+    if (
+        item is None
+        or item.state
+        not in {
+            work_models.WorkState.READY,
+            work_models.WorkState.BLOCKED,
+            work_models.WorkState.DEFERRED,
+        }
+        or item.attempt is not None
+        or any(authority.item == item.item for authority in snapshot.command_preparation_authorities)
+    ):
         return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, unavailable_message, None)
     return proposal, item
-
-
-def _accept_proposal(
-    snapshot: LedgerSnapshot,
-    command: decision_models.AcceptProposalCommand,
-    now: datetime,
-) -> DecisionResult[decision_models.TransitionDecision]:
-    action = command.action
-    value = command.value
-    proposal_id = action.capability.subject
-    current_proposal = _require_current_intake_proposal(
-        snapshot, proposal_id, "Only a current intake proposal can be accepted."
-    )
-    if isinstance(current_proposal, DecisionFailure):
-        return current_proposal
-    proposal, current_item = current_proposal
-    if value.item != ItemId(proposal_id):
-        return DecisionFailure(
-            DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            "An intake proposal must be accepted with its same work-item identity.",
-            None,
-        )
-    dependencies = tuple(dict.fromkeys((*current_item.depends_on, *value.depends_on)))
-    if any(
-        snapshot.item(dependency) is None and dependency not in snapshot.history_items for dependency in dependencies
-    ):
-        return DecisionFailure(
-            DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
-            "Accepted proposal dependencies must be existing identities.",
-            None,
-        )
-    if introduces_dependency_cycle(snapshot, value.item, dependencies):
-        return DecisionFailure(
-            DecisionFailureCode.ITEM_DEPENDENCY_CYCLE,
-            "Accepted proposal dependencies must not introduce a cycle.",
-            None,
-        )
-    current_definition = snapshot.definition(value.item)
-    if current_definition is None:
-        return DecisionFailure(
-            DecisionFailureCode.ITEM_DEFINITION_INVALID,
-            "The accepted proposal item has no current definition.",
-            None,
-        )
-    accepted_definition = replace(current_definition.definition, dependencies=dependencies)
-    definition_digest = work_item_definition_digest(accepted_definition)
-    if isinstance(definition_digest, DecisionFailure):
-        return definition_digest
-    accepted_item = decision_models.AcceptedProposalItem(
-        value.item,
-        value.state,
-        value.timing,
-        value.next_action,
-        dependencies,
-        f"proposal:{proposal.proposal}",
-        proposal.urgency_evidence,
-        current_definition.revision + (definition_digest != current_definition.digest),
-        current_definition.digest,
-        definition_digest,
-        accepted_definition,
-        proposal.source_task_id,
-    )
-    return _accepted_transition_decision(
-        action,
-        now,
-        decision_models.AcceptedProposalChange(proposal.proposal, now, accepted_item),
-        item=value.item,
-    )
 
 
 def _merge_proposal(
@@ -1399,50 +1326,41 @@ def _merge_proposal(
     action = command.action
     value = command.value
     proposal_id = action.capability.subject
-    current_proposal = _require_current_intake_proposal(
-        snapshot, proposal_id, "Only a current intake proposal can be merged."
+    current_proposal = _require_unstarted_proposal(
+        snapshot, proposal_id, "Only a current unstarted proposal can be merged."
     )
     if isinstance(current_proposal, DecisionFailure):
         return current_proposal
-    proposal, _item = current_proposal
+    proposal, item = current_proposal
     if snapshot.item(value.target) is None and value.target not in snapshot.history_items:
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{value.target}' does not exist.", None)
     return _accepted_transition_decision(
         action,
         now,
-        decision_models.MergedProposalChange(proposal.proposal, value.target, now),
+        decision_models.MergedProposalChange(proposal.proposal, value.target, now, item.state),
     )
 
 
 def _dispose_proposal(
     snapshot: LedgerSnapshot,
-    command: decision_models.ReturnProposalCommand | decision_models.RejectProposalCommand,
+    command: decision_models.RejectProposalCommand,
     now: datetime,
 ) -> DecisionResult[decision_models.TransitionDecision]:
     action = command.action
     proposal_id = action.capability.subject
-    current_proposal = _require_current_intake_proposal(
+    current_proposal = _require_unstarted_proposal(
         snapshot,
         proposal_id,
-        "Only a current intake proposal can be returned or rejected.",
+        "Only a current unstarted proposal can be rejected.",
     )
     if isinstance(current_proposal, DecisionFailure):
         return current_proposal
-    proposal, _item = current_proposal
-    match command:
-        case decision_models.ReturnProposalCommand(value=value):
-            change: decision_models.ReturnedProposalChange | decision_models.RejectedProposalChange = (
-                decision_models.ReturnedProposalChange(proposal.proposal, value.reason, now)
-            )
-        case decision_models.RejectProposalCommand(value=value):
-            change = decision_models.RejectedProposalChange(proposal.proposal, value.reason, now)
-        case _ as unreachable:
-            assert_never(unreachable)
+    proposal, item = current_proposal
     return _accepted_transition_decision(
         action,
         now,
-        change,
-        evidence=value.reason,
+        decision_models.RejectedProposalChange(proposal.proposal, command.value.reason, now, item.state),
+        evidence=command.value.reason,
     )
 
 
@@ -1624,15 +1542,13 @@ def decide(  # noqa: C901, PLR0912
             return _return_for_correction(snapshot, command, now)
         case decision_models.BlockItemCommand():
             return _block_item(snapshot, command, now)
-        case decision_models.ReopenCommand() | decision_models.MarkReadyCommand():
-            return _simple_item_transition(snapshot, command, now)
+        case decision_models.ReopenCommand():
+            return _reopen(snapshot, command, now)
         case decision_models.DeferCommand():
             return _defer(snapshot, command, now)
-        case decision_models.AcceptProposalCommand():
-            return _accept_proposal(snapshot, command, now)
         case decision_models.MergeProposalCommand():
             return _merge_proposal(snapshot, command, now)
-        case decision_models.ReturnProposalCommand() | decision_models.RejectProposalCommand():
+        case decision_models.RejectProposalCommand():
             return _dispose_proposal(snapshot, command, now)
         case decision_models.ReviseItemCommand():
             return _revise_item(snapshot, command, now)

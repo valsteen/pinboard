@@ -422,14 +422,8 @@ class ServiceTest(unittest.TestCase):
     def test_positive_item_state_variants_reload_from_fresh_stores(self) -> None:
         for action_type, initial, payload, expected in (
             (
-                decision_models.MarkReadyAction,
-                stored_state.StoredWorkItemState.INTAKE,
-                b'{"reason":"The intake is ready."}',
-                stored_state.StoredWorkItemState.READY,
-            ),
-            (
                 decision_models.BlockItemAction,
-                stored_state.StoredWorkItemState.INTAKE,
+                stored_state.StoredWorkItemState.READY,
                 b'{"reason":"The intake awaits a dependency."}',
                 stored_state.StoredWorkItemState.BLOCKED,
             ),
@@ -437,7 +431,7 @@ class ServiceTest(unittest.TestCase):
                 decision_models.ReopenAction,
                 stored_state.StoredWorkItemState.DEFERRED,
                 b'{"evidence":"The prerequisite is now available."}',
-                stored_state.StoredWorkItemState.INTAKE,
+                stored_state.StoredWorkItemState.READY,
             ),
         ):
             with self.subTest(action_type=action_type.__name__):
@@ -996,15 +990,15 @@ class ServiceTest(unittest.TestCase):
         )
         self.assertEqual(("source:local",), tuple(value.selector for value in after.proposals.evidence))
         proposal = after.proposals.proposals[0]
-        intake_item = next(value for value in after.lifecycle.work_items if value.item_id == ItemId("sqlite-proposal"))
+        ready_item = next(value for value in after.lifecycle.work_items if value.item_id == ItemId("sqlite-proposal"))
         intake_definition = next(
             value.definition
             for value in after.lifecycle.definition_revisions
             if value.item_id == ItemId("sqlite-proposal")
         )
-        self.assertEqual(stored_state.StoredWorkItemState.INTAKE, intake_item.state)
-        self.assertEqual(5, intake_item.queue_position)
-        self.assertEqual("proposal:sqlite-proposal", intake_item.source)
+        self.assertEqual(stored_state.StoredWorkItemState.READY, ready_item.state)
+        self.assertEqual(5, ready_item.queue_position)
+        self.assertEqual("proposal:sqlite-proposal", ready_item.source)
         self.assertEqual(work_models.CheckoutPolicy.COORDINATOR_SELECTED, intake_definition.checkout_policy)
         self.assertEqual(
             (work_models.ObligationId("proposal-outcome"),),
@@ -1190,31 +1184,6 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(before, store.validated_snapshot())
 
     def test_proposal_relationships_reject_missing_identities_before_sqlite(self) -> None:
-        dependency_store = self._store()
-        accept = self._project_action(dependency_store, decision_models.AcceptProposalAction)
-        dependency_command = non_checkpoint_command(
-            decision_models.AcceptProposalCommand(
-                accept,
-                work_models.AcceptProposalInput(
-                    ItemId("zz-proposal-a"),
-                    work_models.AcceptedProposalState.INTAKE,
-                    "review-intake",
-                    work_models.Timing.SAFE_TO_DEFER,
-                    (ItemId("missing-dependency"),),
-                ),
-            ),
-        )
-        before = dependency_store.validated_snapshot()
-        dependency_rejected = self._commit_transition(
-            dependency_store,
-            dependency_command,
-            SQLITE_NOW + timedelta(seconds=1),
-        )
-        self.assertIsInstance(dependency_rejected, DecisionFailure)
-        assert isinstance(dependency_rejected, DecisionFailure)
-        self.assertEqual(DecisionFailureCode.DEPENDENCY_NOT_SATISFIED, dependency_rejected.code)
-        self.assertEqual(before, dependency_store.validated_snapshot())
-
         merge_store = self._store()
         merge = self._project_action(merge_store, decision_models.MergeProposalAction)
         merge_command = non_checkpoint_command(

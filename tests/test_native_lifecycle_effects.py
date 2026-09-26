@@ -578,18 +578,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
 
     def test_native_proposal_dispositions_refresh_the_same_item_bytes_as_full_rebuild(self) -> None:
         cases: tuple[tuple[str, JsonObject], ...] = (
-            (
-                "accept-proposal",
-                {
-                    "item": "zz-proposal-a",
-                    "state": "ready",
-                    "next_action": "activate",
-                    "timing": None,
-                    "depends_on": [],
-                },
-            ),
             ("merge-proposal", {"target": "work-c"}),
-            ("return-proposal", {"reason": "Clarify the evidence."}),
             ("reject-proposal", {"reason": "The proposal is no longer needed."}),
         )
         for kind, payload in cases:

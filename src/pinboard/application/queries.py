@@ -8,7 +8,7 @@ snapshot. These functions never read files, mutate state, or present output.
 from datetime import datetime
 from typing import assert_never
 
-from pinboard.application import ports, query_models, stored_state, work_brief_models
+from pinboard.application import ports, query_models, released_v6_compatibility, stored_state, work_brief_models
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import ActionCapabilityFactory, project_attempt_action_groups
 from pinboard.domain.errors import (
@@ -517,32 +517,26 @@ def _dependency_reason(
     return query_models.DependencyReason(str(dependency_id), reason)
 
 
-def _review_flags(
+def _proposal_origin(
     proposals: dict[ItemId, stored_state.StoredProposal], item_id: ItemId
-) -> tuple[query_models.ReviewFlag, ...]:
+) -> query_models.ProposalOrigin | None:
     proposal = proposals.get(item_id)
     if proposal is None:
-        return ()
-    if isinstance(proposal.disposition, work_models.ReturnedProposalDisposition):
-        return (
-            query_models.ReviewFlag(
-                work_models.ProposalRelationKind.CLARIFICATION,
-                str(proposal.relation.item) if proposal.relation.item is not None else None,
-                proposal.disposition.reason,
-            ),
+        return None
+    disposition = proposal.disposition
+    return query_models.ProposalOrigin(
+        str(proposal.source_task_id),
+        proposal.trigger,
+        proposal.relation.kind,
+        str(proposal.relation.item) if proposal.relation.item is not None else None,
+        proposal.why_it_matters,
+        None if disposition is None else disposition.kind,
+        disposition.reason
+        if isinstance(
+            disposition,
+            released_v6_compatibility.HistoricalReturnedProposalDisposition | work_models.RejectedProposalDisposition,
         )
-    if proposal.disposition is not None or proposal.relation.kind not in {
-        work_models.ProposalRelationKind.DUPLICATE,
-        work_models.ProposalRelationKind.CONTRADICTION,
-        work_models.ProposalRelationKind.CLARIFICATION,
-    }:
-        return ()
-    return (
-        query_models.ReviewFlag(
-            proposal.relation.kind,
-            str(proposal.relation.item) if proposal.relation.item is not None else None,
-            proposal.why_it_matters,
-        ),
+        else None,
     )
 
 
@@ -603,7 +597,7 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
                 _dependency_reason(proposals, prerequisite_proposals, item.item_id, link.dependency_id)
                 for link in dependency_links[item.item_id]
             ),
-            _review_flags(proposals, item.item_id),
+            _proposal_origin(proposals, item.item_id),
             str(attempts[item.item_id]) if item.item_id in attempts else None,
             item.next_action,
             item.source,
@@ -628,12 +622,12 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
         and (item.planned_replacement is None or item.planned_replacement.temporarily_retained)
         and (item.preparation is None or item.preparation.status != authority_models.PreparationLeaseStatus.ACTIVE)
         and (
-            item.state in {work_models.WorkState.INTAKE, work_models.WorkState.READY, work_models.WorkState.DEFERRED}
+            item.state in {work_models.WorkState.READY, work_models.WorkState.DEFERRED}
             or item.state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED}
         )
     )
     return query_models.WorkOverview(
-        "pinboard-overview/v5",
+        "pinboard-overview/v6",
         "sqlite-v6",
         str(state.lifecycle.project.revision),
         tuple(
@@ -669,7 +663,7 @@ def _project_overview_item(
         item.timing,
         tuple(str(value) for value in item.depends_on),
         tuple(_dependency_reason(proposals, prerequisite_proposals, item.item, value) for value in item.depends_on),
-        _review_flags(proposals, item.item),
+        _proposal_origin(proposals, item.item),
         None if item.attempt is None else str(item.attempt),
         item.next_action,
         item.source,
@@ -719,7 +713,6 @@ def project_current_overview(facts: query_models.ProjectOverviewFacts, now: date
         and (item.preparation is None or item.preparation.status != authority_models.PreparationLeaseStatus.ACTIVE)
         and item.state
         in {
-            work_models.WorkState.INTAKE,
             work_models.WorkState.READY,
             work_models.WorkState.DEFERRED,
             work_models.WorkState.PAUSED,
@@ -727,7 +720,7 @@ def project_current_overview(facts: query_models.ProjectOverviewFacts, now: date
         }
     )
     return query_models.WorkOverview(
-        "pinboard-overview/v5",
+        "pinboard-overview/v6",
         "sqlite-v6",
         snapshot.revision,
         tuple(
@@ -811,7 +804,7 @@ def project_item_status(
         str(facts.project_revision),
         str(item.item_id),
         facts.definition_title,
-        item.state,
+        stored_state.StoredWorkItemState.READY if item.state == stored_state.StoredWorkItemState.INTAKE else item.state,
         item.timing,
         item.outcome_evidence,
         item.next_action,

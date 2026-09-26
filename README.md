@@ -20,7 +20,7 @@ That context carries into delivery. Accepted direction becomes a precise brief f
 
 ## What Pinboard does
 
-You decide what belongs in the product. You accept or reject proposed work, settle choices that change scope or behavior, and choose what happens to a reviewed change in the repository.
+You decide what belongs in the product. You can start, merge, or reject saved proposals, settle choices that change scope or behavior, and choose what happens to a reviewed change in the repository.
 
 Pinboard keeps those decisions attached to the work. It:
 

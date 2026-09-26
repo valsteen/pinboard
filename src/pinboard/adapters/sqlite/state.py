@@ -19,7 +19,7 @@ from pinboard.adapters.sqlite.database import decode_row
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import read_lifecycle
 from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
-from pinboard.application import project_export, stored_state
+from pinboard.application import project_export, released_v6_compatibility, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import (
@@ -46,7 +46,7 @@ class _StoredTransitionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     history_id: HistoryId
     project_revision: int
     action_id: ActionId
-    action_kind: decision_models.ActionKind
+    action_kind: str
     subject_id: HistorySubjectId
     artifact_ref_id: ArtifactRefId | None
     authorization: decision_models.AuthorizationKind
@@ -59,11 +59,15 @@ class _StoredTransitionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     committed_at: datetime
 
     def receipt(self) -> stored_state.StoredTransitionReceipt:
+        try:
+            action_kind = released_v6_compatibility.decode_released_v6_action_kind(self.action_kind)
+        except ValueError as error:
+            raise StorageError(StorageErrorCode.INVALID_STATE, "Stored history has an unknown action kind.") from error
         return stored_state.StoredTransitionReceipt(
             self.history_id,
             self.project_revision,
             self.action_id,
-            self.action_kind,
+            action_kind,
             self.subject_id,
             self.artifact_ref_id,
             self.authorization,
@@ -277,7 +281,10 @@ def _validate_current_state(state: stored_state.StoredWorkState, error_code: Sto
         ):
             continue
         current = current_definitions.get(lease.item_id)
-        if item_states.get(lease.item_id) != stored_state.StoredWorkItemState.READY:
+        if item_states.get(lease.item_id) not in {
+            stored_state.StoredWorkItemState.INTAKE,
+            stored_state.StoredWorkItemState.READY,
+        }:
             raise StorageError(error_code, "An active preparation lease must name a ready work item.")
         if current is None or (lease.definition_revision, lease.definition_digest) != (
             current.revision,

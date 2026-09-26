@@ -3,6 +3,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal, assert_never
 
+from pinboard.application import released_v6_compatibility
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.identifiers import (
     ActionId,
@@ -58,9 +59,11 @@ def allowed_current_attempt_states(
 
 def live_work_state(value: StoredWorkItemState) -> work_models.WorkState | None:
     match value:
+        case StoredWorkItemState.INTAKE:
+            # Released SQLite v6 used intake for saved work. Current work has one ready state.
+            return work_models.WorkState.READY
         case (
-            StoredWorkItemState.INTAKE
-            | StoredWorkItemState.READY
+            StoredWorkItemState.READY
             | StoredWorkItemState.ACTIVE
             | StoredWorkItemState.PAUSED
             | StoredWorkItemState.BLOCKED
@@ -75,21 +78,16 @@ def live_work_state(value: StoredWorkItemState) -> work_models.WorkState | None:
 
 
 def stored_live_work_state(
-    value: work_models.WorkState | work_models.AcceptedProposalState,
+    value: work_models.WorkState,
 ) -> StoredWorkItemState:
     match value:
         case (
-            work_models.WorkState.INTAKE
-            | work_models.WorkState.READY
+            work_models.WorkState.READY
             | work_models.WorkState.ACTIVE
             | work_models.WorkState.PAUSED
             | work_models.WorkState.BLOCKED
             | work_models.WorkState.DEFERRED
             | work_models.WorkState.REVIEW
-            | work_models.AcceptedProposalState.INTAKE
-            | work_models.AcceptedProposalState.READY
-            | work_models.AcceptedProposalState.BLOCKED
-            | work_models.AcceptedProposalState.DEFERRED
         ):
             return StoredWorkItemState(value.value)
         case _ as unreachable:
@@ -195,7 +193,7 @@ class StoredProposal:
     effect: str
     unlock: str
     urgency_evidence: str
-    disposition: work_models.ProposalDisposition | None
+    disposition: released_v6_compatibility.StoredProposalDisposition | None
     subject_revision: int
 
 
@@ -297,7 +295,7 @@ class StoredTransitionReceipt:
     history_id: HistoryId
     project_revision: int
     action_id: ActionId
-    action_kind: decision_models.ActionKind
+    action_kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind
     subject_id: HistorySubjectId
     artifact_ref_id: ArtifactRefId | None
     authorization: decision_models.AuthorizationKind

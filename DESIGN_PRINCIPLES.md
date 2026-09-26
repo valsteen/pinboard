@@ -98,6 +98,12 @@ An effect reads or changes an explicitly supplied resource. Its signature names 
 
 Do not combine these roles merely to save a call. Do not separate them when the new boundary would add more translation machinery than the distinction removes.
 
+### Preserve typed observations and effect provenance
+
+Translate an external protocol into operation-specific typed observations at its owning boundary. Carry the selected resource and operation with each observation so a consumer need not reconstruct provenance. Consumers should receive the distinctions needed for their decisions without interpreting process status, byte framing, SDK objects, or SQL cursors. Preserve missing versus invalid data, duplicate values when cardinality matters, and confirmed effects separately from uncertain effects. A successful write acknowledgment is not proof of durable storage or a verified value; claim the value only after the required readback succeeds.
+
+MCP decodes strict request records and correlates typed results before application use. The Git-config adapter turns Git process and NUL-framed output into typed reads and write acknowledgment; each setting owner validates its values and reports its path and first-use effects. SQLite adapters convert rows and stale-write observations into operation-specific values while infrastructure failures remain exceptions. These boundaries need their own useful shapes, not one generic result wrapper.
+
 ### Make effect contracts locally complete
 
 The caller should be able to determine whether a function can mutate state, perform external I/O, end a transaction, obtain ambient values, invoke caller-supplied behavior, or exit normally with an expected rejection.

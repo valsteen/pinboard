@@ -18,9 +18,10 @@ from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.mcpserver.exceptions import ToolError
 
-from pinboard.adapters.files import contributor_traces
+from pinboard.adapters.files import contributor_traces, git_config
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
 from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.files.setting_resolution import SettingEffects, SettingResolution, SettingResolutionError
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.cli import entrypoint
@@ -72,7 +73,7 @@ class ContributorTraceTest(unittest.TestCase):
     def choose(self, project: Path, item_id: str | None) -> Path | None:
         state = contributor_traces.read_project_trace_settings(project)
         assert state is not None
-        return contributor_traces.automatic_trace_directory(*state, item_id)
+        return contributor_traces.automatic_trace_directory(state[0], state[1].value, item_id)
 
     def test_cli_selection_uses_current_mode_and_prunes_automatic_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -171,7 +172,7 @@ class ContributorTraceTest(unittest.TestCase):
                 state = contributor_traces.read_project_trace_settings(primary)
             self.assertIsNotNone(state)
             assert state is not None
-            self.assertEqual("on", state[1].unsafe_persist_exact_pinboard_traces)
+            self.assertEqual("on", state[1].value.unsafe_persist_exact_pinboard_traces)
             setting_path.unlink()
             with (
                 patch.object(
@@ -179,7 +180,7 @@ class ContributorTraceTest(unittest.TestCase):
                     "create_immutable",
                     side_effect=FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "publication failed"),
                 ),
-                self.assertRaises(FileIOError),
+                self.assertRaises(SettingResolutionError),
             ):
                 contributor_traces.read_project_trace_settings(primary)
 
@@ -191,8 +192,9 @@ class ContributorTraceTest(unittest.TestCase):
             settings.write_text(original)
             state = contributor_traces.read_project_trace_settings(primary)
             assert state is not None
-            self.assertEqual("off", state[1].unsafe_persist_exact_pinboard_traces)
-            self.assertEqual({"one": "on"}, state[1].item_overrides)
+            self.assertEqual("off", state[1].value.unsafe_persist_exact_pinboard_traces)
+            self.assertEqual({"one": "on"}, state[1].value.item_overrides)
+            self.assertEqual(("none", "acknowledged"), (state[1].effects.file_creation, state[1].effects.key_write))
             self.assertIn(original, settings.read_text())
             settings.write_text(original)
 
@@ -215,8 +217,9 @@ class ContributorTraceTest(unittest.TestCase):
             )
             state = contributor_traces.read_project_trace_settings(primary)
             assert state is not None
-            self.assertEqual("off", state[1].unsafe_persist_exact_pinboard_traces)
-            self.assertEqual({"one": "on"}, state[1].item_overrides)
+            self.assertEqual("off", state[1].value.unsafe_persist_exact_pinboard_traces)
+            self.assertEqual({"one": "on"}, state[1].value.item_overrides)
+            self.assertEqual(("none", "none"), (state[1].effects.file_creation, state[1].effects.key_write))
 
             invalid = "[unknown]\n\tmode = on\n" + original
             settings.write_text(invalid)
@@ -234,6 +237,13 @@ class ContributorTraceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             primary, worktree = self.project(Path(temporary))
             work_root = primary / ".pinboard"
+            initial = contributor_traces.read_project_trace_settings(primary)
+            assert initial is not None
+            self.assertEqual((work_root / contributor_traces.SETTINGS_NAME).resolve(), initial[1].path)
+            self.assertEqual("none", initial[1].effects.parent_creation)
+            self.assertEqual(
+                ("confirmed", "acknowledged"), (initial[1].effects.file_creation, initial[1].effects.key_write)
+            )
             self.assertIsNone(self.choose(primary, "one"))
             settings = work_root / contributor_traces.SETTINGS_NAME
             self.assertEqual(
@@ -280,6 +290,49 @@ class ContributorTraceTest(unittest.TestCase):
             )
             self.assertNotEqual(0, result.returncode)
             self.assertEqual(1, len(tuple(directory.glob("pinboard-auto-cli-*.json"))))
+
+    def test_first_use_failure_preserves_file_and_key_write_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, _ = self.project(Path(temporary))
+            path = primary / ".pinboard" / contributor_traces.SETTINGS_NAME
+            with (
+                patch.object(
+                    git_config,
+                    "add",
+                    return_value=git_config.WriteUnconfirmed(
+                        path.resolve(), "pinboard.unsafe_persist_exact_pinboard_traces.mode", "write failed"
+                    ),
+                ),
+                self.assertRaises(SettingResolutionError) as failed,
+            ):
+                contributor_traces.read_project_trace_settings(primary)
+            self.assertEqual(path.resolve(), failed.exception.path)
+            self.assertEqual(
+                ("confirmed", "unconfirmed"),
+                (failed.exception.effects.file_creation, failed.exception.effects.key_write),
+            )
+            self.assertEqual(0o600, stat.S_IMODE(path.stat().st_mode))
+            self.assertFalse(hasattr(failed.exception, "value"))
+
+            path.unlink()
+            with (
+                patch.object(
+                    git_config,
+                    "list_entries",
+                    side_effect=[
+                        git_config.Entries(path.resolve(), ()),
+                        git_config.ReadFailed(path.resolve(), "list-entries", None, "reread failed"),
+                    ],
+                ),
+                self.assertRaises(SettingResolutionError) as failed_reread,
+            ):
+                contributor_traces.read_project_trace_settings(primary)
+            self.assertIn("mode = off", path.read_text())
+            self.assertEqual(
+                ("confirmed", "acknowledged"),
+                (failed_reread.exception.effects.file_creation, failed_reread.exception.effects.key_write),
+            )
+            self.assertIn("reread failed", str(failed_reread.exception))
 
     def test_normal_cli_and_mcp_capture_exact_values_only_when_on(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -397,7 +450,11 @@ class ContributorTraceTest(unittest.TestCase):
 
             with (
                 patch.object(server, "create_server", side_effect=create_server),
-                patch.object(server, "read_mcp_omit_regex_lookarounds", return_value=True),
+                patch.object(
+                    server,
+                    "read_mcp_omit_regex_lookarounds",
+                    return_value=SettingResolution(Path("config"), True, SettingEffects("none", "none", "none")),
+                ),
             ):
                 with patch.object(sys, "argv", ["pinboard-mcp"]):
                     server.main()

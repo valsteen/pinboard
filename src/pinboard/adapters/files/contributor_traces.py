@@ -12,9 +12,10 @@ from typing import Literal
 import msgspec
 
 from pinboard.adapters.files import git_config
-from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, RootError
+from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError, RootError
 from pinboard.adapters.files.file_io import create_immutable, ensure_child_directory
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
+from pinboard.adapters.files.setting_resolution import SettingEffects, SettingResolution, SettingResolutionError
 
 SETTINGS_NAME = "contributor-traces.config"
 TRACE_DIRECTORY = "invocation-traces"
@@ -51,16 +52,13 @@ def _decode_settings(path: Path) -> ContributorTraceSettings | None:
         if not path.is_file(follow_symlinks=False):
             raise ValueError("Contributor trace settings must be a regular file.")
         listed = git_config.list_entries(path)
-        if listed.returncode != 0:
-            raise ValueError("Contributor trace settings are invalid or unreadable.")
+        if isinstance(listed, git_config.ReadFailed):
+            raise ValueError(f"Contributor trace settings are invalid or unreadable: {listed.diagnostic}")
         project_mode: Literal["off", "on"] | None = None
         overrides: dict[str, Literal["inherit", "off", "on"]] = {}
         seen: set[str] = set()
-        for entry in listed.stdout.rstrip(b"\0").split(b"\0") if listed.stdout else ():
-            if b"\n" not in entry:
-                raise ValueError("Contributor trace settings are invalid or unreadable.")
-            key_bytes, value_bytes = entry.split(b"\n", 1)
-            key, value = key_bytes.decode(), value_bytes.decode()
+        for entry in listed.entries:
+            key, value = entry.key, entry.value
             if key in seen:
                 raise ValueError("Contributor trace settings contain duplicate keys.")
             seen.add(key)
@@ -78,29 +76,36 @@ def _decode_settings(path: Path) -> ContributorTraceSettings | None:
         raise ValueError("Contributor trace settings are invalid or unreadable.") from error
 
 
-def _settings(data_root: Path) -> ContributorTraceSettings:
+def _settings(data_root: Path) -> SettingResolution[ContributorTraceSettings]:
     path = data_root / SETTINGS_NAME
+    effects = SettingEffects("none", "none", "none")
     if not path.exists(follow_symlinks=False):
         try:
-            create_immutable(path, b"")
+            effects = SettingEffects("none", "confirmed" if create_immutable(path, b"") else "none", "none")
+        except ImmutableFilePublishedError as error:
+            raise SettingResolutionError(str(error), path, SettingEffects("none", "confirmed", "none")) from error
         except FileIOError as error:
             if error.code != FileIOErrorCode.FILE_ALREADY_EXISTS:
-                raise
-    settings = _decode_settings(path)
-    if settings is not None:
-        return settings
+                raise SettingResolutionError(str(error), path, effects) from error
     try:
+        settings = _decode_settings(path)
+        if settings is not None:
+            return SettingResolution(path, settings, effects)
         written = git_config.add(path, "pinboard.unsafe_persist_exact_pinboard_traces.mode", "off")
-    except OSError as error:
-        raise ValueError(f"Cannot write Contributor trace project mode in {path}: {error}") from error
-    if written.returncode != 0:
-        raise ValueError(
-            f"Cannot write Contributor trace project mode in {path}: {written.stderr.decode(errors='replace').strip()}"
-        )
-    settings = _decode_settings(path)
-    if settings is None:
-        raise ValueError("Contributor trace settings must declare the project mode.")
-    return settings
+        if isinstance(written, git_config.WriteUnconfirmed):
+            effects = SettingEffects(effects.parent_creation, effects.file_creation, "unconfirmed")
+            raise SettingResolutionError(
+                f"Cannot write Contributor trace project mode in {path}: {written.diagnostic}", path, effects
+            )
+        effects = SettingEffects(effects.parent_creation, effects.file_creation, "acknowledged")
+        settings = _decode_settings(path)
+        if settings is None:
+            raise ValueError("Contributor trace settings must declare the project mode.")
+        return SettingResolution(path, settings, effects)
+    except ValueError as error:
+        if isinstance(error, SettingResolutionError):
+            raise
+        raise SettingResolutionError(str(error), path, effects) from error
 
 
 def _trace_directory(data_root: Path) -> Path:
@@ -133,7 +138,7 @@ def prune_traces(directory: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-def read_project_trace_settings(project_root: Path) -> tuple[Path, ContributorTraceSettings] | None:
+def read_project_trace_settings(project_root: Path) -> tuple[Path, SettingResolution[ContributorTraceSettings]] | None:
     data_root = _project_data_root(project_root)
     return None if data_root is None else (data_root, _settings(data_root))
 
@@ -168,7 +173,7 @@ def select_cli_trace(arguments: tuple[str, ...]) -> Path | None:
         if arguments[position : position + 1] == ("close",) and position + 1 < len(arguments)
         else None
     )
-    directory = automatic_trace_directory(*state, item_id)
+    directory = automatic_trace_directory(state[0], state[1].value, item_id)
     if directory is None:
         return None
     prune_traces(directory)

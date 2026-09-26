@@ -30,6 +30,7 @@ from pinboard.mcp.contracts import (
     AttemptInspectInvalid,
     AttemptLeaseRequired,
     AttemptNotFound,
+    BriefArchitectureImpactRejected,
     BriefArtifactCommitted,
     BriefArtifactCommittedWithWarning,
     BriefCommitted,
@@ -797,7 +798,11 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     elif status == "rejected" and surfaces == ["immutable-artifact"]:
         msgspec.convert(content, type=BriefPublishedRejection, strict=True)
     elif status == "rejected":
-        msgspec.convert(content, type=BriefRejected, strict=True)
+        msgspec.convert(
+            content,
+            type=BriefArchitectureImpactRejected if "recovery" in content else BriefRejected,
+            strict=True,
+        )
     elif status == "unchanged":
         msgspec.convert(content, type=BriefUnchanged, strict=True)
     elif status == "unchanged-with-warning":

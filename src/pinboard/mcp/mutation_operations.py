@@ -47,6 +47,9 @@ from pinboard.domain.identifiers import (
 from pinboard.mcp import common, contracts, execution, tool_names
 from pinboard.mcp.contracts import JsonValue
 
+_ARCHITECTURE_IMPACT_KIND_PATH = "$.brief.checkpoint.architecture_impact.kind"
+_ARCHITECTURE_IMPACT_KINDS = ("none", "read-only", "update-required")
+
 
 def _proposal_failure(failure: proposal_models.ProposalFailure | DecisionFailure) -> execution.OperationResult:
     details = common._details_json(failure.details)
@@ -77,6 +80,57 @@ def _brief_failure(failure: work_brief_models.WorkBriefFailure | DecisionFailure
             "message": failure.message,
             "state_changed": details["effect"] == EffectDisposition.COMMITTED.value,
             **details,
+        },
+        "rejected",
+        None,
+    )
+
+
+def _brief_decode_failure(
+    project_root: str,
+    work_root: str,
+    brief: dict[str, work_brief_models.WorkBriefJsonValue],
+    error: msgspec.ValidationError,
+) -> execution.OperationResult:
+    failure = work_brief_models.WorkBriefFailure(
+        work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
+        f"Cannot decode brief publication request: {error}",
+    )
+    if not str(error).endswith(f" - at `{_ARCHITECTURE_IMPACT_KIND_PATH}`"):
+        return _brief_failure(failure)
+    checkpoint = brief.get("checkpoint")
+    if not isinstance(checkpoint, dict) or checkpoint.get("boundary") != "cross-boundary":
+        return _brief_failure(failure)
+    architecture_impact = checkpoint.get("architecture_impact")
+    if not isinstance(architecture_impact, dict):
+        return _brief_failure(failure)
+    kind = architecture_impact.get("kind")
+    if not isinstance(kind, str) or kind in _ARCHITECTURE_IMPACT_KINDS:
+        return _brief_failure(failure)
+    result = _brief_failure(failure)
+    return execution.OperationResult(
+        {
+            **result.content,
+            "observed": [{"field": _ARCHITECTURE_IMPACT_KIND_PATH, "value": kind}],
+            "mismatches": [
+                {
+                    "field": _ARCHITECTURE_IMPACT_KIND_PATH,
+                    "expected": "none | read-only | update-required",
+                    "observed": kind,
+                }
+            ],
+            "allowed_selections": list[JsonValue](_ARCHITECTURE_IMPACT_KINDS),
+            "recovery": {
+                "tool": tool_names.BRIEF_CONTRACT_TOOL,
+                "arguments": {
+                    "request": {
+                        "operation": "starter",
+                        "project_root": project_root,
+                        "work_root": work_root,
+                        "boundary": "cross-boundary",
+                    }
+                },
+            },
         },
         "rejected",
         None,
@@ -170,7 +224,9 @@ def _brief_published(
             strict=True,
         )
         durable = common._resolve_durable(request.project_root, request.work_root)
-    except (msgspec.ValidationError, ValueError, OSError) as error:
+    except msgspec.ValidationError as error:
+        return _brief_decode_failure(project_root, work_root, brief, error)
+    except (ValueError, OSError) as error:
         return _brief_failure(
             work_brief_models.WorkBriefFailure(
                 work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,

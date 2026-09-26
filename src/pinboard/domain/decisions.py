@@ -438,18 +438,7 @@ def _project_role_actions(
         )
         result.extend(_item_actions(snapshot, item, factory))
     for proposal in snapshot.proposals:
-        item = snapshot.item(ItemId(proposal.proposal))
-        if (
-            item is None
-            or item.state
-            not in {
-                work_models.WorkState.READY,
-                work_models.WorkState.BLOCKED,
-                work_models.WorkState.DEFERRED,
-            }
-            or item.attempt is not None
-            or any(authority.item == item.item for authority in snapshot.command_preparation_authorities)
-        ):
+        if _unstarted_proposal_item(snapshot, proposal.proposal) is None:
             continue
         result.extend(
             (
@@ -1292,16 +1281,7 @@ def _defer(
     )
 
 
-def _require_unstarted_proposal(
-    snapshot: LedgerSnapshot,
-    proposal_id: ProposalId,
-    unavailable_message: str,
-) -> DecisionResult[tuple[work_models.ProposalRecord, work_models.WorkItem]]:
-    proposal = snapshot.proposal(proposal_id)
-    if proposal is None:
-        return DecisionFailure(
-            DecisionFailureCode.PROPOSAL_NOT_FOUND, f"Proposal '{proposal_id}' does not exist.", None
-        )
+def _unstarted_proposal_item(snapshot: LedgerSnapshot, proposal_id: ProposalId) -> work_models.WorkItem | None:
     item = snapshot.item(ItemId(proposal_id))
     if (
         item is None
@@ -1314,6 +1294,22 @@ def _require_unstarted_proposal(
         or item.attempt is not None
         or any(authority.item == item.item for authority in snapshot.command_preparation_authorities)
     ):
+        return None
+    return item
+
+
+def _require_unstarted_proposal(
+    snapshot: LedgerSnapshot,
+    proposal_id: ProposalId,
+    unavailable_message: str,
+) -> DecisionResult[tuple[work_models.ProposalRecord, work_models.WorkItem]]:
+    proposal = snapshot.proposal(proposal_id)
+    if proposal is None:
+        return DecisionFailure(
+            DecisionFailureCode.PROPOSAL_NOT_FOUND, f"Proposal '{proposal_id}' does not exist.", None
+        )
+    item = _unstarted_proposal_item(snapshot, proposal_id)
+    if item is None:
         return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, unavailable_message, None)
     return proposal, item
 

@@ -17,7 +17,7 @@ import msgspec
 
 from pinboard.adapters.files import root
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
-from pinboard.adapters.files.errors import ArtifactError
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.application import (
     candidate_snapshot_compatibility_models,
     candidate_snapshots,
@@ -26,6 +26,7 @@ from pinboard.application import (
     query_models,
     work_brief_models,
 )
+from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.brief_source_models import BriefSourceFailure, authority_selector
 from pinboard.application.dispatch import (
     find_dispatch_review,
@@ -58,7 +59,6 @@ from pinboard.application.work_briefs import (
 )
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
-    ArtifactAcceptanceAfterPublicationError,
     ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
@@ -92,6 +92,9 @@ class DispatchErrorCode(Enum):
     DISPATCH_CHECKOUT_MISMATCH = "DISPATCH_CHECKOUT_MISMATCH"
     DISPATCH_CHECKPOINT_MISSING = "DISPATCH_CHECKPOINT_MISSING"
     DISPATCH_PROMPT_NOT_CANONICAL = "DISPATCH_PROMPT_NOT_CANONICAL"
+    DISPATCH_REVIEW_READ_FAILED = "DISPATCH_REVIEW_READ_FAILED"
+    DISPATCH_PROMPT_PUBLICATION_FAILED = "DISPATCH_PROMPT_PUBLICATION_FAILED"
+    DISPATCH_AUTHORITY_RECHECK_FAILED = "DISPATCH_AUTHORITY_RECHECK_FAILED"
     STALE_ACTION = "STALE_ACTION"
 
 
@@ -165,6 +168,7 @@ def _after_publication_failure(
     message: str,
     changed_surfaces: tuple[ChangedSurface, ...],
     details: FailureDetails | None,
+    published_selectors: tuple[FailureFact, ...],
 ) -> DispatchFailure:
     if not changed_surfaces:
         return DispatchFailure(code, message, details)
@@ -173,7 +177,7 @@ def _after_publication_failure(
         code,
         message,
         FailureDetails(
-            observed=() if prior is None else prior.observed,
+            observed=(*published_selectors, *(() if prior is None else prior.observed)),
             mismatches=() if prior is None else prior.mismatches,
             retry=RetryDisposition.DO_NOT_RETRY,
             effect=EffectDisposition.COMMITTED,
@@ -181,6 +185,23 @@ def _after_publication_failure(
             alternatives=() if prior is None else prior.alternatives,
         ),
     )
+
+
+def _after_infrastructure_failure(
+    code: DispatchErrorCode,
+    error: ArtifactError | WorkStoreError,
+    changed_surfaces: tuple[ChangedSurface, ...],
+    published_selectors: tuple[FailureFact, ...],
+) -> DispatchFailure:
+    details = FailureDetails(
+        observed=published_selectors,
+        mismatches=(),
+        retry=RetryDisposition.DO_NOT_RETRY,
+        effect=EffectDisposition.COMMITTED,
+        changed_surfaces=changed_surfaces,
+        alternatives=(),
+    )
+    return DispatchFailure(code, str(error), details)
 
 
 def _fresh_review_details(
@@ -965,7 +986,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
     environment: DispatchEnvironment,
     supplied_prompt: bytes | None,
     choice: DispatchPreparationChoice,
-) -> DispatchResult[PublishedAgentPrompt]:
+) -> DispatchResult[PublishedAgentPrompt] | ArtifactAcceptanceFailure | ArtifactWriteFailure:
     selected_dispatch = select_dispatch(store, action, datetime.now(UTC))
     if isinstance(selected_dispatch, ApplicationDispatchFailure):
         return _dispatch_failure(selected_dispatch)
@@ -1049,28 +1070,40 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
             )
             if isinstance(accepted_review, ApplicationDispatchFailure):
                 return _dispatch_failure(accepted_review)
+            if isinstance(accepted_review, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+                return accepted_review
             accepted_review_reference = accepted_review.reference
             review_publication_selector = accepted_review_reference.selector
             review_publication_surfaces = accepted_review.changed_surfaces
             try:
                 accepted_review_bytes = artifacts.read(accepted_review_reference)
             except ArtifactError as error:
-                if not review_publication_surfaces:
+                if error.code == ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION or not review_publication_surfaces:
                     raise
-                raise ArtifactAcceptanceAfterPublicationError(
-                    accepted_review_reference.selector,
+                return _after_infrastructure_failure(
+                    DispatchErrorCode.DISPATCH_REVIEW_READ_FAILED,
                     error,
                     review_publication_surfaces,
-                ) from error
+                    (FailureFact("published_review_selector", accepted_review_reference.selector),),
+                )
         case _ as unreachable:
             assert_never(unreachable)
+    if review_publication_surfaces:
+        assert review_publication_selector is not None
+    review_selector_facts = (
+        (FailureFact("published_review_selector", review_publication_selector),) if review_publication_surfaces else ()
+    )
     if isinstance(choice, CorrectionDispatch):
         assert accepted_review_bytes == canonical_correction_source_review_bytes(choice.review)
         checkpoint_value = validated_brief.checkpoint
         if isinstance(choice.review, work_brief_models.LocalCorrectionSourceReview):
             if (failure := validate_local_correction_source_review(choice.review, validated_brief)) is not None:
                 return _after_publication_failure(
-                    review_failure(failure).code, failure.message, review_publication_surfaces, None
+                    review_failure(failure).code,
+                    failure.message,
+                    review_publication_surfaces,
+                    None,
+                    review_selector_facts,
                 )
             accepted_review_bytes = None
             failure = None
@@ -1090,6 +1123,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
                     f"Cannot read reviewed authority '{authority_id}': {reason}",
                     review_publication_surfaces,
                     None,
+                    review_selector_facts,
                 )
             case work_brief_models.ReviewedAuthorityDigestMismatch(
                 authority_id=authority_id,
@@ -1107,6 +1141,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
                     stale.message,
                     review_publication_surfaces,
                     stale.details,
+                    review_selector_facts,
                 )
             case _ as unreachable:
                 assert_never(unreachable)
@@ -1127,6 +1162,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
             rendered_prompt.message,
             review_publication_surfaces,
             rendered_prompt.details,
+            review_selector_facts,
         )
     try:
         published_prompt = publish_agent_prompt(
@@ -1137,26 +1173,25 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
             prompt=rendered_prompt,
             accepted_at=datetime.now(UTC),
         )
-    except ArtifactAcceptanceAfterPublicationError as error:
-        raise ArtifactAcceptanceAfterPublicationError(
-            error.selector,
-            error.cause,
-            _merge_changed_surfaces(review_publication_surfaces, error.changed_surfaces),
-        ) from error
     except (ArtifactError, WorkStoreError) as error:
+        if (isinstance(error, ArtifactError) and error.code == ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION) or (
+            isinstance(error, WorkStoreError) and error.invariant_violation
+        ):
+            raise
         if not review_publication_surfaces:
             raise
         assert review_publication_selector is not None
-        raise ArtifactAcceptanceAfterPublicationError(
-            review_publication_selector,
+        return _after_infrastructure_failure(
+            DispatchErrorCode.DISPATCH_PROMPT_PUBLICATION_FAILED,
             error,
             review_publication_surfaces,
-        ) from error
+            review_selector_facts,
+        )
     if isinstance(published_prompt, DecisionFailure):
         details = published_prompt.details
         if review_publication_surfaces:
             details = FailureDetails(
-                observed=() if details is None else details.observed,
+                observed=(*review_selector_facts, *(() if details is None else details.observed)),
                 mismatches=() if details is None else details.mismatches,
                 retry=RetryDisposition.DO_NOT_RETRY,
                 effect=EffectDisposition.COMMITTED,
@@ -1171,7 +1206,26 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
             published_prompt.message,
             details,
         )
+    if isinstance(published_prompt, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+        details = published_prompt.details
+        if review_publication_surfaces:
+            details = dataclass_replace(
+                details,
+                observed=(*review_selector_facts, *details.observed),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.COMMITTED,
+                changed_surfaces=_merge_changed_surfaces(review_publication_surfaces, details.changed_surfaces),
+            )
+        return dataclass_replace(published_prompt, details=details)
     invocation_surfaces = _merge_changed_surfaces(review_publication_surfaces, published_prompt.changed_surfaces)
+    invocation_selector_facts = (
+        *review_selector_facts,
+        *(
+            (FailureFact("published_prompt_selector", published_prompt.reference.selector),)
+            if published_prompt.changed_surfaces
+            else ()
+        ),
+    )
     try:
         failure = recheck_dispatch_authority(
             store,
@@ -1180,23 +1234,33 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
             datetime.now(UTC),
         )
     except WorkStoreError as error:
+        if error.invariant_violation:
+            raise
         if not invocation_surfaces:
             raise
-        published_selector = (
-            published_prompt.reference.selector if published_prompt.changed_surfaces else review_publication_selector
-        )
-        assert published_selector is not None
-        raise ArtifactAcceptanceAfterPublicationError(
-            published_selector,
+        return _after_infrastructure_failure(
+            DispatchErrorCode.DISPATCH_AUTHORITY_RECHECK_FAILED,
             error,
             invocation_surfaces,
-        ) from error
+            invocation_selector_facts,
+        )
     if failure is not None:
-        return _dispatch_failure(failure)
+        selected_failure = _dispatch_failure(failure)
+        return _after_publication_failure(
+            selected_failure.code,
+            selected_failure.message,
+            invocation_surfaces,
+            selected_failure.details,
+            invocation_selector_facts,
+        )
     if isinstance(choice, CorrectionDispatch):
         checked_start = _read_correction_start(store, artifacts, source_checkout_root, validated_brief, choice)
         if isinstance(checked_start, DispatchFailure):
             return _after_publication_failure(
-                checked_start.code, checked_start.message, invocation_surfaces, checked_start.details
+                checked_start.code,
+                checked_start.message,
+                invocation_surfaces,
+                checked_start.details,
+                invocation_selector_facts,
             )
     return PublishedAgentPrompt(str(published_prompt), published_prompt.reference, invocation_surfaces)

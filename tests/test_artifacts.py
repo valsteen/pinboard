@@ -1,5 +1,6 @@
 import sqlite3
 import tempfile
+import traceback
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -18,13 +19,23 @@ from pinboard.adapters.files.errors import (
 )
 from pinboard.adapters.files.file_io import create_immutable, resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database, open_database
-from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError
+from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError, StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application.artifact_publication import publish_accepted_artifact
+from pinboard.application.artifact_publication import (
+    ArtifactAcceptanceFailure,
+    ArtifactWriteFailure,
+    publish_accepted_artifact,
+)
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, NewArtifact
 from pinboard.domain import work_models
-from pinboard.domain.errors import ArtifactAcceptanceAfterPublicationError, DecisionFailure, DecisionFailureCode
+from pinboard.domain.errors import (
+    ChangedSurface,
+    DecisionFailure,
+    DecisionFailureCode,
+    EffectDisposition,
+    RetryDisposition,
+)
 from tests.artifact_support import write_revision
 from tests.domain_support import expect_success
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
@@ -51,7 +62,7 @@ class _BarrierArtifactPublisher:
     def work_root(self) -> Path:
         return self.repository.work_root
 
-    def publish(self, artifact: NewArtifact) -> ArtifactPublication:
+    def publish(self, artifact: NewArtifact) -> ArtifactPublication | ArtifactWriteFailure:
         self.barrier.wait(timeout=5)
         return self.repository.publish(artifact)
 
@@ -60,15 +71,37 @@ def _publish_to_readonly_store(
     store: _AlwaysReadOnlyArtifactStore,
     publisher: _BarrierArtifactPublisher,
     artifact: NewArtifact,
-) -> Exception:
-    try:
-        publish_accepted_artifact(store, publisher, artifact, SQLITE_NOW)
-    except Exception as error:
-        return error
+) -> ArtifactAcceptanceFailure:
+    result = publish_accepted_artifact(store, publisher, artifact, SQLITE_NOW)
+    if isinstance(result, ArtifactAcceptanceFailure):
+        return result
     raise AssertionError("Read-only artifact acceptance unexpectedly succeeded.")
 
 
 class ArtifactPersistenceTest(unittest.TestCase):
+    def test_persisted_state_invariant_after_publication_retains_traceback(self) -> None:
+        project = Path(tempfile.mkdtemp()).resolve()
+        roots = resolve_durable_roots(project)
+        initialize_database(roots, SQLITE_NOW)
+        store = SQLiteWorkStore(roots.database_path)
+        before = store.validated_snapshot()
+        for code in (StorageErrorCode.INVARIANT_VIOLATION, StorageErrorCode.INVALID_STATE):
+            with self.subTest(code=code):
+                artifact = NewArtifact(work_models.ArtifactKind.EVIDENCE, code.value, 1, ".md", b"ready\n")
+                failure = StorageError(code, "persisted state is inconsistent")
+                with patch.object(store, "accept_artifact_reference", side_effect=failure):
+                    try:
+                        publish_accepted_artifact(store, ArtifactRepository(roots), artifact, SQLITE_NOW)
+                    except StorageError as raised:
+                        self.assertIs(failure, raised)
+                        self.assertIn("publish_accepted_artifact", "".join(traceback.format_tb(raised.__traceback__)))
+                    else:
+                        self.fail("Persisted-state invariant became a publication result.")
+                self.assertEqual(before, store.validated_snapshot())
+                self.assertEqual(
+                    b"ready\n", (roots.work_root / "artifacts" / "evidence" / code.value / "1.md").read_bytes()
+                )
+
     def test_concurrent_reuse_is_not_attributed_to_the_losing_publisher(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         roots = resolve_durable_roots(project)
@@ -86,15 +119,20 @@ class ArtifactPersistenceTest(unittest.TestCase):
             )
             failures = tuple(future.result() for future in futures)
 
-        self.assertEqual(1, sum(isinstance(error, ArtifactAcceptanceAfterPublicationError) for error in failures))
-        self.assertEqual(1, sum(isinstance(error, SQLiteReadOnlyError) for error in failures))
-        created_failure = next(
-            error for error in failures if isinstance(error, ArtifactAcceptanceAfterPublicationError)
-        )
-        reused_failure = next(error for error in failures if isinstance(error, SQLiteReadOnlyError))
+        self.assertEqual(1, sum(failure.details.effect.value == "committed" for failure in failures))
+        self.assertEqual(1, sum(failure.details.effect.value == "unchanged" for failure in failures))
+        created_failure = next(failure for failure in failures if failure.details.effect.value == "committed")
+        reused_failure = next(failure for failure in failures if failure.details.effect.value == "unchanged")
         self.assertEqual("artifacts/evidence/concurrent/1.md", created_failure.selector)
         self.assertIsInstance(created_failure.cause, SQLiteReadOnlyError)
-        self.assertEqual(roots.database_path, reused_failure.database_path)
+        self.assertIsInstance(reused_failure.cause, SQLiteReadOnlyError)
+        self.assertEqual(roots.database_path, reused_failure.cause.database_path)
+        self.assertEqual("do-not-retry", created_failure.details.retry.value)
+        self.assertEqual("do-not-retry", reused_failure.details.retry.value)
+        self.assertEqual(
+            ("immutable-artifact",), tuple(value.value for value in created_failure.details.changed_surfaces)
+        )
+        self.assertEqual((), reused_failure.details.changed_surfaces)
         self.assertEqual(b"ready\n", (roots.work_root / created_failure.selector).read_bytes())
         self.assertEqual(before, store.validated_snapshot())
 
@@ -175,6 +213,7 @@ class ArtifactPersistenceTest(unittest.TestCase):
         artifact = NewArtifact(work_models.ArtifactKind.BRIEF, "attempt-a", 1, ".json", b"{}\n")
         repository = ArtifactRepository(roots)
         publication = repository.publish(artifact)
+        self.assertIsInstance(publication, ArtifactPublication)
         artifact_directory = (roots.work_root / publication.reference.selector).parent
         artifact_directory.chmod(0o500)
         try:
@@ -189,6 +228,9 @@ class ArtifactPersistenceTest(unittest.TestCase):
     def test_post_publication_sync_failure_reports_the_created_artifact(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         roots = resolve_durable_roots(project)
+        initialize_database(roots, SQLITE_NOW)
+        store = SQLiteWorkStore(roots.database_path)
+        before = store.validated_snapshot()
         artifact = NewArtifact(work_models.ArtifactKind.RESULT, "attempt-a", 1, ".md", b"result\n")
 
         def fail_after_publication(path: Path, content: bytes) -> bool:
@@ -198,14 +240,16 @@ class ArtifactPersistenceTest(unittest.TestCase):
             ):
                 return create_immutable(path, content)
 
-        with (
-            patch("pinboard.adapters.files.artifacts.create_immutable", side_effect=fail_after_publication),
-            self.assertRaises(ArtifactAcceptanceAfterPublicationError) as publication_failure,
-        ):
-            ArtifactRepository(roots).publish(artifact)
+        with patch("pinboard.adapters.files.artifacts.create_immutable", side_effect=fail_after_publication):
+            publication_failure = publish_accepted_artifact(store, ArtifactRepository(roots), artifact, SQLITE_NOW)
 
-        path = roots.work_root / publication_failure.exception.selector
-        self.assertEqual("artifacts/results/attempt-a/1.md", publication_failure.exception.selector)
+        self.assertIsInstance(publication_failure, ArtifactWriteFailure)
+        path = roots.work_root / publication_failure.selector
+        self.assertEqual("artifacts/results/attempt-a/1.md", publication_failure.selector)
+        self.assertEqual(EffectDisposition.COMMITTED, publication_failure.details.effect)
+        self.assertEqual(RetryDisposition.DO_NOT_RETRY, publication_failure.details.retry)
+        self.assertEqual((ChangedSurface.IMMUTABLE_ARTIFACT,), publication_failure.details.changed_surfaces)
+        self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
         self.assertEqual(b"result\n", path.read_bytes())
         self.assertFalse(create_immutable(path, b"result\n"))
 

@@ -17,9 +17,10 @@ from pinboard.adapters.files.file_io import (
     ensure_directory_chain,
 )
 from pinboard.application import stored_state
+from pinboard.application.artifact_publication import ArtifactWriteFailure
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, BriefArtifactRef, NewArtifact
 from pinboard.domain import work_models
-from pinboard.domain.errors import ArtifactAcceptanceAfterPublicationError, ChangedSurface
+from pinboard.domain.errors import ChangedSurface, EffectDisposition, FailureDetails, FailureFact, RetryDisposition
 
 _DIRECTORIES: dict[work_models.ArtifactKind, str] = {
     work_models.ArtifactKind.REQUIREMENTS: "requirements",
@@ -108,7 +109,7 @@ def verify_reference(
     read_reference(work_root, reference)
 
 
-def _publish_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactPublication:
+def _publish_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactPublication | ArtifactWriteFailure:
     selector = _build_selector(artifact.kind, artifact.key, artifact.revision, artifact.suffix)
     digest = sha256(artifact.content).hexdigest()
     reference = ArtifactRef(artifact.kind, artifact.key, artifact.revision, selector, digest, len(artifact.content))
@@ -120,11 +121,18 @@ def _publish_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactPub
         try:
             created = create_immutable(path, artifact.content)
         except ImmutableFilePublishedError as error:
-            raise ArtifactAcceptanceAfterPublicationError(
+            return ArtifactWriteFailure(
                 reference.selector,
                 error,
-                (ChangedSurface.IMMUTABLE_ARTIFACT,),
-            ) from error
+                FailureDetails(
+                    observed=(FailureFact("published_artifact_selector", reference.selector),),
+                    mismatches=(),
+                    retry=RetryDisposition.DO_NOT_RETRY,
+                    effect=EffectDisposition.COMMITTED,
+                    changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+                    alternatives=(),
+                ),
+            )
         except FileIOError as error:
             if error.code == FileIOErrorCode.FILE_ALREADY_EXISTS:
                 raise ArtifactError(
@@ -150,5 +158,5 @@ class ArtifactRepository:
     def read(self, reference: stored_state.ArtifactReference | BriefArtifactRef) -> bytes:
         return read_reference(self.work_root, reference)
 
-    def publish(self, artifact: NewArtifact) -> ArtifactPublication:
+    def publish(self, artifact: NewArtifact) -> ArtifactPublication | ArtifactWriteFailure:
         return _publish_revision(self.roots, artifact)

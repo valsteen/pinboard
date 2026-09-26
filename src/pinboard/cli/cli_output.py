@@ -6,7 +6,7 @@ from typing import Literal
 import msgspec
 
 from pinboard.application import work_brief_models
-from pinboard.cli.errors import CliFailure
+from pinboard.cli.errors import CommandFailure
 from pinboard.domain.errors import EffectDisposition, FailureDetails, FailureFactValue, RetryDisposition
 
 
@@ -75,7 +75,7 @@ def write_json[T](value: T) -> None:
     sys.stdout.write(render_json(value).decode())
 
 
-def write_rejected_operation(operation: str, failure: CliFailure) -> None:
+def write_rejected_operation(operation: str, failure: CommandFailure | work_brief_models.WorkBriefFailure) -> None:
     """Present one expected failure without reconstructing facts from its prose message."""
     details = None if isinstance(failure, work_brief_models.WorkBriefFailure) else failure.details
     default_retry = (

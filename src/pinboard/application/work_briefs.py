@@ -13,8 +13,10 @@ from pinboard.application import (
 )
 from pinboard.application.artifact_publication import (
     AcceptedArtifactPublication,
+    ArtifactAcceptanceFailure,
     ArtifactPublisher,
     ArtifactReader,
+    ArtifactWriteFailure,
     publish_accepted_artifact,
 )
 from pinboard.application.artifacts import (
@@ -49,7 +51,13 @@ def publish_work_brief(
     publisher: ArtifactPublisher,
     brief: work_brief_models.WorkBrief,
     accepted_at: datetime,
-) -> AcceptedArtifactPublication | DecisionFailure | work_brief_models.WorkBriefFailure:
+) -> (
+    AcceptedArtifactPublication
+    | ArtifactAcceptanceFailure
+    | ArtifactWriteFailure
+    | DecisionFailure
+    | work_brief_models.WorkBriefFailure
+):
     if (failure := _validate_current_definition(store, brief)) is not None:
         return failure
     return publish_accepted_artifact(
@@ -439,10 +447,16 @@ def publish_brief_review_needs_correction(
     brief_artifact_ref_id: ArtifactRefId,
     review: work_brief_models.WorkBriefReviewNeedsCorrection,
     accepted_at: datetime,
-) -> AcceptedArtifactPublication | DecisionFailure | work_brief_models.WorkBriefFailure:
+) -> (
+    AcceptedArtifactPublication
+    | ArtifactAcceptanceFailure
+    | ArtifactWriteFailure
+    | DecisionFailure
+    | work_brief_models.WorkBriefFailure
+):
     """Validate an independent negative review, publish bytes, then accept their reference.
 
-    Artifact acceptance retains its irreversible-publication failure contract. This operation
+    Publication retains its irreversible-file failure contract. This operation
     does not acquire authority, change lifecycle, or establish dispatch readiness.
     """
     selected = read_accepted_work_brief(store, reader, brief_artifact_ref_id)

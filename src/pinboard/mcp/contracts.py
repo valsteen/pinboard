@@ -2062,9 +2062,9 @@ class BriefPublishedRejection(PublishedFailureResult, frozen=True):
     message: NonEmptyText
 
 
-class PublicationAcceptanceFailureResult(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class PublicationInfrastructureFailureResult(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     status: Literal["failed-after-publication"]
-    code: Literal["ARTIFACT_ACCEPTANCE_FAILED"]
+    code: Literal["ARTIFACT_ACCEPTANCE_FAILED", "ARTIFACT_PUBLICATION_FAILED"]
     message: NonEmptyText
     state_changed: bool
     effect: Literal["committed"]
@@ -2076,7 +2076,27 @@ class PublicationAcceptanceFailureResult(_ChangedResult, msgspec.Struct, frozen=
     recovery: NonEmptyText
 
 
-class BriefPublicationAcceptanceFailure(PublicationAcceptanceFailureResult, frozen=True):
+class BriefPublicationInfrastructureFailure(PublicationInfrastructureFailureResult, frozen=True):
+    schema: Literal["pinboard-mcp-brief-publication-result/v1"]
+
+
+class PublicationInfrastructureUnchangedFailureResult(
+    _UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True
+):
+    status: Literal["infrastructure-failure"]
+    code: Literal["ARTIFACT_ACCEPTANCE_FAILED", "ARTIFACT_PUBLICATION_FAILED"]
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["retry-same-input", "do-not-retry"]
+    changed_surfaces: Empty
+    observed: Empty
+    mismatches: Empty
+    published_selector: NonEmptyText
+    recovery: NonEmptyText
+
+
+class BriefPublicationInfrastructureUnchangedFailure(PublicationInfrastructureUnchangedFailureResult, frozen=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
 
 
@@ -2200,7 +2220,11 @@ class BriefReviewPublishedRejection(PublishedFailureResult, frozen=True):
     message: NonEmptyText
 
 
-class BriefReviewAcceptanceFailure(PublicationAcceptanceFailureResult, frozen=True):
+class BriefReviewInfrastructureFailure(PublicationInfrastructureFailureResult, frozen=True):
+    schema: Literal["pinboard-mcp-brief-review-result/v1"]
+
+
+class BriefReviewInfrastructureUnchangedFailure(PublicationInfrastructureUnchangedFailureResult, frozen=True):
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
 
 
@@ -2325,10 +2349,38 @@ class DispatchRejected(RejectedReadResult, frozen=True):
 class ReviewJobRejected(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-review-job-result/v1"]
     attempt_id: PathComponent
-    code: DecisionFailureCode
+    code: NonEmptyText
     retry: RetryDisposition
     observed: tuple[FailureObservation, ...]
     mismatches: tuple[FailureMismatch, ...]
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        DecisionFailureCode(self.code)
+
+
+class JobInfrastructureFailure(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    status: Literal["infrastructure-failure"]
+    attempt_id: PathComponent
+    code: Literal["ARTIFACT_ACCEPTANCE_FAILED", "ARTIFACT_PUBLICATION_FAILED"]
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["retry-same-input", "do-not-retry"]
+    changed_surfaces: Empty
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+    def __post_init__(self) -> None:
+        _require_fixed_state_changed(self)
+
+
+class DispatchInfrastructureFailure(JobInfrastructureFailure, frozen=True):
+    schema: Literal["pinboard-mcp-dispatch-result/v1"]
+
+
+class ReviewJobInfrastructureFailure(JobInfrastructureFailure, frozen=True):
+    schema: Literal["pinboard-mcp-review-job-result/v1"]
 
 
 class InitialRecoveryTemplate(ReviewChoiceBase, tag="package-initial-recovery", tag_field="kind", frozen=True):
@@ -2363,7 +2415,7 @@ class ReviewJobCandidateRequired(ReviewJobRejected, frozen=True):
         super().__post_init__()
         remedy = self.recovery
         if (
-            self.code != DecisionFailureCode.ACTION_NOT_AVAILABLE
+            self.code != DecisionFailureCode.ACTION_NOT_AVAILABLE.value
             or self.attempt_id != remedy.arguments.review.attempt_id
         ):
             raise ValueError("Retained recovery must preserve its rejected attempt and expected missing-evidence code.")
@@ -2393,7 +2445,7 @@ class DispatchFailedAfterPublication(JobFailedAfterPublication, frozen=True):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.code != "ARTIFACT_ACCEPTANCE_FAILED":
+        if self.code not in {"ARTIFACT_ACCEPTANCE_FAILED", "ARTIFACT_PUBLICATION_FAILED"}:
             try:
                 dispatch_operations.DispatchErrorCode(self.code)
             except ValueError:
@@ -2405,7 +2457,12 @@ class ReviewJobFailedAfterPublication(JobFailedAfterPublication, frozen=True):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.code != "ARTIFACT_ACCEPTANCE_FAILED":
+        if self.code not in {
+            "ARTIFACT_ACCEPTANCE_FAILED",
+            "ARTIFACT_PUBLICATION_FAILED",
+            "REVIEW_JOB_PREPARATION_FAILED",
+            "REVIEW_PROMPT_PUBLICATION_FAILED",
+        }:
             DecisionFailureCode(self.code)
 
 
@@ -2413,6 +2470,7 @@ DISPATCH_RESULT_TYPES = (
     DispatchReady,
     DispatchInvalid,
     DispatchRejected,
+    DispatchInfrastructureFailure,
     DispatchFailedAfterPublication,
     ExecutorBusyResult,
 )
@@ -2421,6 +2479,7 @@ REVIEW_JOB_RESULT_TYPES = (
     CandidateReviewRecorded,
     ReviewJobInvalid,
     ReviewJobRejected,
+    ReviewJobInfrastructureFailure,
     ReviewJobCandidateRequired,
     ReviewJobFailedAfterPublication,
     ExecutorBusyResult,
@@ -2540,7 +2599,8 @@ BRIEF_REVIEW_RESULT_TYPES = (
     BriefReviewUnchanged,
     BriefReviewRejected,
     BriefReviewPublishedRejection,
-    BriefReviewAcceptanceFailure,
+    BriefReviewInfrastructureFailure,
+    BriefReviewInfrastructureUnchangedFailure,
     ExecutorBusyResult,
 )
 
@@ -2598,7 +2658,8 @@ BRIEF_PUBLICATION_RESULT_TYPES = (
     BriefArchitectureImpactRejected,
     BriefRejected,
     BriefPublishedRejection,
-    BriefPublicationAcceptanceFailure,
+    BriefPublicationInfrastructureFailure,
+    BriefPublicationInfrastructureUnchangedFailure,
     ExecutorBusyResult,
 )
 PREPARATION_AUTHORITY_RESULT_TYPES = (
@@ -2672,7 +2733,8 @@ type ResultBoundary = (
     | type[BriefArchitectureImpactRejected]
     | type[BriefRejected]
     | type[BriefPublishedRejection]
-    | type[BriefPublicationAcceptanceFailure]
+    | type[BriefPublicationInfrastructureFailure]
+    | type[BriefPublicationInfrastructureUnchangedFailure]
     | type[query_models.WorkOverview]
     | type[OverviewRejected]
     | type[OrderCommitted]
@@ -2710,11 +2772,13 @@ type ResultBoundary = (
     | type[DispatchReady]
     | type[DispatchInvalid]
     | type[DispatchRejected]
+    | type[DispatchInfrastructureFailure]
     | type[DispatchFailedAfterPublication]
     | type[ReviewJobReady]
     | type[CandidateReviewRecorded]
     | type[ReviewJobInvalid]
     | type[ReviewJobRejected]
+    | type[ReviewJobInfrastructureFailure]
     | type[ReviewJobCandidateRequired]
     | type[ReviewJobFailedAfterPublication]
     | type[CandidateRestoreReady]
@@ -2736,5 +2800,6 @@ type ResultBoundary = (
     | type[BriefReviewUnchanged]
     | type[BriefReviewRejected]
     | type[BriefReviewPublishedRejection]
-    | type[BriefReviewAcceptanceFailure]
+    | type[BriefReviewInfrastructureFailure]
+    | type[BriefReviewInfrastructureUnchangedFailure]
 )

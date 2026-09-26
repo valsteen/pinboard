@@ -30,6 +30,7 @@ from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import candidate_snapshot_compatibility_models, query_models
+from pinboard.application.artifact_publication import ArtifactWriteFailure
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef
 from pinboard.application.candidate_identity import working_tree_identity
 from pinboard.application.candidate_snapshots import (
@@ -46,11 +47,13 @@ from pinboard.application.candidate_snapshots import (
 )
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import (
-    ArtifactAcceptanceAfterPublicationError,
     ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
     EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    RetryDisposition,
 )
 from pinboard.domain.identifiers import ActionId, AttemptId, CandidateId
 from tests.domain_support import action
@@ -927,18 +930,27 @@ class CandidateSnapshotTest(unittest.TestCase):
                 DecisionFailure,
             )
 
-        publication_error = ArtifactAcceptanceAfterPublicationError(
-            reference.selector, file_error, (ChangedSurface.IMMUTABLE_ARTIFACT,)
+        publication_error = ArtifactWriteFailure(
+            reference.selector,
+            file_error,
+            FailureDetails(
+                observed=(FailureFact("published_artifact_selector", reference.selector),),
+                mismatches=(),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.COMMITTED,
+                changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
+                alternatives=(),
+            ),
         )
         with (
             patch.object(lifecycle_artifacts, "_observe_review_candidate", return_value=snapshot),
-            patch.object(ArtifactRepository, "publish", side_effect=publication_error),
+            patch.object(ArtifactRepository, "publish", return_value=publication_error),
         ):
             self.assertIsInstance(
                 lifecycle_artifacts._submit_review(checkout, store, artifacts, command, SQLITE_NOW, lambda: SQLITE_NOW),
                 lifecycle_artifacts.PublishedTransitionFailure,
             )
-        unexpected = ArtifactAcceptanceAfterPublicationError(reference.selector, RuntimeError("failed"), ())
+        unexpected = RuntimeError("failed")
         with (
             patch.object(lifecycle_artifacts, "_observe_review_candidate", return_value=snapshot),
             patch.object(ArtifactRepository, "publish", side_effect=unexpected),

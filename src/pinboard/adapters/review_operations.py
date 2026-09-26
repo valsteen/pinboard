@@ -15,7 +15,7 @@ import msgspec
 
 from pinboard.adapters import candidate_evidence
 from pinboard.adapters.files.artifacts import read_reference
-from pinboard.adapters.files.errors import ArtifactError
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.application import (
     candidate_snapshots,
     checkpoint_compatibility_models,
@@ -28,7 +28,11 @@ from pinboard.application import (
     work_brief_models,
     work_briefs,
 )
-from pinboard.application.artifact_publication import publish_accepted_artifact
+from pinboard.application.artifact_publication import (
+    ArtifactAcceptanceFailure,
+    ArtifactWriteFailure,
+    publish_accepted_artifact,
+)
 from pinboard.application.artifacts import BriefArtifactRef, NewArtifact
 from pinboard.domain import work_models
 from pinboard.domain.errors import ChangedSurface, DecisionFailure, DecisionFailureCode, DecisionResult
@@ -95,6 +99,11 @@ class RecordedCandidateReview:
 class CurrentCandidateReview:
     reference: stored_state.ArtifactReference
     review: work_brief_models.CandidateReview
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewPromptPublicationFailure:
+    cause: ArtifactError | ports.WorkStoreError
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,7 +244,7 @@ def record_ready_candidate_review(
     review_sha256: str,
     reviewer_task_id: str,
     acceptance_evidence: str,
-) -> DecisionResult[RecordedCandidateReview]:
+) -> DecisionResult[RecordedCandidateReview | ArtifactAcceptanceFailure | ArtifactWriteFailure]:
     arguments = (
         work_root,
         store,
@@ -276,7 +285,7 @@ def record_ready_candidate_review(
         NewArtifact(work_models.ArtifactKind.EVIDENCE, key, 1, ".json", canonical),
         datetime.now(UTC),
     )
-    if isinstance(publication, DecisionFailure):
+    if isinstance(publication, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         return publication
     surfaces = (
         *((ChangedSurface.IMMUTABLE_ARTIFACT,) if publication.artifact_created else ()),
@@ -520,7 +529,7 @@ def _select_review_round(
     return round_view, prompt
 
 
-def prepare_review_job(  # noqa: C901 - one ordered candidate-bound review publication
+def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound review publication
     work_root: Path,
     store: ports.WorkStore,
     artifacts: dispatch_models.DispatchArtifactPort,
@@ -528,7 +537,9 @@ def prepare_review_job(  # noqa: C901 - one ordered candidate-bound review publi
     candidate_revision: str,
     checkpoint_history_id: HistoryId | None,
     correction_history_id: HistoryId | None,
-) -> DecisionResult[PreparedReviewJob]:
+) -> DecisionResult[
+    PreparedReviewJob | ArtifactAcceptanceFailure | ArtifactWriteFailure | ReviewPromptPublicationFailure
+]:
     unavailable = _review_job_failure("Review job requires the current review attempt and exact protected candidate.")
     result_path = work_root / "attempts" / attempt_id / "result.md"
     result_evidence = _read_required_evidence(result_path, "result.md")
@@ -631,15 +642,22 @@ def prepare_review_job(  # noqa: C901 - one ordered candidate-bound review publi
         f"Recheck candidate and result identity before returning; stop if either changed.\n\n{package_prompt}\n\n"
         f"{correction_prompt}\n\n{return_contract}"
     )
-    publication = dispatch_models.publish_agent_prompt(
-        store,
-        artifacts,
-        prompt_role="reviewer",
-        attempt_id=str(attempt_id),
-        prompt=prompt,
-        accepted_at=datetime.now(UTC),
-    )
-    if isinstance(publication, DecisionFailure):
+    try:
+        publication = dispatch_models.publish_agent_prompt(
+            store,
+            artifacts,
+            prompt_role="reviewer",
+            attempt_id=str(attempt_id),
+            prompt=prompt,
+            accepted_at=datetime.now(UTC),
+        )
+    except (ArtifactError, ports.WorkStoreError) as error:
+        if (isinstance(error, ArtifactError) and error.code == ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION) or (
+            isinstance(error, ports.WorkStoreError) and error.invariant_violation
+        ):
+            raise
+        return ReviewPromptPublicationFailure(error)
+    if isinstance(publication, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         return publication
     return PreparedReviewJob(
         candidate, brief, reference, result_path, digest, prior_package, review_round, publication, return_contract

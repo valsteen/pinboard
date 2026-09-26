@@ -31,6 +31,7 @@ from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state, work_brief_models
+from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, BriefArtifactRef, NewArtifact
 from pinboard.application.dispatch_models import (
     FRESH_CONTEXT_REQUIRED,
@@ -62,8 +63,8 @@ def dispatch_environment_enc_hook(value: FreshContextRequired) -> bool:
     raise TypeError(f"unsupported dispatch environment value: {value!r}")
 
 
-def expect_dispatch_success[T](result: DispatchResult[T]) -> T:
-    if isinstance(result, DispatchFailure):
+def expect_dispatch_success[T](result: DispatchResult[T] | ArtifactAcceptanceFailure | ArtifactWriteFailure) -> T:
+    if isinstance(result, (DispatchFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         raise AssertionError(str(result))
     return result
 
@@ -129,6 +130,20 @@ def prepare_dispatch_from_artifact(
 
 
 class DispatchTest(unittest.TestCase):
+    def test_dispatch_recheck_invariant_after_publication_keeps_traceback(self) -> None:
+        project, roots, store, brief, action, environment = self.initialized()
+        choice = self.dispatch_choice(action(), environment, ready_review(brief), "invariant-review", None)
+        before = store.validated_snapshot()
+        invariant = StorageError(StorageErrorCode.INVARIANT_VIOLATION, "accepted authority changed unexpectedly")
+        with (
+            patch("pinboard.adapters.dispatch_operations.recheck_dispatch_authority", side_effect=invariant),
+            self.assertRaises(UnexpectedToolError) as raised,
+        ):
+            self.native_dispatch(project, roots, choice)
+        self.assertIs(invariant, raised.exception.__cause__)
+        after = SQLiteWorkStore(roots.database_path).validated_snapshot()
+        self.assertEqual(before.lifecycle.project.revision + 2, after.lifecycle.project.revision)
+
     def dispatch_choice(
         self,
         selected: decision_models.DispatchAction,
@@ -758,6 +773,17 @@ class DispatchTest(unittest.TestCase):
         ):
             prompt_failure = self.native_dispatch(project, roots, choice(action(), "prompt-acceptance-failure"))
         self.assertEqual("failed-after-publication", prompt_failure["status"])
+        prompt_observed = prompt_failure["observed"]
+        assert isinstance(prompt_observed, list)
+        self.assertTrue(
+            any(isinstance(fact, dict) and fact.get("field") == "published_review_selector" for fact in prompt_observed)
+        )
+        self.assertTrue(
+            any(
+                isinstance(fact, dict) and fact.get("field") == "published_artifact_selector"
+                for fact in prompt_observed
+            )
+        )
         self.assertEqual(
             ["immutable-artifact", "accepted-artifact-reference", "ledger"],
             prompt_failure["changed_surfaces"],
@@ -1187,9 +1213,11 @@ class DispatchTest(unittest.TestCase):
 
         with patch.object(SQLiteWorkStore, "accept_artifact_reference", side_effect=database_failure):
             before_no_effect = SQLiteWorkStore(roots.database_path).validated_snapshot()
-            with self.assertRaises(UnexpectedToolError) as raised:
-                self.native_dispatch(project, roots, choice(action(), publish_review=False))
-        self.assertIsInstance(raised.exception.__cause__, StorageError)
+            unchanged = self.native_dispatch(project, roots, choice(action(), publish_review=False))
+        self.assertEqual("infrastructure-failure", unchanged["status"])
+        self.assertEqual("ARTIFACT_ACCEPTANCE_FAILED", unchanged["code"])
+        self.assertEqual("retry-same-input", unchanged["retry"])
+        self.assertEqual([], unchanged["changed_surfaces"])
         self.assertEqual(before_no_effect, SQLiteWorkStore(roots.database_path).validated_snapshot())
 
         project, roots, store, value, action, environment = self.initialized()
@@ -1197,7 +1225,9 @@ class DispatchTest(unittest.TestCase):
         review_bytes = ready_review(value)
         publish = ArtifactRepository.publish
 
-        def fail_worker_prompt(repository: ArtifactRepository, artifact: NewArtifact) -> ArtifactPublication:
+        def fail_worker_prompt(
+            repository: ArtifactRepository, artifact: NewArtifact
+        ) -> ArtifactPublication | ArtifactWriteFailure:
             if "-worker-prompt-" in artifact.key:
                 raise ArtifactError(ArtifactErrorCode.STORAGE_IO_ERROR, "prompt publication failed")
             return publish(repository, artifact)
@@ -1208,6 +1238,7 @@ class DispatchTest(unittest.TestCase):
                 project, roots, choice(action(), publish_review=True, review_id="prompt-artifact-error-review")
             )
         self.assertEqual("failed-after-publication", with_prior_effect["status"])
+        self.assertEqual("DISPATCH_PROMPT_PUBLICATION_FAILED", with_prior_effect["code"])
         self.assertEqual("do-not-retry", with_prior_effect["retry"])
         self.assertEqual(
             ["immutable-artifact", "accepted-artifact-reference", "ledger"],
@@ -1245,6 +1276,7 @@ class DispatchTest(unittest.TestCase):
                 project, roots, choice(action(), publish_review=True, review_id="review-read-failure")
             )
         self.assertEqual("failed-after-publication", with_prior_effect["status"])
+        self.assertEqual("DISPATCH_REVIEW_READ_FAILED", with_prior_effect["code"])
         self.assertEqual("do-not-retry", with_prior_effect["retry"])
         self.assertEqual(
             ["immutable-artifact", "accepted-artifact-reference", "ledger"],
@@ -1281,6 +1313,7 @@ class DispatchTest(unittest.TestCase):
                 project, roots, choice(action(), publish_review=True, review_id="authority-recheck-failure")
             )
         self.assertEqual("failed-after-publication", with_prior_effect["status"])
+        self.assertEqual("DISPATCH_AUTHORITY_RECHECK_FAILED", with_prior_effect["code"])
         self.assertEqual("do-not-retry", with_prior_effect["retry"])
         self.assertEqual(
             ["immutable-artifact", "accepted-artifact-reference", "ledger"],
@@ -1289,6 +1322,14 @@ class DispatchTest(unittest.TestCase):
         after = SQLiteWorkStore(roots.database_path).validated_snapshot()
         self.assertEqual(before.lifecycle.project.revision + 2, after.lifecycle.project.revision)
         self.assertEqual(len(before.artifact_references) + 2, len(after.artifact_references))
+        observed = with_prior_effect["observed"]
+        assert isinstance(observed, list)
+        for kind, field in (
+            ("-brief-review-", "published_review_selector"),
+            ("-worker-prompt-", "published_prompt_selector"),
+        ):
+            selector = next(reference.selector for reference in after.artifact_references if kind in reference.key)
+            self.assertIn({"field": field, "value": selector}, observed)
         after_files = {path.relative_to(roots.work_root) for path in roots.artifacts_root.rglob("*") if path.is_file()}
         self.assertEqual(len(before_files) + 2, len(after_files))
 
@@ -1303,6 +1344,43 @@ class DispatchTest(unittest.TestCase):
             after_files,
             {path.relative_to(roots.work_root) for path in roots.artifacts_root.rglob("*") if path.is_file()},
         )
+
+    def test_native_dispatch_preserves_traceback_for_immutable_prompt_conflict_after_review(self) -> None:
+        project, roots, store, value, action, environment = self.initialized()
+        before = store.validated_snapshot()
+        publish = ArtifactRepository.publish
+        conflicting_selector: str | None = None
+
+        def collide_with_worker_prompt(
+            repository: ArtifactRepository, artifact: NewArtifact
+        ) -> ArtifactPublication | ArtifactWriteFailure:
+            nonlocal conflicting_selector
+            if "-worker-prompt-" in artifact.key:
+                conflict = publish(repository, dataclass_replace(artifact, content=b"conflicting prompt"))
+                assert isinstance(conflict, ArtifactPublication)
+                conflicting_selector = conflict.reference.selector
+            return publish(repository, artifact)
+
+        with (
+            patch.object(ArtifactRepository, "publish", autospec=True, side_effect=collide_with_worker_prompt),
+            self.assertRaises(UnexpectedToolError) as raised,
+        ):
+            self.native_dispatch(
+                project,
+                roots,
+                self.dispatch_choice(action(), environment, ready_review(value), "invariant-review", None),
+            )
+        cause = raised.exception.__cause__
+        self.assertIsInstance(cause, ArtifactError)
+        assert isinstance(cause, ArtifactError)
+        self.assertEqual(ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION, cause.code)
+        self.assertIsNotNone(cause.__traceback__)
+        assert conflicting_selector is not None
+        self.assertEqual(b"conflicting prompt", (roots.work_root / conflicting_selector).read_bytes())
+        after = SQLiteWorkStore(roots.database_path).validated_snapshot()
+        self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
+        self.assertEqual(len(before.artifact_references) + 1, len(after.artifact_references))
+        self.assertNotIn(conflicting_selector, {reference.selector for reference in after.artifact_references})
 
     def test_native_dispatch_revalidates_the_linked_source_checkout_against_the_shared_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

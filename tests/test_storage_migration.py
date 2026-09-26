@@ -11,7 +11,7 @@ from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.files.legacy_storage import StorageLocation, observe_storage_location
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application.artifacts import NewArtifact
+from pinboard.application.artifacts import ArtifactPublication, NewArtifact
 from pinboard.cli.entrypoint import main
 from pinboard.domain import work_models
 from tests.domain_support import expect_success
@@ -115,6 +115,7 @@ class StorageMigrationTests(unittest.TestCase):
             publication = ArtifactRepository(roots).publish(
                 NewArtifact(work_models.ArtifactKind.EVIDENCE, "kept", 1, ".txt", b"immutable\n")
             )
+            self.assertIsInstance(publication, ArtifactPublication)
             store = SQLiteWorkStore(roots.database_path)
             expect_success(store.accept_artifact_reference(legacy, publication.reference, SQLITE_NOW))
             before = store.validated_snapshot()

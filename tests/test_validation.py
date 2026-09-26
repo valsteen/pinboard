@@ -19,7 +19,7 @@ from pinboard.application import stored_state, work_brief_models
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.work_briefs import canonical_work_brief_bytes, render_work_brief_markdown
 from pinboard.cli.entrypoint import main
-from pinboard.cli.errors import InitializationAfterCommittedEffectsError
+from pinboard.cli.errors import InitializationAfterCommittedEffects
 from pinboard.cli.work_state import initialize_work_state
 from pinboard.domain import work_models
 from tests.artifact_support import write_revision
@@ -27,8 +27,10 @@ from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.work_brief_support import work_a_brief
 
 
-def expect_work_brief_success[T](result: work_brief_models.WorkBriefResult[T]) -> T:
-    if isinstance(result, work_brief_models.WorkBriefFailure):
+def expect_work_brief_success[T](
+    result: work_brief_models.WorkBriefResult[T | InitializationAfterCommittedEffects],
+) -> T:
+    if isinstance(result, (work_brief_models.WorkBriefFailure, InitializationAfterCommittedEffects)):
         raise AssertionError(str(result))
     return result
 
@@ -44,7 +46,7 @@ def _mismatched_brief(project: Path) -> bytes:
 class SQLiteValidationTest(unittest.TestCase):
     def initialize_work_state(
         self, project: Path, work_root: Path | None = None
-    ) -> work_brief_models.WorkBriefResult[InitReceipt]:
+    ) -> work_brief_models.WorkBriefResult[InitReceipt | InitializationAfterCommittedEffects]:
         roots = resolve_durable_roots(project, work_root)
         return initialize_work_state(
             project,
@@ -254,15 +256,13 @@ class SQLiteValidationTest(unittest.TestCase):
         database = project / ".pinboard" / "state.sqlite3"
         failure = StorageError(StorageErrorCode.IO_ERROR, "injected database publication failure")
 
-        with (
-            patch("pinboard.cli.work_state.initialize_database", side_effect=failure),
-            self.assertRaises(InitializationAfterCommittedEffectsError) as raised,
-        ):
-            self.initialize_work_state(project)
+        with patch("pinboard.cli.work_state.initialize_database", side_effect=failure):
+            result = self.initialize_work_state(project)
 
-        self.assertIs(failure, raised.exception.cause)
-        self.assertEqual(exclude, raised.exception.git_exclude_path)
-        self.assertIsNone(raised.exception.database_path)
+        self.assertIsInstance(result, InitializationAfterCommittedEffects)
+        self.assertIs(failure, result.cause)
+        self.assertEqual(exclude, result.git_exclude_path)
+        self.assertIsNone(result.database_path)
         self.assertEqual(original_exclude + b"/.pinboard/\n", exclude.read_bytes())
         self.assertFalse(database.exists())
 

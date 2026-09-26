@@ -6,14 +6,15 @@ authority, file acquisition, terminal presentation or correction-start legality.
 Infrastructure failure after publication preserves every committed surface.
 """
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from typing import Literal
 
 from pinboard.adapters import review_operations
 from pinboard.adapters.files.artifacts import read_reference
-from pinboard.adapters.files.errors import ArtifactError
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.application import (
     artifact_publication,
     checkpoint_compatibility_models,
@@ -28,7 +29,14 @@ from pinboard.domain import errors, work_models
 from pinboard.domain.identifiers import AttemptId, HistoryId
 
 
-def prepare_recovered_review_job(  # noqa: C901 - one cohesive selected remedy and invocation-total aftermath
+@dataclass(frozen=True, slots=True)
+class RecoveredReviewPreparationFailure:
+    cause: ArtifactError | ports.WorkStoreError
+    details: errors.FailureDetails
+    code: Literal["REVIEW_JOB_PREPARATION_FAILED", "REVIEW_PROMPT_PUBLICATION_FAILED"]
+
+
+def prepare_recovered_review_job(  # noqa: C901, PLR0912 - one selected remedy and invocation-total aftermath
     work_root: Path,
     store: ports.WorkStore,
     artifacts: dispatch_models.DispatchArtifactPort,
@@ -37,7 +45,12 @@ def prepare_recovered_review_job(  # noqa: C901 - one cohesive selected remedy a
     checkpoint_history_id: HistoryId,
     correction_history_id: HistoryId | None,
     patch: bytes,
-) -> errors.DecisionResult[review_operations.PreparedReviewJob]:
+) -> errors.DecisionResult[
+    review_operations.PreparedReviewJob
+    | artifact_publication.ArtifactAcceptanceFailure
+    | artifact_publication.ArtifactWriteFailure
+    | RecoveredReviewPreparationFailure
+]:
     facts = queries.select_review_job_context(
         store, attempt_id, checkpoint_history_id, correction_history_id, None, None
     )
@@ -101,7 +114,14 @@ def prepare_recovered_review_job(  # noqa: C901 - one cohesive selected remedy a
         ),
         datetime.now(UTC),
     )
-    if isinstance(publication, errors.DecisionFailure):
+    if isinstance(
+        publication,
+        (
+            errors.DecisionFailure,
+            artifact_publication.ArtifactAcceptanceFailure,
+            artifact_publication.ArtifactWriteFailure,
+        ),
+    ):
         return publication
     surfaces = (
         *((errors.ChangedSurface.IMMUTABLE_ARTIFACT,) if publication.artifact_created else ()),
@@ -110,6 +130,18 @@ def prepare_recovered_review_job(  # noqa: C901 - one cohesive selected remedy a
             if publication.ledger_changed
             else ()
         ),
+    )
+    published_details = (
+        errors.FailureDetails(
+            observed=(errors.FailureFact("recovered_candidate_selector", publication.reference.selector),),
+            mismatches=(),
+            retry=errors.RetryDisposition.DO_NOT_RETRY,
+            effect=errors.EffectDisposition.COMMITTED,
+            changed_surfaces=surfaces,
+            alternatives=(),
+        )
+        if surfaces
+        else None
     )
     try:
         prepared = review_operations.prepare_review_job(
@@ -121,16 +153,40 @@ def prepare_recovered_review_job(  # noqa: C901 - one cohesive selected remedy a
             checkpoint_history_id,
             correction_history_id,
         )
-    except (errors.ArtifactAcceptanceAfterPublicationError, ArtifactError, ports.WorkStoreError) as error:
-        if not surfaces:
+    except (ArtifactError, ports.WorkStoreError) as error:
+        if (isinstance(error, ArtifactError) and error.code == ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION) or (
+            isinstance(error, ports.WorkStoreError) and error.invariant_violation
+        ):
             raise
-        if isinstance(error, errors.ArtifactAcceptanceAfterPublicationError):
-            raise errors.ArtifactAcceptanceAfterPublicationError(
-                error.selector,
-                error.cause,
-                tuple(dict.fromkeys((*surfaces, *error.changed_surfaces))),
-            ) from error
-        raise errors.ArtifactAcceptanceAfterPublicationError(publication.reference.selector, error, surfaces) from error
+        if published_details is None:
+            raise
+        return RecoveredReviewPreparationFailure(error, published_details, "REVIEW_JOB_PREPARATION_FAILED")
+    if isinstance(prepared, review_operations.ReviewPromptPublicationFailure):
+        if published_details is None:
+            raise prepared.cause
+        return RecoveredReviewPreparationFailure(
+            prepared.cause,
+            published_details,
+            "REVIEW_PROMPT_PUBLICATION_FAILED",
+        )
+    if isinstance(
+        prepared, (artifact_publication.ArtifactAcceptanceFailure, artifact_publication.ArtifactWriteFailure)
+    ):
+        if not surfaces:
+            return prepared
+        return replace(
+            prepared,
+            details=replace(
+                prepared.details,
+                observed=(
+                    errors.FailureFact("recovered_candidate_selector", publication.reference.selector),
+                    *prepared.details.observed,
+                ),
+                retry=errors.RetryDisposition.DO_NOT_RETRY,
+                effect=errors.EffectDisposition.COMMITTED,
+                changed_surfaces=tuple(dict.fromkeys((*surfaces, *prepared.details.changed_surfaces))),
+            ),
+        )
     if isinstance(prepared, errors.DecisionFailure):
         if not surfaces:
             return prepared

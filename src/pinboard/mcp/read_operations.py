@@ -33,10 +33,10 @@ from pinboard.application import (
     work_brief_models,
     work_briefs,
 )
+from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.ports import WorkStore
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
-    ArtifactAcceptanceAfterPublicationError,
     DecisionFailure,
     DecisionFailureCode,
     DecisionResult,
@@ -437,33 +437,45 @@ def _brief_review(raw: dict[str, JsonValue], token: execution.CancellationToken)
                     assert_never(unreachable)
             return execution.OperationResult(content, "ok", None)
         case contracts.BriefReviewPublishRequest():
-            try:
-                publication = work_briefs.publish_brief_review_needs_correction(
-                    store,
-                    repository,
-                    repository,
-                    ArtifactRefId(request.brief_artifact_ref_id),
-                    request.review,
-                    datetime.now(UTC),
-                )
-            except ArtifactAcceptanceAfterPublicationError as error:
+            publication = work_briefs.publish_brief_review_needs_correction(
+                store,
+                repository,
+                repository,
+                ArtifactRefId(request.brief_artifact_ref_id),
+                request.review,
+                datetime.now(UTC),
+            )
+            if isinstance(publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+                acceptance_failed = isinstance(publication, ArtifactAcceptanceFailure)
                 return execution.OperationResult(
                     {
                         "schema": schema,
-                        "status": "failed-after-publication",
-                        "code": "ARTIFACT_ACCEPTANCE_FAILED",
-                        "message": "The review was published, but its accepted reference could not be committed.",
-                        "state_changed": True,
-                        "effect": "committed",
-                        "retry": "do-not-retry",
-                        "changed_surfaces": [surface.value for surface in error.changed_surfaces],
+                        "status": (
+                            "failed-after-publication"
+                            if publication.details.effect == EffectDisposition.COMMITTED
+                            else "infrastructure-failure"
+                        ),
+                        "code": "ARTIFACT_ACCEPTANCE_FAILED" if acceptance_failed else "ARTIFACT_PUBLICATION_FAILED",
+                        "message": (
+                            "The review's accepted reference could not be committed."
+                            if acceptance_failed
+                            else "The review's immutable publication could not be completed."
+                        ),
+                        "state_changed": publication.details.effect == EffectDisposition.COMMITTED,
+                        "effect": publication.details.effect.value,
+                        "retry": publication.details.retry.value,
+                        "changed_surfaces": [surface.value for surface in publication.details.changed_surfaces],
                         "observed": [],
                         "mismatches": [],
-                        "published_selector": error.selector,
-                        "recovery": "Preserve the published selector and repair artifact-reference acceptance before continuing.",
+                        "published_selector": publication.selector,
+                        "recovery": (
+                            "Inspect the accepted reference before continuing."
+                            if acceptance_failed
+                            else "Inspect the published artifact and repair immutable publication before continuing."
+                        ),
                     },
                     "infrastructure-failure",
-                    error.selector,
+                    publication.selector,
                 )
             if isinstance(publication, work_brief_models.WorkBriefFailure):
                 return common._read_failure(schema, publication.code.value, publication.message, None)

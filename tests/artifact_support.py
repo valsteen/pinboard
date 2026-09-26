@@ -2,8 +2,11 @@
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.application.artifacts import ArtifactRef, NewArtifact
+from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, NewArtifact
 
 
 def write_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactRef:
-    return ArtifactRepository(roots).publish(artifact).reference
+    publication = ArtifactRepository(roots).publish(artifact)
+    if not isinstance(publication, ArtifactPublication):
+        raise AssertionError(f"Fixture publication failed: {publication}")
+    return publication.reference

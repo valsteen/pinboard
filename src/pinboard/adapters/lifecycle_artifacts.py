@@ -11,7 +11,7 @@ import msgspec
 
 from pinboard.adapters import candidate_evidence
 from pinboard.adapters.files.artifacts import ArtifactRepository
-from pinboard.adapters.files.errors import ArtifactError, FileIOError
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode, FileIOError
 from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
     DifferentHeadCandidate,
@@ -33,7 +33,9 @@ from pinboard.application import (
     stored_state,
     work_brief_models,
 )
+from pinboard.application.artifact_publication import ArtifactWriteFailure
 from pinboard.application.artifacts import (
+    ArtifactPublication,
     ArtifactRef,
     BriefArtifactRef,
     CheckpointArtifacts,
@@ -57,7 +59,6 @@ from pinboard.application.work_briefs import (
 )
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
-    ArtifactAcceptanceAfterPublicationError,
     ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
@@ -148,20 +149,34 @@ def _committed_decision_failure(
 
 
 def _publication_failure(
-    error: ArtifactAcceptanceAfterPublicationError | ArtifactError,
+    error: ArtifactError,
     created: tuple[str, ...],
 ) -> PublishedTransitionFailure:
     """Account for only new publication; rethrow infrastructure failure before effects."""
 
-    if isinstance(error, ArtifactAcceptanceAfterPublicationError):
-        if not isinstance(error.cause, FileIOError):
-            raise error
-        return _published_failure(
-            error.cause.code.value, str(error.cause), (*created, error.selector), storage_error=None
-        )
-    if not created:
+    if error.code == ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION or not created:
         raise error
     return _published_failure(error.code.value, str(error), created, storage_error=None)
+
+
+def _publish_artifact(
+    artifacts: ArtifactRepository,
+    artifact: NewArtifact,
+    created: list[str],
+) -> ArtifactPublication | PublishedTransitionFailure:
+    publication = artifacts.publish(artifact)
+    if isinstance(publication, ArtifactWriteFailure):
+        if not isinstance(publication.cause, FileIOError):
+            raise AssertionError("The filesystem publisher returned a non-file failure.")
+        return _published_failure(
+            publication.cause.code.value,
+            str(publication.cause),
+            (*created, publication.selector),
+            storage_error=None,
+        )
+    if publication.created:
+        created.append(publication.reference.selector)
+    return publication
 
 
 def _publication_terminal_result(
@@ -264,10 +279,9 @@ def _submit_review(
         ".json",
         candidate_snapshots.canonical_candidate_snapshot_bytes(snapshot),
     )
-    try:
-        publication = artifacts.publish(artifact)
-    except ArtifactAcceptanceAfterPublicationError as error:
-        return _publication_failure(error, ())
+    publication = _publish_artifact(artifacts, artifact, [])
+    if isinstance(publication, PublishedTransitionFailure):
+        return publication
     reference = EvidenceArtifactRef(
         publication.reference.key,
         publication.reference.revision,
@@ -280,6 +294,8 @@ def _submit_review(
             store, command, operation_time, reference, read_authorization_time=read_authorization_time
         )
     except StorageError as error:
+        if error.invariant_violation:
+            raise
         return _publication_terminal_result(error, (reference.selector,) if publication.created else ())
     return _publication_terminal_result(result, (reference.selector,) if publication.created else ())
 
@@ -452,15 +468,15 @@ def _publish_checkpoint(
     )
     created: list[str] = []
     try:
-        candidate_publication = artifacts.publish(publications[0])
-        if candidate_publication.created:
-            created.append(candidate_publication.reference.selector)
-        result_publication = artifacts.publish(publications[1])
-        if result_publication.created:
-            created.append(result_publication.reference.selector)
-        review_publication = artifacts.publish(publications[2])
-        if review_publication.created:
-            created.append(review_publication.reference.selector)
+        candidate_publication = _publish_artifact(artifacts, publications[0], created)
+        if isinstance(candidate_publication, PublishedTransitionFailure):
+            return candidate_publication
+        result_publication = _publish_artifact(artifacts, publications[1], created)
+        if isinstance(result_publication, PublishedTransitionFailure):
+            return result_publication
+        review_publication = _publish_artifact(artifacts, publications[2], created)
+        if isinstance(review_publication, PublishedTransitionFailure):
+            return review_publication
         candidate = _evidence_reference(candidate_publication.reference)
         result = ResultArtifactRef(
             result_publication.reference.key,
@@ -515,18 +531,20 @@ def _publish_checkpoint(
             type=work_brief_models.CheckpointReviewPackageV3,
             strict=True,
         )
-        package_publication = artifacts.publish(
+        package_publication = _publish_artifact(
+            artifacts,
             NewArtifact(
                 work_models.ArtifactKind.EVIDENCE,
                 f"{attempt_id}-{checkpoint_id}-review-package",
                 1,
                 ".json",
                 canonical_checkpoint_review_package_bytes(package),
-            )
+            ),
+            created,
         )
-        if package_publication.created:
-            created.append(package_publication.reference.selector)
-    except (ArtifactAcceptanceAfterPublicationError, ArtifactError) as error:
+        if isinstance(package_publication, PublishedTransitionFailure):
+            return package_publication
+    except ArtifactError as error:
         return _publication_failure(error, tuple(created))
     return (
         CheckpointArtifacts(
@@ -571,6 +589,8 @@ def _accept_checkpoint(
             transition_brief_identity=context.identity,
         )
     except StorageError as error:
+        if error.invariant_violation:
+            raise
         return _publication_terminal_result(error, created)
     return _publication_terminal_result(result, created)
 
@@ -691,16 +711,20 @@ def _publish_completion(
         return _unchanged("Current review.md does not match review_sha256.", candidate=None)
     created: list[str] = []
     try:
-        result_publication = artifacts.publish(
-            NewArtifact(work_models.ArtifactKind.RESULT, f"{attempt_id}-terminal-result", 1, ".md", result_bytes)
+        result_publication = _publish_artifact(
+            artifacts,
+            NewArtifact(work_models.ArtifactKind.RESULT, f"{attempt_id}-terminal-result", 1, ".md", result_bytes),
+            created,
         )
-        if result_publication.created:
-            created.append(result_publication.reference.selector)
-        review_publication = artifacts.publish(
-            NewArtifact(work_models.ArtifactKind.EVIDENCE, f"{attempt_id}-terminal-review", 1, ".md", review_bytes)
+        if isinstance(result_publication, PublishedTransitionFailure):
+            return result_publication
+        review_publication = _publish_artifact(
+            artifacts,
+            NewArtifact(work_models.ArtifactKind.EVIDENCE, f"{attempt_id}-terminal-review", 1, ".md", review_bytes),
+            created,
         )
-        if review_publication.created:
-            created.append(review_publication.reference.selector)
+        if isinstance(review_publication, PublishedTransitionFailure):
+            return review_publication
         result = ResultArtifactRef(
             result_publication.reference.key,
             result_publication.reference.revision,
@@ -743,18 +767,20 @@ def _publish_completion(
             ),
             context.checkpoint_coverage,
         )
-        package_publication = artifacts.publish(
+        package_publication = _publish_artifact(
+            artifacts,
             NewArtifact(
                 work_models.ArtifactKind.EVIDENCE,
                 f"{attempt_id}-completion-review-package",
                 1,
                 ".json",
                 canonical_completion_review_package_bytes(package),
-            )
+            ),
+            created,
         )
-        if package_publication.created:
-            created.append(package_publication.reference.selector)
-    except (ArtifactAcceptanceAfterPublicationError, ArtifactError) as error:
+        if isinstance(package_publication, PublishedTransitionFailure):
+            return package_publication
+    except ArtifactError as error:
         return _publication_failure(error, tuple(created))
     return (
         CompletionArtifacts(result, review, _evidence_reference(package_publication.reference)),
@@ -805,6 +831,8 @@ def _complete(
             transition_brief_identity=context.identity,
         )
     except StorageError as error:
+        if error.invariant_violation:
+            raise
         return _publication_terminal_result(error, created)
     return _publication_terminal_result(result, created)
 

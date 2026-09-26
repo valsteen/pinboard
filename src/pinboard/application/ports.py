@@ -23,6 +23,9 @@ from pinboard.domain.ledger import LedgerSnapshot
 class WorkStoreError(RuntimeError):
     """Infrastructure failure owned by the work-store port."""
 
+    retryable = False
+    invariant_violation = False
+
 
 @dataclass(frozen=True, slots=True)
 class ArtifactReferenceAcceptance:

@@ -36,13 +36,15 @@ from pinboard.mcp.contracts import (
     BriefCommitted,
     BriefCommittedWithWarning,
     BriefContractRejected,
-    BriefPublicationAcceptanceFailure,
+    BriefPublicationInfrastructureFailure,
+    BriefPublicationInfrastructureUnchangedFailure,
     BriefPublishedRejection,
     BriefReferenceCommitted,
     BriefReferenceCommittedWithWarning,
     BriefRejected,
-    BriefReviewAcceptanceFailure,
     BriefReviewCommitted,
+    BriefReviewInfrastructureFailure,
+    BriefReviewInfrastructureUnchangedFailure,
     BriefReviewNeedsCorrection,
     BriefReviewNoEvidence,
     BriefReviewPublishedRejection,
@@ -65,6 +67,7 @@ from pinboard.mcp.contracts import (
     CorrectionContextReady,
     CorrectionContextRejected,
     DispatchFailedAfterPublication,
+    DispatchInfrastructureFailure,
     DispatchInvalid,
     DispatchReady,
     DispatchRejected,
@@ -98,6 +101,7 @@ from pinboard.mcp.contracts import (
     RetainedV3BriefReviewNoEvidence,
     ReviewJobCandidateRequired,
     ReviewJobFailedAfterPublication,
+    ReviewJobInfrastructureFailure,
     ReviewJobInvalid,
     ReviewJobReady,
     ReviewJobRejected,
@@ -470,7 +474,13 @@ def _apply_job_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
     if isinstance(review_failure, dict) and isinstance(review_properties := review_failure.get("properties"), dict):
         review_properties["code"] = {
             "type": "string",
-            "enum": ["ARTIFACT_ACCEPTANCE_FAILED", *(code.value for code in DecisionFailureCode)],
+            "enum": [
+                "ARTIFACT_ACCEPTANCE_FAILED",
+                "ARTIFACT_PUBLICATION_FAILED",
+                "REVIEW_JOB_PREPARATION_FAILED",
+                "REVIEW_PROMPT_PUBLICATION_FAILED",
+                *(code.value for code in DecisionFailureCode),
+            ],
         }
     for name in (
         "DispatchReady",
@@ -658,7 +668,9 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         elif status == "unchanged":
             msgspec.convert(content, type=BriefReviewUnchanged, strict=True)
         elif status == "failed-after-publication":
-            msgspec.convert(content, type=BriefReviewAcceptanceFailure, strict=True)
+            msgspec.convert(content, type=BriefReviewInfrastructureFailure, strict=True)
+        elif status == "infrastructure-failure":
+            msgspec.convert(content, type=BriefReviewInfrastructureUnchangedFailure, strict=True)
         elif surfaces == ["immutable-artifact"]:
             msgspec.convert(content, type=BriefReviewPublishedRejection, strict=True)
         else:
@@ -668,6 +680,8 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
             result_type = DispatchReady
         elif status == "failed-after-publication":
             result_type = DispatchFailedAfterPublication
+        elif status == "infrastructure-failure":
+            result_type = DispatchInfrastructureFailure
         elif code == "DISPATCH_INVALID":
             result_type = DispatchInvalid
         else:
@@ -680,6 +694,8 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
             result_type = CandidateReviewRecorded
         elif status == "failed-after-publication":
             result_type = ReviewJobFailedAfterPublication
+        elif status == "infrastructure-failure":
+            result_type = ReviewJobInfrastructureFailure
         elif code == "REVIEW_JOB_INVALID":
             result_type = ReviewJobInvalid
         elif "recovery" in content:
@@ -794,7 +810,9 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     elif tool_name == "pinboard_proposal_create":
         msgspec.convert(content, type=ProposalRejected, strict=True)
     elif status == "failed-after-publication":
-        msgspec.convert(content, type=BriefPublicationAcceptanceFailure, strict=True)
+        msgspec.convert(content, type=BriefPublicationInfrastructureFailure, strict=True)
+    elif status == "infrastructure-failure":
+        msgspec.convert(content, type=BriefPublicationInfrastructureUnchangedFailure, strict=True)
     elif status == "rejected" and surfaces == ["immutable-artifact"]:
         msgspec.convert(content, type=BriefPublishedRejection, strict=True)
     elif status == "rejected":

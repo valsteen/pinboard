@@ -24,7 +24,9 @@ from pinboard.adapters import candidate_evidence, dispatch_operations
 from pinboard.adapters.files import root
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     candidate_snapshot_compatibility_models,
@@ -33,7 +35,7 @@ from pinboard.application import (
     work_brief_models,
     work_briefs,
 )
-from pinboard.application.artifacts import NewArtifact
+from pinboard.application.artifacts import ArtifactPublication, NewArtifact
 from pinboard.application.brief_source_models import BriefSourceFailure, authority_selector
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
@@ -272,6 +274,7 @@ class McpJobsTest(CheckpointPackageSupport):
                             candidate_snapshots.canonical_candidate_snapshot_bytes(retained),
                         )
                     )
+                    assert isinstance(published, ArtifactPublication)
                     accepted = store.accept_artifact_reference(
                         fixture.work, published.reference, context.receipt.committed_at
                     )
@@ -658,6 +661,112 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertEqual(before.lifecycle.work_items, after.lifecycle.work_items)
                 self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
                 self.assertEqual(before.authority, after.authority)
+
+    def test_review_job_post_link_sync_reports_publication_phase(self) -> None:
+        fixture, _, _ = self.review_job_fixture()
+        before = fixture.store.validated_snapshot()
+        original_fsync = os.fsync
+
+        def fail_after_link(descriptor: int) -> None:
+            if any("-reviewer-prompt-" in path.parent.name for path in fixture.work.rglob("1.txt")):
+                raise OSError("injected reviewer prompt sync failure")
+            original_fsync(descriptor)
+
+        with patch("pinboard.adapters.files.file_io.os.fsync", side_effect=fail_after_link):
+            failed = mcp_jobs._review_job(
+                str(fixture.project),
+                str(fixture.work),
+                {
+                    "kind": "initial",
+                    "attempt_id": "work-a-1",
+                    "candidate_revision": "b" * 40,
+                    "runtime": "codex",
+                    "background": False,
+                },
+                mcp_execution.CancellationToken(),
+            )
+        self.assertEqual("failed-after-publication", failed.content["status"])
+        self.assertEqual("ARTIFACT_PUBLICATION_FAILED", failed.content["code"])
+        self.assertEqual(["immutable-artifact"], failed.content["changed_surfaces"])
+        self.assertEqual("do-not-retry", failed.content["retry"])
+        contract_schemas.validate_result("pinboard_review_job", failed.content)
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+
+    def test_review_job_pre_effect_prompt_fault_retains_traceback(self) -> None:
+        fixture, _, _ = self.review_job_fixture()
+        before = fixture.store.validated_snapshot()
+        failure = StorageError(StorageErrorCode.IO_ERROR, "prompt write failed")
+        with (
+            patch("pinboard.adapters.review_operations.dispatch_models.publish_agent_prompt", side_effect=failure),
+            self.assertRaises(StorageError) as raised,
+        ):
+            mcp_jobs._review_job(
+                str(fixture.project),
+                str(fixture.work),
+                {
+                    "kind": "initial",
+                    "attempt_id": "work-a-1",
+                    "candidate_revision": "b" * 40,
+                    "runtime": "codex",
+                    "background": False,
+                },
+                mcp_execution.CancellationToken(),
+            )
+        self.assertIs(failure, raised.exception)
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+
+    def test_review_job_invariant_prompt_fault_retains_traceback(self) -> None:
+        fixture, _, _ = self.review_job_fixture()
+        before = fixture.store.validated_snapshot()
+        invariant = ArtifactError(ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION, "immutable prompt conflict")
+        with (
+            patch("pinboard.adapters.review_operations.dispatch_models.publish_agent_prompt", side_effect=invariant),
+            self.assertRaises(ArtifactError) as raised,
+        ):
+            mcp_jobs._review_job(
+                str(fixture.project),
+                str(fixture.work),
+                {
+                    "kind": "initial",
+                    "attempt_id": "work-a-1",
+                    "candidate_revision": "b" * 40,
+                    "runtime": "codex",
+                    "background": False,
+                },
+                mcp_execution.CancellationToken(),
+            )
+        self.assertIs(invariant, raised.exception)
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+
+    def test_reused_review_job_acceptance_fault_is_infrastructure_failure(self) -> None:
+        fixture, _, _ = self.review_job_fixture()
+        request: dict[str, contracts.JsonValue] = {
+            "kind": "initial",
+            "attempt_id": "work-a-1",
+            "candidate_revision": "b" * 40,
+            "runtime": "codex",
+            "background": False,
+        }
+        ready = mcp_jobs._review_job(
+            str(fixture.project), str(fixture.work), request, mcp_execution.CancellationToken()
+        )
+        self.assertEqual("ready", ready.content["status"])
+        before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        with patch.object(
+            SQLiteWorkStore,
+            "accept_artifact_reference",
+            side_effect=StorageError(StorageErrorCode.BUSY, "database unavailable", retryable=True),
+        ):
+            failed = mcp_jobs._review_job(
+                str(fixture.project), str(fixture.work), request, mcp_execution.CancellationToken()
+            )
+        self.assertEqual("infrastructure-failure", failed.content["status"])
+        self.assertEqual("ARTIFACT_ACCEPTANCE_FAILED", failed.content["code"])
+        self.assertEqual("unchanged", failed.content["effect"])
+        self.assertEqual("retry-same-input", failed.content["retry"])
+        self.assertEqual([], failed.content["changed_surfaces"])
+        contract_schemas.validate_result("pinboard_review_job", failed.content)
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
 
     def test_review_sibling_fields_are_rejected_before_state_access(self) -> None:
         with patch.object(mcp_common, "compose_store") as store:

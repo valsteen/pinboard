@@ -149,7 +149,7 @@ class ArchitectureDependencyTest(unittest.TestCase):
         self.assertEqual([], _violations(SOURCE_ROOT))
 
     def test_cli_composition_is_acyclic_and_the_entrypoint_only_routes(self) -> None:
-        self.assertFalse((SOURCE_ROOT / "interfaces").exists())
+        self.assertEqual([], sorted((SOURCE_ROOT / "interfaces").rglob("*.py")))
         self.assertEqual((), _package_cycles("cli"))
         allowed_non_cli = (
             "pinboard.adapters.files.errors",

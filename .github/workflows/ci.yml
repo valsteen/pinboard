@@ -74,9 +74,7 @@ jobs:
       - name: Check strict type coverage
         run: uv run --locked pyrefly coverage check src --strict --fail-under 100
       - name: Test with branch coverage
-        run: |
-          uv run --locked coverage run -m unittest discover -v
-          uv run --locked coverage report
+        run: uv run --locked python -m tests.runner --coverage
       - name: Validate plugin and skill metadata
         run: uv run --locked python scripts/validate-metadata.py
       - name: Validate Claude plugin and marketplace manifests

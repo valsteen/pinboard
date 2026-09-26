@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
+
+from pinboard.adapters.files import git_config
 
 
 def read_mcp_omit_regex_lookarounds() -> bool:
@@ -13,26 +14,9 @@ def read_mcp_omit_regex_lookarounds() -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         for missing in (False, True):
-            result = subprocess.run(
-                [
-                    "git",
-                    "config",
-                    "--file",
-                    str(path),
-                    "--null",
-                    "--type=bool",
-                    "--get-all",
-                    "mcp.omitRegexLookarounds",
-                ],
-                capture_output=True,
-                check=False,
-            )
+            result = git_config.get_all(path, "mcp.omitRegexLookarounds", as_bool=True)
             if result.returncode == 1 and not missing:
-                written = subprocess.run(
-                    ["git", "config", "--file", str(path), "--add", "mcp.omitRegexLookarounds", "true"],
-                    capture_output=True,
-                    check=False,
-                )
+                written = git_config.add(path, "mcp.omitRegexLookarounds", "true")
                 if written.returncode == 0:
                     continue
                 raise ValueError(

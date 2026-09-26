@@ -11,6 +11,7 @@ from typing import Literal
 
 import msgspec
 
+from pinboard.adapters.files import git_config
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, RootError
 from pinboard.adapters.files.file_io import create_immutable, ensure_child_directory
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
@@ -45,21 +46,17 @@ def _project_data_root(project_root: Path) -> Path | None:
     return ensure_child_directory(shared_repository, ".pinboard")
 
 
-def _decode_settings(path: Path) -> ContributorTraceSettings:
+def _decode_settings(path: Path) -> ContributorTraceSettings | None:
     try:
         if not path.is_file(follow_symlinks=False):
             raise ValueError("Contributor trace settings must be a regular file.")
-        listed = subprocess.run(
-            ["git", "config", "--file", str(path), "--null", "--list"],
-            capture_output=True,
-            check=False,
-        )
+        listed = git_config.list_entries(path)
         if listed.returncode != 0:
             raise ValueError("Contributor trace settings are invalid or unreadable.")
         project_mode: Literal["off", "on"] | None = None
         overrides: dict[str, Literal["inherit", "off", "on"]] = {}
         seen: set[str] = set()
-        for entry in listed.stdout.rstrip(b"\0").split(b"\0"):
+        for entry in listed.stdout.rstrip(b"\0").split(b"\0") if listed.stdout else ():
             if b"\n" not in entry:
                 raise ValueError("Contributor trace settings are invalid or unreadable.")
             key_bytes, value_bytes = entry.split(b"\n", 1)
@@ -76,9 +73,7 @@ def _decode_settings(path: Path) -> ContributorTraceSettings:
                 overrides[item] = value
             else:
                 raise ValueError("Contributor trace settings contain an unknown key or mode.")
-        if project_mode is None:
-            raise ValueError("Contributor trace settings must declare the project mode.")
-        return ContributorTraceSettings(project_mode, overrides)
+        return ContributorTraceSettings(project_mode, overrides) if project_mode is not None else None
     except (OSError, UnicodeError) as error:
         raise ValueError("Contributor trace settings are invalid or unreadable.") from error
 
@@ -87,11 +82,25 @@ def _settings(data_root: Path) -> ContributorTraceSettings:
     path = data_root / SETTINGS_NAME
     if not path.exists(follow_symlinks=False):
         try:
-            create_immutable(path, b'[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = off\n')
+            create_immutable(path, b"")
         except FileIOError as error:
             if error.code != FileIOErrorCode.FILE_ALREADY_EXISTS:
                 raise
-    return _decode_settings(path)
+    settings = _decode_settings(path)
+    if settings is not None:
+        return settings
+    try:
+        written = git_config.add(path, "pinboard.unsafe_persist_exact_pinboard_traces.mode", "off")
+    except OSError as error:
+        raise ValueError(f"Cannot write Contributor trace project mode in {path}: {error}") from error
+    if written.returncode != 0:
+        raise ValueError(
+            f"Cannot write Contributor trace project mode in {path}: {written.stderr.decode(errors='replace').strip()}"
+        )
+    settings = _decode_settings(path)
+    if settings is None:
+        raise ValueError("Contributor trace settings must declare the project mode.")
+    return settings
 
 
 def _trace_directory(data_root: Path) -> Path:

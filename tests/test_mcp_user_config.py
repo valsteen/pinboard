@@ -92,3 +92,13 @@ class McpUserConfigTest(unittest.TestCase):
                 self.assertEqual(64, stopped.exception.code)
                 self.assertIn(expected, stderr.getvalue())
                 self.assertIn(str(path), stderr.getvalue())
+
+    def test_duplicate_value_is_rejected_without_rewriting_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {"XDG_CONFIG_HOME": temporary}):
+            path = Path(temporary) / "pinboard" / "config"
+            path.parent.mkdir()
+            content = "[mcp]\n\tomitRegexLookarounds = false\n\tomitRegexLookarounds = true\n"
+            path.write_text(content)
+            with self.assertRaisesRegex(ValueError, "Invalid Pinboard MCP config"):
+                read_mcp_omit_regex_lookarounds()
+            self.assertEqual(content, path.read_text())

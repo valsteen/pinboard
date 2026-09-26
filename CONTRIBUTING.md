@@ -35,7 +35,7 @@ The repository uses `unittest`. The metadata validator is the supported check fo
 
 ## Diagnose Pinboard invocations during contributor work
 
-An initialized project gets an ignored `<managed-project>/.pinboard/contributor-traces.config` file on its first normal Pinboard CLI or MCP invocation, including a CLI call that needs runtime preparation. Its explicit default is:
+An initialized project gets an ignored Git config file at `<managed-project>/.pinboard/contributor-traces.config` on its first normal Pinboard CLI or MCP invocation, including a CLI call that needs runtime preparation. Pinboard creates an absent file privately at mode `0600`, writes a missing project mode through a key-level Git config operation, then reads the stored mode. Existing item overrides and explicit modes remain. Its explicit default is:
 
 ```gitconfig
 [pinboard "unsafe_persist_exact_pinboard_traces"]

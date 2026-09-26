@@ -183,6 +183,53 @@ class ContributorTraceTest(unittest.TestCase):
             ):
                 contributor_traces.read_project_trace_settings(primary)
 
+    def test_missing_project_mode_preserves_item_override_in_both_readers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            settings = primary / ".pinboard" / contributor_traces.SETTINGS_NAME
+            original = '[item "one"]\n\tmode = on\n'
+            settings.write_text(original)
+            state = contributor_traces.read_project_trace_settings(primary)
+            assert state is not None
+            self.assertEqual("off", state[1].unsafe_persist_exact_pinboard_traces)
+            self.assertEqual({"one": "on"}, state[1].item_overrides)
+            self.assertIn(original, settings.read_text())
+            settings.write_text(original)
+
+            launcher_root = Path(temporary) / "unprepared-plugin"
+            (launcher_root / "scripts").mkdir(parents=True)
+            launcher = launcher_root / "scripts" / "pinboard"
+            launcher.write_bytes((ROOT / "scripts" / "pinboard").read_bytes())
+            launcher.chmod(0o755)
+            result = subprocess.run(
+                [str(launcher), "--project-root", str(worktree), "close", "one"],
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(78, result.returncode)
+            self.assertEqual(
+                1,
+                len(
+                    tuple((primary / ".pinboard" / contributor_traces.TRACE_DIRECTORY).glob("pinboard-auto-cli-*.json"))
+                ),
+            )
+            state = contributor_traces.read_project_trace_settings(primary)
+            assert state is not None
+            self.assertEqual("off", state[1].unsafe_persist_exact_pinboard_traces)
+            self.assertEqual({"one": "on"}, state[1].item_overrides)
+
+            invalid = "[unknown]\n\tmode = on\n" + original
+            settings.write_text(invalid)
+            with self.assertRaisesRegex(ValueError, "unknown key"):
+                contributor_traces.read_project_trace_settings(primary)
+            rejected = subprocess.run(
+                [str(launcher), "--project-root", str(worktree), "close", "one"],
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(64, rejected.returncode)
+            self.assertEqual(invalid, settings.read_text())
+
     def test_explicit_off_and_item_overrides_follow_two_worktrees_and_next_call(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             primary, worktree = self.project(Path(temporary))
@@ -487,7 +534,9 @@ class ContributorTraceTest(unittest.TestCase):
                 [str(launcher), "--project-root", str(worktree), "root"], capture_output=True, check=False
             )
             self.assertEqual(78, missing.returncode)
-            self.assertIn("mode = off", (primary / ".pinboard" / contributor_traces.SETTINGS_NAME).read_text())
+            first_settings = primary / ".pinboard" / contributor_traces.SETTINGS_NAME
+            self.assertIn("mode = off", first_settings.read_text())
+            self.assertEqual(0o600, stat.S_IMODE(first_settings.stat().st_mode))
             self.assertFalse(directory.exists())
 
             self.settings(primary, "off", {})

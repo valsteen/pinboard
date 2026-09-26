@@ -466,7 +466,7 @@ select_unprepared_cli_capture() {
         return 0
     fi
     if [ ! -e "$settings" ] && [ ! -L "$settings" ]; then
-        (umask 077; set -C; printf '[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = off\n' > "$settings") 2>/dev/null || :
+        (umask 077; set -C; : > "$settings") 2>/dev/null || :
     fi
     if [ ! -f "$settings" ] || [ -L "$settings" ]; then
         printf 'Contributor trace settings must be a regular file.\n' >&2
@@ -486,6 +486,7 @@ select_unprepared_cli_capture() {
     item_mode=inherit
     seen_keys=
     while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
         key=${entry%%=*}
         value=${entry#*=}
         if [ "$entry" = "$key" ] || printf '%s\n' "$seen_keys" | grep -Fxq -- "$key"; then
@@ -511,7 +512,14 @@ $key"
     done <<EOF
 $listing
 EOF
-    [ -n "$project_mode" ] || return 1
+    if [ -z "$project_mode" ]; then
+        git config --file "$settings" --add pinboard.unsafe_persist_exact_pinboard_traces.mode off || {
+            printf 'Cannot write Contributor trace project mode in %s.\n' "$settings" >&2
+            return 1
+        }
+        project_mode=$(git config --file "$settings" --get-all pinboard.unsafe_persist_exact_pinboard_traces.mode) || return 1
+        [ "$project_mode" = off ] || return 1
+    fi
     effective_mode=$project_mode
     if [ "$item_mode" != inherit ]; then effective_mode=$item_mode; fi
     if [ "$effective_mode" = off ]; then printf 'off\n'; return 0; fi

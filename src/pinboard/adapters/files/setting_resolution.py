@@ -24,5 +24,5 @@ class SettingResolutionError(ValueError):
 
     def __init__(self, message: str, path: Path, effects: SettingEffects) -> None:
         super().__init__(message)
-        self.path = path
-        self.effects = effects
+        self.path: Path = path
+        self.effects: SettingEffects = effects

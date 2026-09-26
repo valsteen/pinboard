@@ -32,9 +32,19 @@ def _guide() -> str:
 
 # How Pinboard works
 
-Pinboard keeps long-running coding-agent work attached to the decisions that shaped it. It adds a repository-local record of accepted work, implementation attempts, and review evidence without asking you to maintain a parallel ticket system.
+Pinboard helps a person and a coding agent complete suitable development work while keeping its purpose and decisions understandable. The person chooses the outcome, priority, material tradeoffs, and what happens to a reviewed change. The agent preserves context, prepares and carries out authorized work, brings consequential choices back to the person, and arranges separate review.
+
+Today's supported workflow is local to a Git-backed repository: Pinboard records accepted work, attempts, and evidence beside that repository. The wider product direction is to support suitable agentic work without making people learn Pinboard's internal workflow; it is not a claim that other kinds of projects are supported today.
 
 For a short disposable change, working directly with a coding agent is often enough. Pinboard becomes useful when work crosses conversations, interruptions, reviewers, or parallel tasks and the latest chat is no longer a reliable account of why the code looks the way it does.
+
+## What a saved item means
+
+A **proposal** is a suggestion to preserve work. Saving it creates a **work item** under the same identity, with its original reason and evidence attached. The item records an **agreed outcome**: what should change, what is outside scope, and how the result will be judged. Saving an item does not start an attempt.
+
+An item can be ready while current dependencies or holds still prevent a start. The agent checks **eligibility**, prepares the current definition and brief, and obtains **start authorization** before activation creates an attempt. These are separate steps. A **concern** names a possible gap or conflict; a **decision** settles a material choice with the person when it exceeds the agent's authority. **Evidence** records observations and supports a claim, but does not replace required independent review. **Delivery** is the candidate and its result for that review. **Completion** means the accepted outcome and required review are satisfied, the chosen repository disposition is handled when applicable, and Pinboard records the terminal result.
+
+Here, **saved item** and **work item** name the same durable record. A proposal keeps its identity when saved, but it is not an active attempt. A ready item can still be ineligible to start. Brief review checks the delegated request; candidate review checks the exact change; a human review of a published pull request is a separate choice.
 
 ## Ambiguity closes around one accepted brief
 
@@ -48,7 +58,7 @@ Implementation defects return to the same attempt for bounded correction and ano
 
 The human still decides what belongs in the product, which tradeoffs are acceptable, and what happens to reviewed repository changes. Structure keeps those choices visible; it does not make them automatically correct.
 
-A published pull request and Pinboard review are separate facts. If publication happens first, the owning task inspects the attempt, protects the exact local candidate, and starts review by a separate coding agent when the required actions are available. Until then, it reports review as not started or blocked; while review runs, it reports that work as underway; afterward, it reports a favorable verdict or a return for correction. A human may explicitly choose to proceed without waiting, and that choice does not create review evidence. Pinboard checks the selected local commit before recommending repository disposition; the remote published head remains unverified unless separately observed through an authoritative source.
+A published pull request and Pinboard review are separate facts. If publication happens first, the owning task inspects the attempt, protects the exact local candidate, and starts review by a separate coding agent when the required actions are available. Until then, it reports review as not started or blocked; while review runs, it reports that work as underway; afterward, it reports a favorable verdict or a return for correction. A human may explicitly choose a PR review handoff before that agent review; this does not create Pinboard review evidence. Before presenting a merge choice, the agent reports the required review, hosted checks, and remote-head identity as observed or unverified. Pinboard checks local code identity: a reviewed working-tree change can become a clean commit on its recorded branch when the accepted base and exact preimage-to-commit binary diff still match. Reusing that review also requires accepted semantics and reviewed owner-consumer relationships to remain current. This local proof does not establish the published head, hosted checks, or merge.
 
 ## The brief makes delegation inspectable
 
@@ -58,7 +68,7 @@ Before implementation, Pinboard turns accepted direction into a strict structure
 
 Each checkpoint states its outcome, acceptance criteria, architecture impact, required verification, deferrals, and whether accepted work continues or terminates. A cross-boundary checkpoint also binds reviewed authorities, contracts, consumer coverage, and lifecycle distinctions. A local checkpoint is valid only while ownership, dependency direction, stored and wire identities, and independent consumers remain unchanged and one entry point exposes the complete change.
 
-This structure gives an agent a bounded job and gives the reviewer the same checklist. It keeps exclusions, evidence limits, work deliberately deferred, and unresolved decisions from disappearing into prose. Pinboard validates shape, identity, references, and canonical bytes; people and language models still judge whether the facts and choices are sound.
+This structure gives an agent a bounded job and gives the reviewer the same checklist. Exact accepted scope, exclusions, evidence limits, and remaining work survive a new session without relying on remembered chat. Pinboard validates shape, identity, references, and canonical bytes; people and language models still judge whether the facts and choices are sound.
 
 ### Agent actions stay explicit and bounded
 
@@ -77,7 +87,7 @@ A **work item** is the durable project decision. An **attempt** is one execution
 
 {_picture("product", "A work item lifecycle above the legal branches of an active attempt, with related facts shown separately")}
 
-Saving a proposal creates a ready work item with its original facts attached. When someone requests a start, preparation pins the current definition and produces a brief. After the required brief review, activation rechecks dependencies, holds, and authority before starting an attempt. Work can then move through implementation and review, pause at a useful checkpoint, return for correction, continue, or finish. A proposed replacement remains a separate decision rather than silently changing the active target.
+Saving a proposal creates a ready work item with its original facts attached. A start request first leads the agent to check current dependencies and holds. Preparation then pins the definition and produces a brief; activation rechecks eligibility and authority before creating an attempt. Work can move through implementation and review, pause at a useful checkpoint, return for correction, continue, or finish. A proposed replacement remains a separate decision rather than silently changing the active target.
 
 Across those paths, four guarantees stay constant:
 
@@ -86,13 +96,17 @@ Across those paths, four guarantees stay constant:
 - **Review concerns one candidate.** Findings and acceptance stay bound to the exact result that was examined.
 - **Authoritative changes are atomic.** A rejected or failed transition leaves the previous ledger intact; repairable views cannot silently rewrite accepted state.
 
+At the repository decision, you choose what happens to the reviewed change. When the chosen path includes integration, the agent verifies it, removes only the exact worktree and branches you authorized after checking that no needed work remains, and records terminal completion. Those steps can be authorized together when their effects are clear. A merge alone does not close the work item. If the change is already integrated, the agent checks the accepted outcome, candidate review, external evidence, and cleanup state; it reuses valid evidence and finishes the same attempt without creating an empty change.
+
 ## The same workflow, viewed through the codebase
+
+Saving a proposal follows the story above. The MCP boundary decodes the proposal; the application reads current facts inside a write transaction; the domain decision gives the ready item the proposal's identity and accepted definition. SQLite commits those facts together, then the file adapter refreshes the new item view. The result reports the saved item and its position. No attempt is created by that path.
 
 Starting a preparation claim through MCP is one representative path through the same design. The interface decodes an exact request and samples operation time. Application code opens the transaction, reads the current definition and authority facts, and selects the claim operation. A pure domain decision accepts or rejects that requested change without reading files or issuing SQL. The application projects an accepted decision into a targeted mutation; the SQLite adapter commits it, and the filesystem adapter refreshes replaceable views before the interface presents the result.
 
 {_picture("journey", "An ordinary preparation claim moving from an exact MCP request through application orchestration and a pure domain decision to SQLite commit, replaceable view refresh, and a typed result")}
 
-The separation preserves facts that the next agent can act on. A successful operation returns its receipt, effect, and changed surfaces. An expected rejection retains its code, observations, mismatches, retry disposition, and current conflict facts when present. A stale persistence guard remains distinct from a domain rejection, while infrastructure failures remain exceptions. If view refresh fails after commit, the SQLite result remains authoritative and the response identifies the repairable surface. The agent can therefore correct input, refresh an action, reacquire authority, repair a projection, or stop without inferring what happened from prose.
+The separation preserves facts that the next agent can act on. Proposal and transition successes return their receipts, effects, changed surfaces, and a way to discover current continuation. An expected rejection retains its code, observations, mismatches, retry disposition, and a recovery route when one is supported. A stale persistence guard remains distinct from a domain rejection, while infrastructure failures remain exceptions. If view refresh fails after commit, the SQLite result remains authoritative and the response identifies the repairable surface. These native results tell an agent whether to continue, correct input, refresh an action, reacquire authority, repair a projection, or stop without reconstructing the effect from chat or source inspection. The [agent-facing result principle](DESIGN_PRINCIPLES.md#optimize-for-visible-decisions) gives maintainers the check for future changes.
 
 This operation is the opening workflow in code: exact input becomes an explicit requested change, one owner decides it, effects preserve the accepted facts, and presentation reports what happened. The boundaries matter because an accepted decision, a durable commit, and a human-readable projection are related but not interchangeable.
 

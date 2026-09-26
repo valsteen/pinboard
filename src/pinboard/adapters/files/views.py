@@ -15,6 +15,7 @@ from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directo
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
 from pinboard.application import query_models, stored_state
 from pinboard.application.queries import project_overview
+from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, ItemId
 
 NOTICE = "Generated projection; SQLite is authoritative."
@@ -26,6 +27,10 @@ def _dependency_key(value: stored_state.ItemDependency) -> tuple[str, int]:
 
 def _render_header(kind: str) -> str:
     return f"---\nkind: {kind}\nauthority: sqlite-v6\n---\n\n> {NOTICE}\n\n"
+
+
+def _bullets(values: tuple[str, ...]) -> str:
+    return "".join(f"- {value}\n" for value in values) or "- None recorded.\n"
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,24 +63,58 @@ def _render_item(
     dependency_reasons = (
         tuple(f"{value.item_id}: {value.reason}" for value in overview_item.dependency_reasons)
         if overview_item is not None
-        else ()
+        else tuple(str(value) for value in dependencies)
     )
     origin = None if overview_item is None else overview_item.proposal_origin
     accepted = definition.definition
     replacement = None if overview_item is None else overview_item.planned_replacement
+    attempt = overview_item.attempt_id if overview_item is not None else None
+    if overview_item is not None and overview_item.state == work_models.WorkState.READY:
+        next_step = (
+            "Saving this work did not start an attempt. To start it, ask the agent to check current "
+            "dependencies and holds, prepare the agreed brief, and obtain start authorization."
+        )
+    elif overview_item is not None:
+        next_step = f"The agent's recorded next action is {overview_item.next_action or 'not specified'}."
+    else:
+        next_step = "No current action is recorded for this finished item."
     return (
         _render_header("work-item-view")
-        + f"# {accepted.title}\n\n"
-        + f"- Item: {item.item_id}\n"
+        + f"# {accepted.title}\n\n{accepted.objective}\n\n"
+        + "## Current position\n\n"
         + f"- State: {overview_item.state.value if overview_item is not None else item.state.value}\n"
+        + f"- Current attempt: {attempt or 'none'}\n"
+        + f"- Dependency eligibility: {'yes' if overview_item is not None and overview_item.eligible else 'no'}\n\n"
+        + f"{next_step}\n\n"
+        + "## Expected result\n\n"
+        + f"{accepted.effect}\n\n"
+        + f"**What this unlocks:** {accepted.unlock}\n\n"
+        + "## Agreed work\n\n"
+        + f"**Reason:** {accepted.hypothesis}\n\n"
+        + "### Scope\n\n"
+        + _bullets(accepted.scope)
+        + "\n### Outside scope\n\n"
+        + _bullets(accepted.non_scope)
+        + "\n### Acceptance criteria\n\n"
+        + _bullets(accepted.acceptance_criteria)
+        + "\n### Evidence\n\n"
+        + _bullets(accepted.evidence)
+        + "\n### Dependencies\n\n"
+        + _bullets(dependency_reasons)
+        + "\n### Obligations\n\n"
+        + _bullets(
+            tuple(
+                f"{value.obligation_id} ({value.deferral_policy.value}): {value.statement}"
+                for value in accepted.obligations
+            )
+        )
+        + "\n## Record details\n\n"
+        + f"- Item: {item.item_id}\n"
         + f"- Queue position: {item.queue_position if item.queue_position is not None else 'none'}\n"
         + f"- Source: {item.source if item.source is not None else 'none'}\n"
         + f"- Notes: {item.notes if item.notes is not None else 'none'}\n"
-        + f"- Eligible: {'yes' if overview_item is not None and overview_item.eligible else 'no'}\n"
         + f"- Subject revision: {item.subject_revision}\n"
         + f"- Preparation: {overview_item.preparation.status.value if overview_item is not None and overview_item.preparation is not None else 'none'}\n"
-        + f"- Dependencies: {', '.join(dependencies) if dependencies else 'none'}\n"
-        + f"- Dependency reasons: {'; '.join(dependency_reasons) if dependency_reasons else 'none'}\n"
         + f"- Proposal source task: {origin.source_task_id if origin is not None else 'none'}\n"
         + f"- Proposal trigger: {origin.trigger if origin is not None else 'none'}\n"
         + f"- Proposal relation: {origin.relation_kind.value if origin is not None else 'none'}\n"
@@ -88,28 +127,9 @@ def _render_item(
         + f"- Replacement cost: {replacement.replacement_cost if replacement is not None else 'none'}\n"
         + f"- Temporarily retained: {'yes' if replacement is not None and replacement.temporarily_retained else 'no'}\n"
         + f"- Outcome evidence: {item.outcome_evidence or 'none'}\n"
-        + "\n## Accepted definition\n\n"
-        + f"- Revision: {definition.revision}\n"
-        + f"- Digest: {definition.digest}\n"
-        + f"- Objective: {accepted.objective}\n"
-        + f"- Hypothesis: {accepted.hypothesis}\n"
-        + f"- Evidence: {'; '.join(accepted.evidence) if accepted.evidence else 'none'}\n"
-        + f"- Scope: {'; '.join(accepted.scope)}\n"
-        + f"- Non-scope: {'; '.join(accepted.non_scope) if accepted.non_scope else 'none'}\n"
-        + f"- Acceptance criteria: {'; '.join(accepted.acceptance_criteria)}\n"
+        + f"- Definition revision: {definition.revision}\n"
+        + f"- Definition digest: {definition.digest}\n"
         + f"- Checkout policy: {accepted.checkout_policy.value}\n"
-        + "- Obligations: "
-        + (
-            "; ".join(
-                f"{value.obligation_id} ({value.deferral_policy.value}): {value.statement}"
-                for value in accepted.obligations
-            )
-            if accepted.obligations
-            else "none"
-        )
-        + "\n"
-        + f"- Effect: {accepted.effect}\n"
-        + f"- Unlock: {accepted.unlock}\n"
     ).encode()
 
 

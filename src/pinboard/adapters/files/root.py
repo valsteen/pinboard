@@ -222,9 +222,9 @@ def read_untracked_paths(cwd: Path) -> tuple[str, ...]:
 def read_current_head_candidate(
     cwd: Path,
     candidate_revision: str,
-    base_revision: str,
+    comparison_revision: str,
 ) -> CommittedCandidateObservation:
-    """Read a clean exact-HEAD candidate from its accepted base without changing Git."""
+    """Read a clean exact-HEAD candidate from a comparison revision without changing Git."""
 
     current_head = _git_text(cwd, "rev-parse", "--verify", "HEAD")
     if current_head != candidate_revision:
@@ -244,10 +244,10 @@ def read_current_head_candidate(
         cwd,
         "diff",
         "--binary",
-        base_revision,
+        comparison_revision,
         candidate_revision,
         "--",
-        unavailable_message=f"Cannot compare accepted base '{base_revision}' with '{candidate_revision}'.",
+        unavailable_message=f"Cannot compare candidate '{candidate_revision}' with comparison revision '{comparison_revision}'.",
     )
     return CurrentHeadCandidate(candidate_revision, diff)
 

@@ -58,11 +58,21 @@ class GeneratedViewsTest(unittest.TestCase):
         sparse_item = (work_root / "views" / "items" / "intake-work.md").read_text(encoding="utf-8")
         self.assertIn("- Source: none", sparse_item)
         self.assertIn("- Notes: none", sparse_item)
+        self.assertIn("- Current attempt: none", sparse_item)
+        self.assertLess(sparse_item.index("## Current position"), sparse_item.index("## Record details"))
         populated_item = (work_root / "views" / "items" / "work-a.md").read_text(encoding="utf-8")
         self.assertIn("- Source: accepted requirement", populated_item)
         self.assertIn("- Notes: Current work remains bounded.", populated_item)
+        self.assertIn("### Scope\n\n- The state becomes explicit.", populated_item)
+        self.assertIn("### Evidence\n\n- artifacts/design.md", populated_item)
+        self.assertIn("### Obligations\n\n- next-decision (forbidden): The next decision can run.", populated_item)
+        self.assertLess(populated_item.index("Make the state explicit."), populated_item.index("- Subject revision:"))
+        ready_item = (work_root / "views" / "items" / "work-c.md").read_text(encoding="utf-8")
+        self.assertIn("- Current attempt: none", ready_item)
+        self.assertIn("- Dependency eligibility: yes", ready_item)
         terminal_item = (work_root / "views" / "items" / "work-b.md").read_text(encoding="utf-8")
         self.assertIn("- Queue position: none", terminal_item)
+        self.assertIn("- Outcome evidence: work-b superseded", terminal_item)
         advanced = replace(
             state,
             lifecycle=replace(state.lifecycle, project=replace(state.lifecycle.project, revision=13)),

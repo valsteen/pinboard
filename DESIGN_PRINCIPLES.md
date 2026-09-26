@@ -32,6 +32,8 @@ Use a module cohesion budget as a review trigger, not a pass/fail metric. At 1,5
 
 Agent-facing schemas, values, and entry points are product surfaces when agents can use them to steer work. Unless a public API or CLI already makes the contract obvious, keep the consumer, semantic effect or deliberate non-effect, and owner discoverable from the definition or direct entry point. Remove a surface that survives only because a schema can carry it.
 
+Check a representative native success and expected rejection as a fresh agent would: identify the entry preconditions, what the result observed, whether anything committed, the retry or authority limit, and one supported next action or exact current-action lookup. Confirm those claims from the advertised result and a focused behavior check. Use a fresh-agent scenario only when deterministic evidence leaves a real route ambiguity; do not turn one gap into a command-wide rewrite.
+
 When context must survive several reasoning stages, prefer a strict semantic scaffold. Give outcome, provenance, scope, non-goals, acceptance criteria, reviewed sources, verification, and remaining work stable places when those distinctions matter. Validate shape, references, identity, and canonical bytes without claiming that structure proves semantic truth.
 
 Use that context to propose affected code, documentation, architecture, and principles. Reviewed authorities and coverage should reveal likely owners without an exhaustive repository scan; read outward when changed meaning exposes another owner. This mapping remains judgment, confirmed by human acceptance and independent review. Add a hard-coded impact map only for a repository-owned deterministic contract, never as a second source of truth.
@@ -263,6 +265,8 @@ Reader attention is finite. When adding durable documentation, first identify th
 Net growth is justified only when a genuinely new reader need has no existing owner. An exhaustive hybrid document such as the architecture map or this design method preserves every operative semantic distinction, not every paragraph accumulated while discovering it. Semantic completeness may require detail; it does not require repeated rationale, delivery history, or locally complete inventories at each consumer. Do not impose a rigid word or line quota, because compression is not evidence that a contract survived.
 
 Stop when the reader can make the supported decision from one authoritative account and further removal would hide a necessary distinction. Reopen the document when behavior, audience, ownership, evidence, or a material limitation changes; ordinary desire to add context is not enough.
+
+Give each README section a distinct visitor job. Keep a claim there when a prospective user can connect it to concrete use, understand who it serves, and judge an honest cost; move operational procedure to its narrower guide or installation owner. Recheck placement when a section repeats another reader job, promises more than current use supports, or hides a material tradeoff.
 
 ### Collapse to a fixed point
 

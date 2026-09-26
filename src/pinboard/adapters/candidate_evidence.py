@@ -59,7 +59,7 @@ def observe_candidate_lineage(
 ) -> DecisionResult[query_models.CandidateLineage]:
     snapshot = evidence.snapshot
     try:
-        branch, _ = root.observe_candidate_checkout_identity(source_checkout)
+        branch, head = root.observe_candidate_checkout_identity(source_checkout)
         if branch != snapshot.branch:
             return query_models.CandidateLineage.DRIFTED
         match snapshot:
@@ -67,6 +67,9 @@ def observe_candidate_lineage(
                 current = root.read_working_tree_candidate(source_checkout)
                 if current.preimage_revision == snapshot.preimage_revision and current.diff == snapshot.diff:
                     return query_models.CandidateLineage.WORKING_TREE_CURRENT
+                committed = root.read_current_head_candidate(source_checkout, head, snapshot.preimage_revision)
+                if isinstance(committed, root.CurrentHeadCandidate) and committed.diff == snapshot.diff:
+                    return query_models.CandidateLineage.COMMIT_CURRENT
                 return query_models.CandidateLineage.DRIFTED
             case candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot():
                 return query_models.CandidateLineage.DRIFTED

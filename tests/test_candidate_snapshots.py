@@ -22,6 +22,7 @@ from pinboard.adapters.files.root import (
     DifferentHeadCandidate,
     DirtyHeadCandidate,
     WorkingTreeCandidate,
+    read_current_head_candidate,
     read_working_tree_candidate,
     restore_commit_candidate,
     restore_working_tree_candidate,
@@ -264,6 +265,85 @@ class CandidateSnapshotTest(unittest.TestCase):
         assert isinstance(failed, DecisionFailure)
         self.assertIn("Cannot reobserve", failed.message)
 
+    def test_reviewed_working_tree_becomes_same_clean_commit(self) -> None:
+        source, base = self.repository()
+        self.git(
+            source,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "later preimage",
+        )
+        preimage = self.git(source, "rev-parse", "HEAD")
+        self.assertNotEqual(base, preimage)
+        tracked = source / "tracked.txt"
+        tracked.write_text("reviewed\n", encoding="utf-8")
+        observed = read_working_tree_candidate(source)
+        _snapshot, context, _encoded = self.snapshot_context()
+        snapshot = WorkingTreeCandidateSnapshot(
+            "pinboard-candidate-snapshot/v2",
+            "attempt-1",
+            "item-1",
+            observed.identity,
+            "main",
+            preimage,
+            base,
+            SQLITE_NOW.isoformat(),
+            observed.diff,
+        )
+        evidence = CandidateSnapshotEvidence(snapshot, context.reference, context.receipt)
+        self.git(source, "add", "tracked.txt")
+        self.git(source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "reviewed change")
+        self.assertEqual(
+            query_models.CandidateLineage.COMMIT_CURRENT, candidate_evidence.observe_candidate_lineage(source, evidence)
+        )
+        head = self.git(source, "rev-parse", "HEAD")
+        with (
+            patch(
+                "pinboard.adapters.files.root.subprocess.run",
+                side_effect=[
+                    subprocess.CompletedProcess(["git"], 0, head, ""),
+                    subprocess.CompletedProcess(["git"], 0, b"", b""),
+                    subprocess.CompletedProcess(["git"], 1, b"", b""),
+                ],
+            ),
+            self.assertRaises(RootError) as unreadable_diff,
+        ):
+            read_current_head_candidate(source, head, preimage)
+        self.assertIn(f"comparison revision '{preimage}'", str(unreadable_diff.exception))
+        self.assertNotIn(base, str(unreadable_diff.exception))
+        with patch(
+            "pinboard.adapters.candidate_evidence.root.read_current_head_candidate",
+            side_effect=RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "diff unavailable"),
+        ):
+            unavailable = candidate_evidence.observe_candidate_lineage(source, evidence)
+        self.assertIsInstance(unavailable, DecisionFailure)
+        assert isinstance(unavailable, DecisionFailure)
+        self.assertIn("diff unavailable", unavailable.message)
+
+        tracked.write_text("dirty\n", encoding="utf-8")
+        self.assertEqual(
+            query_models.CandidateLineage.DRIFTED, candidate_evidence.observe_candidate_lineage(source, evidence)
+        )
+        self.git(source, "restore", "tracked.txt")
+        self.git(source, "switch", "-c", "other")
+        self.assertEqual(
+            query_models.CandidateLineage.DRIFTED, candidate_evidence.observe_candidate_lineage(source, evidence)
+        )
+        self.git(source, "switch", "main")
+        tracked.write_text("different\n", encoding="utf-8")
+        self.git(source, "add", "tracked.txt")
+        self.git(
+            source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "different change"
+        )
+        self.assertEqual(
+            query_models.CandidateLineage.DRIFTED, candidate_evidence.observe_candidate_lineage(source, evidence)
+        )
+
     def test_legacy_review_receipts_remain_valid_with_exact_live_correlation(self) -> None:
         state = complete_sqlite_state()
         candidate = "working-tree-sha256:" + "0" * 64
@@ -387,6 +467,17 @@ class CandidateSnapshotTest(unittest.TestCase):
                 encoded,
             ),
             (replace(context, attempt_id=AttemptId("other-attempt")), None, encoded),
+            (
+                replace(
+                    context,
+                    state=work_models.AttemptState.REVIEW,
+                    candidate_revision=snapshot.candidate,
+                    candidate_recorded_at=SQLITE_NOW,
+                    base_revision="different accepted base",
+                ),
+                None,
+                encoded,
+            ),
             (
                 replace(
                     context,

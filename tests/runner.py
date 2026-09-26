@@ -58,7 +58,7 @@ def run(test_root: Path, *, jobs: int, coverage: bool) -> int:
 
 def main(arguments: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--jobs", type=_positive_jobs, default=min(os.process_cpu_count() or 1, 8))
+    parser.add_argument("--jobs", type=_positive_jobs, default=min(max(os.process_cpu_count() or 0, 4), 8))
     parser.add_argument("--coverage", action="store_true")
     options = parser.parse_args(arguments)
 

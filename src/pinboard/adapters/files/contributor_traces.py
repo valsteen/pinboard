@@ -13,7 +13,7 @@ import msgspec
 
 from pinboard.adapters.files import git_config
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError, RootError
-from pinboard.adapters.files.file_io import create_immutable, ensure_child_directory
+from pinboard.adapters.files.file_io import create_immutable
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.files.setting_resolution import SettingEffects, SettingResolution, SettingResolutionError
 
@@ -33,18 +33,21 @@ def _project_data_root(project_root: Path) -> Path | None:
         shared_repository = resolve_shared_repository_root(checkout)
     except RootError:
         return None
-    if not (shared_repository / ".pinboard").is_dir():
+    data_root = shared_repository / ".pinboard"
+    if not data_root.is_dir():
         return None
+    if data_root.is_symlink():
+        raise ValueError("Contributor trace work root must be a real directory.")
     ignored = subprocess.run(
         ["git", "check-ignore", "-q", "--", f".pinboard/{SETTINGS_NAME}"],
         cwd=shared_repository,
         check=False,
     )
     if ignored.returncode != 0:
-        if (shared_repository / ".pinboard" / SETTINGS_NAME).exists(follow_symlinks=False):
+        if (data_root / SETTINGS_NAME).exists(follow_symlinks=False):
             raise ValueError("Contributor trace settings must be Git-ignored before Pinboard can use them.")
         return None
-    return ensure_child_directory(shared_repository, ".pinboard")
+    return data_root
 
 
 def _decode_settings(path: Path) -> ContributorTraceSettings | None:

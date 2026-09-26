@@ -339,9 +339,28 @@ class ContributorTraceTest(unittest.TestCase):
             primary, worktree = self.project(Path(temporary))
             args = ("--project-root", str(primary), "root")
             launcher = ROOT / "scripts" / "pinboard"
+            work_root = primary / ".pinboard"
+            initialize_database(resolve_durable_roots(primary, work_root), SQLITE_NOW)
+            initialize_store(SQLiteWorkStore(work_root / "state.sqlite3"), complete_sqlite_state())
             off = subprocess.run([str(launcher), *args], capture_output=True, check=False)
             self.assertEqual(0, off.returncode)
             traces = primary / ".pinboard" / contributor_traces.TRACE_DIRECTORY
+            self.assertFalse(traces.exists())
+
+            async def mcp_call() -> dict[str, object]:
+                parameters = StdioServerParameters(command=str(launcher), args=("--mcp",), cwd=ROOT)
+                async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
+                    await session.initialize()
+                    result = await session.call_tool(
+                        server.ITEM_STATUS_TOOL,
+                        {"project_root": str(worktree), "work_root": str(primary / ".pinboard"), "item_id": "missing"},
+                    )
+                    self.assertFalse(result.is_error)
+                    assert isinstance(result.structured_content, dict)
+                    self.assertEqual("ITEM_NOT_FOUND", result.structured_content.get("code"))
+                    return result.structured_content
+
+            off_mcp_result = asyncio.run(mcp_call())
             self.assertFalse(traces.exists())
             self.settings(primary, "on", {})
             on = subprocess.run([str(launcher), *args], capture_output=True, check=False)
@@ -358,20 +377,12 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertEqual(hashlib.sha256(on.stdout).hexdigest(), record["stdout"]["sha256"])
             self.assertEqual("not-captured", record["environment"])
 
-            async def mcp_call() -> dict[str, object]:
-                parameters = StdioServerParameters(command=sys.executable, args=("-m", "pinboard.mcp"), cwd=ROOT)
-                async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
-                    await session.initialize()
-                    result = await session.call_tool(
-                        server.ITEM_STATUS_TOOL,
-                        {"project_root": str(worktree), "work_root": str(primary / ".pinboard"), "item_id": "missing"},
-                    )
-                    assert isinstance(result.structured_content, dict)
-                    return result.structured_content
-
             mcp_result = asyncio.run(mcp_call())
+            self.assertEqual(off_mcp_result, mcp_result)
             [mcp_trace] = tuple(traces.glob("pinboard-auto-mcp-*.json"))
             semantic = json.loads(mcp_trace.read_bytes())
+            self.assertEqual(0o700, stat.S_IMODE(traces.stat().st_mode))
+            self.assertEqual(0o600, stat.S_IMODE(mcp_trace.stat().st_mode))
             self.assertEqual(mcp_result, semantic["result"]["value"])
             self.assertEqual("unavailable", semantic["transport_bytes"])
             self.assertEqual("unavailable", semantic["pre_callback_events"])
@@ -396,6 +407,24 @@ class ContributorTraceTest(unittest.TestCase):
                 {"request": {"project_root": str(worktree), "work_root": str(work_root), "attempt_id": "work-a-1"}},
             )
             self.assertIsNotNone(capture)
+
+    def test_existing_shared_work_root_needs_no_parent_write_for_mcp_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            mkdir = Path.mkdir
+
+            def deny_parent_write(path: Path, mode: int = 0o777, parents: bool = False, exist_ok: bool = False) -> None:
+                if path.resolve() == work_root.resolve():
+                    raise PermissionError("The shared repository parent is read-only.")
+                mkdir(path, mode=mode, parents=parents, exist_ok=exist_ok)
+
+            capture = execution.AutomaticCapture(common.select_capture_item)
+            for mode in ("off", "on"):
+                with self.subTest(mode=mode), patch.object(Path, "mkdir", deny_parent_write):
+                    self.settings(primary, mode, {})
+                    selected = capture.resolve(str(worktree), {"item_id": "missing"})
+                    self.assertEqual(mode == "on", selected is not None)
 
     def test_mcp_item_attribution_covers_supported_request_envelopes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -715,7 +744,9 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertEqual(b"", cli.stdout)
 
             async def mcp_call() -> bool:
-                parameters = StdioServerParameters(command=sys.executable, args=("-m", "pinboard.mcp"), cwd=ROOT)
+                parameters = StdioServerParameters(
+                    command=str(ROOT / "scripts" / "pinboard"), args=("--mcp",), cwd=ROOT
+                )
                 async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
                     await session.initialize()
                     result = await session.call_tool(

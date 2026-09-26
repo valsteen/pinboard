@@ -1649,6 +1649,7 @@ class TransitionCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_un
         tuple[Literal["immutable-artifact", "accepted-artifact-reference", "ledger"], ...],
         msgspec.Meta(min_length=1),
     ]
+    continuation: NonEmptyText
     warning: WarningResult | None
 
     def __post_init__(self) -> None:
@@ -1671,6 +1672,7 @@ class TransitionRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_u
     changed_surfaces: Empty
     observed: tuple[FailureObservation, ...]
     mismatches: tuple[FailureMismatch, ...]
+    continuation: NonEmptyText
 
 
 class PublishedFailureResult(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1690,6 +1692,7 @@ class TransitionFailedAfterPublication(PublishedFailureResult, frozen=True):
     action_id: ActionIdentity
     code: NonEmptyText
     message: NonEmptyText
+    continuation: NonEmptyText
 
 
 class PreparationAuthorityConflict(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

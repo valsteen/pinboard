@@ -289,12 +289,34 @@ def _transition_rejected(
     failure: DecisionFailure,
 ) -> execution.OperationResult:
     details = common._details_json(failure.details)
-    if failure.details is None:
-        details["retry"] = (
-            RetryDisposition.REFRESH_ACTION.value
-            if failure.code == DecisionFailureCode.ACTION_NOT_AVAILABLE
-            else RetryDisposition.CORRECT_INPUT.value
-        )
+    retry = _rejection_retry(failure)
+    details["retry"] = retry.value
+    match retry:
+        case RetryDisposition.CORRECT_INPUT:
+            continuation = (
+                "Correct the reported input, then discover this exact current action through pinboard_actions."
+            )
+        case RetryDisposition.REFRESH_ACTION | RetryDisposition.RETRY_SAME_INPUT:
+            continuation = "Discover this exact current action through pinboard_actions before another transition."
+        case RetryDisposition.REACQUIRE_AUTHORITY:
+            if failure.code in {
+                DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
+                DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+                DecisionFailureCode.ATTEMPT_LEASE_EXPIRED,
+            }:
+                continuation = (
+                    "Check pinboard_attempt_authority status, reacquire only if permitted, "
+                    "then discover this action through pinboard_actions."
+                )
+            else:
+                continuation = (
+                    "Check the relevant authority status, reacquire only if permitted, "
+                    "then discover this action through pinboard_actions."
+                )
+        case RetryDisposition.DO_NOT_RETRY:
+            continuation = _transition_current_state_route(action_id.kind)
+        case _ as unreachable:
+            assert_never(unreachable)
     return execution.OperationResult(
         {
             "schema": "pinboard-mcp-transition-result/v1",
@@ -304,10 +326,25 @@ def _transition_rejected(
             "message": failure.message,
             "state_changed": False,
             **details,
+            "continuation": continuation,
         },
         "rejected",
         None,
     )
+
+
+def _transition_current_state_route(kind: decision_models.ActionKind) -> str:
+    match decision_models.action_semantics(kind).subject_kind:
+        case decision_models.ActionSubjectKind.ATTEMPT:
+            return "Inspect this attempt with pinboard_attempt_inspect and follow its next_operation; do not replay."
+        case decision_models.ActionSubjectKind.ITEM:
+            return "Read this item with pinboard_item_status, then discover its current action; do not replay."
+        case decision_models.ActionSubjectKind.PROPOSAL:
+            return "Read the current proposal or item in pinboard_overview before another action; do not replay."
+        case decision_models.ActionSubjectKind.LEDGER:
+            return "Read the current pinboard_overview before another action; do not replay."
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _with_completion_reinspection(
@@ -525,6 +562,7 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
                 "message": committed.message,
                 "state_changed": True,
                 **details,
+                "continuation": _transition_current_state_route(identity.kind),
             },
             "failed-after-publication",
             None,
@@ -541,6 +579,7 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
                     "message": committed.message,
                     "state_changed": True,
                     **details,
+                    "continuation": _transition_current_state_route(identity.kind),
                 },
                 "failed-after-publication",
                 None,
@@ -587,6 +626,7 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
             "effect": EffectDisposition.COMMITTED.value,
             "retry": RetryDisposition.DO_NOT_RETRY.value,
             "changed_surfaces": changed_surfaces,
+            "continuation": _transition_current_state_route(identity.kind),
             "warning": None if warning is None else {"message": warning.message, "recovery": warning.repair},
         },
         "committed" if warning is None else "committed-warning",
@@ -594,26 +634,30 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
     )
 
 
-def _authority_rejection_details(failure: DecisionFailure) -> dict[str, JsonValue]:
+def _rejection_retry(failure: DecisionFailure) -> RetryDisposition:
     if failure.details is not None:
-        return common._details_json(failure.details)
+        return failure.details.retry
     if failure.code in {
         DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
         DecisionFailureCode.ATTEMPT_LEASE_EXPIRED,
         DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
         DecisionFailureCode.LEASE_FENCED,
     }:
-        retry = RetryDisposition.REACQUIRE_AUTHORITY
-    elif failure.code in {
+        return RetryDisposition.REACQUIRE_AUTHORITY
+    if failure.code in {
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
         DecisionFailureCode.ITEM_DEFINITION_STALE,
     }:
-        retry = RetryDisposition.REFRESH_ACTION
-    else:
-        retry = RetryDisposition.CORRECT_INPUT
+        return RetryDisposition.REFRESH_ACTION
+    return RetryDisposition.CORRECT_INPUT
+
+
+def _authority_rejection_details(failure: DecisionFailure) -> dict[str, JsonValue]:
+    if failure.details is not None:
+        return common._details_json(failure.details)
     return {
         "effect": EffectDisposition.UNCHANGED.value,
-        "retry": retry.value,
+        "retry": _rejection_retry(failure).value,
         "changed_surfaces": [],
         "observed": [],
         "mismatches": [],

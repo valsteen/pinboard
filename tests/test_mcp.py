@@ -1662,6 +1662,7 @@ class McpTransportTest(unittest.TestCase):
         self.assertEqual("committed", content["effect"])
         self.assertEqual("do-not-retry", content["retry"])
         self.assertEqual(["immutable-artifact"], content["changed_surfaces"])
+        self.assertIn("pinboard_attempt_inspect", str(content["continuation"]))
         self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
         assert publication is not None
         self.assertTrue(publication.created)
@@ -2402,6 +2403,10 @@ class McpTransportTest(unittest.TestCase):
                     "ttl_seconds": 600,
                 },
             )
+            stale_transition = await call(
+                mcp_server.TRANSITION_TOOL,
+                submit_arguments | {"lease_id": acquired["lease_id"], "generation": acquired["generation"]},
+            )
             invalid_arguments: dict[str, contracts.JsonValue] = {
                 **common,
                 "role": "project",
@@ -2452,6 +2457,7 @@ class McpTransportTest(unittest.TestCase):
                 stale_attempt_renew,
                 invalid,
                 committed,
+                stale_transition,
             )
 
         try:
@@ -2475,12 +2481,20 @@ class McpTransportTest(unittest.TestCase):
         self.assertIsNotNone(contents[14]["conflict"])
         self.assertEqual("failed-after-publication", contents[16]["status"])
         self.assertEqual("failed-after-publication", contents[17]["status"])
+        self.assertIn("pinboard_attempt_inspect", contents[16]["continuation"])
+        self.assertIn("pinboard_attempt_inspect", contents[17]["continuation"])
         self.assertEqual("released", contents[19]["authority_status"])
         self.assertEqual("active", contents[20]["authority_status"])
         self.assertEqual("revoked", contents[21]["authority_status"])
         self.assertEqual("rejected", contents[22]["status"])
         self.assertEqual("TRANSITION_INPUT_INVALID", contents[23]["code"])
+        self.assertIn("pinboard_actions", contents[23]["continuation"])
         self.assertIn(contents[24]["status"], {"committed", "committed-with-warning"})
+        self.assertIn("pinboard_attempt_inspect", contents[24]["continuation"])
+        self.assertEqual("ATTEMPT_LEASE_REQUIRED", contents[25]["code"])
+        self.assertEqual("reacquire-authority", contents[25]["retry"])
+        self.assertIn("pinboard_attempt_authority", contents[25]["continuation"])
+        self.assertIn("pinboard_actions", contents[25]["continuation"])
 
     def test_authority_tools_preserve_fixed_time_commit_reload_and_stale_rejection(self) -> None:
         executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
@@ -2803,6 +2817,7 @@ class McpTransportTest(unittest.TestCase):
                 "effect": "committed",
                 "retry": "do-not-retry",
                 "changed_surfaces": list[contracts.JsonValue](surfaces),
+                "continuation": "Inspect this attempt with pinboard_attempt_inspect and follow its next_operation; do not replay.",
                 "warning": None,
             }
 
@@ -4517,6 +4532,74 @@ class McpTransportTest(unittest.TestCase):
 
 
 class ResumedReviewReconciliationTest(CheckpointPackageSupport):
+    def test_equivalent_commit_reuses_review_only_while_review_identity_is_current(self) -> None:
+        fixture = self.checkpoint_fixture(candidate_form="working-tree", committed_context=True)
+        snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        attempt = fixture.store.read_attempt_context(AttemptId("work-a-1"))
+        assert snapshot is not None and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        self.commit_all(fixture.project, "equivalent clean commit")
+        review: dict[str, contracts.JsonValue] = {
+            "kind": "record-ready",
+            "attempt_id": "work-a-1",
+            "candidate_revision": fixture.candidate_revision,
+            "candidate_snapshot_sha256": snapshot.reference.content_sha256,
+            "accepted_brief_sha256": attempt.brief_reference.content_sha256,
+            "result_sha256": sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
+            "review_sha256": sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
+            "reviewer_task_id": "independent-reviewer",
+            "verdict": "ready",
+            "acceptance_evidence": "The protected candidate satisfies the accepted brief.",
+        }
+        common: dict[str, contracts.JsonValue] = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
+        stale_request: dict[str, contracts.JsonValue] = {
+            **common,
+            "review": review | {"accepted_brief_sha256": "0" * 64},
+        }
+        stale = call_native_tool(mcp_server.REVIEW_JOB_TOOL, stale_request)
+        self.assertEqual("rejected", stale["status"], stale)
+        current_request: dict[str, contracts.JsonValue] = {**common, "review": review}
+        recorded = call_native_tool(mcp_server.REVIEW_JOB_TOOL, current_request)
+        self.assertEqual("recorded", recorded["status"], recorded)
+        reconciliation: dict[str, contracts.JsonValue] = {
+            "target_revision": "accepted-target",
+            "relation": "candidate-pending-on-accepted-base",
+            "phase": "disposition",
+            "effects": [
+                {"effect": "source-checkout", "status": "allowed"},
+                {"effect": "shared-work-root", "status": "allowed"},
+                {"effect": "git-metadata", "status": "allowed"},
+            ],
+        }
+
+        def next_operation() -> dict[str, contracts.JsonValue]:
+            inspected = call_native_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "attempt_id": "work-a-1",
+                    "reconciliation": reconciliation,
+                },
+            )
+            self.assertEqual("ok", inspected["status"], inspected)
+            return self.json_object(self.json_object(inspected["continuation"])["next_operation"])
+
+        self.assertEqual("repository-disposition", next_operation()["kind"])
+        reconciliation["effects"] = [
+            {"effect": "source-checkout", "status": "allowed"},
+            {"effect": "shared-work-root", "status": "allowed"},
+            {"effect": "git-metadata", "status": "denied"},
+        ]
+        self.assertEqual("permission-recovery", next_operation()["kind"])
+        reconciliation["effects"] = [
+            {"effect": "source-checkout", "status": "allowed"},
+            {"effect": "shared-work-root", "status": "allowed"},
+            {"effect": "git-metadata", "status": "allowed"},
+        ]
+        (attempt_root / "review.md").write_text("review evidence changed\n", encoding="utf-8")
+        self.assertEqual("review-subagent", next_operation()["kind"])
+
     def test_recorded_ready_review_resumes_at_git_metadata_recovery_without_launch(self) -> None:  # noqa: PLR0915 - exercises the complete resumed-review sequence
         fixture = self.checkpoint_fixture(candidate_form="current-head")
         snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))

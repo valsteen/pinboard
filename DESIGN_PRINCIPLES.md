@@ -117,6 +117,8 @@ Prefer these properties:
 - module-level contract text states the allowed effects and the effects it deliberately does not own;
 - infrastructure and invariant failures are not silently normalized into ordinary outcomes.
 
+When an optional diagnostic or setting resolver runs before every core operation, review its availability under the narrowest supported permissions. Ask whether a valid off-mode call reaches the packaged callback without creating or syncing a directory outside its selected writable root, and whether an on-mode failure is classified before or after the callback. Keep one representative installed-path check for that boundary; revisit the question when the preflight or permission model changes.
+
 Every internal parameter must serve current behavior, validation, conversion, or a required interface. When a parameter has no such consumer, remove it and any transport-only arguments or resource sampling left in its caller chain. A no-op assignment or explanatory comment cannot justify keeping it.
 
 A helper that takes bread and cheese may return a sandwich. It must not also collect the mail, call another service, or decide whether the meal was authorized.

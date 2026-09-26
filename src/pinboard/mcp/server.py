@@ -718,8 +718,8 @@ def main() -> None:
     except ValueError as error:
         print(str(error), file=sys.stderr)
         raise SystemExit(64) from error
-    #if capture is None:
-    #    capture = execution.AutomaticCapture(common.select_capture_item)
+    if capture is None:
+        capture = execution.AutomaticCapture(common.select_capture_item)
     executor = execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
     diagnostics = execution.Diagnostics(sys.stderr, event_limit=32, line_limit=512)
     diagnostics.emit(

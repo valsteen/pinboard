@@ -241,36 +241,13 @@ def _brief_published(
     if isinstance(publication, (DecisionFailure, work_brief_models.WorkBriefFailure)):
         return _brief_failure(publication)
     if isinstance(publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
-        acceptance_failed = isinstance(publication, ArtifactAcceptanceFailure)
-        return execution.OperationResult(
-            {
-                "schema": "pinboard-mcp-brief-publication-result/v1",
-                "status": (
-                    "failed-after-publication"
-                    if publication.details.effect == EffectDisposition.COMMITTED
-                    else "infrastructure-failure"
-                ),
-                "code": "ARTIFACT_ACCEPTANCE_FAILED" if acceptance_failed else "ARTIFACT_PUBLICATION_FAILED",
-                "message": (
-                    "The brief's accepted reference could not be committed."
-                    if acceptance_failed
-                    else "The brief's immutable publication could not be completed."
-                ),
-                "state_changed": publication.details.effect == EffectDisposition.COMMITTED,
-                "effect": publication.details.effect.value,
-                "retry": publication.details.retry.value,
-                "changed_surfaces": [surface.value for surface in publication.details.changed_surfaces],
-                "observed": [],
-                "mismatches": [],
-                "published_selector": publication.selector,
-                "recovery": (
-                    "Preserve the published selector and repair artifact-reference acceptance before continuing."
-                    if acceptance_failed
-                    else "Inspect the published selector and repair immutable publication before continuing."
-                ),
-            },
-            "infrastructure-failure",
-            publication.selector,
+        return common._artifact_publication_failure(
+            "pinboard-mcp-brief-publication-result/v1",
+            publication,
+            acceptance_message="The brief's accepted reference could not be committed.",
+            publication_message="The brief's immutable publication could not be completed.",
+            acceptance_recovery="Preserve the published selector and repair artifact-reference acceptance before continuing.",
+            publication_recovery="Inspect the published selector and repair immutable publication before continuing.",
         )
     view_result = common._refresh_affected_views(durable, store, AffectedViews((), (), ()), now)
     warning = view_result.warning

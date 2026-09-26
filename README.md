@@ -45,6 +45,8 @@ Here, the agent uses Pinboard's own backlog to compare the relative size of queu
 
 The answer links to the recorded tasks and makes qualitative judgments, not measured effort estimates. The smallest apparent change differs from the first task in the saved priority order, and existing evidence reuse may already suffice. Comparing work does not start implementation.
 
+When related tasks accumulate, select the live items you want to compare and, if you have one in mind, a proposed owner. Your agent checks their exact current definitions, accounts for each concern, and shows what one outcome, useful checkpoints, or separate items would preserve. It also shows affected dependencies, priority order, and work already underway. You decide on the proposal separately; only then does the agent use Pinboard's existing actions to make the approved changes.
+
 ## Skills
 
 Use `$pinboard` in Codex or `/pinboard:pinboard` in Claude Code. This is the main entry point when you want to preserve work, decide what should happen next, or start an existing item.

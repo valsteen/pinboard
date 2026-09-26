@@ -178,6 +178,10 @@ class BriefContractEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     request: BriefContractFullRequest | BriefContractStarterRequest
 
 
+class BriefContractStarterEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: BriefContractStarterRequest
+
+
 class BriefSourcesPlanRequest(
     msgspec.Struct, tag="plan", tag_field="operation", frozen=True, forbid_unknown_fields=True
 ):
@@ -2016,6 +2020,41 @@ class BriefRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknow
     mismatches: Empty
 
 
+class BriefArchitectureImpactObservation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    field: Literal["$.brief.checkpoint.architecture_impact.kind"]
+    value: str
+
+
+class BriefArchitectureImpactMismatch(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    field: Literal["$.brief.checkpoint.architecture_impact.kind"]
+    expected: Literal["none | read-only | update-required"]
+    observed: str
+
+
+class BriefContractStarterInvocation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    tool: Literal["pinboard_brief_contract"]
+    arguments: BriefContractStarterEnvelope
+
+    def __post_init__(self) -> None:
+        if self.arguments.request.boundary != "cross-boundary":
+            raise ValueError("architecture-impact recovery requires a cross-boundary starter")
+
+
+class BriefArchitectureImpactRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-brief-publication-result/v1"]
+    status: Literal["rejected"]
+    code: Literal["WORK_BRIEF_INVALID"]
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["correct-input"]
+    changed_surfaces: Empty
+    observed: tuple[BriefArchitectureImpactObservation]
+    mismatches: tuple[BriefArchitectureImpactMismatch]
+    allowed_selections: tuple[Literal["none"], Literal["read-only"], Literal["update-required"]]
+    recovery: BriefContractStarterInvocation
+
+
 class BriefPublishedRejection(PublishedFailureResult, frozen=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["rejected"]
@@ -2556,6 +2595,7 @@ BRIEF_PUBLICATION_RESULT_TYPES = (
     BriefArtifactCommittedWithWarning,
     BriefUnchanged,
     BriefUnchangedWithWarning,
+    BriefArchitectureImpactRejected,
     BriefRejected,
     BriefPublishedRejection,
     BriefPublicationAcceptanceFailure,
@@ -2629,6 +2669,7 @@ type ResultBoundary = (
     | type[BriefArtifactCommittedWithWarning]
     | type[BriefUnchanged]
     | type[BriefUnchangedWithWarning]
+    | type[BriefArchitectureImpactRejected]
     | type[BriefRejected]
     | type[BriefPublishedRejection]
     | type[BriefPublicationAcceptanceFailure]

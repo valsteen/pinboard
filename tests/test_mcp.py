@@ -3771,6 +3771,109 @@ class McpTransportTest(unittest.TestCase):
         self.assertIn("Read item status", duplicate_content["recovery"])
         self.assertFalse(duplicate_content["state_changed"])
 
+    def test_invalid_architecture_impact_selection_returns_actionable_brief_rejection(self) -> None:
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
+        server = mcp_server.create_server(
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
+            omit_regex_lookarounds=True,
+        )
+        store = SQLiteWorkStore(roots.database_path)
+        before = store.validated_snapshot()
+        brief = msgspec.to_builtins(work_a_brief(project))
+        self.assertIsInstance(brief, dict)
+        checkpoint = brief["checkpoint"]
+        self.assertIsInstance(checkpoint, dict)
+        architecture_impact = checkpoint["architecture_impact"]
+        self.assertIsInstance(architecture_impact, dict)
+        architecture_impact["kind"] = "unsupported"
+
+        async def scenario() -> tuple[CallToolResult, CallToolResult, CallToolResult]:
+            async def publish(selection: str) -> CallToolResult:
+                selected_brief = deepcopy(brief)
+                selected_brief["checkpoint"]["architecture_impact"]["kind"] = selection
+                result = await server.call_tool(
+                    mcp_server.BRIEF_PUBLISH_TOOL,
+                    {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "brief": selected_brief,
+                    },
+                )
+                if not isinstance(result, CallToolResult):
+                    raise AssertionError("The brief tool returned an unexpected MCP result.")
+                return result
+
+            actionable = await publish("unsupported")
+            empty = await publish("")
+            generic_brief = deepcopy(brief)
+            generic_brief["artifact_revision"] = "invalid"
+            generic = await server.call_tool(
+                mcp_server.BRIEF_PUBLISH_TOOL,
+                {
+                    "project_root": str(project),
+                    "work_root": str(roots.work_root),
+                    "brief": generic_brief,
+                },
+            )
+            if not isinstance(generic, CallToolResult):
+                raise AssertionError("The brief tool returned an unexpected MCP result.")
+            return actionable, empty, generic
+
+        try:
+            actionable, empty, generic = _run_async(scenario())
+        finally:
+            executor.shutdown()
+
+        path = "$.brief.checkpoint.architecture_impact.kind"
+        for selection, actionable_result in (("unsupported", actionable), ("", empty)):
+            with self.subTest(selection=selection):
+                self.assertEqual(
+                    {
+                        "schema": "pinboard-mcp-brief-publication-result/v1",
+                        "status": "rejected",
+                        "code": "WORK_BRIEF_INVALID",
+                        "message": f"Cannot decode brief publication request: Invalid value {selection!r} - at `{path}`",
+                        "state_changed": False,
+                        "effect": "unchanged",
+                        "retry": "correct-input",
+                        "changed_surfaces": [],
+                        "observed": [{"field": path, "value": selection}],
+                        "mismatches": [
+                            {
+                                "field": path,
+                                "expected": "none | read-only | update-required",
+                                "observed": selection,
+                            }
+                        ],
+                        "allowed_selections": ["none", "read-only", "update-required"],
+                        "recovery": {
+                            "tool": "pinboard_brief_contract",
+                            "arguments": {
+                                "request": {
+                                    "operation": "starter",
+                                    "project_root": str(project),
+                                    "work_root": str(roots.work_root),
+                                    "boundary": "cross-boundary",
+                                }
+                            },
+                        },
+                    },
+                    actionable_result.structured_content,
+                )
+                actionable_content = actionable_result.structured_content
+                self.assertIsInstance(actionable_content, dict)
+                contract_schemas.validate_result(mcp_server.BRIEF_PUBLISH_TOOL, actionable_content)
+        generic_content = generic.structured_content
+        self.assertIsInstance(generic_content, dict)
+        self.assertEqual([], generic_content["observed"])
+        self.assertEqual([], generic_content["mismatches"])
+        self.assertNotIn("recovery", generic_content)
+        contract_schemas.validate_result(mcp_server.BRIEF_PUBLISH_TOOL, generic_content)
+        self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
+
     def test_invalid_actor_identity_is_structured_and_leaves_fresh_store_unchanged(self) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)

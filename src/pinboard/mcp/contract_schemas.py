@@ -726,7 +726,7 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         else:
             result_type = AttemptAuthorityRejected
         msgspec.convert(content, type=result_type, strict=True)
-    elif schema == "pinboard-overview/v5" and tool_name == "pinboard_overview":
+    elif schema == "pinboard-overview/v6" and tool_name == "pinboard_overview":
         msgspec.convert(content, type=query_models.WorkOverview, strict=True)
     elif tool_name == "pinboard_actions" and status == "ok":
         action_values = content.get("actions")

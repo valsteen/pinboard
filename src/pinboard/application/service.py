@@ -450,7 +450,7 @@ def create_proposal(
     actor_task_id: TaskId,
     actor_host_id: HostId,
 ) -> DecisionResult[CommittedEffect]:
-    """Reread locked state, decide, and commit proposal facts plus their intake item."""
+    """Reread locked state, decide, and commit proposal facts plus their ready item."""
 
     with store.write() as transaction:
         allocation = transaction.read_mutation_allocation()
@@ -583,10 +583,6 @@ def _transition_decision_scope(
                 artifact_ids = (value.brief_artifact_ref_id,)
         case decision_models.BlockCommand(value=value) | decision_models.BlockItemCommand(value=value):
             related_item_ids = value.depends_on
-        case decision_models.AcceptProposalCommand(value=value):
-            item_ids = (*item_ids, value.item)
-            related_item_ids = value.depends_on
-            dependency_closure_roots = (value.item, *value.depends_on)
         case decision_models.MergeProposalCommand(value=value):
             related_item_ids = (value.target,)
         case decision_models.ReviseItemCommand(value=value):
@@ -606,9 +602,7 @@ def _transition_decision_scope(
             | decision_models.SubmitReviewCommand()
             | decision_models.ReturnForCorrectionCommand()
             | decision_models.ReopenCommand()
-            | decision_models.MarkReadyCommand()
             | decision_models.DeferCommand()
-            | decision_models.ReturnProposalCommand()
             | decision_models.RejectProposalCommand()
             | decision_models.RetainTemporarilyCommand()
         ):

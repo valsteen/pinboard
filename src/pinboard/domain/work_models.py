@@ -22,7 +22,6 @@ CanonicalJson = NewType("CanonicalJson", bytes)
 
 
 class WorkState(Enum):
-    INTAKE = "intake"
     READY = "ready"
     ACTIVE = "active"
     PAUSED = "paused"
@@ -37,13 +36,6 @@ class AttemptState(Enum):
     BLOCKED = "blocked"
     REVIEW = "review"
     DONE = "done"
-
-
-class AcceptedProposalState(Enum):
-    INTAKE = "intake"
-    READY = "ready"
-    BLOCKED = "blocked"
-    DEFERRED = "deferred"
 
 
 class CloseOutcome(Enum):
@@ -190,24 +182,10 @@ class ProposalDispositionKind(Enum):
 
 
 @dataclass(frozen=True, slots=True)
-class AcceptedProposalDisposition:
-    target: ItemId
-    disposed_at: datetime
-    kind: ProposalDispositionKind = field(init=False, default=ProposalDispositionKind.ACCEPTED)
-
-
-@dataclass(frozen=True, slots=True)
 class MergedProposalDisposition:
     target: ItemId
     disposed_at: datetime
     kind: ProposalDispositionKind = field(init=False, default=ProposalDispositionKind.MERGED)
-
-
-@dataclass(frozen=True, slots=True)
-class ReturnedProposalDisposition:
-    reason: str
-    disposed_at: datetime
-    kind: ProposalDispositionKind = field(init=False, default=ProposalDispositionKind.RETURNED)
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,9 +195,7 @@ class RejectedProposalDisposition:
     kind: ProposalDispositionKind = field(init=False, default=ProposalDispositionKind.REJECTED)
 
 
-type ProposalDisposition = (
-    AcceptedProposalDisposition | MergedProposalDisposition | ReturnedProposalDisposition | RejectedProposalDisposition
-)
+type ProposalDisposition = MergedProposalDisposition | RejectedProposalDisposition
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,15 +320,6 @@ class CloseInput:
 class DeferInput:
     timing: Timing
     reopen_condition: str
-
-
-@dataclass(frozen=True, slots=True)
-class AcceptProposalInput:
-    item: ItemId
-    state: AcceptedProposalState
-    next_action: str
-    timing: Timing | None = None
-    depends_on: tuple[ItemId, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

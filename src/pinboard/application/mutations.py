@@ -75,8 +75,7 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                 ):
                     candidate = str(accepted_candidate)
                 case (
-                    decision_models.AcceptedProposalChange()
-                    | decision_models.ActivationChange()
+                    decision_models.ActivationChange()
                     | decision_models.AttemptStateChange()
                     | decision_models.BlockAttemptChange()
                     | decision_models.BlockItemChange()
@@ -84,7 +83,6 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                     | decision_models.ItemClosureChange()
                     | decision_models.ItemStateChange()
                     | decision_models.MergedProposalChange()
-                    | decision_models.ReturnedProposalChange()
                     | decision_models.RejectedProposalChange()
                     | decision_models.RebindAttemptChange()
                     | decision_models.ResumeAttemptChange()

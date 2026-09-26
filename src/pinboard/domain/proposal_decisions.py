@@ -5,9 +5,9 @@ from pinboard.domain.identifiers import ItemId
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.domain.proposal_models import (
     CreateProposalOperation,
-    IntakeWorkItem,
     PrerequisiteDependencyChange,
     ProposalCreationDecision,
+    ReadyProposalItem,
 )
 
 
@@ -117,7 +117,7 @@ def decide_proposal_creation(
         )
     return ProposalCreationDecision(
         intake,
-        IntakeWorkItem(item_id, position, dependencies, digest, definition),
+        ReadyProposalItem(item_id, position, dependencies, digest, definition),
         prerequisite_change,
         planned_replacement,
         intake.evidence,

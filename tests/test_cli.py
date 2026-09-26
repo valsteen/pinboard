@@ -519,7 +519,7 @@ class CliTest(unittest.TestCase):
         with patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("Complete snapshot used")):
             result = self.run_json_cli("--project-root", str(project), "--work-root", str(work), "status")
         self.assertEqual("12", result["revision"])
-        self.assertEqual({"active": 1, "intake": 2, "ready": 1, "superseded": 1}, result["counts"])
+        self.assertEqual({"active": 1, "ready": 3, "superseded": 1}, result["counts"])
 
     def test_status_composes_one_store_and_static_commands_compose_none(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())

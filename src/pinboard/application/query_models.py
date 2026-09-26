@@ -743,10 +743,14 @@ class DependencyReason(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     reason: str
 
 
-class ReviewFlag(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    kind: work_models.ProposalRelationKind
+class ProposalOrigin(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    source_task_id: str
+    trigger: str
+    relation_kind: work_models.ProposalRelationKind
     related_item: str | None
-    reason: str
+    why_it_matters: str
+    disposition: work_models.ProposalDispositionKind | None
+    disposition_reason: str | None
 
 
 class PlannedReplacementWarning(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -767,7 +771,7 @@ class OverviewItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     timing: str | None
     depends_on: tuple[str, ...]
     dependency_reasons: tuple[DependencyReason, ...]
-    review_flags: tuple[ReviewFlag, ...]
+    proposal_origin: ProposalOrigin | None
     attempt_id: str | None
     next_action: str | None
     source: str | None
@@ -782,7 +786,7 @@ class NextUnstarted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class WorkOverview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-overview/v5"]
+    schema: Literal["pinboard-overview/v6"]
     authority: Literal["sqlite-v6"]
     revision: str
     active_attempts: tuple[str, ...]

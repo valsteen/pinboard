@@ -385,9 +385,12 @@ def _work_item_record(
     dependencies: tuple[ItemId, ...],
     attempt_id: AttemptId | None,
 ) -> work_models.WorkItem:
+    state = stored_state.live_work_state(item.state)
+    if state is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "A current work item has a terminal stored state.")
     return work_models.WorkItem(
         item.item_id,
-        work_models.WorkState(item.state.value),
+        state,
         None if item.timing is None else item.timing.value,
         dependencies,
         attempt_id,

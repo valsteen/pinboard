@@ -256,24 +256,6 @@ class TransitionInputTest(unittest.TestCase):
                 action(decision_models.BlockItemAction, ItemId("work-a")),
                 {"reason": "blocked", "depends_on": ["work-b", "work-b"]},
             ),
-            (
-                action(decision_models.AcceptProposalAction, ProposalId("proposal-a")),
-                {
-                    "item": "work-a",
-                    "state": "intake",
-                    "next_action": "review",
-                    "depends_on": ["work-b", "work-b"],
-                },
-            ),
-            (
-                action(decision_models.AcceptProposalAction, ProposalId("proposal-a")),
-                {
-                    "item": "work-a",
-                    "state": "intake",
-                    "next_action": "review",
-                    "depends_on": ["work-a"],
-                },
-            ),
         )
         for selected_action, value in cases:
             with self.subTest(kind=selected_action.kind):
@@ -302,16 +284,6 @@ class TransitionInputTest(unittest.TestCase):
                 {"candidate": "candidate", "evidence": "accepted"},
             ),
             (
-                action(decision_models.AcceptProposalAction, ProposalId("proposal-1")),
-                {
-                    "item": "work-a",
-                    "state": "intake",
-                    "next_action": "review",
-                    "timing": "must-now",
-                    "depends_on": [],
-                },
-            ),
-            (
                 action(decision_models.ActivateAction, ItemId("work-a")),
                 {"brief_artifact_ref_id": 1},
             ),
@@ -326,7 +298,6 @@ class TransitionInputTest(unittest.TestCase):
                 action(decision_models.DeferAction, ItemId("work-a")),
                 {"timing": "safe-to-defer", "reopen_condition": "when needed"},
             ),
-            (action(decision_models.MarkReadyAction, ItemId("work-a")), {"reason": "ready"}),
             (action(decision_models.MergeProposalAction, ProposalId("proposal-1")), {"target": "work-a"}),
             (action(decision_models.PauseAction, AttemptId("attempt-1")), {"reason": "pause"}),
             (action(decision_models.RejectProposalAction, ProposalId("proposal-1")), {"reason": "reject"}),
@@ -342,7 +313,6 @@ class TransitionInputTest(unittest.TestCase):
             ),
             (action(decision_models.ResumeAction, ItemId("work-a")), {}),
             (action(decision_models.ReturnForCorrectionAction, AttemptId("attempt-1")), {"reason": "correct"}),
-            (action(decision_models.ReturnProposalAction, ProposalId("proposal-1")), {"reason": "more evidence"}),
             (
                 action(decision_models.ReviseItemAction, ItemId("work-a")),
                 revise_item_payload(),

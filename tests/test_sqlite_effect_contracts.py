@@ -99,12 +99,12 @@ class SQLiteEffectContractTest(unittest.TestCase):
                 value
                 for value in actions
                 if str(value.capability.subject) == "intake-work"
-                and value.kind == decision_models.ActionKind.MARK_READY
+                and value.kind == decision_models.ActionKind.BLOCK_ITEM
             )
-            assert isinstance(action, decision_models.MarkReadyAction)
+            assert isinstance(action, decision_models.BlockItemAction)
             decision = decide(
                 snapshot,
-                decision_models.MarkReadyCommand(action, work_models.ReasonInput("Ready for delivery.")),
+                decision_models.BlockItemCommand(action, work_models.BlockInput("Waiting on a dependency.")),
                 SQLITE_NOW,
             )
             assert not isinstance(decision, DecisionFailure)
@@ -479,7 +479,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
             stale = proposals.set_proposal_disposition(
                 connection,
                 ProposalId("missing-proposal"),
-                work_models.ReturnedProposalDisposition("No longer relevant.", SQLITE_NOW),
+                work_models.RejectedProposalDisposition("No longer relevant.", SQLITE_NOW),
                 before.lifecycle.project.revision + 1,
             )
         finally:

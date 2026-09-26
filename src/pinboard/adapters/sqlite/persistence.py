@@ -49,7 +49,6 @@ from pinboard.adapters.sqlite.models import (
     PersistedAllocationRow,
 )
 from pinboard.adapters.sqlite.proposals import (
-    accept_proposal,
     create_proposal,
     insert_planned_replacement,
     set_proposal_disposition,
@@ -136,12 +135,9 @@ def _mutation_subjects(
                     | decision_models.RebindAttemptChange(item=item, attempt=attempt)
                 ):
                     return (item,), (attempt,)
-                case decision_models.AcceptedProposalChange(accepted_item=accepted):
-                    return (accepted.item,), ()
                 case (
                     decision_models.MergedProposalChange(proposal=proposal)
                     | decision_models.RejectedProposalChange(proposal=proposal)
-                    | decision_models.ReturnedProposalChange(proposal=proposal)
                 ):
                     return (ItemId(proposal),), ()
                 case _ as unreachable:
@@ -209,7 +205,7 @@ def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every 
         case OrderMutation(change=change):
             affected_items.extend(item for _position, item in change.changed_positions)
         case ProposalCreationMutation(decision=decision):
-            affected_items.append(decision.intake_item.item_id)
+            affected_items.append(decision.ready_item.item_id)
             if decision.planned_replacement is not None:
                 affected_items.append(decision.planned_replacement.affected_item)
             if decision.prerequisite_change is not None:
@@ -218,7 +214,7 @@ def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every 
                 decode_row(row, ItemIdRow).item_id
                 for row in connection.execute(
                     "SELECT item_id FROM work_items WHERE queue_position >= ? ORDER BY queue_position",
-                    (decision.intake_item.position,),
+                    (decision.ready_item.position,),
                 ).fetchall()
             )
         case PreparationAuthorityMutation(decision=decision):
@@ -264,8 +260,6 @@ def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every 
                     | decision_models.ReviewSubmissionChange()
                     | decision_models.ReviewReturnChange()
                     | decision_models.ReviewAcceptanceChange()
-                    | decision_models.AcceptedProposalChange()
-                    | decision_models.ReturnedProposalChange()
                     | DefinitionRevisionDecision()
                     | decision_models.CheckpointAcceptanceChange()
                     | decision_models.PlannedReplacementChange()
@@ -597,20 +591,17 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 )
             ) is not None:
                 return failure
-        case decision_models.AcceptedProposalChange():
-            if (
-                failure := accept_proposal(connection, facts.item(change.accepted_item.item), change, revision, now)
-            ) is not None:
-                return failure
         case DefinitionRevisionDecision():
             if (failure := _persist_definition_revision(connection, facts, change, revision)) is not None:
                 return failure
-        case decision_models.MergedProposalChange(proposal=proposal, target_item=target, disposed_at=disposed_at):
+        case decision_models.MergedProposalChange(
+            proposal=proposal, target_item=target, disposed_at=disposed_at, item_before=item_before
+        ):
             if (
                 failure := set_item_state(
                     connection,
                     facts.item(ItemId(proposal)),
-                    work_models.WorkState.INTAKE,
+                    item_before,
                     stored_state.StoredWorkItemState.SUPERSEDED,
                     revision,
                     now,
@@ -627,22 +618,14 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 )
             ) is not None:
                 return failure
-        case decision_models.ReturnedProposalChange(proposal=proposal, reason=reason, disposed_at=disposed_at):
-            if (
-                failure := set_proposal_disposition(
-                    connection,
-                    proposal,
-                    work_models.ReturnedProposalDisposition(reason, disposed_at),
-                    revision,
-                )
-            ) is not None:
-                return failure
-        case decision_models.RejectedProposalChange(proposal=proposal, reason=reason, disposed_at=disposed_at):
+        case decision_models.RejectedProposalChange(
+            proposal=proposal, reason=reason, disposed_at=disposed_at, item_before=item_before
+        ):
             if (
                 failure := set_item_state(
                     connection,
                     facts.item(ItemId(proposal)),
-                    work_models.WorkState.INTAKE,
+                    item_before,
                     stored_state.StoredWorkItemState.DROPPED,
                     revision,
                     now,

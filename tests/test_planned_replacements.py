@@ -51,7 +51,7 @@ class PlannedReplacementTests(unittest.TestCase):
             "7",
             (
                 work_item("old-work", state, None if attempt is None else str(attempt)),
-                work_item("new-work", work_models.WorkState.INTAKE),
+                work_item("new-work", work_models.WorkState.READY),
             ),
             attempts,
             subject_revisions=(
@@ -255,7 +255,7 @@ class PlannedReplacementTests(unittest.TestCase):
             "1",
             (
                 work_item("replace-cache", work_models.WorkState.READY),
-                work_item("replace-cache-again", work_models.WorkState.INTAKE),
+                work_item("replace-cache-again", work_models.WorkState.READY),
             ),
             subject_revisions=(
                 work_models.SubjectRevision(ItemId("replace-cache"), "1"),

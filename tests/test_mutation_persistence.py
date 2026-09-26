@@ -161,6 +161,7 @@ class MutationPersistenceTest(unittest.TestCase):
         self, receipt: decision_models.TransitionReceipt, after: stored_state.StoredWorkState
     ) -> MutationReceipt:
         stored = self._stored_receipt(after)
+        assert isinstance(stored.action_kind, decision_models.ActionKind)
         return MutationReceipt(
             receipt,
             stored.history_id,
@@ -468,78 +469,6 @@ class MutationPersistenceTest(unittest.TestCase):
         self.assertEqual(2, persisted.accepted_scope_revision)
         self.assertEqual(revised_scope_digest, persisted.accepted_scope_digest)
 
-    def test_proposal_acceptance_round_trips_semantics_and_ordered_dependencies(self) -> None:
-        store = self._store()
-        snapshot = project_decision_snapshot(store.validated_snapshot(), SQLITE_NOW)
-        actor = decision_models.ActorAuthority(
-            decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
-        )
-        action = next(
-            value
-            for value in available_actions(snapshot, actor)
-            if value.kind == decision_models.ActionKind.ACCEPT_PROPOSAL
-        )
-        assert isinstance(action, decision_models.AcceptProposalAction)
-        decision = decide(
-            snapshot,
-            decision_models.AcceptProposalCommand(
-                action,
-                work_models.AcceptProposalInput(
-                    ItemId("zz-proposal-a"),
-                    work_models.AcceptedProposalState.READY,
-                    "activate",
-                    timing=None,
-                    depends_on=(ItemId("intake-work"),),
-                ),
-            ),
-            SQLITE_NOW + timedelta(seconds=1),
-        )
-
-        self.assertIsInstance(decision.change, decision_models.AcceptedProposalChange)
-        with reject_table_deletes("work_items"), store.write() as transaction:
-            transaction.commit(
-                project_transition_mutation(
-                    mutation_allocation(store.validated_snapshot()),
-                    decision,
-                    TaskId("project-task"),
-                    HostId("host-a"),
-                )
-            )
-
-        reopened = store.validated_snapshot()
-        item = next(value for value in reopened.lifecycle.work_items if value.item_id == ItemId("zz-proposal-a"))
-        proposal = reopened.proposals.proposals[0]
-        accepted_definition = next(
-            value.definition
-            for value in reversed(reopened.lifecycle.definition_revisions)
-            if value.item_id == item.item_id
-        )
-        self.assertEqual(
-            ("Proposal A", "A related observation", "Record the follow-up."),
-            (accepted_definition.title, proposal.trigger, accepted_definition.effect),
-        )
-        self.assertEqual(stored_state.StoredWorkItemState.READY, item.state)
-        self.assertEqual(4, item.queue_position)
-        self.assertEqual(5, len(reopened.lifecycle.work_items))
-        self.assertEqual(
-            (ItemId("work-c"), ItemId("intake-work")),
-            tuple(value.dependency_id for value in reopened.lifecycle.dependencies if value.item_id == item.item_id),
-        )
-        definitions = tuple(value for value in reopened.lifecycle.definition_revisions if value.item_id == item.item_id)
-        self.assertEqual((1, 2), tuple(value.revision for value in definitions))
-        self.assertEqual((ItemId("work-c"), ItemId("intake-work")), definitions[-1].definition.dependencies)
-        self.assertEqual("Accepted explicit proposal dependencies.", definitions[-1].reason)
-        self.assertEqual(TaskId("source-task"), definitions[-1].source_task_id)
-        self.assertEqual(
-            work_models.AcceptedProposalDisposition(
-                ItemId("zz-proposal-a"),
-                SQLITE_NOW + timedelta(seconds=1),
-            ),
-            proposal.disposition,
-        )
-        self.assertEqual(13, reopened.lifecycle.project.revision)
-        self.assertEqual(2, len(reopened.transition_receipts))
-
     def test_cross_family_stale_mutation_is_rejected_without_partial_state(self) -> None:
         first, second = self._store_pair()
         before = first.validated_snapshot()
@@ -591,14 +520,6 @@ class MutationPersistenceTest(unittest.TestCase):
                 b'{"target":"work-c"}',
                 work_models.MergedProposalDisposition(
                     ItemId("work-c"),
-                    SQLITE_NOW + timedelta(seconds=1),
-                ),
-            ),
-            (
-                decision_models.ReturnProposalAction,
-                b'{"reason":"Clarify the evidence."}',
-                work_models.ReturnedProposalDisposition(
-                    "Clarify the evidence.",
                     SQLITE_NOW + timedelta(seconds=1),
                 ),
             ),
@@ -693,13 +614,6 @@ class MutationPersistenceTest(unittest.TestCase):
                 WHERE proposal_id = 'zz-proposal-a';
             END
         """
-        ignore_proposal_update = """
-            CREATE TEMP TRIGGER arrange_real_transition_staleness
-            BEFORE UPDATE OF disposition ON proposals
-            BEGIN
-                SELECT RAISE(IGNORE);
-            END
-        """
         scenarios: tuple[tuple[type[decision_models.Action], bytes, str], ...] = (
             (
                 decision_models.PauseAction,
@@ -712,16 +626,6 @@ class MutationPersistenceTest(unittest.TestCase):
                 stale_attempt_after_item,
             ),
             (
-                decision_models.AcceptProposalAction,
-                b'{"item":"zz-proposal-a","state":"ready","next_action":"activate","depends_on":["intake-work"]}',
-                ignore_item_update,
-            ),
-            (
-                decision_models.AcceptProposalAction,
-                b'{"item":"zz-proposal-a","state":"ready","next_action":"activate","depends_on":["intake-work"]}',
-                stale_proposal_after_item,
-            ),
-            (
                 decision_models.MergeProposalAction,
                 b'{"target":"work-c"}',
                 ignore_item_update,
@@ -730,11 +634,6 @@ class MutationPersistenceTest(unittest.TestCase):
                 decision_models.MergeProposalAction,
                 b'{"target":"work-c"}',
                 stale_proposal_after_item,
-            ),
-            (
-                decision_models.ReturnProposalAction,
-                b'{"reason":"Clarify the evidence."}',
-                ignore_proposal_update,
             ),
             (
                 decision_models.RejectProposalAction,

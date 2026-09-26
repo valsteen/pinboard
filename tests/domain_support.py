@@ -85,17 +85,5 @@ def proposal_record(proposal: str, revision: str) -> work_models.ProposalRecord:
     )
 
 
-def accept_proposal_input(
-    item: str,
-    state: work_models.AcceptedProposalState,
-    next_action: str,
-    timing: work_models.Timing | None = None,
-    depends_on: tuple[str, ...] = (),
-) -> work_models.AcceptProposalInput:
-    return work_models.AcceptProposalInput(
-        ItemId(item), state, next_action, timing, tuple(ItemId(value) for value in depends_on)
-    )
-
-
 def defer_input(timing: str, reopen_condition: str) -> work_models.DeferInput:
     return work_models.DeferInput(work_models.Timing(timing), reopen_condition)

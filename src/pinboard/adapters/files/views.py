@@ -60,21 +60,14 @@ def _render_item(
         if overview_item is not None
         else ()
     )
-    review_flags = (
-        tuple(
-            f"{value.kind.value}{f' ({value.related_item})' if value.related_item is not None else ''}: {value.reason}"
-            for value in overview_item.review_flags
-        )
-        if overview_item is not None
-        else ()
-    )
+    origin = None if overview_item is None else overview_item.proposal_origin
     accepted = definition.definition
     replacement = None if overview_item is None else overview_item.planned_replacement
     return (
         _render_header("work-item-view")
         + f"# {accepted.title}\n\n"
         + f"- Item: {item.item_id}\n"
-        + f"- State: {item.state.value}\n"
+        + f"- State: {overview_item.state.value if overview_item is not None else item.state.value}\n"
         + f"- Queue position: {item.queue_position if item.queue_position is not None else 'none'}\n"
         + f"- Source: {item.source if item.source is not None else 'none'}\n"
         + f"- Notes: {item.notes if item.notes is not None else 'none'}\n"
@@ -83,7 +76,13 @@ def _render_item(
         + f"- Preparation: {overview_item.preparation.status.value if overview_item is not None and overview_item.preparation is not None else 'none'}\n"
         + f"- Dependencies: {', '.join(dependencies) if dependencies else 'none'}\n"
         + f"- Dependency reasons: {'; '.join(dependency_reasons) if dependency_reasons else 'none'}\n"
-        + f"- Review flags: {'; '.join(review_flags) if review_flags else 'none'}\n"
+        + f"- Proposal source task: {origin.source_task_id if origin is not None else 'none'}\n"
+        + f"- Proposal trigger: {origin.trigger if origin is not None else 'none'}\n"
+        + f"- Proposal relation: {origin.relation_kind.value if origin is not None else 'none'}\n"
+        + f"- Related item: {origin.related_item if origin is not None and origin.related_item is not None else 'none'}\n"
+        + f"- Proposal reason: {origin.why_it_matters if origin is not None else 'none'}\n"
+        + f"- Proposal disposition: {origin.disposition.value if origin is not None and origin.disposition is not None else 'none'}\n"
+        + f"- Disposition reason: {origin.disposition_reason if origin is not None and origin.disposition_reason is not None else 'none'}\n"
         + f"- Planned replacement: {replacement.replacement_item_id if replacement is not None else 'none'}\n"
         + f"- Replacement revision: {replacement.relation_revision if replacement is not None else 'none'}\n"
         + f"- Replacement cost: {replacement.replacement_cost if replacement is not None else 'none'}\n"

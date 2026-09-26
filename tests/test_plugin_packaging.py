@@ -424,7 +424,7 @@ class PluginPackagingTests(unittest.TestCase):
                         self.assertFalse(result.is_error)
                         self.assertIsNotNone(result.structured_content)
                         assert result.structured_content is not None
-                        self.assertEqual("intake", result.structured_content["state"])
+                    self.assertEqual("ready", result.structured_content["state"])
 
         asyncio.run(scenario())
         origin = subprocess.run(

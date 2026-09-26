@@ -416,8 +416,8 @@ class McpTransportTest(unittest.TestCase):
             ):
                 for item_id, code in (
                     ("work-c", None),
-                    ("intake-work", "state-not-launchable"),
-                    ("zz-proposal-a", "state-not-launchable"),
+                    ("intake-work", None),
+                    ("zz-proposal-a", "dependency-live"),
                     ("work-a", "dependency-live"),
                 ):
                     with self.subTest(item=item_id):
@@ -472,7 +472,7 @@ class McpTransportTest(unittest.TestCase):
                 ).content
             self.assertTrue(all_safe["safe"])
             all_safe_view = msgspec.convert(all_safe, type=contracts.ParallelPreviewSuccess)
-            self.assertEqual(("work-c",), tuple(item.item_id for item in all_safe_view.launchable))
+            self.assertEqual(("intake-work", "work-c"), tuple(item.item_id for item in all_safe_view.launchable))
             self.assertEqual(before, store.validated_snapshot())
 
     def test_parallel_preview_preserves_independent_precedence_and_expiry(self) -> None:
@@ -496,7 +496,7 @@ class McpTransportTest(unittest.TestCase):
             (
                 replace(
                     ready,
-                    state=work_models.WorkState.INTAKE,
+                    state=work_models.WorkState.BLOCKED,
                     preparation=live_preparation,
                     live_dependencies=(ItemId("work-a"),),
                 ),
@@ -1538,7 +1538,7 @@ class McpTransportTest(unittest.TestCase):
         assert isinstance(properties, dict) and isinstance(properties["request"], dict)
         leaves = properties["request"]["oneOf"]
         assert isinstance(leaves, list)
-        self.assertEqual(23, len(leaves))
+        self.assertEqual(20, len(leaves))
         for advisory_kind in (b'"continue"', b'"dispatch"', b'"inspect"', b'"report-blocker"'):
             self.assertNotIn(advisory_kind, encoded_schema)
 
@@ -1708,14 +1708,6 @@ class McpTransportTest(unittest.TestCase):
                     )
 
                 await call(mcp_server.PROPOSAL_CREATE_TOOL, {"proposal": proposal_input(), **actor})
-                reloaded_state("intake")
-                await transition(
-                    "accept-proposal",
-                    "proposal-1",
-                    "project",
-                    actor,
-                    {"item": "proposal-1", "state": "ready", "next_action": "Implement accepted effect."},
-                )
                 reloaded_state("ready")
                 prepared = await call(
                     mcp_server.PREPARATION_AUTHORITY_TOOL,
@@ -1953,11 +1945,6 @@ class McpTransportTest(unittest.TestCase):
         cases: tuple[tuple[str, str, dict[str, contracts.JsonValue]], ...] = (
             ("accept-checkpoint", "project", {"checkpoint": "checkpoint-1", "candidate": "candidate", **evidence}),
             ("accept-review-and-continue", "project", {"candidate": "candidate", **evidence}),
-            (
-                "accept-proposal",
-                "project",
-                {"item": "item-1", "state": "ready", "next_action": "Prepare accepted work."},
-            ),
             ("activate", "preparer", {"brief_artifact_ref_id": 1}),
             ("block", "project", reason),
             ("block-item", "project", reason),
@@ -1979,7 +1966,6 @@ class McpTransportTest(unittest.TestCase):
             ),
             ("close", "project", {"outcome": "done", **reason}),
             ("defer", "project", {"timing": "safe-to-defer", "reopen_condition": "A supported consumer needs it."}),
-            ("mark-ready", "project", reason),
             ("merge-proposal", "project", {"target": "item-2"}),
             ("pause", "project", reason),
             ("reject-proposal", "project", reason),
@@ -2009,7 +1995,6 @@ class McpTransportTest(unittest.TestCase):
             ),
             ("resume", "project", {}),
             ("return-for-correction", "project", reason),
-            ("return-proposal", "project", reason),
             (
                 "retain-temporarily",
                 "project",
@@ -3198,7 +3183,7 @@ class McpTransportTest(unittest.TestCase):
             self.assertIsInstance(successful.structured_content, dict)
         overview_content = overview.structured_content
         assert isinstance(overview_content, dict)
-        self.assertEqual("pinboard-overview/v5", overview_content["schema"])
+        self.assertEqual("pinboard-overview/v6", overview_content["schema"])
         self.assertEqual("sqlite-v6", overview_content["authority"])
         self.assertEqual(["work-a-1"], overview_content["active_attempts"])
         observer_content = observer.structured_content

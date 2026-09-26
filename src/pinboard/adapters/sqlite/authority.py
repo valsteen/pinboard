@@ -149,7 +149,10 @@ def read_preparation_authority_status(
     if (
         lease.state == authority_models.PreparationLeaseStatus.ACTIVE
         and lease.expires_at > project.updated_at
-        and (item.state != stored_state.StoredWorkItemState.READY or referenced_definition != current_definition)
+        and (
+            item.state not in {stored_state.StoredWorkItemState.INTAKE, stored_state.StoredWorkItemState.READY}
+            or referenced_definition != current_definition
+        )
     ):
         raise StorageError(
             StorageErrorCode.INVALID_STATE,

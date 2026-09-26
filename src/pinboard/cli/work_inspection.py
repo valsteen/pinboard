@@ -18,7 +18,7 @@ class StatusView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     revision: str
     active_attempts: tuple[str, ...]
     counts: dict[str, int]
-    intake_item_count: int
+    ready_item_count: int
     authority: str
 
 
@@ -37,7 +37,7 @@ def compose_status(
         revision=str(facts.project_revision),
         active_attempts=tuple(str(value) for value in facts.active_attempts),
         counts=counts,
-        intake_item_count=counts.get(work_models.WorkState.INTAKE.value, 0),
+        ready_item_count=counts.get(work_models.WorkState.READY.value, 0),
         authority="sqlite-v6",
     )
 
@@ -49,5 +49,5 @@ def show_status(roots: cli_commands.ResolvedRoots, store: ports.WorkStore, comma
     else:
         print(f"OK WORK_STATE_VALID revision={projection.revision}")
         print(f"active_attempts={','.join(projection.active_attempts) or 'none'}")
-        print(f"intake_items={projection.intake_item_count}")
+        print(f"ready_items={projection.ready_item_count}")
     return 0

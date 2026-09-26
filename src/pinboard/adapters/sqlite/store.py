@@ -398,9 +398,14 @@ class SQLiteWorkStore:
                 )
                 if len(count_rows) != len(stored_state.StoredWorkItemState):
                     raise StorageError(StorageErrorCode.INVALID_STATE, "Work-item state counts are incomplete.")
-                counts = tuple(
-                    (selected.state, selected.item_count) for selected in count_rows if selected.item_count > 0
-                )
+                visible_counts = {
+                    selected.state: selected.item_count for selected in count_rows if selected.item_count > 0
+                }
+                released_intake = visible_counts.pop(stored_state.StoredWorkItemState.INTAKE.value, 0)
+                if released_intake:
+                    ready = stored_state.StoredWorkItemState.READY.value
+                    visible_counts[ready] = visible_counts.get(ready, 0) + released_intake
+                counts = tuple(sorted(visible_counts.items()))
                 revision = decode_row(project_row, ProjectRevisionRow).revision
                 return query_models.ProjectStatusFacts(revision, active_attempts, counts)
         finally:

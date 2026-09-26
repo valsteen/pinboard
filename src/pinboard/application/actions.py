@@ -43,7 +43,6 @@ def action_subject_ids(
             | decision_models.BlockItemAction(capability=capability)
             | decision_models.CloseAction(capability=capability)
             | decision_models.DeferAction(capability=capability)
-            | decision_models.MarkReadyAction(capability=capability)
             | decision_models.ReopenAction(capability=capability)
             | decision_models.RecordReplacementAction(capability=capability)
             | decision_models.ResumeAction(capability=capability)
@@ -52,10 +51,8 @@ def action_subject_ids(
         ):
             return (capability.subject,), (), ()
         case (
-            decision_models.AcceptProposalAction(capability=capability)
-            | decision_models.MergeProposalAction(capability=capability)
+            decision_models.MergeProposalAction(capability=capability)
             | decision_models.RejectProposalAction(capability=capability)
-            | decision_models.ReturnProposalAction(capability=capability)
         ):
             return (), (), (capability.subject,)
         case decision_models.InspectAction():

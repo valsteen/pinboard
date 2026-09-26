@@ -17,12 +17,11 @@ from pinboard.adapters.sqlite.lifecycle import (
     append_definition_revision,
     increment_item_state_count,
     make_queue_space,
-    move_item_state_count,
     replace_dependencies,
 )
-from pinboard.application import stored_state
+from pinboard.application import released_v6_compatibility, stored_state
 from pinboard.application.mutation_models import ProposalCreationMutation
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import ItemId, ProposalId, TaskId
 
@@ -150,7 +149,7 @@ def _decode_stored_proposal_disposition(
     target: ItemId | None,
     reason: str | None,
     disposed_at: datetime | None,
-) -> work_models.ProposalDisposition | None:
+) -> released_v6_compatibility.StoredProposalDisposition | None:
     match kind:
         case None:
             if target is not None or reason is not None or disposed_at is not None:
@@ -158,7 +157,7 @@ def _decode_stored_proposal_disposition(
             return None
         case work_models.ProposalDispositionKind.ACCEPTED:
             _forbid_disposition_value(kind, "reason", reason)
-            return work_models.AcceptedProposalDisposition(
+            return released_v6_compatibility.HistoricalAcceptedProposalDisposition(
                 _require_disposition_target(kind, target),
                 _require_disposition_time(kind, disposed_at),
             )
@@ -170,7 +169,7 @@ def _decode_stored_proposal_disposition(
             )
         case work_models.ProposalDispositionKind.RETURNED:
             _forbid_disposition_value(kind, "target item", target)
-            return work_models.ReturnedProposalDisposition(
+            return released_v6_compatibility.HistoricalReturnedProposalDisposition(
                 _require_disposition_reason(kind, reason),
                 _require_disposition_time(kind, disposed_at),
             )
@@ -185,18 +184,22 @@ def _decode_stored_proposal_disposition(
 
 
 def _encode_proposal_disposition_columns(
-    value: work_models.ProposalDisposition | None,
+    value: released_v6_compatibility.StoredProposalDisposition | None,
 ) -> tuple[str | None, ItemId | None, str | None, str | None]:
     match value:
         case None:
             return None, None, None, None
         case (
-            work_models.AcceptedProposalDisposition(kind=kind, target=target, disposed_at=disposed_at)
+            released_v6_compatibility.HistoricalAcceptedProposalDisposition(
+                kind=kind, target=target, disposed_at=disposed_at
+            )
             | work_models.MergedProposalDisposition(kind=kind, target=target, disposed_at=disposed_at)
         ):
             return kind.value, target, None, disposed_at.isoformat()
         case (
-            work_models.ReturnedProposalDisposition(kind=kind, reason=reason, disposed_at=disposed_at)
+            released_v6_compatibility.HistoricalReturnedProposalDisposition(
+                kind=kind, reason=reason, disposed_at=disposed_at
+            )
             | work_models.RejectedProposalDisposition(kind=kind, reason=reason, disposed_at=disposed_at)
         ):
             return kind.value, None, reason, disposed_at.isoformat()
@@ -300,70 +303,6 @@ def set_proposal_disposition(
     )
 
 
-def accept_proposal(
-    connection: sqlite3.Connection,
-    current: stored_state.StoredWorkItem,
-    change: decision_models.AcceptedProposalChange,
-    revision: int,
-    now: datetime,
-) -> DecisionFailure | None:
-    accepted = change.accepted_item
-    if current.item_id != accepted.item:
-        raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "The accepted proposal item is missing.")
-    if accepted.definition_digest_after != accepted.definition_digest_before:
-        append_definition_revision(
-            connection,
-            stored_state.ItemDefinitionRevision(
-                accepted.item,
-                accepted.definition_revision,
-                accepted.definition_digest_after,
-                accepted.definition,
-                "Accepted explicit proposal dependencies.",
-                accepted.definition_source_task,
-                accepted.definition_digest_before,
-                accepted.definition_digest_after,
-                revision,
-                now,
-            ),
-        )
-    if (
-        failure := require_one_changed_row(
-            connection.execute(
-                """
-                UPDATE work_items
-                SET state = ?, timing = ?, source = ?, next_action = ?, notes = ?, subject_revision = ?, updated_at = ?
-                WHERE item_id = ? AND state = 'intake' AND subject_revision = ?
-                """,
-                (
-                    accepted.state.value,
-                    None if accepted.timing is None else accepted.timing.value,
-                    accepted.source,
-                    accepted.next_action,
-                    accepted.notes,
-                    revision,
-                    now.isoformat(),
-                    accepted.item,
-                    current.subject_revision,
-                ),
-            ),
-            "The accepted proposal item is stale.",
-        )
-    ) is not None:
-        return failure
-    move_item_state_count(
-        connection,
-        current.state,
-        stored_state.stored_live_work_state(accepted.state),
-    )
-    replace_dependencies(connection, accepted.item, accepted.dependencies)
-    return set_proposal_disposition(
-        connection,
-        change.proposal,
-        work_models.AcceptedProposalDisposition(accepted.item, change.disposed_at),
-        revision,
-    )
-
-
 def insert_planned_replacement(
     connection: sqlite3.Connection,
     relation: work_models.PlannedReplacement,
@@ -395,7 +334,7 @@ def create_proposal(
 ) -> DecisionFailure | None:
     decision = mutation.decision
     intake = decision.proposal
-    intake_item = decision.intake_item
+    ready_item = decision.ready_item
     revision = mutation.receipt.project_revision
     now = mutation.receipt.transition.decided_at
     prerequisite = decision.prerequisite_change
@@ -425,7 +364,7 @@ def create_proposal(
                 None,
             )
         replacement_subject_revision = decode_row(target, _SubjectRevisionRow).subject_revision
-    if (failure := make_queue_space(connection, intake_item.position)) is not None:
+    if (failure := make_queue_space(connection, ready_item.position)) is not None:
         return failure
     relation = intake.relation
     connection.execute(
@@ -466,36 +405,36 @@ def create_proposal(
         INSERT INTO work_items (
             item_id, state, timing, source, outcome_evidence, next_action, notes, subject_revision,
             recorded_at, updated_at, queue_position
-        ) VALUES (?, 'intake', NULL, ?, NULL, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, 'ready', NULL, ?, NULL, ?, ?, ?, ?, ?, ?)
         """,
         (
-            intake_item.item_id,
+            ready_item.item_id,
             f"proposal:{intake.proposal_id}",
             intake.unlock,
             intake.urgency_evidence,
             revision,
             now.isoformat(),
             now.isoformat(),
-            intake_item.position,
+            ready_item.position,
         ),
     )
-    increment_item_state_count(connection, stored_state.StoredWorkItemState.INTAKE)
+    increment_item_state_count(connection, stored_state.StoredWorkItemState.READY)
     append_definition_revision(
         connection,
         stored_state.ItemDefinitionRevision(
-            intake_item.item_id,
+            ready_item.item_id,
             1,
-            intake_item.definition_digest,
-            intake_item.definition,
+            ready_item.definition_digest,
+            ready_item.definition,
             "Accepted proposal definition.",
             intake.source_task_id,
             None,
-            intake_item.definition_digest,
+            ready_item.definition_digest,
             revision,
             now,
         ),
     )
-    replace_dependencies(connection, intake_item.item_id, intake_item.dependencies)
+    replace_dependencies(connection, ready_item.item_id, ready_item.dependencies)
     if decision.planned_replacement is not None:
         relation = decision.planned_replacement
         assert replacement_subject_revision is not None

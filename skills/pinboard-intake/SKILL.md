@@ -1,11 +1,11 @@
 ---
 name: pinboard-intake
-description: Preserve one newly proposed piece of project work as an intake item on the pinboard. Use when the user explicitly asks to add, queue, intake, preserve, or send a prerequisite, bug, cleanup, feature, contradiction, or clarification for later work. Do not use merely because a conversation explores an idea.
+description: Preserve one newly proposed piece of project work as a ready item on the pinboard. Use when the user explicitly asks to add, queue, intake, preserve, or send a prerequisite, bug, cleanup, feature, contradiction, or clarification for later work. Do not use merely because a conversation explores an idea.
 ---
 
 # Add to the pinboard
 
-Convert one explicit concern into immutable proposal facts and a same-identity intake item. Do not claim that intake made it ready, active, or current work.
+Convert one explicit concern into immutable proposal facts and a same-identity ready item. Do not claim that saving it made it active or current work.
 
 Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) for native MCP discovery, coding-agent identity and optional messaging. Intake persistence remains the correctness boundary.
 
@@ -13,7 +13,7 @@ Intake may be standalone or embedded in ongoing Pinboard work. Standalone intake
 
 ## Preserve immediate-start intent
 
-When the same request says `start`, `begin`, `work on`, `implement`, `fix now`, or otherwise clearly asks for immediate execution, treat intake as the first atomic step rather than the requested outcome. After persistence and before admission or work-brief composition, load the complete main Pinboard skill through the runtime's advertised native coordinator skill loader (`Skill` for `pinboard:pinboard` in Claude). If that loader is unavailable, read the actual sibling `../pinboard/SKILL.md` completely; unavailable complete content stops the continuation. A `$pinboard` mention is not a loaded skill. Follow that loaded owner to admit, prepare, and activate the same-identity item, then use `$pinboard-deliver` to complete its accepted work. Do not end with a save-for-later receipt merely because the user explicitly named `$pinboard-intake`.
+When the same request says `start`, `begin`, `work on`, `implement`, `fix now`, or otherwise clearly asks for immediate execution, treat intake as the first atomic step rather than the requested outcome. After persistence and before work-brief composition, load the complete main Pinboard skill through the runtime's advertised native coordinator skill loader (`Skill` for `pinboard:pinboard` in Claude). If that loader is unavailable, read the actual sibling `../pinboard/SKILL.md` completely; unavailable complete content stops the continuation. A `$pinboard` mention is not a loaded skill. Follow that loaded owner to prepare and activate the same-identity ready item, then use `$pinboard-deliver` to complete its accepted work. Do not end with a save-for-later receipt merely because the user explicitly named `$pinboard-intake`.
 
 Follow the main Pinboard skill's user-facing detail threshold during that continuation. Preserve every higher-level required first-use skill disclosure, keep each one concise and outcome-oriented, and add no separate Pinboard explanation of companion-skill selection or internal routing.
 
@@ -41,7 +41,7 @@ Language such as “if that is a production defect, follow it up” authorizes e
 - exact observation and consequence already recorded: reuse the exact durable owner and create nothing;
 - proved and new: create at most one `follow-up` or `independent` proposal, whichever the evidence supports.
 
-This conditional authority does not authorize a prerequisite relation, admission, preparation, activation, implementation, notification, or unrelated work. Record the condition evidence, the concern's relationship to current work, and the smallest useful next decision. When intake is embedded in delivery, return to the retained continuation anchor immediately after the one permitted disposition.
+This conditional authority does not authorize a prerequisite relation, preparation, activation, implementation, notification, or unrelated work. Record the condition evidence, the concern's relationship to current work, and the smallest useful next decision. When intake is embedded in delivery, return to the retained continuation anchor immediately after the one permitted disposition.
 
 ## Prepare one proposal
 
@@ -49,7 +49,7 @@ If any proposal field or relation shape is uncertain, read the advertised `pinbo
 
 Create a bounded JSON proposal containing:
 
-- `schema`: `pinboard-proposal/v1`;
+- `schema`: `pinboard-proposal/v2`;
 - unique kebab-case `proposal_id`;
 - `created_at`;
 - exact `source_task_id`;
@@ -64,11 +64,11 @@ Create a bounded JSON proposal containing:
 - exact `unlock`;
 - observed `urgency_evidence`, never an invented priority;
 - freshness-sensitive assumptions in `freshness_assumptions`;
-- optional one-based `position`; omit it to place the intake item at the back of live work.
+- optional one-based `position`; omit it to place the ready item at the back of live work.
 
 When the negotiated proposal schema includes checkout policy and obligations, keep the obligations about the product or repository outcome that implementation must produce. A user request to use isolation, obtain independent review, integrate or publish an accepted candidate, clean up disposable checkouts or branches, and terminally close the item authorizes the owning coordinator's outer workflow; it is not implementation scope and must not become a proposal obligation. Preserve that authority in the current task context and follow it after candidate review. Use `checkout_policy` for the selected checkout rule rather than restating isolation as an obligation.
 
-Use `follow-up` when the new intake item depends on the related item. Use `prerequisite` when the live related item depends on the new intake item; persistence advances that target item's immutable definition history as well as its relational dependency projection. Use `planned-replacement` when the proposed intake item would replace its affected `relation.item`; proposal admission records the intake item and explicit replacement relation together or accepts neither. Use `duplicate`, `contradiction`, or `clarification` to expose a review flag rather than inventing a dependency. Encode `relation.item` as JSON `null` for `independent` and `clarification`; the other relations require a string identity. Every new proposal also creates definition revision 1 from its immutable facts, so do not add parallel semantic prose after intake.
+Use `follow-up` when the new ready item depends on the related item. Use `prerequisite` when the live related item depends on the new ready item; persistence advances that target item's immutable definition history as well as its relational dependency projection. Use `planned-replacement` when the proposed intake item would replace its affected `relation.item`; proposal creation records the ready item and explicit replacement relation together or accepts neither. Use `duplicate`, `contradiction`, or `clarification` to preserve proposal origin for later evaluation rather than inventing a dependency. Encode `relation.item` as JSON `null` for `independent` and `clarification`; the other relations require a string identity. Every new proposal also creates definition revision 1 from its immutable facts, so do not add parallel semantic prose after intake.
 
 Do not create work merely because a question was asked. Require an explicit request to preserve or submit the concern.
 
@@ -79,7 +79,7 @@ Before creating a proposal, distinguish exact prior coverage from a merely relat
 Before a first default initialization or after `SQLITE_READONLY`, follow the shared runtime adapter's [Codex protected project writes](../pinboard/references/runtime-adapters.md#codex-protected-project-writes) rule. A normal checkout uses relative `.pinboard`; a linked worktree or explicit root uses only the exact absolute effective work root reported by recovery. Do not substitute the whole shared repository or treat a denied proposal write as saved intake.
 
 1. Call `pinboard_proposal_create` with the structured proposal, exact project and work roots, and current actor task and host identities. No temporary proposal file is needed.
-2. Treat `pinboard-mcp-proposal-result/v1` with status `committed` or `committed-with-warning` as proof that both the proposal facts and intake item persisted. Use its exact `proposal_id`, `position`, `item_state`, and `committed_revision`; do not scrape human output.
+2. Treat `pinboard-mcp-proposal-result/v2` with status `committed` or `committed-with-warning` as proof that both the proposal facts and ready item persisted. Use its exact `proposal_id`, `position`, `item_state`, and `committed_revision`; do not scrape human output.
 3. Follow the returned effect and retry disposition. An unchanged rejection may be corrected as directed; a committed effect must be inspected rather than replayed.
 4. After that success, announce the generated item summary as the readable accepted-definition view only when `<work-root>/views/items/<proposal-id>.md` is confirmed available, using a concise purpose label and a native clickable link. On every later user-facing reference to that item, keep its human-facing label linked to the confirmed view under the main Pinboard skill's shared readable-artifact rule. If the command reports a generated-view warning or the file is unavailable, preserve the successful intake receipt without a broken link; after a successful refresh or rebuild confirms availability, announce it then. Do not send a standalone re-announcement after an unchanged refresh.
 5. For explicitly requested delivery in Codex, read and follow the Codex-only `references/codex-transport.md`. For explicitly requested delivery in Claude Code, follow only the bounded optional-messaging behavior in the shared runtime adapters; do not read or apply the Codex transport leaf.
@@ -90,19 +90,19 @@ When a JSON-capable operation returns `pinboard-rejected-operation/v1`, use its 
 
 For embedded intake, resume the invoking task before the surrounding turn ends. If context compaction obscured the conversation, re-read the anchor's active or paused item, attempt, proposal, or exact selector rather than inventing continuation state. Complete the promised action when it remains in scope; otherwise surface its exact blocker or durably defer it at an exact owner.
 
-When delivery was explicitly requested but transport or the requested target is unavailable, or delivery fails, retain the intake item and report the requested delivery outcome. Without an explicit delivery request, do not inspect transport, send, retry, or report notification state. Any later task can discover the item through overview or status, so never ask the human to relay it or authorize lease revocation merely to reduce notification latency.
+When delivery was explicitly requested but transport or the requested target is unavailable, or delivery fails, retain the ready item and report the requested delivery outcome. Without an explicit delivery request, do not inspect transport, send, retry, or report notification state. Any later task can discover the item through overview or status, so never ask the human to relay it or authorize lease revocation merely to reduce notification latency.
 
 ## Result language
 
 Keep the active work as the main topic and lead with the practical outcome:
 
-- After committed proposal creation, say `Saved for later — <concern> is now <proposal-id> at intake position <n>; current work <continues | is blocked by it>.` When the generated item Markdown is confirmed available, make `<proposal-id>` the native clickable item-view link; otherwise keep the persistence receipt accurate without linking an unavailable view.
+- After committed proposal creation, say `Saved for later — <concern> is now <proposal-id> at position <n>; current work <continues | is blocked by it>.` When the generated item Markdown is confirmed available, make `<proposal-id>` the native clickable item-view link; otherwise keep the persistence receipt accurate without linking an unavailable view.
 - For exact prior coverage, say `Saved for later — <concern> was already recorded at <selector and state>; current work <continues | is blocked by it>.` Make the human-facing selector a native clickable link whenever its readable Markdown is confirmed available.
 - When the user explicitly dismisses the concern, say `Not saved — <concern> was dismissed at your request; no follow-up remains.`
 
 The `Saved for later` forms apply only when intake is the terminal action requested. For immediate-start intent, keep the persistence receipt and, only when its readable view is confirmed available, its accepted-definition-summary link subordinate while continuing the same turn. Keep that confirmed link on every later item reference. An unavailable item summary does not undo persistence or stop immediate-start continuation; report the work as started only after the normal Pinboard activation succeeds.
 
-Use `now` only after committed proposal creation; it means this turn before the update. Notification delivery never upgrades persistence into admission or priority. If persistence happened in response to the user's question, say that directly instead of implying the exact concern was present earlier. When delivery is user-requested or materially affects the result, report it after the durable outcome without implying that optional transport changes persistence.
+Use `now` only after committed proposal creation; it means this turn before the update. Notification delivery never upgrades persistence into priority. If persistence happened in response to the user's question, say that directly instead of implying the exact concern was present earlier. When delivery is user-requested or materially affects the result, report it after the durable outcome without implying that optional transport changes persistence.
 
 When proposal creation fails, `not recorded` is an unresolved state, not a terminal receipt. Give one compact formal announcement containing:
 
@@ -118,9 +118,8 @@ When transport detail is material, distinguish these precise lifecycle outcomes:
 - proposal prepared but not persisted;
 - proposal persisted, delivery unavailable;
 - proposal persisted and notification delivered;
-- intake proposal later accepted in place as ready, blocked, deferred, or retained intake;
+- ready proposal later started, blocked, or deferred;
 - proposal later merged into an existing item;
-- proposal returned for evidence;
 - proposal rejected.
 
-Report the latter four only after applying the matching direct project transition.
+Report those later outcomes only after the matching current action or authority operation commits.

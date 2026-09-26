@@ -18,7 +18,6 @@ from pinboard.domain.identifiers import (
     LedgerId,
     ProposalId,
     SubjectId,
-    TaskId,
 )
 
 
@@ -57,15 +56,14 @@ class ActionLifecyclePrecondition(Enum):
     ACTIVE_OR_PAUSED_ATTEMPT_CURRENT_SCOPE = "active-or-paused-attempt-current-scope"
     ACTIVE_OR_REVIEW_ATTEMPT_CURRENT_SCOPE = "active-or-review-attempt-current-scope"
     DEFERRED_ITEM = "deferred-item"
-    INTAKE_ITEM = "intake-item"
-    INTAKE_READY_OR_BLOCKED_UNSTARTED_ITEM = "intake-ready-or-blocked-unstarted-item"
+    UNSTARTED_ITEM = "unstarted-item"
     ITEM_WITHOUT_ATTEMPT = "item-without-attempt"
     NONTERMINAL_ITEM = "nonterminal-item"
     PAUSED_OR_BLOCKED_ITEM_WITHOUT_LIVE_DEPENDENCIES = "paused-or-blocked-item-without-live-dependencies"
     READY_ITEM = "ready-item"
     REVIEW_ATTEMPT = "review-attempt"
     VALID_LEDGER = "valid-ledger"
-    INTAKE_PROPOSAL = "intake-proposal"
+    UNSTARTED_PROPOSAL = "unstarted-proposal"
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +79,6 @@ class ActionSemantics:
 class ActionKind(Enum):
     ACCEPT_CHECKPOINT = "accept-checkpoint"
     ACCEPT_REVIEW_AND_CONTINUE = "accept-review-and-continue"
-    ACCEPT_PROPOSAL = "accept-proposal"
     ACTIVATE = "activate"
     BLOCK = "block"
     BLOCK_ITEM = "block-item"
@@ -91,7 +88,6 @@ class ActionKind(Enum):
     DEFER = "defer"
     DISPATCH = "dispatch"
     INSPECT = "inspect"
-    MARK_READY = "mark-ready"
     MERGE_PROPOSAL = "merge-proposal"
     PAUSE = "pause"
     REJECT_PROPOSAL = "reject-proposal"
@@ -101,7 +97,6 @@ class ActionKind(Enum):
     REPORT_BLOCKER = "report-blocker"
     RESUME = "resume"
     RETURN_FOR_CORRECTION = "return-for-correction"
-    RETURN_PROPOSAL = "return-proposal"
     RETAIN_TEMPORARILY = "retain-temporarily"
     REVISE_ITEM = "revise-item"
     SUBMIT_REVIEW = "submit-review"
@@ -126,15 +121,6 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.REVIEW_ATTEMPT,
                 "Record the accepted review, return the attempt to active, and fence its prior worker authority so remaining accepted work can proceed.",
-            )
-        case ActionKind.ACCEPT_PROPOSAL:
-            return ActionSemantics(
-                "Admit an intake proposal as accepted work.",
-                LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.PROJECT,),
-                ActionSubjectKind.PROPOSAL,
-                ActionLifecyclePrecondition.INTAKE_PROPOSAL,
-                "Record accepted disposition and apply the selected details to its same-identity work item.",
             )
         case ActionKind.ACTIVATE:
             return ActionSemantics(
@@ -165,11 +151,11 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.BLOCK_ITEM:
             return ActionSemantics(
-                "Stop unstarted intake work on dependencies already accepted in its definition.",
+                "Stop unstarted work on dependencies already accepted in its definition.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
-                ActionLifecyclePrecondition.INTAKE_ITEM,
+                ActionLifecyclePrecondition.READY_ITEM,
                 "Move the item to blocked without changing accepted dependencies or creating an attempt.",
             )
         case ActionKind.COMPLETE:
@@ -205,7 +191,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
-                ActionLifecyclePrecondition.INTAKE_READY_OR_BLOCKED_UNSTARTED_ITEM,
+                ActionLifecyclePrecondition.UNSTARTED_ITEM,
                 "Move the item to deferred and retain its reopen condition.",
             )
         case ActionKind.DISPATCH:
@@ -226,23 +212,14 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionLifecyclePrecondition.VALID_LEDGER,
                 "Return current ledger facts without changing shared state.",
             )
-        case ActionKind.MARK_READY:
-            return ActionSemantics(
-                "Admit an intake item to ready work.",
-                LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.PROJECT,),
-                ActionSubjectKind.ITEM,
-                ActionLifecyclePrecondition.INTAKE_ITEM,
-                "Move the item from intake to ready.",
-            )
         case ActionKind.MERGE_PROPOSAL:
             return ActionSemantics(
-                "Merge an intake proposal into an existing work identity.",
+                "Merge an unstarted proposal into an existing work identity.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.PROPOSAL,
-                ActionLifecyclePrecondition.INTAKE_PROPOSAL,
-                "Record merged disposition and supersede its same-identity intake item for the existing target.",
+                ActionLifecyclePrecondition.UNSTARTED_PROPOSAL,
+                "Record merged disposition and supersede its same-identity unstarted item for the existing target.",
             )
         case ActionKind.PAUSE:
             return ActionSemantics(
@@ -255,21 +232,21 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.REJECT_PROPOSAL:
             return ActionSemantics(
-                "Reject an intake proposal.",
+                "Reject an unstarted proposal.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.PROPOSAL,
-                ActionLifecyclePrecondition.INTAKE_PROPOSAL,
-                "Record rejected disposition and drop its same-identity intake item from live work.",
+                ActionLifecyclePrecondition.UNSTARTED_PROPOSAL,
+                "Record rejected disposition and drop its same-identity unstarted item from live work.",
             )
         case ActionKind.REOPEN:
             return ActionSemantics(
-                "Return deferred work for intake reconsideration.",
+                "Return deferred work to ready.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.DEFERRED_ITEM,
-                "Return deferred work to intake.",
+                "Return deferred work to ready.",
             )
         case ActionKind.RECORD_REPLACEMENT:
             return ActionSemantics(
@@ -306,15 +283,6 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.REVIEW_ATTEMPT,
                 "Return the same attempt to active and fence its prior worker authority.",
-            )
-        case ActionKind.RETURN_PROPOSAL:
-            return ActionSemantics(
-                "Return an intake proposal for more evidence or clarification.",
-                LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.PROJECT,),
-                ActionSubjectKind.PROPOSAL,
-                ActionLifecyclePrecondition.INTAKE_PROPOSAL,
-                "Record returned disposition, retain its same-identity intake item, and expose the reason as clarification.",
             )
         case ActionKind.RETAIN_TEMPORARILY:
             return ActionSemantics(
@@ -381,12 +349,6 @@ class AcceptReviewAndContinueAction:
 
 
 @dataclass(frozen=True, slots=True)
-class AcceptProposalAction:
-    capability: MutationActionCapability[ProposalId]
-    kind: ActionKind = field(init=False, default=ActionKind.ACCEPT_PROPOSAL)
-
-
-@dataclass(frozen=True, slots=True)
 class ActivateAction:
     capability: MutationActionCapability[ItemId]
     kind: ActionKind = field(init=False, default=ActionKind.ACTIVATE)
@@ -438,12 +400,6 @@ class DispatchAction:
 class InspectAction:
     capability: ActionCapability[LedgerId] | MutationActionCapability[LedgerId]
     kind: ActionKind = field(init=False, default=ActionKind.INSPECT)
-
-
-@dataclass(frozen=True, slots=True)
-class MarkReadyAction:
-    capability: MutationActionCapability[ItemId]
-    kind: ActionKind = field(init=False, default=ActionKind.MARK_READY)
 
 
 @dataclass(frozen=True, slots=True)
@@ -501,12 +457,6 @@ class ReturnForCorrectionAction:
 
 
 @dataclass(frozen=True, slots=True)
-class ReturnProposalAction:
-    capability: MutationActionCapability[ProposalId]
-    kind: ActionKind = field(init=False, default=ActionKind.RETURN_PROPOSAL)
-
-
-@dataclass(frozen=True, slots=True)
 class RetainTemporarilyAction:
     capability: MutationActionCapability[ItemId]
     kind: ActionKind = field(init=False, default=ActionKind.RETAIN_TEMPORARILY)
@@ -527,14 +477,12 @@ class SubmitReviewAction:
 type LifecycleAction = (
     AcceptCheckpointAction
     | AcceptReviewAndContinueAction
-    | AcceptProposalAction
     | ActivateAction
     | BlockAttemptAction
     | BlockItemAction
     | CompleteAction
     | CloseAction
     | DeferAction
-    | MarkReadyAction
     | MergeProposalAction
     | PauseAction
     | RejectProposalAction
@@ -543,7 +491,6 @@ type LifecycleAction = (
     | RecordReplacementAction
     | ResumeAction
     | ReturnForCorrectionAction
-    | ReturnProposalAction
     | RetainTemporarilyAction
     | ReviseItemAction
     | SubmitReviewAction
@@ -551,14 +498,12 @@ type LifecycleAction = (
 type TransitionAction = LifecycleAction
 type NonCheckpointTransitionAction = (
     AcceptReviewAndContinueAction
-    | AcceptProposalAction
     | ActivateAction
     | BlockAttemptAction
     | BlockItemAction
     | CompleteAction
     | CloseAction
     | DeferAction
-    | MarkReadyAction
     | MergeProposalAction
     | PauseAction
     | RejectProposalAction
@@ -567,7 +512,6 @@ type NonCheckpointTransitionAction = (
     | RecordReplacementAction
     | ResumeAction
     | ReturnForCorrectionAction
-    | ReturnProposalAction
     | RetainTemporarilyAction
     | ReviseItemAction
     | SubmitReviewAction
@@ -667,12 +611,6 @@ class RecordReplacementCommand:
 
 
 @dataclass(frozen=True, slots=True)
-class MarkReadyCommand:
-    action: MarkReadyAction
-    value: work_models.ReasonInput
-
-
-@dataclass(frozen=True, slots=True)
 class BlockItemCommand:
     action: BlockItemAction
     value: work_models.BlockInput
@@ -685,21 +623,9 @@ class DeferCommand:
 
 
 @dataclass(frozen=True, slots=True)
-class AcceptProposalCommand:
-    action: AcceptProposalAction
-    value: work_models.AcceptProposalInput
-
-
-@dataclass(frozen=True, slots=True)
 class MergeProposalCommand:
     action: MergeProposalAction
     value: work_models.MergeProposalInput
-
-
-@dataclass(frozen=True, slots=True)
-class ReturnProposalCommand:
-    action: ReturnProposalAction
-    value: work_models.ReasonInput
 
 
 @dataclass(frozen=True, slots=True)
@@ -734,12 +660,9 @@ type TransitionCommand = (
     | ReturnForCorrectionCommand
     | ReopenCommand
     | RecordReplacementCommand
-    | MarkReadyCommand
     | BlockItemCommand
     | DeferCommand
-    | AcceptProposalCommand
     | MergeProposalCommand
-    | ReturnProposalCommand
     | RetainTemporarilyCommand
     | ReviseItemCommand
     | RejectProposalCommand
@@ -758,12 +681,9 @@ type NonCheckpointTransitionCommand = (
     | ReturnForCorrectionCommand
     | ReopenCommand
     | RecordReplacementCommand
-    | MarkReadyCommand
     | BlockItemCommand
     | DeferCommand
-    | AcceptProposalCommand
     | MergeProposalCommand
-    | ReturnProposalCommand
     | RetainTemporarilyCommand
     | ReviseItemCommand
     | RejectProposalCommand
@@ -918,40 +838,11 @@ class ItemClosureChange:
 
 
 @dataclass(frozen=True, slots=True)
-class AcceptedProposalItem:
-    item: ItemId
-    state: work_models.AcceptedProposalState
-    timing: work_models.Timing | None
-    next_action: str
-    dependencies: tuple[ItemId, ...]
-    source: str
-    notes: str
-    definition_revision: int
-    definition_digest_before: str
-    definition_digest_after: str
-    definition: work_models.WorkItemDefinition
-    definition_source_task: TaskId
-
-
-@dataclass(frozen=True, slots=True)
-class AcceptedProposalChange:
-    proposal: ProposalId
-    disposed_at: datetime
-    accepted_item: AcceptedProposalItem
-
-
-@dataclass(frozen=True, slots=True)
 class MergedProposalChange:
     proposal: ProposalId
     target_item: ItemId
     disposed_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class ReturnedProposalChange:
-    proposal: ProposalId
-    reason: str
-    disposed_at: datetime
+    item_before: work_models.WorkState
 
 
 @dataclass(frozen=True, slots=True)
@@ -959,6 +850,7 @@ class RejectedProposalChange:
     proposal: ProposalId
     reason: str
     disposed_at: datetime
+    item_before: work_models.WorkState
 
 
 @dataclass(frozen=True, slots=True)
@@ -1008,9 +900,7 @@ type NonCheckpointDecisionChange = (
     | ReviewAcceptanceChange
     | CompletionChange
     | ItemClosureChange
-    | AcceptedProposalChange
     | MergedProposalChange
-    | ReturnedProposalChange
     | RejectedProposalChange
     | PlannedReplacementChange
     | ReplacementDispositionChange

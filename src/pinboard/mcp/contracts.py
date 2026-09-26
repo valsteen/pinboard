@@ -581,9 +581,6 @@ type AcceptCheckpointTransitionRequest = ProjectTransitionRequest[
 type AcceptReviewAndContinueTransitionRequest = ProjectTransitionRequest[
     Literal["accept-review-and-continue"], action_models.AcceptReviewAndContinueInputPayload
 ]
-type AcceptProposalTransitionRequest = ProjectTransitionRequest[
-    Literal["accept-proposal"], action_models.AcceptProposalInputPayload
-]
 type ActivateTransitionRequest = PreparerTransitionRequest[Literal["activate"], action_models.ActivateInputPayload]
 type BlockTransitionRequest = ProjectTransitionRequest[Literal["block"], action_models.BlockInputPayload]
 type BlockItemTransitionRequest = ProjectTransitionRequest[Literal["block-item"], action_models.BlockInputPayload]
@@ -596,7 +593,6 @@ type ReviewedCompleteTransitionRequest = ProjectTransitionRequest[
 ]
 type CloseTransitionRequest = ProjectTransitionRequest[Literal["close"], action_models.CloseInputPayload]
 type DeferTransitionRequest = ProjectTransitionRequest[Literal["defer"], action_models.DeferInputPayload]
-type MarkReadyTransitionRequest = ProjectTransitionRequest[Literal["mark-ready"], action_models.ReasonInputPayload]
 type MergeProposalTransitionRequest = ProjectTransitionRequest[
     Literal["merge-proposal"], action_models.MergeProposalInputPayload
 ]
@@ -615,9 +611,6 @@ type ResumeTransitionRequest = ProjectTransitionRequest[Literal["resume"], actio
 type ReturnForCorrectionTransitionRequest = ProjectTransitionRequest[
     Literal["return-for-correction"], action_models.ReasonInputPayload
 ]
-type ReturnProposalTransitionRequest = ProjectTransitionRequest[
-    Literal["return-proposal"], action_models.ReasonInputPayload
-]
 type RetainTemporarilyTransitionRequest = ProjectTransitionRequest[
     Literal["retain-temporarily"], action_models.RetainTemporarilyInputPayload
 ]
@@ -631,7 +624,6 @@ type SubmitReviewTransitionRequest = WorkerTransitionRequest[
 type TransitionRequest = (
     AcceptCheckpointTransitionRequest
     | AcceptReviewAndContinueTransitionRequest
-    | AcceptProposalTransitionRequest
     | ActivateTransitionRequest
     | BlockTransitionRequest
     | BlockItemTransitionRequest
@@ -640,7 +632,6 @@ type TransitionRequest = (
     | ReviewedCompleteTransitionRequest
     | CloseTransitionRequest
     | DeferTransitionRequest
-    | MarkReadyTransitionRequest
     | MergeProposalTransitionRequest
     | PauseTransitionRequest
     | RejectProposalTransitionRequest
@@ -649,7 +640,6 @@ type TransitionRequest = (
     | RebindAttemptTransitionRequest
     | ResumeTransitionRequest
     | ReturnForCorrectionTransitionRequest
-    | ReturnProposalTransitionRequest
     | RetainTemporarilyTransitionRequest
     | ReviseItemTransitionRequest
     | SubmitReviewTransitionRequest
@@ -682,10 +672,6 @@ def decode_transition_request(raw: dict[str, JsonValue]) -> TransitionRequest:  
             request = msgspec.convert(
                 raw, type=TransitionEnvelope[AcceptReviewAndContinueTransitionRequest], strict=True
             ).request
-        case "accept-proposal":
-            request = msgspec.convert(
-                raw, type=TransitionEnvelope[AcceptProposalTransitionRequest], strict=True
-            ).request
         case "activate":
             request = msgspec.convert(raw, type=TransitionEnvelope[ActivateTransitionRequest], strict=True).request
         case "block":
@@ -711,8 +697,6 @@ def decode_transition_request(raw: dict[str, JsonValue]) -> TransitionRequest:  
             request = msgspec.convert(raw, type=TransitionEnvelope[CloseTransitionRequest], strict=True).request
         case "defer":
             request = msgspec.convert(raw, type=TransitionEnvelope[DeferTransitionRequest], strict=True).request
-        case "mark-ready":
-            request = msgspec.convert(raw, type=TransitionEnvelope[MarkReadyTransitionRequest], strict=True).request
         case "merge-proposal":
             request = msgspec.convert(raw, type=TransitionEnvelope[MergeProposalTransitionRequest], strict=True).request
         case "pause":
@@ -735,10 +719,6 @@ def decode_transition_request(raw: dict[str, JsonValue]) -> TransitionRequest:  
             request = msgspec.convert(
                 raw, type=TransitionEnvelope[ReturnForCorrectionTransitionRequest], strict=True
             ).request
-        case "return-proposal":
-            request = msgspec.convert(
-                raw, type=TransitionEnvelope[ReturnProposalTransitionRequest], strict=True
-            ).request
         case "retain-temporarily":
             request = msgspec.convert(
                 raw, type=TransitionEnvelope[RetainTemporarilyTransitionRequest], strict=True
@@ -755,7 +735,6 @@ def decode_transition_request(raw: dict[str, JsonValue]) -> TransitionRequest:  
 TRANSITION_REQUEST_TYPES: tuple[Any, ...] = (
     AcceptCheckpointTransitionRequest,
     AcceptReviewAndContinueTransitionRequest,
-    AcceptProposalTransitionRequest,
     ActivateTransitionRequest,
     BlockTransitionRequest,
     BlockItemTransitionRequest,
@@ -763,7 +742,6 @@ TRANSITION_REQUEST_TYPES: tuple[Any, ...] = (
     CoveredCompleteTransitionRequest,
     CloseTransitionRequest,
     DeferTransitionRequest,
-    MarkReadyTransitionRequest,
     MergeProposalTransitionRequest,
     PauseTransitionRequest,
     RejectProposalTransitionRequest,
@@ -772,7 +750,6 @@ TRANSITION_REQUEST_TYPES: tuple[Any, ...] = (
     RebindAttemptTransitionRequest,
     ResumeTransitionRequest,
     ReturnForCorrectionTransitionRequest,
-    ReturnProposalTransitionRequest,
     RetainTemporarilyTransitionRequest,
     ReviseItemTransitionRequest,
     SubmitReviewTransitionRequest,
@@ -1585,13 +1562,11 @@ def _committed_transition_surfaces(kind: decision_models.ActionKind) -> tuple[tu
             )
         case (
             decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
-            | decision_models.ActionKind.ACCEPT_PROPOSAL
             | decision_models.ActionKind.ACTIVATE
             | decision_models.ActionKind.BLOCK
             | decision_models.ActionKind.BLOCK_ITEM
             | decision_models.ActionKind.CLOSE
             | decision_models.ActionKind.DEFER
-            | decision_models.ActionKind.MARK_READY
             | decision_models.ActionKind.MERGE_PROPOSAL
             | decision_models.ActionKind.PAUSE
             | decision_models.ActionKind.REJECT_PROPOSAL
@@ -1600,7 +1575,6 @@ def _committed_transition_surfaces(kind: decision_models.ActionKind) -> tuple[tu
             | decision_models.ActionKind.REBIND_ATTEMPT
             | decision_models.ActionKind.RESUME
             | decision_models.ActionKind.RETURN_FOR_CORRECTION
-            | decision_models.ActionKind.RETURN_PROPOSAL
             | decision_models.ActionKind.RETAIN_TEMPORARILY
             | decision_models.ActionKind.REVISE_ITEM
         ):
@@ -1808,11 +1782,11 @@ class AttemptAuthorityRejected(_UnchangedResult, msgspec.Struct, frozen=True, fo
 
 
 class ProposalCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-proposal-result/v1"]
+    schema: Literal["pinboard-mcp-proposal-result/v2"]
     status: Literal["committed"]
     proposal_id: proposal_models.ProposalIdentity
     position: PositiveInt
-    item_state: Literal["intake"]
+    item_state: Literal["ready"]
     committed_revision: PositiveInt
     history_id: PositiveInt
     state_changed: bool
@@ -1824,11 +1798,11 @@ class ProposalCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unkn
 
 
 class ProposalCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-proposal-result/v1"]
+    schema: Literal["pinboard-mcp-proposal-result/v2"]
     status: Literal["committed-with-warning"]
     proposal_id: proposal_models.ProposalIdentity
     position: PositiveInt
-    item_state: Literal["intake"]
+    item_state: Literal["ready"]
     committed_revision: PositiveInt
     history_id: PositiveInt
     state_changed: bool
@@ -1840,7 +1814,7 @@ class ProposalCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=True, 
 
 
 class ProposalRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-proposal-result/v1"]
+    schema: Literal["pinboard-mcp-proposal-result/v2"]
     status: Literal["rejected"]
     code: Literal[
         "PROPOSAL_INVALID",
@@ -1860,7 +1834,7 @@ class ProposalRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unk
 
 
 class ProposalDuplicate(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-proposal-result/v1"]
+    schema: Literal["pinboard-mcp-proposal-result/v2"]
     status: Literal["rejected"]
     code: Literal["PROPOSAL_ALREADY_EXISTS"]
     message: NonEmptyText

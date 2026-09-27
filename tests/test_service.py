@@ -40,10 +40,10 @@ from pinboard.domain.identifiers import (
     CandidateId,
     CheckpointId,
     HostId,
-    ItemId,
     LeaseId,
     ProposalId,
     TaskId,
+    WorkItemId,
 )
 from pinboard.domain.proposal_models import (
     CreateProposalOperation,
@@ -191,17 +191,17 @@ class ServiceTest(unittest.TestCase):
                 state.lifecycle,
                 work_items=tuple(
                     replace(value, state=stored_state.StoredWorkItemState.PAUSED)
-                    if value.item_id == ItemId("work-a")
+                    if value.item_id == WorkItemId("work-a")
                     else value
                     for value in state.lifecycle.work_items
                 ),
                 dependencies=tuple(
-                    value for value in state.lifecycle.dependencies if value.item_id != ItemId("work-a")
+                    value for value in state.lifecycle.dependencies if value.item_id != WorkItemId("work-a")
                 ),
                 attempts=(replace(state.lifecycle.attempts[0], state=work_models.AttemptState.PAUSED),),
             ),
         )
-        state = with_definition_dependencies(state, ItemId("work-a"), ())
+        state = with_definition_dependencies(state, WorkItemId("work-a"), ())
         store, _database = self._store_with_state(state)
         action = self._project_action(store, decision_models.ResumeAction)
         command = non_checkpoint_command(
@@ -216,7 +216,7 @@ class ServiceTest(unittest.TestCase):
             next(
                 value.digest
                 for value in state.lifecycle.definition_revisions
-                if value.item_id == ItemId("work-a") and value.revision == 1
+                if value.item_id == WorkItemId("work-a") and value.revision == 1
             ),
         )
         mismatches = (
@@ -250,7 +250,7 @@ class ServiceTest(unittest.TestCase):
             with self.subTest(item_state=item_state):
                 state = complete_sqlite_state()
                 accepted_definition = next(
-                    value for value in state.lifecycle.definition_revisions if value.item_id == ItemId("work-a")
+                    value for value in state.lifecycle.definition_revisions if value.item_id == WorkItemId("work-a")
                 )
                 current_definition_value = replace(
                     accepted_definition.definition,
@@ -292,7 +292,7 @@ class ServiceTest(unittest.TestCase):
                     lifecycle=replace(
                         state.lifecycle,
                         work_items=tuple(
-                            replace(value, state=item_state) if value.item_id == ItemId("work-a") else value
+                            replace(value, state=item_state) if value.item_id == WorkItemId("work-a") else value
                             for value in state.lifecycle.work_items
                         ),
                         attempts=(replace(current_attempt, state=attempt_state),),
@@ -306,7 +306,6 @@ class ServiceTest(unittest.TestCase):
                     decision_models.RebindAttemptCommand(
                         action,
                         work_models.RebindAttemptInput(
-                            AttemptId("work-a-1"),
                             "codex/corrected-work-a",
                             "corrected-base",
                             replacement.artifact_ref_id,
@@ -422,7 +421,7 @@ class ServiceTest(unittest.TestCase):
     def test_positive_item_state_variants_reload_from_fresh_stores(self) -> None:
         for action_type, initial, payload, expected in (
             (
-                decision_models.BlockItemAction,
+                decision_models.BlockWorkItemAction,
                 stored_state.StoredWorkItemState.READY,
                 b'{"reason":"The intake awaits a dependency."}',
                 stored_state.StoredWorkItemState.BLOCKED,
@@ -442,7 +441,7 @@ class ServiceTest(unittest.TestCase):
                     lifecycle=replace(
                         lifecycle,
                         work_items=tuple(
-                            replace(value, state=initial) if value.item_id == ItemId("intake-work") else value
+                            replace(value, state=initial) if value.item_id == WorkItemId("intake-work") else value
                             for value in lifecycle.work_items
                         ),
                     ),
@@ -461,7 +460,9 @@ class ServiceTest(unittest.TestCase):
 
                 self.assertNotIsInstance(result, DecisionFailure)
                 reloaded = SQLiteWorkStore(database_path).validated_snapshot()
-                item = next(value for value in reloaded.lifecycle.work_items if value.item_id == ItemId("intake-work"))
+                item = next(
+                    value for value in reloaded.lifecycle.work_items if value.item_id == WorkItemId("intake-work")
+                )
                 self.assertEqual(expected, item.state)
 
     def test_positive_attempt_state_variants_reload_from_fresh_stores(self) -> None:
@@ -489,7 +490,7 @@ class ServiceTest(unittest.TestCase):
 
                 self.assertNotIsInstance(result, DecisionFailure)
                 reloaded = SQLiteWorkStore(database_path).validated_snapshot()
-                item = next(value for value in reloaded.lifecycle.work_items if value.item_id == ItemId("work-a"))
+                item = next(value for value in reloaded.lifecycle.work_items if value.item_id == WorkItemId("work-a"))
                 attempt = next(
                     value for value in reloaded.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1")
                 )
@@ -678,7 +679,7 @@ class ServiceTest(unittest.TestCase):
 
         self.assertNotIsInstance(accepted, DecisionFailure)
         reloaded = SQLiteWorkStore(database_path).validated_snapshot()
-        item = next(value for value in reloaded.lifecycle.work_items if value.item_id == ItemId("work-a"))
+        item = next(value for value in reloaded.lifecycle.work_items if value.item_id == WorkItemId("work-a"))
         attempt = next(value for value in reloaded.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
         authority = reloaded.authority.attempt_leases[0]
         self.assertEqual(stored_state.StoredWorkItemState.PAUSED, item.state)
@@ -750,7 +751,7 @@ class ServiceTest(unittest.TestCase):
 
         self.assertNotIsInstance(accepted, DecisionFailure)
         reloaded = SQLiteWorkStore(database_path).validated_snapshot()
-        item = next(value for value in reloaded.lifecycle.work_items if value.item_id == ItemId("work-a"))
+        item = next(value for value in reloaded.lifecycle.work_items if value.item_id == WorkItemId("work-a"))
         attempt = next(value for value in reloaded.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
         authority = reloaded.authority.attempt_leases[0]
         self.assertEqual(stored_state.StoredWorkItemState.ACTIVE, item.state)
@@ -777,7 +778,7 @@ class ServiceTest(unittest.TestCase):
                 lifecycle,
                 work_items=tuple(
                     replace(value, state=stored_state.StoredWorkItemState.PAUSED)
-                    if value.item_id == ItemId("work-a")
+                    if value.item_id == WorkItemId("work-a")
                     else value
                     for value in lifecycle.work_items
                 ),
@@ -792,7 +793,7 @@ class ServiceTest(unittest.TestCase):
         store, database_path = self._store_with_state(state)
         close = non_checkpoint_command(
             decision_models.CloseCommand(
-                action(decision_models.CloseAction, ItemId("work-a")),
+                action(decision_models.CloseAction, WorkItemId("work-a")),
                 work_models.CloseInput(work_models.CloseOutcome.DROPPED, "The retained attempt is no longer needed."),
             )
         )
@@ -804,7 +805,7 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(DecisionFailureCode.ACTION_NOT_AVAILABLE, closed.code)
         self.assertEqual("Action 'close:work-a' is no longer legal.", closed.message)
         reloaded = SQLiteWorkStore(database_path).validated_snapshot()
-        item = next(value for value in reloaded.lifecycle.work_items if value.item_id == ItemId("work-a"))
+        item = next(value for value in reloaded.lifecycle.work_items if value.item_id == WorkItemId("work-a"))
         attempt = next(value for value in reloaded.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
         authority = reloaded.authority.attempt_leases[0]
         self.assertEqual(stored_state.StoredWorkItemState.PAUSED, item.state)
@@ -990,11 +991,13 @@ class ServiceTest(unittest.TestCase):
         )
         self.assertEqual(("source:local",), tuple(value.selector for value in after.proposals.evidence))
         proposal = after.proposals.proposals[0]
-        ready_item = next(value for value in after.lifecycle.work_items if value.item_id == ItemId("sqlite-proposal"))
+        ready_item = next(
+            value for value in after.lifecycle.work_items if value.item_id == WorkItemId("sqlite-proposal")
+        )
         intake_definition = next(
             value.definition
             for value in after.lifecycle.definition_revisions
-            if value.item_id == ItemId("sqlite-proposal")
+            if value.item_id == WorkItemId("sqlite-proposal")
         )
         self.assertEqual(stored_state.StoredWorkItemState.READY, ready_item.state)
         self.assertEqual(5, ready_item.queue_position)
@@ -1025,7 +1028,7 @@ class ServiceTest(unittest.TestCase):
             "The dependency must be in intake before scheduling.",
             "Record the prerequisite candidate and relationship.",
             "A task can evaluate it in queue order.",
-            work_models.PrerequisiteProposalRelation(ItemId("work-c")),
+            work_models.PrerequisiteProposalRelation(WorkItemId("work-c")),
             "The relationship is current.",
             ("source:local",),
             ("Work C remains live.",),
@@ -1060,13 +1063,15 @@ class ServiceTest(unittest.TestCase):
             positions,
         )
         target_definitions = tuple(
-            value for value in after.lifecycle.definition_revisions if value.item_id == ItemId("work-c")
+            value for value in after.lifecycle.definition_revisions if value.item_id == WorkItemId("work-c")
         )
         self.assertEqual(2, len(target_definitions))
         self.assertEqual(target_definitions[0].revision + 1, target_definitions[1].revision)
         self.assertIn(
-            ItemId("required-first"),
-            tuple(value.dependency_id for value in after.lifecycle.dependencies if value.item_id == ItemId("work-c")),
+            WorkItemId("required-first"),
+            tuple(
+                value.dependency_id for value in after.lifecycle.dependencies if value.item_id == WorkItemId("work-c")
+            ),
         )
         self.assertEqual(before.authority, after.authority)
 
@@ -1085,7 +1090,7 @@ class ServiceTest(unittest.TestCase):
             "Create the replacement item and stop obsolete work on Work C.",
             "The replacement can be evaluated without losing the relationship.",
             work_models.PlannedReplacementProposalRelation(
-                ItemId("work-c"), "Discard any Work C implementation already in progress."
+                WorkItemId("work-c"), "Discard any Work C implementation already in progress."
             ),
             "The replacement decision is current.",
             ("source:accepted-design",),
@@ -1106,12 +1111,12 @@ class ServiceTest(unittest.TestCase):
         reopened = SQLiteWorkStore(database_path).validated_snapshot()
         self.assertEqual(1, len(reopened.replacements.planned_replacements))
         relation = reopened.replacements.planned_replacements[0]
-        self.assertEqual(ItemId("work-c"), relation.affected_item_id)
-        self.assertEqual(ItemId("replacement-work"), relation.replacement_item_id)
+        self.assertEqual(WorkItemId("work-c"), relation.affected_item_id)
+        self.assertEqual(WorkItemId("replacement-work"), relation.replacement_item_id)
         self.assertEqual(1, relation.relation_revision)
         self.assertEqual(work_models.PlannedReplacementStatus.CURRENT, relation.status)
-        affected_before = next(value for value in before.lifecycle.work_items if value.item_id == ItemId("work-c"))
-        affected_after = next(value for value in reopened.lifecycle.work_items if value.item_id == ItemId("work-c"))
+        affected_before = next(value for value in before.lifecycle.work_items if value.item_id == WorkItemId("work-c"))
+        affected_after = next(value for value in reopened.lifecycle.work_items if value.item_id == WorkItemId("work-c"))
         self.assertEqual(affected_before.state, affected_after.state)
         self.assertGreater(affected_after.subject_revision, affected_before.subject_revision)
 
@@ -1162,7 +1167,7 @@ class ServiceTest(unittest.TestCase):
             "Storage must not be the first validator.",
             "The proposal is rejected without mutation.",
             "Return a typed item rejection.",
-            work_models.FollowUpProposalRelation(ItemId("does-not-exist")),
+            work_models.FollowUpProposalRelation(WorkItemId("does-not-exist")),
             "The related item is absent.",
             (),
             (),
@@ -1187,7 +1192,7 @@ class ServiceTest(unittest.TestCase):
         merge_store = self._store()
         merge = self._project_action(merge_store, decision_models.MergeProposalAction)
         merge_command = non_checkpoint_command(
-            decision_models.MergeProposalCommand(merge, work_models.MergeProposalInput(ItemId("missing-target")))
+            decision_models.MergeProposalCommand(merge, work_models.MergeProposalInput(WorkItemId("missing-target")))
         )
         before = merge_store.validated_snapshot()
         merge_rejected = self._commit_transition(merge_store, merge_command, SQLITE_NOW + timedelta(seconds=1))

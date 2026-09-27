@@ -6,15 +6,15 @@ from typing import Annotated, Literal
 import msgspec
 
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import ItemId
+from pinboard.domain.identifiers import WorkItemId
 
-type OrderItemId = Annotated[ItemId, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
+type OrderWorkItemId = Annotated[WorkItemId, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
 
 
 class OrderRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-live-order/v1"]
-    expected_order: tuple[OrderItemId, ...]
-    requested_order: tuple[OrderItemId, ...]
+    expected_order: tuple[OrderWorkItemId, ...]
+    requested_order: tuple[OrderWorkItemId, ...]
 
     def __post_init__(self) -> None:
         for values in (self.expected_order, self.requested_order):
@@ -24,11 +24,11 @@ class OrderRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 @dataclass(frozen=True, slots=True)
 class OrderChange:
-    before: tuple[ItemId, ...]
-    after: tuple[ItemId, ...]
+    before: tuple[WorkItemId, ...]
+    after: tuple[WorkItemId, ...]
 
     @property
-    def changed_positions(self) -> tuple[tuple[int, ItemId], ...]:
+    def changed_positions(self) -> tuple[tuple[int, WorkItemId], ...]:
         return tuple(
             (position, item)
             for position, (before, item) in enumerate(zip(self.before, self.after, strict=True), 1)
@@ -37,7 +37,7 @@ class OrderChange:
 
 
 def decide_order(
-    current: tuple[ItemId, ...], expected: tuple[ItemId, ...], requested: tuple[ItemId, ...]
+    current: tuple[WorkItemId, ...], expected: tuple[WorkItemId, ...], requested: tuple[WorkItemId, ...]
 ) -> DecisionResult[OrderChange]:
     if current != expected:
         return DecisionFailure(

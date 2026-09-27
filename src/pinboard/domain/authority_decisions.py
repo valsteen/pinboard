@@ -4,14 +4,14 @@ from typing import assert_never
 
 from pinboard.domain import authority_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import AttemptId, ItemId
+from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
 def _attempt_token(value: authority_models.AttemptLeaseAuthority) -> work_models.CommandAttemptAuthority:
     return work_models.CommandAttemptAuthority(
         host_epoch=value.host_epoch,
-        item=value.item,
+        work_item_id=value.work_item_id,
         item_subject_revision="",
         attempt=value.attempt,
         attempt_subject_revision="",
@@ -29,7 +29,7 @@ def _same_attempt_token(
     token = _attempt_token(retained)
     return (
         token.host_epoch,
-        token.item,
+        token.work_item_id,
         token.attempt,
         token.task_id,
         token.host_id,
@@ -38,7 +38,7 @@ def _same_attempt_token(
         token.expires_at,
     ) == (
         supplied.host_epoch,
-        supplied.item,
+        supplied.work_item_id,
         supplied.attempt,
         supplied.task_id,
         supplied.host_id,
@@ -53,15 +53,15 @@ def decide_attempt_authority(  # noqa: C901, PLR0912
     counter: int,
     operation: authority_models.AttemptAuthorityOperation,
     *,
-    live_attempt: tuple[AttemptId, ItemId] | None = None,
-    transferable_attempt: tuple[AttemptId, ItemId] | None = None,
+    live_attempt: tuple[AttemptId, WorkItemId] | None = None,
+    transferable_attempt: tuple[AttemptId, WorkItemId] | None = None,
     project_host_epoch: int | None = None,
 ) -> DecisionResult[authority_models.AttemptAuthorityDecision]:
     match operation:
         case authority_models.AcquireInitialAttemptAuthority(
             host_epoch=host_epoch,
             attempt=attempt,
-            item=item,
+            work_item_id=item,
             task_id=task_id,
             host_id=host_id,
             lease_id=lease_id,
@@ -90,7 +90,7 @@ def decide_attempt_authority(  # noqa: C901, PLR0912
             proposed_replacement = authority_models.AttemptLeaseAuthority(
                 host_epoch=host_epoch,
                 attempt=attempt,
-                item=item,
+                work_item_id=item,
                 task_id=task_id,
                 host_id=host_id,
                 lease_id=lease_id,
@@ -114,7 +114,7 @@ def decide_attempt_authority(  # noqa: C901, PLR0912
             acquired_at=acquired_at,
             expires_at=expires_at,
         ):
-            if retained is None or transferable_attempt != (retained.attempt, retained.item):
+            if retained is None or transferable_attempt != (retained.attempt, retained.work_item_id):
                 return DecisionFailure(
                     DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
                     "Attempt transfer requires the exact retained nonterminal attempt.",
@@ -246,7 +246,7 @@ def _validate_attempt_transfer(
     expected = authority_models.InactiveAttemptAuthority(
         host_epoch=retained.host_epoch,
         attempt=retained.attempt,
-        item=retained.item,
+        work_item_id=retained.work_item_id,
         task_id=retained.task_id,
         host_id=retained.host_id,
         lease_id=retained.lease_id,
@@ -262,7 +262,7 @@ def _validate_attempt_transfer(
 def _preparation_token(value: authority_models.PreparationLeaseAuthority) -> work_models.PreparationCommandAuthority:
     return work_models.PreparationCommandAuthority(
         host_epoch=value.host_epoch,
-        item=value.item,
+        work_item_id=value.work_item_id,
         definition_revision=value.definition_revision,
         definition_digest=value.definition_digest,
         task_id=value.task_id,
@@ -303,7 +303,7 @@ def _validate_preparation_transfer(
     )
     expected = authority_models.InactivePreparationAuthority(
         host_epoch=retained.host_epoch,
-        item=retained.item,
+        work_item_id=retained.work_item_id,
         definition_revision=retained.definition_revision,
         definition_digest=retained.definition_digest,
         task_id=retained.task_id,
@@ -336,7 +336,7 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
     match operation:
         case authority_models.AcquireInitialPreparationAuthority(
             host_epoch=host_epoch,
-            item=item,
+            work_item_id=item,
             expected_project_revision=expected_project_revision,
             expected_item_subject_revision=expected_item_subject_revision,
             expected_definition_revision=expected_definition_revision,
@@ -351,7 +351,7 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation requires ledger state.", None
                 )
-            item_value = snapshot.item(item)
+            item_value = snapshot.work_item(item)
             definition = snapshot.definition(item)
             if snapshot.host_epoch != host_epoch:
                 return DecisionFailure(
@@ -381,7 +381,7 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                     f"Item '{item}' has an unresolved planned replacement.",
                     None,
                 )
-            if any(dependency in snapshot.items_by_id() for dependency in item_value.depends_on):
+            if any(dependency in snapshot.work_items_by_id() for dependency in item_value.depends_on):
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
                     f"Item '{item}' has live dependencies.",
@@ -417,7 +417,7 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                 )
             proposed_replacement = authority_models.PreparationLeaseAuthority(
                 host_epoch=host_epoch,
-                item=item,
+                work_item_id=item,
                 definition_revision=definition.revision,
                 definition_digest=definition.digest,
                 task_id=task_id,
@@ -429,7 +429,7 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                 state=authority_models.PreparationLeaseStatus.ACTIVE,
             )
             return authority_models.PreparationAuthorityDecision(
-                item=item,
+                work_item_id=item,
                 counter_before=0,
                 counter_after=1,
                 expected_retained=None,
@@ -449,20 +449,20 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                 )
             if (failure := _validate_preparation_transfer(retained, current, now)) is not None:
                 return failure
-            item_value = snapshot.item(retained.item)
-            definition = snapshot.definition(retained.item)
+            item_value = snapshot.work_item(retained.work_item_id)
+            definition = snapshot.definition(retained.work_item_id)
             if item_value is not None and item_value.state == work_models.WorkState.PAUSED:
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
-                    f"Item '{retained.item}' is paused, not ready for preparation. Continue its existing attempt: "
+                    f"Item '{retained.work_item_id}' is paused, not ready for preparation. Continue its existing attempt: "
                     "replace and rebind the brief first if scope or Git lineage changed, then resume when available.",
                     None,
                 )
             if (
                 item_value is None
                 or item_value.state != work_models.WorkState.READY
-                or snapshot.unresolved_replacement(retained.item) is not None
-                or any(dependency in snapshot.items_by_id() for dependency in item_value.depends_on)
+                or snapshot.unresolved_replacement(retained.work_item_id) is not None
+                or any(dependency in snapshot.work_items_by_id() for dependency in item_value.depends_on)
                 or definition is None
                 or expires_at <= acquired_at
             ):
@@ -482,7 +482,7 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                 state=authority_models.PreparationLeaseStatus.ACTIVE,
             )
             return authority_models.PreparationAuthorityDecision(
-                item=retained.item,
+                work_item_id=retained.work_item_id,
                 counter_before=counter,
                 counter_after=counter + 1,
                 expected_retained=retained,
@@ -499,7 +499,7 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                     None,
                 )
             return authority_models.PreparationAuthorityDecision(
-                item=retained.item,
+                work_item_id=retained.work_item_id,
                 counter_before=counter,
                 counter_after=counter,
                 expected_retained=retained,
@@ -510,7 +510,7 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                 return failure
             assert retained is not None
             return authority_models.PreparationAuthorityDecision(
-                item=retained.item,
+                work_item_id=retained.work_item_id,
                 counter_before=counter,
                 counter_after=counter + 1,
                 expected_retained=retained,
@@ -522,7 +522,7 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                 ),
             )
         case authority_models.RevokePreparationAuthority(
-            item=item,
+            work_item_id=item,
             lease_id=lease_id,
             generation=generation,
             revoked_at=revoked_at,
@@ -531,14 +531,14 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation revocation is unavailable.", None
                 )
-            if retained is None or (retained.item, retained.lease_id, retained.generation) != (
+            if retained is None or (retained.work_item_id, retained.lease_id, retained.generation) != (
                 item,
                 lease_id,
                 generation,
             ):
                 return DecisionFailure(DecisionFailureCode.LEASE_FENCED, "Preparation authority is fenced.", None)
             return authority_models.PreparationAuthorityDecision(
-                item=item,
+                work_item_id=item,
                 counter_before=counter,
                 counter_after=counter + 1,
                 expected_retained=retained,

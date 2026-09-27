@@ -571,17 +571,17 @@ def _project_proposal_relation(value: stored_state.StoredProposal) -> ProjectExp
     match value.relation:
         case work_models.IndependentProposalRelation():
             return IndependentProposalRelation(proposal_id)
-        case work_models.PrerequisiteProposalRelation(item=item):
+        case work_models.PrerequisiteProposalRelation(work_item_id=item):
             return PrerequisiteProposalRelation(proposal_id, str(item))
-        case work_models.FollowUpProposalRelation(item=item):
+        case work_models.FollowUpProposalRelation(work_item_id=item):
             return FollowUpProposalRelation(proposal_id, str(item))
-        case work_models.DuplicateProposalRelation(item=item):
+        case work_models.DuplicateProposalRelation(work_item_id=item):
             return DuplicateProposalRelation(proposal_id, str(item))
-        case work_models.ContradictionProposalRelation(item=item):
+        case work_models.ContradictionProposalRelation(work_item_id=item):
             return ContradictionProposalRelation(proposal_id, str(item))
         case work_models.ClarificationProposalRelation():
             return ClarificationProposalRelation(proposal_id)
-        case work_models.PlannedReplacementProposalRelation(item=item, replacement_cost=cost):
+        case work_models.PlannedReplacementProposalRelation(work_item_id=item, replacement_cost=cost):
             return PlannedReplacementProposalRelation(proposal_id, str(item), cost)
         case _ as unreachable:
             assert_never(unreachable)

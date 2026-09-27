@@ -30,7 +30,6 @@ class ResumeInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True
 
 
 class RebindAttemptInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    attempt: Identity
     branch: NonEmptyLine
     base_revision: NonEmptyLine
     brief_artifact_ref_id: Annotated[int, msgspec.Meta(ge=1)]
@@ -110,21 +109,15 @@ class AcceptReviewAndContinueInputPayload(msgspec.Struct, frozen=True, forbid_un
 
 class RecordPlannedReplacementInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-planned-replacement/v1"]
-    affected_item: Identity
     expected_relation_revision: Annotated[int, msgspec.Meta(ge=0)]
     replacement_item: Identity
     replacement_cost: NonEmptyLine
     status: work_models.PlannedReplacementStatus
     recorded_by: NonEmptyLine
 
-    def __post_init__(self) -> None:
-        if self.affected_item == self.replacement_item:
-            raise ValueError("replacement_item must differ from affected_item")
-
 
 class RetainTemporarilyInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-replacement-disposition/v1"]
-    affected_item: Identity
     relation_revision: PositiveInt
     rationale: NonEmptyLine
     accepted_cost: NonEmptyLine
@@ -147,7 +140,6 @@ class MergeProposalInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fiel
 
 class ReviseItemInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-revision/v1"]
-    item_id: Identity
     expected_revision: PositiveInt
     expected_digest: Sha256
     source_task: NonEmptyLine
@@ -306,9 +298,7 @@ class CompletionInputContractView(InputContractView, frozen=True, forbid_unknown
 
 
 def _validate_action_view(
-    action_id: str,
     kind: decision_models.ActionKind,
-    subject: str,
     subject_revision: str | None,
     authorization: str,
     lease_id: str | None,
@@ -316,8 +306,6 @@ def _validate_action_view(
     semantics: ActionSemanticsView,
     input_contract: InputContractView | None,
 ) -> None:
-    if action_id != f"{kind.value}:{subject}":
-        raise ValueError("action_id must match the action kind and subject")
     expected = decision_models.action_semantics(kind)
     if semantics != ActionSemanticsView(
         expected.use_case,
@@ -349,7 +337,6 @@ def _validate_action_view(
 
 
 class ActionSummaryView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    action_id: NonEmptyLine
     kind: decision_models.ActionKind
     subject: NonEmptyLine
     label: NonEmptyLine
@@ -362,9 +349,7 @@ class ActionSummaryView(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
 
     def __post_init__(self) -> None:
         _validate_action_view(
-            self.action_id,
             self.kind,
-            self.subject,
             self.subject_revision,
             self.authorization,
             self.lease_id,
@@ -375,7 +360,6 @@ class ActionSummaryView(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
 
 
 class ActionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    action_id: NonEmptyLine
     kind: decision_models.ActionKind
     subject: NonEmptyLine
     label: NonEmptyLine
@@ -388,9 +372,7 @@ class ActionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
     def __post_init__(self) -> None:
         _validate_action_view(
-            self.action_id,
             self.kind,
-            self.subject,
             self.subject_revision,
             self.authorization,
             self.lease_id,

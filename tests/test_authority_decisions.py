@@ -59,7 +59,7 @@ class AuthorityDecisionTest(unittest.TestCase):
         retained = authority_models.AttemptLeaseAuthority(
             command.host_epoch,
             command.attempt,
-            command.item,
+            command.work_item_id,
             command.task_id,
             command.host_id,
             command.lease_id,
@@ -74,14 +74,14 @@ class AuthorityDecisionTest(unittest.TestCase):
             authority_models.AcquireInitialAttemptAuthority(
                 command.host_epoch,
                 command.attempt,
-                command.item,
+                command.work_item_id,
                 command.task_id,
                 command.host_id,
                 LeaseId("initial"),
                 SQLITE_NOW,
                 SQLITE_NOW + timedelta(minutes=1),
             ),
-            live_attempt=(command.attempt, command.item),
+            live_attempt=(command.attempt, command.work_item_id),
             project_host_epoch=command.host_epoch,
         )
         self.assertNotIsInstance(initial, DecisionFailure)
@@ -93,7 +93,7 @@ class AuthorityDecisionTest(unittest.TestCase):
         inactive = authority_models.InactiveAttemptAuthority(
             released_retained.host_epoch,
             released_retained.attempt,
-            released_retained.item,
+            released_retained.work_item_id,
             released_retained.task_id,
             released_retained.host_id,
             released_retained.lease_id,
@@ -112,7 +112,7 @@ class AuthorityDecisionTest(unittest.TestCase):
                 SQLITE_NOW + timedelta(seconds=1),
                 SQLITE_NOW + timedelta(minutes=2),
             ),
-            transferable_attempt=(command.attempt, command.item),
+            transferable_attempt=(command.attempt, command.work_item_id),
         )
         self.assertNotIsInstance(transfer, DecisionFailure)
         renewed = decide_attempt_authority(
@@ -149,7 +149,7 @@ class AuthorityDecisionTest(unittest.TestCase):
         retained = authority_models.AttemptLeaseAuthority(
             command.host_epoch,
             command.attempt,
-            command.item,
+            command.work_item_id,
             command.task_id,
             command.host_id,
             command.lease_id,
@@ -161,7 +161,7 @@ class AuthorityDecisionTest(unittest.TestCase):
         initial = authority_models.AcquireInitialAttemptAuthority(
             command.host_epoch,
             command.attempt,
-            command.item,
+            command.work_item_id,
             command.task_id,
             command.host_id,
             LeaseId("initial-new"),
@@ -174,7 +174,7 @@ class AuthorityDecisionTest(unittest.TestCase):
             authority_models.InactiveAttemptAuthority(
                 retained.host_epoch,
                 retained.attempt,
-                retained.item,
+                retained.work_item_id,
                 retained.task_id,
                 retained.host_id,
                 retained.lease_id,

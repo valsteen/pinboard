@@ -14,10 +14,12 @@ from pinboard.adapters import (
     lifecycle_operations,
 )
 from pinboard.adapters.files.artifacts import ArtifactRepository
-from pinboard.adapters.files.models import AffectedViews
+from pinboard.adapters.files.file_io import DurableRoots
+from pinboard.adapters.files.models import AffectedViews, ViewWarning
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.application import (
     authority_operations,
+    ports,
     proposal_models,
     proposals,
     query_models,
@@ -26,6 +28,7 @@ from pinboard.application import (
     work_briefs,
 )
 from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
+from pinboard.application.mutation_models import CommittedEffect
 from pinboard.domain import decision_models
 from pinboard.domain.errors import (
     ChangedSurface,
@@ -40,9 +43,9 @@ from pinboard.domain.identifiers import (
     ActionId,
     AttemptId,
     HostId,
-    ItemId,
     LeaseId,
     TaskId,
+    WorkItemId,
 )
 from pinboard.mcp import common, contracts, execution, tool_names
 from pinboard.mcp.contracts import JsonValue
@@ -183,19 +186,19 @@ def _proposal_created(
     view_result = common._refresh_affected_views(
         durable,
         store,
-        AffectedViews(committed.item_ids, committed.attempt_ids, (committed.receipt.history_id,)),
+        AffectedViews(committed.work_item_ids, committed.attempt_ids, (committed.receipt.history_id,)),
         now,
     )
-    status = store.read_item_status(ItemId(decoded.proposal_id))
-    if status is None or status.item.queue_position is None:
+    status = store.read_item_status(WorkItemId(decoded.proposal_id))
+    if status is None or status.work_item.queue_position is None:
         raise RuntimeError("Committed proposal status did not reload exactly.")
     warning = view_result.warning
     content: dict[str, JsonValue] = {
         "schema": "pinboard-mcp-proposal-result/v2",
         "status": "committed" if warning is None else "committed-with-warning",
         "proposal_id": decoded.proposal_id,
-        "position": status.item.queue_position,
-        "item_state": status.item.state.value,
+        "position": status.work_item.queue_position,
+        "item_state": status.work_item.state.value,
         "committed_revision": committed.receipt.project_revision,
         "history_id": int(committed.receipt.history_id),
         "state_changed": True,
@@ -411,7 +414,6 @@ def _with_retained_brief_recovery(
             "actor_host_id": "<host-id>",
             "receipt": {"action_id": action, "subject_revision": "<current-subject-revision>"},
             "payload": {
-                "attempt": identity.subject,
                 "branch": "<accepted-brief-branch>",
                 "base_revision": "<accepted-brief-base-revision>",
                 "brief_artifact_ref_id": "<published-v4-artifact-ref-id>",
@@ -608,7 +610,7 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
         durable,
         store,
         AffectedViews(
-            committed_effect.item_ids,
+            committed_effect.work_item_ids,
             committed_effect.attempt_ids,
             (committed_effect.receipt.history_id,),
         ),
@@ -684,6 +686,39 @@ def _authority_conflict(
     return None if retained is None else _authority_identity(retained)
 
 
+def _authority_rejected(
+    schema: str,
+    identity: dict[str, JsonValue],
+    failure: DecisionFailure,
+    conflict: dict[str, JsonValue] | None,
+) -> execution.OperationResult:
+    return execution.OperationResult(
+        {
+            "schema": schema,
+            "status": "rejected",
+            **identity,
+            "code": failure.code.value,
+            "message": failure.message,
+            "conflict": conflict,
+            "state_changed": False,
+            **_authority_rejection_details(failure),
+        },
+        "rejected",
+        None,
+    )
+
+
+def _refresh_authority_views(
+    durable: DurableRoots, store: ports.WorkStore, effect: CommittedEffect, now: datetime
+) -> ViewWarning | None:
+    return common._refresh_affected_views(
+        durable,
+        store,
+        AffectedViews(effect.work_item_ids, effect.attempt_ids, (effect.receipt.history_id,)),
+        now,
+    ).warning
+
+
 def _authority_status_fields(
     retained: query_models.PreparationAuthorityStatus | query_models.AttemptAuthorityStatus | None,
 ) -> dict[str, JsonValue]:
@@ -736,7 +771,7 @@ def _preparation_authority(
     store = common.compose_store(durable)
     now = datetime.now(UTC)
     if isinstance(request, contracts.PreparationAuthorityStatusRequest):
-        selected = authority_operations.preparation_authority_status(store, ItemId(request.item_id), now)
+        selected = authority_operations.preparation_authority_status(store, WorkItemId(request.item_id), now)
         content: dict[str, JsonValue] = {
             "schema": "pinboard-mcp-preparation-authority-result/v1",
             "item_id": request.item_id,
@@ -749,11 +784,12 @@ def _preparation_authority(
         token.checkpoint()
         return execution.OperationResult(content, "ok", None)
     token.checkpoint()
+    work_item_id = WorkItemId(request.item_id)
     match request:
         case contracts.PreparationAuthorityStartRequest():
             result = authority_operations.start_preparation_authority(
                 store,
-                item_id=ItemId(request.item_id),
+                work_item_id=work_item_id,
                 task_id=TaskId(request.task_id),
                 host_id=HostId(request.host_id),
                 lease_id=LeaseId(uuid4().hex),
@@ -763,7 +799,7 @@ def _preparation_authority(
         case contracts.PreparationAuthorityRenewRequest():
             result = authority_operations.renew_preparation_authority(
                 store,
-                item_id=ItemId(request.item_id),
+                work_item_id=work_item_id,
                 lease_id=LeaseId(request.lease_id),
                 generation=request.generation,
                 renewed_at=now,
@@ -772,7 +808,7 @@ def _preparation_authority(
         case contracts.PreparationAuthorityReleaseRequest():
             result = authority_operations.release_preparation_authority(
                 store,
-                item_id=ItemId(request.item_id),
+                work_item_id=work_item_id,
                 lease_id=LeaseId(request.lease_id),
                 generation=request.generation,
                 released_at=now,
@@ -780,7 +816,7 @@ def _preparation_authority(
         case contracts.PreparationAuthorityRevokeRequest():
             result = authority_operations.revoke_preparation_authority(
                 store,
-                item_id=ItemId(request.item_id),
+                work_item_id=work_item_id,
                 lease_id=LeaseId(request.lease_id),
                 generation=request.generation,
                 revoked_at=now,
@@ -790,35 +826,18 @@ def _preparation_authority(
         case _ as unreachable:
             assert_never(unreachable)
     if isinstance(result, DecisionFailure):
-        details = _authority_rejection_details(result)
-        return execution.OperationResult(
-            {
-                "schema": "pinboard-mcp-preparation-authority-result/v1",
-                "status": "rejected",
-                "item_id": request.item_id,
-                "code": result.code.value,
-                "message": result.message,
-                "conflict": _authority_conflict(
-                    authority_operations.preparation_authority_status(store, ItemId(request.item_id), now)
-                ),
-                "state_changed": False,
-                **details,
-            },
-            "rejected",
-            None,
+        return _authority_rejected(
+            "pinboard-mcp-preparation-authority-result/v1",
+            {"item_id": request.item_id},
+            result,
+            _authority_conflict(authority_operations.preparation_authority_status(store, work_item_id, now)),
         )
-    refreshed = common._refresh_affected_views(
-        durable,
-        store,
-        AffectedViews(result.effect.item_ids, result.effect.attempt_ids, (result.effect.receipt.history_id,)),
-        now,
-    )
-    warning = refreshed.warning
+    warning = _refresh_authority_views(durable, store, result.effect, now)
     retained = result.authority
     return execution.OperationResult(
         {
             "schema": "pinboard-mcp-preparation-authority-result/v1",
-            "item_id": retained.item_id,
+            "item_id": retained.work_item_id,
             "definition_revision": retained.definition_revision,
             "definition_digest": retained.definition_digest,
             **_authority_identity(retained),
@@ -914,32 +933,17 @@ def _attempt_authority(
         case _ as unreachable:
             assert_never(unreachable)
     if isinstance(result, DecisionFailure):
-        details = _authority_rejection_details(result)
-        return execution.OperationResult(
-            {
-                "schema": "pinboard-mcp-attempt-authority-result/v1",
-                "status": "rejected",
-                "attempt_id": request.attempt_id,
-                "code": result.code.value,
-                "message": result.message,
-                "conflict": _authority_conflict(
-                    authority_operations.attempt_authority_status(store, AttemptId(request.attempt_id), now)
-                ),
-                "state_changed": False,
-                **details,
-            },
-            "rejected",
-            None,
+        return _authority_rejected(
+            "pinboard-mcp-attempt-authority-result/v1",
+            {"attempt_id": request.attempt_id},
+            result,
+            _authority_conflict(
+                authority_operations.attempt_authority_status(store, AttemptId(request.attempt_id), now)
+            ),
         )
-    refreshed = common._refresh_affected_views(
-        durable,
-        store,
-        AffectedViews(result.effect.item_ids, result.effect.attempt_ids, (result.effect.receipt.history_id,)),
-        now,
-    )
-    warning = refreshed.warning
+    warning = _refresh_authority_views(durable, store, result.effect, now)
     retained = result.authority
-    item_id = result.effect.receipt.transition.item
+    item_id = result.effect.receipt.transition.work_item_id
     if item_id is None:
         raise RuntimeError("Attempt authority mutation did not identify its item.")
     return execution.OperationResult(

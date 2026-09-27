@@ -15,12 +15,11 @@ from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailureCode, EffectDisposition, FailureDetails, RetryDisposition
 from pinboard.domain.identifiers import (
     ArtifactRefId,
-    AttemptId,
     CandidateId,
     CheckpointId,
     HistoryId,
-    ItemId,
     TaskId,
+    WorkItemId,
 )
 
 
@@ -62,10 +61,9 @@ def _decode[PayloadT: transition_models.InputPayload](
         )
 
 
-def _revise_item_input(payload: transition_models.ReviseItemInputPayload) -> work_models.ReviseItemDefinitionInput:
+def _revise_item_input(payload: transition_models.ReviseItemInputPayload) -> work_models.ReviseWorkItemDefinitionInput:
     definition = payload.definition
-    return work_models.ReviseItemDefinitionInput(
-        ItemId(payload.item_id),
+    return work_models.ReviseWorkItemDefinitionInput(
         payload.expected_revision,
         payload.expected_digest,
         TaskId(payload.source_task),
@@ -78,7 +76,7 @@ def _revise_item_input(payload: transition_models.ReviseItemInputPayload) -> wor
             definition.scope,
             definition.non_scope,
             definition.acceptance_criteria,
-            tuple(ItemId(value) for value in definition.dependencies),
+            tuple(WorkItemId(value) for value in definition.dependencies),
             definition.effect,
             definition.unlock,
             work_models.CheckoutPolicy(definition.checkout_policy),
@@ -125,15 +123,17 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
             if isinstance(payload := _decode(data, transition_models.ActivateInputPayload), TransitionInputFailure):
                 return payload
             return payload
-        case decision_models.BlockAttemptAction() | decision_models.BlockItemAction():
+        case decision_models.BlockAttemptAction() | decision_models.BlockWorkItemAction():
             if isinstance(payload := _decode(data, transition_models.BlockInputPayload), TransitionInputFailure):
                 return payload
-            block_input = work_models.BlockInput(payload.reason, tuple(ItemId(value) for value in payload.depends_on))
+            block_input = work_models.BlockInput(
+                payload.reason, tuple(WorkItemId(value) for value in payload.depends_on)
+            )
             match action:
                 case decision_models.BlockAttemptAction():
                     return decision_models.BlockCommand(action, block_input)
-                case decision_models.BlockItemAction():
-                    return decision_models.BlockItemCommand(action, block_input)
+                case decision_models.BlockWorkItemAction():
+                    return decision_models.BlockWorkItemCommand(action, block_input)
                 case _ as unreachable:
                     assert_never(unreachable)
         case decision_models.CloseAction():
@@ -201,9 +201,8 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
             return decision_models.RecordReplacementCommand(
                 action,
                 work_models.RecordPlannedReplacementInput(
-                    ItemId(payload.affected_item),
                     payload.expected_relation_revision,
-                    ItemId(payload.replacement_item),
+                    WorkItemId(payload.replacement_item),
                     payload.replacement_cost,
                     payload.status,
                     TaskId(payload.recorded_by),
@@ -218,7 +217,6 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
             return decision_models.RetainTemporarilyCommand(
                 action,
                 work_models.RetainTemporarilyInput(
-                    ItemId(payload.affected_item),
                     payload.relation_revision,
                     payload.rationale,
                     payload.accepted_cost,
@@ -252,7 +250,9 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
                 payload := _decode(data, transition_models.MergeProposalInputPayload), TransitionInputFailure
             ):
                 return payload
-            return decision_models.MergeProposalCommand(action, work_models.MergeProposalInput(ItemId(payload.target)))
+            return decision_models.MergeProposalCommand(
+                action, work_models.MergeProposalInput(WorkItemId(payload.target))
+            )
         case decision_models.ResumeAction():
             if isinstance(payload := _decode(data, transition_models.ResumeInputPayload), TransitionInputFailure):
                 return payload
@@ -270,16 +270,15 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
             return decision_models.RebindAttemptCommand(
                 action,
                 work_models.RebindAttemptInput(
-                    AttemptId(payload.attempt),
                     payload.branch,
                     payload.base_revision,
                     ArtifactRefId(payload.brief_artifact_ref_id),
                 ),
             )
-        case decision_models.ReviseItemAction():
+        case decision_models.ReviseWorkItemAction():
             if isinstance(payload := _decode(data, transition_models.ReviseItemInputPayload), TransitionInputFailure):
                 return payload
-            return decision_models.ReviseItemCommand(action, _revise_item_input(payload))
+            return decision_models.ReviseWorkItemCommand(action, _revise_item_input(payload))
         case decision_models.SubmitReviewAction():
             if isinstance(payload := _decode(data, transition_models.SubmitReviewInputPayload), TransitionInputFailure):
                 return payload

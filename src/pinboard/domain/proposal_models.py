@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import ItemId, ProposalId, TaskId
+from pinboard.domain.identifiers import ProposalId, TaskId, WorkItemId
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,18 +25,18 @@ class ProposalIntake:
 
 
 @dataclass(frozen=True, slots=True)
-class ReadyProposalItem:
-    item_id: ItemId
+class ReadyProposalWorkItem:
+    work_item_id: WorkItemId
     position: int
-    dependencies: tuple[ItemId, ...]
+    dependencies: tuple[WorkItemId, ...]
     definition_digest: str
     definition: work_models.WorkItemDefinition
 
 
 @dataclass(frozen=True, slots=True)
 class PrerequisiteDependencyChange:
-    item_id: ItemId
-    dependency_id: ItemId
+    work_item_id: WorkItemId
+    dependency_id: WorkItemId
     position: int
     definition_revision: int
     definition_digest_before: str
@@ -52,7 +52,7 @@ class CreateProposalOperation:
 @dataclass(frozen=True, slots=True)
 class ProposalCreationDecision:
     proposal: ProposalIntake
-    ready_item: ReadyProposalItem
+    ready_item: ReadyProposalWorkItem
     prerequisite_change: PrerequisiteDependencyChange | None
     planned_replacement: work_models.PlannedReplacement | None
     evidence: tuple[str, ...]

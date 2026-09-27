@@ -32,17 +32,16 @@ from pinboard.application.work_briefs import (
 from pinboard.cli import work_state_commands
 from pinboard.cli.entrypoint import main
 from pinboard.domain import authority_models, work_models
-from pinboard.domain.identifiers import HostId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import HostId, LeaseId, TaskId, WorkItemId
 from tests.artifact_support import write_revision
-
-from .support import (
+from tests.support import (
     SQLITE_NOW,
     JsonObject,
     JsonValue,
     complete_sqlite_state,
     initialize_store,
 )
-from .work_brief_support import (
+from tests.work_brief_support import (
     work_a_brief,
 )
 
@@ -131,15 +130,17 @@ class CliTest(unittest.TestCase):
 
     def prepared_state(self, expires_at: datetime) -> stored_state.StoredWorkState:
         state = complete_sqlite_state()
-        definition = next(value for value in state.lifecycle.definition_revisions if value.item_id == ItemId("work-c"))
+        definition = next(
+            value for value in state.lifecycle.definition_revisions if value.item_id == WorkItemId("work-c")
+        )
         return replace(
             state,
             authority=replace(
                 state.authority,
-                preparation_counters=(stored_state.PreparationLeaseCounter(ItemId("work-c"), 1),),
+                preparation_counters=(stored_state.PreparationLeaseCounter(WorkItemId("work-c"), 1),),
                 preparation_generations=(
                     stored_state.PreparationLeaseGeneration(
-                        ItemId("work-c"),
+                        WorkItemId("work-c"),
                         1,
                         LeaseId("preparation-c"),
                         TaskId("preparer-c"),
@@ -148,7 +149,7 @@ class CliTest(unittest.TestCase):
                 ),
                 preparation_leases=(
                     stored_state.StoredPreparationLease(
-                        ItemId("work-c"),
+                        WorkItemId("work-c"),
                         1,
                         definition.revision,
                         definition.digest,

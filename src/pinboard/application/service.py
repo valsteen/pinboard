@@ -52,9 +52,9 @@ from pinboard.domain.identifiers import (
     AttemptId,
     HistorySubjectId,
     HostId,
-    ItemId,
     LeaseId,
     TaskId,
+    WorkItemId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.domain.ordering import OrderRequest, decide_order
@@ -75,7 +75,7 @@ def _project_retained_attempt_authority(
     return authority_models.AttemptLeaseAuthority(
         host_epoch=snapshot.host_epoch,
         attempt=attempt_id,
-        item=attempt.item,
+        work_item_id=attempt.work_item_id,
         task_id=retained.task_id,
         host_id=retained.host_id,
         lease_id=retained.lease_id,
@@ -125,7 +125,7 @@ def acquire_attempt_authority(
                 authority_models.AcquireInitialAttemptAuthority(
                     snapshot.host_epoch,
                     attempt_id,
-                    attempt.item,
+                    attempt.work_item_id,
                     task_id,
                     host_id,
                     lease_id,
@@ -161,7 +161,7 @@ def acquire_attempt_authority(
                 authority_models.InactiveAttemptAuthority(
                     snapshot.host_epoch,
                     attempt_id,
-                    attempt.item,
+                    attempt.work_item_id,
                     retained.task_id,
                     retained.host_id,
                     retained.lease_id,
@@ -218,13 +218,13 @@ def _commit_attempt_authority_change(
         counter=generation_before,
         operation=requested_change,
         live_attempt=(
-            (attempt_id, attempt.item)
+            (attempt_id, attempt.work_item_id)
             if (attempt := decision_context.attempt(attempt_id)) is not None
             and attempt.state == work_models.AttemptState.ACTIVE
             else None
         ),
         transferable_attempt=(
-            (attempt_id, attempt.item)
+            (attempt_id, attempt.work_item_id)
             if (attempt := decision_context.attempt(attempt_id)) is not None
             and attempt.state != work_models.AttemptState.DONE
             else None
@@ -237,7 +237,7 @@ def _commit_attempt_authority_change(
     proposed_replacement = accepted_decision.proposed_replacement
     transition_receipt = decision_models.TransitionReceipt(
         action_id=ActionId(f"continue:attempt-authority:{attempt_id}:{proposed_replacement.generation}"),
-        item=proposed_replacement.item,
+        work_item_id=proposed_replacement.work_item_id,
         outcome=history_outcome,
         evidence=None,
         decided_at=decided_at,
@@ -266,13 +266,13 @@ def _commit_attempt_authority_change(
 def _project_retained_preparation_authority(
     snapshot: LedgerSnapshot,
     retained: query_models.PreparationAuthorityStatus | None,
-    item_id: ItemId,
+    work_item_id: WorkItemId,
 ) -> authority_models.PreparationLeaseAuthority | None:
     if retained is None:
         return None
     return authority_models.PreparationLeaseAuthority(
         host_epoch=snapshot.host_epoch,
-        item=item_id,
+        work_item_id=work_item_id,
         definition_revision=retained.definition_revision,
         definition_digest=retained.definition_digest,
         task_id=retained.task_id,
@@ -302,7 +302,7 @@ def decide_and_commit_preparation_authority_change(
 def start_preparation(
     store: WorkStore,
     *,
-    item_id: ItemId,
+    work_item_id: WorkItemId,
     task_id: TaskId,
     host_id: HostId,
     lease_id: LeaseId,
@@ -313,21 +313,21 @@ def start_preparation(
 
     with store.write() as transaction:
         snapshot = transaction.read_decision_facts(
-            query_models.DecisionScope((item_id,), (), (), (), (), (), (), ()), acquired_at
+            query_models.DecisionScope((work_item_id,), (), (), (), (), (), (), ()), acquired_at
         ).snapshot
         retained = _project_retained_preparation_authority(
-            snapshot, transaction.read_preparation_authority_status(item_id), item_id
+            snapshot, transaction.read_preparation_authority_status(work_item_id), work_item_id
         )
         if retained is None:
-            definition = snapshot.definition(item_id)
-            subject_revision = snapshot.subject_revision(item_id)
+            definition = snapshot.definition(work_item_id)
+            subject_revision = snapshot.subject_revision(work_item_id)
             if definition is None or subject_revision is None:
                 return DecisionFailure(
-                    DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item_id}' has no definition.", None
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{work_item_id}' has no definition.", None
                 )
             requested_change = authority_models.AcquireInitialPreparationAuthority(
                 snapshot.host_epoch,
-                item_id,
+                work_item_id,
                 snapshot.revision,
                 subject_revision,
                 definition.revision,
@@ -345,7 +345,7 @@ def start_preparation(
             requested_change = authority_models.TransferPreparationAuthority(
                 authority_models.InactivePreparationAuthority(
                     retained.host_epoch,
-                    retained.item,
+                    retained.work_item_id,
                     retained.definition_revision,
                     retained.definition_digest,
                     retained.task_id,
@@ -376,24 +376,24 @@ def _commit_preparation_authority_change(
 
     match requested_change:
         case authority_models.AcquireInitialPreparationAuthority(
-            item=item_id, task_id=actor_task_id, host_id=actor_host_id, acquired_at=decided_at
+            work_item_id=item_id, task_id=actor_task_id, host_id=actor_host_id, acquired_at=decided_at
         ):
             history_outcome = "acquire-initial-preparation-authority"
         case authority_models.TransferPreparationAuthority(
             current=current, task_id=actor_task_id, host_id=actor_host_id, acquired_at=decided_at
         ):
-            item_id = current.item
+            item_id = current.work_item_id
             history_outcome = "transfer-preparation-authority"
         case authority_models.RenewPreparationAuthority(current=current, renewed_at=decided_at):
-            item_id = current.item
+            item_id = current.work_item_id
             actor_task_id, actor_host_id = current.task_id, current.host_id
             history_outcome = "renew-preparation-authority"
         case authority_models.ReleasePreparationAuthority(current=current, released_at=decided_at):
-            item_id = current.item
+            item_id = current.work_item_id
             actor_task_id, actor_host_id = current.task_id, current.host_id
             history_outcome = "release-preparation-authority"
         case authority_models.RevokePreparationAuthority(
-            item=item_id, task_id=actor_task_id, host_id=actor_host_id, revoked_at=decided_at
+            work_item_id=item_id, task_id=actor_task_id, host_id=actor_host_id, revoked_at=decided_at
         ):
             history_outcome = "revoke-preparation-authority"
         case _ as unreachable:
@@ -416,7 +416,7 @@ def _commit_preparation_authority_change(
     proposed_replacement = accepted_decision.proposed_replacement
     transition_receipt = decision_models.TransitionReceipt(
         action_id=ActionId(f"continue:preparation-authority:{item_id}:{proposed_replacement.generation}"),
-        item=item_id,
+        work_item_id=item_id,
         outcome=history_outcome,
         evidence=None,
         decided_at=decided_at,
@@ -455,10 +455,10 @@ def create_proposal(
     with store.write() as transaction:
         allocation = transaction.read_mutation_allocation()
         live_item_count = transaction.read_live_item_count()
-        relation_item = operation.intake.relation.item
-        proposal_item = ItemId(operation.intake.proposal_id)
+        relation_item = operation.intake.relation.work_item_id
+        proposal_item = WorkItemId(operation.intake.proposal_id)
         primary_items = (proposal_item,)
-        related_items: tuple[ItemId, ...] = ()
+        related_items: tuple[WorkItemId, ...] = ()
         if relation_item is not None:
             if isinstance(
                 operation.intake.relation,
@@ -469,8 +469,8 @@ def create_proposal(
                 related_items = (relation_item,)
         decision_context = transaction.read_decision_facts(
             query_models.DecisionScope(
-                item_ids=primary_items,
-                related_item_ids=related_items,
+                work_item_ids=primary_items,
+                related_work_item_ids=related_items,
                 dependency_closure_roots=(),
                 live_dependent_roots=(),
                 attempt_ids=(),
@@ -560,7 +560,7 @@ def _resolve_actor_authority(
                 capability.authorization,
                 authority.generation,
                 capability.lease_id,
-                preparations=(authority.item,),
+                preparations=(authority.work_item_id,),
             )
         case _ as unreachable:
             assert_never(unreachable)
@@ -570,9 +570,9 @@ def _transition_decision_scope(
     command: decision_models.TransitionCommand,
 ) -> query_models.DecisionScope:
     item_ids, attempt_ids, proposal_ids = action_subject_ids(command.action)
-    related_item_ids: tuple[ItemId, ...] = ()
-    dependency_closure_roots: tuple[ItemId, ...] = ()
-    live_dependent_roots: tuple[ItemId, ...] = ()
+    related_item_ids: tuple[WorkItemId, ...] = ()
+    dependency_closure_roots: tuple[WorkItemId, ...] = ()
+    live_dependent_roots: tuple[WorkItemId, ...] = ()
     artifact_ids: tuple[ArtifactRefId, ...] = ()
     completion_history_attempt_ids: tuple[AttemptId, ...] = ()
     match command:
@@ -581,12 +581,11 @@ def _transition_decision_scope(
         case decision_models.ResumeCommand(value=value) | decision_models.RebindAttemptCommand(value=value):
             if value.brief_artifact_ref_id is not None:
                 artifact_ids = (value.brief_artifact_ref_id,)
-        case decision_models.BlockCommand(value=value) | decision_models.BlockItemCommand(value=value):
+        case decision_models.BlockCommand(value=value) | decision_models.BlockWorkItemCommand(value=value):
             related_item_ids = value.depends_on
         case decision_models.MergeProposalCommand(value=value):
             related_item_ids = (value.target,)
-        case decision_models.ReviseItemCommand(value=value):
-            item_ids = (*item_ids, value.item_id)
+        case decision_models.ReviseWorkItemCommand(value=value):
             related_item_ids = value.definition.dependencies
             dependency_closure_roots = value.definition.dependencies
         case decision_models.RecordReplacementCommand(value=value):
@@ -610,8 +609,8 @@ def _transition_decision_scope(
         case _ as unreachable:
             assert_never(unreachable)
     return query_models.DecisionScope(
-        item_ids=tuple(dict.fromkeys(item_ids)),
-        related_item_ids=tuple(dict.fromkeys(related_item_ids)),
+        work_item_ids=tuple(dict.fromkeys(item_ids)),
+        related_work_item_ids=tuple(dict.fromkeys(related_item_ids)),
         dependency_closure_roots=tuple(dict.fromkeys(dependency_closure_roots)),
         live_dependent_roots=tuple(dict.fromkeys(live_dependent_roots)),
         attempt_ids=tuple(dict.fromkeys(attempt_ids)),
@@ -847,8 +846,8 @@ def decide_and_commit_covered_completion(
 
 def reorder(
     store: WorkStore,
-    expected: tuple[ItemId, ...],
-    requested: tuple[ItemId, ...],
+    expected: tuple[WorkItemId, ...],
+    requested: tuple[WorkItemId, ...],
     actor_task_id: TaskId,
     actor_host_id: HostId,
     now: datetime,

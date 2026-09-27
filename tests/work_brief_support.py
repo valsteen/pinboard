@@ -12,7 +12,7 @@ from pinboard.application.work_briefs import (
     canonical_work_brief_review_needs_correction_bytes,
 )
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import ItemId
+from pinboard.domain.identifiers import WorkItemId
 from tests.support import SQLITE_DIGEST, test_definition
 
 CHECKPOINT_ID = "typed-json-cutover"
@@ -175,7 +175,7 @@ def work_c_brief() -> work_brief_models.WorkBrief:
         item_id="work-c",
         branch="codex/work-c",
         base_revision="candidate-base",
-        accepted_scope=replace(candidate.accepted_scope, digest=test_definition(ItemId("work-c"))[1]),
+        accepted_scope=replace(candidate.accepted_scope, digest=test_definition(WorkItemId("work-c"))[1]),
         checkpoint=local,
         obligation_correspondence=(
             work_brief_models.ObligationCorrespondence(

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.decisions import available_actions, decide
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.domain.identifiers import AttemptId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import AttemptId, LeaseId, TaskId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 from tests.domain_support import action, expect_success
 
@@ -14,7 +14,7 @@ NOW = datetime(2026, 9, 10, tzinfo=UTC)
 
 def work_item(item_id: str, state: work_models.WorkState, attempt: str | None = None) -> work_models.WorkItem:
     return work_models.WorkItem(
-        ItemId(item_id), state, None, (), AttemptId(attempt) if attempt else None, None, None, None, 1
+        WorkItemId(item_id), state, None, (), AttemptId(attempt) if attempt else None, None, None, None, 1
     )
 
 
@@ -22,9 +22,9 @@ def relation(
     revision: int = 1, *, status: work_models.PlannedReplacementStatus = work_models.PlannedReplacementStatus.CURRENT
 ) -> work_models.PlannedReplacement:
     return work_models.PlannedReplacement(
-        ItemId("old-work"),
+        WorkItemId("old-work"),
         revision,
-        ItemId("new-work"),
+        WorkItemId("new-work"),
         "Doing old-work first spends implementation and review time on code new-work will replace.",
         status,
         TaskId("planner"),
@@ -45,7 +45,7 @@ class PlannedReplacementTests(unittest.TestCase):
         attempts = (
             ()
             if attempt_state is None
-            else (work_models.AttemptRecord(AttemptId("old-work-1"), ItemId("old-work"), attempt_state),)
+            else (work_models.AttemptRecord(AttemptId("old-work-1"), WorkItemId("old-work"), attempt_state),)
         )
         return LedgerSnapshot(
             "7",
@@ -55,8 +55,8 @@ class PlannedReplacementTests(unittest.TestCase):
             ),
             attempts,
             subject_revisions=(
-                work_models.SubjectRevision(ItemId("old-work"), "4"),
-                work_models.SubjectRevision(ItemId("new-work"), "2"),
+                work_models.SubjectRevision(WorkItemId("old-work"), "4"),
+                work_models.SubjectRevision(WorkItemId("new-work"), "2"),
                 *(() if attempt is None else (work_models.SubjectRevision(attempt, "3"),)),
             ),
             planned_replacements=() if relation_value is None else (relation_value,),
@@ -131,7 +131,9 @@ class PlannedReplacementTests(unittest.TestCase):
                 relation_value=relation(),
             ),
             attempt_authorities=(
-                work_models.AttemptAuthority(AttemptId("old-work-1"), ItemId("old-work"), LeaseId("worker-lease"), 1),
+                work_models.AttemptAuthority(
+                    AttemptId("old-work-1"), WorkItemId("old-work"), LeaseId("worker-lease"), 1
+                ),
             ),
         )
         worker = decision_models.ActorAuthority(
@@ -152,7 +154,7 @@ class PlannedReplacementTests(unittest.TestCase):
     def test_exact_revision_disposition_restores_guarded_actions_and_old_disposition_does_not(self) -> None:
         current = relation(2)
         old_disposition = work_models.ReplacementDisposition(
-            ItemId("old-work"),
+            WorkItemId("old-work"),
             1,
             "A short-lived customer commitment still needs it.",
             "One implementation and review pass will be discarded.",
@@ -171,7 +173,7 @@ class PlannedReplacementTests(unittest.TestCase):
             ),
         )
         accepted = work_models.ReplacementDisposition(
-            ItemId("old-work"),
+            WorkItemId("old-work"),
             2,
             "A short-lived customer commitment still needs it.",
             current.replacement_cost,
@@ -204,11 +206,10 @@ class PlannedReplacementTests(unittest.TestCase):
     def test_record_and_disposition_decisions_preserve_lifecycle_and_bind_exact_revision(self) -> None:
         snapshot = self.snapshot(relation_value=None)
         record = decision_models.RecordReplacementCommand(
-            action(decision_models.RecordReplacementAction, ItemId("old-work")),
+            action(decision_models.RecordReplacementAction, WorkItemId("old-work")),
             work_models.RecordPlannedReplacementInput(
-                ItemId("old-work"),
                 0,
-                ItemId("new-work"),
+                WorkItemId("new-work"),
                 "Doing old-work first spends implementation and review time on code new-work will replace.",
                 work_models.PlannedReplacementStatus.CURRENT,
                 TaskId("planner"),
@@ -216,13 +217,12 @@ class PlannedReplacementTests(unittest.TestCase):
         )
         recorded = expect_success(decide(snapshot, record, NOW))
         self.assertIsInstance(recorded.change, decision_models.PlannedReplacementChange)
-        self.assertEqual(work_models.WorkState.READY, snapshot.item(ItemId("old-work")).state)  # type: ignore[union-attr]
+        self.assertEqual(work_models.WorkState.READY, snapshot.work_item(WorkItemId("old-work")).state)  # type: ignore[union-attr]
 
         current = relation()
         retain = decision_models.RetainTemporarilyCommand(
-            action(decision_models.RetainTemporarilyAction, ItemId("old-work")),
+            action(decision_models.RetainTemporarilyAction, WorkItemId("old-work")),
             work_models.RetainTemporarilyInput(
-                ItemId("old-work"),
                 1,
                 "A short-lived customer commitment still needs it.",
                 current.replacement_cost,
@@ -235,7 +235,7 @@ class PlannedReplacementTests(unittest.TestCase):
 
     def test_resume_decision_rejects_a_replacement_recorded_after_selection(self) -> None:
         resume = decision_models.ResumeCommand(
-            action(decision_models.ResumeAction, ItemId("old-work")),
+            action(decision_models.ResumeAction, WorkItemId("old-work")),
             work_models.ResumeInput(None),
         )
 
@@ -258,8 +258,8 @@ class PlannedReplacementTests(unittest.TestCase):
                 work_item("replace-cache-again", work_models.WorkState.READY),
             ),
             subject_revisions=(
-                work_models.SubjectRevision(ItemId("replace-cache"), "1"),
-                work_models.SubjectRevision(ItemId("replace-cache-again"), "1"),
+                work_models.SubjectRevision(WorkItemId("replace-cache"), "1"),
+                work_models.SubjectRevision(WorkItemId("replace-cache-again"), "1"),
             ),
         )
         self.assertNotIn("retain-temporarily:replace-cache", self.action_ids(snapshot))

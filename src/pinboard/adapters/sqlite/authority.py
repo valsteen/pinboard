@@ -15,7 +15,7 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.application import query_models, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure
-from pinboard.domain.identifiers import AttemptId, ItemId
+from pinboard.domain.identifiers import AttemptId, WorkItemId
 
 
 class _PreparationItemFacts(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -80,7 +80,7 @@ def read_attempt_authority_status(
 
 
 def read_preparation_authority_status(
-    connection: sqlite3.Connection, item_id: ItemId
+    connection: sqlite3.Connection, item_id: WorkItemId
 ) -> query_models.PreparationAuthorityStatus | None:
     lease_row = connection.execute(
         """
@@ -445,7 +445,7 @@ def write_preparation_authority(
     proposed_replacement = decision.proposed_replacement
     retained_counter = connection.execute(
         "SELECT generation_high_water FROM preparation_lease_counters WHERE item_id = ?",
-        (decision.item,),
+        (decision.work_item_id,),
     ).fetchone()
     if retained_counter is None:
         if decision.counter_before != 0:
@@ -458,7 +458,7 @@ def write_preparation_authority(
                     VALUES (?, ?)
                     ON CONFLICT(item_id) DO NOTHING
                     """,
-                    (decision.item, decision.counter_after),
+                    (decision.work_item_id, decision.counter_after),
                 ),
                 "The preparation counter already exists.",
             )
@@ -472,7 +472,7 @@ def write_preparation_authority(
                 SET generation_high_water = ?
                 WHERE item_id = ? AND generation_high_water = ?
                 """,
-                (decision.counter_after, decision.item, decision.counter_before),
+                (decision.counter_after, decision.work_item_id, decision.counter_before),
             ),
             "The preparation-authority counter is stale.",
         )
@@ -485,7 +485,7 @@ def write_preparation_authority(
         ON CONFLICT(item_id, generation) DO NOTHING
         """,
         (
-            proposed_replacement.item,
+            proposed_replacement.work_item_id,
             proposed_replacement.generation,
             proposed_replacement.lease_id,
             proposed_replacement.task_id,
@@ -498,7 +498,7 @@ def write_preparation_authority(
         FROM preparation_lease_generations
         WHERE item_id = ? AND generation = ?
         """,
-        (proposed_replacement.item, proposed_replacement.generation),
+        (proposed_replacement.work_item_id, proposed_replacement.generation),
     ).fetchone()
     if anchor is None or tuple(anchor) != (
         proposed_replacement.lease_id,
@@ -517,7 +517,7 @@ def write_preparation_authority(
                 ON CONFLICT(item_id) DO NOTHING
                 """,
                 (
-                    proposed_replacement.item,
+                    proposed_replacement.work_item_id,
                     proposed_replacement.generation,
                     proposed_replacement.definition_revision,
                     proposed_replacement.definition_digest,
@@ -544,7 +544,7 @@ def write_preparation_authority(
                 proposed_replacement.acquired_at.isoformat(),
                 proposed_replacement.expires_at.isoformat(),
                 proposed_replacement.state.value,
-                expected_retained.item,
+                expected_retained.work_item_id,
                 expected_retained.generation,
                 expected_retained.definition_revision,
                 expected_retained.definition_digest,
@@ -570,7 +570,7 @@ def consume_preparation_authority(
                 SET generation_high_water = ?
                 WHERE item_id = ? AND generation_high_water = ?
                 """,
-                (authority.generation + 1, authority.item, authority.generation),
+                (authority.generation + 1, authority.work_item_id, authority.generation),
             ),
             "The preparation-authority counter is stale.",
         )
@@ -582,7 +582,7 @@ def consume_preparation_authority(
         VALUES (?, ?, ?, ?, ?)
         """,
         (
-            authority.item,
+            authority.work_item_id,
             authority.generation + 1,
             authority.lease_id,
             authority.task_id,
@@ -600,7 +600,7 @@ def consume_preparation_authority(
             (
                 authority.generation + 1,
                 consumed_at.isoformat(),
-                authority.item,
+                authority.work_item_id,
                 authority.generation,
                 authority.definition_revision,
                 authority.definition_digest,

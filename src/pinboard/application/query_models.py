@@ -9,7 +9,7 @@ import msgspec
 
 from pinboard.application import artifacts, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, ProposalId, TaskId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, LeaseId, ProposalId, TaskId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
@@ -31,10 +31,10 @@ class ProjectOverviewFacts:
 class DecisionScope:
     """Exact persisted relationships whose current facts can affect one decision."""
 
-    item_ids: tuple[ItemId, ...]
-    related_item_ids: tuple[ItemId, ...]
-    dependency_closure_roots: tuple[ItemId, ...]
-    live_dependent_roots: tuple[ItemId, ...]
+    work_item_ids: tuple[WorkItemId, ...]
+    related_work_item_ids: tuple[WorkItemId, ...]
+    dependency_closure_roots: tuple[WorkItemId, ...]
+    live_dependent_roots: tuple[WorkItemId, ...]
     attempt_ids: tuple[AttemptId, ...]
     proposal_ids: tuple[ProposalId, ...]
     artifact_ref_ids: tuple[ArtifactRefId, ...]
@@ -44,7 +44,7 @@ class DecisionScope:
 @dataclass(frozen=True, slots=True)
 class AttemptLineage:
     attempt_id: AttemptId
-    item_id: ItemId
+    work_item_id: WorkItemId
     branch: str
     base_revision: str
 
@@ -57,16 +57,16 @@ class DecisionFacts:
 
 @dataclass(frozen=True, slots=True)
 class ItemProjectionFacts:
-    item: stored_state.StoredWorkItem
-    dependencies: tuple[ItemId, ...]
+    work_item: stored_state.StoredWorkItem
+    dependencies: tuple[WorkItemId, ...]
     overview: OverviewItem | None
     definition: stored_state.ItemDefinitionRevision
 
 
 @dataclass(frozen=True, slots=True)
 class ItemOverviewFacts:
-    item: work_models.WorkItem
-    dependency_liveness: tuple[tuple[ItemId, bool], ...]
+    work_item: work_models.WorkItem
+    dependency_liveness: tuple[tuple[WorkItemId, bool], ...]
     definition: work_models.DefinitionAnchor
     proposals: tuple[stored_state.StoredProposal, ...]
     preparation: PreparationAuthorityStatus | None
@@ -102,7 +102,7 @@ class AttemptAuthorityStatus:
 
 @dataclass(frozen=True, slots=True)
 class PreparationAuthorityStatus:
-    item_id: ItemId
+    work_item_id: WorkItemId
     definition_revision: int
     definition_digest: str
     task_id: TaskId
@@ -518,12 +518,12 @@ type NonterminalItemState = Literal[
 
 @dataclass(frozen=True, slots=True)
 class AttemptContextItemFacts:
-    item_id: ItemId
+    work_item_id: WorkItemId
     subject_revision: str
     state: NonterminalItemState
     current_definition_revision: int
     current_definition_digest: str
-    live_dependencies: tuple[ItemId, ...]
+    live_dependencies: tuple[WorkItemId, ...]
     current_replacement_revision: int | None
     replacement_resolved: bool
 
@@ -532,7 +532,7 @@ class AttemptContextItemFacts:
 class TerminalAttemptContextFacts:
     project_revision: int
     attempt_id: AttemptId
-    item_id: ItemId
+    work_item_id: WorkItemId
 
 
 @dataclass(frozen=True, slots=True)
@@ -540,7 +540,7 @@ class NonterminalAttemptContextFacts:
     project_revision: int
     attempt_id: AttemptId
     subject_revision: str
-    item_id: ItemId
+    work_item_id: WorkItemId
     state: NonterminalAttemptState
     branch: str
     base_revision: str
@@ -548,7 +548,7 @@ class NonterminalAttemptContextFacts:
     accepted_scope_digest: str
     candidate_revision: str | None
     brief_artifact_ref_id: ArtifactRefId
-    item: AttemptContextItemFacts
+    work_item: AttemptContextItemFacts
     brief_reference: artifacts.BriefArtifactRef
 
 
@@ -570,7 +570,7 @@ class ReviewJobContextFacts:
 @dataclass(frozen=True, slots=True)
 class CandidateSnapshotContextFacts:
     attempt_id: AttemptId
-    item_id: ItemId
+    work_item_id: WorkItemId
     state: work_models.AttemptState
     branch: str
     base_revision: str
@@ -602,7 +602,7 @@ class CompletionCandidateRequired:
 @dataclass(frozen=True, slots=True)
 class CompletionRecoveryRequired:
     attempt_id: AttemptId
-    item_id: ItemId
+    work_item_id: WorkItemId
     route: Literal[
         "accept-checkpoint",
         "dispatch",
@@ -624,7 +624,7 @@ type ItemStatusAuthority = Literal["sqlite-v6"]
 
 @dataclass(frozen=True, slots=True)
 class ItemStatusItemFacts:
-    item_id: ItemId
+    work_item_id: WorkItemId
     state: stored_state.StoredWorkItemState
     timing: work_models.Timing | None
     outcome_evidence: str | None
@@ -644,7 +644,7 @@ class ItemStatusAttemptFacts:
 @dataclass(frozen=True, slots=True)
 class ItemStatusLifecycleFacts:
     project_revision: int
-    item: ItemStatusItemFacts
+    work_item: ItemStatusItemFacts
     definition_title: str | None
     attempts: tuple[ItemStatusAttemptFacts, ...]
 
@@ -652,7 +652,7 @@ class ItemStatusLifecycleFacts:
 @dataclass(frozen=True, slots=True)
 class ItemStatusFacts:
     project_revision: int
-    item: ItemStatusItemFacts
+    work_item: ItemStatusItemFacts
     definition_title: str | None
     attempts: tuple[ItemStatusAttemptFacts, ...]
     preparation: PreparationAuthorityStatus | None
@@ -725,10 +725,10 @@ class ParallelAttemptFacts:
 
 @dataclass(frozen=True, slots=True)
 class ParallelPreviewItemFacts:
-    item_id: ItemId
+    work_item_id: WorkItemId
     label: str
     state: work_models.WorkState
-    live_dependencies: tuple[ItemId, ...]
+    live_dependencies: tuple[WorkItemId, ...]
     preparation: ParallelPreparationFacts | None
     attempt: ParallelAttemptFacts | None
 

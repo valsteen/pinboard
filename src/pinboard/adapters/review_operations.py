@@ -210,7 +210,7 @@ def _candidate_review_record(
     review = work_brief_models.CandidateReview(
         "pinboard-candidate-review/v1",
         str(attempt.attempt_id),
-        str(attempt.item_id),
+        str(attempt.work_item_id),
         candidate_revision,
         _portable("candidate", candidate.reference),
         _portable("accepted-brief", attempt.brief_reference),
@@ -397,7 +397,7 @@ def _select_prior_checkpoint_package(
         package_reference,
         package_bytes,
         attempt_id=str(attempt_id),
-        item_id=str(attempt.item_id),
+        item_id=str(attempt.work_item_id),
     )
     if isinstance(package, work_brief_models.WorkBriefFailure):
         return _review_job_failure(package.message)

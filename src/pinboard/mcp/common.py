@@ -120,7 +120,7 @@ def select_capture_item(  # noqa: C901 - one MCP boundary interprets its support
         durable = resolve_durable_roots(shared_repository, Path(work_root))
         context = compose_store(durable).read_attempt_context(AttemptId(attempt_id))
         if context is not None:
-            return str(context.item_id)
+            return str(context.work_item_id)
     return subject
 
 

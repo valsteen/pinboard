@@ -132,7 +132,7 @@ def _insert_proposals(connection: sqlite3.Connection, records: stored_state.Prop
                 value.trigger,
                 value.why_it_matters,
                 value.relation.kind.value,
-                value.relation.item,
+                value.relation.work_item_id,
                 value.relation.replacement_cost
                 if isinstance(value.relation, work_models.PlannedReplacementProposalRelation)
                 else None,

@@ -48,7 +48,7 @@ from pinboard.application.work_briefs import (
 from pinboard.cli.entrypoint import main
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, LeaseId, TaskId, WorkItemId
 from pinboard.mcp import server
 from tests.artifact_support import write_revision
 from tests.native_support import call_native_tool
@@ -202,7 +202,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         brief = work_a_brief(Path(tempfile.mkdtemp()).resolve())
         checkpoint = brief.checkpoint
         assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
-        definition, _digest = test_definition(ItemId("work-a"))
+        definition, _digest = test_definition(WorkItemId("work-a"))
         self.assertIsNone(validate_definition_brief_agreement(definition, brief))
         unknown = replace(
             brief,
@@ -667,7 +667,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     value = work_c_brief()
                     preparation = work_models.PreparationCommandAuthority(
                         2,
-                        ItemId("work-c"),
+                        WorkItemId("work-c"),
                         value.accepted_scope.revision,
                         value.accepted_scope.digest,
                         TaskId("preparer"),
@@ -677,7 +677,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                         datetime.max.replace(tzinfo=UTC),
                     )
                     capability = decision_models.MutationActionCapability(
-                        ItemId("work-c"),
+                        WorkItemId("work-c"),
                         "label",
                         subject_revision="1",
                         preparation_authority=preparation,
@@ -695,7 +695,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 else:
                     value = work_a_brief(project)
                     capability = decision_models.MutationActionCapability(
-                        ItemId("work-a"), "label", subject_revision="1"
+                        WorkItemId("work-a"), "label", subject_revision="1"
                     )
                     command = decision_models.ResumeCommand(
                         decision_models.ResumeAction(capability), work_models.ResumeInput(ArtifactRefId(1))

@@ -178,7 +178,6 @@ class OperationFailureTest(unittest.TestCase):
         command = decision_models.RebindAttemptCommand(
             decision_models.RebindAttemptAction(capability),
             work_models.RebindAttemptInput(
-                AttemptId("work-a-1"),
                 "codex/work-a",
                 "base-revision",
                 ArtifactRefId(1),

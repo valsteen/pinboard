@@ -94,6 +94,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
     )
     request_ids = itertools.count(1)
 
+    # Async SDK callbacks let cancellation reach _run_request and its queued or running executor checkpoints.
     @server.tool(
         name=ORDER_TOOL,
         description="Save an explicitly human-authorized complete priority permutation against the current live order; fresh overview reconciles state, not caller commitment. Never grants launch authority.",

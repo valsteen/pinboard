@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.identifiers import ItemId
+from pinboard.domain.identifiers import WorkItemId
 
 
 class HistoricalActionKind(Enum):
@@ -27,7 +27,7 @@ def decode_released_v6_action_kind(value: str) -> decision_models.ActionKind | H
 
 @dataclass(frozen=True, slots=True)
 class HistoricalAcceptedProposalDisposition:
-    target: ItemId
+    target: WorkItemId
     disposed_at: datetime
     kind: work_models.ProposalDispositionKind = field(init=False, default=work_models.ProposalDispositionKind.ACCEPTED)
 

@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 import msgspec
 
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import ItemId
+from pinboard.domain.identifiers import WorkItemId
 
 type CanonicalLine = Annotated[str, msgspec.Meta(pattern=r"\A\S(?:[^\r\n]*\S)?\z")]
 type Identity = Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
@@ -60,7 +60,7 @@ def decode_v1(payload: bytes) -> work_models.WorkItemDefinition:
         record.scope,
         record.non_scope,
         record.acceptance_criteria,
-        tuple(ItemId(value) for value in record.dependencies),
+        tuple(WorkItemId(value) for value in record.dependencies),
         record.effect,
         record.unlock,
         work_models.CheckoutPolicy.LEGACY_UNRECORDED,

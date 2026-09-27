@@ -74,6 +74,8 @@ Distribution version lookup, module command aliases and the Claude-native startu
 
 `domain` owns immutable identifiers, ledger values, canonical history records, and pure decisions. It does not read files, issue SQL, parse command-line or JSON input, render views, or coordinate transactions.
 
+`WorkItemId` is the domain identifier for a `WorkItem`. Action subjects and work-item changes use that type; `TaskId` identifies the acting task. Public and stored `item_id` spellings are converted at their respective boundaries.
+
 | Owner group | Responsibility |
 | --- | --- |
 | `work_models.py`, `ledger.py`, `identifiers.py`, `errors.py` | Work-ledger values and canonical artifact kinds, read-only snapshot behavior, opaque identifiers, expected decision failures, exact mismatch facts, effect disposition, retry classification, and recovery-action receipts |
@@ -103,6 +105,8 @@ Expected rejections return typed failure values. Domain and stale-persistence pa
 
 SQLite rows are not active domain objects. `StoredWorkState` is the exact typed read aggregate without SQL handles or filesystem paths, while live mutations carry only the accepted decision, receipt, and affected auxiliary values. `LedgerSnapshot` remains the storage-independent decision input.
 
+Application decision scopes, attempt contexts, authority results, and committed effects use `work_item_id` or `work_item_ids` for domain work-item values. Storage records and public result records retain their supported `item_id` spelling; their adapters and presenters perform the conversion.
+
 ### Adapters
 
 Adapters own concrete persistence and filesystem mechanics without deciding product legality or presenting commands.
@@ -128,6 +132,8 @@ Adapters own concrete persistence and filesystem mechanics without deciding prod
 ### CLI
 
 `cli` owns the installed human-maintenance boundary, not agent workflow discovery or execution. It composes application use cases and concrete adapters without owning lifecycle legality or persistence policy. Its exact nine leaves are `root`, `init`, `status`, `validate`, `views rebuild`, `export`, `close`, `migrate-work-root` and `tool-contract`. Help, version and module entry remain available.
+
+The `close` leaf decodes its public `item_id` into `WorkItemId` before selecting the action. Its result keeps the public `item_id` spelling.
 
 The launcher's optional exact process capture remains outside this command grammar. It observes one complete normal CLI process, including parser rejection and prestart failure, without adding a ninth command leaf or changing `entrypoint.py` output. MCP and Claude hook startup remain protocol-specific paths and cannot be selected through CLI capture.
 
@@ -157,6 +163,8 @@ Parent attribution refreshes when the native host delivers SessionStart on start
 Exact attempt inspection includes verified current accepted snapshot identity and a native `pinboard_candidate_restore` invocation. It preserves exact work root and inspected candidate while leaving the caller-selected exact clean checkout unresolved. The native restore tool invokes `adapters.candidate_evidence` and existing Git effects. They require the current accepted snapshot context; paused checkpoint acceptance clears that context, and neither selects arbitrary archived candidates. An inspected candidate superseded by a newer submission rejects before Git.
 
 `mcp` owns one local-stdio boundary, not a general CLI mirror. `server.py` is SDK registration and composition for exactly twenty-one tools: complete work-brief construction, verified source preparation, current item status, full item definition/history, proposal creation, canonical brief publication, independent negative brief-review publication/status, current overview, saved human priority, selected/all-safe structural parallel preview, legal-action discovery, exact attempt inspection, correction context, immutable-artifact verification, candidate observation and restoration, preparation authority, attempt authority, lifecycle transition, dispatch, and review-job. `execution.py` owns bounded admission, cancellation, diagnostics, and exact semantic capture. `adapters.files.contributor_traces` owns the ignored local setting, effective item mode, private trace directory, and automatic retention. `common.py` owns shared root, store and generated-view glue. `read_operations.py`, `mutation_operations.py`, and `job_operations.py` own their respective transport-to-application flows, while `tool_names.py` owns the stable wire names. CLI and MCP compose the same application use cases and concrete adapters without importing each other. The CLI has no agent workflow counterparts.
+
+SDK tool callbacks remain async so cancellation reaches `execution._run_request`, which cancels queued work or signals a running callback at its safe checkpoints. Action discovery supplies a structured kind and subject; rebind, definition revision, planned replacement, and temporary retention payloads use that selected subject rather than repeating it. Distinct replacement targets, source-task attribution, and candidate correlations remain explicit.
 
 A dedicated MCP process may still opt in at startup with `scripts/pinboard --mcp --capture-evidence-dir <existing-directory> --safe-to-persist-exactly`; that declaration keeps its caller-selected destination. Without it, the long-lived MCP execution boundary rereads the project setting and identifiable item override before each callback, including calls with the stored mode off. It observes an existing shared `.pinboard` directory without creating or syncing its parent; only a missing setting file or mode key is written inside that work root. Valid effective off reaches the callback without creating a trace destination. Invalid settings reject before the callback. Effective on preflights the ignored private `.pinboard/invocation-traces/` destination and publishes an automatic file after the callback. The private directory is mode `0700`, files are mode `0600`, and automatic retention keeps the newest 100 files. Each registration passes the SDK-decoded argument object to shared execution. After strict result validation, that boundary publishes one unique immutable JSON file whose filename binds its SHA-256 digest and size and whose body preserves the request and exact validated result with separate semantic identities. Interrupted or exceptional callbacks record an unavailable result. A strict result-validation failure preserves the original request, callback classification and commit reference. A pre-publication capture failure emits `capture-unavailable` diagnostics while preserving the exact validated tool result; a post-publication synchronization or retention failure emits `capture-committed-with-warning` with the published selector. Neither aftermath turns a committed mutation into a transport error or invites replay. Transport bytes and pre-callback client events remain unavailable; the negotiated tool schemas are unchanged.
 
@@ -375,6 +383,8 @@ When review accepts the protected candidate but the current attempt should conti
 ## Stored formats
 
 The default `.pinboard` path is current; explicit work roots remain supported. A legacy-only `.codex/pinboard` project is rejected before ordinary state composition with recovery naming `pinboard migrate-work-root`. That explicit command verifies the current schema, adds the canonical Git exclusion, moves the existing tree without rewriting SQLite or artifact bytes, installs the exact relative compatibility alias, and reports `repository-git-exclude`, `work-root`, and `compatibility-alias` effects separately. Migration assumes no other Pinboard process accesses the project during the move. This prevents competing roots without claiming rolling-upgrade support; reopen the assumption for supported rolling upgrades, observed overlap, or a materially changed consequence. Current durable and transport identities have separate owners:
+
+Current SQLite columns and JSON records retain their `item_id` spelling. SQLite row decoding constructs `WorkItemId`; renderers convert it back to the required stored or public representation. The type rename changes no durable bytes or schema.
 
 | Product | Supported format |
 | --- | --- |

@@ -5,7 +5,7 @@ from typing import Annotated
 import msgspec
 
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import HostId, ItemId, TaskId
+from pinboard.domain.identifiers import HostId, TaskId, WorkItemId
 
 _PATH_COMPONENT_ID = msgspec.Meta(min_length=1, pattern=r"\A(?!\.{1,2}\z)[^/\r\n\x00]+\z")
 _RUNTIME_ID = msgspec.Meta(
@@ -13,7 +13,7 @@ _RUNTIME_ID = msgspec.Meta(
     pattern=r"\A(?!\s)(?!\.{1,2}\z)[^/\r\n\x00]*[^\s/\r\n\x00]\z",
 )
 type StableHostId = Annotated[HostId, _RUNTIME_ID]
-type StableItemId = Annotated[ItemId, _PATH_COMPONENT_ID]
+type StableWorkItemId = Annotated[WorkItemId, _PATH_COMPONENT_ID]
 type StableTaskId = Annotated[TaskId, _RUNTIME_ID]
 
 
@@ -43,7 +43,7 @@ class StatusCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class CloseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    item_id: StableItemId
+    item_id: StableWorkItemId
     outcome: work_models.CloseOutcome
     reason: str
     task_id: StableTaskId

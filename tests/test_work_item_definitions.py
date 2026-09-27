@@ -11,7 +11,7 @@ from pinboard.domain.decisions import available_actions, decide
 from pinboard.domain.definition_decisions import decide_definition_revision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.history import decode_work_item_definition, work_item_definition_bytes, work_item_definition_digest
-from pinboard.domain.identifiers import AttemptId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import AttemptId, LeaseId, TaskId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 from tests.domain_support import expect_success
 
@@ -27,7 +27,7 @@ def definition() -> work_models.WorkItemDefinition:
         scope=("Map the western route.", "Map the eastern route."),
         non_scope=("Do not redesign combat.",),
         acceptance_criteria=("The next area is reachable.",),
-        dependencies=(ItemId("survey-west"), ItemId("survey-east")),
+        dependencies=(WorkItemId("survey-west"), WorkItemId("survey-east")),
         effect="Navigable routes are available.",
         unlock="The party can reach the next area.",
         checkout_policy=work_models.CheckoutPolicy.ISOLATED,
@@ -107,7 +107,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
         current = definition()
         current_digest = expect_success(work_item_definition_digest(current))
         item = work_models.WorkItem(
-            ItemId("build-map"),
+            WorkItemId("build-map"),
             work_models.WorkState.ACTIVE,
             None,
             current.dependencies,
@@ -121,16 +121,15 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
         snapshot = LedgerSnapshot(
             "ledger-revision",
             (item,),
-            definitions=(work_models.DefinitionAnchor(item.item, 3, current_digest, current),),
-            history_items=(ItemId("survey-west"), ItemId("survey-east")),
+            definitions=(work_models.DefinitionAnchor(item.work_item_id, 3, current_digest, current),),
+            history_items=(WorkItemId("survey-west"), WorkItemId("survey-east")),
         )
 
         decision = expect_success(
             decide_definition_revision(
                 snapshot,
-                item.item,
-                work_models.ReviseItemDefinitionInput(
-                    item.item,
+                item.work_item_id,
+                work_models.ReviseWorkItemDefinitionInput(
                     3,
                     current_digest,
                     TaskId("owner-task"),
@@ -150,59 +149,63 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
         current = definition()
         current_digest = expect_success(work_item_definition_digest(current))
         build = work_models.WorkItem(
-            ItemId("build-map"), work_models.WorkState.PAUSED, None, (), None, "source", "continue", "", 1
+            WorkItemId("build-map"), work_models.WorkState.PAUSED, None, (), None, "source", "continue", "", 1
         )
         survey = work_models.WorkItem(
-            ItemId("survey-west"), work_models.WorkState.READY, None, (build.item,), None, "source", "continue", "", 2
+            WorkItemId("survey-west"),
+            work_models.WorkState.READY,
+            None,
+            (build.work_item_id,),
+            None,
+            "source",
+            "continue",
+            "",
+            2,
         )
         snapshot = LedgerSnapshot(
             "ledger-revision",
             (build, survey),
             definitions=(
-                work_models.DefinitionAnchor(build.item, 3, current_digest, current),
+                work_models.DefinitionAnchor(build.work_item_id, 3, current_digest, current),
                 work_models.DefinitionAnchor(
-                    survey.item,
+                    survey.work_item_id,
                     1,
                     "a" * 64,
-                    replace(current, dependencies=(build.item,)),
+                    replace(current, dependencies=(build.work_item_id,)),
                 ),
             ),
-            history_items=(ItemId("survey-east"),),
+            history_items=(WorkItemId("survey-east"),),
         )
 
         cases = (
             (
-                work_models.ReviseItemDefinitionInput(
-                    build.item, 2, current_digest, TaskId("owner-task"), "Reason", current
-                ),
+                work_models.ReviseWorkItemDefinitionInput(2, current_digest, TaskId("owner-task"), "Reason", current),
                 DecisionFailureCode.ITEM_DEFINITION_STALE,
             ),
             (
-                work_models.ReviseItemDefinitionInput(
-                    build.item,
+                work_models.ReviseWorkItemDefinitionInput(
                     3,
                     current_digest,
                     TaskId("owner-task"),
                     "Reason",
-                    replace(current, dependencies=(ItemId("absent"),)),
+                    replace(current, dependencies=(WorkItemId("absent"),)),
                 ),
                 DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
             ),
             (
-                work_models.ReviseItemDefinitionInput(
-                    build.item,
+                work_models.ReviseWorkItemDefinitionInput(
                     3,
                     current_digest,
                     TaskId("owner-task"),
                     "Reason",
-                    replace(current, dependencies=(survey.item,)),
+                    replace(current, dependencies=(survey.work_item_id,)),
                 ),
                 DecisionFailureCode.ITEM_DEPENDENCY_CYCLE,
             ),
         )
         for value, code in cases:
             with self.subTest(code=code):
-                rejected = decide_definition_revision(snapshot, build.item, value, NOW)
+                rejected = decide_definition_revision(snapshot, build.work_item_id, value, NOW)
                 self.assertIsInstance(rejected, DecisionFailure)
                 self.assertEqual(code, rejected.code)
 
@@ -212,14 +215,14 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
         snapshot = LedgerSnapshot(
             "ledger-revision",
             (),
-            definitions=(work_models.DefinitionAnchor(ItemId("done"), 1, digest, current),),
-            history_items=(ItemId("done"),),
+            definitions=(work_models.DefinitionAnchor(WorkItemId("done"), 1, digest, current),),
+            history_items=(WorkItemId("done"),),
         )
 
         rejected = decide_definition_revision(
             snapshot,
-            ItemId("done"),
-            work_models.ReviseItemDefinitionInput(ItemId("done"), 1, digest, TaskId("owner"), "Reason", current),
+            WorkItemId("done"),
+            work_models.ReviseWorkItemDefinitionInput(1, digest, TaskId("owner"), "Reason", current),
             NOW,
         )
 
@@ -241,7 +244,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
         revised_digest = expect_success(work_item_definition_digest(revised))
         attempt_id = AttemptId("build-map-1")
         item = work_models.WorkItem(
-            ItemId("build-map"),
+            WorkItemId("build-map"),
             work_models.WorkState.ACTIVE,
             None,
             (),
@@ -253,20 +256,20 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
         )
         attempt = work_models.AttemptRecord(
             attempt_id,
-            item.item,
+            item.work_item_id,
             work_models.AttemptState.ACTIVE,
             1,
             accepted_digest,
         )
-        authority = work_models.AttemptAuthority(attempt_id, item.item, LeaseId("worker-lease"), 1)
+        authority = work_models.AttemptAuthority(attempt_id, item.work_item_id, LeaseId("worker-lease"), 1)
         snapshot = LedgerSnapshot(
             "revision",
             (item,),
             attempts=(attempt,),
             attempt_authorities=(authority,),
-            definitions=(work_models.DefinitionAnchor(item.item, 2, revised_digest, revised),),
+            definitions=(work_models.DefinitionAnchor(item.work_item_id, 2, revised_digest, revised),),
             subject_revisions=(
-                work_models.SubjectRevision(item.item, "2"),
+                work_models.SubjectRevision(item.work_item_id, "2"),
                 work_models.SubjectRevision(attempt_id, "1"),
             ),
         )

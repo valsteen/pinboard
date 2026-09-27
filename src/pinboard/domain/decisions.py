@@ -12,7 +12,7 @@ from pinboard.domain.errors import (
     FailureDetails,
     RetryDisposition,
 )
-from pinboard.domain.identifiers import AttemptId, ItemId, LedgerId, ProposalId, SubjectId
+from pinboard.domain.identifiers import AttemptId, LedgerId, ProposalId, SubjectId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
@@ -39,7 +39,7 @@ class ActionCapabilityFactory:
         )
 
 
-def _subject_revision(snapshot: LedgerSnapshot, subject: ItemId | AttemptId | ProposalId) -> str:
+def _subject_revision(snapshot: LedgerSnapshot, subject: WorkItemId | AttemptId | ProposalId) -> str:
     revision = snapshot.subject_revision(subject)
     if revision is None:
         raise ValueError(f"Snapshot has no revision for subject '{subject}'.")
@@ -58,14 +58,14 @@ def _definition_stale(snapshot: LedgerSnapshot, item: work_models.WorkItem) -> b
     if item.attempt is None:
         return False
     attempt = snapshot.attempts_by_id().get(item.attempt)
-    definition = snapshot.definition(item.item)
+    definition = snapshot.definition(item.work_item_id)
     if attempt is None or attempt.accepted_scope_revision is None or definition is None:
         return False
     current_identity = definition.revision, definition.digest
     return (attempt.accepted_scope_revision, attempt.accepted_scope_digest) != current_identity
 
 
-def _replacement_resolved(snapshot: LedgerSnapshot, item: ItemId) -> bool:
+def _replacement_resolved(snapshot: LedgerSnapshot, item: WorkItemId) -> bool:
     return snapshot.unresolved_replacement(item) is None
 
 
@@ -84,15 +84,15 @@ def _context_definition_stale(context: work_models.ProjectAttemptActionContext) 
     )
 
 
-def _require_item(snapshot: LedgerSnapshot, item_id: ItemId) -> DecisionResult[work_models.WorkItem]:
-    item = snapshot.item(item_id)
+def _require_work_item(snapshot: LedgerSnapshot, work_item_id: WorkItemId) -> DecisionResult[work_models.WorkItem]:
+    item = snapshot.work_item(work_item_id)
     if item is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.", None)
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' does not exist.", None)
     return item
 
 
 def _require_attempt_item(snapshot: LedgerSnapshot, attempt_id: AttemptId) -> DecisionResult[work_models.WorkItem]:
-    item = snapshot.item_for_attempt(attempt_id)
+    item = snapshot.work_item_for_attempt(attempt_id)
     if item is None:
         return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.", None)
     return item
@@ -114,7 +114,7 @@ def _require_review_item(
 def _worker_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory) -> tuple[decision_models.Action, ...]:
     result: list[decision_models.Action] = []
     for attempt in factory.actor.attempts:
-        item = snapshot.item_for_attempt(attempt)
+        item = snapshot.work_item_for_attempt(attempt)
         authority = _find_attempt_authority(snapshot, factory.actor, attempt)
         if item is None or authority is None or item.state != work_models.WorkState.ACTIVE:
             continue
@@ -125,17 +125,17 @@ def _worker_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory) 
         revision = _subject_revision(snapshot, attempt)
         result.append(
             decision_models.ReportBlockerAction(
-                factory.make(attempt, f"Prepare blocker report for {item.item}", revision, command_authority)
+                factory.make(attempt, f"Prepare blocker report for {item.work_item_id}", revision, command_authority)
             )
         )
-        if not _definition_stale(snapshot, item) and _replacement_resolved(snapshot, item.item):
+        if not _definition_stale(snapshot, item) and _replacement_resolved(snapshot, item.work_item_id):
             result.extend(
                 (
                     decision_models.ContinueAction(
-                        factory.make(attempt, f"Continue {item.item}", revision, command_authority)
+                        factory.make(attempt, f"Continue {item.work_item_id}", revision, command_authority)
                     ),
                     decision_models.SubmitReviewAction(
-                        factory.make(attempt, f"Submit {item.item} for review", revision, command_authority)
+                        factory.make(attempt, f"Submit {item.work_item_id} for review", revision, command_authority)
                     ),
                 )
             )
@@ -145,10 +145,10 @@ def _worker_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory) 
 def _preparer_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory) -> tuple[decision_models.Action, ...]:
     result: list[decision_models.Action] = []
     for item_id in factory.actor.preparations:
-        item = snapshot.item(item_id)
+        item = snapshot.work_item(item_id)
         authority = snapshot.preparation_for(item_id, factory.actor.lease_id, factory.actor.generation)
         command = next(
-            (value for value in snapshot.command_preparation_authorities if value.item == item_id),
+            (value for value in snapshot.command_preparation_authorities if value.work_item_id == item_id),
             None,
         )
         if (
@@ -156,15 +156,15 @@ def _preparer_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory
             or authority is None
             or command is None
             or item.state != work_models.WorkState.READY
-            or not _replacement_resolved(snapshot, item.item)
+            or not _replacement_resolved(snapshot, item.work_item_id)
         ):
             continue
-        subject_revision = _subject_revision(snapshot, item.item)
+        subject_revision = _subject_revision(snapshot, item.work_item_id)
         result.append(
             decision_models.ActivateAction(
                 factory.make(
-                    item.item,
-                    f"Activate {item.item}",
+                    item.work_item_id,
+                    f"Activate {item.work_item_id}",
                     subject_revision,
                     preparation_authority=command,
                 )
@@ -192,12 +192,14 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
             attempt_actions.extend(
                 (
                     decision_models.ContinueAction(
-                        factory.make(context.attempt, f"Continue {context.item}", context.attempt_subject_revision)
+                        factory.make(
+                            context.attempt, f"Continue {context.work_item_id}", context.attempt_subject_revision
+                        )
                     ),
                     decision_models.DispatchAction(
                         factory.make(
                             context.attempt,
-                            f"Prepare a worker launch for {context.item}",
+                            f"Prepare a worker launch for {context.work_item_id}",
                             context.attempt_subject_revision,
                         )
                     ),
@@ -208,18 +210,20 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
                 decision_models.RebindAttemptAction(
                     factory.make(
                         context.attempt,
-                        f"Rebind the accepted scope and Git baseline for {context.item}",
+                        f"Rebind the accepted scope and Git baseline for {context.work_item_id}",
                         context.attempt_subject_revision,
                     )
                 ),
                 decision_models.PauseAction(
                     factory.make(
-                        context.attempt, f"Pause and preserve {context.item}", context.attempt_subject_revision
+                        context.attempt, f"Pause and preserve {context.work_item_id}", context.attempt_subject_revision
                     )
                 ),
                 decision_models.BlockAttemptAction(
                     factory.make(
-                        context.attempt, f"Block active attempt for {context.item}", context.attempt_subject_revision
+                        context.attempt,
+                        f"Block active attempt for {context.work_item_id}",
+                        context.attempt_subject_revision,
                     )
                 ),
             )
@@ -227,14 +231,18 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
     if context.item_state == work_models.WorkState.REVIEW:
         attempt_actions.append(
             decision_models.ReturnForCorrectionAction(
-                factory.make(context.attempt, f"Return {context.item} for correction", context.attempt_subject_revision)
+                factory.make(
+                    context.attempt, f"Return {context.work_item_id} for correction", context.attempt_subject_revision
+                )
             )
         )
         if not stale and context.replacement_resolved:
             attempt_actions.append(
                 decision_models.AcceptCheckpointAction(
                     factory.make(
-                        context.attempt, f"Accept a checkpoint for {context.item}", context.attempt_subject_revision
+                        context.attempt,
+                        f"Accept a checkpoint for {context.work_item_id}",
+                        context.attempt_subject_revision,
                     )
                 )
             )
@@ -243,7 +251,7 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
                     decision_models.AcceptReviewAndContinueAction(
                         factory.make(
                             context.attempt,
-                            f"Accept the review and continue {context.item}",
+                            f"Accept the review and continue {context.work_item_id}",
                             context.attempt_subject_revision,
                         )
                     )
@@ -254,7 +262,7 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
         and context.replacement_resolved
     ):
         label = (
-            f"Terminally complete {context.item} only after every authorized integration and publication effect, "
+            f"Terminally complete {context.work_item_id} only after every authorized integration and publication effect, "
             "then exact disposable worktree, local branch, and remote branch cleanup, are verified or not applicable"
         )
         attempt_actions.append(
@@ -264,8 +272,8 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
     item_actions: list[decision_models.Action] = [
         decision_models.RecordReplacementAction(
             factory.make(
-                context.item,
-                f"Record or withdraw a planned replacement for {context.item}",
+                context.work_item_id,
+                f"Record or withdraw a planned replacement for {context.work_item_id}",
                 context.item_subject_revision,
             )
         )
@@ -274,17 +282,19 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
         item_actions.append(
             decision_models.RetainTemporarilyAction(
                 factory.make(
-                    context.item,
-                    f"Accept the temporary replacement cost for {context.item}",
+                    context.work_item_id,
+                    f"Accept the temporary replacement cost for {context.work_item_id}",
                     context.item_subject_revision,
                 )
             )
         )
     if context.revision_available:
         item_actions.append(
-            decision_models.ReviseItemAction(
+            decision_models.ReviseWorkItemAction(
                 factory.make(
-                    context.item, f"Revise the accepted definition for {context.item}", context.item_subject_revision
+                    context.work_item_id,
+                    f"Revise the accepted definition for {context.work_item_id}",
+                    context.item_subject_revision,
                 )
             )
         )
@@ -293,7 +303,7 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
             decision_models.RebindAttemptAction(
                 factory.make(
                     context.attempt,
-                    f"Rebind the accepted scope and Git baseline for {context.item}",
+                    f"Rebind the accepted scope and Git baseline for {context.work_item_id}",
                     context.attempt_subject_revision,
                 )
             )
@@ -301,14 +311,18 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
         if not context.live_dependencies and context.replacement_resolved:
             item_actions.append(
                 decision_models.ResumeAction(
-                    factory.make(context.item, f"Return {context.item} to active", context.item_subject_revision)
+                    factory.make(
+                        context.work_item_id, f"Return {context.work_item_id} to active", context.item_subject_revision
+                    )
                 )
             )
     elif context.item_state == work_models.WorkState.BLOCKED:
         if not context.live_dependencies and context.replacement_resolved:
             item_actions.append(
                 decision_models.ResumeAction(
-                    factory.make(context.item, f"Return {context.item} to active", context.item_subject_revision)
+                    factory.make(
+                        context.work_item_id, f"Return {context.work_item_id} to active", context.item_subject_revision
+                    )
                 )
             )
     return ProjectAttemptActionGroups(tuple(attempt_actions), tuple(item_actions))
@@ -322,12 +336,12 @@ def _project_attempt_context(
 ) -> work_models.ProjectAttemptActionContext | None:
     if item.attempt is None:
         return None
-    live_items = snapshot.items_by_id()
-    definition = snapshot.definition(item.item)
-    replacement = snapshot.current_replacement(item.item)
+    live_items = snapshot.work_items_by_id()
+    definition = snapshot.definition(item.work_item_id)
+    replacement = snapshot.current_replacement(item.work_item_id)
     return work_models.ProjectAttemptActionContext(
-        item.item,
-        _subject_revision(snapshot, item.item),
+        item.work_item_id,
+        _subject_revision(snapshot, item.work_item_id),
         item.state,
         item.attempt,
         _subject_revision(snapshot, item.attempt),
@@ -337,39 +351,41 @@ def _project_attempt_context(
         tuple(dependency for dependency in item.depends_on if dependency in live_items),
         revision_available,
         None if replacement is None else replacement.relation_revision,
-        _replacement_resolved(snapshot, item.item),
+        _replacement_resolved(snapshot, item.work_item_id),
     )
 
 
 def _item_actions(
     snapshot: LedgerSnapshot, item: work_models.WorkItem, factory: ActionCapabilityFactory
 ) -> list[decision_models.Action]:
-    subject_revision = _subject_revision(snapshot, item.item)
+    subject_revision = _subject_revision(snapshot, item.work_item_id)
     close = decision_models.CloseAction(
-        factory.make(item.item, f"Record a terminal decision for {item.item}", subject_revision)
+        factory.make(item.work_item_id, f"Record a terminal decision for {item.work_item_id}", subject_revision)
     )
     if item.state == work_models.WorkState.READY:
         return [
-            decision_models.BlockItemAction(
-                factory.make(item.item, f"Block unstarted work item {item.item}", subject_revision)
+            decision_models.BlockWorkItemAction(
+                factory.make(item.work_item_id, f"Block unstarted work item {item.work_item_id}", subject_revision)
             ),
             decision_models.DeferAction(
-                factory.make(item.item, f"Defer {item.item} with a reopen condition", subject_revision)
+                factory.make(item.work_item_id, f"Defer {item.work_item_id} with a reopen condition", subject_revision)
             ),
             close,
         ]
-    dependencies_live = any(dependency in snapshot.items_by_id() for dependency in item.depends_on)
+    dependencies_live = any(dependency in snapshot.work_items_by_id() for dependency in item.depends_on)
     if (
         item.state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED}
         and not dependencies_live
-        and _replacement_resolved(snapshot, item.item)
+        and _replacement_resolved(snapshot, item.work_item_id)
     ):
         result: list[decision_models.Action] = [
-            decision_models.ResumeAction(factory.make(item.item, f"Return {item.item} to ready", subject_revision))
+            decision_models.ResumeAction(
+                factory.make(item.work_item_id, f"Return {item.work_item_id} to ready", subject_revision)
+            )
         ]
         result.append(
             decision_models.DeferAction(
-                factory.make(item.item, f"Defer {item.item} with a reopen condition", subject_revision)
+                factory.make(item.work_item_id, f"Defer {item.work_item_id} with a reopen condition", subject_revision)
             )
         )
         return [*result, close]
@@ -377,7 +393,9 @@ def _item_actions(
         return [close]
     if item.state == work_models.WorkState.DEFERRED:
         return [
-            decision_models.ReopenAction(factory.make(item.item, f"Reopen {item.item} to ready", subject_revision)),
+            decision_models.ReopenAction(
+                factory.make(item.work_item_id, f"Reopen {item.work_item_id} to ready", subject_revision)
+            ),
             close,
         ]
     return []
@@ -387,52 +405,52 @@ def _project_role_actions(
     snapshot: LedgerSnapshot,
     factory: ActionCapabilityFactory,
 ) -> tuple[decision_models.Action, ...]:
-    attempt_groups: dict[ItemId, ProjectAttemptActionGroups] = {}
+    attempt_groups: dict[WorkItemId, ProjectAttemptActionGroups] = {}
     for item in snapshot.items:
         revision_available = not any(
-            authority.item == item.item for authority in snapshot.command_preparation_authorities
+            authority.work_item_id == item.work_item_id for authority in snapshot.command_preparation_authorities
         )
         context = _project_attempt_context(snapshot, item, revision_available=revision_available)
         if context is not None:
-            attempt_groups[item.item] = project_attempt_action_groups(context, factory)
+            attempt_groups[item.work_item_id] = project_attempt_action_groups(context, factory)
     result = [
         action
         for item in snapshot.items
-        if (group := attempt_groups.get(item.item)) is not None
+        if (group := attempt_groups.get(item.work_item_id)) is not None
         for action in group.attempt_actions
     ]
     for item in snapshot.items:
-        group = attempt_groups.get(item.item)
+        group = attempt_groups.get(item.work_item_id)
         if group is not None:
             result.extend(group.item_actions)
             continue
         result.append(
             decision_models.RecordReplacementAction(
                 factory.make(
-                    item.item,
-                    f"Record or withdraw a planned replacement for {item.item}",
-                    _subject_revision(snapshot, item.item),
+                    item.work_item_id,
+                    f"Record or withdraw a planned replacement for {item.work_item_id}",
+                    _subject_revision(snapshot, item.work_item_id),
                 )
             )
         )
-        if snapshot.unresolved_replacement(item.item) is not None:
+        if snapshot.unresolved_replacement(item.work_item_id) is not None:
             result.append(
                 decision_models.RetainTemporarilyAction(
                     factory.make(
-                        item.item,
-                        f"Accept the temporary replacement cost for {item.item}",
-                        _subject_revision(snapshot, item.item),
+                        item.work_item_id,
+                        f"Accept the temporary replacement cost for {item.work_item_id}",
+                        _subject_revision(snapshot, item.work_item_id),
                     )
                 )
             )
-        if any(authority.item == item.item for authority in snapshot.command_preparation_authorities):
+        if any(authority.work_item_id == item.work_item_id for authority in snapshot.command_preparation_authorities):
             continue
         result.append(
-            decision_models.ReviseItemAction(
+            decision_models.ReviseWorkItemAction(
                 factory.make(
-                    item.item,
-                    f"Revise the accepted definition for {item.item}",
-                    _subject_revision(snapshot, item.item),
+                    item.work_item_id,
+                    f"Revise the accepted definition for {item.work_item_id}",
+                    _subject_revision(snapshot, item.work_item_id),
                 )
             )
         )
@@ -553,12 +571,12 @@ def validate_supplied_action(
 
 def _build_transition_receipt(
     action: decision_models.TransitionAction,
-    item: ItemId | None,
+    work_item_id: WorkItemId | None,
     outcome: str,
     evidence: str | None,
     now: datetime,
 ) -> decision_models.TransitionReceipt:
-    return decision_models.TransitionReceipt(decision_models.action_id(action), item, outcome, evidence, now)
+    return decision_models.TransitionReceipt(decision_models.action_id(action), work_item_id, outcome, evidence, now)
 
 
 def _accepted_transition_decision(
@@ -566,14 +584,14 @@ def _accepted_transition_decision(
     now: datetime,
     change: decision_models.NonCheckpointDecisionChange,
     *,
-    item: ItemId | None = None,
+    work_item_id: WorkItemId | None = None,
     outcome: str | None = None,
     evidence: str | None = None,
 ) -> decision_models.TransitionDecision:
     return decision_models.TransitionDecision(
         action,
         change,
-        _build_transition_receipt(action, item, outcome or action.kind.value, evidence, now),
+        _build_transition_receipt(action, work_item_id, outcome or action.kind.value, evidence, now),
     )
 
 
@@ -582,13 +600,13 @@ def _accepted_checkpoint_decision(
     now: datetime,
     change: decision_models.CheckpointAcceptanceChange,
     *,
-    item: ItemId,
+    work_item_id: WorkItemId,
     evidence: str,
 ) -> decision_models.CheckpointAcceptanceDecision:
     return decision_models.CheckpointAcceptanceDecision(
         action,
         change,
-        _build_transition_receipt(action, item, action.kind.value, evidence, now),
+        _build_transition_receipt(action, work_item_id, action.kind.value, evidence, now),
     )
 
 
@@ -597,13 +615,13 @@ def _accepted_completion_decision(
     now: datetime,
     change: decision_models.CoveredCompletionChange,
     *,
-    item: ItemId,
+    work_item_id: WorkItemId,
     evidence: str,
 ) -> decision_models.CompletionAcceptanceDecision:
     return decision_models.CompletionAcceptanceDecision(
         action,
         change,
-        _build_transition_receipt(action, item, action.kind.value, evidence, now),
+        _build_transition_receipt(action, work_item_id, action.kind.value, evidence, now),
     )
 
 
@@ -613,24 +631,24 @@ def _activate(
     action = command.action
     value = command.value
     item_id = action.capability.subject
-    item = _require_item(snapshot, item_id)
+    item = _require_work_item(snapshot, item_id)
     if isinstance(item, DecisionFailure):
         return item
     if item.state != work_models.WorkState.READY:
         return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.item}' is not ready for activation.", None
+            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.work_item_id}' is not ready for activation.", None
         )
     preparation = action.capability.preparation_authority
-    definition = snapshot.definition(item.item)
+    definition = snapshot.definition(item.work_item_id)
     if (
         preparation is None
         or definition is None
         or (
-            preparation.item,
+            preparation.work_item_id,
             preparation.definition_revision,
             preparation.definition_digest,
         )
-        != (item.item, definition.revision, definition.digest)
+        != (item.work_item_id, definition.revision, definition.digest)
     ):
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
@@ -658,7 +676,7 @@ def _activate(
         action,
         now,
         decision_models.ActivationChange(
-            item.item,
+            item.work_item_id,
             item.state,
             value.attempt,
             value.brief_artifact_ref_id,
@@ -666,7 +684,7 @@ def _activate(
             value.base_revision,
             value.owner,
         ),
-        item=item.item,
+        work_item_id=item.work_item_id,
     )
 
 
@@ -674,10 +692,10 @@ def _block_dependencies(
     snapshot: LedgerSnapshot,
     item: work_models.WorkItem,
     value: work_models.BlockInput,
-) -> DecisionResult[tuple[ItemId, ...]]:
+) -> DecisionResult[tuple[WorkItemId, ...]]:
     if not value.depends_on:
         return item.depends_on
-    definition = snapshot.definition(item.item)
+    definition = snapshot.definition(item.work_item_id)
     if definition is None:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
@@ -708,7 +726,7 @@ def _pause_or_block(
     match command:
         case decision_models.PauseCommand():
             change: decision_models.NonCheckpointDecisionChange = decision_models.AttemptStateChange(
-                item.item,
+                item.work_item_id,
                 item.state,
                 work_models.WorkState.PAUSED,
                 attempt_id,
@@ -720,7 +738,7 @@ def _pause_or_block(
             if isinstance(dependencies, DecisionFailure):
                 return dependencies
             change = decision_models.BlockAttemptChange(
-                item.item,
+                item.work_item_id,
                 item.state,
                 attempt_id,
                 work_models.AttemptState.ACTIVE,
@@ -732,7 +750,7 @@ def _pause_or_block(
         action,
         now,
         change,
-        item=item.item,
+        work_item_id=item.work_item_id,
     )
 
 
@@ -769,16 +787,19 @@ def _complete(
             "The attempt has not accepted the item's current definition.",
             None,
         )
-    replacement = snapshot.current_replacement(item.item)
-    if replacement is not None and snapshot.replacement_disposition(item.item, replacement.relation_revision) is None:
+    replacement = snapshot.current_replacement(item.work_item_id)
+    if (
+        replacement is not None
+        and snapshot.replacement_disposition(item.work_item_id, replacement.relation_revision) is None
+    ):
         return DecisionFailure(
             DecisionFailureCode.REPLACEMENT_STALE,
             "Terminal completion requires the current planned replacement to be resolved.",
             None,
         )
-    if item.item in snapshot.history_items:
+    if item.work_item_id in snapshot.history_items:
         return DecisionFailure(
-            DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.item}'.", None
+            DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.work_item_id}'.", None
         )
     authority_change = _fence_retained_attempt_authority(snapshot, attempt_id)
     match command:
@@ -803,13 +824,13 @@ def _complete(
                     None,
                 )
             covered_change = decision_models.CoveredCompletionChange(
-                item.item, attempt_id, value.candidate, value.evidence, authority_change
+                item.work_item_id, attempt_id, value.candidate, value.evidence, authority_change
             )
             return _accepted_completion_decision(
                 action,
                 now,
                 covered_change,
-                item=item.item,
+                work_item_id=item.work_item_id,
                 evidence=value.evidence,
             )
         case _ as unreachable:
@@ -822,7 +843,7 @@ def _close(
     action = command.action
     value = command.value
     item_id = action.capability.subject
-    item = _require_item(snapshot, item_id)
+    item = _require_work_item(snapshot, item_id)
     if isinstance(item, DecisionFailure):
         return item
     if item.state in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}:
@@ -837,20 +858,20 @@ def _close(
             None,
         )
     if value.outcome == work_models.CloseOutcome.DROPPED and any(
-        item.item in candidate.depends_on for candidate in snapshot.items
+        item.work_item_id in candidate.depends_on for candidate in snapshot.items
     ):
         return DecisionFailure(
-            DecisionFailureCode.LIVE_DEPENDENTS, f"Item '{item.item}' still has live dependents.", None
+            DecisionFailureCode.LIVE_DEPENDENTS, f"Item '{item.work_item_id}' still has live dependents.", None
         )
-    if item.item in snapshot.history_items:
+    if item.work_item_id in snapshot.history_items:
         return DecisionFailure(
-            DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.item}'.", None
+            DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.work_item_id}'.", None
         )
     return _accepted_transition_decision(
         action,
         now,
-        decision_models.ItemClosureChange(item.item, item.state, value.outcome, value.reason),
-        item=item.item,
+        decision_models.WorkItemClosureChange(item.work_item_id, item.state, value.outcome, value.reason),
+        work_item_id=item.work_item_id,
         outcome=value.outcome.value,
         evidence=value.reason,
     )
@@ -862,21 +883,23 @@ def _resume(
     action = command.action
     value = command.value
     item_id = action.capability.subject
-    item = _require_item(snapshot, item_id)
+    item = _require_work_item(snapshot, item_id)
     if isinstance(item, DecisionFailure):
         return item
     if item.state not in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED}:
         return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.item}' is not paused or blocked.", None
+            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.work_item_id}' is not paused or blocked.", None
         )
-    if any(dependency in snapshot.items_by_id() for dependency in item.depends_on):
+    if any(dependency in snapshot.work_items_by_id() for dependency in item.depends_on):
         return DecisionFailure(
-            DecisionFailureCode.DEPENDENCY_NOT_SATISFIED, f"Item '{item.item}' still has a live dependency.", None
+            DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
+            f"Item '{item.work_item_id}' still has a live dependency.",
+            None,
         )
-    if not _replacement_resolved(snapshot, item.item):
+    if not _replacement_resolved(snapshot, item.work_item_id):
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            f"Item '{item.item}' has an unresolved planned replacement.",
+            f"Item '{item.work_item_id}' has an unresolved planned replacement.",
             None,
         )
     revised_brief: decision_models.RevisedAttemptBrief | None = None
@@ -897,7 +920,7 @@ def _resume(
                 "Resuming with a revised brief requires one existing brief artifact reference.",
                 None,
             )
-        definition = snapshot.definition(item.item)
+        definition = snapshot.definition(item.work_item_id)
         if definition is None:
             return DecisionFailure(
                 DecisionFailureCode.TRANSITION_INPUT_INVALID,
@@ -917,19 +940,19 @@ def _resume(
             else work_models.AttemptState.BLOCKED
         )
         change: decision_models.NonCheckpointDecisionChange = decision_models.ResumeAttemptChange(
-            item.item,
+            item.work_item_id,
             item.state,
             item.attempt,
             before,
             revised_brief,
         )
     else:
-        change = decision_models.ItemStateChange(item.item, item.state, target)
+        change = decision_models.WorkItemStateChange(item.work_item_id, item.state, target)
     return _accepted_transition_decision(
         action,
         now,
         change,
-        item=item.item,
+        work_item_id=item.work_item_id,
     )
 
 
@@ -941,13 +964,7 @@ def _rebind_attempt(
     action = command.action
     value = command.value
     attempt_id = action.capability.subject
-    if value.attempt != attempt_id:
-        return DecisionFailure(
-            DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            "The rebind payload must name the selected attempt.",
-            None,
-        )
-    item = snapshot.item_for_attempt(attempt_id)
+    item = snapshot.work_item_for_attempt(attempt_id)
     attempt = snapshot.attempt(attempt_id)
     if item is None or attempt is None:
         return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.", None)
@@ -975,7 +992,7 @@ def _rebind_attempt(
             "Only an active or paused attempt can be rebound.",
             None,
         )
-    definition = snapshot.definition(item.item)
+    definition = snapshot.definition(item.work_item_id)
     if definition is None or attempt.accepted_scope_revision is None or attempt.accepted_scope_digest is None:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_STALE,
@@ -1004,7 +1021,7 @@ def _rebind_attempt(
         action,
         now,
         decision_models.RebindAttemptChange(
-            item.item,
+            item.work_item_id,
             attempt_id,
             expected_attempt_state,
             value.branch,
@@ -1017,7 +1034,7 @@ def _rebind_attempt(
                 replace(authority, lease_id=None, generation=authority.generation + 1),
             ),
         ),
-        item=item.item,
+        work_item_id=item.work_item_id,
     )
 
 
@@ -1047,12 +1064,12 @@ def _submit_review(
         action,
         now,
         decision_models.ReviewSubmissionChange(
-            item.item,
+            item.work_item_id,
             attempt_id,
             value.candidate,
             now,
         ),
-        item=item.item,
+        work_item_id=item.work_item_id,
     )
 
 
@@ -1090,12 +1107,12 @@ def _return_for_correction(
         action,
         now,
         decision_models.ReviewReturnChange(
-            item.item,
+            item.work_item_id,
             attempt_id,
             attempt.protected_candidate_revision,
             authority_change,
         ),
-        item=item.item,
+        work_item_id=item.work_item_id,
         evidence=value.reason,
     )
 
@@ -1151,13 +1168,13 @@ def _accept_checkpoint(
         action,
         now,
         decision_models.CheckpointAcceptanceChange(
-            item.item,
+            item.work_item_id,
             value.checkpoint,
             attempt_id,
             value.candidate,
             authority_change,
         ),
-        item=item.item,
+        work_item_id=item.work_item_id,
         evidence=value.evidence,
     )
 
@@ -1209,24 +1226,24 @@ def _accept_review_and_continue(
     return _accepted_transition_decision(
         action,
         now,
-        decision_models.ReviewAcceptanceChange(item.item, attempt_id, value.candidate, authority_change),
-        item=item.item,
+        decision_models.ReviewAcceptanceChange(item.work_item_id, attempt_id, value.candidate, authority_change),
+        work_item_id=item.work_item_id,
         evidence=value.evidence,
     )
 
 
 def _block_item(
-    snapshot: LedgerSnapshot, command: decision_models.BlockItemCommand, now: datetime
+    snapshot: LedgerSnapshot, command: decision_models.BlockWorkItemCommand, now: datetime
 ) -> DecisionResult[decision_models.TransitionDecision]:
     action = command.action
     item_id = action.capability.subject
-    item = _require_item(snapshot, item_id)
+    item = _require_work_item(snapshot, item_id)
     if isinstance(item, DecisionFailure):
         return item
     if item.state != work_models.WorkState.READY:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            f"Item '{item.item}' cannot perform '{action.kind.value}' now.",
+            f"Item '{item.work_item_id}' cannot perform '{action.kind.value}' now.",
             None,
         )
     dependencies = _block_dependencies(snapshot, item, command.value)
@@ -1235,8 +1252,8 @@ def _block_item(
     return _accepted_transition_decision(
         action,
         now,
-        decision_models.BlockItemChange(item.item, item.state, dependencies),
-        item=item.item,
+        decision_models.BlockWorkItemChange(item.work_item_id, item.state, dependencies),
+        work_item_id=item.work_item_id,
     )
 
 
@@ -1247,17 +1264,20 @@ def _reopen(
 ) -> DecisionResult[decision_models.TransitionDecision]:
     action = command.action
     item_id = action.capability.subject
-    item = _require_item(snapshot, item_id)
+    item = _require_work_item(snapshot, item_id)
     if isinstance(item, DecisionFailure):
         return item
     if item.state != work_models.WorkState.DEFERRED:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            f"Item '{item.item}' cannot perform '{action.kind.value}' now.",
+            f"Item '{item.work_item_id}' cannot perform '{action.kind.value}' now.",
             None,
         )
     return _accepted_transition_decision(
-        action, now, decision_models.ItemStateChange(item.item, item.state, work_models.WorkState.READY), item=item.item
+        action,
+        now,
+        decision_models.WorkItemStateChange(item.work_item_id, item.state, work_models.WorkState.READY),
+        work_item_id=item.work_item_id,
     )
 
 
@@ -1266,23 +1286,23 @@ def _defer(
 ) -> DecisionResult[decision_models.TransitionDecision]:
     action = command.action
     item_id = action.capability.subject
-    item = _require_item(snapshot, item_id)
+    item = _require_work_item(snapshot, item_id)
     if isinstance(item, DecisionFailure):
         return item
     if item.state not in {work_models.WorkState.READY, work_models.WorkState.BLOCKED} or item.attempt is not None:
         return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.item}' cannot be deferred now.", None
+            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.work_item_id}' cannot be deferred now.", None
         )
     return _accepted_transition_decision(
         action,
         now,
-        decision_models.ItemStateChange(item.item, item.state, work_models.WorkState.DEFERRED),
-        item=item.item,
+        decision_models.WorkItemStateChange(item.work_item_id, item.state, work_models.WorkState.DEFERRED),
+        work_item_id=item.work_item_id,
     )
 
 
 def _unstarted_proposal_item(snapshot: LedgerSnapshot, proposal_id: ProposalId) -> work_models.WorkItem | None:
-    item = snapshot.item(ItemId(proposal_id))
+    item = snapshot.work_item(WorkItemId(proposal_id))
     if (
         item is None
         or item.state
@@ -1292,7 +1312,7 @@ def _unstarted_proposal_item(snapshot: LedgerSnapshot, proposal_id: ProposalId) 
             work_models.WorkState.DEFERRED,
         }
         or item.attempt is not None
-        or any(authority.item == item.item for authority in snapshot.command_preparation_authorities)
+        or any(authority.work_item_id == item.work_item_id for authority in snapshot.command_preparation_authorities)
     ):
         return None
     return item
@@ -1328,7 +1348,7 @@ def _merge_proposal(
     if isinstance(current_proposal, DecisionFailure):
         return current_proposal
     proposal, item = current_proposal
-    if snapshot.item(value.target) is None and value.target not in snapshot.history_items:
+    if snapshot.work_item(value.target) is None and value.target not in snapshot.history_items:
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{value.target}' does not exist.", None)
     return _accepted_transition_decision(
         action,
@@ -1362,7 +1382,7 @@ def _dispose_proposal(
 
 def _revise_item(
     snapshot: LedgerSnapshot,
-    command: decision_models.ReviseItemCommand,
+    command: decision_models.ReviseWorkItemCommand,
     now: datetime,
 ) -> DecisionResult[decision_models.TransitionDecision]:
     revision = decide_definition_revision(snapshot, command.action.capability.subject, command.value, now)
@@ -1372,7 +1392,7 @@ def _revise_item(
         command.action,
         now,
         revision,
-        item=revision.item,
+        work_item_id=revision.work_item_id,
         evidence=revision.reason,
     )
 
@@ -1384,30 +1404,24 @@ def _record_replacement(
 ) -> DecisionResult[decision_models.TransitionDecision]:
     action = command.action
     value = command.value
-    item = _require_item(snapshot, action.capability.subject)
+    item = _require_work_item(snapshot, action.capability.subject)
     if isinstance(item, DecisionFailure):
         return item
-    if value.affected_item != item.item:
-        return DecisionFailure(
-            DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            "The replacement payload does not match the selected affected item.",
-            None,
-        )
-    known_items = {*snapshot.items_by_id(), *snapshot.history_items}
+    known_items = {*snapshot.work_items_by_id(), *snapshot.history_items}
     if value.replacement_item not in known_items:
         return DecisionFailure(
             DecisionFailureCode.ITEM_NOT_FOUND,
             f"Replacement item '{value.replacement_item}' does not exist.",
             None,
         )
-    if value.replacement_item == item.item or not value.replacement_cost.strip():
+    if value.replacement_item == item.work_item_id or not value.replacement_cost.strip():
         return DecisionFailure(
             DecisionFailureCode.REPLACEMENT_INVALID,
             "A replacement must name another item and a concrete nonempty replacement cost.",
             None,
         )
     matching_relations: tuple[work_models.PlannedReplacement, ...] = tuple(
-        relation for relation in snapshot.planned_replacements if relation.affected_item == item.item
+        relation for relation in snapshot.planned_replacements if relation.affected_item == item.work_item_id
     )
     latest = max(matching_relations, key=work_models.planned_replacement_revision, default=None)
     observed_revision = 0 if latest is None else latest.relation_revision
@@ -1429,7 +1443,7 @@ def _record_replacement(
             None,
         )
     relation = work_models.PlannedReplacement(
-        item.item,
+        item.work_item_id,
         observed_revision + 1,
         value.replacement_item,
         value.replacement_cost,
@@ -1441,7 +1455,7 @@ def _record_replacement(
         action,
         now,
         decision_models.PlannedReplacementChange(relation),
-        item=item.item,
+        work_item_id=item.work_item_id,
         evidence=value.replacement_cost,
     )
 
@@ -1453,11 +1467,11 @@ def _retain_temporarily(
 ) -> DecisionResult[decision_models.TransitionDecision]:
     action = command.action
     value = command.value
-    item = _require_item(snapshot, action.capability.subject)
+    item = _require_work_item(snapshot, action.capability.subject)
     if isinstance(item, DecisionFailure):
         return item
-    relation = snapshot.current_replacement(item.item)
-    if value.affected_item != item.item or relation is None or value.relation_revision != relation.relation_revision:
+    relation = snapshot.current_replacement(item.work_item_id)
+    if relation is None or value.relation_revision != relation.relation_revision:
         return DecisionFailure(
             DecisionFailureCode.REPLACEMENT_STALE,
             "Temporary retention requires the exact current planned-replacement revision.",
@@ -1470,7 +1484,7 @@ def _retain_temporarily(
             None,
         )
     disposition = work_models.ReplacementDisposition(
-        item.item,
+        item.work_item_id,
         relation.relation_revision,
         value.rationale,
         value.accepted_cost,
@@ -1481,7 +1495,7 @@ def _retain_temporarily(
         action,
         now,
         decision_models.ReplacementDispositionChange(disposition),
-        item=item.item,
+        work_item_id=item.work_item_id,
         evidence=value.rationale,
     )
 
@@ -1536,7 +1550,7 @@ def decide(  # noqa: C901, PLR0912
             return _submit_review(snapshot, command, now)
         case decision_models.ReturnForCorrectionCommand():
             return _return_for_correction(snapshot, command, now)
-        case decision_models.BlockItemCommand():
+        case decision_models.BlockWorkItemCommand():
             return _block_item(snapshot, command, now)
         case decision_models.ReopenCommand():
             return _reopen(snapshot, command, now)
@@ -1546,7 +1560,7 @@ def decide(  # noqa: C901, PLR0912
             return _merge_proposal(snapshot, command, now)
         case decision_models.RejectProposalCommand():
             return _dispose_proposal(snapshot, command, now)
-        case decision_models.ReviseItemCommand():
+        case decision_models.ReviseWorkItemCommand():
             return _revise_item(snapshot, command, now)
         case decision_models.RecordReplacementCommand():
             return _record_replacement(snapshot, command, now)

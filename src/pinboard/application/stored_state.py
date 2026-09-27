@@ -12,10 +12,10 @@ from pinboard.domain.identifiers import (
     HistoryId,
     HistorySubjectId,
     HostId,
-    ItemId,
     LeaseId,
     ProposalId,
     TaskId,
+    WorkItemId,
 )
 
 
@@ -127,7 +127,7 @@ class ArtifactReference:
 
 @dataclass(frozen=True, slots=True)
 class StoredWorkItem:
-    item_id: ItemId
+    item_id: WorkItemId
     state: StoredWorkItemState
     timing: work_models.Timing | None
     source: str | None
@@ -142,7 +142,7 @@ class StoredWorkItem:
 
 @dataclass(frozen=True, slots=True)
 class ItemDefinitionRevision:
-    item_id: ItemId
+    item_id: WorkItemId
     revision: int
     digest: str
     definition: work_models.WorkItemDefinition
@@ -156,15 +156,15 @@ class ItemDefinitionRevision:
 
 @dataclass(frozen=True, slots=True)
 class ItemDependency:
-    item_id: ItemId
-    dependency_id: ItemId
+    item_id: WorkItemId
+    dependency_id: WorkItemId
     position: int
 
 
 @dataclass(frozen=True, slots=True)
 class StoredAttempt:
     attempt_id: AttemptId
-    item_id: ItemId
+    item_id: WorkItemId
     state: work_models.AttemptState
     branch: str
     base_revision: str
@@ -213,9 +213,9 @@ class ProposalFreshness:
 
 @dataclass(frozen=True, slots=True)
 class StoredPlannedReplacement:
-    affected_item_id: ItemId
+    affected_item_id: WorkItemId
     relation_revision: int
-    replacement_item_id: ItemId
+    replacement_item_id: WorkItemId
     replacement_cost: str
     status: work_models.PlannedReplacementStatus
     recorded_by: TaskId
@@ -225,7 +225,7 @@ class StoredPlannedReplacement:
 
 @dataclass(frozen=True, slots=True)
 class StoredReplacementDisposition:
-    affected_item_id: ItemId
+    affected_item_id: WorkItemId
     relation_revision: int
     rationale: str
     accepted_cost: str
@@ -266,13 +266,13 @@ class StoredAttemptLease:
 
 @dataclass(frozen=True, slots=True)
 class PreparationLeaseCounter:
-    item_id: ItemId
+    item_id: WorkItemId
     generation_high_water: int
 
 
 @dataclass(frozen=True, slots=True)
 class PreparationLeaseGeneration:
-    item_id: ItemId
+    item_id: WorkItemId
     generation: int
     lease_id: LeaseId
     task_id: TaskId
@@ -281,7 +281,7 @@ class PreparationLeaseGeneration:
 
 @dataclass(frozen=True, slots=True)
 class StoredPreparationLease:
-    item_id: ItemId
+    item_id: WorkItemId
     generation: int
     definition_revision: int
     definition_digest: str

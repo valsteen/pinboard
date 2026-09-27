@@ -10,10 +10,10 @@ from pinboard.domain.identifiers import (
     CheckpointId,
     HistoryId,
     HostId,
-    ItemId,
     LeaseId,
     ProposalId,
     TaskId,
+    WorkItemId,
 )
 
 ObligationId = NewType("ObligationId", str)
@@ -97,9 +97,9 @@ class PlannedReplacementStatus(Enum):
 
 @dataclass(frozen=True, slots=True)
 class PlannedReplacement:
-    affected_item: ItemId
+    affected_item: WorkItemId
     relation_revision: int
-    replacement_item: ItemId
+    replacement_item: WorkItemId
     replacement_cost: str
     status: PlannedReplacementStatus
     recorded_by: TaskId
@@ -112,7 +112,7 @@ def planned_replacement_revision(value: PlannedReplacement) -> int:
 
 @dataclass(frozen=True, slots=True)
 class ReplacementDisposition:
-    affected_item: ItemId
+    affected_item: WorkItemId
     relation_revision: int
     rationale: str
     accepted_cost: str
@@ -122,43 +122,43 @@ class ReplacementDisposition:
 
 @dataclass(frozen=True, slots=True)
 class IndependentProposalRelation:
-    item: None = None
+    work_item_id: None = None
     kind: ProposalRelationKind = field(init=False, default=ProposalRelationKind.INDEPENDENT)
 
 
 @dataclass(frozen=True, slots=True)
 class PrerequisiteProposalRelation:
-    item: ItemId
+    work_item_id: WorkItemId
     kind: ProposalRelationKind = field(init=False, default=ProposalRelationKind.PREREQUISITE)
 
 
 @dataclass(frozen=True, slots=True)
 class FollowUpProposalRelation:
-    item: ItemId
+    work_item_id: WorkItemId
     kind: ProposalRelationKind = field(init=False, default=ProposalRelationKind.FOLLOW_UP)
 
 
 @dataclass(frozen=True, slots=True)
 class DuplicateProposalRelation:
-    item: ItemId
+    work_item_id: WorkItemId
     kind: ProposalRelationKind = field(init=False, default=ProposalRelationKind.DUPLICATE)
 
 
 @dataclass(frozen=True, slots=True)
 class ContradictionProposalRelation:
-    item: ItemId
+    work_item_id: WorkItemId
     kind: ProposalRelationKind = field(init=False, default=ProposalRelationKind.CONTRADICTION)
 
 
 @dataclass(frozen=True, slots=True)
 class ClarificationProposalRelation:
-    item: None = None
+    work_item_id: None = None
     kind: ProposalRelationKind = field(init=False, default=ProposalRelationKind.CLARIFICATION)
 
 
 @dataclass(frozen=True, slots=True)
 class PlannedReplacementProposalRelation:
-    item: ItemId
+    work_item_id: WorkItemId
     replacement_cost: str
     kind: ProposalRelationKind = field(init=False, default=ProposalRelationKind.PLANNED_REPLACEMENT)
 
@@ -183,7 +183,7 @@ class ProposalDispositionKind(Enum):
 
 @dataclass(frozen=True, slots=True)
 class MergedProposalDisposition:
-    target: ItemId
+    target: WorkItemId
     disposed_at: datetime
     kind: ProposalDispositionKind = field(init=False, default=ProposalDispositionKind.MERGED)
 
@@ -200,10 +200,10 @@ type ProposalDisposition = MergedProposalDisposition | RejectedProposalDispositi
 
 @dataclass(frozen=True, slots=True)
 class WorkItem:
-    item: ItemId
+    work_item_id: WorkItemId
     state: WorkState
     timing: str | None
-    depends_on: tuple[ItemId, ...]
+    depends_on: tuple[WorkItemId, ...]
     attempt: AttemptId | None
     source: str | None
     next_action: str | None
@@ -219,7 +219,6 @@ class ResumeInput:
 
 @dataclass(frozen=True, slots=True)
 class RebindAttemptInput:
-    attempt: AttemptId
     branch: str
     base_revision: str
     brief_artifact_ref_id: ArtifactRefId
@@ -247,7 +246,7 @@ class ReasonInput:
 @dataclass(frozen=True, slots=True)
 class BlockInput:
     reason: str
-    depends_on: tuple[ItemId, ...] = ()
+    depends_on: tuple[WorkItemId, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,9 +292,8 @@ class AcceptReviewAndContinueInput:
 
 @dataclass(frozen=True, slots=True)
 class RecordPlannedReplacementInput:
-    affected_item: ItemId
     expected_relation_revision: int
-    replacement_item: ItemId
+    replacement_item: WorkItemId
     replacement_cost: str
     status: PlannedReplacementStatus
     recorded_by: TaskId
@@ -303,7 +301,6 @@ class RecordPlannedReplacementInput:
 
 @dataclass(frozen=True, slots=True)
 class RetainTemporarilyInput:
-    affected_item: ItemId
     relation_revision: int
     rationale: str
     accepted_cost: str
@@ -324,7 +321,7 @@ class DeferInput:
 
 @dataclass(frozen=True, slots=True)
 class MergeProposalInput:
-    target: ItemId
+    target: WorkItemId
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,7 +333,7 @@ class WorkItemDefinition:
     scope: tuple[str, ...]
     non_scope: tuple[str, ...]
     acceptance_criteria: tuple[str, ...]
-    dependencies: tuple[ItemId, ...]
+    dependencies: tuple[WorkItemId, ...]
     effect: str
     unlock: str
     checkout_policy: CheckoutPolicy
@@ -344,8 +341,7 @@ class WorkItemDefinition:
 
 
 @dataclass(frozen=True, slots=True)
-class ReviseItemDefinitionInput:
-    item_id: ItemId
+class ReviseWorkItemDefinitionInput:
     expected_revision: int
     expected_digest: str
     source_task: TaskId
@@ -361,7 +357,7 @@ class ArtifactRecord:
 
 @dataclass(frozen=True, slots=True)
 class DefinitionAnchor:
-    item: ItemId
+    work_item_id: WorkItemId
     revision: int
     digest: str
     definition: WorkItemDefinition
@@ -370,7 +366,7 @@ class DefinitionAnchor:
 @dataclass(frozen=True, slots=True)
 class CommandAttemptAuthority:
     host_epoch: int
-    item: ItemId
+    work_item_id: WorkItemId
     item_subject_revision: str
     attempt: AttemptId
     attempt_subject_revision: str
@@ -384,7 +380,7 @@ class CommandAttemptAuthority:
 @dataclass(frozen=True, slots=True)
 class PreparationCommandAuthority:
     host_epoch: int
-    item: ItemId
+    work_item_id: WorkItemId
     definition_revision: int
     definition_digest: str
     task_id: TaskId
@@ -397,14 +393,14 @@ class PreparationCommandAuthority:
 @dataclass(frozen=True, slots=True)
 class AttemptAuthority:
     attempt: AttemptId
-    item: ItemId
+    work_item_id: WorkItemId
     lease_id: LeaseId | None
     generation: int
 
 
 @dataclass(frozen=True, slots=True)
 class PreparationAuthority:
-    item: ItemId
+    work_item_id: WorkItemId
     definition_revision: int
     definition_digest: str
     lease_id: LeaseId | None
@@ -431,7 +427,7 @@ class ProposalRecord:
 @dataclass(frozen=True, slots=True)
 class AttemptRecord:
     attempt: AttemptId
-    item: ItemId
+    work_item_id: WorkItemId
     state: AttemptState
     accepted_scope_revision: int | None = None
     accepted_scope_digest: str | None = None
@@ -441,7 +437,7 @@ class AttemptRecord:
 
 @dataclass(frozen=True, slots=True)
 class ProjectAttemptActionContext:
-    item: ItemId
+    work_item_id: WorkItemId
     item_subject_revision: str
     item_state: WorkState
     attempt: AttemptId
@@ -449,7 +445,7 @@ class ProjectAttemptActionContext:
     attempt_record: AttemptRecord | None
     current_definition_revision: int | None
     current_definition_digest: str | None
-    live_dependencies: tuple[ItemId, ...]
+    live_dependencies: tuple[WorkItemId, ...]
     revision_available: bool
     current_replacement_revision: int | None
     replacement_resolved: bool
@@ -457,5 +453,5 @@ class ProjectAttemptActionContext:
 
 @dataclass(frozen=True, slots=True)
 class SubjectRevision:
-    subject: ItemId | AttemptId | ProposalId
+    subject: WorkItemId | AttemptId | ProposalId
     revision: str

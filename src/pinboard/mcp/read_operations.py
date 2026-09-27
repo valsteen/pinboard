@@ -52,9 +52,9 @@ from pinboard.domain.identifiers import (
     AttemptId,
     HistoryId,
     HostId,
-    ItemId,
     LeaseId,
     TaskId,
+    WorkItemId,
 )
 from pinboard.mcp import common, contracts, execution, tool_names
 from pinboard.mcp.contracts import JsonValue
@@ -119,7 +119,9 @@ def _read_item_status(
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
     token.checkpoint()
-    projected = queries.project_item_status(common.compose_store(durable), ItemId(request.item_id), datetime.now(UTC))
+    projected = queries.project_item_status(
+        common.compose_store(durable), WorkItemId(request.item_id), datetime.now(UTC)
+    )
     if isinstance(projected, DecisionFailure):
         return common._item_status_failure(projected.code.value, projected.message, projected.details)
     token.checkpoint()
@@ -353,10 +355,10 @@ def _read_item_definition(raw: dict[str, JsonValue], token: execution.Cancellati
     store = common.compose_store(durable)
     match request:
         case contracts.ItemDefinitionCurrentRequest():
-            selected = queries.select_item_definition(store, ItemId(request.item_id))
+            selected = queries.select_item_definition(store, WorkItemId(request.item_id))
         case contracts.ItemDefinitionHistoryRequest():
             selected = queries.select_item_definition_history(
-                store, ItemId(request.item_id), limit=request.limit, before_revision=request.before_revision
+                store, WorkItemId(request.item_id), limit=request.limit, before_revision=request.before_revision
             )
         case _ as unreachable:
             assert_never(unreachable)
@@ -566,7 +568,10 @@ def _order(raw: dict[str, JsonValue], token: execution.CancellationToken) -> exe
             None,
         )
     refreshed = common._refresh_affected_views(
-        durable, store, AffectedViews(committed.item_ids, committed.attempt_ids, (committed.receipt.history_id,)), now
+        durable,
+        store,
+        AffectedViews(committed.work_item_ids, committed.attempt_ids, (committed.receipt.history_id,)),
+        now,
     )
     content: dict[str, JsonValue] = {
         "schema": "pinboard-mcp-order-result/v1",
@@ -959,7 +964,7 @@ def _completion_recovery_failure(
         "request": {
             **roots,
             "role": "project",
-            "action_id": {"kind": "revise-item", "subject": str(required.item_id)},
+            "action_id": {"kind": "revise-item", "subject": str(required.work_item_id)},
         }
     }
     rebind_action: dict[str, JsonValue] = {
@@ -1023,15 +1028,15 @@ def _unavailable_completion_recovery(
     if completion is None or not isinstance(completion.attempt, query_models.NonterminalAttemptContextFacts):
         return None
     attempt = completion.attempt
-    item = attempt.item
+    item = attempt.work_item
     if not item.replacement_resolved:
         return query_models.CompletionRecoveryRequired(
             attempt_id,
-            attempt.item_id,
+            attempt.work_item_id,
             "record-replacement",
-            str(attempt.item_id),
+            str(attempt.work_item_id),
             "retain-temporarily",
-            str(attempt.item_id),
+            str(attempt.work_item_id),
             "Completion is withheld until the unresolved replacement is recorded or its temporary cost is explicitly retained.",
         )
     if (attempt.accepted_scope_revision, attempt.accepted_scope_digest) != (
@@ -1041,7 +1046,7 @@ def _unavailable_completion_recovery(
         route = "return-for-correction" if attempt.state == work_models.AttemptState.REVIEW else "rebind-attempt"
         return query_models.CompletionRecoveryRequired(
             attempt_id,
-            attempt.item_id,
+            attempt.work_item_id,
             route,
             str(attempt_id),
             None,

@@ -16,7 +16,7 @@ from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
 from pinboard.application import query_models, stored_state
 from pinboard.application.queries import project_overview
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import AttemptId, ItemId
+from pinboard.domain.identifiers import AttemptId, WorkItemId
 
 NOTICE = "Generated projection; SQLite is authoritative."
 
@@ -37,13 +37,13 @@ def _bullets(values: tuple[str, ...]) -> str:
 class _ViewInputs:
     overview: query_models.WorkOverview
     overview_items: dict[str, query_models.OverviewItem]
-    dependencies: dict[ItemId, tuple[ItemId, ...]]
-    definitions: dict[ItemId, stored_state.ItemDefinitionRevision]
+    dependencies: dict[WorkItemId, tuple[WorkItemId, ...]]
+    definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision]
 
 
 def _project_view_inputs(state: stored_state.StoredWorkState, now: datetime) -> _ViewInputs:
     overview = project_overview(state, now)
-    dependency_groups: dict[ItemId, list[ItemId]] = {item.item_id: [] for item in state.lifecycle.work_items}
+    dependency_groups: dict[WorkItemId, list[WorkItemId]] = {item.item_id: [] for item in state.lifecycle.work_items}
     for dependency in sorted(state.lifecycle.dependencies, key=_dependency_key):
         dependency_groups[dependency.item_id].append(dependency.dependency_id)
     return _ViewInputs(
@@ -56,7 +56,7 @@ def _project_view_inputs(state: stored_state.StoredWorkState, now: datetime) -> 
 
 def _render_item(
     item: stored_state.StoredWorkItem,
-    dependencies: tuple[ItemId, ...],
+    dependencies: tuple[WorkItemId, ...],
     overview_item: query_models.OverviewItem | None,
     definition: stored_state.ItemDefinitionRevision,
 ) -> bytes:
@@ -197,7 +197,7 @@ def _write_facts(
     if facts.items:
         item_root = ensure_child_directory(view_root, "items")
         for selected in facts.items:
-            item = selected.item
+            item = selected.work_item
             atomic_replace(
                 item_root / f"{item.item_id}.md",
                 _render_item(item, selected.dependencies, selected.overview, selected.definition),

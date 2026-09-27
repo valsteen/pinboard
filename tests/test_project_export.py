@@ -32,13 +32,12 @@ from pinboard.cli.cli_output import RejectedOperationView
 from pinboard.cli.entrypoint import main
 from pinboard.domain import work_models
 from pinboard.domain.history import work_item_definition_digest
-from pinboard.domain.identifiers import ArtifactRefId, ItemId, ProposalId, TaskId
+from pinboard.domain.identifiers import ArtifactRefId, ProposalId, TaskId, WorkItemId
 from pinboard.mcp import mutation_operations, server
 from tests.artifact_support import write_revision
 from tests.decision_support import project_decision_snapshot
 from tests.native_support import call_native_tool
-
-from .support import SQLITE_NOW, JsonObject, complete_sqlite_state, initialize_store, test_definition
+from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, initialize_store, test_definition
 
 
 def commit_item_after_project_read(
@@ -101,7 +100,7 @@ class ProjectExportTest(unittest.TestCase):
         proposal_id: ProposalId,
         position: int,
     ) -> tuple[stored_state.StoredWorkItem, stored_state.ItemDefinitionRevision]:
-        item_id = ItemId(proposal_id)
+        item_id = WorkItemId(proposal_id)
         definition, digest = test_definition(item_id)
         item = stored_state.StoredWorkItem(
             item_id,
@@ -139,13 +138,13 @@ class ProjectExportTest(unittest.TestCase):
         current_definition = next(
             value
             for value in state.lifecycle.definition_revisions
-            if value.item_id == ItemId("work-a") and value.revision == 1
+            if value.item_id == WorkItemId("work-a") and value.revision == 1
         )
         revised_definition = replace(current_definition.definition, objective="Export every accepted project fact.")
         revised_digest = work_item_definition_digest(revised_definition)
         assert isinstance(revised_digest, str)
         definition_revision = stored_state.ItemDefinitionRevision(
-            ItemId("work-a"),
+            WorkItemId("work-a"),
             2,
             revised_digest,
             revised_definition,
@@ -173,9 +172,9 @@ class ProjectExportTest(unittest.TestCase):
 
         relation_values: tuple[tuple[str, work_models.ProposalRelation], ...] = (
             ("proposal-independent", work_models.IndependentProposalRelation()),
-            ("proposal-prerequisite", work_models.PrerequisiteProposalRelation(ItemId("work-c"))),
-            ("proposal-duplicate", work_models.DuplicateProposalRelation(ItemId("work-c"))),
-            ("proposal-contradiction", work_models.ContradictionProposalRelation(ItemId("work-c"))),
+            ("proposal-prerequisite", work_models.PrerequisiteProposalRelation(WorkItemId("work-c"))),
+            ("proposal-duplicate", work_models.DuplicateProposalRelation(WorkItemId("work-c"))),
+            ("proposal-contradiction", work_models.ContradictionProposalRelation(WorkItemId("work-c"))),
             ("proposal-clarification", work_models.ClarificationProposalRelation()),
         )
         proposal_items: list[stored_state.StoredWorkItem] = []
@@ -220,7 +219,7 @@ class ProjectExportTest(unittest.TestCase):
                 "No pending effect.",
                 "Already handled.",
                 "None.",
-                released_v6_compatibility.HistoricalAcceptedProposalDisposition(ItemId("work-c"), SQLITE_NOW),
+                released_v6_compatibility.HistoricalAcceptedProposalDisposition(WorkItemId("work-c"), SQLITE_NOW),
                 5,
             )
         )
@@ -242,9 +241,9 @@ class ProjectExportTest(unittest.TestCase):
             outcome_payload=work_models.CanonicalJson(b'{"accepted":true,"checks":["targeted","fresh-store"]}'),
         )
         replacement = stored_state.StoredPlannedReplacement(
-            ItemId("work-c"),
+            WorkItemId("work-c"),
             1,
-            ItemId("terminal-done"),
+            WorkItemId("terminal-done"),
             "Discard any Work C implementation after switching.",
             work_models.PlannedReplacementStatus.CURRENT,
             TaskId("coordinator"),
@@ -252,7 +251,7 @@ class ProjectExportTest(unittest.TestCase):
             12,
         )
         disposition = stored_state.StoredReplacementDisposition(
-            ItemId("work-c"),
+            WorkItemId("work-c"),
             1,
             "Finish the accepted preparation before switching.",
             replacement.replacement_cost,
@@ -267,7 +266,7 @@ class ProjectExportTest(unittest.TestCase):
                 work_items=(
                     *(
                         replace(value, state=stored_state.StoredWorkItemState.ACTIVE)
-                        if value.item_id == ItemId("work-a")
+                        if value.item_id == WorkItemId("work-a")
                         else value
                         for value in state.lifecycle.work_items
                     ),
@@ -532,9 +531,9 @@ class ProjectExportTest(unittest.TestCase):
         self.assertEqual("committed", result["status"])
 
         accepted_relation = work_models.PlannedReplacement(
-            ItemId("work-c"),
+            WorkItemId("work-c"),
             2,
-            ItemId("provenance-replacement"),
+            WorkItemId("provenance-replacement"),
             replacement_cost,
             work_models.PlannedReplacementStatus.CURRENT,
             TaskId("discoverer"),
@@ -544,7 +543,7 @@ class ProjectExportTest(unittest.TestCase):
         reloaded_relation = next(
             value
             for value in project_decision_snapshot(reloaded, commit_time).planned_replacements
-            if value.replacement_item == ItemId("provenance-replacement")
+            if value.replacement_item == WorkItemId("provenance-replacement")
         )
         self.assertEqual(accepted_relation, reloaded_relation)
 
@@ -558,9 +557,9 @@ class ProjectExportTest(unittest.TestCase):
         self.assertEqual(
             accepted_relation,
             work_models.PlannedReplacement(
-                ItemId(exported_relation.affected_item_id),
+                WorkItemId(exported_relation.affected_item_id),
                 exported_relation.relation_revision,
-                ItemId(exported_relation.replacement_item_id),
+                WorkItemId(exported_relation.replacement_item_id),
                 exported_relation.replacement_cost,
                 exported_relation.status,
                 TaskId(exported_relation.recorded_by),
@@ -646,11 +645,11 @@ class ProjectExportTest(unittest.TestCase):
         self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
         self.assertEqual(
             "committed-between-selects",
-            next(value.next_action for value in after.lifecycle.work_items if value.item_id == ItemId("work-a")),
+            next(value.next_action for value in after.lifecycle.work_items if value.item_id == WorkItemId("work-a")),
         )
         self.assertEqual(before.lifecycle.project.revision, project_export.revision)
         self.assertEqual(
-            next(value.next_action for value in before.lifecycle.work_items if value.item_id == ItemId("work-a")),
+            next(value.next_action for value in before.lifecycle.work_items if value.item_id == WorkItemId("work-a")),
             next(value.next_action for value in project_export.work_items if value.item_id == "work-a"),
         )
 

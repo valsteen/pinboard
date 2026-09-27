@@ -1,13 +1,13 @@
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.history import work_item_definition_digest
-from pinboard.domain.identifiers import ItemId
+from pinboard.domain.identifiers import WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.domain.proposal_models import (
     CreateProposalOperation,
     PrerequisiteDependencyChange,
     ProposalCreationDecision,
-    ReadyProposalItem,
+    ReadyProposalWorkItem,
 )
 
 
@@ -19,15 +19,15 @@ def decide_proposal_creation(
     intake = operation.intake
     if snapshot.proposal(intake.proposal_id) is not None:
         return DecisionFailure(DecisionFailureCode.PROPOSAL_ALREADY_EXISTS, "Proposal identity already exists.", None)
-    item_id = ItemId(intake.proposal_id)
-    if snapshot.item(item_id) is not None or item_id in snapshot.history_items:
+    item_id = WorkItemId(intake.proposal_id)
+    if snapshot.work_item(item_id) is not None or item_id in snapshot.history_items:
         return DecisionFailure(
             DecisionFailureCode.ITEM_ALREADY_EXISTS, "Proposal identity already names a work item.", None
         )
     if (
-        intake.relation.item is not None
-        and snapshot.item(intake.relation.item) is None
-        and intake.relation.item not in snapshot.history_items
+        intake.relation.work_item_id is not None
+        and snapshot.work_item(intake.relation.work_item_id) is None
+        and intake.relation.work_item_id not in snapshot.history_items
     ):
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, "The related work item does not exist.", None)
     position = intake.position if intake.position is not None else live_item_count + 1
@@ -37,7 +37,9 @@ def decide_proposal_creation(
             f"Proposal position must be between 1 and {live_item_count + 1}.",
             None,
         )
-    dependencies = (intake.relation.item,) if isinstance(intake.relation, work_models.FollowUpProposalRelation) else ()
+    dependencies = (
+        (intake.relation.work_item_id,) if isinstance(intake.relation, work_models.FollowUpProposalRelation) else ()
+    )
     definition = work_models.WorkItemDefinition(
         intake.user_label,
         intake.effect,
@@ -58,14 +60,17 @@ def decide_proposal_creation(
     prerequisite_change: PrerequisiteDependencyChange | None = None
     planned_replacement: work_models.PlannedReplacement | None = None
     if isinstance(intake.relation, work_models.PrerequisiteProposalRelation):
-        if any(authority.item == intake.relation.item for authority in snapshot.command_preparation_authorities):
+        if any(
+            authority.work_item_id == intake.relation.work_item_id
+            for authority in snapshot.command_preparation_authorities
+        ):
             return DecisionFailure(
                 DecisionFailureCode.ACTION_NOT_AVAILABLE,
                 "A live preparation claim prevents prerequisite changes to its ready item.",
                 None,
             )
-        target = snapshot.item(intake.relation.item)
-        anchor = snapshot.definition(intake.relation.item)
+        target = snapshot.work_item(intake.relation.work_item_id)
+        anchor = snapshot.definition(intake.relation.work_item_id)
         if target is not None and anchor is not None:
             dependency_position = len(anchor.definition.dependencies)
             changed_definition = work_models.WorkItemDefinition(
@@ -86,7 +91,7 @@ def decide_proposal_creation(
             if isinstance(changed_digest, DecisionFailure):
                 return changed_digest
             prerequisite_change = PrerequisiteDependencyChange(
-                intake.relation.item,
+                intake.relation.work_item_id,
                 item_id,
                 dependency_position,
                 anchor.revision,
@@ -102,12 +107,14 @@ def decide_proposal_creation(
                 None,
             )
         matching_relations: tuple[work_models.PlannedReplacement, ...] = tuple(
-            relation for relation in snapshot.planned_replacements if relation.affected_item == intake.relation.item
+            relation
+            for relation in snapshot.planned_replacements
+            if relation.affected_item == intake.relation.work_item_id
         )
         latest = max(matching_relations, key=work_models.planned_replacement_revision, default=None)
         revision = 1 if latest is None else latest.relation_revision + 1
         planned_replacement = work_models.PlannedReplacement(
-            intake.relation.item,
+            intake.relation.work_item_id,
             revision,
             item_id,
             intake.relation.replacement_cost,
@@ -117,7 +124,7 @@ def decide_proposal_creation(
         )
     return ProposalCreationDecision(
         intake,
-        ReadyProposalItem(item_id, position, dependencies, digest, definition),
+        ReadyProposalWorkItem(item_id, position, dependencies, digest, definition),
         prerequisite_change,
         planned_replacement,
         intake.evidence,

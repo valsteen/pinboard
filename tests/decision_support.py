@@ -4,7 +4,7 @@ from pinboard.application import stored_state
 from pinboard.application.actions import discover_current_actions
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import AttemptId, CandidateId, ItemId, LeaseId, ProposalId
+from pinboard.domain.identifiers import AttemptId, CandidateId, LeaseId, ProposalId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
@@ -50,7 +50,7 @@ def project_inactive_attempt_authority(
     return authority_models.InactiveAttemptAuthority(
         host_epoch=state.lifecycle.project.host_epoch,
         attempt=attempt_id,
-        item=attempt.item_id,
+        work_item_id=attempt.item_id,
         task_id=anchor.task_id,
         host_id=anchor.host_id,
         lease_id=anchor.lease_id,
@@ -73,7 +73,7 @@ def _proposal_freshness_order(value: stored_state.ProposalFreshness) -> tuple[st
 
 
 def _project_work_item(
-    value: stored_state.StoredWorkItem, state: work_models.WorkState, attempt_by_item: dict[ItemId, AttemptId]
+    value: stored_state.StoredWorkItem, state: work_models.WorkState, attempt_by_item: dict[WorkItemId, AttemptId]
 ) -> work_models.WorkItem:
     return work_models.WorkItem(
         value.item_id,
@@ -103,11 +103,11 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
         if (live_state := stored_state.live_work_state(item.state)) is not None
     )
     stored_items_by_id = {item.item_id: item for item in state.lifecycle.work_items}
-    dependency_groups: dict[ItemId, list[ItemId]] = {item_id: [] for item_id in stored_items_by_id}
+    dependency_groups: dict[WorkItemId, list[WorkItemId]] = {item_id: [] for item_id in stored_items_by_id}
     for link in sorted(state.lifecycle.dependencies, key=_dependency_order):
         dependency_groups[link.item_id].append(link.dependency_id)
     dependencies_by_item = {item_id: tuple(values) for item_id, values in dependency_groups.items()}
-    latest_definitions: dict[ItemId, stored_state.ItemDefinitionRevision] = {}
+    latest_definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision] = {}
     for revision in state.lifecycle.definition_revisions:
         latest_definitions[revision.item_id] = revision
     definitions = tuple(
@@ -116,10 +116,10 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
     )
     work_items = tuple(
         work_models.WorkItem(
-            item.item,
+            item.work_item_id,
             item.state,
             item.timing,
-            dependencies_by_item[item.item],
+            dependencies_by_item[item.work_item_id],
             item.attempt,
             item.source,
             item.next_action,
@@ -146,7 +146,7 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
     command_attempt_authorities = tuple(
         work_models.CommandAttemptAuthority(
             host_epoch=state.lifecycle.project.host_epoch,
-            item=attempt_by_id[lease.attempt_id].item_id,
+            work_item_id=attempt_by_id[lease.attempt_id].item_id,
             item_subject_revision=str(stored_items_by_id[attempt_by_id[lease.attempt_id].item_id].subject_revision),
             attempt=lease.attempt_id,
             attempt_subject_revision=str(attempt_by_id[lease.attempt_id].subject_revision),
@@ -178,7 +178,7 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
     command_preparation_authorities = tuple(
         work_models.PreparationCommandAuthority(
             host_epoch=state.lifecycle.project.host_epoch,
-            item=lease.item_id,
+            work_item_id=lease.item_id,
             definition_revision=lease.definition_revision,
             definition_digest=lease.definition_digest,
             task_id=anchor.task_id,

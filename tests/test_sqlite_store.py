@@ -42,9 +42,9 @@ from pinboard.domain.identifiers import (
     AttemptId,
     CandidateId,
     HostId,
-    ItemId,
     LeaseId,
     TaskId,
+    WorkItemId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from tests.decision_support import project_decision_snapshot
@@ -94,9 +94,11 @@ class SQLiteStoreTest(unittest.TestCase):
 
     def test_active_preparation_requires_ready_item_and_current_definition(self) -> None:
         state = complete_sqlite_state()
-        definition = next(value for value in state.lifecycle.definition_revisions if value.item_id == ItemId("work-c"))
+        definition = next(
+            value for value in state.lifecycle.definition_revisions if value.item_id == WorkItemId("work-c")
+        )
         lease = stored_state.StoredPreparationLease(
-            ItemId("work-c"),
+            WorkItemId("work-c"),
             1,
             definition.revision,
             definition.digest,
@@ -106,17 +108,17 @@ class SQLiteStoreTest(unittest.TestCase):
         )
         authority = replace_dataclass(
             state.authority,
-            preparation_counters=(stored_state.PreparationLeaseCounter(ItemId("work-c"), 1),),
+            preparation_counters=(stored_state.PreparationLeaseCounter(WorkItemId("work-c"), 1),),
             preparation_generations=(
                 stored_state.PreparationLeaseGeneration(
-                    ItemId("work-c"), 1, LeaseId("preparation-c"), TaskId("preparer-c"), HostId("host-a")
+                    WorkItemId("work-c"), 1, LeaseId("preparation-c"), TaskId("preparer-c"), HostId("host-a")
                 ),
             ),
             preparation_leases=(lease,),
         )
         non_ready_items = tuple(
             replace_dataclass(value, state=stored_state.StoredWorkItemState.ACTIVE)
-            if value.item_id == ItemId("work-c")
+            if value.item_id == WorkItemId("work-c")
             else value
             for value in state.lifecycle.work_items
         )
@@ -189,18 +191,20 @@ class SQLiteStoreTest(unittest.TestCase):
         self.assertEqual(StorageErrorCode.INVALID_STATE, attempt_error.exception.code)
 
         state = complete_sqlite_state()
-        definition = next(value for value in state.lifecycle.definition_revisions if value.item_id == ItemId("work-c"))
+        definition = next(
+            value for value in state.lifecycle.definition_revisions if value.item_id == WorkItemId("work-c")
+        )
         preparation_authority = replace(
             state.authority,
-            preparation_counters=(stored_state.PreparationLeaseCounter(ItemId("work-c"), 1),),
+            preparation_counters=(stored_state.PreparationLeaseCounter(WorkItemId("work-c"), 1),),
             preparation_generations=(
                 stored_state.PreparationLeaseGeneration(
-                    ItemId("work-c"), 1, LeaseId("preparation-c"), TaskId("preparer-c"), HostId("host-a")
+                    WorkItemId("work-c"), 1, LeaseId("preparation-c"), TaskId("preparer-c"), HostId("host-a")
                 ),
             ),
             preparation_leases=(
                 stored_state.StoredPreparationLease(
-                    ItemId("work-c"),
+                    WorkItemId("work-c"),
                     1,
                     definition.revision,
                     definition.digest,
@@ -902,7 +906,7 @@ class SQLiteStoreTest(unittest.TestCase):
             value
             for value in available_actions(snapshot, actor)
             if value.kind == decision_models.ActionKind.RECORD_REPLACEMENT
-            and value.capability.subject == ItemId("work-c")
+            and value.capability.subject == WorkItemId("work-c")
         )
         assert isinstance(action, decision_models.RecordReplacementAction)
         decision = decide(
@@ -910,9 +914,8 @@ class SQLiteStoreTest(unittest.TestCase):
             decision_models.RecordReplacementCommand(
                 action,
                 work_models.RecordPlannedReplacementInput(
-                    ItemId("work-c"),
                     0,
-                    ItemId("work-b"),
+                    WorkItemId("work-b"),
                     "Discard the current partial implementation.",
                     work_models.PlannedReplacementStatus.CURRENT,
                     TaskId("coordinator"),
@@ -931,14 +934,14 @@ class SQLiteStoreTest(unittest.TestCase):
         self.assertEqual("pinboard-planned-replacement/v1", recorded.transition_receipts[-1].input_schema)
 
         selected = store.read_current_action_snapshot(SQLITE_NOW)
-        relation = selected.current_replacement(ItemId("work-c"))
+        relation = selected.current_replacement(WorkItemId("work-c"))
         self.assertIsNotNone(relation)
         assert relation is not None
         retain_action = next(
             value
             for value in available_actions(selected, actor)
             if value.kind == decision_models.ActionKind.RETAIN_TEMPORARILY
-            and value.capability.subject == ItemId("work-c")
+            and value.capability.subject == WorkItemId("work-c")
         )
         assert isinstance(retain_action, decision_models.RetainTemporarilyAction)
         retention = decide(
@@ -946,7 +949,6 @@ class SQLiteStoreTest(unittest.TestCase):
             decision_models.RetainTemporarilyCommand(
                 retain_action,
                 work_models.RetainTemporarilyInput(
-                    ItemId("work-c"),
                     relation.relation_revision,
                     "Finish the current review before switching.",
                     relation.replacement_cost,

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from pinboard.domain.identifiers import AttemptId, HistoryId, ItemId
+from pinboard.domain.identifiers import AttemptId, HistoryId, WorkItemId
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +17,6 @@ class ViewRefreshResult:
 
 @dataclass(frozen=True, slots=True)
 class AffectedViews:
-    items: tuple[ItemId, ...]
+    items: tuple[WorkItemId, ...]
     attempts: tuple[AttemptId, ...]
     history_receipts: tuple[HistoryId, ...]

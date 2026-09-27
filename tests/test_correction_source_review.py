@@ -332,7 +332,6 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             fixture,
             self.project_action(fixture, "rebind-attempt:work-a-1"),
             {
-                "attempt": "work-a-1",
                 "branch": replacement.branch,
                 "base_revision": replacement.base_revision,
                 "brief_artifact_ref_id": brief_reference["artifact_ref_id"],

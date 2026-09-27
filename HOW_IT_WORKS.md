@@ -48,6 +48,8 @@ This structure gives an agent a bounded job and gives the reviewer the same chec
 
 The native MCP surface separates reading, authority, immutable publication, candidate observation, and lifecycle change. A few representative operations show how the brief governs the work:
 
+An action names its subject once; its payload supplies the change specific to that action. The domain uses `WorkItemId` for a work item, while public `item_id` fields and the SQLite `item_id` column are converted at their boundaries.
+
 - `proposal_create`, `brief_contract`, `brief_sources`, `brief_publish`, and `brief_review` preserve direction, construct the exact brief, select source evidence, and record independent brief findings.
 - `actions` exposes only legal current operations and their exact payloads. `preparation_authority` and `attempt_authority` fence who may prepare or implement; `dispatch` publishes verified launch instructions without granting that authority.
 - `artifact_verify` checks immutable accepted bytes. `candidate_observe` identifies the actual tracked working-tree candidate, and `review_job` binds that candidate, brief, result, and selected history into a separate reviewer launch.

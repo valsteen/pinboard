@@ -10,10 +10,10 @@ from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.identifiers import (
     AttemptId,
     CandidateId,
-    ItemId,
     ProposalId,
     SubjectId,
     TaskId,
+    WorkItemId,
 )
 
 
@@ -61,7 +61,7 @@ def attempt_record(
 ) -> work_models.AttemptRecord:
     return work_models.AttemptRecord(
         AttemptId(attempt),
-        ItemId(item),
+        WorkItemId(item),
         state,
         accepted_scope_revision,
         accepted_scope_digest,

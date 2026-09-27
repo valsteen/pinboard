@@ -68,7 +68,7 @@ def prepare_recovered_review_job(  # noqa: C901, PLR0912 - one selected remedy a
         reference,
         read_reference(work_root, reference),
         attempt_id=str(attempt_id),
-        item_id=str(facts.attempt.item_id),
+        item_id=str(facts.attempt.work_item_id),
     )
     if isinstance(package, work_brief_models.WorkBriefFailure):
         return errors.DecisionFailure(errors.DecisionFailureCode.ACTION_NOT_AVAILABLE, package.message, None)

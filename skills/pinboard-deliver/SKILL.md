@@ -41,6 +41,7 @@ If a replacement brief superseded an outstanding correction, follow the coordina
 
 - Edit only what the attempt requires.
 - Keep one writer per checkout. Disjoint attempts may proceed concurrently in separate checkouts.
+- For a bounded contributor, state the exact owned paths, public interface, package identity where relevant, and verification command with all required flags and targets. Use a separate checkout; the attempt owner integrates the contribution and runs the accepted checks on the combined candidate.
 - Preserve unrelated user changes.
 - Follow the repository's own testing, formatting, lint, documentation, and safety guidance.
 - Treat a stale instruction as an instruction defect before reshaping working code around it.

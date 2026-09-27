@@ -743,7 +743,6 @@ class McpCaptureTest(unittest.TestCase):
                 executor,
                 execution.Diagnostics(io.StringIO(), event_limit=1, line_limit=256),
                 capture,
-                omit_regex_lookarounds=True,
             )
             observed: dict[str, dict[str, execution.JsonValue]] = {}
 

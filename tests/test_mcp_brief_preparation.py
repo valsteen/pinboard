@@ -61,7 +61,6 @@ class McpBriefPreparationTest(unittest.TestCase):
         transport = server.create_server(
             executor,
             mcp_execution.Diagnostics(io.StringIO(), event_limit=8, line_limit=256),
-            omit_regex_lookarounds=True,
         )
         temporary, project, roots = test_mcp.McpTransportTest()._project()
         self.addCleanup(temporary.cleanup)

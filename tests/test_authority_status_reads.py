@@ -90,7 +90,6 @@ class AuthorityStatusReadTest(unittest.TestCase):
         server = mcp_server.create_server(
             executor,
             mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
-            omit_regex_lookarounds=True,
         )
         arguments = {"project_root": project, "work_root": work, **request}
         if tool in {

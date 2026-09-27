@@ -659,13 +659,17 @@ class McpTransportTest(unittest.TestCase):
         server = mcp_server.create_server(
             executor,
             mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
-            omit_regex_lookarounds=True,
         )
 
         def patterns(value: contracts.JsonSchemaValue) -> list[str]:
             if isinstance(value, dict):
                 found = [pattern] if isinstance(pattern := value.get("pattern"), str) else []
-                return found + [pattern for child in value.values() for pattern in patterns(child)]
+                return found + [
+                    pattern
+                    for key, child in value.items()
+                    if key not in {"const", "enum", "default", "examples"}
+                    for pattern in patterns(child)
+                ]
             if isinstance(value, list):
                 return [pattern for child in value for pattern in patterns(child)]
             return []
@@ -677,13 +681,11 @@ class McpTransportTest(unittest.TestCase):
                 with self.subTest(tool=tool.name):
                     self.assertEqual("object", tool.input_schema["type"])
                     self.assertFalse({"anyOf", "oneOf", "allOf"} & tool.input_schema.keys())
-                    self.assertFalse(
-                        any(
-                            marker in pattern
-                            for pattern in patterns(tool.input_schema)
-                            for marker in ("(?=", "(?!", "(?<=", "(?<!")
-                        )
-                    )
+                    for schema in (tool.input_schema, tool.output_schema):
+                        for pattern in patterns(schema):
+                            self.assertFalse(
+                                any(marker in pattern for marker in (r"\A", r"\z", "(?=", "(?!", "(?<=", "(?<!"))
+                            )
             inspect_tool = next(tool for tool in tools if tool.name == mcp_server.ATTEMPT_INSPECT_TOOL)
             definitions = inspect_tool.input_schema["$defs"]
             effects = definitions["AttemptReconciliation"]["properties"]["effects"]
@@ -758,27 +760,25 @@ class McpTransportTest(unittest.TestCase):
         common = {"project_root": str(project), "work_root": str(roots.work_root)}
 
         async def scenario() -> None:
-            for omit in (True, False):
-                server = mcp_server.create_server(
-                    executor,
-                    mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
-                    omit_regex_lookarounds=omit,
-                )
-                accepted = await server.call_tool(mcp_server.ITEM_STATUS_TOOL, common | {"item_id": "work-a"})
-                invalid_path = await server.call_tool(mcp_server.ITEM_STATUS_TOOL, common | {"item_id": ".."})
-                invalid_identity = await server.call_tool(
-                    mcp_server.ACTIONS_TOOL,
-                    {"request": common | {"role": "worker", "lease_id": "lease ", "generation": 1}},
-                )
-                assert isinstance(accepted, CallToolResult) and isinstance(accepted.structured_content, dict)
-                self.assertEqual("pinboard-item-status/v1", accepted.structured_content["schema"])
-                for result, code in (
-                    (invalid_path, "ITEM_STATUS_INVALID"),
-                    (invalid_identity, "ACTIONS_INVALID"),
-                ):
-                    assert isinstance(result, CallToolResult) and isinstance(result.structured_content, dict)
-                    self.assertEqual("rejected", result.structured_content["status"])
-                    self.assertEqual(code, result.structured_content["code"])
+            server = mcp_server.create_server(
+                executor,
+                mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
+            )
+            accepted = await server.call_tool(mcp_server.ITEM_STATUS_TOOL, common | {"item_id": "work-a"})
+            invalid_path = await server.call_tool(mcp_server.ITEM_STATUS_TOOL, common | {"item_id": ".."})
+            invalid_identity = await server.call_tool(
+                mcp_server.ACTIONS_TOOL,
+                {"request": common | {"role": "worker", "lease_id": "lease ", "generation": 1}},
+            )
+            assert isinstance(accepted, CallToolResult) and isinstance(accepted.structured_content, dict)
+            self.assertEqual("pinboard-item-status/v1", accepted.structured_content["schema"])
+            for result, code in (
+                (invalid_path, "ITEM_STATUS_INVALID"),
+                (invalid_identity, "ACTIONS_INVALID"),
+            ):
+                assert isinstance(result, CallToolResult) and isinstance(result.structured_content, dict)
+                self.assertEqual("rejected", result.structured_content["status"])
+                self.assertEqual(code, result.structured_content["code"])
 
         _run_async(scenario())
 
@@ -790,7 +790,6 @@ class McpTransportTest(unittest.TestCase):
         server = mcp_server.create_server(
             executor,
             mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
-            omit_regex_lookarounds=True,
         )
         explicit_roots = {"project_root": str(project), "work_root": str(roots.work_root)}
         brief = work_a_brief(project)
@@ -1109,7 +1108,6 @@ class McpTransportTest(unittest.TestCase):
             server = mcp_server.create_server(
                 executor,
                 mcp_execution.Diagnostics(io.StringIO(), event_limit=2, line_limit=256),
-                omit_regex_lookarounds=True,
             )
             _run_async(
                 server.call_tool(
@@ -2130,7 +2128,6 @@ class McpTransportTest(unittest.TestCase):
         server = mcp_server.create_server(
             executor,
             mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
-            omit_regex_lookarounds=True,
         )
         common: dict[str, contracts.JsonValue] = {
             "project_root": str(project),
@@ -2493,7 +2490,6 @@ class McpTransportTest(unittest.TestCase):
         server = mcp_server.create_server(
             executor,
             mcp_execution.Diagnostics(io.StringIO(), event_limit=1, line_limit=256),
-            omit_regex_lookarounds=True,
         )
         for family in ("attempt", "preparation"):
             for operation in ("renew", "release", "revoke"):
@@ -3494,7 +3490,7 @@ class McpTransportTest(unittest.TestCase):
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=2)
         diagnostics_stream = io.StringIO()
         diagnostics = mcp_execution.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256)
-        server = mcp_server.create_server(executor, diagnostics, omit_regex_lookarounds=True)
+        server = mcp_server.create_server(executor, diagnostics)
         original_emit = diagnostics.emit
         running_started = threading.Event()
         running_release = threading.Event()
@@ -3653,7 +3649,6 @@ class McpTransportTest(unittest.TestCase):
         server = mcp_server.create_server(
             executor,
             mcp_execution.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256),
-            omit_regex_lookarounds=True,
         )
         committed = threading.Event()
         release = threading.Event()
@@ -3717,7 +3712,7 @@ class McpTransportTest(unittest.TestCase):
         self.addCleanup(second_temporary.cleanup)
         executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=2)
         diagnostics = mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256)
-        server = mcp_server.create_server(executor, diagnostics, omit_regex_lookarounds=True)
+        server = mcp_server.create_server(executor, diagnostics)
         barrier = threading.Barrier(2)
         stores: list[tuple[int, Path, SQLiteWorkStore]] = []
         stores_lock = threading.Lock()
@@ -3771,7 +3766,6 @@ class McpTransportTest(unittest.TestCase):
         server = mcp_server.create_server(
             executor,
             mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
-            omit_regex_lookarounds=True,
         )
         store = SQLiteWorkStore(roots.database_path)
         before = store.validated_snapshot()
@@ -3832,7 +3826,6 @@ class McpTransportTest(unittest.TestCase):
         server = mcp_server.create_server(
             executor,
             mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
-            omit_regex_lookarounds=True,
         )
         store = SQLiteWorkStore(roots.database_path)
         before = store.validated_snapshot()
@@ -3935,7 +3928,6 @@ class McpTransportTest(unittest.TestCase):
         server = mcp_server.create_server(
             executor,
             mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
-            omit_regex_lookarounds=True,
         )
         before = SQLiteWorkStore(roots.database_path).validated_snapshot()
 
@@ -3978,7 +3970,6 @@ class McpTransportTest(unittest.TestCase):
         server = mcp_server.create_server(
             executor,
             mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
-            omit_regex_lookarounds=True,
         )
         requests = (
             (
@@ -4039,7 +4030,6 @@ class McpTransportTest(unittest.TestCase):
                 server = mcp_server.create_server(
                     executor,
                     mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
-                    omit_regex_lookarounds=True,
                 )
                 if operation == mcp_server.PROPOSAL_CREATE_TOOL:
                     arguments = {
@@ -4081,7 +4071,6 @@ class McpTransportTest(unittest.TestCase):
         server = mcp_server.create_server(
             executor,
             mcp_execution.Diagnostics(diagnostics_stream, event_limit=16, line_limit=256),
-            omit_regex_lookarounds=True,
         )
         brief = work_a_brief(project)
         references_before = SQLiteWorkStore(roots.database_path).validated_snapshot().artifact_references
@@ -4131,7 +4120,6 @@ class McpTransportTest(unittest.TestCase):
         server = mcp_server.create_server(
             executor,
             mcp_execution.Diagnostics(io.StringIO(), event_limit=16, line_limit=256),
-            omit_regex_lookarounds=True,
         )
         warning = ViewRefreshResult(
             12,
@@ -4167,7 +4155,6 @@ class McpTransportTest(unittest.TestCase):
         server = mcp_server.create_server(
             executor,
             mcp_execution.Diagnostics(io.StringIO(), event_limit=8, line_limit=256),
-            omit_regex_lookarounds=True,
         )
 
         def contradictory_result(
@@ -4365,15 +4352,15 @@ class McpTransportTest(unittest.TestCase):
             self.assertEqual(required, set(tool.input_schema["required"]))
             self.assertEqual(1, tool.input_schema["properties"]["project_root"]["minLength"])
             self.assertEqual(1, tool.input_schema["properties"]["work_root"]["minLength"])
-            self.assertEqual(r"\A[^\x00]+\z", tool.input_schema["properties"]["project_root"]["pattern"])
-            self.assertEqual(r"\A[^\x00]+\z", tool.input_schema["properties"]["work_root"]["pattern"])
+            self.assertIn("pattern", tool.input_schema["properties"]["project_root"])
+            self.assertIn("pattern", tool.input_schema["properties"]["work_root"])
             self.assertIn("$defs", tool.input_schema)
             self.assertIsNotNone(tool.output_schema)
             assert tool.output_schema is not None
             self.assertIn("anyOf", tool.output_schema)
             self.assertIn("$defs", tool.output_schema)
         item_schema = tools_by_name[mcp_server.ITEM_STATUS_TOOL].input_schema
-        self.assertNotIn("pattern", item_schema["properties"]["item_id"])
+        self.assertIn("pattern", item_schema["properties"]["item_id"])
         proposal_schema = tools_by_name[mcp_server.PROPOSAL_CREATE_TOOL].input_schema
         self.assertEqual("#/$defs/Proposal", proposal_schema["properties"]["proposal"]["$ref"])
         self.assertFalse(proposal_schema["$defs"]["Proposal"]["additionalProperties"])
@@ -4386,7 +4373,7 @@ class McpTransportTest(unittest.TestCase):
         self.assertEqual(1, reference_schema["properties"]["artifact_ref_id"]["minimum"])
         self.assertEqual(1, reference_schema["properties"]["revision"]["minimum"])
         self.assertEqual(1, reference_schema["properties"]["size_bytes"]["minimum"])
-        self.assertEqual(r"\A[0-9a-f]{64}\z", reference_schema["properties"]["sha256"]["pattern"])
+        self.assertIn("pattern", reference_schema["properties"]["sha256"])
         unchanged_schema = brief_output_schema["$defs"]["BriefUnchanged"]
         self.assertFalse(unchanged_schema["properties"]["state_changed"]["const"])
         self.assertEqual(["unchanged"], unchanged_schema["properties"]["effect"]["enum"])

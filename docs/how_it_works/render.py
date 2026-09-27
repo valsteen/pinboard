@@ -89,6 +89,8 @@ A **work item** is the durable project decision. An **attempt** is one execution
 
 Saving a proposal creates a ready work item with its original facts attached. A start request first leads the agent to check current dependencies and holds. Preparation then pins the definition and produces a brief; activation rechecks eligibility and authority before creating an attempt. Work can move through implementation and review, pause at a useful checkpoint, return for correction, continue, or finish. A proposed replacement remains a separate decision rather than silently changing the active target.
 
+Ready, blocked, and deferred items without an attempt offer item decisions for their state. Active and review work offer attempt decisions. Paused work with a live attempt retains rebind and conditional resume; blocked work with a live attempt retains conditional resume. Recording a planned replacement or revising the accepted definition remains available for live attempts when its own conditions allow. A conflicting stored item and attempt state stops action discovery before it presents a legal choice.
+
 Across those paths, four guarantees stay constant:
 
 - **Intent survives conversations.** Later work can continue from accepted scope and evidence instead of reconstructing intent from chat history.

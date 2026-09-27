@@ -9,6 +9,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import pairwise
+from typing import assert_never
 
 import msgspec
 
@@ -172,14 +173,21 @@ class ParallelPreviewLifecycleSelection:
     items: tuple[ParallelPreviewLifecycleItem, ...]
 
 
-def _validate_selected_open_attempt(
+def validate_current_attempt_relation(
+    operation: str,
+    item_id: WorkItemId,
     state: stored_state.StoredWorkItemState,
     attempt_state: work_models.AttemptState | None,
+    error_code: StorageErrorCode,
 ) -> None:
-    if attempt_state not in stored_state.allowed_current_attempt_states(state):
+    allowed = stored_state.allowed_current_attempt_states(state)
+    if attempt_state not in allowed:
+        expected = " or ".join("none" if value is None else value.value for value in allowed)
+        observed = "none" if attempt_state is None else attempt_state.value
         raise StorageError(
-            StorageErrorCode.INVALID_STATE,
-            "The selected work item and open attempt states do not match.",
+            error_code,
+            f"{operation}: work item '{item_id}' state '{state.value}' requires current attempt state "
+            f"'{expected}', observed '{observed}'; effect unchanged.",
         )
 
 
@@ -393,7 +401,13 @@ def read_parallel_preview_lifecycle(
                     attempt = ParallelPreviewLifecycleAttempt(decoded_attempt.attempt_id, attempt_state)
                 case _:
                     raise StorageError(StorageErrorCode.INVALID_STATE, "The selected open attempt state is invalid.")
-        _validate_selected_open_attempt(item.state, None if attempt is None else attempt.state)
+        validate_current_attempt_relation(
+            "read_parallel_preview_lifecycle",
+            item.item_id,
+            item.state,
+            None if attempt is None else attempt.state,
+            StorageErrorCode.INVALID_STATE,
+        )
         selected.append(
             ParallelPreviewLifecycleItem(
                 item.item_id,
@@ -450,6 +464,9 @@ def read_attempt_context(
     if item_row is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "The selected nonterminal attempt has no work item.")
     item = decode_row(item_row, _AttemptItemRow)
+    validate_current_attempt_relation(
+        "read_attempt_context", attempt.item_id, item.state, attempt_state, StorageErrorCode.INVALID_STATE
+    )
     match item.state:
         case (
             stored_state.StoredWorkItemState.ACTIVE
@@ -747,21 +764,20 @@ def set_attempt_state(
     candidate_recorded_at: datetime | None = None,
 ) -> DecisionFailure | None:
     attempt_id = current.attempt_id
-    if after_state == work_models.AttemptState.REVIEW:
-        stored_candidate = candidate_revision
-        stored_candidate_at = None if candidate_recorded_at is None else candidate_recorded_at.isoformat()
-    elif after_state in {
-        work_models.AttemptState.ACTIVE,
-        work_models.AttemptState.PAUSED,
-        work_models.AttemptState.BLOCKED,
-    }:
-        stored_candidate = None
-        stored_candidate_at = None
-    else:
-        stored_candidate = current.candidate_revision
-        stored_candidate_at = (
-            None if current.candidate_recorded_at is None else current.candidate_recorded_at.isoformat()
-        )
+    match after_state:
+        case work_models.AttemptState.REVIEW:
+            stored_candidate = candidate_revision
+            stored_candidate_at = None if candidate_recorded_at is None else candidate_recorded_at.isoformat()
+        case work_models.AttemptState.ACTIVE | work_models.AttemptState.PAUSED | work_models.AttemptState.BLOCKED:
+            stored_candidate = None
+            stored_candidate_at = None
+        case work_models.AttemptState.DONE:
+            stored_candidate = current.candidate_revision
+            stored_candidate_at = (
+                None if current.candidate_recorded_at is None else current.candidate_recorded_at.isoformat()
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
     return require_one_changed_row(
         connection.execute(
             """

@@ -493,6 +493,57 @@ class AuthorityStatusReadTest(unittest.TestCase):
         self.assertNotIn("work_item_state_counts", read_tables)
         self.assert_keyed_status_queries(work / "state.sqlite3", statements)
 
+    def test_action_discovery_rejects_selected_item_attempt_conflict(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        database = work / "state.sqlite3"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute("UPDATE work_items SET state = 'ready' WHERE item_id = 'work-a'")
+            connection.commit()
+        finally:
+            connection.close()
+        before = database.read_bytes()
+
+        requests: tuple[tuple[JsonObject, str], ...] = (
+            ({"role": "project"}, "read_current_snapshot"),
+            (
+                {"role": "project", "action_id": {"kind": "continue", "subject": "work-a-1"}},
+                "read_selected_decision_facts",
+            ),
+        )
+        for request, operation in requests:
+            with self.subTest(operation=operation), self.assertRaises(UnexpectedToolError) as raised:
+                self.native(mcp_server.ACTIONS_TOOL, str(project), str(work), request)
+            cause = raised.exception.__cause__
+            self.assertIsInstance(cause, StorageError)
+            assert isinstance(cause, StorageError)
+            self.assertEqual(StorageErrorCode.INVALID_STATE, cause.code)
+            self.assertIn(operation, str(cause))
+            self.assertIn("work item 'work-a' state 'ready'", str(cause))
+            self.assertIn("requires current attempt state 'none', observed 'active'", str(cause))
+            self.assertIn("effect unchanged", str(cause))
+
+        unaffected = self.native(
+            mcp_server.ACTIONS_TOOL,
+            str(project),
+            str(work),
+            {"role": "project", "action_id": {"kind": "revise-item", "subject": "work-c"}},
+        )
+        self.assertEqual("ok", unaffected["status"])
+        status, output, error = self.run_cli(
+            "--project-root", str(project), "--work-root", str(work), "validate", "--json"
+        )
+        self.assertEqual(10, status, error)
+        diagnostics = self.json_array(json.loads(output)["diagnostics"])
+        self.assertTrue(
+            any(
+                "read_state: work item 'work-a' state 'ready' requires current attempt state 'none', "
+                "observed 'active'; effect unchanged" in str(self.json_object(value)["message"])
+                for value in diagnostics
+            )
+        )
+        self.assertEqual(before, database.read_bytes())
+
     def test_installed_item_status_reads_only_selected_item_facts(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_preparation(unrelated_count=64))
 

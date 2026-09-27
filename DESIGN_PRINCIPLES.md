@@ -237,6 +237,8 @@ Apply the same ownership test to read paths. When neighboring projections repeat
 
 The primary hazard is implicit fallback, not dynamic dispatch by itself. For every dispatch site, ask whether the alternatives are closed, whether this owner must distinguish them, where a new alternative should force an edit, and what happens for an unsupported value. Reject catch-all `else` branches, mapping `.get()` defaults, optional handlers, inherited default implementations, and generic registrations that silently accept an unknown alternative.
 
+Name a known empty or absent outcome in the closed owner's arm. Return a typed rejection for an expected invalid request. When persisted or independently combined facts contradict the selected operation's invariant, reject them at the owning boundary with the operation, subject, expected and observed relationship, and effect context. Use `case _ as unreachable:` with `assert_never` only after every supported typed alternative is named; the central coverage rule excludes that statically impossible arm from line and branch coverage, while tests exercise invalid states reachable through real boundaries.
+
 | Situation | Preferred shape | Why | Avoid |
 | --- | --- | --- | --- |
 | Incoming payload, CLI leaf, storage row, or protocol tag selects a closed representation | Decode directly to an exact record or tagged union; use one exhaustive `match` when coupled fields select among records | Validation and completeness belong at the boundary, and a new supported shape must update that owner | General namespaces past the boundary, stringly route enums, permissive fallback records |

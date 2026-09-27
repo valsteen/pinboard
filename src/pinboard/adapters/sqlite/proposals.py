@@ -367,6 +367,20 @@ def create_proposal(
     if (failure := make_queue_space(connection, ready_item.position)) is not None:
         return failure
     relation = intake.relation
+    match relation:
+        case work_models.PlannedReplacementProposalRelation(replacement_cost=cost):
+            replacement_cost = cost
+        case (
+            work_models.IndependentProposalRelation()
+            | work_models.PrerequisiteProposalRelation()
+            | work_models.FollowUpProposalRelation()
+            | work_models.DuplicateProposalRelation()
+            | work_models.ContradictionProposalRelation()
+            | work_models.ClarificationProposalRelation()
+        ):
+            replacement_cost = None
+        case _ as unreachable:
+            assert_never(unreachable)
     connection.execute(
         """
         INSERT INTO proposals (
@@ -385,7 +399,7 @@ def create_proposal(
             intake.why_it_matters,
             relation.kind.value,
             relation.work_item_id,
-            relation.replacement_cost if isinstance(relation, work_models.PlannedReplacementProposalRelation) else None,
+            replacement_cost,
             intake.effect,
             intake.unlock,
             intake.urgency_evidence,

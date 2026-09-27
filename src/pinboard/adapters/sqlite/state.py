@@ -17,7 +17,7 @@ from pinboard.adapters.sqlite.artifacts import read_artifacts
 from pinboard.adapters.sqlite.authority import read_authority, validate_attempt_authority
 from pinboard.adapters.sqlite.database import decode_row
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.adapters.sqlite.lifecycle import read_lifecycle
+from pinboard.adapters.sqlite.lifecycle import read_lifecycle, validate_current_attempt_relation
 from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
 from pinboard.application import project_export, released_v6_compatibility, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
@@ -270,12 +270,7 @@ def _validate_current_state(state: stored_state.StoredWorkState, error_code: Sto
     }
     for item_id, item_state in item_states.items():
         attempt_state = current_attempt_states.get(item_id)
-        if attempt_state not in stored_state.allowed_current_attempt_states(item_state):
-            observed = "none" if attempt_state is None else attempt_state.value
-            raise StorageError(
-                error_code,
-                f"Work item '{item_id}' state '{item_state.value}' conflicts with current attempt state '{observed}'.",
-            )
+        validate_current_attempt_relation("read_state", item_id, item_state, attempt_state, error_code)
     for lease in state.authority.preparation_leases:
         if (
             lease.state != authority_models.PreparationLeaseStatus.ACTIVE

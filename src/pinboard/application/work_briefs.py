@@ -736,6 +736,18 @@ def _obligation_target_text(target: work_brief_models.ObligationTarget) -> str:
             assert_never(unreachable)
 
 
+def _boundary_text(
+    checkpoint: work_brief_models.WorkBriefCheckpoint | work_brief_compatibility_models.WorkBriefCheckpointV3,
+) -> str:
+    match checkpoint:
+        case work_brief_models.LocalCheckpoint() | work_brief_compatibility_models.LocalCheckpointV3():
+            return "local"
+        case work_brief_models.CrossBoundaryCheckpoint() | work_brief_compatibility_models.CrossBoundaryCheckpointV3():
+            return "cross-boundary"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def render_work_brief_markdown(brief: WorkBriefValue) -> bytes:  # noqa: PLR0912 - closed brief projection
     checkpoint = brief.checkpoint
     lines = [
@@ -766,7 +778,7 @@ def render_work_brief_markdown(brief: WorkBriefValue) -> bytes:  # noqa: PLR0912
         f"## Checkpoint: {checkpoint.title}",
         "",
         f"- Checkpoint ID: `{checkpoint.checkpoint_id}`",
-        f"- Boundary: `{('cross-boundary' if isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint) else 'local')}`",
+        f"- Boundary: `{_boundary_text(checkpoint)}`",
         f"- Architecture impact: {_architecture_text(checkpoint.architecture_impact)}",
         "",
         checkpoint.outcome_description,
@@ -896,6 +908,13 @@ def current_attempt_work_brief_identity(
     artifact_ref_id: ArtifactRefId,
 ) -> CurrentAttemptWorkBriefIdentity:
     disposition = brief.checkpoint.disposition
+    match disposition:
+        case work_brief_models.ContinueCheckpointDisposition():
+            disposition_kind = "continue"
+        case work_brief_models.TerminalCheckpointDisposition():
+            disposition_kind = "terminal"
+        case _ as unreachable:
+            assert_never(unreachable)
     return CurrentAttemptWorkBriefIdentity(
         brief.attempt_id,
         brief.item_id,
@@ -904,7 +923,7 @@ def current_attempt_work_brief_identity(
         brief.accepted_scope.revision,
         brief.accepted_scope.digest,
         artifact_ref_id,
-        "continue" if isinstance(disposition, work_brief_models.ContinueCheckpointDisposition) else "terminal",
+        disposition_kind,
     )
 
 

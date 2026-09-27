@@ -108,6 +108,8 @@ def discover_current_actions(
                 lease_id,
                 preparations=preparations,
             )
+        case _ as unreachable:
+            assert_never(unreachable)
     return available_actions(snapshot, actor)
 
 

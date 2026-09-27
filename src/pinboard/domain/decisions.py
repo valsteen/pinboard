@@ -179,7 +179,7 @@ class ProjectAttemptActionGroups:
     item_actions: tuple[decision_models.Action, ...]
 
 
-def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt action projection
+def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-attempt action projection
     context: work_models.ProjectAttemptActionContext,
     factory: ActionCapabilityFactory,
 ) -> ProjectAttemptActionGroups:
@@ -187,75 +187,89 @@ def project_attempt_action_groups(  # noqa: C901 - one exhaustive live-attempt a
 
     attempt_actions: list[decision_models.Action] = []
     stale = _context_definition_stale(context)
-    if context.item_state == work_models.WorkState.ACTIVE:
-        if not stale and context.replacement_resolved:
+    match context.item_state:
+        case work_models.WorkState.ACTIVE:
+            if not stale and context.replacement_resolved:
+                attempt_actions.extend(
+                    (
+                        decision_models.ContinueAction(
+                            factory.make(
+                                context.attempt, f"Continue {context.work_item_id}", context.attempt_subject_revision
+                            )
+                        ),
+                        decision_models.DispatchAction(
+                            factory.make(
+                                context.attempt,
+                                f"Prepare a worker launch for {context.work_item_id}",
+                                context.attempt_subject_revision,
+                            )
+                        ),
+                    )
+                )
             attempt_actions.extend(
                 (
-                    decision_models.ContinueAction(
-                        factory.make(
-                            context.attempt, f"Continue {context.work_item_id}", context.attempt_subject_revision
-                        )
-                    ),
-                    decision_models.DispatchAction(
+                    decision_models.RebindAttemptAction(
                         factory.make(
                             context.attempt,
-                            f"Prepare a worker launch for {context.work_item_id}",
+                            f"Rebind the accepted scope and Git baseline for {context.work_item_id}",
+                            context.attempt_subject_revision,
+                        )
+                    ),
+                    decision_models.PauseAction(
+                        factory.make(
+                            context.attempt,
+                            f"Pause and preserve {context.work_item_id}",
+                            context.attempt_subject_revision,
+                        )
+                    ),
+                    decision_models.BlockAttemptAction(
+                        factory.make(
+                            context.attempt,
+                            f"Block active attempt for {context.work_item_id}",
                             context.attempt_subject_revision,
                         )
                     ),
                 )
             )
-        attempt_actions.extend(
-            (
-                decision_models.RebindAttemptAction(
-                    factory.make(
-                        context.attempt,
-                        f"Rebind the accepted scope and Git baseline for {context.work_item_id}",
-                        context.attempt_subject_revision,
-                    )
-                ),
-                decision_models.PauseAction(
-                    factory.make(
-                        context.attempt, f"Pause and preserve {context.work_item_id}", context.attempt_subject_revision
-                    )
-                ),
-                decision_models.BlockAttemptAction(
-                    factory.make(
-                        context.attempt,
-                        f"Block active attempt for {context.work_item_id}",
-                        context.attempt_subject_revision,
-                    )
-                ),
-            )
-        )
-    if context.item_state == work_models.WorkState.REVIEW:
-        attempt_actions.append(
-            decision_models.ReturnForCorrectionAction(
-                factory.make(
-                    context.attempt, f"Return {context.work_item_id} for correction", context.attempt_subject_revision
-                )
-            )
-        )
-        if not stale and context.replacement_resolved:
+        case work_models.WorkState.REVIEW:
             attempt_actions.append(
-                decision_models.AcceptCheckpointAction(
+                decision_models.ReturnForCorrectionAction(
                     factory.make(
                         context.attempt,
-                        f"Accept a checkpoint for {context.work_item_id}",
+                        f"Return {context.work_item_id} for correction",
                         context.attempt_subject_revision,
                     )
                 )
             )
-            if context.attempt_record is not None and context.attempt_record.state == work_models.AttemptState.REVIEW:
+            if not stale and context.replacement_resolved:
                 attempt_actions.append(
-                    decision_models.AcceptReviewAndContinueAction(
+                    decision_models.AcceptCheckpointAction(
                         factory.make(
                             context.attempt,
-                            f"Accept the review and continue {context.work_item_id}",
+                            f"Accept a checkpoint for {context.work_item_id}",
                             context.attempt_subject_revision,
                         )
                     )
                 )
+                if (
+                    context.attempt_record is not None
+                    and context.attempt_record.state == work_models.AttemptState.REVIEW
+                ):
+                    attempt_actions.append(
+                        decision_models.AcceptReviewAndContinueAction(
+                            factory.make(
+                                context.attempt,
+                                f"Accept the review and continue {context.work_item_id}",
+                                context.attempt_subject_revision,
+                            )
+                        )
+                    )
+        case work_models.WorkState.PAUSED | work_models.WorkState.BLOCKED:
+            pass
+        case work_models.WorkState.READY | work_models.WorkState.DEFERRED:
+            raise ValueError("A live attempt requires an active, review, paused, or blocked work item.")
+        case _ as unreachable:
+            assert_never(unreachable)
     if (
         context.item_state in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}
         and not stale
@@ -362,43 +376,45 @@ def _item_actions(
     close = decision_models.CloseAction(
         factory.make(item.work_item_id, f"Record a terminal decision for {item.work_item_id}", subject_revision)
     )
-    if item.state == work_models.WorkState.READY:
-        return [
-            decision_models.BlockWorkItemAction(
-                factory.make(item.work_item_id, f"Block unstarted work item {item.work_item_id}", subject_revision)
-            ),
-            decision_models.DeferAction(
-                factory.make(item.work_item_id, f"Defer {item.work_item_id} with a reopen condition", subject_revision)
-            ),
-            close,
-        ]
-    dependencies_live = any(dependency in snapshot.work_items_by_id() for dependency in item.depends_on)
-    if (
-        item.state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED}
-        and not dependencies_live
-        and _replacement_resolved(snapshot, item.work_item_id)
-    ):
-        result: list[decision_models.Action] = [
-            decision_models.ResumeAction(
-                factory.make(item.work_item_id, f"Return {item.work_item_id} to ready", subject_revision)
-            )
-        ]
-        result.append(
-            decision_models.DeferAction(
-                factory.make(item.work_item_id, f"Defer {item.work_item_id} with a reopen condition", subject_revision)
-            )
-        )
-        return [*result, close]
-    if item.state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED}:
-        return [close]
-    if item.state == work_models.WorkState.DEFERRED:
-        return [
-            decision_models.ReopenAction(
-                factory.make(item.work_item_id, f"Reopen {item.work_item_id} to ready", subject_revision)
-            ),
-            close,
-        ]
-    return []
+    match item.state:
+        case work_models.WorkState.READY:
+            return [
+                decision_models.BlockWorkItemAction(
+                    factory.make(item.work_item_id, f"Block unstarted work item {item.work_item_id}", subject_revision)
+                ),
+                decision_models.DeferAction(
+                    factory.make(
+                        item.work_item_id, f"Defer {item.work_item_id} with a reopen condition", subject_revision
+                    )
+                ),
+                close,
+            ]
+        case work_models.WorkState.PAUSED | work_models.WorkState.BLOCKED:
+            dependencies_live = any(dependency in snapshot.work_items_by_id() for dependency in item.depends_on)
+            if not dependencies_live and _replacement_resolved(snapshot, item.work_item_id):
+                return [
+                    decision_models.ResumeAction(
+                        factory.make(item.work_item_id, f"Return {item.work_item_id} to ready", subject_revision)
+                    ),
+                    decision_models.DeferAction(
+                        factory.make(
+                            item.work_item_id, f"Defer {item.work_item_id} with a reopen condition", subject_revision
+                        )
+                    ),
+                    close,
+                ]
+            return [close]
+        case work_models.WorkState.DEFERRED:
+            return [
+                decision_models.ReopenAction(
+                    factory.make(item.work_item_id, f"Reopen {item.work_item_id} to ready", subject_revision)
+                ),
+                close,
+            ]
+        case work_models.WorkState.ACTIVE | work_models.WorkState.REVIEW:
+            return []
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _project_role_actions(
@@ -846,10 +862,20 @@ def _close(
     item = _require_work_item(snapshot, item_id)
     if isinstance(item, DecisionFailure):
         return item
-    if item.state in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}:
-        return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE, "Active or review work requires the acceptance path.", None
-        )
+    match item.state:
+        case (
+            work_models.WorkState.READY
+            | work_models.WorkState.PAUSED
+            | work_models.WorkState.BLOCKED
+            | work_models.WorkState.DEFERRED
+        ):
+            pass
+        case work_models.WorkState.ACTIVE | work_models.WorkState.REVIEW:
+            return DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE, "Active or review work requires the acceptance path.", None
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
     if item.attempt is not None:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,

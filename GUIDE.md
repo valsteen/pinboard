@@ -14,9 +14,9 @@ A typical reply is: “I've saved the database issue. I'll keep working on this 
 
 > Let's fix the database issue now.
 
-Here, saving is only the first step. The agent checks the accepted goal, dependencies, checkout, and any choice that could change the result. It prepares a brief and starts the work when those conditions are settled. You decide material changes to scope or behavior; routine implementation choices stay with the agent.
+Here, saving is only the first step. The agent checks the goal you agreed on, dependencies, checkout, and any choice that could change the result. It prepares a brief and starts the work when those conditions are settled. You decide material changes to scope or behavior; routine implementation choices stay with the agent.
 
-If the intended fix is unclear, it may ask: “Should this change prevent new invalid records, repair existing records, or both?” Your answer becomes part of the accepted goal before implementation.
+If the intended fix is unclear, it may ask: “Should this change prevent new invalid records, repair existing records, or both?” Your answer shapes the goal before implementation.
 
 ## Decide what to do next
 
@@ -34,17 +34,17 @@ The agent checks the current order and records the priority change you chose. Pr
 
 > Let's tackle the API cleanup next. Let me know what the review finds.
 
-The agent works from the accepted brief, verifies the change, and submits an exact candidate with its result. A separate coding agent reviews that candidate against the brief. The owning agent reports the review outcome and any material concern. A published pull request alone does not count as this review.
+The agent works from the agreed brief, verifies the change, and saves the exact version it wants reviewed with its results. A separate coding agent reviews that version against the brief. The owning agent reports the review outcome and any material concern. A published pull request alone does not count as this review.
 
 A review update could say: “The reviewer found a case the cleanup misses. I'll fix it and have the change reviewed again.”
 
-If the reviewer finds an implementation defect, the same attempt can return for correction. The worker addresses the finding, verifies a new exact candidate, and a separate reviewer checks it again. If the finding would change the agreed product goal, architecture, or compatibility, the agent asks you to settle that decision before affected work continues. You choose the repository disposition of a favorably reviewed change; Pinboard records completion only after its required review and authorized repository steps are satisfied.
+If the reviewer finds an implementation defect, the agent can correct the same work and send the revised change for another review. If the finding would change the agreed product goal, architecture, or compatibility, the agent asks you to settle that decision before affected work continues. You choose what happens to a favorably reviewed change in the repository; Pinboard records completion only after its required review and authorized repository steps are satisfied.
 
 ## Pick up interrupted work
 
 > Where did we leave off with the API cleanup? Please pick it up if the plan still fits.
 
-The agent reads the saved item, attempt, brief, and current evidence, then explains the next supported step. It can continue an active attempt, resume a paused one, or restore the exact accepted candidate into a suitable clean checkout when that recovery applies. If the accepted scope or Git lineage changed, it updates the brief through the supported path before continuing. A pause preserves the work; it is not a new item or proof of completion. The agent asks you only when a material choice or missing authority blocks the next step.
+The agent reads the saved goal, brief, current work, and review evidence, then explains the next supported step. It can continue active work, resume paused work, or restore the saved change into a suitable clean checkout when that recovery applies. If the agreed scope or Git history changed, it updates the brief through the supported path before continuing. A pause preserves the work; it is not proof of completion. The agent asks you only when a material choice or missing authority blocks the next step.
 
 For example: “The change is ready, but it hasn't been reviewed yet. I can send the saved version for review.”
 
@@ -64,9 +64,9 @@ That request authorizes the displayed safe batch. The agent checks it again befo
 
 > I think this change was merged. Can you check whether anything is left to do?
 
-The agent compares the current repository result with the accepted goal and any protected candidate and review. It identifies missing review, disposition, or cleanup evidence and follows the same attempt where possible. A merge or closed pull request alone does not make an accepted attempt complete. If an item never had an attempt, you can instead explicitly decide to close that unstarted item as completed or dropped; the agent records that decision without inventing an implementation review.
+The agent compares the repository result with the goal you agreed on, the saved change, and its review. It checks whether review, your repository decision, or cleanup is still missing and continues the same work where possible. A merge or closed pull request alone does not prove the work is complete. If work was saved but never started, you can instead decide to close it as completed or dropped; the agent records that choice without inventing an implementation review.
 
-An honest reply might be: “The change is merged, but its review isn't finished. I'll check the saved change before marking the work done.” If the item was never started, your explicit completed-or-dropped decision takes the shorter close route.
+An honest reply might be: “The change is merged, but its review isn't finished. I'll check the saved change before marking the work done.” If the work was never started, your decision to mark it completed or dropped takes the shorter close route.
 
 ## Review a pull request owned by a person
 

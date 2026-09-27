@@ -74,7 +74,7 @@ These skills specialize part of the work. They are not alternate ways to start o
 
 ## When Pinboard is worth it
 
-Pinboard is most useful when a decision must survive more than the current conversation. That may mean another revision, interruption, reviewer, or task. When work lives that long, ideas can disappear before they become work, accepted decisions can remain after becoming obsolete, architectural assumptions can outlive the evidence that invalidated them, and changes can accumulate until no one can trace why they belong.
+Pinboard is most useful when a decision must survive more than the current conversation. That may mean another revision, interruption, reviewer, or task. When work lives that long, ideas can disappear before they become work, earlier decisions can remain after becoming obsolete, architectural assumptions can outlive the evidence that invalidated them, and changes can accumulate until no one can trace why they belong.
 
 The drift is co-authored. Sometimes your former self made the forgotten choice. Sometimes the agent filled a gap, and plausible language made the guess look intentional. As notes, code, and reviews reinforce one another, both of you can mistake momentum for direction.
 
@@ -136,7 +136,7 @@ Exact invocation capture is off by default. Contributors can enable private proj
 ## Learn more
 
 - [Using Pinboard in conversation](GUIDE.md) gives practical requests for saving, starting, reviewing, resuming, and deciding what happens to work.
-- [How Pinboard works](HOW_IT_WORKS.md) follows the workflow from an idea to an accepted, reviewed change.
+- [How Pinboard works](HOW_IT_WORKS.md) follows the workflow from an idea to a reviewed change and your decision about it.
 - [Install Pinboard](INSTALL.md) covers advanced setup, Codex and Claude Code permissions, linked worktrees, local data, and troubleshooting.
 - [Contributing](CONTRIBUTING.md) covers the development environment, checks, tests, and packaging.
 - [Architecture](ARCHITECTURE.md) describes system ownership, boundaries, limitations, and failure semantics.

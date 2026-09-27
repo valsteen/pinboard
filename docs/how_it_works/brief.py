@@ -81,7 +81,7 @@ def validate() -> None:
 
 DIAGRAM = Diagram(
     slug="brief",
-    title="The canonical work brief turns one accepted decision into structured implementation and review attention",
+    title="The work brief gives implementation and review one shared agreement",
     description=(
         "A document-anatomy view of the canonical work brief. Artifact identity and accepted-scope identity anchor the "
         "whole-work definition. A cross-boundary checkpoint then names its boundary and outcome before expanding into "
@@ -94,7 +94,7 @@ DIAGRAM = Diagram(
     height=1040,
     sections=(
         Section("Canonical work brief", "one strict hierarchy travels with implementation, review, and resume", 28, 42),
-        Section("Anchor the whole job", "identity, accepted scope, and the complete work definition", 28, 192),
+        Section("Anchor the whole job", "identity, agreed scope, and the complete work definition", 28, 192),
         Section(
             "Cross-boundary checkpoint",
             "local work keeps the common criteria, architecture, verification, and deferrals",
@@ -119,7 +119,7 @@ DIAGRAM = Diagram(
         Box(
             "brief",
             "pinboard-work-brief/v4",
-            "One accepted artifact",
+            "One saved brief",
             ("starter → structural choices → completed brief",),
             ("WorkBriefContract · WorkBrief",),
             400,
@@ -140,8 +140,8 @@ DIAGRAM = Diagram(
         ),
         Box(
             "accepted-scope",
-            "Accepted scope reference",
-            "Which decision was accepted?",
+            "Scope reference",
+            "Which agreement applies?",
             ("revision + digest",),
             ("accepted_scope",),
             355,
@@ -178,7 +178,7 @@ DIAGRAM = Diagram(
         Box(
             "criteria",
             "Acceptance criteria",
-            "What earns acceptance?",
+            "What must the work satisfy?",
             ("numbered requirements",),
             ("number · requirement",),
             35,

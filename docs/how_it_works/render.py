@@ -48,15 +48,17 @@ When you ask the agent to start an item, it checks dependencies and holds, then 
 
 Before implementation, the agent resolves material open questions with you and prepares an inspectable brief.
 
-{_picture("ambiguity-closure", "Structured intake and discussion becoming a reviewed brief that anchors implementation and exact-candidate review, with defects returning for correction and discoveries outside delegated authority returning to a human decision")}
+{_picture("ambiguity-closure", "A discussion becomes a shared brief for implementation and review; defects return for correction, while changes to the goal return to a human decision")}
 
-The accepted brief anchors both implementation and review. Cross-boundary work receives an independent review of the brief before implementation; local work uses a lighter brief and skips that separate review. The worker then implements the accepted scope, verifies it, and submits one exact candidate with its evidence. A separate reviewer evaluates that candidate against the same brief.
+The agreed brief guides both implementation and review. Cross-boundary work receives a separate review of the brief before implementation; local work uses a lighter brief. The agent builds the agreed change, checks it, and submits the exact version and evidence for a separate coding agent to review against that brief.
 
-Implementation defects return to the same attempt for bounded correction and another review. A discovery that changes product scope, architecture, compatibility, or another delegated boundary returns to the human. If the agreement changes, Pinboard replaces the complete definition and brief before affected implementation resumes; it does not reinterpret the old candidate as satisfying a new request.
+Implementation defects return to the same attempt for bounded correction and another review. A discovery that changes product scope, architecture, compatibility, or another delegated boundary returns to the human. If the agreement changes, Pinboard replaces the complete definition and brief before affected implementation resumes; it does not reinterpret the earlier version of the change as satisfying a new request.
 
 The human still decides what belongs in the product, which tradeoffs are acceptable, and what happens to reviewed repository changes. Structure keeps those choices visible; it does not make them automatically correct.
 
-A published pull request and Pinboard review are separate facts. If publication happens first, the owning task inspects the attempt, protects the exact local candidate, and starts review by a separate coding agent when the required actions are available. Until then, it reports review as not started or blocked; while review runs, it reports that work as underway; afterward, it reports a favorable verdict or a return for correction. A human may explicitly choose a PR review handoff before that agent review; this does not create Pinboard review evidence. Before presenting a merge choice, the agent reports the required review, hosted checks, and remote-head identity as observed or unverified. For a favorably reviewed current working-tree change, Pinboard directs the agent to commit the unchanged diff and inspect again. It then checks the clean commit on the recorded branch against the accepted base and exact preimage-to-commit binary diff before repository disposition. Reusing that review also requires accepted semantics and reviewed owner-consumer relationships to remain current. This local proof does not establish the published head, hosted checks, or merge.
+A published pull request does not prove Pinboard review happened. If publication happens first, the agent can recover the saved local change and send that exact version for review. It reports whether review has not started, is underway, or has finished. You can also choose to handle the PR review before Pinboard's separate coding-agent review; that choice does not create review evidence in Pinboard.
+
+Before offering a merge choice, the agent reports what it has observed about review, hosted checks, and the remote head, and what remains unverified. If a favorably reviewed local change is still uncommitted, the agent commits the unchanged diff. It checks the clean commit on the recorded branch against the saved base and the exact diff that was reviewed. Reusing the review also requires the agreed goal and affected code relationships to remain current. This local check does not verify the published head, hosted checks, or merge.
 
 When a person owns the PR and you ask Pinboard to manage its review, it follows a separate path. The agent connects the PR to current requirements, expected behavior, affected consumers, code owners, and repository criteria. Another reviewer checks that brief before the first review round. Each round records the full commit the reviewing agent observed, where that observation came from, the findings, what happened to earlier findings, and what could not be checked. The agent reports those findings to you.
 
@@ -64,13 +66,13 @@ If the agent later sees a newer commit, you can ask for another review or direct
 
 ## The brief makes delegation inspectable
 
-Before implementation, Pinboard turns accepted direction into a strict structured brief. The artifact identifies the item, attempt, owner, branch, base revision, checkout, and exact accepted-scope revision and digest. Its whole-work definition records the outcome, scope, non-goals, compatibility, supported roots, provenance, testing strategy, bootstrap, and the mapping from accepted obligations to evidence.
+Before implementation, Pinboard records the agreed work in a strict structured brief. It identifies the item, attempt, owner, branch, base revision, checkout, and exact `accepted_scope` revision and digest. Its whole-work definition records the outcome, scope, non-goals, compatibility, supported roots, provenance, testing strategy, bootstrap, and the mapping from agreed obligations to evidence.
 
-{_picture("brief", "The canonical work brief organized into artifact identity, accepted scope, whole-work definition, and a checkpoint containing criteria, architecture impact, reviewed authorities, contracts, coverage, lifecycle distinctions, verification, and deferrals")}
+{_picture("brief", "The work brief organized into artifact identity, the accepted_scope field, the complete goal, and a checkpoint containing criteria, architecture impact, reviewed sources, contracts, coverage, verification, and deferrals")}
 
-Each checkpoint states its outcome, acceptance criteria, architecture impact, required verification, deferrals, and whether accepted work continues or terminates. A cross-boundary checkpoint also binds reviewed authorities, contracts, consumer coverage, and lifecycle distinctions. A local checkpoint is valid only while ownership, dependency direction, stored and wire identities, and independent consumers remain unchanged and one entry point exposes the complete change.
+Each checkpoint states its outcome, acceptance criteria, architecture impact, required verification, deferrals, and whether work continues or ends. A cross-boundary checkpoint also binds reviewed authorities, contracts, consumer coverage, and lifecycle distinctions. A local checkpoint is valid only while ownership, dependency direction, stored and wire identities, and independent consumers remain unchanged and one entry point exposes the complete change.
 
-This structure gives an agent a bounded job and gives the reviewer the same checklist. Exact accepted scope, exclusions, evidence limits, and remaining work survive a new session without relying on remembered chat. Pinboard validates shape, identity, references, and canonical bytes; people and language models still judge whether the facts and choices are sound.
+This structure gives an agent a bounded job and gives the reviewer the same checklist. The agreed scope, exclusions, evidence limits, and remaining work survive a new session without relying on remembered chat. Pinboard validates shape, identity, references, and canonical bytes; people and language models still judge whether the facts and choices are sound.
 
 ### Agent actions stay explicit and bounded
 
@@ -94,18 +96,18 @@ A **work item** is the durable project decision. An **attempt** is one execution
 
 Saving a proposal creates a ready work item with its original facts attached. A start request first leads the agent to check current dependencies and holds. Preparation then pins the definition and produces a brief; activation rechecks eligibility and authority before creating an attempt. Work can move through implementation and review, pause at a useful checkpoint, return for correction, continue, or finish. A proposed replacement remains a separate decision rather than silently changing the active target.
 
-Ready, blocked, and deferred items without an attempt offer item decisions for their state. Active and review work offer attempt decisions. Paused work with a live attempt retains rebind and conditional resume; blocked work with a live attempt retains conditional resume. Recording a planned replacement or revising the accepted definition remains available for live attempts when its own conditions allow. A conflicting stored item and attempt state stops action discovery before it presents a legal choice.
+Ready, blocked, and deferred items without an attempt offer item decisions for their state. Active and review work offer attempt decisions. Paused work with a live attempt retains rebind and conditional resume; blocked work with a live attempt retains conditional resume. Recording a planned replacement or revising the agreed goal remains available for live attempts when its own conditions allow. A conflicting stored item and attempt state stops action discovery before it presents a legal choice.
 
 A human-owned PR review has no attempt. While it is active, its dedicated review actions record the brief and rounds; ordinary item closure is unavailable. Its item view keeps the reviewed commits and findings readable after the human-directed close. The human can also stop before any round; the record then says no PR head was reviewed and identifies any observed but unreviewed head.
 
 Across those paths, four guarantees stay constant:
 
-- **Intent survives conversations.** Later work can continue from accepted scope and evidence instead of reconstructing intent from chat history.
+- **Intent survives conversations.** Later work can continue from the recorded goal and evidence instead of reconstructing intent from chat history.
 - **Only the current worker may act.** Replaced or expired execution authority cannot apply an earlier decision after ownership changes.
 - **Review concerns one candidate.** Findings and acceptance stay bound to the exact result that was examined.
 - **Authoritative changes are atomic.** A rejected or failed transition leaves the previous ledger intact; repairable views cannot silently rewrite accepted state.
 
-At the repository decision, you choose what happens to the reviewed change. When the chosen path includes integration, the agent verifies it, removes only the exact worktree and branches you authorized after checking that no needed work remains, and records terminal completion. Those steps can be authorized together when their effects are clear. A merge alone does not close the work item. If the change is already integrated, the agent checks the accepted outcome, candidate review, external evidence, and cleanup state; it reuses valid evidence and finishes the same attempt without creating an empty change.
+At the repository decision, you choose what happens to the reviewed change. When the chosen path includes integration, the agent verifies it, removes only the exact worktree and branches you authorized after checking that no needed work remains, and records completion. Those steps can be authorized together when their effects are clear. A merge alone does not close the work item. If the change is already integrated, the agent checks the agreed result, review, external evidence, and cleanup state; it reuses valid evidence and finishes the same work without creating an empty change.
 
 ## The same workflow, viewed through the codebase
 

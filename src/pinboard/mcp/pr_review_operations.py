@@ -7,7 +7,6 @@ import msgspec
 
 from pinboard.adapters.files.models import AffectedViews
 from pinboard.adapters.sqlite import pr_review
-from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import HistoryId, WorkItemId
 from pinboard.mcp import common, contracts, execution
@@ -39,13 +38,13 @@ def _present(
     if (state.item_state.value == "ready" and brief is None and not state.has_attempt) or (
         state.item_state.value == "review" and not current_brief
     ):
-        actions = ("start",)
+        actions = ("start",) if state.item_state.value == "ready" else ("start", "close")
     elif state.item_state.value == "review" and review is None:
-        actions = ("review-brief", "observe")
+        actions = ("review-brief", "observe", "close")
     elif state.item_state.value == "review" and review is not None and review.verdict == "needs-correction":
-        actions = ("start",)
+        actions = ("start", "close")
     elif state.item_state.value == "review" and current_brief:
-        actions = ("observe", "round", "close") if rounds else ("observe", "round")
+        actions = ("observe", "round", "close")
     else:
         actions = ()
     value = contracts.PrReviewSuccess(
@@ -59,6 +58,7 @@ def _present(
         None if brief is None else brief[1],
         review,
         tuple(contracts.PrReviewRoundView(history_id, round_value) for history_id, round_value in rounds),
+        "reviewed-head-recorded" if rounds else "no-pr-round-completed",
         latest,
         unreviewed,
         state.close,
@@ -102,6 +102,8 @@ def execute(raw: dict[str, JsonValue], token: execution.CancellationToken) -> ex
             payload = request.round
         case contracts.PrReviewCloseRequest():
             payload = request.close
+            if payload.human_task_id != request.actor_task_id:
+                return _rejected("PR_REVIEW_INVALID", "Human direction must use the caller's task identity.")
         case _ as unreachable:
             assert_never(unreachable)
     result = pr_review.write(
@@ -118,7 +120,7 @@ def execute(raw: dict[str, JsonValue], token: execution.CancellationToken) -> ex
     token.checkpoint()
     refreshed = common._refresh_affected_views(
         durable,
-        SQLiteWorkStore(durable.database_path),
+        common.compose_store(durable),
         AffectedViews((item_id,), (), (HistoryId(result.evidence[-1].history_id),)),
         datetime.now(UTC),
     )

@@ -271,22 +271,24 @@ def validate_review_history(  # noqa: C901, PLR0912, PLR0915
                             raise StorageError(StorageErrorCode.INVALID_STATE, "Round lost prior finding dispositions.")
                         previous = row.history_id, row.payload
                     case pr_reviews.ReviewClose():
-                        if previous is None or (
+                        expected_round = (None, None) if previous is None else (previous[0], previous[1].observed_head)
+                        if (
                             row.payload.final_round_history_id,
                             row.payload.last_reviewed_head,
-                        ) != (previous[0], previous[1].observed_head):
+                        ) != expected_round:
                             raise StorageError(
                                 StorageErrorCode.INVALID_STATE, "Closure does not name the last reviewed round."
                             )
                         if {value.finding_id for value in row.payload.final_dispositions} != {
-                            value.finding_id for value in previous[1].findings
+                            value.finding_id for value in (() if previous is None else previous[1].findings)
                         }:
                             raise StorageError(
                                 StorageErrorCode.INVALID_STATE, "Closure lost final finding dispositions."
                             )
                         pending = (
                             None
-                            if observation is None or observation.observed_head == previous[1].observed_head
+                            if observation is None
+                            or (previous is not None and observation.observed_head == previous[1].observed_head)
                             else observation
                         )
                         if (row.payload.newer_observed_head, row.payload.newer_observation_source) != (
@@ -424,23 +426,12 @@ def _check(state: ReviewState, payload: Payload) -> DecisionFailure | None:  # n
                         None,
                     )
         case pr_reviews.ReviewClose():
-            if state.item_state != stored_state.StoredWorkItemState.REVIEW or brief is None or last_round is None:
-                return DecisionFailure(
-                    DecisionFailureCode.ACTION_NOT_AVAILABLE, "A reviewed round is required for closure.", None
-                )
-            if (brief[1].definition_revision, brief[1].definition_digest) != (
-                state.definition_revision,
-                state.definition_digest,
-            ) or last_round[1].brief_history_id != brief[0]:
-                return DecisionFailure(
-                    DecisionFailureCode.ITEM_DEFINITION_STALE,
-                    "A current reviewed brief and round are required for closure.",
-                    None,
-                )
+            if state.item_state != stored_state.StoredWorkItemState.REVIEW or brief is None:
+                return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "The review is not active.", None)
             if (payload.item_id, payload.final_round_history_id, payload.last_reviewed_head) != (
                 state.item_id,
-                last_round[0],
-                last_round[1].observed_head,
+                None if last_round is None else last_round[0],
+                None if last_round is None else last_round[1].observed_head,
             ):
                 return DecisionFailure(
                     DecisionFailureCode.TRANSITION_INPUT_INVALID,
@@ -448,14 +439,17 @@ def _check(state: ReviewState, payload: Payload) -> DecisionFailure | None:  # n
                     None,
                 )
             if {value.finding_id for value in payload.final_dispositions} != {
-                value.finding_id for value in last_round[1].findings
+                value.finding_id for value in (() if last_round is None else last_round[1].findings)
             }:
                 return DecisionFailure(
                     DecisionFailureCode.TRANSITION_INPUT_INVALID, "Closure must dispose of every final finding.", None
                 )
             observation = state.latest_observation
             pending = (
-                None if observation is None or observation.observed_head == last_round[1].observed_head else observation
+                None
+                if observation is None
+                or (last_round is not None and observation.observed_head == last_round[1].observed_head)
+                else observation
             )
             if (payload.newer_observed_head, payload.newer_observation_source) != (
                 None if pending is None else pending.observed_head,

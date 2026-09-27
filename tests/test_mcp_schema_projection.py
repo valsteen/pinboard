@@ -62,7 +62,7 @@ class McpSchemaProjectionTest(unittest.TestCase):
             return await raw_server.list_tools(), await advertised_server.list_tools()
 
         raw_tools, advertised_tools = asyncio.run(tools())
-        self.assertEqual(21, len(advertised_tools))
+        self.assertEqual(22, len(advertised_tools))
         samples = (
             "",
             ".",

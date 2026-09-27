@@ -197,21 +197,23 @@ def read_checkpoint_receipts(
     )
 
 
-def read_review_history_for_item(
-    connection: sqlite3.Connection, item_id: WorkItemId
-) -> tuple[stored_state.StoredTransitionReceipt, ...]:
-    return tuple(
-        decode_row(row, _StoredTransitionRow).receipt()
-        for row in connection.execute(
-            """SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
-                      authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
-                      input_json, outcome_schema, outcome_json, committed_at
-               FROM transition_history WHERE subject_id = ?
-               AND action_kind IN ('start-pr-review', 'review-pr-brief', 'observe-pr-head', 'record-pr-round', 'close-pr-review')
-               ORDER BY history_id""",
-            (item_id,),
-        ).fetchall()
-    )
+def read_review_history_for_items(
+    connection: sqlite3.Connection, item_ids: tuple[WorkItemId, ...]
+) -> dict[WorkItemId, tuple[stored_state.StoredTransitionReceipt, ...]]:
+    grouped: dict[WorkItemId, list[stored_state.StoredTransitionReceipt]] = {}
+    for row in select_by_ids(
+        connection,
+        """SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
+                  authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
+                  input_json, outcome_schema, outcome_json, committed_at
+           FROM transition_history WHERE subject_id IN ({ids})
+           AND action_kind IN ('start-pr-review', 'review-pr-brief', 'observe-pr-head', 'record-pr-round', 'close-pr-review')
+           ORDER BY history_id""",
+        item_ids,
+    ):
+        receipt = decode_row(row, _StoredTransitionRow).receipt()
+        grouped.setdefault(WorkItemId(str(receipt.subject_id)), []).append(receipt)
+    return {item_id: tuple(receipts) for item_id, receipts in grouped.items()}
 
 
 def _definition_revision_number(value: stored_state.ItemDefinitionRevision) -> int:

@@ -99,8 +99,8 @@ class FinalFindingDisposition(msgspec.Struct, frozen=True, forbid_unknown_fields
 class ReviewClose(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-pr-review-close/v1"]
     item_id: Line
-    final_round_history_id: Annotated[int, msgspec.Meta(ge=1)]
-    last_reviewed_head: Sha
+    final_round_history_id: Annotated[int, msgspec.Meta(ge=1)] | None
+    last_reviewed_head: Sha | None
     newer_observed_head: Sha | None
     newer_observation_source: Line | None
     final_dispositions: tuple[FinalFindingDisposition, ...]
@@ -109,6 +109,10 @@ class ReviewClose(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     outcome: Literal["accepted", "stopped"]
 
     def __post_init__(self) -> None:
+        if (self.final_round_history_id is None) != (self.last_reviewed_head is None):
+            raise ValueError("The final round and reviewed head must be supplied together.")
+        if self.final_round_history_id is None and self.final_dispositions:
+            raise ValueError("A review without a round has no findings to dispose of.")
         if (self.newer_observed_head is None) != (self.newer_observation_source is None):
             raise ValueError("A newer observed head requires its observation source.")
         if self.newer_observed_head == self.last_reviewed_head:
@@ -216,7 +220,7 @@ def render_review_history(item_id: WorkItemId, receipts: tuple[stored_state.Stor
                         "### Human-directed close",
                         "",
                         f"- Outcome: {close.outcome}",
-                        f"- Last reviewed head: {close.last_reviewed_head}",
+                        f"- Last reviewed head: {close.last_reviewed_head or 'none; no PR round completed'}",
                         f"- Newer observed but unreviewed head: {close.newer_observed_head or 'none'}",
                         f"- Human direction: {close.human_direction}",
                         "",

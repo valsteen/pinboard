@@ -21,7 +21,7 @@ from pinboard.domain.errors import (
     FailureMismatch,
     RetryDisposition,
 )
-from pinboard.domain.identifiers import AttemptId, CandidateId, HistoryId, ItemId, TaskId
+from pinboard.domain.identifiers import AttemptId, CandidateId, HistoryId, TaskId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
@@ -74,7 +74,7 @@ def validate_attempt_brief_identity(
         brief.accepted_scope.digest,
     ) == (
         context.attempt_id,
-        context.item_id,
+        context.work_item_id,
         context.branch,
         context.base_revision,
         context.accepted_scope_revision,
@@ -107,7 +107,7 @@ def project_attempt_continuation(
             return query_models.TerminalAttemptContinuation(
                 "pinboard-attempt-continuation/v1",
                 context.attempt_id,
-                context.item_id,
+                context.work_item_id,
                 context.project_revision,
                 None,
                 True,
@@ -123,10 +123,10 @@ def project_attempt_continuation(
                     "A nonterminal attempt requires its verified owner task identity.",
                     None,
                 )
-            item = context.item
+            item = context.work_item
             attempt_record = work_models.AttemptRecord(
                 context.attempt_id,
-                context.item_id,
+                context.work_item_id,
                 context.state,
                 context.accepted_scope_revision,
                 context.accepted_scope_digest,
@@ -135,7 +135,7 @@ def project_attempt_continuation(
             )
             groups = project_attempt_action_groups(
                 work_models.ProjectAttemptActionContext(
-                    item.item_id,
+                    item.work_item_id,
                     item.subject_revision,
                     work_models.WorkState(item.state.value),
                     context.attempt_id,
@@ -169,7 +169,7 @@ def project_attempt_continuation(
             continuation_arguments = (
                 "pinboard-attempt-continuation/v1",
                 context.attempt_id,
-                context.item_id,
+                context.work_item_id,
                 context.project_revision,
                 owner_task_id,
                 False,
@@ -391,8 +391,8 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 action.kind,
                 "Resolve the recorded pause or dependency condition and provide the matching current accepted brief.",
             )
-    if context.item.live_dependencies:
-        return query_models.DependencyContinuation(tuple(str(value) for value in context.item.live_dependencies))
+    if context.work_item.live_dependencies:
+        return query_models.DependencyContinuation(tuple(str(value) for value in context.work_item.live_dependencies))
     return DecisionFailure(
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
         f"Attempt '{context.attempt_id}' has no supported continuation among its current legal actions.",
@@ -409,7 +409,7 @@ def _item_key(value: stored_state.StoredWorkItem) -> tuple[int, str]:
 
 
 def _decision_item_key(value: work_models.WorkItem) -> tuple[int, str]:
-    return value.queue_position if value.queue_position is not None else 0, str(value.item)
+    return value.queue_position if value.queue_position is not None else 0, str(value.work_item_id)
 
 
 def _select_live_items(
@@ -482,12 +482,12 @@ def _project_selected_preparation_status(
 def _proposal_maps(
     proposals: tuple[stored_state.StoredProposal, ...],
 ) -> tuple[
-    dict[ItemId, stored_state.StoredProposal],
-    dict[tuple[ItemId, ItemId], stored_state.StoredProposal],
+    dict[WorkItemId, stored_state.StoredProposal],
+    dict[tuple[WorkItemId, WorkItemId], stored_state.StoredProposal],
 ]:
-    by_item = {ItemId(proposal.proposal_id): proposal for proposal in proposals}
+    by_item = {WorkItemId(proposal.proposal_id): proposal for proposal in proposals}
     prerequisites = {
-        (proposal.relation.item, ItemId(proposal.proposal_id)): proposal
+        (proposal.relation.work_item_id, WorkItemId(proposal.proposal_id)): proposal
         for proposal in proposals
         if isinstance(proposal.relation, work_models.PrerequisiteProposalRelation)
     }
@@ -495,20 +495,20 @@ def _proposal_maps(
 
 
 def _dependency_reason(
-    proposals: dict[ItemId, stored_state.StoredProposal],
-    prerequisite_proposals: dict[tuple[ItemId, ItemId], stored_state.StoredProposal],
-    item_id: ItemId,
-    dependency_id: ItemId,
+    proposals: dict[WorkItemId, stored_state.StoredProposal],
+    prerequisite_proposals: dict[tuple[WorkItemId, WorkItemId], stored_state.StoredProposal],
+    work_item_id: WorkItemId,
+    dependency_id: WorkItemId,
 ) -> query_models.DependencyReason:
-    proposal = proposals.get(item_id)
+    proposal = proposals.get(work_item_id)
     if (
         proposal is not None
         and isinstance(proposal.relation, work_models.FollowUpProposalRelation)
-        and proposal.relation.item == dependency_id
+        and proposal.relation.work_item_id == dependency_id
     ):
         reason = f"Follow-up to {dependency_id}: {proposal.why_it_matters}"
     else:
-        prerequisite = prerequisite_proposals.get((item_id, dependency_id))
+        prerequisite = prerequisite_proposals.get((work_item_id, dependency_id))
         reason = (
             f"Inferred prerequisite {dependency_id}: {prerequisite.why_it_matters}"
             if prerequisite is not None
@@ -518,9 +518,9 @@ def _dependency_reason(
 
 
 def _proposal_origin(
-    proposals: dict[ItemId, stored_state.StoredProposal], item_id: ItemId
+    proposals: dict[WorkItemId, stored_state.StoredProposal], work_item_id: WorkItemId
 ) -> query_models.ProposalOrigin | None:
-    proposal = proposals.get(item_id)
+    proposal = proposals.get(work_item_id)
     if proposal is None:
         return None
     disposition = proposal.disposition
@@ -528,7 +528,7 @@ def _proposal_origin(
         str(proposal.source_task_id),
         proposal.trigger,
         proposal.relation.kind,
-        str(proposal.relation.item) if proposal.relation.item is not None else None,
+        str(proposal.relation.work_item_id) if proposal.relation.work_item_id is not None else None,
         proposal.why_it_matters,
         None if disposition is None else disposition.kind,
         disposition.reason
@@ -557,7 +557,7 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
         for attempt in state.lifecycle.attempts
         if attempt.state != work_models.AttemptState.DONE
     }
-    dependency_groups: dict[ItemId, list[stored_state.ItemDependency]] = {
+    dependency_groups: dict[WorkItemId, list[stored_state.ItemDependency]] = {
         item.item_id: [] for item in state.lifecycle.work_items
     }
     for link in sorted(state.lifecycle.dependencies, key=_dependency_key):
@@ -573,7 +573,7 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
     }
     live_items = _select_live_items(state)
     live_ids = frozenset(item.item_id for item, _live_state in live_items)
-    current_replacements: dict[ItemId, stored_state.StoredPlannedReplacement] = {}
+    current_replacements: dict[WorkItemId, stored_state.StoredPlannedReplacement] = {}
     for relation in state.replacements.planned_replacements:
         current = current_replacements.get(relation.affected_item_id)
         if current is None or current.relation_revision < relation.relation_revision:
@@ -644,16 +644,16 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
 def _project_overview_item(
     item: work_models.WorkItem,
     definition: work_models.WorkItemDefinition,
-    live_dependencies: frozenset[ItemId],
-    proposals: dict[ItemId, stored_state.StoredProposal],
-    prerequisite_proposals: dict[tuple[ItemId, ItemId], stored_state.StoredProposal],
+    live_dependencies: frozenset[WorkItemId],
+    proposals: dict[WorkItemId, stored_state.StoredProposal],
+    prerequisite_proposals: dict[tuple[WorkItemId, WorkItemId], stored_state.StoredProposal],
     preparation: query_models.PreparationAuthorityStatus | None,
     replacement: work_models.PlannedReplacement | None,
     replacement_disposition: work_models.ReplacementDisposition | None,
     now: datetime,
 ) -> query_models.OverviewItem:
     return query_models.OverviewItem(
-        str(item.item),
+        str(item.work_item_id),
         definition.title,
         definition.effect,
         definition.unlock,
@@ -662,8 +662,10 @@ def _project_overview_item(
         not any(dependency in live_dependencies for dependency in item.depends_on),
         item.timing,
         tuple(str(value) for value in item.depends_on),
-        tuple(_dependency_reason(proposals, prerequisite_proposals, item.item, value) for value in item.depends_on),
-        _proposal_origin(proposals, item.item),
+        tuple(
+            _dependency_reason(proposals, prerequisite_proposals, item.work_item_id, value) for value in item.depends_on
+        ),
+        _proposal_origin(proposals, item.work_item_id),
         None if item.attempt is None else str(item.attempt),
         item.next_action,
         item.source,
@@ -684,23 +686,23 @@ def project_current_overview(facts: query_models.ProjectOverviewFacts, now: date
     """Project overview output from current facts that exclude retained history."""
 
     snapshot = facts.snapshot
-    definitions = {value.item: value.definition for value in snapshot.definitions}
-    live_ids = frozenset(item.item for item in snapshot.items)
+    definitions = {value.work_item_id: value.definition for value in snapshot.definitions}
+    live_ids = frozenset(item.work_item_id for item in snapshot.items)
     proposals, prerequisite_proposals = _proposal_maps(facts.proposals)
-    preparations = {value.item_id: value for value in facts.preparations}
+    preparations = {value.work_item_id: value for value in facts.preparations}
 
     items = tuple(
         _project_overview_item(
             item,
-            definitions[item.item],
+            definitions[item.work_item_id],
             live_ids,
             proposals,
             prerequisite_proposals,
-            preparations.get(item.item),
-            snapshot.current_replacement(item.item),
+            preparations.get(item.work_item_id),
+            snapshot.current_replacement(item.work_item_id),
             None
-            if (replacement := snapshot.current_replacement(item.item)) is None
-            else snapshot.replacement_disposition(item.item, replacement.relation_revision),
+            if (replacement := snapshot.current_replacement(item.work_item_id)) is None
+            else snapshot.replacement_disposition(item.work_item_id, replacement.relation_revision),
             now,
         )
         for item in sorted(snapshot.items, key=_decision_item_key)
@@ -735,7 +737,7 @@ def project_current_overview(facts: query_models.ProjectOverviewFacts, now: date
 def project_item_overview(facts: query_models.ItemOverviewFacts, now: datetime) -> query_models.OverviewItem:
     """Project one live item from its exact view relationships."""
 
-    item = facts.item
+    item = facts.work_item
     proposals, prerequisite_proposals = _proposal_maps(facts.proposals)
     live_dependencies = frozenset(dependency_id for dependency_id, is_live in facts.dependency_liveness if is_live)
     return _project_overview_item(
@@ -753,16 +755,16 @@ def project_item_overview(facts: query_models.ItemOverviewFacts, now: datetime) 
 
 def project_item_status(
     reader: ports.ItemStatusReader,
-    item_id: ItemId,
+    work_item_id: WorkItemId,
     now: datetime,
 ) -> DecisionResult[query_models.ItemStatus]:
-    facts = reader.read_item_status(item_id)
+    facts = reader.read_item_status(work_item_id)
     if facts is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' was not found.", None)
-    item = facts.item
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' was not found.", None)
+    item = facts.work_item
     if facts.definition_title is None:
         return DecisionFailure(
-            DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Item '{item_id}' has no definition.", None
+            DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Item '{work_item_id}' has no definition.", None
         )
     attempt = None if not facts.attempts else facts.attempts[0]
     attempt_state = None if attempt is None else attempt.state
@@ -772,10 +774,10 @@ def project_item_status(
         observed = "none" if attempt_state is None else attempt_state.value
         return DecisionFailure(
             DecisionFailureCode.ITEM_STATUS_INCONSISTENT,
-            f"Item '{item_id}' state '{item.state.value}' conflicts with current attempt state '{observed}'.",
+            f"Item '{work_item_id}' state '{item.state.value}' conflicts with current attempt state '{observed}'.",
             FailureDetails(
                 observed=(
-                    FailureFact("item_id", str(item.item_id)),
+                    FailureFact("item_id", str(item.work_item_id)),
                     FailureFact("item_state", item.state.value),
                     FailureFact("item_timing", None if item.timing is None else item.timing.value),
                     FailureFact("item_outcome_evidence", item.outcome_evidence),
@@ -802,7 +804,7 @@ def project_item_status(
         "pinboard-item-status/v1",
         "sqlite-v6",
         str(facts.project_revision),
-        str(item.item_id),
+        str(item.work_item_id),
         facts.definition_title,
         stored_state.StoredWorkItemState.READY if item.state == stored_state.StoredWorkItemState.INTAKE else item.state,
         item.timing,
@@ -842,22 +844,22 @@ def _project_definition(definition: work_models.WorkItemDefinition) -> query_mod
 
 
 def select_item_definition(
-    reader: ports.ItemDefinitionReader, item_id: ItemId
+    reader: ports.ItemDefinitionReader, work_item_id: WorkItemId
 ) -> DecisionResult[query_models.ItemDefinition]:
-    selected = reader.read_item_definition(item_id)
+    selected = reader.read_item_definition(work_item_id)
     if selected.item_subject_revision is None:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.", None)
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' does not exist.", None)
     if selected.definition is None:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
-            f"Item '{item_id}' has no accepted definition.",
+            f"Item '{work_item_id}' has no accepted definition.",
             None,
         )
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
         "sqlite-v6",
         selected.project_revision,
-        item_id,
+        work_item_id,
         selected.item_subject_revision,
         selected.definition.revision,
         selected.definition.digest,
@@ -867,14 +869,14 @@ def select_item_definition(
 
 def select_item_definition_history(
     reader: ports.ItemDefinitionReader,
-    item_id: ItemId,
+    work_item_id: WorkItemId,
     *,
     limit: int,
     before_revision: int | None,
 ) -> DecisionResult[query_models.ItemDefinitionHistory]:
-    selected = reader.read_item_definition_history(item_id, limit=limit, before_revision=before_revision)
+    selected = reader.read_item_definition_history(work_item_id, limit=limit, before_revision=before_revision)
     if not selected.item_exists:
-        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{item_id}' does not exist.", None)
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' does not exist.", None)
     visible = selected.revisions[:limit]
     rows = tuple(
         query_models.ItemDefinitionHistoryRow(
@@ -894,7 +896,7 @@ def select_item_definition_history(
         "pinboard-item-definition-history/v1",
         "sqlite-v6",
         selected.project_revision,
-        item_id,
+        work_item_id,
         rows,
         rows[-1].revision if len(selected.revisions) > limit else None,
     )
@@ -904,7 +906,7 @@ def _classify_parallel_exclusion_reasons(
     item: query_models.ParallelPreviewItemFacts,
     operation_time: datetime,
 ) -> tuple[query_models.ParallelReason, ...]:
-    item_id = item.item_id
+    item_id = item.work_item_id
     if item.state not in {work_models.WorkState.READY, work_models.WorkState.ACTIVE}:
         return (
             query_models.ParallelReason(
@@ -956,7 +958,7 @@ def _project_parallel_preview_facts(
     for item in facts.items:
         reasons = _classify_parallel_exclusion_reasons(item, now)
         common = (
-            str(item.item_id),
+            str(item.work_item_id),
             item.label,
             item.state,
             None if item.attempt is None else str(item.attempt.attempt_id),
@@ -979,14 +981,14 @@ def _project_parallel_preview_facts(
 def project_current_parallel_preview(snapshot: LedgerSnapshot, *, now: datetime) -> query_models.ParallelPreview:
     """Project all-safe parallel work from current decision facts only."""
 
-    definitions = {value.item: value.definition for value in snapshot.definitions}
-    live_ids = frozenset(item.item for item in snapshot.items)
+    definitions = {value.work_item_id: value.definition for value in snapshot.definitions}
+    live_ids = frozenset(item.work_item_id for item in snapshot.items)
     attempts = {value.attempt: value for value in snapshot.attempts}
     attempt_authorities = {value.attempt: value for value in snapshot.command_attempt_authorities}
-    preparations = {value.item: value for value in snapshot.command_preparation_authorities}
+    preparations = {value.work_item_id: value for value in snapshot.command_preparation_authorities}
     items: list[query_models.ParallelPreviewItemFacts] = []
     for item in snapshot.items:
-        command_preparation = preparations.get(item.item)
+        command_preparation = preparations.get(item.work_item_id)
         preparation = (
             None
             if command_preparation is None
@@ -1007,8 +1009,8 @@ def project_current_parallel_preview(snapshot: LedgerSnapshot, *, now: datetime)
             )
         items.append(
             query_models.ParallelPreviewItemFacts(
-                item.item,
-                definitions[item.item].title,
+                item.work_item_id,
+                definitions[item.work_item_id].title,
                 item.state,
                 tuple(dependency for dependency in item.depends_on if dependency in live_ids),
                 preparation,
@@ -1028,7 +1030,7 @@ def select_parallel_preview(
     selected: tuple[str, ...],
     now: datetime,
 ) -> query_models.ParallelPreview | query_models.ParallelSelectionInvalid:
-    facts = reader.read_parallel_preview(tuple(ItemId(item_id) for item_id in selected))
+    facts = reader.read_parallel_preview(tuple(WorkItemId(item_id) for item_id in selected))
     if facts is None:
         return query_models.ParallelSelectionInvalid("Selected item identities must be current items.")
     return _project_parallel_preview_facts(facts, query_models.ParallelSelection.SELECTED, now)

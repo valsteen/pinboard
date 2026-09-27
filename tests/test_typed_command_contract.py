@@ -13,9 +13,9 @@ from pinboard.domain.identifiers import (
     AttemptId,
     CandidateId,
     HostId,
-    ItemId,
     LeaseId,
     TaskId,
+    WorkItemId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from tests.decision_support import project_decision_snapshot
@@ -76,7 +76,7 @@ class TypedTransitionContractTest(unittest.TestCase):
 
     def test_activation_requires_one_existing_brief_artifact_reference(self) -> None:
         ready = work_models.WorkItem(
-            ItemId("ready-item"), work_models.WorkState.READY, None, (), None, "test", "activate", "", 1
+            WorkItemId("ready-item"), work_models.WorkState.READY, None, (), None, "test", "activate", "", 1
         )
         snapshot = LedgerSnapshot(
             "project-revision",
@@ -87,13 +87,13 @@ class TypedTransitionContractTest(unittest.TestCase):
             ),
             definitions=(
                 work_models.DefinitionAnchor(
-                    ItemId("ready-item"), 1, "d" * 64, test_definition(ItemId("ready-item"))[0]
+                    WorkItemId("ready-item"), 1, "d" * 64, test_definition(WorkItemId("ready-item"))[0]
                 ),
             ),
         )
         preparation = work_models.PreparationCommandAuthority(
             1,
-            ItemId("ready-item"),
+            WorkItemId("ready-item"),
             1,
             "d" * 64,
             TaskId("preparer"),
@@ -112,7 +112,7 @@ class TypedTransitionContractTest(unittest.TestCase):
         )
         activation = decision_models.ActivateAction(
             decision_models.MutationActionCapability(
-                ItemId("ready-item"),
+                WorkItemId("ready-item"),
                 "activate",
                 "1",
                 authorization=decision_models.AuthorizationKind.PREPARATION,
@@ -149,7 +149,7 @@ class TypedTransitionContractTest(unittest.TestCase):
             "project-revision",
             (
                 work_models.WorkItem(
-                    ItemId("ready-item"),
+                    WorkItemId("ready-item"),
                     work_models.WorkState.PAUSED,
                     None,
                     (),
@@ -165,7 +165,8 @@ class TypedTransitionContractTest(unittest.TestCase):
         rejected_without_attempt = decision_outcome(
             without_attempt,
             decision_models.ResumeCommand(
-                action(decision_models.ResumeAction, ItemId("ready-item")), work_models.ResumeInput(ArtifactRefId(1))
+                action(decision_models.ResumeAction, WorkItemId("ready-item")),
+                work_models.ResumeInput(ArtifactRefId(1)),
             ),
             SQLITE_NOW,
         )
@@ -173,7 +174,7 @@ class TypedTransitionContractTest(unittest.TestCase):
         self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected_without_attempt.code)
 
         paused = work_models.WorkItem(
-            ItemId("ready-item"),
+            WorkItemId("ready-item"),
             work_models.WorkState.PAUSED,
             None,
             (),
@@ -189,7 +190,7 @@ class TypedTransitionContractTest(unittest.TestCase):
             attempts=(
                 work_models.AttemptRecord(
                     AttemptId("ready-item-1"),
-                    ItemId("ready-item"),
+                    WorkItemId("ready-item"),
                     work_models.AttemptState.PAUSED,
                     brief_artifact_ref_id=ArtifactRefId(1),
                 ),
@@ -201,7 +202,7 @@ class TypedTransitionContractTest(unittest.TestCase):
             ),
             definitions=(
                 work_models.DefinitionAnchor(
-                    ItemId("ready-item"),
+                    WorkItemId("ready-item"),
                     2,
                     "d" * 64,
                     work_models.WorkItemDefinition(
@@ -227,7 +228,7 @@ class TypedTransitionContractTest(unittest.TestCase):
                 ),
             ),
         )
-        resume = action(decision_models.ResumeAction, ItemId("ready-item"))
+        resume = action(decision_models.ResumeAction, WorkItemId("ready-item"))
 
         for value in (work_models.ResumeInput(ArtifactRefId(99)), work_models.ResumeInput(ArtifactRefId(3))):
             with self.subTest(value=value):
@@ -266,7 +267,7 @@ class ExactMutationAuthorityTest(unittest.TestCase):
             (2, "work-a", "7", "work-a-1", "8", "worker", "host-a", "attempt-lease-a", 3),
             (
                 authority.host_epoch,
-                authority.item,
+                authority.work_item_id,
                 authority.item_subject_revision,
                 authority.attempt,
                 authority.attempt_subject_revision,

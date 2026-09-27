@@ -22,7 +22,7 @@ from pinboard.application.service import create_proposal, decide_and_commit_prep
 from pinboard.domain import authority_models, decision_models, decisions, work_models
 from pinboard.domain.authority_decisions import decide_preparation_authority
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.domain.identifiers import HostId, ItemId, LeaseId, ProposalId, TaskId
+from pinboard.domain.identifiers import HostId, LeaseId, ProposalId, TaskId, WorkItemId
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
 from tests.decision_support import discover_actions, project_decision_snapshot
 from tests.domain_support import expect_success
@@ -33,17 +33,19 @@ class PreparationAuthorityTest(unittest.TestCase):
     def test_ordinary_start_selects_definition_after_waiting_for_a_revision_commit(self) -> None:
         store, database_path = self._store()
         before = store.validated_snapshot()
-        current = next(value for value in before.lifecycle.definition_revisions if value.item_id == ItemId("work-c"))
+        current = next(
+            value for value in before.lifecycle.definition_revisions if value.item_id == WorkItemId("work-c")
+        )
         action = next(
             value
             for value in expect_success(discover_actions(before, decision_models.Role.PROJECT, now=SQLITE_NOW))
-            if isinstance(value, decision_models.ReviseItemAction) and value.capability.subject == ItemId("work-c")
+            if isinstance(value, decision_models.ReviseWorkItemAction)
+            and value.capability.subject == WorkItemId("work-c")
         )
-        assert isinstance(action, decision_models.ReviseItemAction)
-        command = decision_models.ReviseItemCommand(
+        assert isinstance(action, decision_models.ReviseWorkItemAction)
+        command = decision_models.ReviseWorkItemCommand(
             action,
-            work_models.ReviseItemDefinitionInput(
-                ItemId("work-c"),
+            work_models.ReviseWorkItemDefinitionInput(
                 current.revision,
                 current.digest,
                 TaskId("definition-owner"),
@@ -65,7 +67,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             results.append(
                 service.start_preparation(
                     SQLiteWorkStore(database_path),
-                    item_id=ItemId("work-c"),
+                    work_item_id=WorkItemId("work-c"),
                     task_id=TaskId("preparer"),
                     host_id=HostId("host-a"),
                     lease_id=LeaseId("preparation"),
@@ -86,7 +88,7 @@ class PreparationAuthorityTest(unittest.TestCase):
         acquired = expect_success(results[0]).authority
         after = SQLiteWorkStore(database_path).validated_snapshot()
         revised = next(
-            value for value in reversed(after.lifecycle.definition_revisions) if value.item_id == ItemId("work-c")
+            value for value in reversed(after.lifecycle.definition_revisions) if value.item_id == WorkItemId("work-c")
         )
         self.assertEqual(2, acquired.definition_revision)
         self.assertEqual(revised.digest, acquired.definition_digest)
@@ -103,7 +105,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             results.append(
                 service.start_preparation(
                     SQLiteWorkStore(database_path),
-                    item_id=ItemId("work-c"),
+                    work_item_id=WorkItemId("work-c"),
                     task_id=TaskId(identity),
                     host_id=HostId("host-a"),
                     lease_id=LeaseId(identity),
@@ -141,15 +143,15 @@ class PreparationAuthorityTest(unittest.TestCase):
         expires_at: datetime = SQLITE_NOW + timedelta(minutes=1),
     ) -> authority_models.AcquireInitialPreparationAuthority:
         snapshot = project_decision_snapshot(state, SQLITE_NOW)
-        item = snapshot.item(ItemId("work-c"))
-        definition = snapshot.definition(ItemId("work-c"))
+        item = snapshot.work_item(WorkItemId("work-c"))
+        definition = snapshot.definition(WorkItemId("work-c"))
         assert item is not None
         assert definition is not None
         return authority_models.AcquireInitialPreparationAuthority(
             snapshot.host_epoch,
-            item.item,
+            item.work_item_id,
             snapshot.revision,
-            snapshot.subject_revision(item.item) or "",
+            snapshot.subject_revision(item.work_item_id) or "",
             definition.revision,
             definition.digest,
             TaskId("preparer"),
@@ -161,14 +163,16 @@ class PreparationAuthorityTest(unittest.TestCase):
 
     def test_paused_item_with_retained_preparation_rejects_ordinary_start_unchanged(self) -> None:
         state = complete_sqlite_state()
-        definition = next(value for value in state.lifecycle.definition_revisions if value.item_id == ItemId("work-a"))
+        definition = next(
+            value for value in state.lifecycle.definition_revisions if value.item_id == WorkItemId("work-a")
+        )
         paused = replace(
             state,
             lifecycle=replace(
                 state.lifecycle,
                 work_items=tuple(
                     replace(value, state=stored_state.StoredWorkItemState.PAUSED)
-                    if value.item_id == ItemId("work-a")
+                    if value.item_id == WorkItemId("work-a")
                     else value
                     for value in state.lifecycle.work_items
                 ),
@@ -176,15 +180,15 @@ class PreparationAuthorityTest(unittest.TestCase):
             ),
             authority=replace(
                 state.authority,
-                preparation_counters=(stored_state.PreparationLeaseCounter(ItemId("work-a"), 1),),
+                preparation_counters=(stored_state.PreparationLeaseCounter(WorkItemId("work-a"), 1),),
                 preparation_generations=(
                     stored_state.PreparationLeaseGeneration(
-                        ItemId("work-a"), 1, LeaseId("old-preparation"), TaskId("old-preparer"), HostId("host-a")
+                        WorkItemId("work-a"), 1, LeaseId("old-preparation"), TaskId("old-preparer"), HostId("host-a")
                     ),
                 ),
                 preparation_leases=(
                     stored_state.StoredPreparationLease(
-                        ItemId("work-a"),
+                        WorkItemId("work-a"),
                         1,
                         definition.revision,
                         definition.digest,
@@ -200,7 +204,7 @@ class PreparationAuthorityTest(unittest.TestCase):
 
         rejected = service.start_preparation(
             store,
-            item_id=ItemId("work-a"),
+            work_item_id=WorkItemId("work-a"),
             task_id=TaskId("new-preparer"),
             host_id=HostId("host-a"),
             lease_id=LeaseId("new-preparation"),
@@ -217,8 +221,8 @@ class PreparationAuthorityTest(unittest.TestCase):
 
     def test_initial_acquisition_pins_ready_item_definition_and_keeps_item_ready(self) -> None:
         snapshot = project_decision_snapshot(complete_sqlite_state(), SQLITE_NOW)
-        item = snapshot.item(ItemId("work-c"))
-        definition = snapshot.definition(ItemId("work-c"))
+        item = snapshot.work_item(WorkItemId("work-c"))
+        definition = snapshot.definition(WorkItemId("work-c"))
         assert item is not None
         assert definition is not None
 
@@ -227,9 +231,9 @@ class PreparationAuthorityTest(unittest.TestCase):
             0,
             authority_models.AcquireInitialPreparationAuthority(
                 snapshot.host_epoch,
-                item.item,
+                item.work_item_id,
                 snapshot.revision,
-                snapshot.subject_revision(item.item) or "",
+                snapshot.subject_revision(item.work_item_id) or "",
                 definition.revision,
                 definition.digest,
                 TaskId("preparer"),
@@ -244,7 +248,7 @@ class PreparationAuthorityTest(unittest.TestCase):
 
         self.assertNotIsInstance(decision, DecisionFailure)
         assert not isinstance(decision, DecisionFailure)
-        retained_item = snapshot.item(item.item)
+        retained_item = snapshot.work_item(item.work_item_id)
         assert retained_item is not None
         self.assertEqual(work_models.WorkState.READY, retained_item.state)
         self.assertEqual(
@@ -256,10 +260,10 @@ class PreparationAuthorityTest(unittest.TestCase):
     def test_initial_acquisition_names_each_mismatched_observed_precondition(self) -> None:
         snapshot = project_decision_snapshot(complete_sqlite_state(), SQLITE_NOW)
         acquisition = self._acquisition(complete_sqlite_state())
-        item = snapshot.item(ItemId("work-c"))
+        item = snapshot.work_item(WorkItemId("work-c"))
         assert item is not None
         not_ready = replace(item, state=work_models.WorkState.ACTIVE)
-        blocked = replace(item, depends_on=(ItemId("work-a"),))
+        blocked = replace(item, depends_on=(WorkItemId("work-a"),))
         cases = (
             (
                 "project revision",
@@ -269,7 +273,9 @@ class PreparationAuthorityTest(unittest.TestCase):
             ),
             (
                 "missing item",
-                replace(snapshot, items=tuple(value for value in snapshot.items if value.item != item.item)),
+                replace(
+                    snapshot, items=tuple(value for value in snapshot.items if value.work_item_id != item.work_item_id)
+                ),
                 acquisition,
                 "Item 'work-c' does not exist.",
             ),
@@ -282,7 +288,10 @@ class PreparationAuthorityTest(unittest.TestCase):
             (
                 "not ready",
                 replace(
-                    snapshot, items=tuple(not_ready if value.item == item.item else value for value in snapshot.items)
+                    snapshot,
+                    items=tuple(
+                        not_ready if value.work_item_id == item.work_item_id else value for value in snapshot.items
+                    ),
                 ),
                 acquisition,
                 "Item 'work-c' is not ready.",
@@ -290,7 +299,10 @@ class PreparationAuthorityTest(unittest.TestCase):
             (
                 "live dependency",
                 replace(
-                    snapshot, items=tuple(blocked if value.item == item.item else value for value in snapshot.items)
+                    snapshot,
+                    items=tuple(
+                        blocked if value.work_item_id == item.work_item_id else value for value in snapshot.items
+                    ),
                 ),
                 acquisition,
                 "Item 'work-c' has live dependencies.",
@@ -301,9 +313,9 @@ class PreparationAuthorityTest(unittest.TestCase):
                     snapshot,
                     planned_replacements=(
                         work_models.PlannedReplacement(
-                            ItemId("work-c"),
+                            WorkItemId("work-c"),
                             1,
-                            ItemId("work-a"),
+                            WorkItemId("work-a"),
                             "Starting Work C would duplicate replacement work.",
                             work_models.PlannedReplacementStatus.CURRENT,
                             TaskId("project-task"),
@@ -318,7 +330,9 @@ class PreparationAuthorityTest(unittest.TestCase):
                 "missing definition",
                 replace(
                     snapshot,
-                    definitions=tuple(value for value in snapshot.definitions if value.item != item.item),
+                    definitions=tuple(
+                        value for value in snapshot.definitions if value.work_item_id != item.work_item_id
+                    ),
                 ),
                 acquisition,
                 "Item 'work-c' has no accepted definition.",
@@ -364,7 +378,7 @@ class PreparationAuthorityTest(unittest.TestCase):
     def test_renew_and_release_require_the_exact_live_token(self) -> None:
         current = authority_models.PreparationLeaseAuthority(
             2,
-            ItemId("work-c"),
+            WorkItemId("work-c"),
             1,
             "definition-digest",
             TaskId("preparer"),
@@ -377,7 +391,7 @@ class PreparationAuthorityTest(unittest.TestCase):
         )
         token = work_models.PreparationCommandAuthority(
             current.host_epoch,
-            current.item,
+            current.work_item_id,
             current.definition_revision,
             current.definition_digest,
             current.task_id,
@@ -422,11 +436,11 @@ class PreparationAuthorityTest(unittest.TestCase):
     def test_only_preparer_with_live_authority_receives_activation(self) -> None:
         state = complete_sqlite_state()
         snapshot = project_decision_snapshot(state, SQLITE_NOW)
-        definition = snapshot.definition(ItemId("work-c"))
+        definition = snapshot.definition(WorkItemId("work-c"))
         assert definition is not None
         command = work_models.PreparationCommandAuthority(
             snapshot.host_epoch,
-            ItemId("work-c"),
+            WorkItemId("work-c"),
             definition.revision,
             definition.digest,
             TaskId("preparer"),
@@ -439,7 +453,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             snapshot,
             preparation_authorities=(
                 work_models.PreparationAuthority(
-                    command.item,
+                    command.work_item_id,
                     command.definition_revision,
                     command.definition_digest,
                     command.lease_id,
@@ -453,7 +467,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             decision_models.AuthorizationKind.PREPARATION,
             command.generation,
             command.lease_id,
-            preparations=(command.item,),
+            preparations=(command.work_item_id,),
         )
 
         actions = __import__("pinboard.domain.decisions", fromlist=["available_actions"]).available_actions(
@@ -469,9 +483,9 @@ class PreparationAuthorityTest(unittest.TestCase):
             prepared,
             planned_replacements=(
                 work_models.PlannedReplacement(
-                    ItemId("work-c"),
+                    WorkItemId("work-c"),
                     1,
-                    ItemId("work-a"),
+                    WorkItemId("work-a"),
                     "Activation would start work that Work A replaces.",
                     work_models.PlannedReplacementStatus.CURRENT,
                     TaskId("project-task"),
@@ -500,7 +514,9 @@ class PreparationAuthorityTest(unittest.TestCase):
         self.assertNotIsInstance(receipt, DecisionFailure)
 
         reloaded = SQLiteWorkStore(database_path).validated_snapshot()
-        self.assertEqual((ItemId("work-c"),), tuple(value.item_id for value in reloaded.authority.preparation_leases))
+        self.assertEqual(
+            (WorkItemId("work-c"),), tuple(value.item_id for value in reloaded.authority.preparation_leases)
+        )
         before = project_overview(reloaded, expires_at - timedelta(microseconds=1))
         at = project_overview(reloaded, expires_at)
         before_item = next(value for value in before.items if value.item_id == "work-c")
@@ -543,7 +559,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             "The dependency must be preserved before activation.",
             "Record the prerequisite and relationship.",
             "A project can evaluate it.",
-            work_models.PrerequisiteProposalRelation(ItemId("work-c")),
+            work_models.PrerequisiteProposalRelation(WorkItemId("work-c")),
             "The relationship is current.",
             ("source:local",),
             ("Work C remains ready.",),
@@ -594,7 +610,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             "The dependency must be preserved before activation.",
             "Record the prerequisite and relationship.",
             "A project can evaluate it.",
-            work_models.PrerequisiteProposalRelation(ItemId("work-c")),
+            work_models.PrerequisiteProposalRelation(WorkItemId("work-c")),
             "The relationship is current.",
             ("source:local",),
             ("Work C remains ready.",),
@@ -623,11 +639,11 @@ class PreparationAuthorityTest(unittest.TestCase):
 
     def test_transfer_repins_current_definition_and_revocation_fences_the_holder(self) -> None:
         snapshot = project_decision_snapshot(complete_sqlite_state(), SQLITE_NOW)
-        definition = snapshot.definition(ItemId("work-c"))
+        definition = snapshot.definition(WorkItemId("work-c"))
         assert definition is not None
         retained = authority_models.PreparationLeaseAuthority(
             snapshot.host_epoch,
-            ItemId("work-c"),
+            WorkItemId("work-c"),
             definition.revision,
             definition.digest,
             TaskId("preparer-a"),
@@ -640,7 +656,7 @@ class PreparationAuthorityTest(unittest.TestCase):
         )
         inactive = authority_models.InactivePreparationAuthority(
             retained.host_epoch,
-            retained.item,
+            retained.work_item_id,
             retained.definition_revision,
             retained.definition_digest,
             retained.task_id,
@@ -661,12 +677,12 @@ class PreparationAuthorityTest(unittest.TestCase):
         transferred = decide_preparation_authority(retained, 2, request, snapshot, SQLITE_NOW)
         self.assertNotIsInstance(transferred, DecisionFailure)
         assert not isinstance(transferred, DecisionFailure)
-        item = snapshot.item(ItemId("work-c"))
+        item = snapshot.work_item(WorkItemId("work-c"))
         assert item is not None
         paused = replace(
             snapshot,
             items=tuple(
-                replace(value, state=work_models.WorkState.PAUSED) if value.item == item.item else value
+                replace(value, state=work_models.WorkState.PAUSED) if value.work_item_id == item.work_item_id else value
                 for value in snapshot.items
             ),
         )
@@ -680,7 +696,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             transferred.proposed_replacement,
             transferred.counter_after,
             authority_models.RevokePreparationAuthority(
-                transferred.item,
+                transferred.work_item_id,
                 transferred.proposed_replacement.lease_id,
                 transferred.proposed_replacement.generation,
                 TaskId("project-task"),
@@ -700,8 +716,8 @@ class PreparationAuthorityTest(unittest.TestCase):
         acquired_at = SQLITE_NOW
         store, database_path = self._store(state)
         snapshot = project_decision_snapshot(store.validated_snapshot(), acquired_at)
-        item = snapshot.item(ItemId("work-c"))
-        definition = snapshot.definition(ItemId("work-c"))
+        item = snapshot.work_item(WorkItemId("work-c"))
+        definition = snapshot.definition(WorkItemId("work-c"))
         assert item is not None
         assert definition is not None
         expires_at = acquired_at + timedelta(seconds=1)
@@ -709,9 +725,9 @@ class PreparationAuthorityTest(unittest.TestCase):
             store,
             authority_models.AcquireInitialPreparationAuthority(
                 snapshot.host_epoch,
-                item.item,
+                item.work_item_id,
                 snapshot.revision,
-                snapshot.subject_revision(item.item) or "",
+                snapshot.subject_revision(item.work_item_id) or "",
                 definition.revision,
                 definition.digest,
                 TaskId("preparer"),

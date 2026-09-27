@@ -74,7 +74,9 @@ class NativeCheckpointEffectsTest(CheckpointPackageSupport):
                 snapshot=replace(
                     facts.snapshot,
                     items=tuple(
-                        replace(item, state=work_models.WorkState.ACTIVE) if str(item.item) == "work-a" else item
+                        replace(item, state=work_models.WorkState.ACTIVE)
+                        if str(item.work_item_id) == "work-a"
+                        else item
                         for item in facts.snapshot.items
                     ),
                     attempts=tuple(
@@ -394,7 +396,6 @@ class NativeCheckpointEffectsTest(CheckpointPackageSupport):
         payload = self.json_object(json.loads(fixture.payload.read_bytes()))
         relation: JsonObject = {
             "schema": "pinboard-planned-replacement/v1",
-            "affected_item": "work-a",
             "expected_relation_revision": 0,
             "replacement_item": "work-c",
             "replacement_cost": "Checkpoint acceptance would preserve replaced work.",

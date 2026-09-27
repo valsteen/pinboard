@@ -37,7 +37,7 @@ from pinboard.application.work_briefs import (
 from pinboard.cli.entrypoint import main
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure
-from pinboard.domain.identifiers import AttemptId, ItemId
+from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import mutation_operations as mcp_mutations
 from pinboard.mcp import server as mcp_server
@@ -432,7 +432,7 @@ class CheckpointPackageSupport(unittest.TestCase):
                 state.lifecycle,
                 work_items=tuple(
                     replace(value, state=stored_state.StoredWorkItemState.REVIEW)
-                    if value.item_id == ItemId("work-a")
+                    if value.item_id == WorkItemId("work-a")
                     else value
                     for value in state.lifecycle.work_items
                 ),

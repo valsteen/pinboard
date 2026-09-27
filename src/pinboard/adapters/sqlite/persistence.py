@@ -74,18 +74,18 @@ from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, ItemId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, WorkItemId
 
 
 @dataclass(frozen=True, slots=True)
 class _PersistenceFacts:
-    items: dict[ItemId, stored_state.StoredWorkItem]
+    items: dict[WorkItemId, stored_state.StoredWorkItem]
     attempts: dict[AttemptId, stored_state.StoredAttempt]
-    definitions: dict[ItemId, stored_state.ItemDefinitionRevision]
+    definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision]
 
-    def item(self, item_id: ItemId) -> stored_state.StoredWorkItem:
+    def work_item(self, work_item_id: WorkItemId) -> stored_state.StoredWorkItem:
         try:
-            return self.items[item_id]
+            return self.items[work_item_id]
         except KeyError:
             raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "The targeted mutation item is missing.") from None
 
@@ -97,7 +97,7 @@ class _PersistenceFacts:
                 StorageErrorCode.INVARIANT_VIOLATION, "The targeted mutation attempt is missing."
             ) from None
 
-    def definition(self, item_id: ItemId) -> stored_state.ItemDefinitionRevision:
+    def definition(self, item_id: WorkItemId) -> stored_state.ItemDefinitionRevision:
         try:
             return self.definitions[item_id]
         except KeyError:
@@ -108,16 +108,16 @@ class _PersistenceFacts:
 
 def _mutation_subjects(
     mutation: StoredStateMutation,
-) -> tuple[tuple[ItemId, ...], tuple[AttemptId, ...]]:
+) -> tuple[tuple[WorkItemId, ...], tuple[AttemptId, ...]]:
     match mutation:
         case TransitionMutation(decision=decision) | ReviewSubmissionMutation(decision=decision):
             match decision.change:
                 case (
-                    decision_models.ItemStateChange(item=item)
-                    | decision_models.BlockItemChange(item=item)
-                    | decision_models.ActivationChange(item=item)
-                    | decision_models.ItemClosureChange(item=item)
-                    | DefinitionRevisionDecision(item=item)
+                    decision_models.WorkItemStateChange(work_item_id=item)
+                    | decision_models.BlockWorkItemChange(work_item_id=item)
+                    | decision_models.ActivationChange(work_item_id=item)
+                    | decision_models.WorkItemClosureChange(work_item_id=item)
+                    | DefinitionRevisionDecision(work_item_id=item)
                 ):
                     return (item,), ()
                 case decision_models.PlannedReplacementChange(relation=relation):
@@ -125,25 +125,25 @@ def _mutation_subjects(
                 case decision_models.ReplacementDispositionChange(disposition=disposition):
                     return (disposition.affected_item,), ()
                 case (
-                    decision_models.AttemptStateChange(item=item, attempt=attempt)
-                    | decision_models.BlockAttemptChange(item=item, attempt=attempt)
-                    | decision_models.ResumeAttemptChange(item=item, attempt=attempt)
-                    | decision_models.ReviewSubmissionChange(item=item, attempt=attempt)
-                    | decision_models.ReviewAcceptanceChange(item=item, attempt=attempt)
-                    | decision_models.ReviewReturnChange(item=item, attempt=attempt)
-                    | decision_models.CompletionChange(item=item, attempt=attempt)
-                    | decision_models.RebindAttemptChange(item=item, attempt=attempt)
+                    decision_models.AttemptStateChange(work_item_id=item, attempt=attempt)
+                    | decision_models.BlockAttemptChange(work_item_id=item, attempt=attempt)
+                    | decision_models.ResumeAttemptChange(work_item_id=item, attempt=attempt)
+                    | decision_models.ReviewSubmissionChange(work_item_id=item, attempt=attempt)
+                    | decision_models.ReviewAcceptanceChange(work_item_id=item, attempt=attempt)
+                    | decision_models.ReviewReturnChange(work_item_id=item, attempt=attempt)
+                    | decision_models.CompletionChange(work_item_id=item, attempt=attempt)
+                    | decision_models.RebindAttemptChange(work_item_id=item, attempt=attempt)
                 ):
                     return (item,), (attempt,)
                 case (
                     decision_models.MergedProposalChange(proposal=proposal)
                     | decision_models.RejectedProposalChange(proposal=proposal)
                 ):
-                    return (ItemId(proposal),), ()
+                    return (WorkItemId(proposal),), ()
                 case _ as unreachable:
                     assert_never(unreachable)
         case CheckpointAcceptanceMutation(decision=decision) | CompletionAcceptanceMutation(decision=decision):
-            return (decision.change.item,), (decision.change.attempt,)
+            return (decision.change.work_item_id,), (decision.change.attempt,)
         case ProposalCreationMutation() | AttemptAuthorityMutation() | PreparationAuthorityMutation() | OrderMutation():
             return (), ()
         case _ as unreachable:
@@ -152,7 +152,7 @@ def _mutation_subjects(
 
 def _read_persistence_facts(connection: sqlite3.Connection, mutation: StoredStateMutation) -> _PersistenceFacts:
     item_ids, attempt_ids = _mutation_subjects(mutation)
-    items: dict[ItemId, stored_state.StoredWorkItem] = {}
+    items: dict[WorkItemId, stored_state.StoredWorkItem] = {}
     for item_id in item_ids:
         row = connection.execute(
             """
@@ -178,7 +178,7 @@ def _read_persistence_facts(connection: sqlite3.Connection, mutation: StoredStat
         ).fetchone()
         if row is not None:
             attempts[attempt_id] = decode_row(row, stored_state.StoredAttempt)
-    definitions: dict[ItemId, stored_state.ItemDefinitionRevision] = {}
+    definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision] = {}
     for item_id in item_ids:
         row = connection.execute(
             """
@@ -197,19 +197,19 @@ def _read_persistence_facts(connection: sqlite3.Connection, mutation: StoredStat
 
 def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every closed mutation effect
     connection: sqlite3.Connection, mutation: StoredStateMutation
-) -> tuple[tuple[ItemId, ...], tuple[AttemptId, ...]]:
+) -> tuple[tuple[WorkItemId, ...], tuple[AttemptId, ...]]:
     item_ids, attempt_ids = _mutation_subjects(mutation)
     affected_items = list(item_ids)
-    liveness_flip_roots: list[ItemId] = []
+    liveness_flip_roots: list[WorkItemId] = []
     match mutation:
         case OrderMutation(change=change):
             affected_items.extend(item for _position, item in change.changed_positions)
         case ProposalCreationMutation(decision=decision):
-            affected_items.append(decision.ready_item.item_id)
+            affected_items.append(decision.ready_item.work_item_id)
             if decision.planned_replacement is not None:
                 affected_items.append(decision.planned_replacement.affected_item)
             if decision.prerequisite_change is not None:
-                affected_items.append(decision.prerequisite_change.item_id)
+                affected_items.append(decision.prerequisite_change.work_item_id)
             affected_items.extend(
                 decode_row(row, ItemIdRow).item_id
                 for row in connection.execute(
@@ -218,7 +218,7 @@ def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every 
                 ).fetchall()
             )
         case PreparationAuthorityMutation(decision=decision):
-            affected_items.append(decision.proposed_replacement.item)
+            affected_items.append(decision.proposed_replacement.work_item_id)
         case AttemptAuthorityMutation():
             pass
         case (
@@ -231,13 +231,13 @@ def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every 
                 case decision_models.ActivationChange(attempt=attempt):
                     attempt_ids = (*attempt_ids, attempt)
                 case (
-                    decision_models.CompletionChange(item=item)
-                    | decision_models.CoveredCompletionChange(item=item)
-                    | decision_models.ItemClosureChange(item=item)
+                    decision_models.CompletionChange(work_item_id=item)
+                    | decision_models.CoveredCompletionChange(work_item_id=item)
+                    | decision_models.WorkItemClosureChange(work_item_id=item)
                     | decision_models.MergedProposalChange(proposal=item)
                     | decision_models.RejectedProposalChange(proposal=item)
                 ):
-                    selected_item = ItemId(item)
+                    selected_item = WorkItemId(item)
                     liveness_flip_roots.append(selected_item)
                     selected = connection.execute(
                         "SELECT queue_position FROM work_items WHERE item_id = ?", (selected_item,)
@@ -251,10 +251,10 @@ def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every 
                             ).fetchall()
                         )
                 case (
-                    decision_models.ItemStateChange()
+                    decision_models.WorkItemStateChange()
                     | decision_models.AttemptStateChange()
                     | decision_models.BlockAttemptChange()
-                    | decision_models.BlockItemChange()
+                    | decision_models.BlockWorkItemChange()
                     | decision_models.RebindAttemptChange()
                     | decision_models.ResumeAttemptChange()
                     | decision_models.ReviewSubmissionChange()
@@ -295,7 +295,7 @@ def _persist_definition_revision(
     project_revision: int,
 ) -> DecisionFailure | None:
     stored = stored_state.ItemDefinitionRevision(
-        decision.item,
+        decision.work_item_id,
         decision.revision,
         decision.after_digest,
         decision.definition,
@@ -308,11 +308,11 @@ def _persist_definition_revision(
     )
     if (
         failure := insert_definition_revision(
-            connection, facts.item(decision.item), facts.definition(decision.item), stored
+            connection, facts.work_item(decision.work_item_id), facts.definition(decision.work_item_id), stored
         )
     ) is not None:
         return failure
-    replace_dependencies(connection, decision.item, decision.definition.dependencies)
+    replace_dependencies(connection, decision.work_item_id, decision.definition.dependencies)
     return None
 
 
@@ -325,8 +325,8 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
     revision = mutation.receipt.project_revision
     now = mutation.decision.receipt.decided_at
 
-    def advance_item_revision(item: ItemId) -> DecisionFailure | None:
-        current = facts.item(item)
+    def advance_item_revision(item: WorkItemId) -> DecisionFailure | None:
+        current = facts.work_item(item)
         return require_one_changed_row(
             connection.execute(
                 """
@@ -340,11 +340,11 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
         )
 
     match change:
-        case decision_models.ItemStateChange(item=item, before=before, after=after):
+        case decision_models.WorkItemStateChange(work_item_id=item, before=before, after=after):
             if (
                 failure := set_item_state(
                     connection,
-                    facts.item(item),
+                    facts.work_item(item),
                     before,
                     stored_state.stored_live_work_state(after),
                     revision,
@@ -352,11 +352,11 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 )
             ) is not None:
                 return failure
-        case decision_models.ActivationChange(item=item, item_before=before):
+        case decision_models.ActivationChange(work_item_id=item, item_before=before):
             if (
                 failure := set_item_state(
                     connection,
-                    facts.item(item),
+                    facts.work_item(item),
                     before,
                     stored_state.StoredWorkItemState.ACTIVE,
                     revision,
@@ -374,11 +374,13 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (failure := consume_preparation_authority(connection, preparation, now)) is not None:
                 return failure
             if (
-                failure := insert_attempt(connection, facts.item(item), facts.definition(item), change, revision, now)
+                failure := insert_attempt(
+                    connection, facts.work_item(item), facts.definition(item), change, revision, now
+                )
             ) is not None:
                 return failure
         case decision_models.AttemptStateChange(
-            item=item,
+            work_item_id=item,
             item_before=item_before,
             item_after=item_after,
             attempt=attempt,
@@ -388,7 +390,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    facts.item(item),
+                    facts.work_item(item),
                     item_before,
                     stored_state.stored_live_work_state(item_after),
                     revision,
@@ -403,7 +405,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             ) is not None:
                 return failure
         case decision_models.BlockAttemptChange(
-            item=item,
+            work_item_id=item,
             item_before=item_before,
             attempt=attempt,
             attempt_before=attempt_before,
@@ -412,7 +414,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    facts.item(item),
+                    facts.work_item(item),
                     item_before,
                     stored_state.StoredWorkItemState.BLOCKED,
                     revision,
@@ -432,11 +434,13 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             ) is not None:
                 return failure
             replace_dependencies(connection, item, dependencies)
-        case decision_models.BlockItemChange(item=item, item_before=item_before, dependencies_after=dependencies):
+        case decision_models.BlockWorkItemChange(
+            work_item_id=item, item_before=item_before, dependencies_after=dependencies
+        ):
             if (
                 failure := set_item_state(
                     connection,
-                    facts.item(item),
+                    facts.work_item(item),
                     item_before,
                     stored_state.StoredWorkItemState.BLOCKED,
                     revision,
@@ -453,7 +457,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (failure := fence_attempt_authority(connection, authority, now)) is not None:
                 return failure
         case decision_models.ResumeAttemptChange(
-            item=item,
+            work_item_id=item,
             item_before=item_before,
             attempt=attempt,
             attempt_before=attempt_before,
@@ -462,7 +466,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    facts.item(item),
+                    facts.work_item(item),
                     item_before,
                     stored_state.StoredWorkItemState.ACTIVE,
                     revision,
@@ -483,7 +487,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             ) is not None:
                 return failure
         case decision_models.ReviewSubmissionChange(
-            item=item,
+            work_item_id=item,
             attempt=attempt,
             protected_candidate_after=candidate,
             candidate_observed_at=observed_at,
@@ -491,7 +495,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    facts.item(item),
+                    facts.work_item(item),
                     work_models.WorkState.ACTIVE,
                     stored_state.StoredWorkItemState.REVIEW,
                     revision,
@@ -513,13 +517,13 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             ) is not None:
                 return failure
         case (
-            decision_models.ReviewAcceptanceChange(item=item, attempt=attempt, authority_change=authority)
-            | decision_models.ReviewReturnChange(item=item, attempt=attempt, authority_change=authority)
+            decision_models.ReviewAcceptanceChange(work_item_id=item, attempt=attempt, authority_change=authority)
+            | decision_models.ReviewReturnChange(work_item_id=item, attempt=attempt, authority_change=authority)
         ):
             if (
                 failure := set_item_state(
                     connection,
-                    facts.item(item),
+                    facts.work_item(item),
                     work_models.WorkState.REVIEW,
                     stored_state.StoredWorkItemState.ACTIVE,
                     revision,
@@ -541,7 +545,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (failure := fence_attempt_authority(connection, authority, now)) is not None:
                 return failure
         case decision_models.CompletionChange(
-            item=item,
+            work_item_id=item,
             item_before=item_before,
             attempt=attempt,
             attempt_before=attempt_before,
@@ -551,7 +555,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    facts.item(item),
+                    facts.work_item(item),
                     item_before,
                     stored_state.StoredWorkItemState.DONE,
                     revision,
@@ -573,8 +577,8 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 return failure
             if authority is not None and (failure := fence_attempt_authority(connection, authority, now)) is not None:
                 return failure
-        case decision_models.ItemClosureChange(
-            item=item,
+        case decision_models.WorkItemClosureChange(
+            work_item_id=item,
             item_before=item_before,
             terminal_state=terminal_state,
             evidence=evidence,
@@ -582,7 +586,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    facts.item(item),
+                    facts.work_item(item),
                     item_before,
                     stored_state.stored_close_outcome(terminal_state),
                     revision,
@@ -600,7 +604,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    facts.item(ItemId(proposal)),
+                    facts.work_item(WorkItemId(proposal)),
                     item_before,
                     stored_state.StoredWorkItemState.SUPERSEDED,
                     revision,
@@ -624,7 +628,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             if (
                 failure := set_item_state(
                     connection,
-                    facts.item(ItemId(proposal)),
+                    facts.work_item(WorkItemId(proposal)),
                     item_before,
                     stored_state.StoredWorkItemState.DROPPED,
                     revision,
@@ -711,7 +715,7 @@ def _persist_checkpoint_acceptance(
     if (
         failure := set_item_state(
             connection,
-            facts.item(change.item),
+            facts.work_item(change.work_item_id),
             work_models.WorkState.REVIEW,
             stored_state.StoredWorkItemState.PAUSED,
             revision,
@@ -754,7 +758,7 @@ def _persist_completion_acceptance(
     if (
         failure := set_item_state(
             connection,
-            facts.item(change.item),
+            facts.work_item(change.work_item_id),
             work_models.WorkState.REVIEW,
             stored_state.StoredWorkItemState.DONE,
             revision,
@@ -1000,7 +1004,7 @@ class SQLiteWorkTransaction:
             tuple(accepted),
         )
 
-    def read_live_order(self) -> tuple[ItemId, ...]:
+    def read_live_order(self) -> tuple[WorkItemId, ...]:
         return tuple(
             decode_row(row, ItemIdRow).item_id
             for row in self.connection.execute(
@@ -1019,8 +1023,10 @@ class SQLiteWorkTransaction:
     def read_attempt_authority_status(self, attempt_id: AttemptId) -> query_models.AttemptAuthorityStatus | None:
         return read_attempt_authority_status(self.connection, attempt_id)
 
-    def read_preparation_authority_status(self, item_id: ItemId) -> query_models.PreparationAuthorityStatus | None:
-        return read_preparation_authority_status(self.connection, item_id)
+    def read_preparation_authority_status(
+        self, work_item_id: WorkItemId
+    ) -> query_models.PreparationAuthorityStatus | None:
+        return read_preparation_authority_status(self.connection, work_item_id)
 
     def read_attempt_generation(self, attempt_id: AttemptId) -> int:
         row = self.connection.execute(
@@ -1029,20 +1035,20 @@ class SQLiteWorkTransaction:
         ).fetchone()
         return 0 if row is None else decode_row(row, GenerationRow).generation_high_water
 
-    def read_preparation_generation(self, item_id: ItemId) -> int:
+    def read_preparation_generation(self, work_item_id: WorkItemId) -> int:
         row = self.connection.execute(
             "SELECT generation_high_water FROM preparation_lease_counters WHERE item_id = ?",
-            (item_id,),
+            (work_item_id,),
         ).fetchone()
         return 0 if row is None else decode_row(row, GenerationRow).generation_high_water
 
     def commit(self, mutation: StoredStateMutation) -> DecisionResult[CommittedEffect]:
         item_ids, attempt_ids = _committed_effect_ids(self.connection, mutation)
         continuation_attempt_id = attempt_ids[0] if attempt_ids else None
-        if continuation_attempt_id is None and mutation.receipt.transition.item is not None:
+        if continuation_attempt_id is None and mutation.receipt.transition.work_item_id is not None:
             row = self.connection.execute(
                 "SELECT attempt_id FROM attempts WHERE item_id = ? AND state != 'done'",
-                (mutation.receipt.transition.item,),
+                (mutation.receipt.transition.work_item_id,),
             ).fetchone()
             if row is not None:
                 continuation_attempt_id = decode_row(row, AttemptIdRow).attempt_id

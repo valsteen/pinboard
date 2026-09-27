@@ -16,7 +16,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import actions, query_models
 from pinboard.domain import history
 from pinboard.domain.errors import DecisionFailure
-from pinboard.domain.identifiers import AttemptId, ItemId
+from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.mcp import contract_schemas
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import read_operations as mcp_reads
@@ -242,7 +242,6 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                     fixture,
                     self.project_action(fixture, "rebind-attempt:work-a-1"),
                     {
-                        "attempt": "work-a-1",
                         "branch": current.branch,
                         "base_revision": current.base_revision,
                         "brief_artifact_ref_id": published_reference["artifact_ref_id"],
@@ -383,7 +382,6 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
             action,
             {
                 "schema": "pinboard-planned-replacement/v1",
-                "affected_item": "work-a",
                 "expected_relation_revision": 0,
                 "replacement_item": "work-b",
                 "replacement_cost": "One retained owner.",
@@ -410,7 +408,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         fixture = self.terminalize_brief(self.checkpoint_fixture())
         snapshot = fixture.store.validated_snapshot()
         definitions = tuple(
-            value for value in snapshot.lifecycle.definition_revisions if value.item_id == ItemId("work-a")
+            value for value in snapshot.lifecycle.definition_revisions if value.item_id == WorkItemId("work-a")
         )
         current = definitions[-1]
         definition_bytes = history.work_item_definition_bytes(current.definition)
@@ -424,7 +422,6 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
             action,
             {
                 "schema": "pinboard-item-revision/v1",
-                "item_id": "work-a",
                 "expected_revision": current.revision,
                 "expected_digest": current.digest,
                 "source_task": "review-owner",

@@ -6,7 +6,7 @@ from pathlib import Path
 import msgspec
 
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import AttemptId, HistoryId, ItemId
+from pinboard.domain.identifiers import AttemptId, HistoryId, WorkItemId
 
 
 class OpenMode(Enum):
@@ -23,7 +23,7 @@ class InitReceipt:
 
 
 class ItemIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    item_id: ItemId
+    item_id: WorkItemId
 
 
 class AttemptIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -35,7 +35,7 @@ class HistoryIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class DependencyViewRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    dependency_id: ItemId
+    dependency_id: WorkItemId
     queue_position: int | None
 
 
@@ -72,7 +72,7 @@ class StateCountRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class CandidateSnapshotAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: AttemptId
-    item_id: ItemId
+    item_id: WorkItemId
     state: work_models.AttemptState
     branch: str
     base_revision: str

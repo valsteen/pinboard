@@ -30,9 +30,9 @@ from pinboard.domain.identifiers import (
     HistoryId,
     HistorySubjectId,
     HostId,
-    ItemId,
     LeaseId,
     TaskId,
+    WorkItemId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from tests.decision_support import project_decision_snapshot
@@ -96,7 +96,7 @@ class MutationPersistenceTest(unittest.TestCase):
         retained = authority_models.AttemptLeaseAuthority(
             command.host_epoch,
             command.attempt,
-            command.item,
+            command.work_item_id,
             command.task_id,
             command.host_id,
             command.lease_id,
@@ -117,7 +117,7 @@ class MutationPersistenceTest(unittest.TestCase):
         self, before: stored_state.StoredWorkState, action: str
     ) -> tuple[decision_models.TransitionReceipt, stored_state.StoredWorkState]:
         decided_at = before.lifecycle.project.updated_at + timedelta(seconds=1)
-        receipt = decision_models.TransitionReceipt(ActionId(action), ItemId("work-a"), action, None, decided_at)
+        receipt = decision_models.TransitionReceipt(ActionId(action), WorkItemId("work-a"), action, None, decided_at)
         stored_receipt = stored_state.StoredTransitionReceipt(
             HistoryId(1 + max((int(value.history_id) for value in before.transition_receipts), default=0)),
             before.lifecycle.project.revision + 1,
@@ -178,20 +178,22 @@ class MutationPersistenceTest(unittest.TestCase):
 
     def test_activation_decision_retains_and_persists_creation_facts(self) -> None:
         state = complete_sqlite_state()
-        definition = next(value for value in state.lifecycle.definition_revisions if value.item_id == ItemId("work-c"))
+        definition = next(
+            value for value in state.lifecycle.definition_revisions if value.item_id == WorkItemId("work-c")
+        )
         state = replace(
             state,
             authority=replace(
                 state.authority,
-                preparation_counters=(stored_state.PreparationLeaseCounter(ItemId("work-c"), 1),),
+                preparation_counters=(stored_state.PreparationLeaseCounter(WorkItemId("work-c"), 1),),
                 preparation_generations=(
                     stored_state.PreparationLeaseGeneration(
-                        ItemId("work-c"), 1, LeaseId("preparation-c"), TaskId("preparer-c"), HostId("host-a")
+                        WorkItemId("work-c"), 1, LeaseId("preparation-c"), TaskId("preparer-c"), HostId("host-a")
                     ),
                 ),
                 preparation_leases=(
                     stored_state.StoredPreparationLease(
-                        ItemId("work-c"),
+                        WorkItemId("work-c"),
                         1,
                         definition.revision,
                         definition.digest,
@@ -209,7 +211,7 @@ class MutationPersistenceTest(unittest.TestCase):
             decision_models.AuthorizationKind.PREPARATION,
             1,
             LeaseId("preparation-c"),
-            preparations=(ItemId("work-c"),),
+            preparations=(WorkItemId("work-c"),),
         )
         action = next(
             value for value in available_actions(snapshot, actor) if value.kind == decision_models.ActionKind.ACTIVATE
@@ -274,7 +276,7 @@ class MutationPersistenceTest(unittest.TestCase):
             ("The state becomes explicit.",),
             (),
             ("The next decision can run.",),
-            (ItemId("work-c"),),
+            (WorkItemId("work-c"),),
             "The state becomes explicit.",
             "The next decision can run.",
             work_models.CheckoutPolicy.COORDINATOR_SELECTED,
@@ -292,9 +294,9 @@ class MutationPersistenceTest(unittest.TestCase):
             lifecycle=replace(
                 state.lifecycle,
                 definition_revisions=(
-                    *(value for value in state.lifecycle.definition_revisions if value.item_id != ItemId("work-a")),
+                    *(value for value in state.lifecycle.definition_revisions if value.item_id != WorkItemId("work-a")),
                     stored_state.ItemDefinitionRevision(
-                        ItemId("work-a"),
+                        WorkItemId("work-a"),
                         1,
                         current_digest,
                         current,
@@ -315,7 +317,7 @@ class MutationPersistenceTest(unittest.TestCase):
         revised = replace(
             current,
             objective="Make the state explicit and observable.",
-            dependencies=(ItemId("intake-work"),),
+            dependencies=(WorkItemId("intake-work"),),
         )
         decided_at = SQLITE_NOW + timedelta(seconds=1)
         actor = decision_models.ActorAuthority(
@@ -326,15 +328,14 @@ class MutationPersistenceTest(unittest.TestCase):
         action = next(
             value
             for value in available_actions(snapshot, actor)
-            if value.kind == decision_models.ActionKind.REVISE_ITEM and value.capability.subject == ItemId("work-a")
+            if value.kind == decision_models.ActionKind.REVISE_ITEM and value.capability.subject == WorkItemId("work-a")
         )
-        assert isinstance(action, decision_models.ReviseItemAction)
+        assert isinstance(action, decision_models.ReviseWorkItemAction)
         decision = decide(
             snapshot,
-            decision_models.ReviseItemCommand(
+            decision_models.ReviseWorkItemCommand(
                 action,
-                work_models.ReviseItemDefinitionInput(
-                    ItemId("work-a"),
+                work_models.ReviseWorkItemDefinitionInput(
                     1,
                     current_digest,
                     TaskId("revision-owner"),
@@ -359,15 +360,17 @@ class MutationPersistenceTest(unittest.TestCase):
         assert not isinstance(committed, DecisionFailure)
         self.assertEqual(ActionId("revise-item:work-a"), committed.receipt.transition.action_id)
         reopened = store.validated_snapshot()
-        reopened_item = project_decision_snapshot(reopened, SQLITE_NOW).item(ItemId("work-a"))
+        reopened_item = project_decision_snapshot(reopened, SQLITE_NOW).work_item(WorkItemId("work-a"))
         assert reopened_item is not None
         self.assertEqual(work_models.WorkState.ACTIVE, reopened_item.state)
         self.assertEqual(
             2,
-            sum(value.item_id == ItemId("work-a") for value in reopened.lifecycle.definition_revisions),
+            sum(value.item_id == WorkItemId("work-a") for value in reopened.lifecycle.definition_revisions),
         )
         persisted = next(
-            value for value in reversed(reopened.lifecycle.definition_revisions) if value.item_id == ItemId("work-a")
+            value
+            for value in reversed(reopened.lifecycle.definition_revisions)
+            if value.item_id == WorkItemId("work-a")
         )
         self.assertEqual(revised, persisted.definition)
         self.assertEqual(current_digest, persisted.before_digest)
@@ -377,9 +380,11 @@ class MutationPersistenceTest(unittest.TestCase):
         self.assertEqual(13, persisted.accepted_project_revision)
         self.assertEqual(decided_at, persisted.accepted_at)
         self.assertEqual(
-            (ItemId("intake-work"),),
+            (WorkItemId("intake-work"),),
             tuple(
-                value.dependency_id for value in reopened.lifecycle.dependencies if value.item_id == ItemId("work-a")
+                value.dependency_id
+                for value in reopened.lifecycle.dependencies
+                if value.item_id == WorkItemId("work-a")
             ),
         )
 
@@ -480,7 +485,7 @@ class MutationPersistenceTest(unittest.TestCase):
         action = next(
             value
             for value in available_actions(snapshot, actor)
-            if value.kind == decision_models.ActionKind.DEFER and value.capability.subject == ItemId("intake-work")
+            if value.kind == decision_models.ActionKind.DEFER and value.capability.subject == WorkItemId("intake-work")
         )
         assert isinstance(action, decision_models.DeferAction)
         first_decision = decide(
@@ -519,7 +524,7 @@ class MutationPersistenceTest(unittest.TestCase):
                 decision_models.MergeProposalAction,
                 b'{"target":"work-c"}',
                 work_models.MergedProposalDisposition(
-                    ItemId("work-c"),
+                    WorkItemId("work-c"),
                     SQLITE_NOW + timedelta(seconds=1),
                 ),
             ),
@@ -565,7 +570,7 @@ class MutationPersistenceTest(unittest.TestCase):
         action = next(
             value
             for value in available_actions(snapshot, actor)
-            if value.kind == decision_models.ActionKind.DEFER and value.capability.subject == ItemId("intake-work")
+            if value.kind == decision_models.ActionKind.DEFER and value.capability.subject == WorkItemId("intake-work")
         )
         assert isinstance(action, decision_models.DeferAction)
         decision = decide(

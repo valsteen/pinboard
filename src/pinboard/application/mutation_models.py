@@ -3,7 +3,15 @@ from dataclasses import dataclass
 from pinboard.application import stored_state
 from pinboard.application.artifacts import EvidenceArtifactRef, ResultArtifactRef
 from pinboard.domain import authority_models, decision_models, work_models
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, HistorySubjectId, HostId, ItemId, TaskId
+from pinboard.domain.identifiers import (
+    ArtifactRefId,
+    AttemptId,
+    HistoryId,
+    HistorySubjectId,
+    HostId,
+    TaskId,
+    WorkItemId,
+)
 from pinboard.domain.ordering import OrderChange
 from pinboard.domain.proposal_models import ProposalCreationDecision
 
@@ -46,7 +54,7 @@ class CommittedEffect:
     """One receipt plus the exact generated projections changed by its commit."""
 
     receipt: MutationReceipt
-    item_ids: tuple[ItemId, ...]
+    work_item_ids: tuple[WorkItemId, ...]
     attempt_ids: tuple[AttemptId, ...]
     continuation_attempt_id: AttemptId | None
 

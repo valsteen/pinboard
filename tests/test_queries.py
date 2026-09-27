@@ -23,9 +23,9 @@ from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import (
     AttemptId,
-    ItemId,
     LeaseId,
     TaskId,
+    WorkItemId,
 )
 from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
@@ -72,17 +72,17 @@ class SQLiteQueriesTest(unittest.TestCase):
 
     def test_overview_exposes_duplicate_contradiction_and_clarification_for_review(self) -> None:
         for relation in (
-            work_models.DuplicateProposalRelation(ItemId("work-c")),
-            work_models.ContradictionProposalRelation(ItemId("work-c")),
+            work_models.DuplicateProposalRelation(WorkItemId("work-c")),
+            work_models.ContradictionProposalRelation(WorkItemId("work-c")),
             work_models.ClarificationProposalRelation(),
         ):
             state = complete_sqlite_state()
             proposal = state.proposals.proposals[0]
             changed = replace(proposal, relation=relation)
             dependencies = tuple(
-                value for value in state.lifecycle.dependencies if value.item_id != ItemId("zz-proposal-a")
+                value for value in state.lifecycle.dependencies if value.item_id != WorkItemId("zz-proposal-a")
             )
-            state = with_definition_dependencies(state, ItemId("zz-proposal-a"), ())
+            state = with_definition_dependencies(state, WorkItemId("zz-proposal-a"), ())
             store = self._store(
                 replace(
                     state,
@@ -98,7 +98,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                 self.assertIsNotNone(item.proposal_origin)
                 assert item.proposal_origin is not None
                 self.assertEqual(relation.kind, item.proposal_origin.relation_kind)
-                self.assertEqual(None if relation.item is None else "work-c", item.proposal_origin.related_item)
+                self.assertEqual(None if relation.work_item_id is None else "work-c", item.proposal_origin.related_item)
 
     def test_focused_overview_preserves_historical_returned_proposal_origin(self) -> None:
         state = complete_sqlite_state()
@@ -122,9 +122,9 @@ class SQLiteQueriesTest(unittest.TestCase):
     def test_overview_supplies_definition_context_and_explicit_replacement_warning_in_one_read(self) -> None:
         state = complete_sqlite_state()
         relation = stored_state.StoredPlannedReplacement(
-            ItemId("work-c"),
+            WorkItemId("work-c"),
             1,
-            ItemId("work-a"),
+            WorkItemId("work-a"),
             "Starting Work C now would duplicate the replacement implementation and review.",
             work_models.PlannedReplacementStatus.CURRENT,
             TaskId("coordinator"),
@@ -140,7 +140,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertEqual(full, focused)
         item = next(value for value in focused.items if value.item_id == "work-c")
         definition = next(
-            value.definition for value in state.lifecycle.definition_revisions if value.item_id == ItemId("work-c")
+            value.definition for value in state.lifecycle.definition_revisions if value.item_id == WorkItemId("work-c")
         )
         self.assertEqual(
             (definition.title, definition.effect, definition.unlock), (item.label, item.effect, item.unlock)
@@ -154,10 +154,10 @@ class SQLiteQueriesTest(unittest.TestCase):
     def test_focused_action_order_remains_identity_stable_while_overview_uses_queue_order(self) -> None:
         state = complete_sqlite_state()
         positions = {
-            ItemId("intake-work"): 3,
-            ItemId("work-a"): 2,
-            ItemId("work-c"): 1,
-            ItemId("zz-proposal-a"): 4,
+            WorkItemId("intake-work"): 3,
+            WorkItemId("work-a"): 2,
+            WorkItemId("work-c"): 1,
+            WorkItemId("zz-proposal-a"): 4,
         }
         reordered = replace(
             state,
@@ -237,7 +237,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             )
         )
 
-        live = expect_success(project_item_status(store, ItemId("work-a"), SQLITE_NOW))
+        live = expect_success(project_item_status(store, WorkItemId("work-a"), SQLITE_NOW))
         done = expect_success(project_item_status(store, done_item.item_id, SQLITE_NOW))
 
         self.assertEqual(
@@ -315,9 +315,9 @@ class SQLiteQueriesTest(unittest.TestCase):
             def __init__(self, facts: query_models.ItemStatusFacts) -> None:
                 self.facts = facts
 
-            def read_item_status(self, item_id: ItemId) -> query_models.ItemStatusFacts | None:
-                if item_id != ItemId("selected"):
-                    raise AssertionError(f"Unexpected item selection: {item_id}")
+            def read_item_status(self, work_item_id: WorkItemId) -> query_models.ItemStatusFacts | None:
+                if work_item_id != WorkItemId("selected"):
+                    raise AssertionError(f"Unexpected item selection: {work_item_id}")
                 return self.facts
 
         legal_shapes = (
@@ -342,7 +342,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             facts = query_models.ItemStatusFacts(
                 12,
                 query_models.ItemStatusItemFacts(
-                    ItemId("selected"), item_state, work_models.Timing.MUST_NOW, None, "continue", "source", None, 1
+                    WorkItemId("selected"), item_state, work_models.Timing.MUST_NOW, None, "continue", "source", None, 1
                 ),
                 "Selected work",
                 attempts,
@@ -350,7 +350,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             )
 
             with self.subTest(item_state=item_state.value, attempt_state=attempt_state):
-                status = project_item_status(Reader(facts), ItemId("selected"), SQLITE_NOW)
+                status = project_item_status(Reader(facts), WorkItemId("selected"), SQLITE_NOW)
 
             self.assertIsInstance(status, query_models.ItemStatus)
             assert isinstance(status, query_models.ItemStatus)
@@ -367,13 +367,13 @@ class SQLiteQueriesTest(unittest.TestCase):
             def __init__(self, facts: query_models.ItemStatusFacts) -> None:
                 self.facts = facts
 
-            def read_item_status(self, item_id: ItemId) -> query_models.ItemStatusFacts | None:
-                if item_id != ItemId("selected"):
-                    raise AssertionError(f"Unexpected item selection: {item_id}")
+            def read_item_status(self, work_item_id: WorkItemId) -> query_models.ItemStatusFacts | None:
+                if work_item_id != WorkItemId("selected"):
+                    raise AssertionError(f"Unexpected item selection: {work_item_id}")
                 return self.facts
 
         item = query_models.ItemStatusItemFacts(
-            ItemId("selected"),
+            WorkItemId("selected"),
             stored_state.StoredWorkItemState.READY,
             work_models.Timing.CHEAPER_NOW,
             "evidence",
@@ -397,7 +397,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             facts = query_models.ItemStatusFacts(12, selected_item, "Selected work", attempts, None)
 
             with self.subTest(item_state=selected_item.state.value, observed=observed):
-                failure = project_item_status(Reader(facts), ItemId("selected"), SQLITE_NOW)
+                failure = project_item_status(Reader(facts), WorkItemId("selected"), SQLITE_NOW)
 
             self.assertIsInstance(failure, DecisionFailure)
             assert isinstance(failure, DecisionFailure)
@@ -420,7 +420,7 @@ class SQLiteQueriesTest(unittest.TestCase):
     def test_item_status_rejects_an_unknown_canonical_identity(self) -> None:
         store = self._store()
 
-        missing = project_item_status(store, ItemId("missing-item"), SQLITE_NOW)
+        missing = project_item_status(store, WorkItemId("missing-item"), SQLITE_NOW)
 
         self.assertIsInstance(missing, DecisionFailure)
         assert isinstance(missing, DecisionFailure)
@@ -428,7 +428,7 @@ class SQLiteQueriesTest(unittest.TestCase):
 
     def test_item_definition_and_history_project_exact_store_reads(self) -> None:
         state = complete_sqlite_state()
-        item = next(value for value in state.lifecycle.work_items if value.item_id == ItemId("work-c"))
+        item = next(value for value in state.lifecycle.work_items if value.item_id == WorkItemId("work-c"))
         store = self._store(state)
 
         definition = expect_success(select_item_definition(store, item.item_id))

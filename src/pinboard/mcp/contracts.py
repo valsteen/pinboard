@@ -141,7 +141,7 @@ class SelectedParallelPreviewRequest(
 ):
     project_root: RootPath
     work_root: RootPath
-    item_ids: Annotated[tuple[ordering.OrderItemId, ...], msgspec.Meta(min_length=1)]
+    item_ids: Annotated[tuple[ordering.OrderWorkItemId, ...], msgspec.Meta(min_length=1)]
 
     def __post_init__(self) -> None:
         if len(set(self.item_ids)) != len(self.item_ids):
@@ -1054,7 +1054,6 @@ class ActionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     def __post_init__(self) -> None:
         identity = self.action_id
         action_models.ActionView(
-            f"{identity.kind.value}:{identity.subject}",
             identity.kind,
             identity.subject,
             self.label,
@@ -1556,7 +1555,7 @@ class OrderRejected(RejectedReadResult, frozen=True):
 
 class OrderCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-order-result/v1"]
-    order: tuple[ordering.OrderItemId, ...]
+    order: tuple[ordering.OrderWorkItemId, ...]
     committed_revision: PositiveInt
     history_id: PositiveInt
     recovery: OrderRecovery

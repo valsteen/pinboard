@@ -54,7 +54,7 @@ def refresh_effect(
     return refresh(
         durable,
         store,
-        AffectedViews(effect.item_ids, effect.attempt_ids, (effect.receipt.history_id,)),
+        AffectedViews(effect.work_item_ids, effect.attempt_ids, (effect.receipt.history_id,)),
         now,
     )
 

@@ -26,7 +26,7 @@ from pinboard.application.service import start_preparation
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.decisions import available_actions, decide
 from pinboard.domain.errors import DecisionFailure
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, ProposalId, TaskId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, LeaseId, ProposalId, TaskId, WorkItemId
 from tests.decision_support import project_decision_snapshot
 from tests.support import (
     SQLITE_NOW,
@@ -101,10 +101,10 @@ class SQLiteEffectContractTest(unittest.TestCase):
                 if str(value.capability.subject) == "intake-work"
                 and value.kind == decision_models.ActionKind.BLOCK_ITEM
             )
-            assert isinstance(action, decision_models.BlockItemAction)
+            assert isinstance(action, decision_models.BlockWorkItemAction)
             decision = decide(
                 snapshot,
-                decision_models.BlockItemCommand(action, work_models.BlockInput("Waiting on a dependency.")),
+                decision_models.BlockWorkItemCommand(action, work_models.BlockInput("Waiting on a dependency.")),
                 SQLITE_NOW,
             )
             assert not isinstance(decision, DecisionFailure)
@@ -191,7 +191,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
             store.read_current_action_snapshot(SQLITE_NOW)
             store.read_current_parallel_snapshot(SQLITE_NOW)
             store.read_decision_facts(
-                query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), (), ()), SQLITE_NOW
+                query_models.DecisionScope((WorkItemId("work-a"),), (), (), (), (), (), (), ()), SQLITE_NOW
             )
 
         self.assertFalse(any("from artifact_refs" in statement.lower() for statement in statements))
@@ -236,10 +236,10 @@ class SQLiteEffectContractTest(unittest.TestCase):
     def test_decision_artifacts_and_dependency_closure_are_explicit(self) -> None:
         _path, store = self._store()
         focused = store.read_decision_facts(
-            query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), (), ()), SQLITE_NOW
+            query_models.DecisionScope((WorkItemId("work-a"),), (), (), (), (), (), (), ()), SQLITE_NOW
         ).snapshot
         artifact = store.read_decision_facts(
-            query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), (ArtifactRefId(1),), ()),
+            query_models.DecisionScope((WorkItemId("work-a"),), (), (), (), (), (), (ArtifactRefId(1),), ()),
             SQLITE_NOW,
         ).snapshot
 
@@ -247,38 +247,38 @@ class SQLiteEffectContractTest(unittest.TestCase):
         self.assertEqual((ArtifactRefId(1),), tuple(value.artifact_ref_id for value in artifact.artifacts))
 
         state = complete_sqlite_state()
-        state = with_definition_dependencies(state, ItemId("work-c"), (ItemId("intake-work"),))
-        state = with_definition_dependencies(state, ItemId("work-b"), (ItemId("work-a"),))
+        state = with_definition_dependencies(state, WorkItemId("work-c"), (WorkItemId("intake-work"),))
+        state = with_definition_dependencies(state, WorkItemId("work-b"), (WorkItemId("work-a"),))
         _chain_path, store = self._store(state)
 
         direct = store.read_decision_facts(
-            query_models.DecisionScope((ItemId("work-a"),), (), (), (), (), (), (), ()), SQLITE_NOW
+            query_models.DecisionScope((WorkItemId("work-a"),), (), (), (), (), (), (), ()), SQLITE_NOW
         ).snapshot
         closed = store.read_decision_facts(
-            query_models.DecisionScope((ItemId("work-a"),), (), (ItemId("work-c"),), (), (), (), (), ()),
+            query_models.DecisionScope((WorkItemId("work-a"),), (), (WorkItemId("work-c"),), (), (), (), (), ()),
             SQLITE_NOW,
         ).snapshot
         terminal_closed = store.read_decision_facts(
-            query_models.DecisionScope((ItemId("work-a"),), (), (ItemId("work-b"),), (), (), (), (), ()),
+            query_models.DecisionScope((WorkItemId("work-a"),), (), (WorkItemId("work-b"),), (), (), (), (), ()),
             SQLITE_NOW,
         ).snapshot
 
-        self.assertEqual({ItemId("work-a"), ItemId("work-c")}, set(direct.items_by_id()))
-        self.assertEqual({ItemId("work-a")}, {value.item for value in direct.definitions})
+        self.assertEqual({WorkItemId("work-a"), WorkItemId("work-c")}, set(direct.work_items_by_id()))
+        self.assertEqual({WorkItemId("work-a")}, {value.work_item_id for value in direct.definitions})
         self.assertEqual(
-            {ItemId("work-a"), ItemId("work-c"), ItemId("intake-work")},
-            set(closed.items_by_id()),
+            {WorkItemId("work-a"), WorkItemId("work-c"), WorkItemId("intake-work")},
+            set(closed.work_items_by_id()),
         )
         self.assertEqual(
-            {ItemId("work-a"), ItemId("work-c"), ItemId("intake-work")},
-            {value.item for value in closed.definitions},
+            {WorkItemId("work-a"), WorkItemId("work-c"), WorkItemId("intake-work")},
+            {value.work_item_id for value in closed.definitions},
         )
-        self.assertIn(ItemId("work-b"), terminal_closed.history_items)
-        self.assertIn(ItemId("work-b"), {value.item for value in terminal_closed.definitions})
+        self.assertIn(WorkItemId("work-b"), terminal_closed.history_items)
+        self.assertIn(WorkItemId("work-b"), {value.work_item_id for value in terminal_closed.definitions})
 
     def test_generated_item_view_does_not_follow_transitive_dependencies(self) -> None:
         state = complete_sqlite_state()
-        state = with_definition_dependencies(state, ItemId("work-c"), (ItemId("intake-work"),))
+        state = with_definition_dependencies(state, WorkItemId("work-c"), (WorkItemId("intake-work"),))
         _path, store = self._store(state)
         statements: list[str] = []
         original_open = sqlite_store.open_database
@@ -289,16 +289,16 @@ class SQLiteEffectContractTest(unittest.TestCase):
             return connection
 
         with patch.object(sqlite_store, "open_database", traced_open):
-            facts = store.read_generated_view_facts((ItemId("work-a"),), (), (), SQLITE_NOW)
+            facts = store.read_generated_view_facts((WorkItemId("work-a"),), (), (), SQLITE_NOW)
 
-        self.assertEqual((ItemId("work-c"),), facts.items[0].dependencies)
+        self.assertEqual((WorkItemId("work-c"),), facts.items[0].dependencies)
         self.assertIsNotNone(facts.items[0].overview)
         self.assertFalse(any("'intake-work'" in statement for statement in statements), statements)
 
     def test_committed_effect_refreshes_reverse_dependents_only_for_liveness_changes(self) -> None:
         def project_action(
             state: stored_state.StoredWorkState,
-            item_id: ItemId,
+            item_id: WorkItemId,
             kind: decision_models.ActionKind,
         ) -> decision_models.Action:
             snapshot = project_decision_snapshot(state, SQLITE_NOW)
@@ -322,7 +322,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
 
         state = complete_sqlite_state()
         _path, store = self._store(state)
-        defer_action = project_action(state, ItemId("work-c"), decision_models.ActionKind.DEFER)
+        defer_action = project_action(state, WorkItemId("work-c"), decision_models.ActionKind.DEFER)
         assert isinstance(defer_action, decision_models.DeferAction)
         defer_decision = decide(
             project_decision_snapshot(state, SQLITE_NOW),
@@ -338,7 +338,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
             transaction.connection.set_trace_callback(statements.append)
             deferred = transaction.commit(project_transition_mutation(mutation_allocation(state), defer_decision))
         assert not isinstance(deferred, DecisionFailure)
-        self.assertEqual((ItemId("work-c"),), deferred.item_ids)
+        self.assertEqual((WorkItemId("work-c"),), deferred.work_item_ids)
         self.assertEqual((), reverse_dependency_queries(statements))
 
         _path, store = self._store()
@@ -353,7 +353,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
         with patch.object(sqlite_store, "open_database", traced_open):
             prepared = start_preparation(
                 store,
-                item_id=ItemId("work-c"),
+                work_item_id=WorkItemId("work-c"),
                 task_id=TaskId("preparer"),
                 host_id=HostId("host-a"),
                 lease_id=LeaseId("preparation-work-c"),
@@ -361,12 +361,12 @@ class SQLiteEffectContractTest(unittest.TestCase):
                 expires_at=SQLITE_NOW + timedelta(minutes=5),
             )
         assert not isinstance(prepared, DecisionFailure)
-        self.assertEqual((ItemId("work-c"),), prepared.effect.item_ids)
+        self.assertEqual((WorkItemId("work-c"),), prepared.effect.work_item_ids)
         self.assertEqual((), reverse_dependency_queries(statements))
 
         state = complete_sqlite_state()
         _path, store = self._store(state)
-        close_action = project_action(state, ItemId("intake-work"), decision_models.ActionKind.CLOSE)
+        close_action = project_action(state, WorkItemId("intake-work"), decision_models.ActionKind.CLOSE)
         assert isinstance(close_action, decision_models.CloseAction)
         close_decision = decide(
             project_decision_snapshot(state, SQLITE_NOW),
@@ -383,8 +383,8 @@ class SQLiteEffectContractTest(unittest.TestCase):
             closed = transaction.commit(project_transition_mutation(mutation_allocation(state), close_decision))
         assert not isinstance(closed, DecisionFailure)
         self.assertEqual(
-            (ItemId("intake-work"), ItemId("work-a"), ItemId("work-c"), ItemId("zz-proposal-a")),
-            closed.item_ids,
+            (WorkItemId("intake-work"), WorkItemId("work-a"), WorkItemId("work-c"), WorkItemId("zz-proposal-a")),
+            closed.work_item_ids,
         )
         self.assertEqual(1, len(reverse_dependency_queries(statements)), reverse_dependency_queries(statements))
 
@@ -519,7 +519,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
         before = store.validated_snapshot()
         attempt = before.lifecycle.attempts[0]
         duplicate_attempt = decision_models.ActivationChange(
-            ItemId("work-c"),
+            WorkItemId("work-c"),
             work_models.WorkState.READY,
             attempt.attempt_id,
             attempt.brief_artifact_ref_id,
@@ -529,12 +529,12 @@ class SQLiteEffectContractTest(unittest.TestCase):
         )
         unrelated_live_attempt_conflict = replace(
             duplicate_attempt,
-            item=attempt.item_id,
+            work_item_id=attempt.item_id,
             attempt=AttemptId("other-live-attempt"),
         )
-        work_c = next(value for value in before.lifecycle.work_items if value.item_id == ItemId("work-c"))
+        work_c = next(value for value in before.lifecycle.work_items if value.item_id == WorkItemId("work-c"))
         work_c_definition = next(
-            value for value in before.lifecycle.definition_revisions if value.item_id == ItemId("work-c")
+            value for value in before.lifecycle.definition_revisions if value.item_id == WorkItemId("work-c")
         )
         work_a = next(value for value in before.lifecycle.work_items if value.item_id == attempt.item_id)
         work_a_definition = next(
@@ -567,11 +567,11 @@ class SQLiteEffectContractTest(unittest.TestCase):
             with self.assertRaises(StorageError) as unrelated_foreign_key, write_transaction(connection):
                 lifecycle.insert_attempt(
                     connection,
-                    replace(work_c, item_id=ItemId("missing-item")),
-                    replace(work_c_definition, item_id=ItemId("missing-item")),
+                    replace(work_c, item_id=WorkItemId("missing-item")),
+                    replace(work_c_definition, item_id=WorkItemId("missing-item")),
                     replace(
                         duplicate_attempt,
-                        item=ItemId("missing-item"),
+                        work_item_id=WorkItemId("missing-item"),
                         attempt=AttemptId("missing-item-attempt"),
                     ),
                     before.lifecycle.project.revision + 1,
@@ -584,7 +584,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
             current = authority_models.AttemptLeaseAuthority(
                 command.host_epoch,
                 command.attempt,
-                command.item,
+                command.work_item_id,
                 command.task_id,
                 command.host_id,
                 command.lease_id,

@@ -14,13 +14,13 @@ from pinboard.domain.errors import (
     DecisionFailureCode,
     DecisionResult,
 )
-from pinboard.domain.identifiers import ActionId, AttemptId, ItemId, LeaseId, ProposalId
+from pinboard.domain.identifiers import ActionId, AttemptId, LeaseId, ProposalId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
 def action_subject_ids(
     action: decision_models.Action,
-) -> tuple[tuple[ItemId, ...], tuple[AttemptId, ...], tuple[ProposalId, ...]]:
+) -> tuple[tuple[WorkItemId, ...], tuple[AttemptId, ...], tuple[ProposalId, ...]]:
     """Return the exact persisted subject family selected by one action."""
 
     match action:
@@ -40,14 +40,14 @@ def action_subject_ids(
             return (), (capability.subject,), ()
         case (
             decision_models.ActivateAction(capability=capability)
-            | decision_models.BlockItemAction(capability=capability)
+            | decision_models.BlockWorkItemAction(capability=capability)
             | decision_models.CloseAction(capability=capability)
             | decision_models.DeferAction(capability=capability)
             | decision_models.ReopenAction(capability=capability)
             | decision_models.RecordReplacementAction(capability=capability)
             | decision_models.ResumeAction(capability=capability)
             | decision_models.RetainTemporarilyAction(capability=capability)
-            | decision_models.ReviseItemAction(capability=capability)
+            | decision_models.ReviseWorkItemAction(capability=capability)
         ):
             return (capability.subject,), (), ()
         case (
@@ -95,7 +95,7 @@ def discover_current_actions(
             )
         case decision_models.Role.PREPARER:
             preparations = tuple(
-                authority.item
+                authority.work_item_id
                 for authority in snapshot.command_preparation_authorities
                 if lease_id is not None
                 and authority.lease_id == lease_id
@@ -125,7 +125,7 @@ def action_identity_scope(action_id: ActionId) -> query_models.DecisionScope | N
         return None
     match semantics.subject_kind:
         case decision_models.ActionSubjectKind.ITEM:
-            return query_models.DecisionScope((ItemId(subject),), (), (), (), (), (), (), ())
+            return query_models.DecisionScope((WorkItemId(subject),), (), (), (), (), (), (), ())
         case decision_models.ActionSubjectKind.ATTEMPT:
             return query_models.DecisionScope((), (), (), (), (AttemptId(subject),), (), (), ())
         case decision_models.ActionSubjectKind.PROPOSAL:
@@ -221,7 +221,7 @@ def completion_input_contract(
         route = "return-for-correction" if attempt.state == work_models.AttemptState.REVIEW else "rebind-attempt"
         return query_models.CompletionRecoveryRequired(
             attempt.attempt_id,
-            attempt.item_id,
+            attempt.work_item_id,
             route,
             str(attempt.attempt_id),
             None,
@@ -237,7 +237,7 @@ def completion_input_contract(
         route = "accept-checkpoint" if attempt.state == work_models.AttemptState.REVIEW else "dispatch"
         return query_models.CompletionRecoveryRequired(
             attempt.attempt_id,
-            attempt.item_id,
+            attempt.work_item_id,
             route,
             str(attempt.attempt_id),
             None,
@@ -306,7 +306,6 @@ def project_action(
         case _ as unreachable:
             assert_never(unreachable)
     common = (
-        decision_models.action_id(action),
         action.kind,
         capability.subject,
         capability.label,

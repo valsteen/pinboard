@@ -187,7 +187,7 @@ def verify_candidate_snapshot_context(
         raise ValueError("The candidate snapshot receipt outcome is not canonical or correlated.")
     if (
         snapshot.attempt_id != str(context.attempt_id)
-        or snapshot.item_id != str(context.item_id)
+        or snapshot.item_id != str(context.work_item_id)
         or snapshot.candidate != receipt_input.candidate
         or snapshot.recorded_at != receipt.committed_at.isoformat()
     ):

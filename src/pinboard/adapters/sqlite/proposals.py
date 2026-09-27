@@ -23,7 +23,7 @@ from pinboard.application import released_v6_compatibility, stored_state
 from pinboard.application.mutation_models import ProposalCreationMutation
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.domain.identifiers import ItemId, ProposalId, TaskId
+from pinboard.domain.identifiers import ProposalId, TaskId, WorkItemId
 
 
 class _StoredProposalRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -35,13 +35,13 @@ class _StoredProposalRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     trigger: str
     why_it_matters: str
     relation_kind: work_models.ProposalRelationKind
-    relation_item_id: ItemId | None
+    relation_item_id: WorkItemId | None
     relation_replacement_cost: str | None
     effect: str
     unlock: str
     urgency_evidence: str
     disposition: work_models.ProposalDispositionKind | None
-    disposition_target_item_id: ItemId | None
+    disposition_target_item_id: WorkItemId | None
     disposition_reason: str | None
     subject_revision: int
     disposition_recorded_at: datetime | None
@@ -73,20 +73,20 @@ class _SubjectRevisionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     subject_revision: int
 
 
-def _require_relation_item(kind: work_models.ProposalRelationKind, value: ItemId | None) -> ItemId:
+def _require_relation_item(kind: work_models.ProposalRelationKind, value: WorkItemId | None) -> WorkItemId:
     if value is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, f"{kind.value} proposal has no related item.")
     return value
 
 
-def _reject_relation_item(kind: work_models.ProposalRelationKind, value: ItemId | None) -> None:
+def _reject_relation_item(kind: work_models.ProposalRelationKind, value: WorkItemId | None) -> None:
     if value is not None:
         raise StorageError(StorageErrorCode.INVALID_STATE, f"{kind.value} proposal has a related item.")
 
 
 def decode_proposal_relation(
     kind: work_models.ProposalRelationKind,
-    value: ItemId | None,
+    value: WorkItemId | None,
     replacement_cost: str | None,
 ) -> work_models.ProposalRelation:
     if kind != work_models.ProposalRelationKind.PLANNED_REPLACEMENT and replacement_cost is not None:
@@ -116,8 +116,8 @@ def decode_proposal_relation(
 
 def _require_disposition_target(
     kind: work_models.ProposalDispositionKind,
-    target: ItemId | None,
-) -> ItemId:
+    target: WorkItemId | None,
+) -> WorkItemId:
     if target is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, f"{kind.value} proposal disposition has no target item.")
     return target
@@ -138,7 +138,7 @@ def _require_disposition_time(kind: work_models.ProposalDispositionKind, value: 
 def _forbid_disposition_value(
     kind: work_models.ProposalDispositionKind,
     name: str,
-    value: ItemId | str | None,
+    value: WorkItemId | str | None,
 ) -> None:
     if value is not None:
         raise StorageError(StorageErrorCode.INVALID_STATE, f"{kind.value} proposal disposition has a {name}.")
@@ -146,7 +146,7 @@ def _forbid_disposition_value(
 
 def _decode_stored_proposal_disposition(
     kind: work_models.ProposalDispositionKind | None,
-    target: ItemId | None,
+    target: WorkItemId | None,
     reason: str | None,
     disposed_at: datetime | None,
 ) -> released_v6_compatibility.StoredProposalDisposition | None:
@@ -185,7 +185,7 @@ def _decode_stored_proposal_disposition(
 
 def _encode_proposal_disposition_columns(
     value: released_v6_compatibility.StoredProposalDisposition | None,
-) -> tuple[str | None, ItemId | None, str | None, str | None]:
+) -> tuple[str | None, WorkItemId | None, str | None, str | None]:
     match value:
         case None:
             return None, None, None, None
@@ -343,7 +343,7 @@ def create_proposal(
     if prerequisite is not None:
         target = connection.execute(
             "SELECT subject_revision FROM work_items WHERE item_id = ?",
-            (prerequisite.item_id,),
+            (prerequisite.work_item_id,),
         ).fetchone()
         if target is None:
             return DecisionFailure(
@@ -384,7 +384,7 @@ def create_proposal(
             intake.trigger,
             intake.why_it_matters,
             relation.kind.value,
-            relation.item,
+            relation.work_item_id,
             relation.replacement_cost if isinstance(relation, work_models.PlannedReplacementProposalRelation) else None,
             intake.effect,
             intake.unlock,
@@ -408,7 +408,7 @@ def create_proposal(
         ) VALUES (?, 'ready', NULL, ?, NULL, ?, ?, ?, ?, ?, ?)
         """,
         (
-            ready_item.item_id,
+            ready_item.work_item_id,
             f"proposal:{intake.proposal_id}",
             intake.unlock,
             intake.urgency_evidence,
@@ -422,7 +422,7 @@ def create_proposal(
     append_definition_revision(
         connection,
         stored_state.ItemDefinitionRevision(
-            ready_item.item_id,
+            ready_item.work_item_id,
             1,
             ready_item.definition_digest,
             ready_item.definition,
@@ -434,7 +434,7 @@ def create_proposal(
             now,
         ),
     )
-    replace_dependencies(connection, ready_item.item_id, ready_item.dependencies)
+    replace_dependencies(connection, ready_item.work_item_id, ready_item.dependencies)
     if decision.planned_replacement is not None:
         relation = decision.planned_replacement
         assert replacement_subject_revision is not None
@@ -467,7 +467,7 @@ def create_proposal(
                 (
                     revision,
                     now.isoformat(),
-                    prerequisite.item_id,
+                    prerequisite.work_item_id,
                     prerequisite_subject_revision,
                 ),
             ),
@@ -477,12 +477,12 @@ def create_proposal(
         return failure
     connection.execute(
         "INSERT INTO item_dependencies (item_id, dependency_id, position) VALUES (?, ?, ?)",
-        (prerequisite.item_id, prerequisite.dependency_id, prerequisite.position),
+        (prerequisite.work_item_id, prerequisite.dependency_id, prerequisite.position),
     )
     append_definition_revision(
         connection,
         stored_state.ItemDefinitionRevision(
-            prerequisite.item_id,
+            prerequisite.work_item_id,
             prerequisite.definition_revision + 1,
             prerequisite.definition_digest_after,
             prerequisite.definition_after,

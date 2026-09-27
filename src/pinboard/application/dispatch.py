@@ -49,8 +49,8 @@ def _rediscover_dispatch_action(
     actions = discover_current_actions(
         store.read_decision_facts(
             query_models.DecisionScope(
-                item_ids=(),
-                related_item_ids=(),
+                work_item_ids=(),
+                related_work_item_ids=(),
                 dependency_closure_roots=(),
                 live_dependent_roots=(),
                 attempt_ids=(supplied.capability.subject,),

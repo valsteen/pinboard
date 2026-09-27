@@ -152,7 +152,6 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                     if route == "rebind":
                         action = self.project_action(fixture, "rebind-attempt:work-a-1")
                         payload: JsonObject = {
-                            "attempt": "work-a-1",
                             "branch": brief.branch,
                             "base_revision": brief.base_revision,
                             "brief_artifact_ref_id": reference_id,
@@ -402,7 +401,6 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             revise,
             {
                 "schema": "pinboard-item-revision/v1",
-                "item_id": "work-a",
                 "expected_revision": current["definition_revision"],
                 "expected_digest": current["definition_digest"],
                 "source_task": "review-owner",

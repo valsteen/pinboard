@@ -71,13 +71,13 @@ from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.application.project_export import ProjectExportState
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionResult
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, ItemId, LeaseId, ProposalId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, LeaseId, ProposalId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
 def _read_generated_view_facts(
     connection: sqlite3.Connection,
-    item_ids: tuple[ItemId, ...],
+    item_ids: tuple[WorkItemId, ...],
     attempt_ids: tuple[AttemptId, ...],
     history_ids: tuple[HistoryId, ...],
     now: datetime,
@@ -204,7 +204,9 @@ def _read_overview_proposals(
     connection: sqlite3.Connection, snapshot: LedgerSnapshot
 ) -> tuple[stored_state.StoredProposal, ...]:
     proposal_ids = tuple(
-        dict.fromkeys(ProposalId(item_id) for item in snapshot.items for item_id in (item.item, *item.depends_on))
+        dict.fromkeys(
+            ProposalId(item_id) for item in snapshot.items for item_id in (item.work_item_id, *item.depends_on)
+        )
     )
     return tuple(
         proposal for proposal_id in proposal_ids if (proposal := read_proposal(connection, proposal_id)) is not None
@@ -250,7 +252,7 @@ def _read_attempt_context_facts(
                 selected.candidate_revision,
                 selected.brief_artifact_ref_id,
                 replace(
-                    selected.item,
+                    selected.work_item,
                     current_replacement_revision=None if replacement is None else replacement.relation_revision,
                     replacement_resolved=replacement is None or bool(dispositions),
                 ),
@@ -537,7 +539,7 @@ class SQLiteWorkStore:
                     tuple(
                         status
                         for item in snapshot.items
-                        if (status := read_preparation_authority_status(connection, item.item)) is not None
+                        if (status := read_preparation_authority_status(connection, item.work_item_id)) is not None
                     ),
                 )
         finally:
@@ -545,7 +547,7 @@ class SQLiteWorkStore:
 
     def read_generated_view_facts(
         self,
-        item_ids: tuple[ItemId, ...],
+        work_item_ids: tuple[WorkItemId, ...],
         attempt_ids: tuple[AttemptId, ...],
         history_ids: tuple[HistoryId, ...],
         now: datetime,
@@ -553,7 +555,7 @@ class SQLiteWorkStore:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
-                return _read_generated_view_facts(connection, item_ids, attempt_ids, history_ids, now)
+                return _read_generated_view_facts(connection, work_item_ids, attempt_ids, history_ids, now)
         finally:
             connection.close()
 
@@ -589,33 +591,35 @@ class SQLiteWorkStore:
         finally:
             connection.close()
 
-    def read_preparation_authority_status(self, item_id: ItemId) -> query_models.PreparationAuthorityStatus | None:
+    def read_preparation_authority_status(
+        self, work_item_id: WorkItemId
+    ) -> query_models.PreparationAuthorityStatus | None:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
-                return read_preparation_authority_status(connection, item_id)
+                return read_preparation_authority_status(connection, work_item_id)
         finally:
             connection.close()
 
-    def read_item_definition(self, item_id: ItemId) -> query_models.ItemDefinitionFacts:
+    def read_item_definition(self, work_item_id: WorkItemId) -> query_models.ItemDefinitionFacts:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
-                return select_item_definition(connection, item_id)
+                return select_item_definition(connection, work_item_id)
         finally:
             connection.close()
 
-    def read_item_status(self, item_id: ItemId) -> query_models.ItemStatusFacts | None:
+    def read_item_status(self, work_item_id: WorkItemId) -> query_models.ItemStatusFacts | None:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
-                lifecycle = read_item_status(connection, item_id)
+                lifecycle = read_item_status(connection, work_item_id)
                 if lifecycle is None:
                     return None
-                preparation = read_preparation_authority_status(connection, item_id)
+                preparation = read_preparation_authority_status(connection, work_item_id)
                 return query_models.ItemStatusFacts(
                     lifecycle.project_revision,
-                    lifecycle.item,
+                    lifecycle.work_item,
                     lifecycle.definition_title,
                     lifecycle.attempts,
                     preparation,
@@ -775,11 +779,11 @@ class SQLiteWorkStore:
         finally:
             connection.close()
 
-    def read_parallel_preview(self, item_ids: tuple[ItemId, ...]) -> query_models.ParallelPreviewFacts | None:
+    def read_parallel_preview(self, work_item_ids: tuple[WorkItemId, ...]) -> query_models.ParallelPreviewFacts | None:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
-                lifecycle = read_parallel_preview_lifecycle(connection, item_ids)
+                lifecycle = read_parallel_preview_lifecycle(connection, work_item_ids)
                 if lifecycle is None:
                     return None
                 items: list[query_models.ParallelPreviewItemFacts] = []
@@ -821,12 +825,14 @@ class SQLiteWorkStore:
             connection.close()
 
     def read_item_definition_history(
-        self, item_id: ItemId, *, limit: int, before_revision: int | None
+        self, work_item_id: WorkItemId, *, limit: int, before_revision: int | None
     ) -> query_models.ItemDefinitionHistoryFacts:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
-                return select_item_definition_history(connection, item_id, limit=limit, before_revision=before_revision)
+                return select_item_definition_history(
+                    connection, work_item_id, limit=limit, before_revision=before_revision
+                )
         finally:
             connection.close()
 

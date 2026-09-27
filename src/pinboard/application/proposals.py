@@ -4,7 +4,7 @@ from pinboard.application import proposal_models
 from pinboard.application.proposal_models import Proposal
 from pinboard.domain import proposal_models as domain_proposal_models
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import ItemId, ProposalId, TaskId
+from pinboard.domain.identifiers import ProposalId, TaskId, WorkItemId
 
 
 def convert_proposal(value: Proposal) -> domain_proposal_models.CreateProposalOperation:
@@ -12,17 +12,17 @@ def convert_proposal(value: Proposal) -> domain_proposal_models.CreateProposalOp
         case proposal_models.IndependentProposalRelation():
             relation = work_models.IndependentProposalRelation()
         case proposal_models.PrerequisiteProposalRelation(item=item):
-            relation = work_models.PrerequisiteProposalRelation(ItemId(item))
+            relation = work_models.PrerequisiteProposalRelation(WorkItemId(item))
         case proposal_models.FollowUpProposalRelation(item=item):
-            relation = work_models.FollowUpProposalRelation(ItemId(item))
+            relation = work_models.FollowUpProposalRelation(WorkItemId(item))
         case proposal_models.DuplicateProposalRelation(item=item):
-            relation = work_models.DuplicateProposalRelation(ItemId(item))
+            relation = work_models.DuplicateProposalRelation(WorkItemId(item))
         case proposal_models.ContradictionProposalRelation(item=item):
-            relation = work_models.ContradictionProposalRelation(ItemId(item))
+            relation = work_models.ContradictionProposalRelation(WorkItemId(item))
         case proposal_models.ClarificationProposalRelation():
             relation = work_models.ClarificationProposalRelation()
         case proposal_models.PlannedReplacementProposalRelation(item=item, replacement_cost=replacement_cost):
-            relation = work_models.PlannedReplacementProposalRelation(ItemId(item), replacement_cost)
+            relation = work_models.PlannedReplacementProposalRelation(WorkItemId(item), replacement_cost)
         case _ as unreachable:
             assert_never(unreachable)
     return domain_proposal_models.CreateProposalOperation(

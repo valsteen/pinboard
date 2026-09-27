@@ -156,7 +156,7 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
                     FailureMismatch("attempt_id", str(attempt_id), identity.attempt_id),
                     FailureMismatch(
                         "item_id",
-                        None if attempt is None else str(attempt.item),
+                        None if attempt is None else str(attempt.work_item_id),
                         identity.item_id,
                     ),
                     FailureMismatch(
@@ -198,7 +198,7 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
         case decision_models.ResumeCommand(action=action, value=value) if value.brief_artifact_ref_id is not None:
             item_id = str(action.capability.subject)
             attempt = next(
-                (candidate for candidate in facts.attempt_lineage if str(candidate.item_id) == item_id), None
+                (candidate for candidate in facts.attempt_lineage if str(candidate.work_item_id) == item_id), None
             )
             if attempt is None:
                 return DecisionFailure(
@@ -221,7 +221,7 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
                     "Rebinding requires an existing attempt.",
                     None,
                 )
-            item_id = str(attempt.item_id)
+            item_id = str(attempt.work_item_id)
             branch = value.branch
             base_revision = value.base_revision
         case _:
@@ -254,10 +254,10 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
                 alternatives=(),
             ),
         )
-    item = next((candidate for candidate in snapshot.items if str(candidate.item) == item_id), None)
+    item = next((candidate for candidate in snapshot.items if str(candidate.work_item_id) == item_id), None)
     if item is None:
         return None
-    definition = snapshot.definition(item.item)
+    definition = snapshot.definition(item.work_item_id)
     if definition is None:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
@@ -267,12 +267,12 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
     if isinstance(command, decision_models.ActivateCommand):
         preparation = command.action.capability.preparation_authority
         preparation_mismatches = (
-            (FailureMismatch("preparation_item", str(item.item), None),)
+            (FailureMismatch("preparation_item", str(item.work_item_id), None),)
             if preparation is None
             else tuple(
                 mismatch
                 for mismatch in (
-                    FailureMismatch("preparation_item", str(item.item), str(preparation.item)),
+                    FailureMismatch("preparation_item", str(item.work_item_id), str(preparation.work_item_id)),
                     FailureMismatch(
                         "preparation_definition_revision",
                         definition.revision,

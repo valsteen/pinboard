@@ -1003,7 +1003,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
         source_checkout_root,
         checkpoint,
         environment,
-        str(selected_dispatch.attempt.item_id),
+        str(selected_dispatch.attempt.work_item_id),
         selected_dispatch.attempt.accepted_scope_revision,
         selected_dispatch.attempt.accepted_scope_digest,
         validate_original_authorities=not isinstance(choice, CorrectionDispatch),

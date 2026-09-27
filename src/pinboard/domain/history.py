@@ -10,7 +10,7 @@ from pinboard.domain.errors import (
     DecisionFailureCode,
     DecisionResult,
 )
-from pinboard.domain.identifiers import ItemId
+from pinboard.domain.identifiers import WorkItemId
 
 type CanonicalLine = Annotated[str, msgspec.Meta(pattern=r"\A\S(?:[^\r\n]*\S)?\z")]
 type Identity = Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
@@ -193,7 +193,7 @@ def decode_work_item_definition(payload: bytes) -> DecisionResult[work_models.Wo
         record.scope,
         record.non_scope,
         record.acceptance_criteria,
-        tuple(ItemId(value) for value in record.dependencies),
+        tuple(WorkItemId(value) for value in record.dependencies),
         record.effect,
         record.unlock,
         work_models.CheckoutPolicy(record.checkout_policy),

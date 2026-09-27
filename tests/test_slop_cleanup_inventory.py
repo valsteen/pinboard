@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import override
 
-from .support import JsonObject, JsonValue
+from tests.support import JsonObject, JsonValue
 
 INVENTORY = Path(__file__).parents[1] / "skills" / "slop-cleanup" / "scripts" / "inventory.py"
 

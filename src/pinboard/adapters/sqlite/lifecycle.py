@@ -22,12 +22,12 @@ from pinboard.domain.history import (
     work_item_definition_bytes,
     work_item_definition_digest,
 )
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, ItemId, TaskId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, TaskId, WorkItemId
 
 
 @dataclass(frozen=True, slots=True)
 class _DefinitionRevisionRow:
-    item_id: ItemId
+    item_id: WorkItemId
     revision: int
     digest: str
     definition_json: work_models.CanonicalJson
@@ -51,18 +51,18 @@ class _SubjectRevisionRow:
 
 @dataclass(frozen=True, slots=True)
 class _DependencyRow:
-    dependency_id: ItemId
+    dependency_id: WorkItemId
 
 
 class _AttemptItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    item_id: ItemId
+    item_id: WorkItemId
     state: stored_state.StoredWorkItemState
     subject_revision: int
 
 
 class _AttemptContextRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: AttemptId
-    item_id: ItemId
+    item_id: WorkItemId
     subject_revision: int
     state: work_models.AttemptState
     branch: str
@@ -74,12 +74,12 @@ class _AttemptContextRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True
 
 
 class _DependencyStateRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    dependency_id: ItemId
+    dependency_id: WorkItemId
     state: stored_state.StoredWorkItemState
 
 
 class _ParallelPreviewItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    item_id: ItemId
+    item_id: WorkItemId
     state: stored_state.StoredWorkItemState
 
 
@@ -89,7 +89,7 @@ class _ParallelPreviewAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fie
 
 
 class _QueuePositionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    item_id: ItemId
+    item_id: WorkItemId
     queue_position: int
 
 
@@ -129,7 +129,7 @@ def move_item_state_count(
 class TerminalAttemptContextSelection:
     project_revision: int
     attempt_id: AttemptId
-    item_id: ItemId
+    item_id: WorkItemId
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +137,7 @@ class NonterminalAttemptContextSelection:
     project_revision: int
     attempt_id: AttemptId
     subject_revision: str
-    item_id: ItemId
+    item_id: WorkItemId
     state: query_models.NonterminalAttemptState
     branch: str
     base_revision: str
@@ -145,7 +145,7 @@ class NonterminalAttemptContextSelection:
     accepted_scope_digest: str
     candidate_revision: str | None
     brief_artifact_ref_id: ArtifactRefId
-    item: query_models.AttemptContextItemFacts
+    work_item: query_models.AttemptContextItemFacts
 
 
 type AttemptContextSelection = TerminalAttemptContextSelection | NonterminalAttemptContextSelection
@@ -159,10 +159,10 @@ class ParallelPreviewLifecycleAttempt:
 
 @dataclass(frozen=True, slots=True)
 class ParallelPreviewLifecycleItem:
-    item_id: ItemId
+    item_id: WorkItemId
     label: str
     state: work_models.WorkState
-    live_dependencies: tuple[ItemId, ...]
+    live_dependencies: tuple[WorkItemId, ...]
     attempt: ParallelPreviewLifecycleAttempt | None
 
 
@@ -209,7 +209,7 @@ def decode_definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionR
 
 
 def read_current_definition(
-    connection: sqlite3.Connection, item_id: ItemId
+    connection: sqlite3.Connection, item_id: WorkItemId
 ) -> stored_state.ItemDefinitionRevision | None:
     row = connection.execute(
         """
@@ -228,7 +228,7 @@ def read_current_definition(
 
 def _current_definition_with_dependency_states(
     connection: sqlite3.Connection,
-    item_id: ItemId,
+    item_id: WorkItemId,
     *,
     missing_message: str,
 ) -> tuple[stored_state.ItemDefinitionRevision, tuple[_DependencyStateRow, ...]]:
@@ -256,7 +256,7 @@ def _current_definition_with_dependency_states(
     return definition, dependencies
 
 
-def read_item_definition(connection: sqlite3.Connection, item_id: ItemId) -> query_models.ItemDefinitionFacts:
+def read_item_definition(connection: sqlite3.Connection, item_id: WorkItemId) -> query_models.ItemDefinitionFacts:
     project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
     item_row = connection.execute("SELECT subject_revision FROM work_items WHERE item_id = ?", (item_id,)).fetchone()
     if project_revision_row is None:
@@ -296,14 +296,16 @@ def read_item_definition(connection: sqlite3.Connection, item_id: ItemId) -> que
     )
 
 
-def read_item_status(connection: sqlite3.Connection, item_id: ItemId) -> query_models.ItemStatusLifecycleFacts | None:
+def read_item_status(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> query_models.ItemStatusLifecycleFacts | None:
     project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
     if project_revision_row is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
     project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
     item_row = connection.execute(
         """
-        SELECT item_id, state, timing, outcome_evidence, next_action, source, notes, queue_position
+        SELECT item_id AS work_item_id, state, timing, outcome_evidence, next_action, source, notes, queue_position
         FROM work_items
         WHERE item_id = ?
         """,
@@ -345,7 +347,7 @@ def read_item_status(connection: sqlite3.Connection, item_id: ItemId) -> query_m
 
 def read_parallel_preview_lifecycle(
     connection: sqlite3.Connection,
-    item_ids: tuple[ItemId, ...],
+    item_ids: tuple[WorkItemId, ...],
 ) -> ParallelPreviewLifecycleSelection | None:
     project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
     if project_revision_row is None:
@@ -499,7 +501,7 @@ def read_attempt_context(
 
 def read_item_definition_history(
     connection: sqlite3.Connection,
-    item_id: ItemId,
+    item_id: WorkItemId,
     *,
     limit: int,
     before_revision: int | None,
@@ -814,7 +816,7 @@ def rebind_attempt(
                 revision,
                 now.isoformat(),
                 change.attempt,
-                change.item,
+                change.work_item_id,
                 change.attempt_state.value,
                 current.subject_revision,
                 current.accepted_scope_revision,
@@ -825,7 +827,9 @@ def rebind_attempt(
     )
 
 
-def replace_dependencies(connection: sqlite3.Connection, item_id: ItemId, dependencies: tuple[ItemId, ...]) -> None:
+def replace_dependencies(
+    connection: sqlite3.Connection, item_id: WorkItemId, dependencies: tuple[WorkItemId, ...]
+) -> None:
     connection.execute("DELETE FROM item_dependencies WHERE item_id = ?", (item_id,))
     connection.executemany(
         "INSERT INTO item_dependencies (item_id, dependency_id, position) VALUES (?, ?, ?)",
@@ -888,7 +892,7 @@ def insert_attempt(
     revision: int,
     now: datetime,
 ) -> DecisionFailure | None:
-    if current_item.item_id != change.item or definition.item_id != change.item:
+    if current_item.item_id != change.work_item_id or definition.item_id != change.work_item_id:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
             "The activated work item has no current definition.",
@@ -907,7 +911,7 @@ def insert_attempt(
             """,
             (
                 change.attempt,
-                change.item,
+                change.work_item_id,
                 change.branch,
                 change.base_revision,
                 change.owner,

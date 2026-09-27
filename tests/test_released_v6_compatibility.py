@@ -18,7 +18,7 @@ from pinboard.cli.entrypoint import main
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.decisions import available_actions
 from pinboard.domain.errors import DecisionFailure
-from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import AttemptId, HostId, LeaseId, TaskId, WorkItemId
 from tests.decision_support import project_decision_snapshot
 from tests.domain_support import expect_success
 from tests.support import SQLITE_NOW
@@ -55,7 +55,7 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                     <= retained_dispositions
                 )
                 retained = next(
-                    value for value in state.lifecycle.work_items if value.item_id == ItemId("zz-proposal-a")
+                    value for value in state.lifecycle.work_items if value.item_id == WorkItemId("zz-proposal-a")
                 )
                 self.assertEqual(name, retained.state.value)
                 self.assertEqual(
@@ -63,10 +63,10 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                     next(
                         value.state.value
                         for value in state.lifecycle.work_items
-                        if value.item_id == ItemId("intake-work")
+                        if value.item_id == WorkItemId("intake-work")
                     ),
                 )
-                status = expect_success(queries.project_item_status(store, ItemId("intake-work"), SQLITE_NOW))
+                status = expect_success(queries.project_item_status(store, WorkItemId("intake-work"), SQLITE_NOW))
                 self.assertEqual(stored_state.StoredWorkItemState.READY, status.state)
                 overview = queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW)
                 self.assertEqual("pinboard-overview/v6", overview.schema)
@@ -103,7 +103,7 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                 prepared = expect_success(
                     service.start_preparation(
                         store,
-                        item_id=ItemId(item_id),
+                        work_item_id=WorkItemId(item_id),
                         task_id=TaskId("preparer"),
                         host_id=HostId("local"),
                         lease_id=LeaseId("legacy-preparation"),
@@ -119,12 +119,13 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                     decision_models.AuthorizationKind.PREPARATION,
                     authority.generation,
                     authority.lease_id,
-                    preparations=(ItemId(item_id),),
+                    preparations=(WorkItemId(item_id),),
                 )
                 action = next(
                     value
                     for value in expect_success(available_actions(snapshot, actor))
-                    if isinstance(value, decision_models.ActivateAction) and value.capability.subject == ItemId(item_id)
+                    if isinstance(value, decision_models.ActivateAction)
+                    and value.capability.subject == WorkItemId(item_id)
                 )
                 brief_ref_id = fresh.validated_snapshot().artifact_references[0].artifact_ref_id
                 command = decision_models.ActivateCommand(
@@ -152,7 +153,7 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                 )
                 self.assertNotIsInstance(committed, DecisionFailure)
                 reloaded = SQLiteWorkStore(database).validated_snapshot()
-                item = next(value for value in reloaded.lifecycle.work_items if value.item_id == ItemId(item_id))
+                item = next(value for value in reloaded.lifecycle.work_items if value.item_id == WorkItemId(item_id))
                 self.assertEqual(stored_state.StoredWorkItemState.ACTIVE, item.state)
                 self.assertIn(
                     AttemptId(attempt_id),
@@ -175,11 +176,11 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                     action = next(
                         value
                         for value in expect_success(available_actions(snapshot, actor))
-                        if value.kind == kind and value.capability.subject == ItemId("zz-proposal-a")
+                        if value.kind == kind and value.capability.subject == WorkItemId("zz-proposal-a")
                     )
                     if isinstance(action, decision_models.MergeProposalAction):
                         command = decision_models.MergeProposalCommand(
-                            action, work_models.MergeProposalInput(ItemId("work-c"))
+                            action, work_models.MergeProposalInput(WorkItemId("work-c"))
                         )
                     else:
                         assert isinstance(action, decision_models.RejectProposalAction)
@@ -219,12 +220,12 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                 value
                 for value in initial_actions
                 if isinstance(value, decision_models.MergeProposalAction)
-                and value.capability.subject == ItemId("zz-proposal-a")
+                and value.capability.subject == WorkItemId("zz-proposal-a")
             )
             close_dependency = next(
                 value
                 for value in initial_actions
-                if isinstance(value, decision_models.CloseAction) and value.capability.subject == ItemId("work-c")
+                if isinstance(value, decision_models.CloseAction) and value.capability.subject == WorkItemId("work-c")
             )
             expect_success(
                 service.decide_and_commit_transition(
@@ -241,7 +242,7 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
             prepared = expect_success(
                 service.start_preparation(
                     store,
-                    item_id=ItemId("zz-proposal-a"),
+                    work_item_id=WorkItemId("zz-proposal-a"),
                     task_id=TaskId("preparer"),
                     host_id=HostId("local"),
                     lease_id=LeaseId("proposal-preparation"),
@@ -256,13 +257,13 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                 decision_models.AuthorizationKind.PREPARATION,
                 authority.generation,
                 authority.lease_id,
-                preparations=(ItemId("zz-proposal-a"),),
+                preparations=(WorkItemId("zz-proposal-a"),),
             )
             activate = next(
                 value
                 for value in expect_success(available_actions(snapshot, preparer))
                 if isinstance(value, decision_models.ActivateAction)
-                and value.capability.subject == ItemId("zz-proposal-a")
+                and value.capability.subject == WorkItemId("zz-proposal-a")
             )
             brief_ref_id = store.validated_snapshot().artifact_references[0].artifact_ref_id
             expect_success(
@@ -300,13 +301,13 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
             self.assertFalse(
                 any(
                     isinstance(value, decision_models.MergeProposalAction | decision_models.RejectProposalAction)
-                    and value.capability.subject == ItemId("zz-proposal-a")
+                    and value.capability.subject == WorkItemId("zz-proposal-a")
                     for value in current_actions
                 )
             )
             rejected = service.decide_and_commit_transition(
                 fresh,
-                decision_models.MergeProposalCommand(stale_merge, work_models.MergeProposalInput(ItemId("work-c"))),
+                decision_models.MergeProposalCommand(stale_merge, work_models.MergeProposalInput(WorkItemId("work-c"))),
                 SQLITE_NOW + timedelta(seconds=2),
                 read_authorization_time=lambda: SQLITE_NOW + timedelta(seconds=2),
                 actor_task_id=TaskId("project"),

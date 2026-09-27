@@ -30,7 +30,7 @@ from pinboard.application.brief_sources import BriefSourceSelector
 from pinboard.application.ports import WorkStore
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, ItemId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, WorkItemId
 
 type WorkBriefValue = (
     work_brief_models.WorkBrief
@@ -155,7 +155,7 @@ def _validate_current_definition(
     store: WorkStore,
     brief: work_brief_models.WorkBrief,
 ) -> work_brief_models.WorkBriefFailure | None:
-    selected = store.read_item_definition(ItemId(brief.item_id))
+    selected = store.read_item_definition(WorkItemId(brief.item_id))
     definition = selected.definition
     if (
         definition is None

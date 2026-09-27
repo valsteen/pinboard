@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import AttemptId, HostId, LeaseId, TaskId, WorkItemId
 
 
 class AttemptLeaseStatus(Enum):
@@ -23,7 +23,7 @@ class PreparationLeaseStatus(Enum):
 @dataclass(frozen=True, slots=True)
 class PreparationLeaseAuthority:
     host_epoch: int
-    item: ItemId
+    work_item_id: WorkItemId
     definition_revision: int
     definition_digest: str
     task_id: TaskId
@@ -38,7 +38,7 @@ class PreparationLeaseAuthority:
 @dataclass(frozen=True, slots=True)
 class InactivePreparationAuthority:
     host_epoch: int
-    item: ItemId
+    work_item_id: WorkItemId
     definition_revision: int
     definition_digest: str
     task_id: TaskId
@@ -52,7 +52,7 @@ class InactivePreparationAuthority:
 @dataclass(frozen=True, slots=True)
 class AcquireInitialPreparationAuthority:
     host_epoch: int
-    item: ItemId
+    work_item_id: WorkItemId
     expected_project_revision: str
     expected_item_subject_revision: str
     expected_definition_revision: int
@@ -89,7 +89,7 @@ class ReleasePreparationAuthority:
 
 @dataclass(frozen=True, slots=True)
 class RevokePreparationAuthority:
-    item: ItemId
+    work_item_id: WorkItemId
     lease_id: LeaseId
     generation: int
     task_id: TaskId
@@ -108,7 +108,7 @@ type PreparationAuthorityOperation = (
 
 @dataclass(frozen=True, slots=True)
 class PreparationAuthorityDecision:
-    item: ItemId
+    work_item_id: WorkItemId
     counter_before: int
     counter_after: int
     expected_retained: PreparationLeaseAuthority | None
@@ -119,7 +119,7 @@ class PreparationAuthorityDecision:
 class AttemptLeaseAuthority:
     host_epoch: int
     attempt: AttemptId
-    item: ItemId
+    work_item_id: WorkItemId
     task_id: TaskId
     host_id: HostId
     lease_id: LeaseId
@@ -133,7 +133,7 @@ class AttemptLeaseAuthority:
 class InactiveAttemptAuthority:
     host_epoch: int
     attempt: AttemptId
-    item: ItemId
+    work_item_id: WorkItemId
     task_id: TaskId
     host_id: HostId
     lease_id: LeaseId
@@ -146,7 +146,7 @@ class InactiveAttemptAuthority:
 class AcquireInitialAttemptAuthority:
     host_epoch: int
     attempt: AttemptId
-    item: ItemId
+    work_item_id: WorkItemId
     task_id: TaskId
     host_id: HostId
     lease_id: LeaseId

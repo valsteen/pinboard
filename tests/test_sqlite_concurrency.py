@@ -38,10 +38,10 @@ from pinboard.domain.identifiers import (
     CandidateId,
     CheckpointId,
     HostId,
-    ItemId,
     LeaseId,
     ProposalId,
     TaskId,
+    WorkItemId,
 )
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
 from tests.artifact_support import write_revision
@@ -88,9 +88,7 @@ def _commit_same_rebind(
     assert isinstance(action, decision_models.RebindAttemptAction)
     selected_command = decision_models.RebindAttemptCommand(
         action,
-        work_models.RebindAttemptInput(
-            AttemptId("work-a-1"), "codex/corrected-work-a", "corrected-base", ArtifactRefId(99)
-        ),
+        work_models.RebindAttemptInput("codex/corrected-work-a", "corrected-base", ArtifactRefId(99)),
     )
     decision = expect_success(decide(snapshot, selected_command, SQLITE_NOW))
     assert isinstance(decision, decision_models.TransitionDecision)
@@ -193,19 +191,18 @@ def _commit_same_definition_revision(
     action = next(
         value
         for value in actions
-        if value.kind == decision_models.ActionKind.REVISE_ITEM and value.capability.subject == ItemId("work-a")
+        if value.kind == decision_models.ActionKind.REVISE_ITEM and value.capability.subject == WorkItemId("work-a")
     )
-    assert isinstance(action, decision_models.ReviseItemAction)
-    current = next(value for value in before.lifecycle.definition_revisions if value.item_id == ItemId("work-a"))
+    assert isinstance(action, decision_models.ReviseWorkItemAction)
+    current = next(value for value in before.lifecycle.definition_revisions if value.item_id == WorkItemId("work-a"))
     revised = replace(
         current.definition,
         objective="Commit exactly one concurrent definition revision.",
-        dependencies=(ItemId("intake-work"),),
+        dependencies=(WorkItemId("intake-work"),),
     )
-    selected_command = decision_models.ReviseItemCommand(
+    selected_command = decision_models.ReviseWorkItemCommand(
         action,
-        work_models.ReviseItemDefinitionInput(
-            ItemId("work-a"),
+        work_models.ReviseWorkItemDefinitionInput(
             current.revision,
             current.digest,
             TaskId("concurrent-owner"),
@@ -232,15 +229,15 @@ def _acquire_same_preparation(
 ) -> None:
     store = SQLiteWorkStore(Path(database_path))
     snapshot = project_decision_snapshot(store.validated_snapshot(), SQLITE_NOW)
-    item = snapshot.item(ItemId("work-c"))
-    definition = snapshot.definition(ItemId("work-c"))
+    item = snapshot.work_item(WorkItemId("work-c"))
+    definition = snapshot.definition(WorkItemId("work-c"))
     assert item is not None
     assert definition is not None
     operation = authority_models.AcquireInitialPreparationAuthority(
         snapshot.host_epoch,
-        item.item,
+        item.work_item_id,
         snapshot.revision,
-        snapshot.subject_revision(item.item) or "",
+        snapshot.subject_revision(item.work_item_id) or "",
         definition.revision,
         definition.digest,
         TaskId(f"preparer-{lease_id}"),
@@ -263,15 +260,15 @@ def _race_preparation_and_prerequisite_proposal(
     store = SQLiteWorkStore(Path(database_path))
     if operation_kind == "preparation":
         snapshot = project_decision_snapshot(store.validated_snapshot(), SQLITE_NOW)
-        item = snapshot.item(ItemId("work-c"))
-        definition = snapshot.definition(ItemId("work-c"))
+        item = snapshot.work_item(WorkItemId("work-c"))
+        definition = snapshot.definition(WorkItemId("work-c"))
         assert item is not None
         assert definition is not None
         operation = authority_models.AcquireInitialPreparationAuthority(
             snapshot.host_epoch,
-            item.item,
+            item.work_item_id,
             snapshot.revision,
-            snapshot.subject_revision(item.item) or "",
+            snapshot.subject_revision(item.work_item_id) or "",
             definition.revision,
             definition.digest,
             TaskId("preparer"),
@@ -292,7 +289,7 @@ def _race_preparation_and_prerequisite_proposal(
             "The dependency must be preserved before activation.",
             "Record the prerequisite and relationship.",
             "A task can evaluate it.",
-            work_models.PrerequisiteProposalRelation(ItemId("work-c")),
+            work_models.PrerequisiteProposalRelation(WorkItemId("work-c")),
             "The relationship is current.",
             ("source:local",),
             ("Work C remains ready.",),
@@ -329,7 +326,7 @@ def _activate_same_prepared_item(
         decision_models.AuthorizationKind.PREPARATION,
         authority.generation,
         authority.lease_id,
-        preparations=(authority.item,),
+        preparations=(authority.work_item_id,),
     )
     actions = expect_success(available_actions(snapshot, actor))
     action = next(value for value in actions if value.kind == decision_models.ActionKind.ACTIVATE)
@@ -373,15 +370,17 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         initialize_database(roots, SQLITE_NOW)
         store = SQLiteWorkStore(roots.database_path)
         state = complete_sqlite_state()
-        definition = next(value for value in state.lifecycle.definition_revisions if value.item_id == ItemId("work-c"))
+        definition = next(
+            value for value in state.lifecycle.definition_revisions if value.item_id == WorkItemId("work-c")
+        )
         state = replace(
             state,
             authority=replace(
                 state.authority,
-                preparation_counters=(stored_state.PreparationLeaseCounter(ItemId("work-c"), 1),),
+                preparation_counters=(stored_state.PreparationLeaseCounter(WorkItemId("work-c"), 1),),
                 preparation_generations=(
                     stored_state.PreparationLeaseGeneration(
-                        ItemId("work-c"),
+                        WorkItemId("work-c"),
                         1,
                         LeaseId("preparation-c"),
                         TaskId("preparer"),
@@ -390,7 +389,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
                 ),
                 preparation_leases=(
                     stored_state.StoredPreparationLease(
-                        ItemId("work-c"),
+                        WorkItemId("work-c"),
                         1,
                         definition.revision,
                         definition.digest,
@@ -523,7 +522,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         current_definition = next(
             value
             for value in state.lifecycle.definition_revisions
-            if value.item_id == ItemId("work-a") and value.revision == 1
+            if value.item_id == WorkItemId("work-a") and value.revision == 1
         )
         revised_definition = replace(current_definition.definition, title="Revised work A")
         revised_digest = expect_success(work_item_definition_digest(revised_definition))
@@ -670,10 +669,10 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         self.assertCountEqual(("committed", "ACTION_NOT_AVAILABLE"), (results.get(), results.get()))
         reloaded = store.validated_snapshot()
         revisions = tuple(
-            value for value in reloaded.lifecycle.definition_revisions if value.item_id == ItemId("work-a")
+            value for value in reloaded.lifecycle.definition_revisions if value.item_id == WorkItemId("work-a")
         )
         self.assertEqual((1, 2), tuple(value.revision for value in revisions))
-        self.assertEqual((ItemId("intake-work"),), revisions[-1].definition.dependencies)
+        self.assertEqual((WorkItemId("intake-work"),), revisions[-1].definition.dependencies)
         self.assertEqual(work_item_definition_digest(revisions[-1].definition), revisions[-1].digest)
         self.assertEqual(before.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
         self.assertEqual(len(before.transition_receipts) + 1, len(reloaded.transition_receipts))

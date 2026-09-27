@@ -21,10 +21,10 @@ from pinboard.domain.identifiers import (
     HistoryId,
     HistorySubjectId,
     HostId,
-    ItemId,
     LeaseId,
     ProposalId,
     TaskId,
+    WorkItemId,
 )
 from tests.decision_support import project_decision_snapshot
 from tests.sqlite_support import insert_initial_state
@@ -68,7 +68,7 @@ SQLITE_DEFINITION = work_models.WorkItemDefinition(
     ("The state becomes explicit.",),
     (),
     ("The next decision can run.",),
-    (ItemId("work-c"),),
+    (WorkItemId("work-c"),),
     "The state becomes explicit.",
     "The next decision can run.",
     work_models.CheckoutPolicy.COORDINATOR_SELECTED,
@@ -86,10 +86,10 @@ def initialize_store(store: SQLiteWorkStore, state: stored_state.StoredWorkState
         insert_initial_state(transaction.connection, state)
 
 
-def test_definition(item: ItemId) -> tuple[work_models.WorkItemDefinition, str]:
-    if item == ItemId("work-a"):
+def test_definition(item: WorkItemId) -> tuple[work_models.WorkItemDefinition, str]:
+    if item == WorkItemId("work-a"):
         definition = SQLITE_DEFINITION
-    elif item == ItemId("zz-proposal-a"):
+    elif item == WorkItemId("zz-proposal-a"):
         definition = work_models.WorkItemDefinition(
             "Proposal A",
             "Record the follow-up.",
@@ -98,7 +98,7 @@ def test_definition(item: ItemId) -> tuple[work_models.WorkItemDefinition, str]:
             ("Record the follow-up.",),
             (),
             ("A later task can assess it.",),
-            (ItemId("work-c"),),
+            (WorkItemId("work-c"),),
             "Record the follow-up.",
             "A later task can assess it.",
             work_models.CheckoutPolicy.COORDINATOR_SELECTED,
@@ -132,8 +132,8 @@ def test_definition(item: ItemId) -> tuple[work_models.WorkItemDefinition, str]:
 
 def with_definition_dependencies(
     state: stored_state.StoredWorkState,
-    item_id: ItemId,
-    dependencies: tuple[ItemId, ...],
+    item_id: WorkItemId,
+    dependencies: tuple[WorkItemId, ...],
 ) -> stored_state.StoredWorkState:
     def revision_number(value: stored_state.ItemDefinitionRevision) -> int:
         return value.revision
@@ -231,7 +231,7 @@ def reject_table_inserts(table_name: str) -> Generator[None]:
 
 
 def _stored_item(
-    item_id: ItemId,
+    item_id: WorkItemId,
     state: stored_state.StoredWorkItemState,
     *,
     outcome_evidence: str | None = None,
@@ -255,11 +255,11 @@ def _stored_item(
 
 
 def complete_sqlite_state() -> stored_state.StoredWorkState:
-    item_a = ItemId("work-a")
-    item_b = ItemId("work-b")
-    item_c = ItemId("work-c")
-    intake_item = ItemId("intake-work")
-    proposal_item = ItemId("zz-proposal-a")
+    item_a = WorkItemId("work-a")
+    item_b = WorkItemId("work-b")
+    item_c = WorkItemId("work-c")
+    intake_item = WorkItemId("intake-work")
+    proposal_item = WorkItemId("zz-proposal-a")
     attempt_id = AttemptId("work-a-1")
     attempt_lease_id = LeaseId("attempt-lease-a")
     brief = stored_state.ArtifactReference(

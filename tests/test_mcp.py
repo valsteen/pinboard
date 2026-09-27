@@ -59,7 +59,7 @@ from pinboard.domain.errors import (
     FailureFact,
     RetryDisposition,
 )
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, LeaseId, TaskId, WorkItemId
 from pinboard.mcp import common as mcp_common
 from pinboard.mcp import contract_schemas, contracts
 from pinboard.mcp import execution as mcp_execution
@@ -238,7 +238,7 @@ class McpTransportTest(unittest.TestCase):
                     contract_schemas.validate_result(mcp_server.PARALLEL_PREVIEW_TOOL, result.content)
 
     def test_order_persists_exact_priority_and_truthful_aftermath(self) -> None:  # noqa: PLR0915 - one persisted order/recovery journey
-        with patch("tests.test_mcp.datetime") as seed_clock:
+        with patch(f"{__name__}.datetime") as seed_clock:
             seed_clock.now.return_value = SQLITE_NOW
             temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
@@ -285,8 +285,8 @@ class McpTransportTest(unittest.TestCase):
 
             def commit_then_cancel(
                 selected_store: WorkStore,
-                expected: tuple[ItemId, ...],
-                replacement: tuple[ItemId, ...],
+                expected: tuple[WorkItemId, ...],
+                replacement: tuple[WorkItemId, ...],
                 task_id: TaskId,
                 host_id: HostId,
                 now: datetime,
@@ -396,7 +396,7 @@ class McpTransportTest(unittest.TestCase):
             self.assertTrue((roots.work_root / "views/history" / f"{view.history_id}.md").is_file())
 
     def test_parallel_preview_keeps_focused_scope_wire_shape_and_fixed_time_exclusions(self) -> None:
-        with patch("tests.test_mcp.datetime") as seed_clock:
+        with patch(f"{__name__}.datetime") as seed_clock:
             seed_clock.now.return_value = SQLITE_NOW
             temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
@@ -481,11 +481,11 @@ class McpTransportTest(unittest.TestCase):
             self.assertEqual(before, store.validated_snapshot())
 
     def test_parallel_preview_preserves_independent_precedence_and_expiry(self) -> None:
-        with patch("tests.test_mcp.datetime") as seed_clock:
+        with patch(f"{__name__}.datetime") as seed_clock:
             seed_clock.now.return_value = SQLITE_NOW
             temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
-        facts = SQLiteWorkStore(roots.database_path).read_parallel_preview((ItemId("work-c"),))
+        facts = SQLiteWorkStore(roots.database_path).read_parallel_preview((WorkItemId("work-c"),))
         assert facts is not None
         ready = facts.items[0]
         live_preparation = query_models.ParallelPreparationFacts(
@@ -503,19 +503,19 @@ class McpTransportTest(unittest.TestCase):
                     ready,
                     state=work_models.WorkState.BLOCKED,
                     preparation=live_preparation,
-                    live_dependencies=(ItemId("work-a"),),
+                    live_dependencies=(WorkItemId("work-a"),),
                 ),
                 query_models.ParallelReasonCode.STATE_NOT_LAUNCHABLE,
             ),
             (
-                replace(ready, preparation=live_preparation, live_dependencies=(ItemId("work-a"),)),
+                replace(ready, preparation=live_preparation, live_dependencies=(WorkItemId("work-a"),)),
                 query_models.ParallelReasonCode.PREPARATION_OWNED,
             ),
             (
                 replace(
                     ready,
                     preparation=replace(live_preparation, expires_at=SQLITE_NOW),
-                    live_dependencies=(ItemId("work-a"),),
+                    live_dependencies=(WorkItemId("work-a"),),
                 ),
                 query_models.ParallelReasonCode.DEPENDENCY_LIVE,
             ),
@@ -565,7 +565,7 @@ class McpTransportTest(unittest.TestCase):
                     )
 
     def test_order_competing_workers_and_empty_board_preserve_receipts(self) -> None:
-        with patch("tests.test_mcp.datetime") as seed_clock:
+        with patch(f"{__name__}.datetime") as seed_clock:
             seed_clock.now.return_value = SQLITE_NOW
             temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
@@ -580,7 +580,7 @@ class McpTransportTest(unittest.TestCase):
         original = mcp_reads.service.decide_order
 
         def controlled_decision(
-            observed: tuple[ItemId, ...], expected: tuple[ItemId, ...], requested: tuple[ItemId, ...]
+            observed: tuple[WorkItemId, ...], expected: tuple[WorkItemId, ...], requested: tuple[WorkItemId, ...]
         ) -> DecisionResult[ordering.OrderChange]:
             if requested == current[::-1]:
                 locked.set()
@@ -825,7 +825,6 @@ class McpTransportTest(unittest.TestCase):
                         },
                         "payload": {
                             "schema": "pinboard-item-revision/v1",
-                            "item_id": "work-c",
                             "expected_revision": current["definition_revision"],
                             "expected_digest": current["definition_digest"],
                             "source_task": "revision-owner",
@@ -837,7 +836,7 @@ class McpTransportTest(unittest.TestCase):
                 self.assertEqual("committed", revised["status"])
                 current = await call(mcp_server.ITEM_DEFINITION_TOOL, {"operation": "current", "item_id": "work-c"})
             reopened = SQLiteWorkStore(roots.database_path)
-            expected = queries.select_item_definition(reopened, ItemId("work-c"))
+            expected = queries.select_item_definition(reopened, WorkItemId("work-c"))
             self.assertEqual(msgspec.json.decode(msgspec.json.encode(expected)), current)
             first = await call(
                 mcp_server.ITEM_DEFINITION_TOOL,
@@ -871,7 +870,7 @@ class McpTransportTest(unittest.TestCase):
                         msgspec.json.encode(
                             queries.select_item_definition_history(
                                 reopened,
-                                ItemId("work-c"),
+                                WorkItemId("work-c"),
                                 limit=2,
                                 before_revision=cursor,
                             )
@@ -1568,7 +1567,7 @@ class McpTransportTest(unittest.TestCase):
         self.assertFalse(contents[7]["state_changed"])
 
         reopened = SQLiteWorkStore(roots.database_path)
-        preparation = reopened.read_preparation_authority_status(ItemId("work-c"))
+        preparation = reopened.read_preparation_authority_status(WorkItemId("work-c"))
         self.assertIsNotNone(preparation)
         assert preparation is not None
         self.assertEqual("released", preparation.status.value)
@@ -1589,7 +1588,7 @@ class McpTransportTest(unittest.TestCase):
             self.assertNotIn(advisory_kind, encoded_schema)
 
     def test_review_submission_expired_during_publication_preserves_artifact_without_ledger_commit(self) -> None:
-        with patch("tests.test_mcp.datetime") as fixture_clock:
+        with patch(f"{__name__}.datetime") as fixture_clock:
             fixture_clock.now.return_value = SQLITE_NOW
             temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
@@ -1706,7 +1705,7 @@ class McpTransportTest(unittest.TestCase):
 
         def reloaded_state(expected: str) -> stored_state.StoredWorkState:
             snapshot = SQLiteWorkStore(roots.database_path).validated_snapshot()
-            item = next(row for row in snapshot.lifecycle.work_items if row.item_id == ItemId("proposal-1"))
+            item = next(row for row in snapshot.lifecycle.work_items if row.item_id == WorkItemId("proposal-1"))
             self.assertEqual(expected, item.state.value)
             return snapshot
 
@@ -2024,7 +2023,6 @@ class McpTransportTest(unittest.TestCase):
                 "project",
                 {
                     "schema": "pinboard-planned-replacement/v1",
-                    "affected_item": "item-1",
                     "expected_relation_revision": 0,
                     "replacement_item": "item-2",
                     "replacement_cost": "One retained owner.",
@@ -2036,7 +2034,6 @@ class McpTransportTest(unittest.TestCase):
                 "rebind-attempt",
                 "project",
                 {
-                    "attempt": "attempt-1",
                     "branch": "codex/candidate",
                     "base_revision": "base",
                     "brief_artifact_ref_id": 1,
@@ -2049,7 +2046,6 @@ class McpTransportTest(unittest.TestCase):
                 "project",
                 {
                     "schema": "pinboard-replacement-disposition/v1",
-                    "affected_item": "item-1",
                     "relation_revision": 1,
                     "rationale": "Current consumer remains necessary.",
                     "accepted_cost": "One owner.",
@@ -2061,7 +2057,6 @@ class McpTransportTest(unittest.TestCase):
                 "project",
                 {
                     "schema": "pinboard-item-revision/v1",
-                    "item_id": "item-1",
                     "expected_revision": 1,
                     "expected_digest": "a" * 64,
                     "source_task": "coordinator",
@@ -2508,7 +2503,7 @@ class McpTransportTest(unittest.TestCase):
             for operation in ("renew", "release", "revoke"):
                 with (
                     self.subTest(family=family, operation=operation),
-                    patch("tests.test_mcp.datetime") as fixture_clock,
+                    patch(f"{__name__}.datetime") as fixture_clock,
                 ):
                     fixture_clock.now.return_value = SQLITE_NOW
                     temporary, project, roots = self._project()
@@ -2517,7 +2512,7 @@ class McpTransportTest(unittest.TestCase):
                     if family == "preparation":
                         started = authority_operations.start_preparation_authority(
                             store,
-                            item_id=ItemId("work-c"),
+                            work_item_id=WorkItemId("work-c"),
                             task_id=TaskId("preparer"),
                             host_id=HostId("local"),
                             lease_id=LeaseId("preparation-lease"),
@@ -2566,7 +2561,7 @@ class McpTransportTest(unittest.TestCase):
                     latest = (
                         reopened.read_attempt_authority_status(AttemptId("work-a-1"))
                         if family == "attempt"
-                        else reopened.read_preparation_authority_status(ItemId("work-c"))
+                        else reopened.read_preparation_authority_status(WorkItemId("work-c"))
                     )
                     assert latest is not None
                     self.assertEqual(content["authority_status"], latest.status.value)
@@ -2611,7 +2606,7 @@ class McpTransportTest(unittest.TestCase):
 
         started = authority_operations.start_preparation_authority(
             store,
-            item_id=ItemId("work-c"),
+            work_item_id=WorkItemId("work-c"),
             task_id=TaskId("preparer"),
             host_id=HostId("local"),
             lease_id=LeaseId("preparation-lease"),
@@ -2619,13 +2614,13 @@ class McpTransportTest(unittest.TestCase):
             expires_at=now + timedelta(minutes=5),
         )
         self.assertNotIsInstance(started, DecisionFailure)
-        expired_preparation = authority_operations.preparation_authority_status(store, ItemId("work-c"), later)
+        expired_preparation = authority_operations.preparation_authority_status(store, WorkItemId("work-c"), later)
         self.assertIsNotNone(expired_preparation)
         assert expired_preparation is not None
         self.assertEqual("expired", expired_preparation.status.value)
         missing_preparation = authority_operations.release_preparation_authority(
             store,
-            item_id=ItemId("work-b"),
+            work_item_id=WorkItemId("work-b"),
             lease_id=LeaseId("missing-lease"),
             generation=1,
             released_at=now,
@@ -2634,7 +2629,7 @@ class McpTransportTest(unittest.TestCase):
 
     def _expected_bytes(self, roots: DurableRoots, item_id: str) -> bytes:
         projected = queries.project_item_status(
-            SQLiteWorkStore(roots.database_path), ItemId(item_id), datetime.now(UTC)
+            SQLiteWorkStore(roots.database_path), WorkItemId(item_id), datetime.now(UTC)
         )
         if isinstance(projected, DecisionFailure):
             raise AssertionError(projected.message)
@@ -3714,7 +3709,7 @@ class McpTransportTest(unittest.TestCase):
         self.assertIsInstance(content, dict)
         self.assertEqual("committed", content["status"])
         self.assertTrue(content["state_changed"])
-        self.assertIsNotNone(SQLiteWorkStore(roots.database_path).read_item_status(ItemId("proposal-1")))
+        self.assertIsNotNone(SQLiteWorkStore(roots.database_path).read_item_status(WorkItemId("proposal-1")))
         diagnostics = diagnostics_stream.getvalue()
         self.assertIn("classification=committed", diagnostics)
         self.assertIn("commit=", diagnostics)
@@ -4073,7 +4068,7 @@ class McpTransportTest(unittest.TestCase):
 
                 reopened = SQLiteWorkStore(roots.database_path)
                 if operation == mcp_server.PROPOSAL_CREATE_TOOL:
-                    self.assertIsNotNone(reopened.read_item_status(ItemId("proposal-1")))
+                    self.assertIsNotNone(reopened.read_item_status(WorkItemId("proposal-1")))
                 else:
                     reference = reopened.read_artifact_reference(
                         kind=work_models.ArtifactKind.BRIEF,
@@ -4169,7 +4164,7 @@ class McpTransportTest(unittest.TestCase):
         warning_content = content["warning"]
         self.assertIsInstance(warning_content, dict)
         self.assertEqual("Run 'pinboard views rebuild'.", warning_content["recovery"])
-        self.assertIsNotNone(SQLiteWorkStore(roots.database_path).read_item_status(ItemId("proposal-1")))
+        self.assertIsNotNone(SQLiteWorkStore(roots.database_path).read_item_status(WorkItemId("proposal-1")))
 
     def test_server_rejects_an_internal_result_that_violates_its_advertised_contract(self) -> None:
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
@@ -4514,7 +4509,7 @@ class McpTransportTest(unittest.TestCase):
         self.assertEqual(published_content["reference"], repeated_content["reference"])
 
         reopened = SQLiteWorkStore(roots.database_path)
-        status = reopened.read_item_status(ItemId("proposal-1"))
+        status = reopened.read_item_status(WorkItemId("proposal-1"))
         self.assertIsNotNone(status)
         reference_content = published_content["reference"]
         self.assertIsInstance(reference_content, dict)

@@ -16,7 +16,7 @@ from pinboard.application import queries, service, stored_state
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
-from pinboard.domain.identifiers import HostId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import HostId, LeaseId, TaskId, WorkItemId
 from pinboard.mcp import server as mcp_server
 from tests.native_support import call_native_tool
 from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
@@ -37,7 +37,9 @@ class OrderingTest(unittest.TestCase):
         with self.store.write() as transaction:
             self.order = transaction.read_live_order()
 
-    def reorder(self, expected: tuple[ItemId, ...], requested: tuple[ItemId, ...]) -> CommittedEffect | DecisionFailure:
+    def reorder(
+        self, expected: tuple[WorkItemId, ...], requested: tuple[WorkItemId, ...]
+    ) -> CommittedEffect | DecisionFailure:
         return service.reorder(self.store, expected, requested, TaskId("owner"), HostId("local"), SQLITE_NOW)
 
     def native_order(self, order: JsonObject) -> JsonObject:
@@ -105,9 +107,9 @@ class OrderingTest(unittest.TestCase):
     def test_invalid_requests_and_stale_competitors_leave_ledger_unchanged(self) -> None:
         invalid = (
             self.order[:-1],
-            (*self.order, ItemId("unknown")),
+            (*self.order, WorkItemId("unknown")),
             (self.order[0],) * len(self.order),
-            (*self.order[:-1], ItemId("work-b")),
+            (*self.order[:-1], WorkItemId("work-b")),
         )
         for requested in invalid:
             with self.subTest(requested=requested):
@@ -135,11 +137,11 @@ class OrderingTest(unittest.TestCase):
             effect = self.reorder(self.order, self.order)
         self.assertNotIsInstance(effect, DecisionFailure)
         assert not isinstance(effect, DecisionFailure)
-        self.assertEqual((), effect.item_ids)
+        self.assertEqual((), effect.work_item_ids)
         self.assertEqual((), effect.attempt_ids)
 
     def test_blocked_first_unstarted_is_visible_without_granting_eligibility(self) -> None:
-        requested = (ItemId("work-a"), ItemId("zz-proposal-a"), ItemId("work-c"), ItemId("intake-work"))
+        requested = (WorkItemId("work-a"), WorkItemId("zz-proposal-a"), WorkItemId("work-c"), WorkItemId("intake-work"))
         self.assertNotIsInstance(self.reorder(self.order, requested), DecisionFailure)
         overview = call_native_tool(
             mcp_server.OVERVIEW_TOOL,
@@ -161,7 +163,9 @@ class OrderingTest(unittest.TestCase):
         for state in (work_models.AttemptState.PAUSED, work_models.AttemptState.REVIEW):
             snapshot = self.store.read_project_overview(SQLITE_NOW)
             items = tuple(
-                replace(item, state=work_models.WorkState(state.value)) if item.item == ItemId("work-a") else item
+                replace(item, state=work_models.WorkState(state.value))
+                if item.work_item_id == WorkItemId("work-a")
+                else item
                 for item in snapshot.snapshot.items
             )
             attempts = tuple(replace(attempt, state=state) for attempt in snapshot.snapshot.attempts)
@@ -194,7 +198,7 @@ class OrderingTest(unittest.TestCase):
                 self.assertEqual(self.before, self.store.validated_snapshot())
 
     def test_priority_preserves_replacement_and_preparation_conditions(self) -> None:
-        item = ItemId("work-c")
+        item = WorkItemId("work-c")
         requested = (item, *(value for value in self.order if value != item))
         for retained in (False, True):
             with self.subTest(temporarily_retained=retained):
@@ -205,7 +209,7 @@ class OrderingTest(unittest.TestCase):
                 relation = stored_state.StoredPlannedReplacement(
                     item,
                     1,
-                    ItemId("work-a"),
+                    WorkItemId("work-a"),
                     "Duplicate work.",
                     work_models.PlannedReplacementStatus.CURRENT,
                     TaskId("owner"),
@@ -235,7 +239,7 @@ class OrderingTest(unittest.TestCase):
                 self.assertEqual(state.replacements, store.validated_snapshot().replacements)
         prepared = service.start_preparation(
             self.store,
-            item_id=item,
+            work_item_id=item,
             task_id=TaskId("preparer"),
             host_id=HostId("local"),
             lease_id=LeaseId("preparation-order"),

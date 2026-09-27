@@ -29,7 +29,7 @@ from pinboard.application.work_briefs import canonical_work_brief_bytes
 from pinboard.cli.entrypoint import main
 from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.history import work_item_definition_digest
-from pinboard.domain.identifiers import ActionId, AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import ActionId, AttemptId, HostId, LeaseId, TaskId, WorkItemId
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server as mcp_server
 from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
@@ -181,7 +181,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
             replace(
                 template,
                 attempt_id=AttemptId(f"unrelated-{index}"),
-                item_id=ItemId("work-b"),
+                item_id=WorkItemId("work-b"),
                 state=work_models.AttemptState.DONE,
                 branch=f"codex/unrelated-{index}",
             )
@@ -227,7 +227,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         unrelated_count: int = 0,
     ) -> stored_state.StoredWorkState:
         state = self.state_with_unrelated_attempt_authority()
-        item_id = ItemId("work-c")
+        item_id = WorkItemId("work-c")
         original = next(value for value in state.lifecycle.definition_revisions if value.item_id == item_id)
         definitions = state.lifecycle.definition_revisions
         if historical:
@@ -253,7 +253,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         unrelated_items = tuple(
             replace(
                 selected_item,
-                item_id=ItemId(f"unrelated-preparation-{index}"),
+                item_id=WorkItemId(f"unrelated-preparation-{index}"),
                 queue_position=5 + index,
             )
             for index in range(unrelated_count)
@@ -817,7 +817,9 @@ class AuthorityStatusReadTest(unittest.TestCase):
         state = complete_sqlite_state()
         candidate = "working-tree-sha256:" + "0" * 64
         items = tuple(
-            replace(item, state=stored_state.StoredWorkItemState.REVIEW) if item.item_id == ItemId("work-a") else item
+            replace(item, state=stored_state.StoredWorkItemState.REVIEW)
+            if item.item_id == WorkItemId("work-a")
+            else item
             for item in state.lifecycle.work_items
         )
         attempt = replace(
@@ -863,7 +865,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
     def test_terminal_attempt_inspection_stops_before_related_rows_and_artifacts(self) -> None:
         state = self.state_with_unrelated_attempt_authority()
-        selected_item = next(value for value in state.lifecycle.work_items if value.item_id == ItemId("work-a"))
+        selected_item = next(value for value in state.lifecycle.work_items if value.item_id == WorkItemId("work-a"))
         selected_attempt = next(
             value for value in state.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1")
         )
@@ -1129,7 +1131,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 state.lifecycle,
                 work_items=tuple(
                     replace(value, state=stored_state.StoredWorkItemState.BLOCKED)
-                    if value.item_id == ItemId("work-c")
+                    if value.item_id == WorkItemId("work-c")
                     else value
                     for value in state.lifecycle.work_items
                 ),

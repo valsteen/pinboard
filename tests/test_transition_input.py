@@ -13,7 +13,7 @@ from pinboard.application import action_models
 from pinboard.application.actions import encoded_action_input_schema
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CandidateId, ItemId, ProposalId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CandidateId, ProposalId, WorkItemId
 from tests.domain_support import action
 from tests.support import JsonObject, JsonValue
 
@@ -31,7 +31,6 @@ def expect_transition_command(
 def revise_item_payload() -> JsonObject:
     return {
         "schema": "pinboard-item-revision/v1",
-        "item_id": "work-a",
         "expected_revision": 1,
         "expected_digest": "a" * 64,
         "source_task": "owner-task",
@@ -129,13 +128,13 @@ class TransitionInputTest(unittest.TestCase):
                 self.assertIsInstance(rejected, TransitionInputFailure)
 
     def test_current_inputs_decode_exact_models(self) -> None:
-        activation_action = action(decision_models.ActivateAction, ItemId("item-1"))
+        activation_action = action(decision_models.ActivateAction, WorkItemId("item-1"))
         activation = parse_transition_input(activation_action, '{"brief_artifact_ref_id":7}')
         self.assertEqual(
             action_models.ActivateInputPayload(ArtifactRefId(7)),
             activation,
         )
-        resume_action = action(decision_models.ResumeAction, ItemId("item-1"))
+        resume_action = action(decision_models.ResumeAction, WorkItemId("item-1"))
         self.assertEqual(
             decision_models.ResumeCommand(resume_action, work_models.ResumeInput()),
             expect_transition_command(parse_transition_input(resume_action, "{}")),
@@ -148,15 +147,12 @@ class TransitionInputTest(unittest.TestCase):
         self.assertEqual(
             decision_models.RebindAttemptCommand(
                 rebind_action,
-                work_models.RebindAttemptInput(
-                    AttemptId("attempt-1"), "codex/corrected", "correct-base", ArtifactRefId(9)
-                ),
+                work_models.RebindAttemptInput("codex/corrected", "correct-base", ArtifactRefId(9)),
             ),
             expect_transition_command(
                 parse_transition_input(
                     rebind_action,
-                    '{"attempt":"attempt-1","branch":"codex/corrected","base_revision":"correct-base",'
-                    '"brief_artifact_ref_id":9}',
+                    '{"branch":"codex/corrected","base_revision":"correct-base","brief_artifact_ref_id":9}',
                 )
             ),
         )
@@ -186,10 +182,10 @@ class TransitionInputTest(unittest.TestCase):
         )
 
     def test_invalid_closed_choices_report_native_paths(self) -> None:
-        revise = action(decision_models.ReviseItemAction, ItemId("work-a"))
+        revise = action(decision_models.ReviseWorkItemAction, WorkItemId("work-a"))
         cases: tuple[tuple[decision_models.Action, JsonObject], ...] = (
             (
-                action(decision_models.ActivateAction, ItemId("item-1")),
+                action(decision_models.ActivateAction, WorkItemId("item-1")),
                 {
                     "attempt": "bad\nvalue",
                     "branch": "branch",
@@ -221,7 +217,6 @@ class TransitionInputTest(unittest.TestCase):
             (
                 action(decision_models.RebindAttemptAction, AttemptId("attempt-1")),
                 {
-                    "attempt": "attempt-1",
                     "branch": "codex/corrected",
                     "base_revision": "correct-base",
                     "brief_artifact_ref_id": 1,
@@ -231,7 +226,6 @@ class TransitionInputTest(unittest.TestCase):
             (
                 action(decision_models.RebindAttemptAction, AttemptId("attempt-1")),
                 {
-                    "attempt": "attempt-1",
                     "branch": "bad\nbranch",
                     "base_revision": "correct-base",
                     "brief_artifact_ref_id": 1,
@@ -253,7 +247,7 @@ class TransitionInputTest(unittest.TestCase):
                 revise_item_payload_with_definition(dependencies=["Bad Identity"]),
             ),
             (
-                action(decision_models.BlockItemAction, ItemId("work-a")),
+                action(decision_models.BlockWorkItemAction, WorkItemId("work-a")),
                 {"reason": "blocked", "depends_on": ["work-b", "work-b"]},
             ),
         )
@@ -284,37 +278,39 @@ class TransitionInputTest(unittest.TestCase):
                 {"candidate": "candidate", "evidence": "accepted"},
             ),
             (
-                action(decision_models.ActivateAction, ItemId("work-a")),
+                action(decision_models.ActivateAction, WorkItemId("work-a")),
                 {"brief_artifact_ref_id": 1},
             ),
             (
                 action(decision_models.BlockAttemptAction, AttemptId("attempt-1")),
                 {"reason": "blocked", "depends_on": ["work-b"]},
             ),
-            (action(decision_models.BlockItemAction, ItemId("work-a")), {"reason": "blocked", "depends_on": []}),
-            (action(decision_models.CloseAction, ItemId("work-a")), {"outcome": "done", "reason": "complete"}),
+            (
+                action(decision_models.BlockWorkItemAction, WorkItemId("work-a")),
+                {"reason": "blocked", "depends_on": []},
+            ),
+            (action(decision_models.CloseAction, WorkItemId("work-a")), {"outcome": "done", "reason": "complete"}),
             (action(decision_models.CompleteAction, AttemptId("attempt-1")), {"evidence": "complete"}),
             (
-                action(decision_models.DeferAction, ItemId("work-a")),
+                action(decision_models.DeferAction, WorkItemId("work-a")),
                 {"timing": "safe-to-defer", "reopen_condition": "when needed"},
             ),
             (action(decision_models.MergeProposalAction, ProposalId("proposal-1")), {"target": "work-a"}),
             (action(decision_models.PauseAction, AttemptId("attempt-1")), {"reason": "pause"}),
             (action(decision_models.RejectProposalAction, ProposalId("proposal-1")), {"reason": "reject"}),
-            (action(decision_models.ReopenAction, ItemId("work-a")), {"evidence": "reopen"}),
+            (action(decision_models.ReopenAction, WorkItemId("work-a")), {"evidence": "reopen"}),
             (
                 action(decision_models.RebindAttemptAction, AttemptId("attempt-1")),
                 {
-                    "attempt": "attempt-1",
                     "branch": "codex/corrected",
                     "base_revision": "correct-base",
                     "brief_artifact_ref_id": 2,
                 },
             ),
-            (action(decision_models.ResumeAction, ItemId("work-a")), {}),
+            (action(decision_models.ResumeAction, WorkItemId("work-a")), {}),
             (action(decision_models.ReturnForCorrectionAction, AttemptId("attempt-1")), {"reason": "correct"}),
             (
-                action(decision_models.ReviseItemAction, ItemId("work-a")),
+                action(decision_models.ReviseWorkItemAction, WorkItemId("work-a")),
                 revise_item_payload(),
             ),
             (action(decision_models.SubmitReviewAction, AttemptId("attempt-1")), {"candidate": "candidate"}),
@@ -349,13 +345,58 @@ class TransitionInputTest(unittest.TestCase):
         for field, value in repeated_fields:
             with self.subTest(field=field):
                 rejected = parse_transition_input(
-                    action(decision_models.ActivateAction, ItemId("item-1")),
+                    action(decision_models.ActivateAction, WorkItemId("item-1")),
                     json.dumps({"brief_artifact_ref_id": 1, field: value}),
                 )
                 self.assertIsInstance(rejected, TransitionInputFailure)
                 assert isinstance(rejected, TransitionInputFailure)
                 assert rejected.details is not None
                 self.assertEqual(RetryDisposition.CORRECT_INPUT, rejected.details.retry)
+
+    def test_transition_payload_rejects_subject_repeated_from_action(self) -> None:
+        cases: tuple[tuple[decision_models.Action, JsonObject], ...] = (
+            (
+                action(decision_models.RebindAttemptAction, AttemptId("attempt-1")),
+                {
+                    "attempt": "attempt-1",
+                    "branch": "codex/corrected",
+                    "base_revision": "base",
+                    "brief_artifact_ref_id": 1,
+                },
+            ),
+            (
+                action(decision_models.ReviseWorkItemAction, WorkItemId("work-a")),
+                revise_item_payload() | {"item_id": "work-a"},
+            ),
+            (
+                action(decision_models.RecordReplacementAction, WorkItemId("work-a")),
+                {
+                    "schema": "pinboard-planned-replacement/v1",
+                    "affected_item": "work-a",
+                    "expected_relation_revision": 0,
+                    "replacement_item": "work-b",
+                    "replacement_cost": "Replace the old path.",
+                    "status": "current",
+                    "recorded_by": "owner",
+                },
+            ),
+            (
+                action(decision_models.RetainTemporarilyAction, WorkItemId("work-a")),
+                {
+                    "schema": "pinboard-replacement-disposition/v1",
+                    "affected_item": "work-a",
+                    "relation_revision": 1,
+                    "rationale": "Finish current work.",
+                    "accepted_cost": "One review.",
+                    "recorded_by": "owner",
+                },
+            ),
+        )
+        for selected_action, payload in cases:
+            with self.subTest(kind=selected_action.kind):
+                self.assertIsInstance(
+                    parse_transition_input(selected_action, json.dumps(payload)), TransitionInputFailure
+                )
 
 
 if __name__ == "__main__":

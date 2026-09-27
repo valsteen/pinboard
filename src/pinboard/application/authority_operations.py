@@ -15,7 +15,7 @@ from pinboard.domain.errors import (
     DecisionFailureCode,
     DecisionResult,
 )
-from pinboard.domain.identifiers import AttemptId, HostId, ItemId, LeaseId, TaskId
+from pinboard.domain.identifiers import AttemptId, HostId, LeaseId, TaskId, WorkItemId
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,9 +44,9 @@ def attempt_authority_status(
 
 
 def preparation_authority_status(
-    store: ports.WorkStore, item_id: ItemId, observed_at: datetime
+    store: ports.WorkStore, work_item_id: WorkItemId, observed_at: datetime
 ) -> query_models.PreparationAuthorityStatus | None:
-    retained = store.read_preparation_authority_status(item_id)
+    retained = store.read_preparation_authority_status(work_item_id)
     if (
         retained is not None
         and retained.status == authority_models.PreparationLeaseStatus.ACTIVE
@@ -176,12 +176,12 @@ def revoke_attempt_authority(
 
 def _committed_preparation_result(
     store: ports.WorkStore,
-    item_id: ItemId,
+    work_item_id: WorkItemId,
     result: DecisionResult[CommittedEffect],
 ) -> DecisionResult[PreparationAuthorityMutationResult]:
     if isinstance(result, DecisionFailure):
         return result
-    retained = store.read_preparation_authority_status(item_id)
+    retained = store.read_preparation_authority_status(work_item_id)
     if retained is None:
         raise RuntimeError("Committed preparation authority did not reload.")
     return PreparationAuthorityMutationResult(result, retained)
@@ -190,7 +190,7 @@ def _committed_preparation_result(
 def start_preparation_authority(
     store: ports.WorkStore,
     *,
-    item_id: ItemId,
+    work_item_id: WorkItemId,
     task_id: TaskId,
     host_id: HostId,
     lease_id: LeaseId,
@@ -199,7 +199,7 @@ def start_preparation_authority(
 ) -> DecisionResult[PreparationAuthorityMutationResult]:
     result = service.start_preparation(
         store,
-        item_id=item_id,
+        work_item_id=work_item_id,
         task_id=task_id,
         host_id=host_id,
         lease_id=lease_id,
@@ -208,7 +208,7 @@ def start_preparation_authority(
     )
     if isinstance(result, DecisionFailure):
         return result
-    retained = store.read_preparation_authority_status(item_id)
+    retained = store.read_preparation_authority_status(work_item_id)
     if retained is None:
         raise RuntimeError("Committed preparation authority did not reload.")
     return PreparationAuthorityMutationResult(result.effect, retained)
@@ -216,33 +216,33 @@ def start_preparation_authority(
 
 def _supplied_preparation_authority(
     store: ports.WorkStore,
-    item_id: ItemId,
+    work_item_id: WorkItemId,
     lease_id: LeaseId,
     generation: int,
     operation_time: datetime,
 ) -> work_models.PreparationCommandAuthority | None:
     snapshot = store.read_decision_facts(
-        query_models.DecisionScope((item_id,), (), (), (), (), (), (), ()), operation_time
+        query_models.DecisionScope((work_item_id,), (), (), (), (), (), (), ()), operation_time
     ).snapshot
-    current = snapshot.command_preparation_authority(item_id)
+    current = snapshot.command_preparation_authority(work_item_id)
     return None if current is None else replace(current, lease_id=lease_id, generation=generation)
 
 
 def renew_preparation_authority(
     store: ports.WorkStore,
     *,
-    item_id: ItemId,
+    work_item_id: WorkItemId,
     lease_id: LeaseId,
     generation: int,
     renewed_at: datetime,
     expires_at: datetime,
 ) -> DecisionResult[PreparationAuthorityMutationResult]:
-    supplied = _supplied_preparation_authority(store, item_id, lease_id, generation, renewed_at)
+    supplied = _supplied_preparation_authority(store, work_item_id, lease_id, generation, renewed_at)
     if supplied is None:
         return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority is not active.", None)
     return _committed_preparation_result(
         store,
-        item_id,
+        work_item_id,
         service.decide_and_commit_preparation_authority_change(
             store, authority_models.RenewPreparationAuthority(supplied, renewed_at, expires_at)
         ),
@@ -252,17 +252,17 @@ def renew_preparation_authority(
 def release_preparation_authority(
     store: ports.WorkStore,
     *,
-    item_id: ItemId,
+    work_item_id: WorkItemId,
     lease_id: LeaseId,
     generation: int,
     released_at: datetime,
 ) -> DecisionResult[PreparationAuthorityMutationResult]:
-    supplied = _supplied_preparation_authority(store, item_id, lease_id, generation, released_at)
+    supplied = _supplied_preparation_authority(store, work_item_id, lease_id, generation, released_at)
     if supplied is None:
         return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority is not active.", None)
     return _committed_preparation_result(
         store,
-        item_id,
+        work_item_id,
         service.decide_and_commit_preparation_authority_change(
             store, authority_models.ReleasePreparationAuthority(supplied, released_at)
         ),
@@ -272,7 +272,7 @@ def release_preparation_authority(
 def revoke_preparation_authority(
     store: ports.WorkStore,
     *,
-    item_id: ItemId,
+    work_item_id: WorkItemId,
     lease_id: LeaseId,
     generation: int,
     actor_task_id: TaskId,
@@ -280,7 +280,7 @@ def revoke_preparation_authority(
     revoked_at: datetime,
 ) -> DecisionResult[PreparationAuthorityMutationResult]:
     requested = authority_models.RevokePreparationAuthority(
-        item_id,
+        work_item_id,
         lease_id,
         generation,
         actor_task_id,
@@ -289,6 +289,6 @@ def revoke_preparation_authority(
     )
     return _committed_preparation_result(
         store,
-        item_id,
+        work_item_id,
         service.decide_and_commit_preparation_authority_change(store, requested),
     )

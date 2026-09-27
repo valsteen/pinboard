@@ -13,11 +13,11 @@ from pinboard.domain.identifiers import (
     AttemptId,
     CandidateId,
     CheckpointId,
-    ItemId,
     LeaseId,
     LedgerId,
     ProposalId,
     SubjectId,
+    WorkItemId,
 )
 
 
@@ -350,7 +350,7 @@ class AcceptReviewAndContinueAction:
 
 @dataclass(frozen=True, slots=True)
 class ActivateAction:
-    capability: MutationActionCapability[ItemId]
+    capability: MutationActionCapability[WorkItemId]
     kind: ActionKind = field(init=False, default=ActionKind.ACTIVATE)
 
 
@@ -361,8 +361,8 @@ class BlockAttemptAction:
 
 
 @dataclass(frozen=True, slots=True)
-class BlockItemAction:
-    capability: MutationActionCapability[ItemId]
+class BlockWorkItemAction:
+    capability: MutationActionCapability[WorkItemId]
     kind: ActionKind = field(init=False, default=ActionKind.BLOCK_ITEM)
 
 
@@ -374,7 +374,7 @@ class CompleteAction:
 
 @dataclass(frozen=True, slots=True)
 class CloseAction:
-    capability: MutationActionCapability[ItemId]
+    capability: MutationActionCapability[WorkItemId]
     kind: ActionKind = field(init=False, default=ActionKind.CLOSE)
 
 
@@ -386,7 +386,7 @@ class ContinueAction:
 
 @dataclass(frozen=True, slots=True)
 class DeferAction:
-    capability: MutationActionCapability[ItemId]
+    capability: MutationActionCapability[WorkItemId]
     kind: ActionKind = field(init=False, default=ActionKind.DEFER)
 
 
@@ -422,13 +422,13 @@ class RejectProposalAction:
 
 @dataclass(frozen=True, slots=True)
 class ReopenAction:
-    capability: MutationActionCapability[ItemId]
+    capability: MutationActionCapability[WorkItemId]
     kind: ActionKind = field(init=False, default=ActionKind.REOPEN)
 
 
 @dataclass(frozen=True, slots=True)
 class RecordReplacementAction:
-    capability: MutationActionCapability[ItemId]
+    capability: MutationActionCapability[WorkItemId]
     kind: ActionKind = field(init=False, default=ActionKind.RECORD_REPLACEMENT)
 
 
@@ -446,7 +446,7 @@ class ReportBlockerAction:
 
 @dataclass(frozen=True, slots=True)
 class ResumeAction:
-    capability: MutationActionCapability[ItemId]
+    capability: MutationActionCapability[WorkItemId]
     kind: ActionKind = field(init=False, default=ActionKind.RESUME)
 
 
@@ -458,13 +458,13 @@ class ReturnForCorrectionAction:
 
 @dataclass(frozen=True, slots=True)
 class RetainTemporarilyAction:
-    capability: MutationActionCapability[ItemId]
+    capability: MutationActionCapability[WorkItemId]
     kind: ActionKind = field(init=False, default=ActionKind.RETAIN_TEMPORARILY)
 
 
 @dataclass(frozen=True, slots=True)
-class ReviseItemAction:
-    capability: MutationActionCapability[ItemId]
+class ReviseWorkItemAction:
+    capability: MutationActionCapability[WorkItemId]
     kind: ActionKind = field(init=False, default=ActionKind.REVISE_ITEM)
 
 
@@ -479,7 +479,7 @@ type LifecycleAction = (
     | AcceptReviewAndContinueAction
     | ActivateAction
     | BlockAttemptAction
-    | BlockItemAction
+    | BlockWorkItemAction
     | CompleteAction
     | CloseAction
     | DeferAction
@@ -492,7 +492,7 @@ type LifecycleAction = (
     | ResumeAction
     | ReturnForCorrectionAction
     | RetainTemporarilyAction
-    | ReviseItemAction
+    | ReviseWorkItemAction
     | SubmitReviewAction
 )
 type TransitionAction = LifecycleAction
@@ -500,7 +500,7 @@ type NonCheckpointTransitionAction = (
     AcceptReviewAndContinueAction
     | ActivateAction
     | BlockAttemptAction
-    | BlockItemAction
+    | BlockWorkItemAction
     | CompleteAction
     | CloseAction
     | DeferAction
@@ -513,7 +513,7 @@ type NonCheckpointTransitionAction = (
     | ResumeAction
     | ReturnForCorrectionAction
     | RetainTemporarilyAction
-    | ReviseItemAction
+    | ReviseWorkItemAction
     | SubmitReviewAction
 )
 type Action = TransitionAction | ContinueAction | DispatchAction | InspectAction | ReportBlockerAction
@@ -611,8 +611,8 @@ class RecordReplacementCommand:
 
 
 @dataclass(frozen=True, slots=True)
-class BlockItemCommand:
-    action: BlockItemAction
+class BlockWorkItemCommand:
+    action: BlockWorkItemAction
     value: work_models.BlockInput
 
 
@@ -635,9 +635,9 @@ class RetainTemporarilyCommand:
 
 
 @dataclass(frozen=True, slots=True)
-class ReviseItemCommand:
-    action: ReviseItemAction
-    value: work_models.ReviseItemDefinitionInput
+class ReviseWorkItemCommand:
+    action: ReviseWorkItemAction
+    value: work_models.ReviseWorkItemDefinitionInput
 
 
 @dataclass(frozen=True, slots=True)
@@ -660,11 +660,11 @@ type TransitionCommand = (
     | ReturnForCorrectionCommand
     | ReopenCommand
     | RecordReplacementCommand
-    | BlockItemCommand
+    | BlockWorkItemCommand
     | DeferCommand
     | MergeProposalCommand
     | RetainTemporarilyCommand
-    | ReviseItemCommand
+    | ReviseWorkItemCommand
     | RejectProposalCommand
     | CoveredCompleteCommand
 )
@@ -681,11 +681,11 @@ type NonCheckpointTransitionCommand = (
     | ReturnForCorrectionCommand
     | ReopenCommand
     | RecordReplacementCommand
-    | BlockItemCommand
+    | BlockWorkItemCommand
     | DeferCommand
     | MergeProposalCommand
     | RetainTemporarilyCommand
-    | ReviseItemCommand
+    | ReviseWorkItemCommand
     | RejectProposalCommand
 )
 
@@ -697,7 +697,7 @@ class ActorAuthority:
     generation: int
     lease_id: LeaseId | None = None
     attempts: tuple[AttemptId, ...] = ()
-    preparations: tuple[ItemId, ...] = ()
+    preparations: tuple[WorkItemId, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -707,22 +707,22 @@ class ObserverActorAuthority:
     generation: int = 0
     lease_id: None = None
     attempts: tuple[AttemptId, ...] = ()
-    preparations: tuple[ItemId, ...] = ()
+    preparations: tuple[WorkItemId, ...] = ()
 
 
 type ActionActorAuthority = ActorAuthority | ObserverActorAuthority
 
 
 @dataclass(frozen=True, slots=True)
-class ItemStateChange:
-    item: ItemId
+class WorkItemStateChange:
+    work_item_id: WorkItemId
     before: work_models.WorkState
     after: work_models.WorkState
 
 
 @dataclass(frozen=True, slots=True)
 class ActivationChange:
-    item: ItemId
+    work_item_id: WorkItemId
     item_before: work_models.WorkState
     attempt: AttemptId
     brief_artifact_ref_id: ArtifactRefId
@@ -733,7 +733,7 @@ class ActivationChange:
 
 @dataclass(frozen=True, slots=True)
 class AttemptStateChange:
-    item: ItemId
+    work_item_id: WorkItemId
     item_before: work_models.WorkState
     item_after: work_models.WorkState
     attempt: AttemptId
@@ -743,18 +743,18 @@ class AttemptStateChange:
 
 @dataclass(frozen=True, slots=True)
 class BlockAttemptChange:
-    item: ItemId
+    work_item_id: WorkItemId
     item_before: work_models.WorkState
     attempt: AttemptId
     attempt_before: work_models.AttemptState
-    dependencies_after: tuple[ItemId, ...]
+    dependencies_after: tuple[WorkItemId, ...]
 
 
 @dataclass(frozen=True, slots=True)
-class BlockItemChange:
-    item: ItemId
+class BlockWorkItemChange:
+    work_item_id: WorkItemId
     item_before: work_models.WorkState
-    dependencies_after: tuple[ItemId, ...]
+    dependencies_after: tuple[WorkItemId, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -766,7 +766,7 @@ class RevisedAttemptBrief:
 
 @dataclass(frozen=True, slots=True)
 class ResumeAttemptChange:
-    item: ItemId
+    work_item_id: WorkItemId
     item_before: work_models.WorkState
     attempt: AttemptId
     attempt_before: work_models.AttemptState
@@ -775,7 +775,7 @@ class ResumeAttemptChange:
 
 @dataclass(frozen=True, slots=True)
 class RebindAttemptChange:
-    item: ItemId
+    work_item_id: WorkItemId
     attempt: AttemptId
     attempt_state: work_models.AttemptState
     branch: str
@@ -788,7 +788,7 @@ class RebindAttemptChange:
 
 @dataclass(frozen=True, slots=True)
 class ReviewSubmissionChange:
-    item: ItemId
+    work_item_id: WorkItemId
     attempt: AttemptId
     protected_candidate_after: CandidateId
     candidate_observed_at: datetime
@@ -796,7 +796,7 @@ class ReviewSubmissionChange:
 
 @dataclass(frozen=True, slots=True)
 class ReviewReturnChange:
-    item: ItemId
+    work_item_id: WorkItemId
     attempt: AttemptId
     candidate: CandidateId
     authority_change: AttemptAuthorityChange
@@ -804,7 +804,7 @@ class ReviewReturnChange:
 
 @dataclass(frozen=True, slots=True)
 class ReviewAcceptanceChange:
-    item: ItemId
+    work_item_id: WorkItemId
     attempt: AttemptId
     candidate: CandidateId
     authority_change: AttemptAuthorityChange
@@ -812,7 +812,7 @@ class ReviewAcceptanceChange:
 
 @dataclass(frozen=True, slots=True)
 class CompletionChange:
-    item: ItemId
+    work_item_id: WorkItemId
     item_before: work_models.WorkState
     attempt: AttemptId
     attempt_before: work_models.AttemptState
@@ -822,7 +822,7 @@ class CompletionChange:
 
 @dataclass(frozen=True, slots=True)
 class CoveredCompletionChange:
-    item: ItemId
+    work_item_id: WorkItemId
     attempt: AttemptId
     candidate: CandidateId
     evidence: str
@@ -830,8 +830,8 @@ class CoveredCompletionChange:
 
 
 @dataclass(frozen=True, slots=True)
-class ItemClosureChange:
-    item: ItemId
+class WorkItemClosureChange:
+    work_item_id: WorkItemId
     item_before: work_models.WorkState
     terminal_state: work_models.CloseOutcome
     evidence: str
@@ -840,7 +840,7 @@ class ItemClosureChange:
 @dataclass(frozen=True, slots=True)
 class MergedProposalChange:
     proposal: ProposalId
-    target_item: ItemId
+    target_item: WorkItemId
     disposed_at: datetime
     item_before: work_models.WorkState
 
@@ -871,7 +871,7 @@ class AttemptAuthorityChange:
 
 @dataclass(frozen=True, slots=True)
 class CheckpointAcceptanceChange:
-    item: ItemId
+    work_item_id: WorkItemId
     checkpoint: CheckpointId
     attempt: AttemptId
     candidate: CandidateId
@@ -881,25 +881,25 @@ class CheckpointAcceptanceChange:
 @dataclass(frozen=True, slots=True)
 class TransitionReceipt:
     action_id: ActionId
-    item: ItemId | None
+    work_item_id: WorkItemId | None
     outcome: str
     evidence: str | None
     decided_at: datetime
 
 
 type NonCheckpointDecisionChange = (
-    ItemStateChange
+    WorkItemStateChange
     | ActivationChange
     | AttemptStateChange
     | BlockAttemptChange
-    | BlockItemChange
+    | BlockWorkItemChange
     | RebindAttemptChange
     | ResumeAttemptChange
     | ReviewSubmissionChange
     | ReviewReturnChange
     | ReviewAcceptanceChange
     | CompletionChange
-    | ItemClosureChange
+    | WorkItemClosureChange
     | MergedProposalChange
     | RejectedProposalChange
     | PlannedReplacementChange

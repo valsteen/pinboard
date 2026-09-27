@@ -19,10 +19,10 @@ from pinboard.domain.identifiers import (
     CandidateId,
     HistoryId,
     HostId,
-    ItemId,
     LeaseId,
     ProposalId,
     TaskId,
+    WorkItemId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
 
@@ -33,7 +33,7 @@ class _ProjectRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class _ItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    item_id: ItemId
+    item_id: WorkItemId
     state: stored_state.StoredWorkItemState
     timing: work_models.Timing | None
     source: str | None
@@ -46,7 +46,7 @@ class _ItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class _AttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: AttemptId
-    item_id: ItemId
+    item_id: WorkItemId
     state: work_models.AttemptState
     accepted_scope_revision: int
     accepted_scope_digest: str
@@ -58,7 +58,7 @@ class _AttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class _AttemptLineageRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: AttemptId
-    item_id: ItemId
+    item_id: WorkItemId
     state: work_models.AttemptState
     branch: str
     base_revision: str
@@ -71,12 +71,12 @@ class _AttemptLineageRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True
 
 
 class _DependencyRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    item_id: ItemId
-    dependency_id: ItemId
+    item_id: WorkItemId
+    dependency_id: WorkItemId
 
 
 class _ItemIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    item_id: ItemId
+    item_id: WorkItemId
 
 
 class _HistoryIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -96,7 +96,7 @@ class _ProposalRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     trigger: str
     why_it_matters: str
     relation_kind: work_models.ProposalRelationKind
-    relation_item_id: ItemId | None
+    relation_item_id: WorkItemId | None
     relation_replacement_cost: str | None
     effect: str
     unlock: str
@@ -111,7 +111,7 @@ class _ProposalTextRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class _AttemptLeaseRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: AttemptId
-    item_id: ItemId
+    item_id: WorkItemId
     item_subject_revision: int
     attempt_subject_revision: int
     generation: int
@@ -123,7 +123,7 @@ class _AttemptLeaseRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class _PreparationLeaseRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    item_id: ItemId
+    item_id: WorkItemId
     definition_revision: int
     definition_digest: str
     generation: int
@@ -136,9 +136,9 @@ class _PreparationLeaseRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
 
 
 class _PlannedReplacementRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    affected_item_id: ItemId
+    affected_item_id: WorkItemId
     relation_revision: int
-    replacement_item_id: ItemId
+    replacement_item_id: WorkItemId
     replacement_cost: str
     status: work_models.PlannedReplacementStatus
     recorded_by: TaskId
@@ -146,7 +146,7 @@ class _PlannedReplacementRow(msgspec.Struct, frozen=True, forbid_unknown_fields=
 
 
 class _ReplacementDispositionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    affected_item_id: ItemId
+    affected_item_id: WorkItemId
     relation_revision: int
     rationale: str
     accepted_cost: str
@@ -213,7 +213,7 @@ def _project_attempt_authority(
     )
 
 
-def _read_preparation_lease(connection: sqlite3.Connection, item_id: ItemId) -> _PreparationLeaseRow | None:
+def _read_preparation_lease(connection: sqlite3.Connection, item_id: WorkItemId) -> _PreparationLeaseRow | None:
     row = connection.execute(
         """
         SELECT lease.item_id, lease.definition_revision, lease.definition_digest,
@@ -257,7 +257,7 @@ def _project_preparation_authority(
 
 
 def read_current_replacements(
-    connection: sqlite3.Connection, item_ids: Iterable[ItemId]
+    connection: sqlite3.Connection, item_ids: Iterable[WorkItemId]
 ) -> tuple[tuple[work_models.PlannedReplacement, ...], tuple[work_models.ReplacementDisposition, ...]]:
     selected_ids = tuple(dict.fromkeys(item_ids))
     if not selected_ids:
@@ -363,7 +363,7 @@ def _read_attempt_authorities(
 
 def _read_preparation_authorities(
     connection: sqlite3.Connection,
-    item_ids: Iterable[ItemId],
+    item_ids: Iterable[WorkItemId],
     host_epoch: int,
     now: datetime,
 ) -> tuple[tuple[work_models.PreparationAuthority, ...], tuple[work_models.PreparationCommandAuthority, ...]]:
@@ -382,7 +382,7 @@ def _read_preparation_authorities(
 
 def _work_item_record(
     item: _ItemRow,
-    dependencies: tuple[ItemId, ...],
+    dependencies: tuple[WorkItemId, ...],
     attempt_id: AttemptId | None,
 ) -> work_models.WorkItem:
     state = stored_state.live_work_state(item.state)
@@ -492,7 +492,7 @@ def read_current_snapshot(
             (item.item_id,),
         ).fetchall()
     )
-    dependencies: dict[ItemId, list[ItemId]] = defaultdict(list)
+    dependencies: dict[WorkItemId, list[WorkItemId]] = defaultdict(list)
     for row in dependency_rows:
         dependencies[row.item_id].append(row.dependency_id)
     definitions = tuple(
@@ -606,7 +606,7 @@ def read_current_snapshot(
     )
 
 
-def _read_selected_item(connection: sqlite3.Connection, item_id: ItemId) -> _ItemRow | None:
+def _read_selected_item(connection: sqlite3.Connection, item_id: WorkItemId) -> _ItemRow | None:
     row = connection.execute(
         """
         SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
@@ -618,7 +618,7 @@ def _read_selected_item(connection: sqlite3.Connection, item_id: ItemId) -> _Ite
     return None if row is None else decode_row(row, _ItemRow)
 
 
-def _read_selected_dependencies(connection: sqlite3.Connection, item_id: ItemId) -> tuple[ItemId, ...]:
+def _read_selected_dependencies(connection: sqlite3.Connection, item_id: WorkItemId) -> tuple[WorkItemId, ...]:
     return tuple(
         decode_row(row, _DependencyRow).dependency_id
         for row in connection.execute(
@@ -628,7 +628,9 @@ def _read_selected_dependencies(connection: sqlite3.Connection, item_id: ItemId)
     )
 
 
-def _read_required_definition(connection: sqlite3.Connection, item_id: ItemId) -> stored_state.ItemDefinitionRevision:
+def _read_required_definition(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> stored_state.ItemDefinitionRevision:
     definition = read_current_definition(connection, item_id)
     if definition is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Every selected work item must have a current definition.")
@@ -670,7 +672,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
 
     project = _project(connection)
     attempts: dict[AttemptId, _AttemptLineageRow] = {}
-    primary_item_ids = list(scope.item_ids)
+    primary_item_ids = list(scope.work_item_ids)
     for attempt_id in scope.attempt_ids:
         attempt = _read_selected_attempt(connection, attempt_id)
         if attempt is not None:
@@ -682,18 +684,18 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         proposal = _read_selected_proposal(connection, proposal_id)
         if proposal is not None:
             proposals[proposal.proposal_id] = proposal
-            primary_item_ids.append(ItemId(proposal.proposal_id))
+            primary_item_ids.append(WorkItemId(proposal.proposal_id))
 
-    item_rows: dict[ItemId, _ItemRow] = {}
-    history_items: list[ItemId] = []
-    dependencies: dict[ItemId, list[ItemId]] = defaultdict(list)
-    definitions: dict[ItemId, stored_state.ItemDefinitionRevision] = {}
-    contextual_item_ids: set[ItemId] = set()
-    selected_replacement_item_ids: set[ItemId] = set()
-    dependency_item_ids: set[ItemId] = set()
+    item_rows: dict[WorkItemId, _ItemRow] = {}
+    history_items: list[WorkItemId] = []
+    dependencies: dict[WorkItemId, list[WorkItemId]] = defaultdict(list)
+    definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision] = {}
+    contextual_item_ids: set[WorkItemId] = set()
+    selected_replacement_item_ids: set[WorkItemId] = set()
+    dependency_item_ids: set[WorkItemId] = set()
 
     def read_item(
-        item_id: ItemId,
+        item_id: WorkItemId,
         *,
         include_dependencies: bool,
         include_definition: bool,
@@ -733,7 +735,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         read_item(item_id, include_dependencies=True, include_definition=True, context=True)
 
     pending_closure = list(scope.dependency_closure_roots)
-    visited_closure: set[ItemId] = set()
+    visited_closure: set[WorkItemId] = set()
     while pending_closure:
         item_id = pending_closure.pop()
         if item_id in visited_closure:
@@ -743,7 +745,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         if selected is not None:
             pending_closure.extend(dependencies[item_id])
 
-    related_item_ids = list(scope.related_item_ids)
+    related_item_ids = list(scope.related_work_item_ids)
     for item_id in contextual_item_ids:
         related_item_ids.extend(dependencies[item_id])
     for item_id in scope.live_dependent_roots:

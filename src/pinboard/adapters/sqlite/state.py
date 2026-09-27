@@ -28,8 +28,8 @@ from pinboard.domain.identifiers import (
     HistoryId,
     HistorySubjectId,
     HostId,
-    ItemId,
     TaskId,
+    WorkItemId,
 )
 
 
@@ -167,10 +167,12 @@ def _dependency_identity_position(value: stored_state.ItemDependency) -> tuple[s
 
 def _current_definitions(
     state: stored_state.StoredWorkState,
-    item_ids: set[ItemId],
+    item_ids: set[WorkItemId],
     error_code: StorageErrorCode,
-) -> dict[ItemId, stored_state.ItemDefinitionRevision]:
-    definitions_by_item: dict[ItemId, list[stored_state.ItemDefinitionRevision]] = {item_id: [] for item_id in item_ids}
+) -> dict[WorkItemId, stored_state.ItemDefinitionRevision]:
+    definitions_by_item: dict[WorkItemId, list[stored_state.ItemDefinitionRevision]] = {
+        item_id: [] for item_id in item_ids
+    }
     for value in state.lifecycle.definition_revisions:
         if value.item_id not in definitions_by_item:
             raise StorageError(error_code, "Definition history names an unknown work item.")
@@ -178,7 +180,7 @@ def _current_definitions(
         digest = work_item_definition_digest(value.definition)
         if not isinstance(digest, str) or digest != value.digest or value.after_digest != value.digest:
             raise StorageError(error_code, "Definition history digest does not match its canonical definition.")
-    current_definitions: dict[ItemId, stored_state.ItemDefinitionRevision] = {}
+    current_definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision] = {}
     for item_id, revisions in definitions_by_item.items():
         ordered = sorted(revisions, key=_definition_revision_number)
         if [value.revision for value in ordered] != list(range(1, len(ordered) + 1)) or not ordered:
@@ -193,11 +195,11 @@ def _current_definitions(
 
 def _validate_dependencies(
     state: stored_state.StoredWorkState,
-    item_ids: set[ItemId],
-    current_definitions: dict[ItemId, stored_state.ItemDefinitionRevision],
+    item_ids: set[WorkItemId],
+    current_definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision],
     error_code: StorageErrorCode,
 ) -> None:
-    dependency_groups: dict[ItemId, list[ItemId]] = {item_id: [] for item_id in item_ids}
+    dependency_groups: dict[WorkItemId, list[WorkItemId]] = {item_id: [] for item_id in item_ids}
     for value in sorted(state.lifecycle.dependencies, key=_dependency_identity_position):
         if value.item_id not in item_ids or value.dependency_id not in item_ids:
             raise StorageError(error_code, "A dependency names an unknown work item.")
@@ -209,7 +211,7 @@ def _validate_dependencies(
         raise StorageError(error_code, "Current definition dependencies do not match relational dependencies.")
     for item_id in item_ids:
         pending = list(dependency_groups[item_id])
-        visited: set[ItemId] = set()
+        visited: set[WorkItemId] = set()
         while pending:
             dependency = pending.pop()
             if dependency == item_id:
@@ -225,21 +227,21 @@ def _replacement_revision(value: stored_state.StoredPlannedReplacement) -> int:
 
 def _validate_replacements(
     records: stored_state.ReplacementRecords,
-    item_ids: set[ItemId],
+    item_ids: set[WorkItemId],
     error_code: StorageErrorCode,
 ) -> None:
-    replacements_by_item: dict[ItemId, list[stored_state.StoredPlannedReplacement]] = {}
+    replacements_by_item: dict[WorkItemId, list[stored_state.StoredPlannedReplacement]] = {}
     for replacement in records.planned_replacements:
         if replacement.affected_item_id not in item_ids or replacement.replacement_item_id not in item_ids:
             raise StorageError(error_code, "A planned replacement names an unknown work item.")
         replacements_by_item.setdefault(replacement.affected_item_id, []).append(replacement)
-    indexed_replacements: dict[tuple[ItemId, int], stored_state.StoredPlannedReplacement] = {}
+    indexed_replacements: dict[tuple[WorkItemId, int], stored_state.StoredPlannedReplacement] = {}
     for affected_item, replacements in replacements_by_item.items():
         ordered = sorted(replacements, key=_replacement_revision)
         if [value.relation_revision for value in ordered] != list(range(1, len(ordered) + 1)):
             raise StorageError(error_code, "Planned replacement revisions must be contiguous from revision 1.")
         indexed_replacements.update(((affected_item, value.relation_revision), value) for value in ordered)
-    disposition_keys: set[tuple[ItemId, int]] = set()
+    disposition_keys: set[tuple[WorkItemId, int]] = set()
     for disposition in records.dispositions:
         key = (disposition.affected_item_id, disposition.relation_revision)
         replacement = indexed_replacements.get(key)

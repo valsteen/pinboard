@@ -83,7 +83,7 @@ class SQLiteValidationTest(unittest.TestCase):
                 state.lifecycle,
                 work_items=tuple(
                     replace(value, state=stored_state.StoredWorkItemState.READY)
-                    if value.item_id == work_models.ItemId("work-a")
+                    if value.item_id == work_models.WorkItemId("work-a")
                     else value
                     for value in state.lifecycle.work_items
                 ),

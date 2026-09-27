@@ -16,7 +16,7 @@ from pinboard.application.mutation_models import (
 from pinboard.application.project_export import ProjectExportState
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionResult
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, ItemId, LeaseId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, LeaseId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
@@ -44,15 +44,17 @@ class WorkTransaction(Protocol):
 
     def read_live_item_count(self) -> int: ...
 
-    def read_live_order(self) -> tuple[ItemId, ...]: ...
+    def read_live_order(self) -> tuple[WorkItemId, ...]: ...
 
     def read_attempt_authority_status(self, attempt_id: AttemptId) -> query_models.AttemptAuthorityStatus | None: ...
 
-    def read_preparation_authority_status(self, item_id: ItemId) -> query_models.PreparationAuthorityStatus | None: ...
+    def read_preparation_authority_status(
+        self, work_item_id: WorkItemId
+    ) -> query_models.PreparationAuthorityStatus | None: ...
 
     def read_attempt_generation(self, attempt_id: AttemptId) -> int: ...
 
-    def read_preparation_generation(self, item_id: ItemId) -> int: ...
+    def read_preparation_generation(self, work_item_id: WorkItemId) -> int: ...
 
     def commit(self, mutation: StoredStateMutation) -> DecisionResult[CommittedEffect]: ...
 
@@ -102,17 +104,21 @@ class WorkStore(Protocol):
 
     def read_attempt_authority_status(self, attempt_id: AttemptId) -> query_models.AttemptAuthorityStatus | None: ...
 
-    def read_preparation_authority_status(self, item_id: ItemId) -> query_models.PreparationAuthorityStatus | None: ...
+    def read_preparation_authority_status(
+        self, work_item_id: WorkItemId
+    ) -> query_models.PreparationAuthorityStatus | None: ...
 
-    def read_item_definition(self, item_id: ItemId) -> query_models.ItemDefinitionFacts: ...
+    def read_item_definition(self, work_item_id: WorkItemId) -> query_models.ItemDefinitionFacts: ...
 
     def read_item_definition_history(
-        self, item_id: ItemId, *, limit: int, before_revision: int | None
+        self, work_item_id: WorkItemId, *, limit: int, before_revision: int | None
     ) -> query_models.ItemDefinitionHistoryFacts: ...
 
-    def read_item_status(self, item_id: ItemId) -> query_models.ItemStatusFacts | None: ...
+    def read_item_status(self, work_item_id: WorkItemId) -> query_models.ItemStatusFacts | None: ...
 
-    def read_parallel_preview(self, item_ids: tuple[ItemId, ...]) -> query_models.ParallelPreviewFacts | None: ...
+    def read_parallel_preview(
+        self, work_item_ids: tuple[WorkItemId, ...]
+    ) -> query_models.ParallelPreviewFacts | None: ...
 
     def read_project_status(self) -> query_models.ProjectStatusFacts: ...
 
@@ -128,7 +134,7 @@ class WorkStore(Protocol):
 
     def read_generated_view_facts(
         self,
-        item_ids: tuple[ItemId, ...],
+        work_item_ids: tuple[WorkItemId, ...],
         attempt_ids: tuple[AttemptId, ...],
         history_ids: tuple[HistoryId, ...],
         now: datetime,
@@ -146,15 +152,15 @@ class ValidatedStateReader(Protocol):
 
 
 class ItemDefinitionReader(Protocol):
-    def read_item_definition(self, item_id: ItemId) -> query_models.ItemDefinitionFacts: ...
+    def read_item_definition(self, work_item_id: WorkItemId) -> query_models.ItemDefinitionFacts: ...
 
     def read_item_definition_history(
-        self, item_id: ItemId, *, limit: int, before_revision: int | None
+        self, work_item_id: WorkItemId, *, limit: int, before_revision: int | None
     ) -> query_models.ItemDefinitionHistoryFacts: ...
 
 
 class ItemStatusReader(Protocol):
-    def read_item_status(self, item_id: ItemId) -> query_models.ItemStatusFacts | None: ...
+    def read_item_status(self, work_item_id: WorkItemId) -> query_models.ItemStatusFacts | None: ...
 
 
 class AttemptContextReader(Protocol):
@@ -173,13 +179,15 @@ class ReviewJobContextReader(Protocol):
 
 
 class ParallelPreviewReader(Protocol):
-    def read_parallel_preview(self, item_ids: tuple[ItemId, ...]) -> query_models.ParallelPreviewFacts | None: ...
+    def read_parallel_preview(
+        self, work_item_ids: tuple[WorkItemId, ...]
+    ) -> query_models.ParallelPreviewFacts | None: ...
 
 
 class GeneratedViewReader(Protocol):
     def read_generated_view_facts(
         self,
-        item_ids: tuple[ItemId, ...],
+        work_item_ids: tuple[WorkItemId, ...],
         attempt_ids: tuple[AttemptId, ...],
         history_ids: tuple[HistoryId, ...],
         now: datetime,

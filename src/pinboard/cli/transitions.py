@@ -15,7 +15,7 @@ from pinboard.cli.cli_output import write_json
 from pinboard.cli.errors import CommandFailure, CommandResult
 from pinboard.domain import decision_models
 from pinboard.domain.errors import DecisionFailure, EffectDisposition, FailureAction, FailureDetails, RetryDisposition
-from pinboard.domain.identifiers import ActionId, ItemId
+from pinboard.domain.identifiers import ActionId, WorkItemId
 
 
 class CloseView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -27,14 +27,14 @@ class CloseView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 def _with_close_alternatives(
     store: ports.WorkStore,
-    item_id: ItemId,
+    item_id: WorkItemId,
     failure: CommandFailure,
 ) -> CommandFailure:
     snapshot = store.read_decision_facts(
         query_models.DecisionScope((item_id,), (), (), (), (), (), (), ()),
         datetime.now(UTC),
     ).snapshot
-    item = snapshot.item(item_id)
+    item = snapshot.work_item(item_id)
     subjects = {item_id} if item is None or item.attempt is None else {item_id, item.attempt}
     current = actions.discover_current_actions(
         snapshot,
@@ -93,7 +93,7 @@ def close(
     if isinstance(selected, DecisionFailure):
         return _with_close_alternatives(
             store,
-            ItemId(command.item_id),
+            WorkItemId(command.item_id),
             CommandFailure(selected.code, selected.message, selected.details),
         )
     selected_action = selected[0]
@@ -115,7 +115,7 @@ def close(
     )
     if isinstance(committed, DecisionFailure):
         return _with_close_alternatives(
-            store, ItemId(command.item_id), CommandFailure(committed.code, committed.message, committed.details)
+            store, WorkItemId(command.item_id), CommandFailure(committed.code, committed.message, committed.details)
         )
     views = work_views.refresh_effect(durable, store, committed, datetime.now(UTC))
     if views.warning is not None:

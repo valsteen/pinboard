@@ -14,10 +14,10 @@ from pinboard.domain.identifiers import (
     CandidateId,
     CheckpointId,
     HistoryId,
-    ItemId,
     LeaseId,
     ProposalId,
     TaskId,
+    WorkItemId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from tests.domain_support import (
@@ -49,9 +49,9 @@ def available_actions(
         subject_revisions=(
             *snapshot.subject_revisions,
             *(
-                work_models.SubjectRevision(value.item, "1")
+                work_models.SubjectRevision(value.work_item_id, "1")
                 for value in snapshot.items
-                if value.item not in known_subjects
+                if value.work_item_id not in known_subjects
             ),
             *(
                 work_models.SubjectRevision(value.attempt, "1")
@@ -76,7 +76,7 @@ def decide(
 
 def item(item_id: str, state: work_models.WorkState, *, attempt: str | None = None) -> work_models.WorkItem:
     return work_models.WorkItem(
-        ItemId(item_id),
+        WorkItemId(item_id),
         state,
         None,
         (),
@@ -92,10 +92,10 @@ def definition_anchor(
     item_id: str,
     revision: int,
     digest: str,
-    dependencies: tuple[ItemId, ...] = (),
+    dependencies: tuple[WorkItemId, ...] = (),
 ) -> work_models.DefinitionAnchor:
     return work_models.DefinitionAnchor(
-        ItemId(item_id),
+        WorkItemId(item_id),
         revision,
         digest,
         work_models.WorkItemDefinition(
@@ -188,7 +188,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 work_models.WorkState.PAUSED,
                 work_models.AttemptState.PAUSED,
                 DIGEST_A,
-                (ItemId("dependency"),),
+                (WorkItemId("dependency"),),
                 ("revise-item:target", "rebind-attempt:target-1"),
             ),
             (
@@ -204,7 +204,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 work_models.WorkState.BLOCKED,
                 work_models.AttemptState.BLOCKED,
                 DIGEST_A,
-                (ItemId("dependency"),),
+                (WorkItemId("dependency"),),
                 ("revise-item:target",),
             ),
             (
@@ -244,20 +244,20 @@ class LifecycleDecisionTest(unittest.TestCase):
                     attempts=(attempt,),
                     definitions=(current_definition,),
                     subject_revisions=(
-                        work_models.SubjectRevision(ItemId("target"), "1"),
+                        work_models.SubjectRevision(WorkItemId("target"), "1"),
                         work_models.SubjectRevision(AttemptId("target-1"), "1"),
-                        *((work_models.SubjectRevision(ItemId("dependency"), "1"),) if live_dependencies else ()),
+                        *((work_models.SubjectRevision(WorkItemId("dependency"), "1"),) if live_dependencies else ()),
                     ),
                 )
                 global_actions = available_actions(snapshot, actor)
                 selected_global = tuple(
                     decision_models.action_id(action)
                     for action in global_actions
-                    if action.capability.subject in {ItemId("target"), AttemptId("target-1")}
+                    if action.capability.subject in {WorkItemId("target"), AttemptId("target-1")}
                 )
                 groups = project_attempt_action_groups(
                     work_models.ProjectAttemptActionContext(
-                        ItemId("target"),
+                        WorkItemId("target"),
                         "1",
                         item_state,
                         AttemptId("target-1"),
@@ -327,7 +327,9 @@ class LifecycleDecisionTest(unittest.TestCase):
         attempt = AttemptRecord(
             "target-1", "target", work_models.AttemptState.REVIEW, protected_candidate_revision="candidate-a"
         )
-        authority = work_models.AttemptAuthority(AttemptId("target-1"), ItemId("target"), LeaseId("worker-lease"), 3)
+        authority = work_models.AttemptAuthority(
+            AttemptId("target-1"), WorkItemId("target"), LeaseId("worker-lease"), 3
+        )
         snapshot = LedgerSnapshot(
             "revision",
             (review,),
@@ -401,7 +403,9 @@ class LifecycleDecisionTest(unittest.TestCase):
         attempt = AttemptRecord(
             "target-1", "target", work_models.AttemptState.REVIEW, protected_candidate_revision="candidate-a"
         )
-        authority = work_models.AttemptAuthority(AttemptId("target-1"), ItemId("target"), LeaseId("worker-lease"), 3)
+        authority = work_models.AttemptAuthority(
+            AttemptId("target-1"), WorkItemId("target"), LeaseId("worker-lease"), 3
+        )
         snapshot = LedgerSnapshot(
             "revision",
             (review,),
@@ -421,7 +425,9 @@ class LifecycleDecisionTest(unittest.TestCase):
         self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, mismatch.code)
 
     def test_rebind_preserves_active_or_paused_attempt_and_fences_authority(self) -> None:
-        authority = work_models.AttemptAuthority(AttemptId("target-1"), ItemId("target"), LeaseId("worker-lease"), 3)
+        authority = work_models.AttemptAuthority(
+            AttemptId("target-1"), WorkItemId("target"), LeaseId("worker-lease"), 3
+        )
         definition = definition_anchor("target", 1, DIGEST_A)
         brief = work_models.ArtifactRecord(ArtifactRefId(7), work_models.ArtifactKind.BRIEF)
 
@@ -454,9 +460,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     snapshot,
                     decision_models.RebindAttemptCommand(
                         selected,
-                        work_models.RebindAttemptInput(
-                            AttemptId("target-1"), "codex/corrected", "correct-base", ArtifactRefId(7)
-                        ),
+                        work_models.RebindAttemptInput("codex/corrected", "correct-base", ArtifactRefId(7)),
                     ),
                     NOW,
                 )
@@ -471,7 +475,9 @@ class LifecycleDecisionTest(unittest.TestCase):
                 self.assertIsNone(accepted.change.authority_change.after.lease_id)
 
     def test_definition_stale_active_or_paused_attempt_advertises_rebind_to_current_scope(self) -> None:
-        authority = work_models.AttemptAuthority(AttemptId("target-1"), ItemId("target"), LeaseId("worker-lease"), 3)
+        authority = work_models.AttemptAuthority(
+            AttemptId("target-1"), WorkItemId("target"), LeaseId("worker-lease"), 3
+        )
         brief = work_models.ArtifactRecord(ArtifactRefId(7), work_models.ArtifactKind.BRIEF)
         prerequisite = item("prerequisite", work_models.WorkState.READY)
 
@@ -482,7 +488,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             with self.subTest(state=state):
                 target = replace_dataclass(
                     item("target", state, attempt="target-1"),
-                    depends_on=(ItemId("prerequisite"),),
+                    depends_on=(WorkItemId("prerequisite"),),
                 )
                 snapshot = LedgerSnapshot(
                     "revision",
@@ -511,9 +517,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     snapshot,
                     decision_models.RebindAttemptCommand(
                         selected,
-                        work_models.RebindAttemptInput(
-                            AttemptId("target-1"), "codex/corrected", "correct-base", ArtifactRefId(7)
-                        ),
+                        work_models.RebindAttemptInput("codex/corrected", "correct-base", ArtifactRefId(7)),
                     ),
                     NOW,
                 )
@@ -528,10 +532,10 @@ class LifecycleDecisionTest(unittest.TestCase):
     def test_rebind_rejects_unsupported_attempts_and_requires_exact_authority(self) -> None:
         definition = definition_anchor("target", 1, DIGEST_A)
         brief = work_models.ArtifactRecord(ArtifactRefId(7), work_models.ArtifactKind.BRIEF)
-        authority = work_models.AttemptAuthority(AttemptId("target-1"), ItemId("target"), LeaseId("lease"), 2)
+        authority = work_models.AttemptAuthority(AttemptId("target-1"), WorkItemId("target"), LeaseId("lease"), 2)
         command = decision_models.RebindAttemptCommand(
             action(decision_models.RebindAttemptAction, AttemptId("target-1")),
-            work_models.RebindAttemptInput(AttemptId("target-1"), "codex/corrected", "correct-base", ArtifactRefId(7)),
+            work_models.RebindAttemptInput("codex/corrected", "correct-base", ArtifactRefId(7)),
         )
         cases = (
             (
@@ -597,7 +601,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 self.assertEqual(expected_code, rejected.code)
 
     def test_paused_current_attempt_with_live_dependency_can_rebind_without_resume(self) -> None:
-        dependency = ItemId("prerequisite")
+        dependency = WorkItemId("prerequisite")
         paused = replace(
             item("target", work_models.WorkState.PAUSED, attempt="target-1"),
             depends_on=(dependency,),
@@ -624,7 +628,7 @@ class LifecycleDecisionTest(unittest.TestCase):
     def test_blocker_actions_expose_distinct_roles_subjects_preconditions_and_effects(self) -> None:
         active = replace(
             item("target", work_models.WorkState.ACTIVE, attempt="target-1"),
-            depends_on=(ItemId("prerequisite"),),
+            depends_on=(WorkItemId("prerequisite"),),
         )
         intake = item("unstarted", work_models.WorkState.READY)
         prerequisite = item("prerequisite", work_models.WorkState.READY)
@@ -632,9 +636,9 @@ class LifecycleDecisionTest(unittest.TestCase):
             "revision",
             (active, intake, prerequisite),
             attempts=(AttemptRecord("target-1", "target", work_models.AttemptState.ACTIVE),),
-            definitions=(definition_anchor("target", 1, DIGEST_A, (ItemId("prerequisite"),)),),
+            definitions=(definition_anchor("target", 1, DIGEST_A, (WorkItemId("prerequisite"),)),),
             attempt_authorities=(
-                work_models.AttemptAuthority(AttemptId("target-1"), ItemId("target"), LeaseId("worker-lease"), 4),
+                work_models.AttemptAuthority(AttemptId("target-1"), WorkItemId("target"), LeaseId("worker-lease"), 4),
             ),
         )
         project = available_actions(
@@ -725,18 +729,18 @@ class LifecycleDecisionTest(unittest.TestCase):
             snapshot,
             decision_models.BlockCommand(
                 block_action,
-                work_models.BlockInput("Waiting for prerequisite.", (ItemId("prerequisite"),)),
+                work_models.BlockInput("Waiting for prerequisite.", (WorkItemId("prerequisite"),)),
             ),
             NOW,
         )
         self.assertIsInstance(blocked.change, decision_models.BlockAttemptChange)
         assert isinstance(blocked.change, decision_models.BlockAttemptChange)
-        self.assertEqual((ItemId("prerequisite"),), blocked.change.dependencies_after)
+        self.assertEqual((WorkItemId("prerequisite"),), blocked.change.dependencies_after)
         rejected_dependency = decision_outcome(
             snapshot,
             decision_models.BlockCommand(
                 block_action,
-                work_models.BlockInput("Waiting for an unaccepted prerequisite.", (ItemId("unstarted"),)),
+                work_models.BlockInput("Waiting for an unaccepted prerequisite.", (WorkItemId("unstarted"),)),
             ),
             NOW,
         )
@@ -834,7 +838,7 @@ class LifecycleDecisionTest(unittest.TestCase):
         closed = decide(
             intake,
             decision_models.CloseCommand(
-                action(decision_models.CloseAction, ItemId("obsolete")),
+                action(decision_models.CloseAction, WorkItemId("obsolete")),
                 work_models.CloseInput(work_models.CloseOutcome.DROPPED, "no longer needed"),
             ),
             NOW,
@@ -945,7 +949,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             (
                 LedgerSnapshot("r", ()),
                 decision_models.ActivateCommand(
-                    action(decision_models.ActivateAction, ItemId("missing")),
+                    action(decision_models.ActivateAction, WorkItemId("missing")),
                     work_models.ActivateInput(AttemptId("missing-1"), "branch", "base", "owner", ArtifactRefId(1)),
                 ),
                 "ITEM_NOT_FOUND",
@@ -953,7 +957,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             (
                 LedgerSnapshot("r", (item("target", work_models.WorkState.READY),)),
                 decision_models.ActivateCommand(
-                    action(decision_models.ActivateAction, ItemId("target")),
+                    action(decision_models.ActivateAction, WorkItemId("target")),
                     work_models.ActivateInput(AttemptId("target-1"), "branch", "base", "owner", ArtifactRefId(1)),
                 ),
                 "ACTION_NOT_AVAILABLE",
@@ -992,7 +996,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 "ITEM_DEFINITION_STALE",
             ),
             (
-                LedgerSnapshot("r", (review,), attempts=(attempt_review,), history_items=(ItemId("target"),)),
+                LedgerSnapshot("r", (review,), attempts=(attempt_review,), history_items=(WorkItemId("target"),)),
                 decision_models.CompleteCommand(
                     action(decision_models.CompleteAction, AttemptId("target-1")), work_models.EvidenceInput("done")
                 ),
@@ -1001,7 +1005,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             (
                 LedgerSnapshot("r", (active,), attempts=(attempt_active,)),
                 decision_models.CloseCommand(
-                    action(decision_models.CloseAction, ItemId("target")),
+                    action(decision_models.CloseAction, WorkItemId("target")),
                     work_models.CloseInput(work_models.CloseOutcome.DONE, "done"),
                 ),
                 "ACTION_NOT_AVAILABLE",
@@ -1011,7 +1015,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "r", (paused,), attempts=(replace(attempt_active, state=work_models.AttemptState.PAUSED),)
                 ),
                 decision_models.CloseCommand(
-                    action(decision_models.CloseAction, ItemId("target")),
+                    action(decision_models.CloseAction, WorkItemId("target")),
                     work_models.CloseInput(work_models.CloseOutcome.DROPPED, "abandon review"),
                 ),
                 "ACTION_NOT_AVAILABLE",
@@ -1021,15 +1025,15 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "r", (ready, replace(item("dependent", work_models.WorkState.READY), depends_on=("target",)))
                 ),
                 decision_models.CloseCommand(
-                    action(decision_models.CloseAction, ItemId("target")),
+                    action(decision_models.CloseAction, WorkItemId("target")),
                     work_models.CloseInput(work_models.CloseOutcome.DROPPED, "obsolete"),
                 ),
                 "LIVE_DEPENDENTS",
             ),
             (
-                LedgerSnapshot("r", (ready,), history_items=(ItemId("target"),)),
+                LedgerSnapshot("r", (ready,), history_items=(WorkItemId("target"),)),
                 decision_models.CloseCommand(
-                    action(decision_models.CloseAction, ItemId("target")),
+                    action(decision_models.CloseAction, WorkItemId("target")),
                     work_models.CloseInput(work_models.CloseOutcome.DONE, "done"),
                 ),
                 "HISTORY_RECORD_EXISTS",
@@ -1037,7 +1041,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             (
                 LedgerSnapshot("r", (ready,)),
                 decision_models.ResumeCommand(
-                    action(decision_models.ResumeAction, ItemId("target")), work_models.ResumeInput()
+                    action(decision_models.ResumeAction, WorkItemId("target")), work_models.ResumeInput()
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),
@@ -1046,7 +1050,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "r", (replace(paused, depends_on=("source",)), item("source", work_models.WorkState.READY))
                 ),
                 decision_models.ResumeCommand(
-                    action(decision_models.ResumeAction, ItemId("target")), work_models.ResumeInput()
+                    action(decision_models.ResumeAction, WorkItemId("target")), work_models.ResumeInput()
                 ),
                 "DEPENDENCY_NOT_SATISFIED",
             ),
@@ -1073,22 +1077,22 @@ class LifecycleDecisionTest(unittest.TestCase):
             ),
             (
                 LedgerSnapshot("r", (active,)),
-                decision_models.BlockItemCommand(
-                    action(decision_models.BlockItemAction, ItemId("target")), work_models.BlockInput("blocked")
+                decision_models.BlockWorkItemCommand(
+                    action(decision_models.BlockWorkItemAction, WorkItemId("target")), work_models.BlockInput("blocked")
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),
             (
                 LedgerSnapshot("r", (item("target", work_models.WorkState.READY),)),
                 decision_models.ReopenCommand(
-                    action(decision_models.ReopenAction, ItemId("target")), work_models.EvidenceInput("reopen")
+                    action(decision_models.ReopenAction, WorkItemId("target")), work_models.EvidenceInput("reopen")
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),
             (
                 LedgerSnapshot("r", (active,)),
                 decision_models.DeferCommand(
-                    action(decision_models.DeferAction, ItemId("target")), DeferInput("safe-to-defer", "later")
+                    action(decision_models.DeferAction, WorkItemId("target")), DeferInput("safe-to-defer", "later")
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),
@@ -1106,7 +1110,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             (
                 decision_models.MergeProposalCommand(
                     action(decision_models.MergeProposalAction, ProposalId("proposal")),
-                    work_models.MergeProposalInput(ItemId("target")),
+                    work_models.MergeProposalInput(WorkItemId("target")),
                 ),
                 "Only a current unstarted proposal can be merged.",
             ),
@@ -1141,7 +1145,9 @@ class LifecycleDecisionTest(unittest.TestCase):
                 self.assertIsInstance(
                     decide(
                         snapshot,
-                        decision_models.MergeProposalCommand(merge, work_models.MergeProposalInput(ItemId("target"))),
+                        decision_models.MergeProposalCommand(
+                            merge, work_models.MergeProposalInput(WorkItemId("target"))
+                        ),
                         NOW,
                     ).change,
                     decision_models.MergedProposalChange,

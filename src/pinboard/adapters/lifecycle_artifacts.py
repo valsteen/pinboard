@@ -220,7 +220,7 @@ def _observe_review_candidate(
         return candidate_snapshots.WorkingTreeCandidateSnapshot(
             "pinboard-candidate-snapshot/v2",
             str(context.attempt_id),
-            str(context.item_id),
+            str(context.work_item_id),
             candidate,
             branch,
             observed.preimage_revision,
@@ -237,7 +237,7 @@ def _observe_review_candidate(
             return candidate_snapshots.CommitCandidateSnapshot(
                 "pinboard-candidate-snapshot/v1",
                 str(context.attempt_id),
-                str(context.item_id),
+                str(context.work_item_id),
                 candidate,
                 branch,
                 context.base_revision,
@@ -368,7 +368,7 @@ def _read_current_attempt_brief(
         brief.accepted_scope.digest,
     ) != (
         str(context.attempt_id),
-        str(context.item_id),
+        str(context.work_item_id),
         context.branch,
         context.base_revision,
         context.accepted_scope_revision,
@@ -635,7 +635,7 @@ def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure v
             reference,
             artifacts.read(reference),
             attempt_id=str(attempt.attempt_id),
-            item_id=str(attempt.item_id),
+            item_id=str(attempt.work_item_id),
         )
         if isinstance(package, work_brief_models.WorkBriefFailure):
             return _unchanged(package.message, candidate=None)

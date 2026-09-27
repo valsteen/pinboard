@@ -1,5 +1,6 @@
 """One supported human-owned PR review through the native boundary and fresh SQLite readers."""
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ import msgspec
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import pr_reviews, queries
 from pinboard.domain.errors import DecisionFailure
@@ -60,7 +62,7 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
                     "colleague",
                     (pr_reviews.Requirement("issue:42", "Expected behavior.", "CLI", "application"),),
                     ("Repository tests",),
-                    "preparer",
+                    "human",
                 ),
                 7,
             )
@@ -147,7 +149,8 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
                 ("Repository tests and architecture rules",),
                 "preparer",
             )
-            started = accepted("start", "brief", brief, 7)
+            self.assertEqual("rejected", action("start", "brief", brief, 7)["status"])
+            started = accepted("start", "brief", brief, 7, "preparer")
             self.assertEqual((), started.rounds)
             self.assertEqual("unverified", started.remote_freshness)
             brief_history_id = started.brief_history_id
@@ -190,6 +193,23 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
                 "preparer",
             )
             self.assertEqual("rejected", self_review["status"])
+            self.assertEqual(
+                "rejected",
+                action(
+                    "review-brief",
+                    "brief_review",
+                    pr_reviews.BriefReview(
+                        "pinboard-pr-review-brief-review/v1",
+                        str(item_id),
+                        brief_history_id,
+                        "brief-reviewer",
+                        "ready",
+                        "Spoofed independent reviewer.",
+                    ),
+                    started.subject_revision,
+                    "preparer",
+                )["status"],
+            )
             approved = accepted(
                 "review-brief",
                 "brief_review",
@@ -214,22 +234,25 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
                 ),
                 approved.subject_revision,
             )
+            first_round = pr_reviews.ReviewRound(
+                "pinboard-pr-review-round/v1",
+                str(item_id),
+                brief_history_id,
+                None,
+                head_one,
+                "harness git fetch",
+                (pr_reviews.Finding("f1", "concern", "The edge case is unclear.", "src/example.py:12"),),
+                ("Hosted checks were not inspected.",),
+                (),
+                "review-agent",
+            )
+            self.assertEqual("rejected", action("round", "round", first_round, observed.subject_revision)["status"])
             first = accepted(
                 "round",
                 "round",
-                pr_reviews.ReviewRound(
-                    "pinboard-pr-review-round/v1",
-                    str(item_id),
-                    brief_history_id,
-                    None,
-                    head_one,
-                    "harness git fetch",
-                    (pr_reviews.Finding("f1", "concern", "The edge case is unclear.", "src/example.py:12"),),
-                    ("Hosted checks were not inspected.",),
-                    (),
-                    "review-agent",
-                ),
+                first_round,
                 observed.subject_revision,
+                "review-agent",
             )
             observed_two = accepted(
                 "observe",
@@ -255,6 +278,7 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
                     "review-agent",
                 ),
                 observed_two.subject_revision,
+                "review-agent",
             )
             head_three = "c" * 40
             newer = accepted(
@@ -350,3 +374,35 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
             self.assertIn(head_one, item_view)
             self.assertIn(head_two, item_view)
             self.assertIn(head_three, item_view)
+
+            connection = sqlite3.connect(roots.database_path)
+            try:
+                second_round_id = second.rounds[-1].history_id
+                close_row = connection.execute(
+                    "SELECT history_id FROM transition_history WHERE subject_id = ? AND action_kind = 'close-pr-review'",
+                    (item_id,),
+                ).fetchone()
+                assert close_row is not None
+                close_id = close_row[0]
+                for history_id, mutation in (
+                    (second_round_id, "$.prior_dispositions[0].disposition"),
+                    (close_id, "$.outcome"),
+                ):
+                    original = connection.execute(
+                        "SELECT input_json FROM transition_history WHERE history_id = ?", (history_id,)
+                    ).fetchone()
+                    assert original is not None
+                    connection.execute(
+                        "UPDATE transition_history SET input_json = json_set(input_json, ?, ?) WHERE history_id = ?",
+                        (mutation, "resolved" if history_id == second_round_id else "accepted", history_id),
+                    )
+                    connection.commit()
+                    with self.assertRaises(StorageError) as raised:
+                        SQLiteWorkStore(roots.database_path).validated_snapshot()
+                    self.assertEqual(StorageErrorCode.INVALID_STATE, raised.exception.code)
+                    connection.execute(
+                        "UPDATE transition_history SET input_json = ? WHERE history_id = ?", (original[0], history_id)
+                    )
+                    connection.commit()
+            finally:
+                connection.close()

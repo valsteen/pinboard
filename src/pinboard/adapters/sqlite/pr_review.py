@@ -213,6 +213,7 @@ def validate_review_history(  # noqa: C901, PLR0912, PLR0915
             previous: tuple[int, pr_reviews.ReviewRound] | None = None
             observation: pr_reviews.HeadObservation | None = None
             closed = False
+            expected_state = stored_state.StoredWorkItemState.REVIEW
             for row in state.evidence:
                 if closed or row.payload.item_id != item_id:
                     raise StorageError(
@@ -269,6 +270,15 @@ def validate_review_history(  # noqa: C901, PLR0912, PLR0915
                         prior = set() if previous is None else {value.finding_id for value in previous[1].findings}
                         if {value.finding_id for value in row.payload.prior_dispositions} != prior:
                             raise StorageError(StorageErrorCode.INVALID_STATE, "Round lost prior finding dispositions.")
+                        carried = {
+                            value.finding_id
+                            for value in row.payload.prior_dispositions
+                            if value.disposition == "carried-forward"
+                        }
+                        if carried != {value.finding_id for value in row.payload.findings if value.finding_id in prior}:
+                            raise StorageError(
+                                StorageErrorCode.INVALID_STATE, "Round finding carry-forward is inconsistent."
+                            )
                         previous = row.history_id, row.payload
                     case pr_reviews.ReviewClose():
                         expected_round = (None, None) if previous is None else (previous[0], previous[1].observed_head)
@@ -297,13 +307,14 @@ def validate_review_history(  # noqa: C901, PLR0912, PLR0915
                         ):
                             raise StorageError(StorageErrorCode.INVALID_STATE, "Closure hides an unreviewed head.")
                         closed = True
+                        expected_state = (
+                            stored_state.StoredWorkItemState.DONE
+                            if row.payload.outcome == "accepted"
+                            else stored_state.StoredWorkItemState.DROPPED
+                        )
                     case _ as unreachable:
                         assert_never(unreachable)
-            if (
-                closed
-                and state.item_state
-                not in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.DROPPED}
-            ) or (not closed and state.item_state != stored_state.StoredWorkItemState.REVIEW):
+            if state.item_state != expected_state:
                 raise StorageError(StorageErrorCode.INVALID_STATE, "Review item state conflicts with its history.")
     except (msgspec.ValidationError, ValueError) as error:
         raise StorageError(StorageErrorCode.INVALID_STATE, f"Stored PR review is invalid: {error}") from error

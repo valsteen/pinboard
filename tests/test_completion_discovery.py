@@ -11,7 +11,6 @@ from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from pinboard.adapters.files.root import read_working_tree_candidate
-from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import actions, query_models
 from pinboard.domain import history
@@ -641,11 +640,9 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
             patch.object(
                 SQLiteWorkStore, "read_project_export_batches", side_effect=AssertionError("project_export read")
             ),
-            patch.object(sqlite_state, "read_history_receipt", wraps=sqlite_state.read_history_receipt) as reads,
         ):
             action = self.project_action(fixture, "complete:work-a-1")
         packages = self.json_array(self.json_object(action["input_contract"])["checkpoint_packages"])
         expected = [history_id, next_id + 100]
         self.assertEqual(expected, [self.json_object(row)["history_id"] for row in packages])
-        self.assertEqual(expected, [int(call.args[1]) for call in reads.call_args_list])
         self.assertEqual(before, (fixture.work / "state.sqlite3").read_bytes())

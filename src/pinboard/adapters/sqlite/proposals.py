@@ -11,7 +11,7 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row
+from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     append_definition_revision,
@@ -251,35 +251,41 @@ def read_pending_proposals(connection: sqlite3.Connection) -> stored_state.Propo
     proposals = _read_proposal_records(connection, pending_only=True)
     evidence = tuple(
         decode_row(row, stored_state.ProposalEvidence)
-        for proposal in proposals
-        for row in connection.execute(
-            "SELECT proposal_id, position, selector FROM proposal_evidence WHERE proposal_id = ? ORDER BY position",
-            (proposal.proposal_id,),
-        ).fetchall()
+        for row in select_by_ids(
+            connection,
+            "SELECT proposal_id, position, selector FROM proposal_evidence WHERE proposal_id IN ({ids}) ORDER BY proposal_id, position",
+            (proposal.proposal_id for proposal in proposals),
+        )
     )
     freshness = tuple(
         decode_row(row, stored_state.ProposalFreshness)
-        for proposal in proposals
-        for row in connection.execute(
-            "SELECT proposal_id, position, assumption FROM proposal_freshness WHERE proposal_id = ? ORDER BY position",
-            (proposal.proposal_id,),
-        ).fetchall()
+        for row in select_by_ids(
+            connection,
+            "SELECT proposal_id, position, assumption FROM proposal_freshness WHERE proposal_id IN ({ids}) ORDER BY proposal_id, position",
+            (proposal.proposal_id for proposal in proposals),
+        )
     )
     return stored_state.ProposalRecords(proposals, evidence, freshness)
 
 
-def read_proposal(connection: sqlite3.Connection, proposal_id: ProposalId) -> stored_state.StoredProposal | None:
-    row = connection.execute(
-        """
-        SELECT proposal_id, created_at, recorded_at, source_task_id, user_label, trigger,
-               why_it_matters, relation_kind, relation_item_id, relation_replacement_cost, effect, unlock, urgency_evidence,
-               disposition, disposition_target_item_id, disposition_reason, subject_revision,
-               disposition_recorded_at
-        FROM proposals WHERE proposal_id = ?
-        """,
-        (proposal_id,),
-    ).fetchone()
-    return None if row is None else decode_row(row, _StoredProposalRow).proposal()
+def read_proposals_by_ids(
+    connection: sqlite3.Connection, proposal_ids: tuple[ProposalId, ...]
+) -> dict[ProposalId, stored_state.StoredProposal]:
+    return {
+        proposal.proposal_id: proposal
+        for proposal in (
+            decode_row(row, _StoredProposalRow).proposal()
+            for row in select_by_ids(
+                connection,
+                """SELECT proposal_id, created_at, recorded_at, source_task_id, user_label, trigger,
+                          why_it_matters, relation_kind, relation_item_id, relation_replacement_cost,
+                          effect, unlock, urgency_evidence, disposition, disposition_target_item_id,
+                          disposition_reason, subject_revision, disposition_recorded_at
+                   FROM proposals WHERE proposal_id IN ({ids})""",
+                proposal_ids,
+            )
+        )
+    }
 
 
 def set_proposal_disposition(

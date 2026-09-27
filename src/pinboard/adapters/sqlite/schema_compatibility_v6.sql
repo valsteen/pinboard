@@ -1,10 +1,10 @@
--- SQLite authority schema version 7.
+-- SQLite authority schema version 6.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE project_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     application TEXT NOT NULL CHECK (application = 'pinboard'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 7),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 6),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
     created_at TEXT NOT NULL,
@@ -276,7 +276,3 @@ CREATE TABLE transition_history (
         REFERENCES artifact_refs(artifact_ref_id, kind),
     CHECK ((artifact_ref_id IS NULL) = (artifact_kind IS NULL))
 ) STRICT;
-
-CREATE INDEX checkpoint_history_by_subject
-ON transition_history(subject_id, history_id)
-WHERE outcome_schema = 'checkpoint-acceptance/v2';

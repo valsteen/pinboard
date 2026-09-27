@@ -76,3 +76,14 @@ class WorkRootMigrationView(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     effect: Literal["committed", "unchanged"]
     retry: Literal["do-not-retry", "safe-to-repeat"]
     changed_surfaces: tuple[str, ...]
+
+
+class SchemaMigrationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-schema-migration/v1"]
+    status: Literal["migrated", "unchanged"]
+    database_path: str
+    authority: Literal["sqlite-v7"]
+    state_changed: bool
+    effect: Literal["committed", "unchanged"]
+    retry: Literal["do-not-retry", "safe-to-repeat"]
+    changed_surfaces: tuple[str, ...]

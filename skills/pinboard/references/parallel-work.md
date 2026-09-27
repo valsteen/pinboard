@@ -12,7 +12,7 @@ Use [the coding-agent runtime adapters](runtime-adapters.md) for native task, su
 
 ## Build the preview
 
-1. Require authority `sqlite-v6`.
+1. Require authority `sqlite-v7`.
 2. Call `pinboard_parallel_preview` with exact roots and `selection: all-safe` inside `request`. This explicit leaf spans current portfolio facts, not proposal bodies or retained history; do not include `item_ids`.
 3. Present the result in two compact groups:
    - **Ready together:** the unambiguous all-safe set.

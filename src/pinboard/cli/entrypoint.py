@@ -23,6 +23,7 @@ from pinboard.cli import (
     cli_output,
     cli_parser,
     project_export,
+    schema_migration,
     tool_contract,
     transitions,
     work_inspection,
@@ -49,7 +50,7 @@ from pinboard.domain.errors import (
 build_parser = cli_parser.build_parser
 
 
-def _dispatch(
+def _dispatch(  # noqa: C901, PLR0912 - keep the installed command routes visible
     invocation: cli_commands.CliInvocation,
     roots: cli_commands.ResolvedRoots | None,
 ) -> CliResult[int]:
@@ -64,6 +65,8 @@ def _dispatch(
     if (root_failure := work_root_migration.require_current_work_root(roots)) is not None:
         return root_failure
     durable = work_state_commands.resolve_durable_layout(roots)
+    if isinstance(invocation.command, cli_commands.MigrateSchemaCommand):
+        return schema_migration.migrate_schema(durable)
     store = work_state_commands.compose_store(durable)
     match invocation.command:
         case cli_commands.ValidateCommand() as command:

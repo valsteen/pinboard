@@ -7,9 +7,12 @@ from datetime import datetime
 
 import msgspec
 
-from pinboard.adapters.sqlite.database import decode_row
+from pinboard.adapters.sqlite.database import decode_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.adapters.sqlite.lifecycle import read_current_definition, validate_current_attempt_relation
+from pinboard.adapters.sqlite.lifecycle import (
+    read_current_definitions,
+    validate_current_attempt_relation,
+)
 from pinboard.adapters.sqlite.proposals import decode_proposal_relation
 from pinboard.application import query_models, stored_state
 from pinboard.domain import authority_models, work_models
@@ -154,6 +157,10 @@ class _ReplacementDispositionRow(msgspec.Struct, frozen=True, forbid_unknown_fie
     recorded_at: datetime
 
 
+def _replacement_item_key(value: _PlannedReplacementRow) -> WorkItemId:
+    return value.affected_item_id
+
+
 def _attempt_row_key(value: _AttemptRow) -> str:
     return str(value.attempt_id)
 
@@ -167,24 +174,6 @@ def _project(connection: sqlite3.Connection) -> _ProjectRow:
     if row is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
     return decode_row(row, _ProjectRow)
-
-
-def _read_attempt_lease(connection: sqlite3.Connection, attempt_id: AttemptId) -> _AttemptLeaseRow | None:
-    row = connection.execute(
-        """
-        SELECT lease.attempt_id, attempt.item_id, item.subject_revision AS item_subject_revision,
-               attempt.subject_revision AS attempt_subject_revision, lease.generation,
-               anchor.lease_id, anchor.task_id, anchor.host_id, lease.expires_at, lease.status
-        FROM attempt_leases AS lease
-        JOIN attempt_lease_generations AS anchor
-          ON anchor.attempt_id = lease.attempt_id AND anchor.generation = lease.generation
-        JOIN attempts AS attempt ON attempt.attempt_id = lease.attempt_id
-        JOIN work_items AS item ON item.item_id = attempt.item_id
-        WHERE lease.attempt_id = ?
-        """,
-        (attempt_id,),
-    ).fetchone()
-    return None if row is None else decode_row(row, _AttemptLeaseRow)
 
 
 def _project_attempt_authority(
@@ -211,22 +200,6 @@ def _project_attempt_authority(
         selected.generation,
         selected.expires_at,
     )
-
-
-def _read_preparation_lease(connection: sqlite3.Connection, item_id: WorkItemId) -> _PreparationLeaseRow | None:
-    row = connection.execute(
-        """
-        SELECT lease.item_id, lease.definition_revision, lease.definition_digest,
-               lease.generation, anchor.lease_id, anchor.task_id, anchor.host_id,
-               lease.acquired_at, lease.expires_at, lease.status
-        FROM preparation_leases AS lease
-        JOIN preparation_lease_generations AS anchor
-          ON anchor.item_id = lease.item_id AND anchor.generation = lease.generation
-        WHERE lease.item_id = ?
-        """,
-        (item_id,),
-    ).fetchone()
-    return None if row is None else decode_row(row, _PreparationLeaseRow)
 
 
 def _project_preparation_authority(
@@ -262,16 +235,18 @@ def read_current_replacements(
     selected_ids = tuple(dict.fromkeys(item_ids))
     if not selected_ids:
         return (), ()
-    placeholders = ", ".join("?" for _ in selected_ids)
     rows = tuple(
-        decode_row(row, _PlannedReplacementRow)
-        for row in connection.execute(
-            f"""
+        sorted(
+            (
+                decode_row(row, _PlannedReplacementRow)
+                for row in select_by_ids(
+                    connection,
+                    """
             SELECT relation.affected_item_id, relation.relation_revision,
                    relation.replacement_item_id, relation.replacement_cost,
                    relation.status, relation.recorded_by, relation.recorded_at
             FROM planned_replacements AS relation
-            WHERE relation.affected_item_id IN ({placeholders})
+            WHERE relation.affected_item_id IN ({ids})
               AND relation.relation_revision = (
                   SELECT MAX(candidate.relation_revision)
                   FROM planned_replacements AS candidate
@@ -279,15 +254,19 @@ def read_current_replacements(
               )
             ORDER BY relation.affected_item_id
             """,
-            selected_ids,
-        ).fetchall()
+                    selected_ids,
+                )
+            ),
+            key=_replacement_item_key,
+        )
     )
     dispositions_by_key = {
         (value.affected_item_id, value.relation_revision): value
         for value in (
             decode_row(row, _ReplacementDispositionRow)
-            for row in connection.execute(
-                f"""
+            for row in select_by_ids(
+                connection,
+                """
                 SELECT disposition.affected_item_id, disposition.relation_revision,
                        disposition.rationale, disposition.accepted_cost,
                        disposition.recorded_by, disposition.recorded_at
@@ -295,7 +274,7 @@ def read_current_replacements(
                 JOIN planned_replacements AS relation
                   ON relation.affected_item_id = disposition.affected_item_id
                  AND relation.relation_revision = disposition.relation_revision
-                WHERE disposition.affected_item_id IN ({placeholders})
+                WHERE disposition.affected_item_id IN ({ids})
                   AND relation.relation_revision = (
                       SELECT MAX(candidate.relation_revision)
                       FROM planned_replacements AS candidate
@@ -304,7 +283,7 @@ def read_current_replacements(
                 ORDER BY disposition.affected_item_id, disposition.relation_revision
                 """,
                 selected_ids,
-            ).fetchall()
+            )
         )
     }
     replacements = tuple(
@@ -348,10 +327,30 @@ def _read_attempt_authorities(
     host_epoch: int,
     now: datetime,
 ) -> tuple[tuple[work_models.AttemptAuthority, ...], tuple[work_models.CommandAttemptAuthority, ...]]:
+    selected_ids = tuple(dict.fromkeys(attempt_ids))
+    leases = {
+        lease.attempt_id: lease
+        for lease in (
+            decode_row(row, _AttemptLeaseRow)
+            for row in select_by_ids(
+                connection,
+                """SELECT lease.attempt_id, attempt.item_id, item.subject_revision AS item_subject_revision,
+                          attempt.subject_revision AS attempt_subject_revision, lease.generation,
+                          anchor.lease_id, anchor.task_id, anchor.host_id, lease.expires_at, lease.status
+                   FROM attempt_leases AS lease
+                   JOIN attempt_lease_generations AS anchor
+                     ON anchor.attempt_id = lease.attempt_id AND anchor.generation = lease.generation
+                   JOIN attempts AS attempt ON attempt.attempt_id = lease.attempt_id
+                   JOIN work_items AS item ON item.item_id = attempt.item_id
+                   WHERE lease.attempt_id IN ({ids})""",
+                selected_ids,
+            )
+        )
+    }
     retained_authorities: list[work_models.AttemptAuthority] = []
     command_authorities: list[work_models.CommandAttemptAuthority] = []
-    for attempt_id in attempt_ids:
-        selected = _read_attempt_lease(connection, attempt_id)
+    for attempt_id in selected_ids:
+        selected = leases.get(attempt_id)
         if selected is None:
             continue
         retained, command = _project_attempt_authority(selected, host_epoch, now)
@@ -367,10 +366,28 @@ def _read_preparation_authorities(
     host_epoch: int,
     now: datetime,
 ) -> tuple[tuple[work_models.PreparationAuthority, ...], tuple[work_models.PreparationCommandAuthority, ...]]:
+    selected_ids = tuple(dict.fromkeys(item_ids))
+    leases = {
+        lease.item_id: lease
+        for lease in (
+            decode_row(row, _PreparationLeaseRow)
+            for row in select_by_ids(
+                connection,
+                """SELECT lease.item_id, lease.definition_revision, lease.definition_digest,
+                          lease.generation, anchor.lease_id, anchor.task_id, anchor.host_id,
+                          lease.acquired_at, lease.expires_at, lease.status
+                   FROM preparation_leases AS lease
+                   JOIN preparation_lease_generations AS anchor
+                     ON anchor.item_id = lease.item_id AND anchor.generation = lease.generation
+                   WHERE lease.item_id IN ({ids})""",
+                selected_ids,
+            )
+        )
+    }
     retained_authorities: list[work_models.PreparationAuthority] = []
     command_authorities: list[work_models.PreparationCommandAuthority] = []
-    for item_id in item_ids:
-        selected = _read_preparation_lease(connection, item_id)
+    for item_id in selected_ids:
+        selected = leases.get(item_id)
         if selected is None:
             continue
         retained, command = _project_preparation_authority(selected, host_epoch, now)
@@ -499,24 +516,17 @@ def read_current_snapshot(
             )
     dependency_rows = tuple(
         decode_row(row, _DependencyRow)
-        for item in item_rows
-        for row in connection.execute(
-            """
-            SELECT item_id, dependency_id FROM item_dependencies
-            WHERE item_id = ? ORDER BY position
-            """,
-            (item.item_id,),
-        ).fetchall()
+        for row in select_by_ids(
+            connection,
+            "SELECT item_id, dependency_id FROM item_dependencies WHERE item_id IN ({ids}) ORDER BY item_id, position",
+            (item.item_id for item in item_rows),
+        )
     )
     dependencies: dict[WorkItemId, list[WorkItemId]] = defaultdict(list)
     for row in dependency_rows:
         dependencies[row.item_id].append(row.dependency_id)
-    definitions = tuple(
-        definition
-        for item in item_rows
-        if (definition := read_current_definition(connection, item.item_id)) is not None
-    )
-    definitions_by_item = {value.item_id: value for value in definitions}
+    definitions_by_item = read_current_definitions(connection, tuple(item.item_id for item in item_rows))
+    definitions = tuple(definitions_by_item[item.item_id] for item in item_rows if item.item_id in definitions_by_item)
     if definitions_by_item.keys() != live_item_ids:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Every current work item must have a current definition.")
     if any(
@@ -528,31 +538,41 @@ def read_current_snapshot(
             "Current definition dependencies do not match relational dependencies.",
         )
 
-    proposal_rows = (
-        tuple(
-            proposal
-            for item in item_rows
-            for item_id in (item.item_id,)
-            if (proposal := _read_selected_proposal(connection, ProposalId(item_id))) is not None
+    selected_proposals = {
+        proposal.proposal_id: proposal
+        for proposal in (
+            decode_row(row, _ProposalRow)
+            for row in select_by_ids(
+                connection,
+                """SELECT proposal_id, created_at, source_task_id, user_label, trigger, why_it_matters,
+                          relation_kind, relation_item_id, relation_replacement_cost, effect, unlock,
+                          urgency_evidence, subject_revision
+                   FROM proposals WHERE proposal_id IN ({ids}) AND disposition IS NULL""",
+                (item.item_id for item in item_rows) if include_proposals else (),
+            )
         )
-        if include_proposals
-        else ()
+    }
+    proposal_rows = tuple(
+        selected_proposals[ProposalId(item.item_id)]
+        for item in item_rows
+        if ProposalId(item.item_id) in selected_proposals
     )
     evidence: dict[ProposalId, list[str]] = defaultdict(list)
     freshness: dict[ProposalId, list[str]] = defaultdict(list)
-    for proposal in proposal_rows:
-        for row in connection.execute(
-            "SELECT proposal_id, selector AS value FROM proposal_evidence WHERE proposal_id = ? ORDER BY position",
-            (proposal.proposal_id,),
-        ).fetchall():
-            selected = decode_row(row, _ProposalTextRow)
-            evidence[selected.proposal_id].append(selected.value)
-        for row in connection.execute(
-            "SELECT proposal_id, assumption AS value FROM proposal_freshness WHERE proposal_id = ? ORDER BY position",
-            (proposal.proposal_id,),
-        ).fetchall():
-            selected = decode_row(row, _ProposalTextRow)
-            freshness[selected.proposal_id].append(selected.value)
+    for row in select_by_ids(
+        connection,
+        "SELECT proposal_id, selector AS value FROM proposal_evidence WHERE proposal_id IN ({ids}) ORDER BY proposal_id, position",
+        (proposal.proposal_id for proposal in proposal_rows),
+    ):
+        selected = decode_row(row, _ProposalTextRow)
+        evidence[selected.proposal_id].append(selected.value)
+    for row in select_by_ids(
+        connection,
+        "SELECT proposal_id, assumption AS value FROM proposal_freshness WHERE proposal_id IN ({ids}) ORDER BY proposal_id, position",
+        (proposal.proposal_id for proposal in proposal_rows),
+    ):
+        selected = decode_row(row, _ProposalTextRow)
+        freshness[selected.proposal_id].append(selected.value)
 
     attempt_authorities: tuple[work_models.AttemptAuthority, ...] = ()
     command_attempt_authorities: tuple[work_models.CommandAttemptAuthority, ...] = ()
@@ -622,63 +642,6 @@ def read_current_snapshot(
     )
 
 
-def _read_selected_item(connection: sqlite3.Connection, item_id: WorkItemId) -> _ItemRow | None:
-    row = connection.execute(
-        """
-        SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
-               subject_revision, queue_position
-        FROM work_items WHERE item_id = ?
-        """,
-        (item_id,),
-    ).fetchone()
-    return None if row is None else decode_row(row, _ItemRow)
-
-
-def _read_selected_dependencies(connection: sqlite3.Connection, item_id: WorkItemId) -> tuple[WorkItemId, ...]:
-    return tuple(
-        decode_row(row, _DependencyRow).dependency_id
-        for row in connection.execute(
-            "SELECT item_id, dependency_id FROM item_dependencies WHERE item_id = ? ORDER BY position",
-            (item_id,),
-        ).fetchall()
-    )
-
-
-def _read_required_definition(
-    connection: sqlite3.Connection, item_id: WorkItemId
-) -> stored_state.ItemDefinitionRevision:
-    definition = read_current_definition(connection, item_id)
-    if definition is None:
-        raise StorageError(StorageErrorCode.INVALID_STATE, "Every selected work item must have a current definition.")
-    return definition
-
-
-def _read_selected_attempt(connection: sqlite3.Connection, attempt_id: AttemptId) -> _AttemptLineageRow | None:
-    row = connection.execute(
-        """
-        SELECT attempt_id, item_id, state, branch, base_revision, accepted_scope_revision,
-               accepted_scope_digest, candidate_revision, brief_artifact_ref_id,
-               result_artifact_ref_id, subject_revision
-        FROM attempts WHERE attempt_id = ?
-        """,
-        (attempt_id,),
-    ).fetchone()
-    return None if row is None else decode_row(row, _AttemptLineageRow)
-
-
-def _read_selected_proposal(connection: sqlite3.Connection, proposal_id: ProposalId) -> _ProposalRow | None:
-    row = connection.execute(
-        """
-        SELECT proposal_id, created_at, source_task_id, user_label, trigger, why_it_matters,
-               relation_kind, relation_item_id, relation_replacement_cost,
-               effect, unlock, urgency_evidence, subject_revision
-        FROM proposals WHERE proposal_id = ? AND disposition IS NULL
-        """,
-        (proposal_id,),
-    ).fetchone()
-    return None if row is None else decode_row(row, _ProposalRow)
-
-
 def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
     connection: sqlite3.Connection,
     scope: query_models.DecisionScope,
@@ -689,18 +652,111 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
     project = _project(connection)
     attempts: dict[AttemptId, _AttemptLineageRow] = {}
     primary_item_ids = list(scope.work_item_ids)
-    for attempt_id in scope.attempt_ids:
-        attempt = _read_selected_attempt(connection, attempt_id)
-        if attempt is not None:
-            attempts[attempt.attempt_id] = attempt
-            primary_item_ids.append(attempt.item_id)
+    for row in select_by_ids(
+        connection,
+        """SELECT attempt_id, item_id, state, branch, base_revision, accepted_scope_revision,
+                  accepted_scope_digest, candidate_revision, brief_artifact_ref_id,
+                  result_artifact_ref_id, subject_revision
+           FROM attempts WHERE attempt_id IN ({ids})""",
+        scope.attempt_ids,
+    ):
+        attempt = decode_row(row, _AttemptLineageRow)
+        attempts[attempt.attempt_id] = attempt
+    attempts = {attempt_id: attempts[attempt_id] for attempt_id in scope.attempt_ids if attempt_id in attempts}
 
     proposals: dict[ProposalId, _ProposalRow] = {}
-    for proposal_id in scope.proposal_ids:
-        proposal = _read_selected_proposal(connection, proposal_id)
-        if proposal is not None:
-            proposals[proposal.proposal_id] = proposal
-            primary_item_ids.append(WorkItemId(proposal.proposal_id))
+    for row in select_by_ids(
+        connection,
+        """SELECT proposal_id, created_at, source_task_id, user_label, trigger, why_it_matters,
+                  relation_kind, relation_item_id, relation_replacement_cost,
+                  effect, unlock, urgency_evidence, subject_revision
+           FROM proposals WHERE proposal_id IN ({ids}) AND disposition IS NULL""",
+        scope.proposal_ids,
+    ):
+        proposal = decode_row(row, _ProposalRow)
+        proposals[proposal.proposal_id] = proposal
+    proposals = {proposal_id: proposals[proposal_id] for proposal_id in scope.proposal_ids if proposal_id in proposals}
+    primary_item_ids.extend(attempt.item_id for attempt in attempts.values())
+    primary_item_ids.extend(WorkItemId(proposal.proposal_id) for proposal in proposals.values())
+
+    closure_ids = tuple(
+        decode_row(row, _ItemIdRow).item_id
+        for row in select_by_ids(
+            connection,
+            """WITH RECURSIVE closure(item_id) AS (
+                   SELECT item_id FROM work_items WHERE item_id IN ({ids})
+                   UNION
+                   SELECT dependency.dependency_id
+                   FROM item_dependencies AS dependency
+                   JOIN closure ON closure.item_id = dependency.item_id
+               ) SELECT item_id FROM closure""",
+            scope.dependency_closure_roots,
+        )
+    )
+    definition_ids = tuple(dict.fromkeys((*primary_item_ids, *closure_ids)))
+    dependency_ids = tuple(dict.fromkeys((*definition_ids, *scope.live_dependent_roots)))
+    dependent_ids = tuple(
+        decode_row(row, _ItemIdRow).item_id
+        for row in select_by_ids(
+            connection,
+            """SELECT dependency.item_id
+               FROM item_dependencies AS dependency INDEXED BY item_dependencies_by_dependency
+               JOIN work_items AS item ON item.item_id = dependency.item_id
+               WHERE dependency.dependency_id IN ({ids}) AND item.queue_position IS NOT NULL
+               ORDER BY dependency.item_id""",
+            scope.live_dependent_roots,
+        )
+    )
+    dependency_ids = tuple(dict.fromkeys((*dependency_ids, *dependent_ids)))
+    selected_dependencies: dict[WorkItemId, list[WorkItemId]] = defaultdict(list)
+    for row in select_by_ids(
+        connection,
+        "SELECT item_id, dependency_id FROM item_dependencies WHERE item_id IN ({ids}) ORDER BY item_id, position",
+        dependency_ids,
+    ):
+        dependency = decode_row(row, _DependencyRow)
+        selected_dependencies[dependency.item_id].append(dependency.dependency_id)
+    selected_definitions = read_current_definitions(connection, definition_ids)
+    selected_items = {
+        item.item_id: item
+        for item in (
+            decode_row(row, _ItemRow)
+            for row in select_by_ids(
+                connection,
+                """SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
+                          subject_revision, queue_position
+                   FROM work_items WHERE item_id IN ({ids})""",
+                (*definition_ids, *dependent_ids),
+            )
+        )
+    }
+    related_ids = tuple(
+        dict.fromkeys(
+            (
+                *scope.related_work_item_ids,
+                *(
+                    dependency
+                    for item_id in primary_item_ids
+                    if (item := selected_items.get(item_id)) is not None
+                    and stored_state.live_work_state(item.state) is not None
+                    for dependency in selected_dependencies[item_id]
+                ),
+            )
+        )
+    )
+    selected_items.update(
+        (item.item_id, item)
+        for item in (
+            decode_row(row, _ItemRow)
+            for row in select_by_ids(
+                connection,
+                """SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
+                          subject_revision, queue_position
+                   FROM work_items WHERE item_id IN ({ids})""",
+                (item_id for item_id in related_ids if item_id not in selected_items),
+            )
+        )
+    )
 
     item_rows: dict[WorkItemId, _ItemRow] = {}
     history_items: list[WorkItemId] = []
@@ -719,7 +775,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
     ) -> _ItemRow | None:
         item = item_rows.get(item_id)
         if item is None:
-            item = _read_selected_item(connection, item_id)
+            item = selected_items.get(item_id)
         if item is None:
             return None
         live = stored_state.live_work_state(item.state) is not None
@@ -728,10 +784,15 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         else:
             history_items.append(item_id)
         if include_dependencies and item_id not in dependency_item_ids:
-            dependencies[item_id].extend(_read_selected_dependencies(connection, item_id))
+            dependencies[item_id].extend(selected_dependencies[item_id])
             dependency_item_ids.add(item_id)
         if include_definition and item_id not in definitions:
-            definitions[item_id] = _read_required_definition(connection, item_id)
+            definition = selected_definitions.get(item_id)
+            if definition is None:
+                raise StorageError(
+                    StorageErrorCode.INVALID_STATE, "Every selected work item must have a current definition."
+                )
+            definitions[item_id] = definition
         if (
             item_id in dependency_item_ids
             and item_id in definitions
@@ -764,35 +825,22 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
     related_item_ids = list(scope.related_work_item_ids)
     for item_id in contextual_item_ids:
         related_item_ids.extend(dependencies[item_id])
-    for item_id in scope.live_dependent_roots:
-        for row in connection.execute(
-            """
-            SELECT dependency.item_id
-            FROM item_dependencies AS dependency INDEXED BY item_dependencies_by_dependency
-            JOIN work_items AS item ON item.item_id = dependency.item_id
-            WHERE dependency.dependency_id = ? AND item.queue_position IS NOT NULL
-            ORDER BY dependency.item_id
-            """,
-            (item_id,),
-        ).fetchall():
-            dependent_id = decode_row(row, _ItemIdRow).item_id
-            read_item(dependent_id, include_dependencies=True, include_definition=False, context=False)
+    for dependent_id in dependent_ids:
+        read_item(dependent_id, include_dependencies=True, include_definition=False, context=False)
     for item_id in dict.fromkeys(related_item_ids):
         read_item(item_id, include_dependencies=False, include_definition=False, context=False)
 
-    for item_id in contextual_item_ids:
-        linked_attempt = connection.execute(
-            """
-            SELECT attempt_id, item_id, state, branch, base_revision, accepted_scope_revision,
-                   accepted_scope_digest, candidate_revision, brief_artifact_ref_id,
-                   result_artifact_ref_id, subject_revision
-            FROM attempts WHERE item_id = ? AND state != 'done'
-            """,
-            (item_id,),
-        ).fetchone()
-        if linked_attempt is not None:
-            selected_attempt = decode_row(linked_attempt, _AttemptLineageRow)
-            attempts[selected_attempt.attempt_id] = selected_attempt
+    for row in select_by_ids(
+        connection,
+        """SELECT attempt_id, item_id, state, branch, base_revision, accepted_scope_revision,
+                  accepted_scope_digest, candidate_revision, brief_artifact_ref_id,
+                  result_artifact_ref_id, subject_revision
+           FROM attempts INDEXED BY one_live_attempt_per_item
+           WHERE item_id IN ({ids}) AND state != 'done'""",
+        contextual_item_ids,
+    ):
+        selected_attempt = decode_row(row, _AttemptLineageRow)
+        attempts[selected_attempt.attempt_id] = selected_attempt
 
     attempt_states = {
         attempt.item_id: attempt.state
@@ -817,29 +865,34 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
 
     evidence: dict[ProposalId, list[str]] = defaultdict(list)
     freshness: dict[ProposalId, list[str]] = defaultdict(list)
-    for proposal_id in proposals:
-        for row in connection.execute(
-            "SELECT proposal_id, selector AS value FROM proposal_evidence WHERE proposal_id = ? ORDER BY position",
-            (proposal_id,),
-        ).fetchall():
-            selected = decode_row(row, _ProposalTextRow)
-            evidence[proposal_id].append(selected.value)
-        for row in connection.execute(
-            "SELECT proposal_id, assumption AS value FROM proposal_freshness WHERE proposal_id = ? ORDER BY position",
-            (proposal_id,),
-        ).fetchall():
-            selected = decode_row(row, _ProposalTextRow)
-            freshness[proposal_id].append(selected.value)
+    for row in select_by_ids(
+        connection,
+        "SELECT proposal_id, selector AS value FROM proposal_evidence WHERE proposal_id IN ({ids}) ORDER BY proposal_id, position",
+        proposals,
+    ):
+        selected = decode_row(row, _ProposalTextRow)
+        evidence[selected.proposal_id].append(selected.value)
+    for row in select_by_ids(
+        connection,
+        "SELECT proposal_id, assumption AS value FROM proposal_freshness WHERE proposal_id IN ({ids}) ORDER BY proposal_id, position",
+        proposals,
+    ):
+        selected = decode_row(row, _ProposalTextRow)
+        freshness[selected.proposal_id].append(selected.value)
 
-    artifacts: list[work_models.ArtifactRecord] = []
-    for artifact_id in scope.artifact_ref_ids:
-        row = connection.execute(
-            "SELECT artifact_ref_id, kind FROM artifact_refs WHERE artifact_ref_id = ?",
-            (artifact_id,),
-        ).fetchone()
-        if row is not None:
-            selected = decode_row(row, _ArtifactRow)
-            artifacts.append(work_models.ArtifactRecord(selected.artifact_ref_id, selected.kind))
+    selected_artifacts: dict[ArtifactRefId, work_models.ArtifactRecord] = {}
+    for row in select_by_ids(
+        connection,
+        "SELECT artifact_ref_id, kind FROM artifact_refs WHERE artifact_ref_id IN ({ids})",
+        scope.artifact_ref_ids,
+    ):
+        selected = decode_row(row, _ArtifactRow)
+        selected_artifacts[selected.artifact_ref_id] = work_models.ArtifactRecord(
+            selected.artifact_ref_id, selected.kind
+        )
+    artifacts = [
+        selected_artifacts[artifact_id] for artifact_id in scope.artifact_ref_ids if artifact_id in selected_artifacts
+    ]
 
     attempt_authorities, command_attempt_authorities = _read_attempt_authorities(
         connection, (attempt.attempt_id for attempt in attempts.values()), project.host_epoch, now
@@ -850,15 +903,13 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
 
     checkpoint_history_ids = tuple(
         decode_row(row, _HistoryIdRow).history_id
-        for attempt_id in scope.completion_history_attempt_ids
-        for row in connection.execute(
-            """
-            SELECT history_id FROM transition_history
-            WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
-            ORDER BY history_id
-            """,
-            (attempt_id,),
-        ).fetchall()
+        for row in select_by_ids(
+            connection,
+            """SELECT history_id FROM transition_history
+               WHERE subject_id IN ({ids}) AND outcome_schema = 'checkpoint-acceptance/v2'
+               ORDER BY history_id""",
+            scope.completion_history_attempt_ids,
+        )
     )
 
     attempts_by_item = {

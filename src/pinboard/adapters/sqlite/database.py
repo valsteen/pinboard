@@ -12,10 +12,11 @@ lifecycle in ``store.py``. This module never obtains time or invokes callbacks.
 
 import os
 import sqlite3
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from datetime import datetime
 from functools import cache
+from itertools import batched
 from pathlib import Path
 from urllib.parse import quote
 
@@ -29,8 +30,8 @@ from pinboard.application import stored_state
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 
 APPLICATION = "pinboard"
-SCHEMA_VERSION = 6
-SCHEMA_ID = "sqlite-v6"
+SCHEMA_VERSION = 7
+SCHEMA_ID = "sqlite-v7"
 BUSY_TIMEOUT_MS = 2_000
 
 
@@ -41,6 +42,17 @@ def decode_row[Record](row: sqlite3.Row, record_type: type[Record]) -> Record:
         return msgspec.convert(dict(row), type=record_type, strict=True)
     except msgspec.ValidationError as error:
         raise StorageError(StorageErrorCode.INVALID_STATE, f"Stored row is invalid: {error}") from error
+
+
+def select_by_ids(connection: sqlite3.Connection, query: str, ids: Iterable[str | int]) -> tuple[sqlite3.Row, ...]:
+    """Read selected keys in bounded batches; query contains one ``{ids}`` slot."""
+
+    selected = tuple(dict.fromkeys(ids))
+    return tuple(
+        row
+        for group in batched(selected, 400, strict=False)
+        for row in connection.execute(query.format(ids=", ".join("?" for _ in group)), group).fetchall()
+    )
 
 
 def stale_write(message: str) -> DecisionFailure:
@@ -152,6 +164,18 @@ def _build_expected_schema_signature() -> tuple[tuple[str, str, str, str | None]
         connection.close()
 
 
+@cache
+def _build_v6_schema_signature() -> tuple[tuple[str, str, str, str | None], ...]:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(Path(__file__).with_name("schema_compatibility_v6.sql").read_text(encoding="utf-8"))
+        return _read_schema_signature(connection)
+    except (OSError, sqlite3.Error, UnicodeError) as error:
+        raise StorageError(StorageErrorCode.IO_ERROR, "The installed v6 compatibility schema is invalid.") from error
+    finally:
+        connection.close()
+
+
 def _verify_current_schema(connection: sqlite3.Connection) -> None:
     application, version = _read_required_metadata(connection)
     if application != APPLICATION:
@@ -160,6 +184,13 @@ def _verify_current_schema(connection: sqlite3.Connection) -> None:
             f"The database belongs to application {application!r}, not {APPLICATION!r}.",
         )
     if version != SCHEMA_VERSION:
+        if version == 6:
+            if _read_schema_signature(connection) != _build_v6_schema_signature():
+                raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v6 schema.")
+            raise StorageError(
+                StorageErrorCode.SCHEMA_UNSUPPORTED,
+                "Schema sqlite-v6 requires 'pinboard migrate-schema' with the same project and work roots before ordinary commands can open it.",
+            )
         raise StorageError(
             StorageErrorCode.SCHEMA_UNSUPPORTED,
             f"Schema sqlite-v{version} is not the supported {SCHEMA_ID} schema.",
@@ -396,6 +427,74 @@ def open_database(path: Path, mode: OpenMode) -> sqlite3.Connection:
     preflight = _open_verified_database(path, OpenMode.READ_ONLY, configure_writes=False, immutable=True)
     preflight.close()
     return _open_verified_database(path, mode, configure_writes=mode == OpenMode.READ_WRITE)
+
+
+def migrate_v6_database(path: Path) -> bool:
+    """Upgrade one exact v6 ledger under an exclusive transaction; leave v7 unchanged."""
+
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(
+            _build_database_uri(path, OpenMode.READ_WRITE),
+            uri=True,
+            timeout=BUSY_TIMEOUT_MS / 1_000,
+            isolation_level=None,
+        )
+        connection.row_factory = sqlite3.Row
+        _configure_connection(connection)
+        connection.execute("PRAGMA synchronous = FULL")
+        connection.execute("BEGIN EXCLUSIVE")
+        application, version = _read_required_metadata(connection)
+        if application != APPLICATION:
+            raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not belong to Pinboard.")
+        if version == SCHEMA_VERSION:
+            _verify_current_schema(connection)
+            connection.rollback()
+            return False
+        if version != 6:
+            raise StorageError(StorageErrorCode.SCHEMA_UNSUPPORTED, f"Schema sqlite-v{version} cannot migrate to v7.")
+        if _read_schema_signature(connection) != _build_v6_schema_signature():
+            raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v6 schema.")
+        verify_database_integrity(connection)
+        connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v6")
+        connection.execute(
+            """CREATE TABLE project_meta (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    application TEXT NOT NULL CHECK (application = 'pinboard'),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 7),
+    revision INTEGER NOT NULL CHECK (revision >= 0),
+    host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT"""
+        )
+        connection.execute(
+            """INSERT INTO project_meta (singleton, application, schema_version, revision,
+                                         host_epoch, created_at, updated_at)
+               SELECT singleton, application, 7, revision, host_epoch, created_at, updated_at
+               FROM project_meta_v6"""
+        )
+        connection.execute("DROP TABLE project_meta_v6")
+        connection.execute(
+            """CREATE INDEX checkpoint_history_by_subject
+ON transition_history(subject_id, history_id)
+WHERE outcome_schema = 'checkpoint-acceptance/v2'"""
+        )
+        _verify_current_schema(connection)
+        verify_database_integrity(connection)
+        connection.commit()
+        return True
+    except StorageError:
+        if connection is not None and connection.in_transaction:
+            connection.rollback()
+        raise
+    except sqlite3.Error as error:
+        if connection is not None and connection.in_transaction:
+            connection.rollback()
+        raise translate_database_error(error).with_database_path(path) from error
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 @contextmanager

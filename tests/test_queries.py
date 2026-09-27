@@ -52,7 +52,7 @@ class SQLiteQueriesTest(unittest.TestCase):
 
         state = store.validated_snapshot()
         overview = project_overview(state, SQLITE_NOW)
-        self.assertEqual("sqlite-v6", overview.authority)
+        self.assertEqual("sqlite-v7", overview.authority)
         self.assertEqual("12", overview.revision)
         self.assertEqual(("work-a-1",), overview.active_attempts)
         self.assertEqual(
@@ -243,7 +243,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertEqual(
             query_models.ItemStatus(
                 "pinboard-item-status/v1",
-                "sqlite-v6",
+                "sqlite-v7",
                 "12",
                 "work-a",
                 "Work work-a",
@@ -262,7 +262,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertEqual(
             query_models.ItemStatus(
                 "pinboard-item-status/v1",
-                "sqlite-v6",
+                "sqlite-v7",
                 "12",
                 "work-b",
                 "Work work-b",

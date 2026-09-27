@@ -22,7 +22,7 @@ The project-local work root contains one SQLite authority and generated or immut
 
 Resolve the project through Git's shared common directory. A linked worktree therefore uses the primary checkout's `.pinboard`, not a competing ignored root. Default initialization adds only the anchored `/.pinboard/` entry to that shared repository's local Git exclude file; it does not edit committed ignore files or hide unrelated `.codex` content. A legacy-only `.codex/pinboard` tree requires explicit `pinboard migrate-work-root` recovery while the project is quiescent; the exact relative alias remains a supported compatibility path after migration. An explicit `--work-root` remains at the exact selected path.
 
-Require `authority: sqlite-v6` from the executable. `state.sqlite3` owns lifecycle, dependencies, attempts, preparation and attempt leases, proposals, history, and accepted artifact references. `views/` is replaceable output and never a fallback authority. Do not reconstruct state from other files.
+Require `authority: sqlite-v7` from the executable. `state.sqlite3` owns lifecycle, dependencies, attempts, preparation and attempt leases, proposals, history, and accepted artifact references. `views/` is replaceable output and never a fallback authority. Do not reconstruct state from other files. A released `sqlite-v6` ledger must be upgraded while quiescent with the installed `pinboard migrate-schema` command before ordinary reads; the command verifies the exact old schema and changes the ledger atomically. For a legacy-only v6 root, select that exact root with `--work-root` for schema migration before running `pinboard migrate-work-root`.
 
 Use these nonterminal states:
 

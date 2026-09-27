@@ -39,7 +39,7 @@ def compose_status(
         active_attempts=tuple(str(value) for value in facts.active_attempts),
         counts=counts,
         ready_item_count=counts.get(work_models.WorkState.READY.value, 0),
-        authority="sqlite-v6",
+        authority="sqlite-v7",
     )
 
 

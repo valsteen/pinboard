@@ -13,7 +13,7 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row
+from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.application import query_models, stored_state
 from pinboard.domain import decision_models, work_models
@@ -84,7 +84,14 @@ class _ParallelPreviewItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields
     state: stored_state.StoredWorkItemState
 
 
-class _ParallelPreviewAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class _SelectedDependencyStateRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
+    dependency_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+
+
+class _SelectedPreviewAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
     attempt_id: AttemptId
     state: work_models.AttemptState
 
@@ -234,6 +241,27 @@ def read_current_definition(
     return None if row is None else decode_definition_revision(row)
 
 
+def read_current_definitions(
+    connection: sqlite3.Connection, item_ids: tuple[WorkItemId, ...]
+) -> dict[WorkItemId, stored_state.ItemDefinitionRevision]:
+    rows = select_by_ids(
+        connection,
+        """
+        SELECT item_id, definition_revision AS revision, definition_digest AS digest,
+               definition_json, reason, source_task_id, before_digest, after_digest,
+               accepted_project_revision, accepted_at
+        FROM work_item_definition_revisions AS definition
+        WHERE item_id IN ({ids}) AND definition_revision = (
+            SELECT MAX(current.definition_revision)
+            FROM work_item_definition_revisions AS current
+            WHERE current.item_id = definition.item_id
+        )
+        """,
+        item_ids,
+    )
+    return {value.item_id: value for value in map(decode_definition_revision, rows)}
+
+
 def _current_definition_with_dependency_states(
     connection: sqlite3.Connection,
     item_id: WorkItemId,
@@ -361,36 +389,60 @@ def read_parallel_preview_lifecycle(
     if project_revision_row is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
     project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
+    selected_items = {
+        item.item_id: item
+        for item in (
+            decode_row(row, _ParallelPreviewItemRow)
+            for row in select_by_ids(
+                connection,
+                "SELECT item_id, state FROM work_items WHERE item_id IN ({ids})",
+                item_ids,
+            )
+        )
+    }
+    definitions = read_current_definitions(connection, item_ids)
+    dependencies_by_item: dict[WorkItemId, list[_SelectedDependencyStateRow]] = {}
+    for row in select_by_ids(
+        connection,
+        """SELECT dependency.item_id, dependency.dependency_id, item.state
+           FROM item_dependencies AS dependency
+           JOIN work_items AS item ON item.item_id = dependency.dependency_id
+           WHERE dependency.item_id IN ({ids}) ORDER BY dependency.item_id, dependency.position""",
+        item_ids,
+    ):
+        dependency = decode_row(row, _SelectedDependencyStateRow)
+        dependencies_by_item.setdefault(dependency.item_id, []).append(dependency)
+    attempts = {
+        attempt.item_id: attempt
+        for attempt in (
+            decode_row(row, _SelectedPreviewAttemptRow)
+            for row in select_by_ids(
+                connection,
+                """SELECT item_id, attempt_id, state FROM attempts INDEXED BY one_live_attempt_per_item
+                   WHERE item_id IN ({ids}) AND state != 'done'""",
+                item_ids,
+            )
+        )
+    }
     selected: list[ParallelPreviewLifecycleItem] = []
     for item_id in item_ids:
-        item_row = connection.execute(
-            "SELECT item_id, state FROM work_items WHERE item_id = ?",
-            (item_id,),
-        ).fetchone()
-        if item_row is None:
+        item = selected_items.get(item_id)
+        if item is None:
             return None
-        item = decode_row(item_row, _ParallelPreviewItemRow)
         state = stored_state.live_work_state(item.state)
         if state is None:
             return None
-        definition, dependencies = _current_definition_with_dependency_states(
-            connection,
-            item_id,
-            missing_message="The selected work item has no definition.",
-        )
-        attempt_row = connection.execute(
-            """
-            SELECT attempt_id, state
-            FROM attempts
-            WHERE item_id = ? AND state != 'done'
-            ORDER BY attempt_id
-            LIMIT 1
-            """,
-            (item_id,),
-        ).fetchone()
+        definition = definitions.get(item_id)
+        if definition is None:
+            raise StorageError(StorageErrorCode.INVALID_STATE, "The selected work item has no definition.")
+        dependencies = tuple(dependencies_by_item.get(item_id, ()))
+        if tuple(value.dependency_id for value in dependencies) != definition.definition.dependencies:
+            raise StorageError(
+                StorageErrorCode.INVALID_STATE, "Current definition dependencies do not match relational dependencies."
+            )
+        decoded_attempt = attempts.get(item_id)
         attempt = None
-        if attempt_row is not None:
-            decoded_attempt = decode_row(attempt_row, _ParallelPreviewAttemptRow)
+        if decoded_attempt is not None:
             match decoded_attempt.state:
                 case (
                     work_models.AttemptState.ACTIVE

@@ -34,11 +34,6 @@ class HistoryIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     history_id: HistoryId
 
 
-class DependencyViewRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    dependency_id: WorkItemId
-    queue_position: int | None
-
-
 class MutationAllocationRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     revision: int
     next_history_id: int

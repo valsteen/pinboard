@@ -1155,6 +1155,8 @@ def _continuation_operation(
             return contracts.ContinuationPermissionRecovery(target_revision, effect, status)
         case query_models.RepositoryDispositionContinuation(target_revision=target_revision, relation=relation):
             return contracts.ContinuationRepositoryDisposition(target_revision, relation)
+        case query_models.CommitThenReinspectContinuation(target_revision=target_revision, relation=relation):
+            return contracts.ContinuationCommitThenReinspect(target_revision, relation)
         case query_models.RepositoryCleanupContinuation(target_revision=target_revision):
             return contracts.ContinuationRepositoryCleanup(target_revision)
         case _ as unreachable:

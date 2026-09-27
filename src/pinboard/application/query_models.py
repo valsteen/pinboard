@@ -271,6 +271,20 @@ class RepositoryDispositionContinuation(
             raise ValueError("repository disposition requires a pending candidate relation")
 
 
+class CommitThenReinspectContinuation(
+    msgspec.Struct, tag="commit-then-reinspect", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    target_revision: str
+    relation: IntegrationRelation
+
+    def __post_init__(self) -> None:
+        if self.relation not in (
+            IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE,
+            IntegrationRelation.CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE,
+        ):
+            raise ValueError("commit then reinspect requires a pending candidate relation")
+
+
 class RepositoryCleanupContinuation(
     msgspec.Struct, tag="repository-cleanup", tag_field="kind", frozen=True, forbid_unknown_fields=True
 ):
@@ -281,6 +295,7 @@ type ReconciliationContinuation = (
     RefreshTargetContinuation
     | PermissionRecoveryContinuation
     | RepositoryDispositionContinuation
+    | CommitThenReinspectContinuation
     | RepositoryCleanupContinuation
 )
 type NonterminalContinuationOperation = (
@@ -444,6 +459,7 @@ class ReviewAttemptContinuation(
                     RefreshTargetContinuation,
                     PermissionRecoveryContinuation,
                     RepositoryDispositionContinuation,
+                    CommitThenReinspectContinuation,
                     RepositoryCleanupContinuation,
                 ),
             )

@@ -199,9 +199,15 @@ def _select_repository_disposition(
     reconciliation: query_models.AttemptReconciliation,
     candidate_lineage: query_models.CandidateLineage | None,
     actions: tuple[decision_models.Action, ...],
-) -> DecisionResult[query_models.ActionContinuation | query_models.RepositoryDispositionContinuation]:
+) -> DecisionResult[
+    query_models.ActionContinuation
+    | query_models.RepositoryDispositionContinuation
+    | query_models.CommitThenReinspectContinuation
+]:
     if candidate_lineage == query_models.CandidateLineage.COMMIT_CURRENT:
         return query_models.RepositoryDispositionContinuation(reconciliation.target_revision, reconciliation.relation)
+    if candidate_lineage == query_models.CandidateLineage.WORKING_TREE_CURRENT:
+        return query_models.CommitThenReinspectContinuation(reconciliation.target_revision, reconciliation.relation)
     for action in actions:
         if isinstance(action, decision_models.ReturnForCorrectionAction):
             condition = (
@@ -209,11 +215,6 @@ def _select_repository_disposition(
                 "attempt with this lineage mismatch as the reason, preserve its history_id, obtain correction-source "
                 "review, then dispatch correction work that submits a current clean commit candidate; no user input "
                 "is required."
-                if candidate_lineage == query_models.CandidateLineage.DRIFTED
-                else "Repository disposition requires a current clean commit candidate. Apply return-for-correction "
-                "to the same attempt with this requirement as the reason, preserve its history_id, obtain "
-                "correction-source review, then dispatch correction work that commits and resubmits the candidate; "
-                "no user input is required."
             )
             return query_models.ActionContinuation(decision_models.action_id(action), action.kind, condition)
     return DecisionFailure(

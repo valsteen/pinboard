@@ -4516,7 +4516,6 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         attempt = fixture.store.read_attempt_context(AttemptId("work-a-1"))
         assert snapshot is not None and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
         attempt_root = fixture.work / "attempts" / "work-a-1"
-        self.commit_all(fixture.project, "equivalent clean commit")
         review: dict[str, contracts.JsonValue] = {
             "kind": "record-ready",
             "attempt_id": "work-a-1",
@@ -4563,6 +4562,8 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
             self.assertEqual("ok", inspected["status"], inspected)
             return self.json_object(self.json_object(inspected["continuation"])["next_operation"])
 
+        self.assertEqual("commit-then-reinspect", next_operation()["kind"])
+        self.commit_all(fixture.project, "equivalent clean commit")
         self.assertEqual("repository-disposition", next_operation()["kind"])
         reconciliation["effects"] = [
             {"effect": "source-checkout", "status": "allowed"},

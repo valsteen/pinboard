@@ -134,6 +134,7 @@ The result must record:
 - concise implementation result;
 - acceptance-criterion evidence;
 - verification commands and outcomes;
+- when bounded contributors participated, each actual assignment's owned paths, public interface, relevant package identity, and exact verification commands; distinguish commands assigned from standalone outcomes reported by contributors and checks the attempt owner observed on the integrated candidate, preserving unknown outcomes rather than inferring execution, model quality, or total delivery speed;
 - any material test removal and its replacement evidence;
 - production-entry-point evidence for lifecycle claims;
 - for a cross-boundary checkpoint, startup reviewed-source count and bytes, each changed contract's concrete implementation source set, every on-demand read and trigger, accepted-decision coverage, discovered defects, implementation outcome, and the separate final-review outcome or its pending status;

@@ -135,6 +135,7 @@ Exact invocation capture is off by default. Contributors can enable private proj
 
 ## Learn more
 
+- [Using Pinboard in conversation](GUIDE.md) gives practical requests for saving, starting, reviewing, resuming, and deciding what happens to work.
 - [How Pinboard works](HOW_IT_WORKS.md) follows the workflow from an idea to an accepted, reviewed change.
 - [Install Pinboard](INSTALL.md) covers advanced setup, Codex and Claude Code permissions, linked worktrees, local data, and troubleshooting.
 - [Contributing](CONTRIBUTING.md) covers the development environment, checks, tests, and packaging.

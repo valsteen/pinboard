@@ -424,7 +424,13 @@ def _open_verified_database(
 
 
 def open_database(path: Path, mode: OpenMode) -> sqlite3.Connection:
-    preflight = _open_verified_database(path, OpenMode.READ_ONLY, configure_writes=False, immutable=True)
+    try:
+        with path.open("rb") as database_file:
+            # SQLite header bytes 18-19 identify WAL mode; rejected WAL opens must not create sidecars.
+            wal_mode = database_file.read(20)[18:20] == b"\x02\x02"
+    except OSError as error:
+        raise StorageError(StorageErrorCode.IO_ERROR, "SQLite could not read the work database header.") from error
+    preflight = _open_verified_database(path, OpenMode.READ_ONLY, configure_writes=False, immutable=wal_mode)
     preflight.close()
     return _open_verified_database(path, mode, configure_writes=mode == OpenMode.READ_WRITE)
 

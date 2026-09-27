@@ -18,6 +18,87 @@ from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, initial
 
 
 class HumanOwnedPrReviewTest(unittest.TestCase):
+    def test_human_can_close_without_a_completed_round(self) -> None:
+        project = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            work_root = Path(temporary) / ".pinboard"
+            roots = resolve_durable_roots(project, work_root)
+            initialize_database(roots, SQLITE_NOW)
+            store = SQLiteWorkStore(roots.database_path)
+            initialize_store(store, complete_sqlite_state())
+            item_id = WorkItemId("work-c")
+            definition = store.read_item_definition(item_id).definition
+            assert definition is not None
+            common = {"project_root": str(project), "work_root": str(work_root), "item_id": str(item_id)}
+
+            def act(operation: str, field: str, payload: object, revision: int) -> contracts.PrReviewSuccess:
+                response = call_native_tool(
+                    "pinboard_pr_review",
+                    {
+                        "request": {
+                            **common,
+                            "operation": operation,
+                            "expected_subject_revision": revision,
+                            "actor_task_id": "human",
+                            "actor_host_id": "test-host",
+                            field: msgspec.to_builtins(payload),
+                        }
+                    },
+                )
+                self.assertEqual("committed", response["status"])
+                return msgspec.convert(response, type=contracts.PrReviewSuccess, strict=True)
+
+            started = act(
+                "start",
+                "brief",
+                pr_reviews.ReviewBrief(
+                    "pinboard-pr-review-brief/v1",
+                    str(item_id),
+                    definition.revision,
+                    definition.digest,
+                    "https://github.com/example/repo/pull/42",
+                    "colleague",
+                    (pr_reviews.Requirement("issue:42", "Expected behavior.", "CLI", "application"),),
+                    ("Repository tests",),
+                    "preparer",
+                ),
+                7,
+            )
+            self.assertIn("close", started.available_actions)
+            head = "a" * 40
+            observed = act(
+                "observe",
+                "observation",
+                pr_reviews.HeadObservation("pinboard-pr-head-observation/v1", str(item_id), head, "harness fetch"),
+                started.subject_revision,
+            )
+            closed = act(
+                "close",
+                "close",
+                pr_reviews.ReviewClose(
+                    "pinboard-pr-review-close/v1",
+                    str(item_id),
+                    None,
+                    None,
+                    head,
+                    "harness fetch",
+                    (),
+                    "Stop before a PR round is completed.",
+                    "human",
+                    "stopped",
+                ),
+                observed.subject_revision,
+            )
+            self.assertEqual((), closed.rounds)
+            self.assertEqual("no-pr-round-completed", closed.round_status)
+            self.assertEqual(head, closed.unreviewed_head)
+            fresh = SQLiteWorkStore(roots.database_path).validated_snapshot()
+            self.assertEqual(
+                "dropped", next(item.state.value for item in fresh.lifecycle.work_items if item.item_id == item_id)
+            )
+            view = (work_root / "views" / "items" / f"{item_id}.md").read_text()
+            self.assertIn("no PR round completed", view)
+
     def test_two_heads_and_human_stop_survive_fresh_store(self) -> None:  # noqa: PLR0915
         project = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as temporary:
@@ -200,6 +281,7 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
                     "stopped",
                 ),
                 newer.subject_revision,
+                "human",
             )
             self.assertEqual("rejected", stale_close["status"])
             current = call_native_tool("pinboard_pr_review", {"request": {**common, "operation": "status"}})
@@ -220,6 +302,7 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
                     "stopped",
                 ),
                 newer.subject_revision,
+                "human",
             )
             self.assertIsNotNone(closed.close)
             assert closed.close is not None

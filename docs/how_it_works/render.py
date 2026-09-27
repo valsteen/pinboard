@@ -94,7 +94,7 @@ Saving a proposal creates a ready work item with its original facts attached. A 
 
 Ready, blocked, and deferred items without an attempt offer item decisions for their state. Active and review work offer attempt decisions. Paused work with a live attempt retains rebind and conditional resume; blocked work with a live attempt retains conditional resume. Recording a planned replacement or revising the accepted definition remains available for live attempts when its own conditions allow. A conflicting stored item and attempt state stops action discovery before it presents a legal choice.
 
-A human-owned PR review has no attempt. While it is active, its dedicated review actions record the brief and rounds; ordinary item closure is unavailable. Its item view keeps the reviewed commits and findings readable after the human-directed close.
+A human-owned PR review has no attempt. While it is active, its dedicated review actions record the brief and rounds; ordinary item closure is unavailable. Its item view keeps the reviewed commits and findings readable after the human-directed close. The human can also stop before any round; the record then says no PR head was reviewed and identifies any observed but unreviewed head.
 
 Across those paths, four guarantees stay constant:
 

@@ -152,6 +152,7 @@ class PrReviewSuccess(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     brief: pr_reviews.ReviewBrief | None
     brief_review: pr_reviews.BriefReview | None
     rounds: tuple[PrReviewRoundView, ...]
+    round_status: Literal["no-pr-round-completed", "reviewed-head-recorded"]
     latest_observation: pr_reviews.HeadObservation | None
     unreviewed_head: str | None
     close: pr_reviews.ReviewClose | None

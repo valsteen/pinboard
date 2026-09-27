@@ -155,6 +155,7 @@ def _read_generated_view_facts(
     replacements, dispositions = read_current_replacements(connection, live_item_ids)
     replacements_by_item = {value.affected_item: value for value in replacements}
     dispositions_by_item = {value.affected_item: value for value in dispositions}
+    review_history_by_item = sqlite_state.read_review_history_for_items(connection, item_ids)
     items: list[query_models.ItemProjectionFacts] = []
     for item_id in item_ids:
         item = selected_items.get(item_id)
@@ -209,7 +210,7 @@ def _read_generated_view_facts(
                 dependencies,
                 projected,
                 definition,
-                sqlite_state.read_review_history_for_item(connection, item_id),
+                review_history_by_item.get(item_id, ()),
             )
         )
     selected_attempt_records = {

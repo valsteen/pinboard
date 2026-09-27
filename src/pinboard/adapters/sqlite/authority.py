@@ -10,12 +10,13 @@ from datetime import datetime
 
 import msgspec
 
-from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, stale_write
+from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids, stale_write
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.adapters.sqlite.models import AttemptIdRow, ItemIdRow
 from pinboard.application import query_models, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure
-from pinboard.domain.identifiers import AttemptId, WorkItemId
+from pinboard.domain.identifiers import AttemptId, HostId, LeaseId, TaskId, WorkItemId
 
 
 class _PreparationItemFacts(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -29,6 +30,160 @@ class _DefinitionIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 
 class _ProjectUpdate(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     updated_at: datetime
+
+
+class _AttemptStatusRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    generation: int
+    acquired_at: datetime
+    expires_at: datetime
+    state: authority_models.AttemptLeaseStatus
+    generation_high_water: int | None
+    lease_id: LeaseId | None
+    task_id: TaskId | None
+    host_id: HostId | None
+    selected_attempt_id: AttemptId | None
+
+
+class _PreparationStatusRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
+    generation: int
+    definition_revision: int
+    definition_digest: str
+    acquired_at: datetime
+    expires_at: datetime
+    state: authority_models.PreparationLeaseStatus
+    generation_high_water: int | None
+    lease_id: LeaseId | None
+    task_id: TaskId | None
+    host_id: HostId | None
+    item_state: stored_state.StoredWorkItemState | None
+    referenced_revision: int | None
+    referenced_digest: str | None
+    current_revision: int | None
+    current_digest: str | None
+    project_updated_at: datetime | None
+
+
+def read_attempt_authority_statuses(
+    connection: sqlite3.Connection, attempt_ids: tuple[AttemptId, ...]
+) -> dict[AttemptId, query_models.AttemptAuthorityStatus]:
+    selected_ids = tuple(
+        decode_row(row, AttemptIdRow).attempt_id
+        for row in select_by_ids(
+            connection, "SELECT attempt_id FROM attempt_leases WHERE attempt_id IN ({ids})", attempt_ids
+        )
+    )
+    statuses: dict[AttemptId, query_models.AttemptAuthorityStatus] = {}
+    for row in select_by_ids(
+        connection,
+        """SELECT lease.attempt_id, lease.generation, lease.acquired_at, lease.expires_at,
+                  lease.status AS state, counter.generation_high_water, anchor.lease_id,
+                  anchor.task_id, anchor.host_id, attempt.attempt_id AS selected_attempt_id
+           FROM attempt_leases AS lease
+           LEFT JOIN attempt_lease_counters AS counter ON counter.attempt_id = lease.attempt_id
+           LEFT JOIN attempt_lease_generations AS anchor
+             ON anchor.attempt_id = lease.attempt_id AND anchor.generation = lease.generation
+           LEFT JOIN attempts AS attempt ON attempt.attempt_id = lease.attempt_id
+           WHERE lease.attempt_id IN ({ids})""",
+        selected_ids,
+    ):
+        value = decode_row(row, _AttemptStatusRow)
+        if (
+            value.generation_high_water != value.generation
+            or value.lease_id is None
+            or value.task_id is None
+            or value.host_id is None
+            or value.selected_attempt_id is None
+        ):
+            raise StorageError(StorageErrorCode.INVALID_STATE, "Attempt authority has no exact identity anchor.")
+        statuses[value.attempt_id] = query_models.AttemptAuthorityStatus(
+            value.attempt_id,
+            value.task_id,
+            value.host_id,
+            value.lease_id,
+            value.generation,
+            value.acquired_at,
+            value.expires_at,
+            value.state,
+        )
+    return statuses
+
+
+def read_preparation_authority_statuses(
+    connection: sqlite3.Connection, item_ids: tuple[WorkItemId, ...]
+) -> dict[WorkItemId, query_models.PreparationAuthorityStatus]:
+    selected_ids = tuple(
+        decode_row(row, ItemIdRow).item_id
+        for row in select_by_ids(
+            connection, "SELECT item_id FROM preparation_leases WHERE item_id IN ({ids})", item_ids
+        )
+    )
+    statuses: dict[WorkItemId, query_models.PreparationAuthorityStatus] = {}
+    for row in select_by_ids(
+        connection,
+        """SELECT lease.item_id, lease.generation, lease.definition_revision, lease.definition_digest,
+                  lease.acquired_at, lease.expires_at, lease.status AS state,
+                  counter.generation_high_water, anchor.lease_id, anchor.task_id, anchor.host_id,
+                  item.state AS item_state, reference.definition_revision AS referenced_revision,
+                  reference.definition_digest AS referenced_digest,
+                  current.definition_revision AS current_revision, current.definition_digest AS current_digest,
+                  (SELECT updated_at FROM project_meta WHERE singleton = 1) AS project_updated_at
+           FROM preparation_leases AS lease
+           LEFT JOIN preparation_lease_counters AS counter ON counter.item_id = lease.item_id
+           LEFT JOIN preparation_lease_generations AS anchor
+             ON anchor.item_id = lease.item_id AND anchor.generation = lease.generation
+           LEFT JOIN work_items AS item ON item.item_id = lease.item_id
+           LEFT JOIN work_item_definition_revisions AS reference
+             ON reference.item_id = lease.item_id AND reference.definition_revision = lease.definition_revision
+            AND reference.definition_digest = lease.definition_digest
+           LEFT JOIN work_item_definition_revisions AS current
+             ON current.item_id = lease.item_id AND current.definition_revision = (
+                 SELECT MAX(latest.definition_revision) FROM work_item_definition_revisions AS latest
+                 WHERE latest.item_id = lease.item_id
+             )
+           WHERE lease.item_id IN ({ids})""",
+        selected_ids,
+    ):
+        value = decode_row(row, _PreparationStatusRow)
+        if (
+            value.generation_high_water != value.generation
+            or value.lease_id is None
+            or value.task_id is None
+            or value.host_id is None
+            or value.item_state is None
+            or value.referenced_revision is None
+            or value.current_revision is None
+            or value.project_updated_at is None
+        ):
+            raise StorageError(StorageErrorCode.INVALID_STATE, "Preparation authority has no exact identity anchor.")
+        if (
+            value.state == authority_models.PreparationLeaseStatus.ACTIVE
+            and value.expires_at > value.project_updated_at
+            and (
+                value.item_state
+                not in {stored_state.StoredWorkItemState.INTAKE, stored_state.StoredWorkItemState.READY}
+                or (value.referenced_revision, value.referenced_digest)
+                != (value.current_revision, value.current_digest)
+            )
+        ):
+            raise StorageError(
+                StorageErrorCode.INVALID_STATE,
+                "An active preparation lease must name a ready item and its current definition.",
+            )
+        statuses[value.item_id] = query_models.PreparationAuthorityStatus(
+            value.item_id,
+            value.definition_revision,
+            value.definition_digest,
+            value.task_id,
+            value.host_id,
+            value.lease_id,
+            value.generation,
+            value.acquired_at,
+            value.expires_at,
+            value.state,
+        )
+    return statuses
 
 
 def read_attempt_authority_status(

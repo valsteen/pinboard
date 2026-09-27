@@ -638,7 +638,7 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
     )
     return query_models.WorkOverview(
         "pinboard-overview/v6",
-        "sqlite-v6",
+        "sqlite-v7",
         str(state.lifecycle.project.revision),
         tuple(
             str(attempt.attempt_id)
@@ -733,7 +733,7 @@ def project_current_overview(facts: query_models.ProjectOverviewFacts, now: date
     )
     return query_models.WorkOverview(
         "pinboard-overview/v6",
-        "sqlite-v6",
+        "sqlite-v7",
         snapshot.revision,
         tuple(
             str(attempt.attempt) for attempt in snapshot.attempts if attempt.state == work_models.AttemptState.ACTIVE
@@ -812,7 +812,7 @@ def project_item_status(
     )
     return query_models.ItemStatus(
         "pinboard-item-status/v1",
-        "sqlite-v6",
+        "sqlite-v7",
         str(facts.project_revision),
         str(item.work_item_id),
         facts.definition_title,
@@ -867,7 +867,7 @@ def select_item_definition(
         )
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
-        "sqlite-v6",
+        "sqlite-v7",
         selected.project_revision,
         work_item_id,
         selected.item_subject_revision,
@@ -904,7 +904,7 @@ def select_item_definition_history(
     )
     return query_models.ItemDefinitionHistory(
         "pinboard-item-definition-history/v1",
-        "sqlite-v6",
+        "sqlite-v7",
         selected.project_revision,
         work_item_id,
         rows,

@@ -133,6 +133,8 @@ A result that intentionally describes the current portfolio or complete project 
 
 Do not make one hot file, hidden cache, log, or projection accumulate without a product-owned retention or segmentation decision. Immutable evidence and normalized rows may grow when provenance is the product requirement, but ordinary work must reach them through keys, bounded pages, or explicit whole-project operations. Tests should grow unrelated retained data and observe that focused operations neither read, rewrite, nor republish it.
 
+For SQLite-backed operations, bound statement count as selected records and relationships grow. Read selected keys with set queries or fixed-size batches, and check query plans separately from statement counts and returned-row scope. A keyed query repeated once per selected record is still unbounded work; an indexed batch that fetches unrelated retained rows is still too broad.
+
 ### Make code and guide tell the same story
 
 Make production code and tests readable by the next coding agent. Names, structure, and local contracts must expose purpose, input provenance, decisions, effects, expected failures, important constraints, and the next owner without author coaching or delivery history. Leave established findings at their owning code or contract, not only in an audit or conversation.

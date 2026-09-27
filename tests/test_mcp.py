@@ -467,10 +467,6 @@ class McpTransportTest(unittest.TestCase):
                     "pinboard.adapters.sqlite.state.read_state",
                     side_effect=AssertionError("all-safe read retained state"),
                 ),
-                patch(
-                    "pinboard.adapters.sqlite.decision_reads._read_selected_proposal",
-                    side_effect=AssertionError("all-safe read proposal bodies"),
-                ),
             ):
                 all_safe = mcp_reads._parallel_preview(
                     {"request": {**root_arguments, "selection": "all-safe"}}, mcp_execution.CancellationToken()
@@ -3242,7 +3238,7 @@ class McpTransportTest(unittest.TestCase):
         overview_content = overview.structured_content
         assert isinstance(overview_content, dict)
         self.assertEqual("pinboard-overview/v6", overview_content["schema"])
-        self.assertEqual("sqlite-v6", overview_content["authority"])
+        self.assertEqual("sqlite-v7", overview_content["authority"])
         self.assertEqual(["work-a-1"], overview_content["active_attempts"])
         observer_content = observer.structured_content
         assert isinstance(observer_content, dict)

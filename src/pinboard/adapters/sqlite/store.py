@@ -17,17 +17,21 @@ from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.artifacts import (
     read_artifact_reference,
     read_artifact_reference_by_id,
+    read_artifact_references_by_ids,
     read_brief_artifact_reference,
     read_latest_artifact_reference,
 )
 from pinboard.adapters.sqlite.authority import (
     read_attempt_authority_status,
+    read_attempt_authority_statuses,
     read_preparation_authority_status,
+    read_preparation_authority_statuses,
 )
 from pinboard.adapters.sqlite.database import (
     decode_row,
     open_database,
     read_operation,
+    select_by_ids,
     verify_database_integrity,
 )
 from pinboard.adapters.sqlite.decision_reads import (
@@ -39,8 +43,8 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     NonterminalAttemptContextSelection,
     TerminalAttemptContextSelection,
-    decode_definition_revision,
     read_attempt_context,
+    read_current_definitions,
     read_item_status,
     read_parallel_preview_lifecycle,
 )
@@ -53,7 +57,6 @@ from pinboard.adapters.sqlite.lifecycle import (
 from pinboard.adapters.sqlite.models import (
     AttemptIdRow,
     CandidateSnapshotAttemptRow,
-    DependencyViewRow,
     HistoryIdRow,
     ItemIdRow,
     OpenMode,
@@ -63,16 +66,27 @@ from pinboard.adapters.sqlite.models import (
 from pinboard.adapters.sqlite.persistence import SQLiteWorkTransaction
 from pinboard.adapters.sqlite.persistence import accept_artifact_reference as persist_artifact_reference
 from pinboard.adapters.sqlite.proposals import (
-    read_proposal,
+    read_proposals_by_ids,
 )
 from pinboard.application import candidate_snapshots, queries, query_models, stored_state, work_briefs
-from pinboard.application.artifacts import ArtifactRef
+from pinboard.application.artifacts import ArtifactRef, BriefArtifactRef
 from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.application.project_export import ProjectExportState
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, LeaseId, ProposalId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
+
+
+class _SelectedDependencyViewRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
+    dependency_id: WorkItemId
+    queue_position: int | None
+
+
+class _SelectedAttemptLinkRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
+    attempt_id: AttemptId
 
 
 def _read_generated_view_facts(
@@ -86,57 +100,79 @@ def _read_generated_view_facts(
     if project_row is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
     project_revision = decode_row(project_row, ProjectRevisionRow).revision
+    selected_items = {
+        item.item_id: item
+        for item in (
+            decode_row(row, stored_state.StoredWorkItem)
+            for row in select_by_ids(
+                connection,
+                """SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
+                          subject_revision, recorded_at, updated_at, queue_position
+                   FROM work_items WHERE item_id IN ({ids})""",
+                item_ids,
+            )
+        )
+    }
+    selected_definitions = read_current_definitions(connection, item_ids)
+    selected_dependencies: dict[WorkItemId, list[_SelectedDependencyViewRow]] = {}
+    for row in select_by_ids(
+        connection,
+        """SELECT dependency.item_id, dependency.dependency_id, item.queue_position
+           FROM item_dependencies AS dependency
+           JOIN work_items AS item ON item.item_id = dependency.dependency_id
+           WHERE dependency.item_id IN ({ids}) ORDER BY dependency.item_id, dependency.position""",
+        item_ids,
+    ):
+        dependency = decode_row(row, _SelectedDependencyViewRow)
+        selected_dependencies.setdefault(dependency.item_id, []).append(dependency)
+    live_item_ids = tuple(
+        item_id
+        for item_id in item_ids
+        if item_id in selected_items and stored_state.live_work_state(selected_items[item_id].state) is not None
+    )
+    selected_attempts = {
+        link.item_id: link.attempt_id
+        for link in (
+            decode_row(row, _SelectedAttemptLinkRow)
+            for row in select_by_ids(
+                connection,
+                """SELECT item_id, attempt_id FROM attempts INDEXED BY one_live_attempt_per_item
+                   WHERE item_id IN ({ids}) AND state != 'done'""",
+                live_item_ids,
+            )
+        )
+    }
+    proposal_ids = tuple(
+        dict.fromkeys(
+            ProposalId(proposal_id)
+            for item_id in live_item_ids
+            for proposal_id in (item_id, *(value.dependency_id for value in selected_dependencies.get(item_id, ())))
+        )
+    )
+    selected_proposals_by_id = read_proposals_by_ids(connection, proposal_ids)
+    selected_preparations = read_preparation_authority_statuses(connection, live_item_ids)
+    replacements, dispositions = read_current_replacements(connection, live_item_ids)
+    replacements_by_item = {value.affected_item: value for value in replacements}
+    dispositions_by_item = {value.affected_item: value for value in dispositions}
     items: list[query_models.ItemProjectionFacts] = []
     for item_id in item_ids:
-        item_row = connection.execute(
-            """
-            SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
-                   subject_revision, recorded_at, updated_at, queue_position
-            FROM work_items WHERE item_id = ?
-            """,
-            (item_id,),
-        ).fetchone()
-        definition_row = connection.execute(
-            """
-            SELECT item_id, definition_revision AS revision, definition_digest AS digest,
-                   definition_json, reason, source_task_id, before_digest, after_digest,
-                   accepted_project_revision, accepted_at
-            FROM work_item_definition_revisions
-            WHERE item_id = ? ORDER BY definition_revision DESC LIMIT 1
-            """,
-            (item_id,),
-        ).fetchone()
-        if item_row is None or definition_row is None:
+        item = selected_items.get(item_id)
+        definition = selected_definitions.get(item_id)
+        if item is None or definition is None:
             raise StorageError(StorageErrorCode.INVALID_STATE, "An affected item projection is missing.")
-        dependency_rows = tuple(
-            decode_row(row, DependencyViewRow)
-            for row in connection.execute(
-                """
-                SELECT dependency.dependency_id, item.queue_position
-                FROM item_dependencies AS dependency
-                JOIN work_items AS item ON item.item_id = dependency.dependency_id
-                WHERE dependency.item_id = ? ORDER BY dependency.position
-                """,
-                (item_id,),
-            ).fetchall()
-        )
+        dependency_rows = tuple(selected_dependencies.get(item_id, ()))
         dependencies = tuple(value.dependency_id for value in dependency_rows)
-        item = decode_row(item_row, stored_state.StoredWorkItem)
-        definition = decode_definition_revision(definition_row)
         live_state = stored_state.live_work_state(item.state)
         projected: query_models.OverviewItem | None = None
         if live_state is not None:
-            replacements, dispositions = read_current_replacements(connection, (item_id,))
-            attempt_row = connection.execute(
-                "SELECT attempt_id FROM attempts WHERE item_id = ? AND state != 'done'",
-                (item_id,),
-            ).fetchone()
-            attempt_id = None if attempt_row is None else decode_row(attempt_row, AttemptIdRow).attempt_id
-            proposal_ids = tuple(dict.fromkeys((ProposalId(item_id), *(ProposalId(value) for value in dependencies))))
+            attempt_id = selected_attempts.get(item_id)
+            item_proposal_ids = tuple(
+                dict.fromkeys((ProposalId(item_id), *(ProposalId(value) for value in dependencies)))
+            )
             selected_proposals = tuple(
                 proposal
-                for proposal_id in proposal_ids
-                if (proposal := read_proposal(connection, proposal_id)) is not None
+                for proposal_id in item_proposal_ids
+                if (proposal := selected_proposals_by_id.get(proposal_id)) is not None
             )
             projected = queries.project_item_overview(
                 query_models.ItemOverviewFacts(
@@ -160,40 +196,62 @@ def _read_generated_view_facts(
                         definition.definition,
                     ),
                     selected_proposals,
-                    read_preparation_authority_status(connection, item_id),
-                    replacements[0] if replacements else None,
-                    dispositions[0] if dispositions else None,
+                    selected_preparations.get(item_id),
+                    replacements_by_item.get(item_id),
+                    dispositions_by_item.get(item_id),
                 ),
                 now,
             )
         items.append(query_models.ItemProjectionFacts(item, dependencies, projected, definition))
+    selected_attempt_records = {
+        attempt.attempt_id: attempt
+        for attempt in (
+            decode_row(row, stored_state.StoredAttempt)
+            for row in select_by_ids(
+                connection,
+                """SELECT attempt_id, item_id, state, branch, base_revision, provenance,
+                          brief_artifact_ref_id, result_artifact_ref_id, candidate_revision,
+                          candidate_recorded_at, accepted_scope_revision, accepted_scope_digest,
+                          subject_revision, recorded_at, updated_at
+                   FROM attempts WHERE attempt_id IN ({ids})""",
+                attempt_ids,
+            )
+        )
+    }
+    brief_references = read_artifact_references_by_ids(
+        connection,
+        tuple(
+            attempt.brief_artifact_ref_id
+            for attempt in selected_attempt_records.values()
+            if attempt.state != work_models.AttemptState.DONE
+        ),
+    )
     attempts: list[query_models.AttemptProjectionFacts] = []
     for attempt_id in attempt_ids:
-        attempt_row = connection.execute(
-            """
-            SELECT attempt_id, item_id, state, branch, base_revision, provenance,
-                   brief_artifact_ref_id, result_artifact_ref_id, candidate_revision,
-                   candidate_recorded_at, accepted_scope_revision, accepted_scope_digest,
-                   subject_revision, recorded_at, updated_at
-            FROM attempts WHERE attempt_id = ?
-            """,
-            (attempt_id,),
-        ).fetchone()
-        if attempt_row is None:
+        attempt = selected_attempt_records.get(attempt_id)
+        if attempt is None:
             raise StorageError(StorageErrorCode.INVALID_STATE, "An affected attempt projection is missing.")
-        attempt = decode_row(attempt_row, stored_state.StoredAttempt)
+        reference = brief_references.get(attempt.brief_artifact_ref_id)
         attempts.append(
             query_models.AttemptProjectionFacts(
                 attempt,
                 None
                 if attempt.state == work_models.AttemptState.DONE
-                else read_brief_artifact_reference(connection, attempt.brief_artifact_ref_id),
+                or reference is None
+                or reference.kind != work_models.ArtifactKind.BRIEF
+                else BriefArtifactRef(
+                    reference.key,
+                    reference.revision,
+                    reference.selector,
+                    reference.content_sha256,
+                    reference.size_bytes,
+                    reference.kind,
+                ),
             )
         )
+    selected_receipts = sqlite_state.read_history_receipts_by_ids(connection, history_ids)
     receipts = tuple(
-        receipt
-        for history_id in history_ids
-        if (receipt := sqlite_state.read_history_receipt(connection, history_id)) is not None
+        receipt for history_id in history_ids if (receipt := selected_receipts.get(history_id)) is not None
     )
     if len(receipts) != len(history_ids):
         raise StorageError(StorageErrorCode.INVALID_STATE, "An affected history projection is missing.")
@@ -208,9 +266,8 @@ def _read_overview_proposals(
             ProposalId(item_id) for item in snapshot.items for item_id in (item.work_item_id, *item.depends_on)
         )
     )
-    return tuple(
-        proposal for proposal_id in proposal_ids if (proposal := read_proposal(connection, proposal_id)) is not None
-    )
+    selected = read_proposals_by_ids(connection, proposal_ids)
+    return tuple(proposal for proposal_id in proposal_ids if (proposal := selected.get(proposal_id)) is not None)
 
 
 def _read_attempt_context_facts(
@@ -533,13 +590,14 @@ class SQLiteWorkStore:
                 snapshot = read_current_snapshot(
                     connection, now, include_proposals=False, include_action_authorities=False
                 )
+                preparations = read_preparation_authority_statuses(
+                    connection, tuple(item.work_item_id for item in snapshot.items)
+                )
                 return query_models.ProjectOverviewFacts(
                     snapshot,
                     _read_overview_proposals(connection, snapshot),
                     tuple(
-                        status
-                        for item in snapshot.items
-                        if (status := read_preparation_authority_status(connection, item.work_item_id)) is not None
+                        status for item in snapshot.items if (status := preparations.get(item.work_item_id)) is not None
                     ),
                 )
         finally:
@@ -755,27 +813,21 @@ class SQLiteWorkStore:
                 attempt = _read_attempt_context_facts(connection, attempt_id)
                 if attempt is None:
                     return None
-                rows = connection.execute(
-                    """
-                    SELECT history_id FROM transition_history
-                    WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
-                    ORDER BY history_id
-                    """,
-                    (attempt_id,),
-                ).fetchall()
-                checkpoints: list[query_models.CompletionCheckpointFacts] = []
-                for row in rows:
-                    history_id = decode_row(row, HistoryIdRow).history_id
-                    receipt = sqlite_state.read_history_receipt(connection, history_id)
-                    if receipt is None:
-                        raise StorageError(StorageErrorCode.INVALID_STATE, "Completion history disappeared.")
-                    reference = (
-                        None
-                        if receipt.artifact_ref_id is None
-                        else read_artifact_reference_by_id(connection, receipt.artifact_ref_id)
-                    )
-                    checkpoints.append(query_models.CompletionCheckpointFacts(receipt, reference))
-                return query_models.CompletionContextFacts(attempt, tuple(checkpoints))
+                receipts = sqlite_state.read_checkpoint_receipts(connection, attempt_id)
+                references = read_artifact_references_by_ids(
+                    connection,
+                    tuple(receipt.artifact_ref_id for receipt in receipts if receipt.artifact_ref_id is not None),
+                )
+                return query_models.CompletionContextFacts(
+                    attempt,
+                    tuple(
+                        query_models.CompletionCheckpointFacts(
+                            receipt,
+                            None if receipt.artifact_ref_id is None else references.get(receipt.artifact_ref_id),
+                        )
+                        for receipt in receipts
+                    ),
+                )
         finally:
             connection.close()
 
@@ -786,9 +838,20 @@ class SQLiteWorkStore:
                 lifecycle = read_parallel_preview_lifecycle(connection, work_item_ids)
                 if lifecycle is None:
                     return None
+                preparations = read_preparation_authority_statuses(
+                    connection, tuple(item.item_id for item in lifecycle.items)
+                )
+                authorities = read_attempt_authority_statuses(
+                    connection,
+                    tuple(
+                        item.attempt.attempt_id
+                        for item in lifecycle.items
+                        if item.attempt is not None and item.attempt.state == work_models.AttemptState.ACTIVE
+                    ),
+                )
                 items: list[query_models.ParallelPreviewItemFacts] = []
                 for item in lifecycle.items:
-                    preparation_status = read_preparation_authority_status(connection, item.item_id)
+                    preparation_status = preparations.get(item.item_id)
                     preparation = (
                         None
                         if preparation_status is None
@@ -799,11 +862,7 @@ class SQLiteWorkStore:
                     )
                     attempt = None
                     if item.attempt is not None:
-                        authority = (
-                            read_attempt_authority_status(connection, item.attempt.attempt_id)
-                            if item.attempt.state == work_models.AttemptState.ACTIVE
-                            else None
-                        )
+                        authority = authorities.get(item.attempt.attempt_id)
                         attempt = query_models.ParallelAttemptFacts(
                             item.attempt.attempt_id,
                             item.attempt.state,

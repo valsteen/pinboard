@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -33,6 +34,7 @@ from tests.support import (
     complete_sqlite_state,
     initialize_store,
     mutation_allocation,
+    test_definition,
     with_definition_dependencies,
 )
 
@@ -45,6 +47,262 @@ class SQLiteEffectContractTest(unittest.TestCase):
         store = SQLiteWorkStore(roots.database_path)
         initialize_store(store, state or complete_sqlite_state())
         return roots.database_path, store
+
+    def test_public_read_statement_growth_is_bounded_and_selection_stays_focused(self) -> None:  # noqa: PLR0915
+        state = complete_sqlite_state()
+        original = next(item for item in state.lifecycle.work_items if item.item_id == WorkItemId("work-c"))
+        originals = next(
+            definition for definition in state.lifecycle.definition_revisions if definition.item_id == original.item_id
+        )
+        added_ids = tuple(WorkItemId(f"extra-{index:03}") for index in range(30))
+        added_items = tuple(
+            replace(original, item_id=item_id, queue_position=5 + index) for index, item_id in enumerate(added_ids)
+        )
+        added_definitions = tuple(
+            replace(
+                originals,
+                item_id=item_id,
+                definition=test_definition(item_id)[0],
+                digest=test_definition(item_id)[1],
+                after_digest=test_definition(item_id)[1],
+            )
+            for item_id in added_ids
+        )
+        retained = next(item for item in state.lifecycle.work_items if item.item_id == WorkItemId("work-b"))
+        retained_ids = tuple(WorkItemId(f"retained-{index:03}") for index in range(40))
+        retained_items = tuple(replace(retained, item_id=item_id) for item_id in retained_ids)
+        retained_definitions = tuple(
+            replace(
+                originals,
+                item_id=item_id,
+                definition=test_definition(item_id)[0],
+                digest=test_definition(item_id)[1],
+                after_digest=test_definition(item_id)[1],
+            )
+            for item_id in retained_ids
+        )
+        grown = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=(*state.lifecycle.work_items, *added_items, *retained_items),
+                definition_revisions=(*state.lifecycle.definition_revisions, *added_definitions, *retained_definitions),
+            ),
+        )
+        _path, store = self._store(grown)
+        _base_path, base_store = self._store(state)
+        statements: list[str] = []
+        original_open = sqlite_store.open_database
+
+        def traced_open(database_path: Path, mode: OpenMode) -> sqlite3.Connection:
+            connection = original_open(database_path, mode)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        def count() -> int:
+            return sum(statement.lstrip().upper().startswith(("SELECT", "WITH")) for statement in statements)
+
+        with patch.object(sqlite_store, "open_database", traced_open):
+            base_live = base_store.read_current_action_snapshot(SQLITE_NOW)
+            live_small = count()
+            statements.clear()
+            grown_live = store.read_current_action_snapshot(SQLITE_NOW)
+            live_large = count()
+            statements.clear()
+            small = store.read_decision_facts(
+                query_models.DecisionScope(added_ids[:1], (), (), (), (), (), (), ()), SQLITE_NOW
+            )
+            small_count = count()
+            statements.clear()
+            large = store.read_decision_facts(
+                query_models.DecisionScope(added_ids, (), (), (), (), (), (), ()), SQLITE_NOW
+            )
+            large_count = count()
+            selected_sql = tuple(statements)
+            statements.clear()
+            store.read_generated_view_facts(added_ids[:1], (), (), SQLITE_NOW)
+            view_small = count()
+            statements.clear()
+            store.read_generated_view_facts(added_ids, (), (), SQLITE_NOW)
+            view_large = count()
+            statements.clear()
+            store.read_parallel_preview(added_ids[:1])
+            preview_small = count()
+            statements.clear()
+            store.read_parallel_preview(added_ids)
+            preview_large = count()
+
+        self.assertEqual(len(base_live.items) + len(added_ids), len(grown_live.items))
+        self.assertEqual(live_small, live_large)
+        self.assertEqual(added_ids[:1], tuple(item.work_item_id for item in small.snapshot.items))
+        self.assertEqual(set(added_ids), {item.work_item_id for item in large.snapshot.items})
+        self.assertEqual((small_count, view_small, preview_small), (large_count, view_large, preview_large))
+        with sqlite3.connect(_path) as connection:
+            for table in ("work_items", "item_dependencies", "work_item_definition_revisions"):
+                query = next(
+                    statement for statement in selected_sql if f"FROM {table}" in statement and " IN (" in statement
+                )
+                plan = " ".join(str(row[3]).upper() for row in connection.execute(f"EXPLAIN QUERY PLAN {query}"))
+                self.assertIn("SEARCH", plan, (table, plan))
+
+    def test_pending_proposal_export_batches_child_reads(self) -> None:
+        state = complete_sqlite_state()
+        proposal = state.proposals.proposals[0]
+        proposal_item = next(
+            item for item in state.lifecycle.work_items if item.item_id == WorkItemId(proposal.proposal_id)
+        )
+        definition = next(
+            value for value in state.lifecycle.definition_revisions if value.item_id == proposal_item.item_id
+        )
+        evidence = state.proposals.evidence[0]
+        freshness = state.proposals.freshness[0]
+        ids = tuple(ProposalId(f"proposal-extra-{index:03}") for index in range(25))
+        grown = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=(
+                    *state.lifecycle.work_items,
+                    *(
+                        replace(
+                            proposal_item,
+                            item_id=WorkItemId(value),
+                            queue_position=5 + index,
+                            source=f"proposal:{value}",
+                        )
+                        for index, value in enumerate(ids)
+                    ),
+                ),
+                definition_revisions=(
+                    *state.lifecycle.definition_revisions,
+                    *(replace(definition, item_id=WorkItemId(value)) for value in ids),
+                ),
+                dependencies=(
+                    *state.lifecycle.dependencies,
+                    *(stored_state.ItemDependency(WorkItemId(value), WorkItemId("work-c"), 0) for value in ids),
+                ),
+            ),
+            proposals=replace(
+                state.proposals,
+                proposals=(*state.proposals.proposals, *(replace(proposal, proposal_id=value) for value in ids)),
+                evidence=(*state.proposals.evidence, *(replace(evidence, proposal_id=value) for value in ids)),
+                freshness=(*state.proposals.freshness, *(replace(freshness, proposal_id=value) for value in ids)),
+            ),
+        )
+        _base_path, base_store = self._store(state)
+        path, store = self._store(grown)
+        statements: list[str] = []
+        original_open = sqlite_store.open_database
+
+        def traced_open(database_path: Path, mode: OpenMode) -> sqlite3.Connection:
+            connection = original_open(database_path, mode)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(sqlite_store, "open_database", traced_open):
+            base = base_store.read_project_export_batches()[0]
+            base_count = sum(value.lstrip().upper().startswith("SELECT") for value in statements)
+            statements.clear()
+            selected = store.read_project_export_batches()[0]
+            grown_count = sum(value.lstrip().upper().startswith("SELECT") for value in statements)
+        self.assertEqual(len(base.proposals.proposals) + len(ids), len(selected.proposals.proposals))
+        self.assertEqual(base_count, grown_count)
+        child_query = next(value for value in statements if "FROM proposal_evidence WHERE proposal_id IN" in value)
+        with sqlite3.connect(path) as connection:
+            plan = " ".join(str(row[3]).upper() for row in connection.execute(f"EXPLAIN QUERY PLAN {child_query}"))
+        self.assertIn("SEARCH PROPOSAL_EVIDENCE", plan)
+        self.assertNotIn("SCAN PROPOSAL_EVIDENCE", plan)
+
+    def test_completion_context_batches_selected_checkpoint_references(self) -> None:
+        path, store = self._store()
+
+        def add_checkpoints(first: int, last: int) -> None:
+            with closing(sqlite3.connect(path)) as connection, connection:
+                for index in range(first, last):
+                    connection.execute(
+                        """INSERT INTO transition_history (
+                               history_id, project_revision, action_id, action_kind, subject_id,
+                               artifact_ref_id, artifact_kind, authorization_kind, actor_task_id,
+                               actor_host_id, input_schema, input_json, outcome_schema,
+                               outcome_json, committed_at
+                           ) SELECT ?, ?, action_id, action_kind, subject_id, artifact_ref_id,
+                                    artifact_kind, authorization_kind, actor_task_id, actor_host_id,
+                                    input_schema, input_json, 'checkpoint-acceptance/v2', '{}', committed_at
+                           FROM transition_history WHERE history_id = 1""",
+                        (index + 1, index + 12),
+                    )
+                connection.execute("UPDATE project_meta SET revision = ? WHERE singleton = 1", (last + 11,))
+
+        def add_unrelated_history() -> None:
+            with closing(sqlite3.connect(path)) as connection, connection:
+                for index in range(22, 222):
+                    connection.execute(
+                        """INSERT INTO transition_history (
+                               history_id, project_revision, action_id, action_kind, subject_id,
+                               artifact_ref_id, artifact_kind, authorization_kind, actor_task_id,
+                               actor_host_id, input_schema, input_json, outcome_schema,
+                               outcome_json, committed_at
+                           ) SELECT ?, ?, action_id, action_kind, 'unrelated-attempt', artifact_ref_id,
+                                    artifact_kind, authorization_kind, actor_task_id, actor_host_id,
+                                    input_schema, input_json, 'checkpoint-acceptance/v2', '{}', committed_at
+                           FROM transition_history WHERE history_id = 1""",
+                        (index + 1, index + 12),
+                    )
+                connection.execute("UPDATE project_meta SET revision = 233 WHERE singleton = 1")
+
+        add_checkpoints(1, 2)
+        statements: list[str] = []
+        original_open = sqlite_store.open_database
+
+        def traced_open(database_path: Path, mode: OpenMode) -> sqlite3.Connection:
+            connection = original_open(database_path, mode)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(sqlite_store, "open_database", traced_open):
+            first = store.read_completion_context(AttemptId("work-a-1"))
+            small_count = sum(value.lstrip().upper().startswith("SELECT") for value in statements)
+            add_checkpoints(2, 22)
+            add_unrelated_history()
+            statements.clear()
+            grown = store.read_completion_context(AttemptId("work-a-1"))
+            large_count = sum(value.lstrip().upper().startswith("SELECT") for value in statements)
+            completion_statements = tuple(statements)
+            statements.clear()
+            selected = store.read_decision_facts(
+                query_models.DecisionScope((), (), (), (), (), (), (), (AttemptId("work-a-1"),)), SQLITE_NOW
+            )
+            decision_statements = tuple(statements)
+        assert first is not None and grown is not None
+        self.assertEqual(1, len(first.checkpoints))
+        self.assertEqual(21, len(grown.checkpoints))
+        self.assertEqual(21, len(selected.snapshot.checkpoint_history_ids))
+        self.assertEqual(small_count, large_count)
+        artifact_query = next(
+            value for value in completion_statements if "FROM artifact_refs WHERE artifact_ref_id IN" in value
+        )
+        checkpoint_query = next(
+            value
+            for value in completion_statements
+            if "FROM transition_history" in value and "checkpoint-acceptance/v2" in value
+        )
+        decision_query = next(
+            value
+            for value in decision_statements
+            if "FROM transition_history" in value and "checkpoint-acceptance/v2" in value
+        )
+        with closing(sqlite3.connect(path)) as connection:
+            plan = " ".join(str(row[3]).upper() for row in connection.execute(f"EXPLAIN QUERY PLAN {artifact_query}"))
+            checkpoint_plan = " ".join(
+                str(row[3]).upper() for row in connection.execute(f"EXPLAIN QUERY PLAN {checkpoint_query}")
+            )
+            decision_plan = " ".join(
+                str(row[3]).upper() for row in connection.execute(f"EXPLAIN QUERY PLAN {decision_query}")
+            )
+        self.assertIn("SEARCH ARTIFACT_REFS USING INTEGER PRIMARY KEY", plan)
+        for selected_plan in (checkpoint_plan, decision_plan):
+            self.assertIn("SEARCH TRANSITION_HISTORY USING", selected_plan)
+            self.assertIn("INDEX CHECKPOINT_HISTORY_BY_SUBJECT", selected_plan)
 
     def test_checkpoint_artifact_identity_is_exact(self) -> None:
         path, store = self._store()

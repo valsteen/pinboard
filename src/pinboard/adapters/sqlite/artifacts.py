@@ -13,7 +13,7 @@ from pathlib import Path
 import msgspec
 
 from pinboard.adapters.files.artifacts import verify_reference
-from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row
+from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.application import stored_state
 from pinboard.application.artifacts import (
@@ -106,6 +106,24 @@ def read_artifact_reference_by_id(
         (artifact_ref_id,),
     ).fetchone()
     return None if row is None else decode_row(row, stored_state.ArtifactReference)
+
+
+def read_artifact_references_by_ids(
+    connection: sqlite3.Connection, artifact_ids: tuple[ArtifactRefId, ...]
+) -> dict[ArtifactRefId, stored_state.ArtifactReference]:
+    return {
+        value.artifact_ref_id: value
+        for value in (
+            decode_row(row, stored_state.ArtifactReference)
+            for row in select_by_ids(
+                connection,
+                """SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+                          relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
+                   FROM artifact_refs WHERE artifact_ref_id IN ({ids})""",
+                artifact_ids,
+            )
+        )
+    }
 
 
 def _insert_artifact(connection: sqlite3.Connection, reference: stored_state.ArtifactReference) -> None:

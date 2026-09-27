@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -10,15 +11,97 @@ from unittest.mock import patch
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.files.legacy_storage import StorageLocation, observe_storage_location
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.artifacts import ArtifactPublication, NewArtifact
 from pinboard.cli.entrypoint import main
 from pinboard.domain import work_models
 from tests.domain_support import expect_success
-from tests.support import SQLITE_NOW, JsonObject, JsonValue
+from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
 
 
 class StorageMigrationTests(unittest.TestCase):
+    def downgrade_schema(self, database_path: Path) -> None:
+        with contextlib.closing(sqlite3.connect(database_path)) as connection, connection:
+            connection.execute("DROP INDEX checkpoint_history_by_subject")
+            connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v7")
+            connection.execute(
+                """CREATE TABLE project_meta (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    application TEXT NOT NULL CHECK (application = 'pinboard'),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 6),
+    revision INTEGER NOT NULL CHECK (revision >= 0),
+    host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT"""
+            )
+            connection.execute(
+                """INSERT INTO project_meta
+                   SELECT singleton, application, 6, revision, host_epoch, created_at, updated_at
+                   FROM project_meta_v7"""
+            )
+            connection.execute("DROP TABLE project_meta_v7")
+
+    def test_populated_v6_ledger_migrates_explicitly_and_failed_upgrade_rolls_back(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory).resolve()
+            subprocess.run(["git", "init", "-b", "main", str(project)], check=True, capture_output=True)
+            self.assertEqual(0, self.run_cli(project, "init")[0])
+            path = resolve_durable_roots(project).database_path
+            store = SQLiteWorkStore(path)
+            initialize_store(store, complete_sqlite_state())
+            expected = store.validated_snapshot()
+            self.downgrade_schema(path)
+
+            before_read = path.read_bytes()
+            status_code, status = self.run_cli(project, "status")
+            self.assertEqual(12, status_code)
+            self.assertEqual("SCHEMA_UNSUPPORTED", status["code"])
+            self.assertIn("pinboard migrate-schema", str(status["message"]))
+            self.assertEqual(before_read, path.read_bytes())
+
+            with (
+                patch(
+                    "pinboard.adapters.sqlite.database._verify_current_schema",
+                    side_effect=StorageError(StorageErrorCode.INVALID_STATE, "forced verification failure"),
+                ),
+                self.assertRaises(StorageError),
+            ):
+                self.run_cli(project, "migrate-schema")
+            with contextlib.closing(sqlite3.connect(path)) as connection:
+                self.assertEqual(6, connection.execute("SELECT schema_version FROM project_meta").fetchone()[0])
+                self.assertIsNone(
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_schema WHERE name = 'checkpoint_history_by_subject'"
+                    ).fetchone()
+                )
+
+            migration_code, migration = self.run_cli(project, "migrate-schema")
+            self.assertEqual(0, migration_code, migration)
+            self.assertEqual("migrated", migration["status"])
+            self.assertEqual("sqlite-v7", migration["authority"])
+            self.assertEqual(expected, SQLiteWorkStore(path).validated_snapshot())
+            repeated_code, repeated = self.run_cli(project, "migrate-schema")
+            self.assertEqual(0, repeated_code, repeated)
+            self.assertEqual("unchanged", repeated["status"])
+
+    def test_legacy_v6_root_uses_schema_migration_before_work_root_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory).resolve()
+            subprocess.run(["git", "init", "-b", "main", str(project)], check=True, capture_output=True)
+            legacy = self.initialize_legacy(project)
+            path = legacy / "state.sqlite3"
+            initialize_store(SQLiteWorkStore(path), complete_sqlite_state())
+            self.downgrade_schema(path)
+
+            code, failure = self.run_cli(project, "migrate-work-root")
+            self.assertEqual(12, code, failure)
+            self.assertEqual("SCHEMA_UNSUPPORTED", failure["code"])
+            self.assertEqual(0, self.run_cli(project, "--work-root", str(legacy), "migrate-schema")[0])
+            self.assertEqual(0, self.run_cli(project, "migrate-work-root")[0])
+            self.assertEqual(0, self.run_cli(project, "status")[0])
+
     def run_cli(self, project: Path, *arguments: str) -> tuple[int, JsonObject]:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

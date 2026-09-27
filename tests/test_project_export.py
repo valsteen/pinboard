@@ -387,7 +387,7 @@ class ProjectExportTest(unittest.TestCase):
         self.assertEqual("pinboard-project-export/v1", project_export.schema)
         self.assertEqual((), project_export.completion_packages)
         self.assertEqual((), project_export.checkpoint_packages)
-        self.assertEqual("sqlite-v6", project_export.authority)
+        self.assertEqual("sqlite-v7", project_export.authority)
         self.assertEqual(state_before.lifecycle.project.revision, project_export.revision)
         with patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")):
             self.assertEqual(stdout, self.run_cli(*common)[1])

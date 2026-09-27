@@ -160,6 +160,16 @@ def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContra
             precondition = "default-root-state-is-legacy-current-or-exact-compatibility-alias"
             postcondition = "Preserve ledger and artifact bytes while establishing .pinboard and the exact relative compatibility alias."
             retry = "inspect-current-state-before-retry"
+        case "migrate-schema":
+            purpose = "Upgrade one exact v6 SQLite ledger to v7 with an indexed checkpoint-history path."
+            mutation = "mutates-ledger"
+            scope = "explicit-project-wide"
+            roles = ("local-caller",)
+            authority = "filesystem-access-and-quiescent-ledger"
+            subject = "ledger"
+            precondition = "exact-v6-or-v7-schema-with-no-concurrent-users"
+            postcondition = "Preserve existing facts and install the checkpoint-history index atomically."
+            retry = "inspect-current-state-before-retry"
         case "close":
             purpose = "Record a terminal decision for eligible live work without an accepted attempt."
             mutation = "mutates-ledger"

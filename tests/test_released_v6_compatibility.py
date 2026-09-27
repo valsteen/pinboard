@@ -11,6 +11,8 @@ from contextlib import closing, redirect_stdout
 from datetime import timedelta
 from pathlib import Path
 
+from pinboard.adapters.sqlite.database import migrate_v6_database
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import queries, service, stored_state
 from pinboard.application.artifacts import WorkBriefIdentity
@@ -33,6 +35,7 @@ FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "released_v6"
 class ReleasedV6CompatibilityTest(unittest.TestCase):
     def _copy_fixture(self, name: str, destination: Path) -> SQLiteWorkStore:
         shutil.copyfile(FIXTURE_ROOT / f"{name}.sqlite3", destination)
+        assert migrate_v6_database(destination)
         return SQLiteWorkStore(destination)
 
     def _raw_counts(self, database: Path) -> dict[str, int]:
@@ -41,11 +44,16 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
 
     def test_populated_released_ledgers_project_ready_without_read_writes(self) -> None:
         for name, digest in FIXTURES:
-            with self.subTest(name=name):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
                 path = FIXTURE_ROOT / f"{name}.sqlite3"
                 before = path.read_bytes()
                 self.assertEqual(digest, hashlib.sha256(before).hexdigest())
-                store = SQLiteWorkStore(path)
+                with self.assertRaises(StorageError) as unconverted:
+                    SQLiteWorkStore(path).validated_snapshot()
+                self.assertEqual(StorageErrorCode.SCHEMA_UNSUPPORTED, unconverted.exception.code)
+                self.assertEqual(before, path.read_bytes())
+                database = Path(temporary) / "state.sqlite3"
+                store = self._copy_fixture(name, database)
                 state = store.validated_snapshot()
                 retained_dispositions = {
                     value.disposition.kind for value in state.proposals.proposals if value.disposition is not None
@@ -78,18 +86,15 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                 self.assertNotIn("intake", counts)
                 self.assertEqual(before, path.read_bytes())
 
-                with tempfile.TemporaryDirectory() as temporary:
-                    project = Path(temporary)
-                    work_root = project / ".pinboard"
-                    work_root.mkdir()
-                    shutil.copyfile(path, work_root / "state.sqlite3")
-                    output = io.StringIO()
-                    with redirect_stdout(output):
-                        result = main(
-                            ("--project-root", str(project), "--work-root", str(work_root), "status", "--json")
-                        )
-                    self.assertEqual(0, result)
-                    self.assertEqual(counts, json.loads(output.getvalue())["counts"])
+                project = Path(temporary) / "project"
+                work_root = project / ".pinboard"
+                work_root.mkdir(parents=True)
+                shutil.copyfile(database, work_root / "state.sqlite3")
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    result = main(("--project-root", str(project), "--work-root", str(work_root), "status", "--json"))
+                self.assertEqual(0, result)
+                self.assertEqual(counts, json.loads(output.getvalue())["counts"])
 
     def test_raw_intake_and_ready_prepare_and_activate_from_a_fresh_store(self) -> None:
         for name, _digest in FIXTURES:

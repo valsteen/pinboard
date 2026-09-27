@@ -20,7 +20,7 @@ class ContentEncoding(Enum):
 
 class ProjectExportProject(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     application: Literal["pinboard"]
-    schema_version: Literal[6]
+    schema_version: Literal[7]
     created_at: str
     updated_at: str
 
@@ -440,7 +440,7 @@ class ProjectExportCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_u
 
 class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-project-export/v1"]
-    authority: Literal["sqlite-v6"]
+    authority: Literal["sqlite-v7"]
     revision: int
     project: ProjectExportProject
     work_items: tuple[ProjectExportWorkItem, ...]
@@ -639,7 +639,7 @@ def project_export_from_state(
     }
     return ProjectExport(
         "pinboard-project-export/v1",
-        "sqlite-v6",
+        "sqlite-v7",
         state.lifecycle.project.revision,
         ProjectExportProject(
             state.lifecycle.project.application,

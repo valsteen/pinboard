@@ -17,7 +17,7 @@ import msgspec
 
 from pinboard.adapters.sqlite.artifacts import read_artifacts
 from pinboard.adapters.sqlite.authority import read_authority, validate_attempt_authority
-from pinboard.adapters.sqlite.database import decode_row
+from pinboard.adapters.sqlite.database import decode_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import read_lifecycle, validate_current_attempt_relation
 from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
@@ -27,6 +27,7 @@ from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import (
     ActionId,
     ArtifactRefId,
+    AttemptId,
     HistoryId,
     HistorySubjectId,
     HostId,
@@ -157,6 +158,42 @@ def read_history_receipt(
         (history_id,),
     ).fetchone()
     return None if row is None else decode_row(row, _StoredTransitionRow).receipt()
+
+
+def read_history_receipts_by_ids(
+    connection: sqlite3.Connection, history_ids: tuple[HistoryId, ...]
+) -> dict[HistoryId, stored_state.StoredTransitionReceipt]:
+    return {
+        receipt.history_id: receipt
+        for receipt in (
+            decode_row(row, _StoredTransitionRow).receipt()
+            for row in select_by_ids(
+                connection,
+                """SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
+                          authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
+                          input_json, outcome_schema, outcome_json, committed_at
+                   FROM transition_history WHERE history_id IN ({ids})""",
+                history_ids,
+            )
+        )
+    }
+
+
+def read_checkpoint_receipts(
+    connection: sqlite3.Connection, attempt_id: AttemptId
+) -> tuple[stored_state.StoredTransitionReceipt, ...]:
+    return tuple(
+        decode_row(row, _StoredTransitionRow).receipt()
+        for row in connection.execute(
+            """SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
+                      authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
+                      input_json, outcome_schema, outcome_json, committed_at
+               FROM transition_history
+               WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+               ORDER BY history_id""",
+            (attempt_id,),
+        ).fetchall()
+    )
 
 
 def _definition_revision_number(value: stored_state.ItemDefinitionRevision) -> int:

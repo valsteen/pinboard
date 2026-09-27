@@ -65,7 +65,9 @@ class GeneratedViewsTest(unittest.TestCase):
         self.assertIn("- Notes: Current work remains bounded.", populated_item)
         self.assertIn("### Scope\n\n- The state becomes explicit.", populated_item)
         self.assertIn("### Evidence\n\n- artifacts/design.md", populated_item)
-        self.assertIn("### Obligations\n\n- next-decision (forbidden): The next decision can run.", populated_item)
+        self.assertIn(
+            "### Obligations\n\n- next-decision (deferral not allowed): The next decision can run.", populated_item
+        )
         self.assertLess(populated_item.index("Make the state explicit."), populated_item.index("- Subject revision:"))
         ready_item = (work_root / "views" / "items" / "work-c.md").read_text(encoding="utf-8")
         self.assertIn("- Current attempt: none", ready_item)
@@ -81,6 +83,34 @@ class GeneratedViewsTest(unittest.TestCase):
             derive_expected_view_bytes(state, {}, now=SQLITE_NOW),
             derive_expected_view_bytes(advanced, {}, now=SQLITE_NOW),
         )
+
+    def test_item_view_labels_allowed_deferral(self) -> None:
+        _, store = self._state()
+        state = store.validated_snapshot()
+        revisions = state.lifecycle.definition_revisions
+        revision = next(value for value in revisions if value.item_id == work_models.WorkItemId("work-a"))
+        allowed = replace(
+            revision,
+            definition=replace(
+                revision.definition,
+                obligations=(
+                    replace(
+                        revision.definition.obligations[0],
+                        deferral_policy=work_models.ObligationDeferralPolicy.ALLOWED,
+                    ),
+                ),
+            ),
+        )
+        state = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                definition_revisions=tuple(allowed if value is revision else value for value in revisions),
+            ),
+        )
+
+        item = derive_expected_view_bytes(state, {}, now=SQLITE_NOW)["items/work-a.md"].decode()
+        self.assertIn("- next-decision (deferral allowed): The next decision can run.", item)
 
     def test_post_commit_refresh_failure_is_a_repairable_warning(self) -> None:
         work_root, store = self._state()

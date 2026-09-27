@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
+from typing import assert_never
 
 from pinboard.adapters.files.errors import FileIOError
 from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory, remove_replaceable
@@ -32,6 +33,16 @@ def _render_header(kind: str) -> str:
 
 def _bullets(values: tuple[str, ...]) -> str:
     return "".join(f"- {value}\n" for value in values) or "- None recorded.\n"
+
+
+def _deferral_label(policy: work_models.ObligationDeferralPolicy) -> str:
+    match policy:
+        case work_models.ObligationDeferralPolicy.ALLOWED:
+            return "deferral allowed"
+        case work_models.ObligationDeferralPolicy.FORBIDDEN:
+            return "deferral not allowed"
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,7 +117,7 @@ def _render_item(
         + "\n### Obligations\n\n"
         + _bullets(
             tuple(
-                f"{value.obligation_id} ({value.deferral_policy.value}): {value.statement}"
+                f"{value.obligation_id} ({_deferral_label(value.deferral_policy)}): {value.statement}"
                 for value in accepted.obligations
             )
         )

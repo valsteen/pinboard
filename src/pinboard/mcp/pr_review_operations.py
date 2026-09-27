@@ -92,20 +92,23 @@ def execute(raw: dict[str, JsonValue], token: execution.CancellationToken) -> ex
             return _present(state, committed=False)
         case contracts.PrReviewStartRequest():
             payload = request.brief
+            claimed_task_id = payload.prepared_by_task_id
         case contracts.PrReviewBriefReviewRequest():
             payload = request.brief_review
-            if payload.reviewer_task_id != request.actor_task_id:
-                return _rejected("PR_REVIEW_INVALID", "Brief reviewer must use their own task identity.")
+            claimed_task_id = payload.reviewer_task_id
         case contracts.PrReviewObserveRequest():
             payload = request.observation
+            claimed_task_id = request.actor_task_id
         case contracts.PrReviewRoundRequest():
             payload = request.round
+            claimed_task_id = payload.reviewer_task_id
         case contracts.PrReviewCloseRequest():
             payload = request.close
-            if payload.human_task_id != request.actor_task_id:
-                return _rejected("PR_REVIEW_INVALID", "Human direction must use the caller's task identity.")
+            claimed_task_id = payload.human_task_id
         case _ as unreachable:
             assert_never(unreachable)
+    if claimed_task_id != request.actor_task_id:
+        return _rejected("PR_REVIEW_INVALID", "Review task identity must match the caller.")
     result = pr_review.write(
         durable.database_path,
         item_id,

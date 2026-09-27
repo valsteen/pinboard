@@ -61,6 +61,7 @@ class ItemProjectionFacts:
     dependencies: tuple[WorkItemId, ...]
     overview: OverviewItem | None
     definition: stored_state.ItemDefinitionRevision
+    review_history: tuple[stored_state.StoredTransitionReceipt, ...]
 
 
 @dataclass(frozen=True, slots=True)

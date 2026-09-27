@@ -13,6 +13,7 @@ from typing import assert_never
 
 import msgspec
 
+from pinboard.adapters.sqlite import pr_review
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.artifacts import (
     read_artifact_reference,
@@ -202,7 +203,15 @@ def _read_generated_view_facts(
                 ),
                 now,
             )
-        items.append(query_models.ItemProjectionFacts(item, dependencies, projected, definition))
+        items.append(
+            query_models.ItemProjectionFacts(
+                item,
+                dependencies,
+                projected,
+                definition,
+                sqlite_state.read_review_history_for_item(connection, item_id),
+            )
+        )
     selected_attempt_records = {
         attempt.attempt_id: attempt
         for attempt in (
@@ -674,6 +683,8 @@ class SQLiteWorkStore:
                 lifecycle = read_item_status(connection, work_item_id)
                 if lifecycle is None:
                     return None
+                if lifecycle.work_item.state == stored_state.StoredWorkItemState.REVIEW and not lifecycle.attempts:
+                    pr_review.validate_review_history(connection, (work_item_id,))
                 preparation = read_preparation_authority_status(connection, work_item_id)
                 return query_models.ItemStatusFacts(
                     lifecycle.project_revision,

@@ -95,6 +95,8 @@ from pinboard.mcp.contracts import (
     ProposalCommittedWithWarning,
     ProposalDuplicate,
     ProposalRejected,
+    PrReviewRejected,
+    PrReviewSuccess,
     RequestBoundary,
     ResultBoundary,
     RetainedV3BriefReviewNeedsCorrection,
@@ -659,6 +661,8 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         msgspec.convert(content, type=ExecutorBusyResult, strict=True)
     elif tool_name == "pinboard_order":
         msgspec.convert(content, type=OrderRejected if status == "rejected" else OrderCommitted, strict=True)
+    elif tool_name == "pinboard_pr_review":
+        msgspec.convert(content, type=PrReviewRejected if status == "rejected" else PrReviewSuccess, strict=True)
     elif tool_name == "pinboard_parallel_preview":
         msgspec.convert(
             content, type=ParallelPreviewRejected if status == "rejected" else ParallelPreviewSuccess, strict=True

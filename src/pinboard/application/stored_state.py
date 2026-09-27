@@ -43,7 +43,7 @@ def allowed_current_attempt_states(
         case StoredWorkItemState.BLOCKED:
             return (None, work_models.AttemptState.BLOCKED)
         case StoredWorkItemState.REVIEW:
-            return (work_models.AttemptState.REVIEW,)
+            return (None, work_models.AttemptState.REVIEW)
         case (
             StoredWorkItemState.INTAKE
             | StoredWorkItemState.READY

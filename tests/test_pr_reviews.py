@@ -1,0 +1,269 @@
+"""One supported human-owned PR review through the native boundary and fresh SQLite readers."""
+
+import tempfile
+import unittest
+from pathlib import Path
+
+import msgspec
+
+from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.sqlite.database import initialize_database
+from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.application import pr_reviews, queries
+from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.identifiers import WorkItemId
+from pinboard.mcp import contracts
+from tests.native_support import call_native_tool
+from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, initialize_store
+
+
+class HumanOwnedPrReviewTest(unittest.TestCase):
+    def test_two_heads_and_human_stop_survive_fresh_store(self) -> None:  # noqa: PLR0915
+        project = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            work_root = Path(temporary) / ".pinboard"
+            roots = resolve_durable_roots(project, work_root)
+            initialize_database(roots, SQLITE_NOW)
+            store = SQLiteWorkStore(roots.database_path)
+            initialize_store(store, complete_sqlite_state())
+            item_id = WorkItemId("work-c")
+            definition = store.read_item_definition(item_id).definition
+            assert definition is not None
+            common = {"project_root": str(project), "work_root": str(work_root), "item_id": str(item_id)}
+
+            def action(
+                operation: str, payload_name: str, payload: object, revision: int, actor: str = "project-owner"
+            ) -> JsonObject:
+                return call_native_tool(
+                    "pinboard_pr_review",
+                    {
+                        "request": {
+                            **common,
+                            "operation": operation,
+                            "expected_subject_revision": revision,
+                            "actor_task_id": actor,
+                            "actor_host_id": "test-host",
+                            payload_name: msgspec.to_builtins(payload),
+                        }
+                    },
+                )
+
+            def accepted(
+                operation: str, payload_name: str, payload: object, revision: int, actor: str = "project-owner"
+            ) -> contracts.PrReviewSuccess:
+                result = action(operation, payload_name, payload, revision, actor)
+                self.assertEqual("committed", result["status"])
+                return msgspec.convert(result, type=contracts.PrReviewSuccess, strict=True)
+
+            brief = pr_reviews.ReviewBrief(
+                "pinboard-pr-review-brief/v1",
+                str(item_id),
+                definition.revision,
+                definition.digest,
+                "https://github.com/example/repo/pull/42",
+                "colleague",
+                (pr_reviews.Requirement("issue:42", "The change works for consumers.", "CLI", "application"),),
+                ("Repository tests and architecture rules",),
+                "preparer",
+            )
+            started = accepted("start", "brief", brief, 7)
+            self.assertEqual((), started.rounds)
+            self.assertEqual("unverified", started.remote_freshness)
+            brief_history_id = started.brief_history_id
+            assert brief_history_id is not None
+            item_status = queries.project_item_status(SQLiteWorkStore(roots.database_path), item_id, SQLITE_NOW)
+            self.assertNotIsInstance(item_status, DecisionFailure)
+            assert not isinstance(item_status, DecisionFailure)
+            self.assertEqual((), item_status.attempts)
+
+            premature = action(
+                "round",
+                "round",
+                pr_reviews.ReviewRound(
+                    "pinboard-pr-review-round/v1",
+                    str(item_id),
+                    brief_history_id,
+                    None,
+                    "a" * 40,
+                    "harness git fetch",
+                    (),
+                    (),
+                    (),
+                    "review-agent",
+                ),
+                started.subject_revision,
+            )
+            self.assertEqual("rejected", premature["status"])
+            self_review = action(
+                "review-brief",
+                "brief_review",
+                pr_reviews.BriefReview(
+                    "pinboard-pr-review-brief-review/v1",
+                    str(item_id),
+                    brief_history_id,
+                    "preparer",
+                    "ready",
+                    "Self review is not independent.",
+                ),
+                started.subject_revision,
+                "preparer",
+            )
+            self.assertEqual("rejected", self_review["status"])
+            approved = accepted(
+                "review-brief",
+                "brief_review",
+                pr_reviews.BriefReview(
+                    "pinboard-pr-review-brief-review/v1",
+                    str(item_id),
+                    brief_history_id,
+                    "brief-reviewer",
+                    "ready",
+                    "Checked requirements and owners.",
+                ),
+                started.subject_revision,
+                "brief-reviewer",
+            )
+            head_one = "a" * 40
+            head_two = "b" * 40
+            observed = accepted(
+                "observe",
+                "observation",
+                pr_reviews.HeadObservation(
+                    "pinboard-pr-head-observation/v1", str(item_id), head_one, "harness git fetch"
+                ),
+                approved.subject_revision,
+            )
+            first = accepted(
+                "round",
+                "round",
+                pr_reviews.ReviewRound(
+                    "pinboard-pr-review-round/v1",
+                    str(item_id),
+                    brief_history_id,
+                    None,
+                    head_one,
+                    "harness git fetch",
+                    (pr_reviews.Finding("f1", "concern", "The edge case is unclear.", "src/example.py:12"),),
+                    ("Hosted checks were not inspected.",),
+                    (),
+                    "review-agent",
+                ),
+                observed.subject_revision,
+            )
+            observed_two = accepted(
+                "observe",
+                "observation",
+                pr_reviews.HeadObservation(
+                    "pinboard-pr-head-observation/v1", str(item_id), head_two, "harness git fetch"
+                ),
+                first.subject_revision,
+            )
+            second = accepted(
+                "round",
+                "round",
+                pr_reviews.ReviewRound(
+                    "pinboard-pr-review-round/v1",
+                    str(item_id),
+                    brief_history_id,
+                    first.rounds[-1].history_id,
+                    head_two,
+                    "harness git fetch",
+                    (pr_reviews.Finding("f1", "concern", "The edge case remains unclear.", "src/example.py:14"),),
+                    ("Hosted checks were not inspected.",),
+                    (pr_reviews.PriorFindingDisposition("f1", "carried-forward", "Same concern at the new head."),),
+                    "review-agent",
+                ),
+                observed_two.subject_revision,
+            )
+            head_three = "c" * 40
+            newer = accepted(
+                "observe",
+                "observation",
+                pr_reviews.HeadObservation(
+                    "pinboard-pr-head-observation/v1", str(item_id), head_three, "harness git fetch"
+                ),
+                second.subject_revision,
+            )
+            stale_close = action(
+                "close",
+                "close",
+                pr_reviews.ReviewClose(
+                    "pinboard-pr-review-close/v1",
+                    str(item_id),
+                    second.rounds[-1].history_id,
+                    head_two,
+                    None,
+                    None,
+                    (pr_reviews.FinalFindingDisposition("f1", "accepted-residual", "Human accepted the concern."),),
+                    "Stop at the reviewed head despite the newer observation.",
+                    "human",
+                    "stopped",
+                ),
+                newer.subject_revision,
+            )
+            self.assertEqual("rejected", stale_close["status"])
+            current = call_native_tool("pinboard_pr_review", {"request": {**common, "operation": "status"}})
+            self.assertEqual(head_three, msgspec.convert(current, type=contracts.PrReviewSuccess).unreviewed_head)
+            closed = accepted(
+                "close",
+                "close",
+                pr_reviews.ReviewClose(
+                    "pinboard-pr-review-close/v1",
+                    str(item_id),
+                    second.rounds[-1].history_id,
+                    head_two,
+                    head_three,
+                    "harness git fetch",
+                    (pr_reviews.FinalFindingDisposition("f1", "accepted-residual", "Human accepted the concern."),),
+                    "Stop at the reviewed head despite the newer observation.",
+                    "human",
+                    "stopped",
+                ),
+                newer.subject_revision,
+            )
+            self.assertIsNotNone(closed.close)
+            assert closed.close is not None
+            self.assertEqual(head_two, closed.close.last_reviewed_head)
+            self.assertEqual(head_three, closed.close.newer_observed_head)
+            after = call_native_tool("pinboard_pr_review", {"request": {**common, "operation": "status"}})
+            after_state = msgspec.convert(after, type=contracts.PrReviewSuccess)
+            self.assertEqual(2, len(after_state.rounds))
+            self.assertEqual("dropped", after_state.item_state)
+            self.assertEqual((), after_state.available_actions)
+            self.assertEqual(
+                "rejected",
+                action(
+                    "round",
+                    "round",
+                    pr_reviews.ReviewRound(
+                        "pinboard-pr-review-round/v1",
+                        str(item_id),
+                        brief_history_id,
+                        second.rounds[-1].history_id,
+                        head_three,
+                        "harness git fetch",
+                        (),
+                        (),
+                        (),
+                        "review-agent",
+                    ),
+                    closed.subject_revision,
+                )["status"],
+            )
+            fresh = SQLiteWorkStore(roots.database_path).validated_snapshot()
+            self.assertEqual(
+                "dropped", next(value.state.value for value in fresh.lifecycle.work_items if value.item_id == item_id)
+            )
+            exported = SQLiteWorkStore(roots.database_path).read_project_export_batches()[0]
+            round_inputs = tuple(
+                bytes(value.input_payload).decode("utf-8")
+                for value in exported.transition_receipts
+                if value.action_kind.value == "record-pr-round"
+            )
+            self.assertEqual(2, len(round_inputs))
+            self.assertIn(head_one, round_inputs[0])
+            self.assertIn(head_two, round_inputs[1])
+            item_view = (work_root / "views" / "items" / f"{item_id}.md").read_text()
+            self.assertIn(head_one, item_view)
+            self.assertIn(head_two, item_view)
+            self.assertIn(head_three, item_view)

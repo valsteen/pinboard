@@ -77,6 +77,11 @@ class ActionSemantics:
 
 
 class ActionKind(Enum):
+    START_PR_REVIEW = "start-pr-review"
+    REVIEW_PR_BRIEF = "review-pr-brief"
+    OBSERVE_PR_HEAD = "observe-pr-head"
+    RECORD_PR_ROUND = "record-pr-round"
+    CLOSE_PR_REVIEW = "close-pr-review"
     ACCEPT_CHECKPOINT = "accept-checkpoint"
     ACCEPT_REVIEW_AND_CONTINUE = "accept-review-and-continue"
     ACTIVATE = "activate"
@@ -104,6 +109,51 @@ class ActionKind(Enum):
 
 def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR0912
     match kind:
+        case ActionKind.START_PR_REVIEW:
+            return ActionSemantics(
+                "Record the brief that starts a human-owned PR review.",
+                LifecycleEffect.CHANGES_LIFECYCLE,
+                (Role.PROJECT,),
+                ActionSubjectKind.ITEM,
+                ActionLifecyclePrecondition.READY_ITEM,
+                "Begin review without an implementation attempt or worker authority.",
+            )
+        case ActionKind.REVIEW_PR_BRIEF:
+            return ActionSemantics(
+                "Independently check one exact human-owned PR review brief.",
+                LifecycleEffect.CHANGES_LIFECYCLE,
+                (Role.PROJECT,),
+                ActionSubjectKind.ITEM,
+                ActionLifecyclePrecondition.NONTERMINAL_ITEM,
+                "Record a separate review before a PR review round can begin.",
+            )
+        case ActionKind.RECORD_PR_ROUND:
+            return ActionSemantics(
+                "Record one exact observed PR head and its findings.",
+                LifecycleEffect.CHANGES_LIFECYCLE,
+                (Role.PROJECT,),
+                ActionSubjectKind.ITEM,
+                ActionLifecyclePrecondition.NONTERMINAL_ITEM,
+                "Append a review round while retaining earlier rounds.",
+            )
+        case ActionKind.OBSERVE_PR_HEAD:
+            return ActionSemantics(
+                "Record a harness-observed PR head without reviewing it.",
+                LifecycleEffect.CHANGES_LIFECYCLE,
+                (Role.PROJECT,),
+                ActionSubjectKind.ITEM,
+                ActionLifecyclePrecondition.NONTERMINAL_ITEM,
+                "Make an unreviewed newer head visible until another round or human-directed close.",
+            )
+        case ActionKind.CLOSE_PR_REVIEW:
+            return ActionSemantics(
+                "Close a human-owned PR review at the human's direction.",
+                LifecycleEffect.CHANGES_LIFECYCLE,
+                (Role.PROJECT,),
+                ActionSubjectKind.ITEM,
+                ActionLifecyclePrecondition.NONTERMINAL_ITEM,
+                "Preserve final dispositions and the last reviewed head.",
+            )
         case ActionKind.ACCEPT_CHECKPOINT:
             return ActionSemantics(
                 "Accept one independently reviewed checkpoint without completing its item.",

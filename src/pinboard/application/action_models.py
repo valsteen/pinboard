@@ -9,6 +9,7 @@ from typing import (
 
 import msgspec
 
+from pinboard.application import pr_reviews
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.history import WorkItemDefinitionPayload
 
@@ -148,7 +149,12 @@ class ReviseItemInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=
 
 
 type InputPayload = (
-    ResumeInputPayload
+    pr_reviews.ReviewBrief
+    | pr_reviews.BriefReview
+    | pr_reviews.HeadObservation
+    | pr_reviews.ReviewRound
+    | pr_reviews.ReviewClose
+    | ResumeInputPayload
     | RebindAttemptInputPayload
     | ActivateInputPayload
     | SubmitReviewInputPayload
@@ -173,6 +179,16 @@ def action_input_model(kind: decision_models.ActionKind) -> InputModel | None:  
     """Return the exact shared payload record selected by one action kind."""
 
     match kind:
+        case decision_models.ActionKind.START_PR_REVIEW:
+            return pr_reviews.ReviewBrief
+        case decision_models.ActionKind.REVIEW_PR_BRIEF:
+            return pr_reviews.BriefReview
+        case decision_models.ActionKind.OBSERVE_PR_HEAD:
+            return pr_reviews.HeadObservation
+        case decision_models.ActionKind.RECORD_PR_ROUND:
+            return pr_reviews.ReviewRound
+        case decision_models.ActionKind.CLOSE_PR_REVIEW:
+            return pr_reviews.ReviewClose
         case decision_models.ActionKind.ACCEPT_CHECKPOINT:
             return AcceptCheckpointInputPayload
         case decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE:

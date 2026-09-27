@@ -8,7 +8,7 @@ WORK_STATE_ROLES: dict[work_models.WorkState, str] = {
     work_models.WorkState.PAUSED: "preserved interruption",
     work_models.WorkState.BLOCKED: "waiting on a condition",
     work_models.WorkState.DEFERRED: "saved for a later decision",
-    work_models.WorkState.REVIEW: "protected candidate awaiting a decision",
+    work_models.WorkState.REVIEW: "candidate review or human-owned PR review",
 }
 
 ATTEMPT_STATE_ROLES: dict[work_models.AttemptState, str] = {
@@ -42,6 +42,11 @@ ACTION_GROUPS: dict[decision_models.ActionKind, str] = {
     decision_models.ActionKind.RESUME: "lifecycle",
     decision_models.ActionKind.RETURN_FOR_CORRECTION: "review",
     decision_models.ActionKind.RETAIN_TEMPORARILY: "relation",
+    decision_models.ActionKind.START_PR_REVIEW: "review",
+    decision_models.ActionKind.REVIEW_PR_BRIEF: "review",
+    decision_models.ActionKind.OBSERVE_PR_HEAD: "review",
+    decision_models.ActionKind.RECORD_PR_ROUND: "review",
+    decision_models.ActionKind.CLOSE_PR_REVIEW: "terminal",
     decision_models.ActionKind.SUBMIT_REVIEW: "review",
 }
 
@@ -96,7 +101,7 @@ DIAGRAM = Diagram(
     boxes=(
         Box("ready", "Ready", "Saved work", (), ("WorkState.READY",), 60, 80, 190, 90),
         Box("active", "Active", "Attempt underway", (), ("WorkState.ACTIVE",), 480, 80, 170, 90),
-        Box("review", "Review", "Exact candidate held", (), ("return · accept + continue",), 720, 80, 220, 90),
+        Box("review", "Review", "Candidate or human PR", (), ("round · return · accept",), 720, 80, 220, 90),
         Box(
             "terminal",
             "Terminal",

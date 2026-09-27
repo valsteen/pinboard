@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import io
 import json
+import shutil
 import stat
 import subprocess
 import sys
@@ -72,7 +73,7 @@ class ContributorTraceTest(unittest.TestCase):
         )
 
     def choose(self, project: Path, item_id: str | None) -> Path | None:
-        state = contributor_traces.read_project_trace_settings(project)
+        state = contributor_traces.read_project_trace_settings(project, None)
         assert state is not None
         return contributor_traces.automatic_trace_directory(state[0], state[1].value, item_id)
 
@@ -118,23 +119,23 @@ class ContributorTraceTest(unittest.TestCase):
     def test_uninitialized_unignored_and_malformed_local_settings_are_not_silent_opt_ins(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            self.assertIsNone(contributor_traces.read_project_trace_settings(directory))
+            self.assertIsNone(contributor_traces.read_project_trace_settings(directory, None))
             project = directory / "unignored"
             project.mkdir()
             subprocess.run(["git", "init", "-q", str(project)], check=True)
-            self.assertIsNone(contributor_traces.read_project_trace_settings(project))
+            self.assertIsNone(contributor_traces.read_project_trace_settings(project, None))
             (project / ".pinboard").mkdir()
-            self.assertIsNone(contributor_traces.read_project_trace_settings(project))
+            self.assertIsNone(contributor_traces.read_project_trace_settings(project, None))
             settings = project / ".pinboard" / contributor_traces.SETTINGS_NAME
             settings.write_text('[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = on\n')
             with self.assertRaisesRegex(ValueError, "Git-ignored"):
-                contributor_traces.read_project_trace_settings(project)
+                contributor_traces.read_project_trace_settings(project, None)
             primary, _ = self.project(directory)
             self.choose(primary, None)
             settings = primary / ".pinboard" / contributor_traces.SETTINGS_NAME
             settings.write_text("{}")
             with self.assertRaisesRegex(ValueError, "invalid or unreadable"):
-                contributor_traces.read_project_trace_settings(primary)
+                contributor_traces.read_project_trace_settings(primary, None)
             error = io.StringIO()
             with redirect_stderr(error):
                 self.assertEqual(
@@ -144,7 +145,7 @@ class ContributorTraceTest(unittest.TestCase):
             settings.unlink()
             settings.symlink_to(project / ".pinboard" / contributor_traces.SETTINGS_NAME)
             with self.assertRaisesRegex(ValueError, "regular file"):
-                contributor_traces.read_project_trace_settings(primary)
+                contributor_traces.read_project_trace_settings(primary, None)
 
     def test_ignored_setting_alone_cannot_enable_git_visible_traces(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -170,7 +171,7 @@ class ContributorTraceTest(unittest.TestCase):
                 raise FileIOError(FileIOErrorCode.FILE_ALREADY_EXISTS, "created by another caller")
 
             with patch.object(contributor_traces, "create_immutable", side_effect=concurrent_writer):
-                state = contributor_traces.read_project_trace_settings(primary)
+                state = contributor_traces.read_project_trace_settings(primary, None)
             self.assertIsNotNone(state)
             assert state is not None
             self.assertEqual("on", state[1].value.unsafe_persist_exact_pinboard_traces)
@@ -183,7 +184,7 @@ class ContributorTraceTest(unittest.TestCase):
                 ),
                 self.assertRaises(SettingResolutionError),
             ):
-                contributor_traces.read_project_trace_settings(primary)
+                contributor_traces.read_project_trace_settings(primary, None)
 
     def test_missing_project_mode_preserves_item_override_in_both_readers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -191,7 +192,7 @@ class ContributorTraceTest(unittest.TestCase):
             settings = primary / ".pinboard" / contributor_traces.SETTINGS_NAME
             original = '[item "one"]\n\tmode = on\n'
             settings.write_text(original)
-            state = contributor_traces.read_project_trace_settings(primary)
+            state = contributor_traces.read_project_trace_settings(primary, None)
             assert state is not None
             self.assertEqual("off", state[1].value.unsafe_persist_exact_pinboard_traces)
             self.assertEqual({"one": "on"}, state[1].value.item_overrides)
@@ -217,7 +218,7 @@ class ContributorTraceTest(unittest.TestCase):
                     tuple((primary / ".pinboard" / contributor_traces.TRACE_DIRECTORY).glob("pinboard-auto-cli-*.json"))
                 ),
             )
-            state = contributor_traces.read_project_trace_settings(primary)
+            state = contributor_traces.read_project_trace_settings(primary, None)
             assert state is not None
             self.assertEqual("off", state[1].value.unsafe_persist_exact_pinboard_traces)
             self.assertEqual({"one": "on"}, state[1].value.item_overrides)
@@ -226,7 +227,7 @@ class ContributorTraceTest(unittest.TestCase):
             invalid = "[unknown]\n\tmode = on\n" + original
             settings.write_text(invalid)
             with self.assertRaisesRegex(ValueError, "unknown key"):
-                contributor_traces.read_project_trace_settings(primary)
+                contributor_traces.read_project_trace_settings(primary, None)
             rejected = subprocess.run(
                 [str(launcher), "--project-root", str(worktree), "close", "one"],
                 capture_output=True,
@@ -239,7 +240,7 @@ class ContributorTraceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             primary, worktree = self.project(Path(temporary))
             work_root = primary / ".pinboard"
-            initial = contributor_traces.read_project_trace_settings(primary)
+            initial = contributor_traces.read_project_trace_settings(primary, None)
             assert initial is not None
             self.assertEqual((work_root / contributor_traces.SETTINGS_NAME).resolve(), initial[1].path)
             self.assertEqual("none", initial[1].effects.parent_creation)
@@ -307,7 +308,7 @@ class ContributorTraceTest(unittest.TestCase):
                 ),
                 self.assertRaises(SettingResolutionError) as failed,
             ):
-                contributor_traces.read_project_trace_settings(primary)
+                contributor_traces.read_project_trace_settings(primary, None)
             self.assertEqual(path.resolve(), failed.exception.path)
             self.assertEqual(
                 ("confirmed", "unconfirmed"),
@@ -328,7 +329,7 @@ class ContributorTraceTest(unittest.TestCase):
                 ),
                 self.assertRaises(SettingResolutionError) as failed_reread,
             ):
-                contributor_traces.read_project_trace_settings(primary)
+                contributor_traces.read_project_trace_settings(primary, None)
             self.assertIn("mode = off", path.read_text())
             self.assertEqual(
                 ("confirmed", "acknowledged"),
@@ -395,15 +396,62 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertEqual((cli_trace,), tuple(traces.glob("pinboard-auto-cli-*.json")))
             self.assertEqual((mcp_trace,), tuple(traces.glob("pinboard-auto-mcp-*.json")))
 
+    def test_prepared_cli_capture_retains_traces_with_explicit_work_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = Path(temporary) / "selected-work-root"
+            work_root.mkdir()
+            initialize_database(resolve_durable_roots(primary, work_root), SQLITE_NOW)
+            initialize_store(SQLiteWorkStore(work_root / "state.sqlite3"), complete_sqlite_state())
+            settings = work_root / contributor_traces.SETTINGS_NAME
+            settings.write_text('[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = off\n')
+            command = [
+                str(ROOT / "scripts" / "pinboard"),
+                "--project-root",
+                str(worktree),
+                "--work-root",
+                str(work_root),
+                "root",
+            ]
+            off = subprocess.run(command, capture_output=True, check=False)
+            self.assertEqual(0, off.returncode)
+            settings.write_text('[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = on\n')
+            directory = work_root / contributor_traces.TRACE_DIRECTORY
+            directory.mkdir(mode=0o700)
+            for index in range(contributor_traces.TRACE_LIMIT + 3):
+                (directory / f"pinboard-auto-cli-old-{index:04}.json").write_bytes(b"x")
+            on = subprocess.run(command, capture_output=True, check=False)
+            self.assertEqual(0, on.returncode)
+            self.assertEqual(off.stdout, on.stdout)
+            self.assertEqual(off.stderr, on.stderr)
+            self.assertEqual(contributor_traces.TRACE_LIMIT, len(tuple(directory.glob("pinboard-auto-*.json"))))
+            [published] = tuple(directory.glob("pinboard-auto-cli-[0-9a-f]*.json"))
+            record = json.loads(published.read_bytes())
+            self.assertEqual(on.stdout, bytes.fromhex(record["stdout"]["data"]))
+
+    def test_cli_prune_failure_reports_post_target_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            selected = Path(temporary) / "invocation-traces" / "pinboard-auto-cli-example.json"
+            error = io.StringIO()
+            with (
+                patch.object(contributor_traces, "prune_cli_traces", side_effect=OSError("retention denied")),
+                redirect_stderr(error),
+            ):
+                self.assertEqual(64, entrypoint.main(("--contributor-capture-prune", str(selected))))
+            self.assertIn("retention cleanup failed after Pinboard ran", error.getvalue())
+
     def test_attempt_selector_uses_its_saved_item_override(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             primary, worktree = self.project(Path(temporary))
-            work_root = primary / ".pinboard"
+            work_root = Path(temporary) / "selected-work-root"
+            work_root.mkdir()
             database = work_root / "state.sqlite3"
             initialize_database(resolve_durable_roots(primary, work_root), SQLITE_NOW)
             initialize_store(SQLiteWorkStore(database), complete_sqlite_state())
-            self.choose(primary, None)
-            self.settings(primary, "off", {"work-a": "on"})
+            (work_root / contributor_traces.SETTINGS_NAME).write_text(
+                '[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = off\n[item "work-a"]\n\tmode = on\n',
+                encoding="utf-8",
+            )
             capture = execution.AutomaticCapture(common.select_capture_item).resolve(
                 str(worktree),
                 {"request": {"project_root": str(worktree), "work_root": str(work_root), "attempt_id": "work-a-1"}},
@@ -425,8 +473,120 @@ class ContributorTraceTest(unittest.TestCase):
             for mode in ("off", "on"):
                 with self.subTest(mode=mode), patch.object(Path, "mkdir", deny_parent_write):
                     self.settings(primary, mode, {})
-                    selected = capture.resolve(str(worktree), {"item_id": "missing"})
+                    selected = capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "missing"})
                     self.assertEqual(mode == "on", selected is not None)
+
+    def test_explicit_work_root_never_writes_shared_trace_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            selected_root = Path(temporary) / "selected-work-root"
+            selected_root.mkdir()
+            arguments: dict[str, JsonValue] = {
+                "project_root": str(worktree),
+                "work_root": str(selected_root),
+                "item_id": "missing",
+            }
+            called = 0
+
+            def callback(_token: execution.CancellationToken) -> execution.OperationResult:
+                nonlocal called
+                called += 1
+                return execution.OperationResult({"ok": True}, "ok", None)
+
+            def identity_result(_operation: str, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
+                return value
+
+            original_create = contributor_traces.create_immutable
+
+            def deny_shared(path: Path, content: bytes) -> bool:
+                if path.is_relative_to(primary / ".pinboard"):
+                    raise PermissionError("shared work root is read-only")
+                return original_create(path, content)
+
+            async def run() -> dict[str, JsonValue]:
+                executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+                try:
+                    return await execution._run_request(
+                        executor,
+                        execution.Diagnostics(io.StringIO(), event_limit=10, line_limit=300),
+                        1,
+                        server.ITEM_STATUS_TOOL,
+                        str(worktree),
+                        callback,
+                        arguments=arguments,
+                        capture=execution.AutomaticCapture(common.select_capture_item),
+                    )
+                finally:
+                    executor.shutdown()
+
+            with (
+                patch.object(contributor_traces, "create_immutable", side_effect=deny_shared),
+                patch.object(execution.contract_schemas, "validate_result", side_effect=identity_result),
+            ):
+                self.assertEqual({"ok": True}, asyncio.run(run()))
+                self.assertEqual(1, called)
+                self.assertFalse((primary / ".pinboard" / contributor_traces.SETTINGS_NAME).exists())
+                selected_settings = selected_root / contributor_traces.SETTINGS_NAME
+                self.assertIn("mode = off", selected_settings.read_text())
+                selected_settings.write_text('[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = on\n')
+                trace_directory = selected_root / contributor_traces.TRACE_DIRECTORY
+                trace_directory.mkdir(mode=0o755)
+                with self.assertRaisesRegex(ToolError, "selected-work-root.*private directory.*target did not run"):
+                    asyncio.run(run())
+                self.assertEqual(1, called)
+
+    def test_unprepared_launcher_uses_explicit_trace_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            selected_root = Path(temporary) / "selected-work-root"
+            selected_root.mkdir()
+            launcher_root = Path(temporary) / "unprepared-plugin"
+            (launcher_root / "scripts").mkdir(parents=True)
+            launcher = launcher_root / "scripts" / "pinboard"
+            launcher.write_bytes((ROOT / "scripts" / "pinboard").read_bytes())
+            launcher.chmod(0o755)
+            command = [str(launcher), "--project-root", str(worktree), "--work-root", str(selected_root), "root"]
+            off = subprocess.run(command, capture_output=True, check=False)
+            self.assertEqual(78, off.returncode)
+            self.assertIn(b"runtime-preparation-required", off.stdout)
+            self.assertFalse((primary / ".pinboard" / contributor_traces.SETTINGS_NAME).exists())
+            selected_settings = selected_root / contributor_traces.SETTINGS_NAME
+            self.assertIn("mode = off", selected_settings.read_text())
+            selected_settings.write_text('[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = on\n')
+            trace_directory = selected_root / contributor_traces.TRACE_DIRECTORY
+            trace_directory.mkdir(mode=0o755)
+            on = subprocess.run(command, capture_output=True, check=False)
+            self.assertEqual(64, on.returncode)
+            self.assertEqual(b"", on.stdout)
+            self.assertIn(str(trace_directory).encode(), on.stderr)
+            self.assertIn(b"target did not run", on.stderr)
+            trace_directory.chmod(0o700)
+            recovered = subprocess.run(command, capture_output=True, check=False)
+            self.assertEqual(78, recovered.returncode)
+            self.assertIn(b"runtime-preparation-required", recovered.stdout)
+            self.assertEqual(1, len(tuple(trace_directory.glob("pinboard-auto-cli-*.json"))))
+
+            subprocess.run(["git", "init", "-q", temporary], check=True)
+            (selected_root / ".git").write_text("gitdir: /missing\n")
+            visible = subprocess.run(
+                ["git", "-C", temporary, "status", "--short", "--untracked-files=all"],
+                capture_output=True,
+                check=True,
+            )
+            self.assertIn(b"selected-work-root/contributor-traces.config", visible.stdout)
+            self.assertIn(b"selected-work-root/invocation-traces/", visible.stdout)
+            rejected = subprocess.run(command, capture_output=True, check=False)
+            self.assertEqual(64, rejected.returncode)
+            self.assertEqual(b"", rejected.stdout)
+            self.assertIn(str(selected_settings).encode(), rejected.stderr)
+            self.assertIn(b"Git status could not be verified", rejected.stderr)
+            self.assertIn(b"target did not run", rejected.stderr)
+            self.assertEqual(1, len(tuple(trace_directory.glob("pinboard-auto-cli-*.json"))))
+            (selected_root / ".git").unlink()
+            shutil.rmtree(Path(temporary) / ".git")
+            restored = subprocess.run(command, capture_output=True, check=False)
+            self.assertEqual(78, restored.returncode)
+            self.assertEqual(2, len(tuple(trace_directory.glob("pinboard-auto-cli-*.json"))))
 
     def test_mcp_item_attribution_covers_supported_request_envelopes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -454,12 +614,13 @@ class ContributorTraceTest(unittest.TestCase):
                 "unmapped", common.select_capture_item(primary, None, {"action_id": {"subject": "unmapped"}})
             )
             capture = execution.AutomaticCapture(common.select_capture_item)
-            self.assertIsNone(capture.resolve(str(worktree), {"item_id": "another"}))
-            self.assertIsNone(capture.resolve(str(Path(temporary)), {"item_id": "work-a"}))
-            self.assertIsNotNone(capture.resolve(str(worktree), {"item_id": "work-a"}))
+            self.assertIsNone(capture.resolve(str(worktree), {"item_id": "work-a"}))
+            self.assertIsNone(capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "another"}))
+            self.assertIsNone(capture.resolve(str(Path(temporary)), {"work_root": str(work_root), "item_id": "work-a"}))
+            self.assertIsNotNone(capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "work-a"}))
             self.settings(primary, "off", {"work-a": "invalid"})
             with self.assertRaises(ToolError):
-                capture.resolve(str(worktree), {"item_id": "work-a"})
+                capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "work-a"})
 
     def test_mcp_startup_uses_automatic_mode_unless_manual_capture_was_declared(self) -> None:
         async def no_transport() -> None:
@@ -735,7 +896,7 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertEqual(64, cli.returncode)
             self.assertEqual(b"", cli.stdout)
 
-            async def mcp_call() -> bool:
+            async def mcp_call() -> tuple[bool, str]:
                 parameters = StdioServerParameters(
                     command=str(ROOT / "scripts" / "pinboard"), args=("--mcp",), cwd=ROOT
                 )
@@ -745,9 +906,12 @@ class ContributorTraceTest(unittest.TestCase):
                         server.ITEM_STATUS_TOOL,
                         {"project_root": str(primary), "work_root": str(primary / ".pinboard"), "item_id": "one"},
                     )
-                    return result.is_error
+                    return result.is_error, str(result.content)
 
-            self.assertTrue(asyncio.run(mcp_call()))
+            rejected, message = asyncio.run(mcp_call())
+            self.assertTrue(rejected)
+            self.assertIn(str(primary / ".pinboard"), message)
+            self.assertIn("private directory", message)
             self.assertEqual((), tuple(directory.glob("pinboard-auto-*.json")))
 
     def test_long_lived_mcp_process_reloads_item_mode_before_each_call(self) -> None:

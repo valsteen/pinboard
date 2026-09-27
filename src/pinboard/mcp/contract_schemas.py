@@ -114,20 +114,56 @@ from pinboard.mcp.contracts import (
 )
 
 
-def omit_regex_lookarounds(schema: dict[str, JsonSchemaValue]) -> None:
-    """Temporarily omit lookarounds rejected on a reported Claude Code → LiteLLM → OpenAI route.
+def _portable_pattern(pattern: str) -> tuple[str, str | None]:
+    if not pattern.startswith(r"\A") or not pattern.endswith(r"\z"):
+        raise ValueError(f"Unsupported canonical MCP pattern: {pattern}")
+    component = r"(?:[^./\r\n\x00]|\.[^./\r\n\x00]|\.\.[^/\r\n\x00])[^/\r\n\x00]*"
+    trimmed_component = (
+        r"(?:[^.\s/\r\n\x00](?:[^/\r\n\x00]*[^\s/\r\n\x00])?"
+        r"|\.(?:[^.\s/\r\n\x00]|[^./\r\n\x00][^/\r\n\x00]*[^\s/\r\n\x00]"
+        r"|\.[^/\r\n\x00]*[^\s/\r\n\x00]))"
+    )
+    special = {
+        r"\A(?!\.{1,2}\z)[^/\r\n\x00]+\z": f"^{component}$",
+        r"\A(?!\s)(?!\.{1,2}\z)[^/\r\n\x00]*[^\s/\r\n\x00]\z": f"^{trimmed_component}$",
+    }
+    python_space = r"\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000"
+    projected = special.get(pattern, f"^{pattern[2:-2]}$")
+    projected = projected.replace(r"\S", f"[^{python_space}]").replace(r"\s", python_space)
+    if any(marker in projected for marker in (r"\A", r"\z", "(?=", "(?!", "(?<=", "(?<!")):
+        raise ValueError(f"Unsupported canonical MCP pattern: {pattern}")
+    if pattern == r"\A[^\x00]+\z":
+        return projected, None
+    if pattern == r"\A[^\n]+\z":
+        return projected, r"\n$"
+    if pattern == r"\A(?!\.{1,2}\z)[^/\r\n\x00]+\z":
+        return projected, r"[\r\n]$"
+    return projected, r"[\r\n\u2028\u2029]$"
 
-    The rejecting component is unknown. Remove this projection when the affected
-    route accepts the original schemas; runtime request validation stays strict.
-    """
+
+def project_regex_patterns(schema: dict[str, JsonSchemaValue]) -> None:
+    """Expose canonical field formats with ECMAScript-compatible patterns."""
+
+    seen: set[int] = set()
 
     def visit(value: JsonSchemaValue) -> None:
+        if isinstance(value, (dict, list)):
+            if id(value) in seen:
+                return
+            seen.add(id(value))
         if isinstance(value, dict):
+            for key, child in list(value.items()):
+                if key not in {"const", "enum", "default", "examples"}:
+                    visit(child)
             pattern = value.get("pattern")
-            if isinstance(pattern, str) and any(marker in pattern for marker in ("(?=", "(?!", "(?<=", "(?<!")):
-                del value["pattern"]
-            for child in value.values():
-                visit(child)
+            if isinstance(pattern, str):
+                projected, terminator = _portable_pattern(pattern)
+                value["pattern"] = projected
+                if terminator is not None:
+                    # ECMAScript $ also matches just before a final line terminator.
+                    if "allOf" in value:
+                        raise ValueError(f"MCP pattern already has composed constraints: {pattern}")
+                    value["allOf"] = [{"not": {"pattern": terminator}}]
         elif isinstance(value, list):
             for child in value:
                 visit(child)

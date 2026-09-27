@@ -22,7 +22,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pinboard.adapters.files import contributor_traces, git_config
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
 from pinboard.adapters.files.file_io import resolve_durable_roots
-from pinboard.adapters.files.setting_resolution import SettingEffects, SettingResolution, SettingResolutionError
+from pinboard.adapters.files.setting_resolution import SettingResolutionError
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.cli import entrypoint
@@ -472,21 +472,11 @@ class ContributorTraceTest(unittest.TestCase):
                 _executor: execution.BoundedExecutor,
                 _diagnostics: execution.Diagnostics,
                 capture: execution.SemanticCapture | execution.AutomaticCapture | None,
-                *,
-                omit_regex_lookarounds: bool,
             ) -> SimpleNamespace:
-                self.assertTrue(omit_regex_lookarounds)
                 captures.append(capture)
                 return SimpleNamespace(run_stdio_async=no_transport)
 
-            with (
-                patch.object(server, "create_server", side_effect=create_server),
-                patch.object(
-                    server,
-                    "read_mcp_omit_regex_lookarounds",
-                    return_value=SettingResolution(Path("config"), True, SettingEffects("none", "none", "none")),
-                ),
-            ):
+            with patch.object(server, "create_server", side_effect=create_server):
                 with patch.object(sys, "argv", ["pinboard-mcp"]):
                     server.main()
                 self.assertIsInstance(captures[-1], execution.AutomaticCapture)

@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 
 from pinboard.adapters.files.errors import FileIOError
 from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory, remove_replaceable
@@ -36,9 +37,9 @@ def _bullets(values: tuple[str, ...]) -> str:
 @dataclass(frozen=True, slots=True)
 class _ViewInputs:
     overview: query_models.WorkOverview
-    overview_items: dict[str, query_models.OverviewItem]
-    dependencies: dict[WorkItemId, tuple[WorkItemId, ...]]
-    definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision]
+    overview_items: Mapping[str, query_models.OverviewItem]
+    dependencies: Mapping[WorkItemId, tuple[WorkItemId, ...]]
+    definitions: Mapping[WorkItemId, stored_state.ItemDefinitionRevision]
 
 
 def _project_view_inputs(state: stored_state.StoredWorkState, now: datetime) -> _ViewInputs:
@@ -48,9 +49,9 @@ def _project_view_inputs(state: stored_state.StoredWorkState, now: datetime) -> 
         dependency_groups[dependency.item_id].append(dependency.dependency_id)
     return _ViewInputs(
         overview,
-        {item.item_id: item for item in overview.items},
-        {item_id: tuple(dependencies) for item_id, dependencies in dependency_groups.items()},
-        {definition.item_id: definition for definition in state.lifecycle.definition_revisions},
+        MappingProxyType({item.item_id: item for item in overview.items}),
+        MappingProxyType({item_id: tuple(dependencies) for item_id, dependencies in dependency_groups.items()}),
+        MappingProxyType({definition.item_id: definition for definition in state.lifecycle.definition_revisions}),
     )
 
 
@@ -241,7 +242,7 @@ def derive_expected_view_bytes(
     attempt_briefs: Mapping[AttemptId, bytes],
     *,
     now: datetime,
-) -> dict[str, bytes]:
+) -> Mapping[str, bytes]:
     """Return every generated selector and its canonical bytes for one SQLite snapshot."""
 
     view_inputs = _project_view_inputs(state, now)
@@ -265,4 +266,4 @@ def derive_expected_view_bytes(
     expected_views.update(
         (f"history/{receipt.history_id}.md", _render_history(receipt)) for receipt in state.transition_receipts
     )
-    return expected_views
+    return MappingProxyType(expected_views)

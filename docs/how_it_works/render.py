@@ -79,7 +79,7 @@ An action names its subject once; its payload supplies the change specific to th
 - `artifact_verify` checks immutable accepted bytes. `candidate_observe` identifies the actual tracked working-tree candidate, and `review_job` binds that candidate, brief, result, and selected history into a separate reviewer launch.
 - `attempt_inspect` exposes one attempt's current continuation. `candidate_restore` can restore its accepted candidate into an exact clean checkout, while `transition` alone applies a freshly discovered lifecycle mutation.
 
-The complete surface also contains focused project and definition reads, priority and parallel planning, and status operations. Preparation and attempt authority are time-limited claims identifying which agent may prepare or work on an item. They prevent a former worker from acting after replacement; they do not authorize a change to the agreed goal. Each operation has one advertised data scope and effect, so an agent cannot treat a convenient read, prompt publication, or stale receipt as mutation authority.
+The complete surface also contains focused project and definition reads, priority and parallel planning, and status operations. Action decisions accumulate legal choices in local lists and hand ordered tuples to their callers; snapshot lookups expose read-only maps. Preparation and attempt authority are time-limited claims identifying which agent may prepare or work on an item. They prevent a former worker from acting after replacement; they do not authorize a change to the agreed goal. Each operation has one advertised data scope and effect, so an agent cannot treat a convenient read, prompt publication, or stale receipt as mutation authority.
 
 ## Work survives its current execution
 

@@ -1,5 +1,6 @@
 """Present bounded current work facts without complete-state acquisition."""
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import msgspec
@@ -17,7 +18,7 @@ class StatusView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     work_root: str
     revision: str
     active_attempts: tuple[str, ...]
-    counts: dict[str, int]
+    counts: Mapping[str, int]
     ready_item_count: int
     authority: str
 

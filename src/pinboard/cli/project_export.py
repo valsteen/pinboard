@@ -1,7 +1,9 @@
 """Read-only composition for the complete portable project export."""
 
 import base64
+from collections.abc import Mapping
 from pathlib import PurePosixPath
+from types import MappingProxyType
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
@@ -11,14 +13,16 @@ from pinboard.cli import cli_commands, work_state
 from pinboard.cli.cli_output import write_json
 from pinboard.domain.identifiers import ArtifactRefId
 
-MEDIA_TYPE_BY_SUFFIX = {
-    ".json": "application/json",
-    ".md": "text/markdown",
-    ".patch": "text/x-diff",
-    ".txt": "text/plain",
-    ".yaml": "application/yaml",
-    ".yml": "application/yaml",
-}
+MEDIA_TYPE_BY_SUFFIX: Mapping[str, str] = MappingProxyType(
+    {
+        ".json": "application/json",
+        ".md": "text/markdown",
+        ".patch": "text/x-diff",
+        ".txt": "text/plain",
+        ".yaml": "application/yaml",
+        ".yml": "application/yaml",
+    }
+)
 
 
 def _encode_artifact_content(reference_id: int, value: bytes) -> project_export.ProjectExportArtifactContent:
@@ -39,7 +43,7 @@ def _read_and_encode_artifacts(
 ) -> tuple[
     tuple[project_export.ProjectExportArtifactReference, ...],
     tuple[project_export.ProjectExportArtifactContent, ...],
-    dict[ArtifactRefId, bytes],
+    Mapping[ArtifactRefId, bytes],
 ]:
     projected_references: list[project_export.ProjectExportArtifactReference] = []
     encoded_contents: list[project_export.ProjectExportArtifactContent] = []
@@ -57,7 +61,7 @@ def _read_and_encode_artifacts(
         verified_artifacts[reference.artifact_ref_id] = verified_bytes
         projected_references.append(project_export.project_artifact_reference(reference, media_type=media_type))
         encoded_contents.append(_encode_artifact_content(int(reference.artifact_ref_id), verified_bytes))
-    return tuple(projected_references), tuple(encoded_contents), verified_artifacts
+    return tuple(projected_references), tuple(encoded_contents), MappingProxyType(verified_artifacts)
 
 
 def export_project(

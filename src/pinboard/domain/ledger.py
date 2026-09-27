@@ -1,4 +1,6 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, HistoryId, LeaseId, ProposalId, WorkItemId
@@ -23,8 +25,8 @@ class LedgerSnapshot:
     planned_replacements: tuple[work_models.PlannedReplacement, ...] = ()
     replacement_dispositions: tuple[work_models.ReplacementDisposition, ...] = ()
 
-    def work_items_by_id(self) -> dict[WorkItemId, work_models.WorkItem]:
-        return {item.work_item_id: item for item in self.items}
+    def work_items_by_id(self) -> Mapping[WorkItemId, work_models.WorkItem]:
+        return MappingProxyType({item.work_item_id: item for item in self.items})
 
     def work_item(self, work_item_id: WorkItemId) -> work_models.WorkItem | None:
         return next((item for item in self.items if item.work_item_id == work_item_id), None)
@@ -35,8 +37,8 @@ class LedgerSnapshot:
     def definition(self, work_item_id: WorkItemId) -> work_models.DefinitionAnchor | None:
         return next((definition for definition in self.definitions if definition.work_item_id == work_item_id), None)
 
-    def attempts_by_id(self) -> dict[AttemptId, work_models.AttemptRecord]:
-        return {attempt.attempt: attempt for attempt in self.attempts}
+    def attempts_by_id(self) -> Mapping[AttemptId, work_models.AttemptRecord]:
+        return MappingProxyType({attempt.attempt: attempt for attempt in self.attempts})
 
     def attempt(self, attempt_id: AttemptId) -> work_models.AttemptRecord | None:
         return next((attempt for attempt in self.attempts if attempt.attempt == attempt_id), None)

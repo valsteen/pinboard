@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -272,7 +273,7 @@ def _review_histories(
 
 
 def _dispatch_job(
-    project_root: str, work_root: str, dispatch: dict[str, JsonValue], token: execution.CancellationToken
+    project_root: str, work_root: str, dispatch: Mapping[str, JsonValue], token: execution.CancellationToken
 ) -> execution.OperationResult:
     token.checkpoint()
     schema = "pinboard-mcp-dispatch-result/v1"
@@ -376,7 +377,7 @@ def _dispatch_job(
 
 
 def _review_job(
-    project_root: str, work_root: str, review: dict[str, JsonValue], token: execution.CancellationToken
+    project_root: str, work_root: str, review: Mapping[str, JsonValue], token: execution.CancellationToken
 ) -> execution.OperationResult:
     token.checkpoint()
     schema = "pinboard-mcp-review-job-result/v1"

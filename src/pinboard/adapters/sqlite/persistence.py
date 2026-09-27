@@ -1,10 +1,11 @@
 """Persist one accepted application mutation inside one SQLite write transaction."""
 
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from types import TracebackType
+from types import MappingProxyType, TracebackType
 from typing import Literal, Self, assert_never
 
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
@@ -79,9 +80,9 @@ from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, Wor
 
 @dataclass(frozen=True, slots=True)
 class _PersistenceFacts:
-    items: dict[WorkItemId, stored_state.StoredWorkItem]
-    attempts: dict[AttemptId, stored_state.StoredAttempt]
-    definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision]
+    items: Mapping[WorkItemId, stored_state.StoredWorkItem]
+    attempts: Mapping[AttemptId, stored_state.StoredAttempt]
+    definitions: Mapping[WorkItemId, stored_state.ItemDefinitionRevision]
 
     def work_item(self, work_item_id: WorkItemId) -> stored_state.StoredWorkItem:
         try:
@@ -192,7 +193,7 @@ def _read_persistence_facts(connection: sqlite3.Connection, mutation: StoredStat
         ).fetchone()
         if row is not None:
             definitions[item_id] = decode_definition_revision(row)
-    return _PersistenceFacts(items, attempts, definitions)
+    return _PersistenceFacts(MappingProxyType(items), MappingProxyType(attempts), MappingProxyType(definitions))
 
 
 def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every closed mutation effect

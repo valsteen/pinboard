@@ -5,7 +5,9 @@ their operation facts; remaining projections select from an already-loaded compl
 snapshot. These functions never read files, mutate state, or present output.
 """
 
+from collections.abc import Mapping
 from datetime import datetime
+from types import MappingProxyType
 from typing import assert_never
 
 from pinboard.application import ports, query_models, released_v6_compatibility, stored_state, work_brief_models
@@ -484,8 +486,8 @@ def _project_selected_preparation_status(
 def _proposal_maps(
     proposals: tuple[stored_state.StoredProposal, ...],
 ) -> tuple[
-    dict[WorkItemId, stored_state.StoredProposal],
-    dict[tuple[WorkItemId, WorkItemId], stored_state.StoredProposal],
+    Mapping[WorkItemId, stored_state.StoredProposal],
+    Mapping[tuple[WorkItemId, WorkItemId], stored_state.StoredProposal],
 ]:
     by_item = {WorkItemId(proposal.proposal_id): proposal for proposal in proposals}
     prerequisites = {
@@ -493,12 +495,12 @@ def _proposal_maps(
         for proposal in proposals
         if isinstance(proposal.relation, work_models.PrerequisiteProposalRelation)
     }
-    return by_item, prerequisites
+    return MappingProxyType(by_item), MappingProxyType(prerequisites)
 
 
 def _dependency_reason(
-    proposals: dict[WorkItemId, stored_state.StoredProposal],
-    prerequisite_proposals: dict[tuple[WorkItemId, WorkItemId], stored_state.StoredProposal],
+    proposals: Mapping[WorkItemId, stored_state.StoredProposal],
+    prerequisite_proposals: Mapping[tuple[WorkItemId, WorkItemId], stored_state.StoredProposal],
     work_item_id: WorkItemId,
     dependency_id: WorkItemId,
 ) -> query_models.DependencyReason:
@@ -520,7 +522,7 @@ def _dependency_reason(
 
 
 def _proposal_origin(
-    proposals: dict[WorkItemId, stored_state.StoredProposal], work_item_id: WorkItemId
+    proposals: Mapping[WorkItemId, stored_state.StoredProposal], work_item_id: WorkItemId
 ) -> query_models.ProposalOrigin | None:
     proposal = proposals.get(work_item_id)
     if proposal is None:
@@ -653,8 +655,8 @@ def _project_overview_item(
     item: work_models.WorkItem,
     definition: work_models.WorkItemDefinition,
     live_dependencies: frozenset[WorkItemId],
-    proposals: dict[WorkItemId, stored_state.StoredProposal],
-    prerequisite_proposals: dict[tuple[WorkItemId, WorkItemId], stored_state.StoredProposal],
+    proposals: Mapping[WorkItemId, stored_state.StoredProposal],
+    prerequisite_proposals: Mapping[tuple[WorkItemId, WorkItemId], stored_state.StoredProposal],
     preparation: query_models.PreparationAuthorityStatus | None,
     replacement: work_models.PlannedReplacement | None,
     replacement_disposition: work_models.ReplacementDisposition | None,

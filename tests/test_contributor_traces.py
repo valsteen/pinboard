@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import MutableMapping
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -194,6 +195,7 @@ class ContributorTraceTest(unittest.TestCase):
             assert state is not None
             self.assertEqual("off", state[1].value.unsafe_persist_exact_pinboard_traces)
             self.assertEqual({"one": "on"}, state[1].value.item_overrides)
+            self.assertNotIsInstance(state[1].value.item_overrides, MutableMapping)
             self.assertEqual(("none", "acknowledged"), (state[1].effects.file_creation, state[1].effects.key_write))
             self.assertIn(original, settings.read_text())
             settings.write_text(original)

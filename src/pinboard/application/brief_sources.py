@@ -2,6 +2,7 @@
 
 import hashlib
 import re
+from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import Final, Protocol
 
@@ -108,7 +109,7 @@ def select_brief_source_bytes(
 def _reject_overlap(
     request: BriefSourceRequest,
     selected: SelectedBriefSource,
-    prior_ranges: list[tuple[str, PurePosixPath, int, int]],
+    prior_ranges: Sequence[tuple[str, PurePosixPath, int, int]],
 ) -> BriefSourceFailure | None:
     for prior_id, prior_path, prior_start, prior_end in prior_ranges:
         if selected.selector.relative_path != prior_path:

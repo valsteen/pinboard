@@ -8,8 +8,10 @@ persisted-invariant failures remain exceptional; the transaction owner stays in
 
 import sqlite3
 from collections import Counter
+from collections.abc import Mapping, Set
 from datetime import datetime
 from itertools import pairwise
+from types import MappingProxyType
 
 import msgspec
 
@@ -167,9 +169,9 @@ def _dependency_identity_position(value: stored_state.ItemDependency) -> tuple[s
 
 def _current_definitions(
     state: stored_state.StoredWorkState,
-    item_ids: set[WorkItemId],
+    item_ids: Set[WorkItemId],
     error_code: StorageErrorCode,
-) -> dict[WorkItemId, stored_state.ItemDefinitionRevision]:
+) -> Mapping[WorkItemId, stored_state.ItemDefinitionRevision]:
     definitions_by_item: dict[WorkItemId, list[stored_state.ItemDefinitionRevision]] = {
         item_id: [] for item_id in item_ids
     }
@@ -190,13 +192,13 @@ def _current_definitions(
         ):
             raise StorageError(error_code, "Definition history digest links are not contiguous.")
         current_definitions[item_id] = ordered[-1]
-    return current_definitions
+    return MappingProxyType(current_definitions)
 
 
 def _validate_dependencies(
     state: stored_state.StoredWorkState,
-    item_ids: set[WorkItemId],
-    current_definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision],
+    item_ids: Set[WorkItemId],
+    current_definitions: Mapping[WorkItemId, stored_state.ItemDefinitionRevision],
     error_code: StorageErrorCode,
 ) -> None:
     dependency_groups: dict[WorkItemId, list[WorkItemId]] = {item_id: [] for item_id in item_ids}
@@ -227,7 +229,7 @@ def _replacement_revision(value: stored_state.StoredPlannedReplacement) -> int:
 
 def _validate_replacements(
     records: stored_state.ReplacementRecords,
-    item_ids: set[WorkItemId],
+    item_ids: Set[WorkItemId],
     error_code: StorageErrorCode,
 ) -> None:
     replacements_by_item: dict[WorkItemId, list[stored_state.StoredPlannedReplacement]] = {}

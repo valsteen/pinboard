@@ -1,4 +1,5 @@
 import unittest
+from collections.abc import MutableMapping
 
 from pinboard.domain.identifiers import LeaseId, WorkItemId
 from tests.decision_support import project_decision_snapshot
@@ -15,6 +16,8 @@ class DecisionProjectionTest(unittest.TestCase):
             tuple(item.work_item_id for item in snapshot.items),
         )
         self.assertEqual((WorkItemId("work-c"),), snapshot.work_items_by_id()[WorkItemId("work-a")].depends_on)
+        self.assertNotIsInstance(snapshot.work_items_by_id(), MutableMapping)
+        self.assertNotIsInstance(snapshot.attempts_by_id(), MutableMapping)
         self.assertEqual((1, 2, 3, 4), tuple(item.queue_position for item in snapshot.items))
         sparse_item = snapshot.work_items_by_id()[WorkItemId("intake-work")]
         self.assertIsNone(sparse_item.source)

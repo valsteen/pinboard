@@ -50,6 +50,7 @@ class McpSchemaProjectionTest(unittest.TestCase):
         executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
         diagnostics = execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+
         def retain_canonical(_schema: dict[str, JsonSchemaValue]) -> None:
             return None
 

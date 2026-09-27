@@ -1,6 +1,7 @@
 """Stable MCP wire tool names shared by registration and launch recipes."""
 
 ITEM_STATUS_TOOL = "pinboard_item_status"
+PR_REVIEW_TOOL = "pinboard_pr_review"
 PROPOSAL_CREATE_TOOL = "pinboard_proposal_create"
 BRIEF_PUBLISH_TOOL = "pinboard_brief_publish"
 OVERVIEW_TOOL = "pinboard_overview"

@@ -14,7 +14,7 @@ from types import MappingProxyType
 from pinboard.adapters.files.errors import FileIOError
 from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory, remove_replaceable
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
-from pinboard.application import query_models, stored_state
+from pinboard.application import pr_reviews, query_models, stored_state
 from pinboard.application.queries import project_overview
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, WorkItemId
@@ -60,6 +60,7 @@ def _render_item(
     dependencies: tuple[WorkItemId, ...],
     overview_item: query_models.OverviewItem | None,
     definition: stored_state.ItemDefinitionRevision,
+    review_history: tuple[stored_state.StoredTransitionReceipt, ...],
 ) -> bytes:
     dependency_reasons = (
         tuple(f"{value.item_id}: {value.reason}" for value in overview_item.dependency_reasons)
@@ -109,6 +110,8 @@ def _render_item(
                 for value in accepted.obligations
             )
         )
+        + "\n"
+        + pr_reviews.render_review_history(item.item_id, review_history)
         + "\n## Record details\n\n"
         + f"- Item: {item.item_id}\n"
         + f"- Queue position: {item.queue_position if item.queue_position is not None else 'none'}\n"
@@ -201,7 +204,9 @@ def _write_facts(
             item = selected.work_item
             atomic_replace(
                 item_root / f"{item.item_id}.md",
-                _render_item(item, selected.dependencies, selected.overview, selected.definition),
+                _render_item(
+                    item, selected.dependencies, selected.overview, selected.definition, selected.review_history
+                ),
             )
     if facts.attempts:
         attempt_root = ensure_child_directory(view_root, "attempts")
@@ -255,6 +260,7 @@ def derive_expected_view_bytes(
                 view_inputs.dependencies[item.item_id],
                 view_inputs.overview_items.get(str(item.item_id)),
                 view_inputs.definitions[item.item_id],
+                tuple(receipt for receipt in state.transition_receipts if receipt.subject_id == item.item_id),
             ),
         )
         for item in state.lifecycle.work_items

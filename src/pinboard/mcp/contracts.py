@@ -10,6 +10,7 @@ from pinboard.application import (
     action_models,
     brief_source_models,
     dispatch_models,
+    pr_reviews,
     proposal_models,
     query_models,
     work_brief_compatibility_models,
@@ -48,6 +49,133 @@ type PublicationSurfaces = tuple[
     Literal["ledger"],
 ]
 type JobPublicationSurface = Literal["immutable-artifact", "accepted-artifact-reference", "ledger"]
+
+
+class PrReviewStatusRequest(
+    msgspec.Struct, tag="status", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: PathComponent
+
+
+class PrReviewActionsRequest(
+    msgspec.Struct, tag="actions", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: PathComponent
+
+
+class PrReviewStartRequest(msgspec.Struct, tag="start", tag_field="operation", frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: PathComponent
+    expected_subject_revision: NonNegativeInt
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+    brief: pr_reviews.ReviewBrief
+
+
+class PrReviewObserveRequest(
+    msgspec.Struct, tag="observe", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: PathComponent
+    expected_subject_revision: NonNegativeInt
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+    observation: pr_reviews.HeadObservation
+
+
+class PrReviewBriefReviewRequest(
+    msgspec.Struct, tag="review-brief", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: PathComponent
+    expected_subject_revision: NonNegativeInt
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+    brief_review: pr_reviews.BriefReview
+
+
+class PrReviewRoundRequest(msgspec.Struct, tag="round", tag_field="operation", frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: PathComponent
+    expected_subject_revision: NonNegativeInt
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+    round: pr_reviews.ReviewRound
+
+
+class PrReviewCloseRequest(msgspec.Struct, tag="close", tag_field="operation", frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: PathComponent
+    expected_subject_revision: NonNegativeInt
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+    close: pr_reviews.ReviewClose
+
+
+type PrReviewRequest = (
+    PrReviewStatusRequest
+    | PrReviewActionsRequest
+    | PrReviewStartRequest
+    | PrReviewBriefReviewRequest
+    | PrReviewObserveRequest
+    | PrReviewRoundRequest
+    | PrReviewCloseRequest
+)
+
+
+class PrReviewEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: PrReviewRequest
+
+
+class PrReviewRoundView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: int
+    round: pr_reviews.ReviewRound
+
+
+class PrReviewSuccess(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-pr-review-status/v1"]
+    status: Literal["ok", "committed", "committed-with-warning"]
+    item_id: str
+    item_state: str
+    subject_revision: int
+    project_revision: int
+    brief_history_id: int | None
+    brief: pr_reviews.ReviewBrief | None
+    brief_review: pr_reviews.BriefReview | None
+    rounds: tuple[PrReviewRoundView, ...]
+    latest_observation: pr_reviews.HeadObservation | None
+    unreviewed_head: str | None
+    close: pr_reviews.ReviewClose | None
+    available_actions: tuple[Literal["start", "review-brief", "observe", "round", "close"], ...]
+    remote_freshness: Literal["unverified"]
+    state_changed: bool
+    effect: Literal["committed", "unchanged"]
+    retry: Literal["do-not-retry", "safe-to-repeat"]
+    changed_surfaces: tuple[Literal["ledger"], ...]
+    view_warning: str | None
+
+
+class PrReviewRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-pr-review-result/v1"]
+    status: Literal["rejected"]
+    code: str
+    message: str
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["correct-input", "refresh-action", "do-not-retry"]
+    changed_surfaces: tuple[()]
+
+
+PR_REVIEW_RESULT_TYPES = (PrReviewSuccess, PrReviewRejected)
 
 
 class _FixedStateChangedResult:
@@ -1646,6 +1774,11 @@ def _committed_transition_surfaces(kind: decision_models.ActionKind) -> tuple[tu
             | decision_models.ActionKind.RETURN_FOR_CORRECTION
             | decision_models.ActionKind.RETAIN_TEMPORARILY
             | decision_models.ActionKind.REVISE_ITEM
+            | decision_models.ActionKind.START_PR_REVIEW
+            | decision_models.ActionKind.REVIEW_PR_BRIEF
+            | decision_models.ActionKind.OBSERVE_PR_HEAD
+            | decision_models.ActionKind.RECORD_PR_ROUND
+            | decision_models.ActionKind.CLOSE_PR_REVIEW
         ):
             return (("ledger",),)
         case _ as unreachable:

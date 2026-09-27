@@ -436,6 +436,18 @@ def _project_role_actions(
         for action in group.attempt_actions
     ]
     for item in snapshot.items:
+        if item.state == work_models.WorkState.REVIEW and item.attempt is None:
+            # Human-owned PR review has no implementation attempt or worker route.
+            result.append(
+                decision_models.ReviseWorkItemAction(
+                    factory.make(
+                        item.work_item_id,
+                        f"Revise the accepted definition for {item.work_item_id}",
+                        _subject_revision(snapshot, item.work_item_id),
+                    )
+                )
+            )
+            continue
         group = attempt_groups.get(item.work_item_id)
         if group is not None:
             result.extend(group.item_actions)

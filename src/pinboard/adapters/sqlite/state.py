@@ -20,6 +20,7 @@ from pinboard.adapters.sqlite.authority import read_authority, validate_attempt_
 from pinboard.adapters.sqlite.database import decode_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import read_lifecycle, validate_current_attempt_relation
+from pinboard.adapters.sqlite.pr_review import validate_review_history
 from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
 from pinboard.application import project_export, released_v6_compatibility, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
@@ -196,6 +197,23 @@ def read_checkpoint_receipts(
     )
 
 
+def read_review_history_for_item(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> tuple[stored_state.StoredTransitionReceipt, ...]:
+    return tuple(
+        decode_row(row, _StoredTransitionRow).receipt()
+        for row in connection.execute(
+            """SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
+                      authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
+                      input_json, outcome_schema, outcome_json, committed_at
+               FROM transition_history WHERE subject_id = ?
+               AND action_kind IN ('start-pr-review', 'review-pr-brief', 'observe-pr-head', 'record-pr-round', 'close-pr-review')
+               ORDER BY history_id""",
+            (item_id,),
+        ).fetchall()
+    )
+
+
 def _definition_revision_number(value: stored_state.ItemDefinitionRevision) -> int:
     return value.revision
 
@@ -358,6 +376,7 @@ def read_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
         _read_history(connection),
     )
     _validate_current_state(state, StorageErrorCode.INVALID_STATE)
+    validate_review_history(connection, None)
     _validate_item_state_counts(connection, state.lifecycle.work_items)
     return state
 
@@ -367,6 +386,7 @@ def read_project_export_state(connection: sqlite3.Connection) -> project_export.
 
     project = _read_project(connection)
     lifecycle = read_lifecycle(connection, project)
+    validate_review_history(connection, None)
     replacements = _read_replacements(connection)
     _validate_replacements(
         replacements,

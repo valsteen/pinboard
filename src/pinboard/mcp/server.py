@@ -24,6 +24,7 @@ from pinboard.mcp import (
     execution,
     job_operations,
     mutation_operations,
+    pr_review_operations,
     read_operations,
 )
 from pinboard.mcp.contracts import JsonValue
@@ -45,6 +46,7 @@ from pinboard.mcp.tool_names import (
     ORDER_TOOL,
     OVERVIEW_TOOL,
     PARALLEL_PREVIEW_TOOL,
+    PR_REVIEW_TOOL,
     PREPARATION_AUTHORITY_TOOL,
     PROPOSAL_CREATE_TOOL,
     REVIEW_JOB_TOOL,
@@ -201,6 +203,22 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             project_root,
             partial(read_operations._read_item_status, project_root, work_root, item_id),
             arguments={"project_root": project_root, "work_root": work_root, "item_id": item_id},
+            capture=capture,
+        )
+
+    @server.tool(
+        name=PR_REVIEW_TOOL,
+        description="Discover and record a human-owned PR review brief, observed heads, exact-head rounds, and human-directed closure without an implementation attempt.",
+    )
+    async def pr_review(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return await execution._run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            PR_REVIEW_TOOL,
+            str(request.get("project_root", "")),
+            partial(pr_review_operations.execute, {"request": request}),
+            arguments={"request": request},
             capture=capture,
         )
 
@@ -611,6 +629,11 @@ def _install_boundary_contracts(server: MCPServer) -> None:
             ITEM_STATUS_TOOL,
             contract_schemas.schema_for(contracts.ItemStatusRequest),
             contract_schemas.union_schema_for(contracts.ITEM_STATUS_RESULT_TYPES),
+        ),
+        (
+            PR_REVIEW_TOOL,
+            contract_schemas.schema_for(contracts.PrReviewEnvelope),
+            contract_schemas.union_schema_for(contracts.PR_REVIEW_RESULT_TYPES),
         ),
         (
             PROPOSAL_CREATE_TOOL,

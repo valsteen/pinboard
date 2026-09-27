@@ -5,6 +5,7 @@ committed effect. Explicit rebuild reads the complete declared projection and
 reconciles its generated files. SQLite and accepted artifacts remain authoritative.
 """
 
+from collections.abc import Mapping
 from datetime import datetime
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
@@ -21,7 +22,7 @@ from pinboard.domain.identifiers import AttemptId
 def read_attempt_brief_views(
     durable: DurableRoots,
     state: stored_state.StoredWorkState,
-) -> work_brief_models.WorkBriefResult[dict[AttemptId, bytes]]:
+) -> work_brief_models.WorkBriefResult[Mapping[AttemptId, bytes]]:
     return build_attempt_brief_views(
         state,
         ArtifactRepository(durable),

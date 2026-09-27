@@ -1,5 +1,6 @@
 """Strict request and correlated result contracts for the MCP transport."""
 
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal, assert_never  # noqa: TID251 - validated against the selected action leaf
 
 import msgspec
@@ -661,7 +662,7 @@ class TransitionEnvelope[RequestT](msgspec.Struct, frozen=True, forbid_unknown_f
     request: RequestT
 
 
-def decode_transition_request(raw: dict[str, JsonValue]) -> TransitionRequest:  # noqa: C901, PLR0912, PLR0915 - exhaustive exact wire leaves
+def decode_transition_request(raw: Mapping[str, JsonValue]) -> TransitionRequest:  # noqa: C901, PLR0912, PLR0915 - exhaustive exact wire leaves
     """Decode one strict envelope and exact leaf before resources or effects.
 
     Transition leaves share role tags, so receipt action identity selects the

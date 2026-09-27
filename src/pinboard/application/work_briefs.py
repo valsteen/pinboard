@@ -1,5 +1,7 @@
 import hashlib
+from collections.abc import Mapping
 from datetime import datetime
+from types import MappingProxyType
 from typing import assert_never
 
 import msgspec
@@ -978,7 +980,7 @@ def _render_attempt_brief_view(
 
 def build_attempt_brief_views(
     state: stored_state.StoredWorkState, artifacts: ArtifactReader
-) -> work_brief_models.WorkBriefResult[dict[AttemptId, bytes]]:
+) -> work_brief_models.WorkBriefResult[Mapping[AttemptId, bytes]]:
     result: dict[AttemptId, bytes] = {}
     references = {value.artifact_ref_id: value for value in state.artifact_references}
     for attempt in state.lifecycle.attempts:
@@ -989,12 +991,12 @@ def build_attempt_brief_views(
         if isinstance(rendered, work_brief_models.WorkBriefFailure):
             return rendered
         result[attempt.attempt_id] = rendered
-    return result
+    return MappingProxyType(result)
 
 
 def build_selected_attempt_brief_views(
     attempts: tuple[query_models.AttemptProjectionFacts, ...], artifacts: ArtifactReader
-) -> work_brief_models.WorkBriefResult[dict[AttemptId, bytes]]:
+) -> work_brief_models.WorkBriefResult[Mapping[AttemptId, bytes]]:
     """Render only the accepted briefs required by selected attempt views."""
 
     result: dict[AttemptId, bytes] = {}
@@ -1006,4 +1008,4 @@ def build_selected_attempt_brief_views(
         if isinstance(rendered, work_brief_models.WorkBriefFailure):
             return rendered
         result[attempt.attempt_id] = rendered
-    return result
+    return MappingProxyType(result)

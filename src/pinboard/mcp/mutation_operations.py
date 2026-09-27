@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import assert_never
@@ -92,7 +93,7 @@ def _brief_failure(failure: work_brief_models.WorkBriefFailure | DecisionFailure
 def _brief_decode_failure(
     project_root: str,
     work_root: str,
-    brief: dict[str, work_brief_models.WorkBriefJsonValue],
+    brief: Mapping[str, work_brief_models.WorkBriefJsonValue],
     error: msgspec.ValidationError,
 ) -> execution.OperationResult:
     failure = work_brief_models.WorkBriefFailure(
@@ -143,7 +144,7 @@ def _brief_decode_failure(
 def _proposal_created(
     project_root: str,
     work_root: str,
-    proposal: dict[str, proposal_models.ProposalJsonValue],
+    proposal: Mapping[str, proposal_models.ProposalJsonValue],
     actor_task_id: str,
     actor_host_id: str,
     token: execution.CancellationToken,
@@ -216,7 +217,7 @@ def _proposal_created(
 def _brief_published(
     project_root: str,
     work_root: str,
-    brief: dict[str, work_brief_models.WorkBriefJsonValue],
+    brief: Mapping[str, work_brief_models.WorkBriefJsonValue],
     token: execution.CancellationToken,
 ) -> execution.OperationResult:
     token.checkpoint()
@@ -458,7 +459,7 @@ def _with_retained_brief_recovery(
 
 
 def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-result boundary
-    raw: dict[str, JsonValue],
+    raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
 ) -> execution.OperationResult:
     token.checkpoint()
@@ -688,7 +689,7 @@ def _authority_conflict(
 
 def _authority_rejected(
     schema: str,
-    identity: dict[str, JsonValue],
+    identity: Mapping[str, JsonValue],
     failure: DecisionFailure,
     conflict: dict[str, JsonValue] | None,
 ) -> execution.OperationResult:
@@ -738,7 +739,7 @@ def _authority_status_fields(
 
 
 def _preparation_authority(
-    raw: dict[str, JsonValue],
+    raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
 ) -> execution.OperationResult:
     token.checkpoint()
@@ -850,7 +851,7 @@ def _preparation_authority(
 
 
 def _attempt_authority(
-    raw: dict[str, JsonValue],
+    raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
 ) -> execution.OperationResult:
     token.checkpoint()

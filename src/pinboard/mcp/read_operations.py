@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import shlex
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -222,7 +223,7 @@ def _brief_preparation_failure(schema: str, code: str, message: str) -> executio
     )
 
 
-def _brief_contract(raw: dict[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
+def _brief_contract(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
     """Construct unresolved contract data without resolving roots, stores or authority."""
     token.checkpoint()
     try:
@@ -286,7 +287,7 @@ def _publish_source_plan(
     return execution.OperationResult(receipt, "committed" if created else "unchanged", None)
 
 
-def _brief_sources(raw: dict[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
+def _brief_sources(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
     """Acquire selected-checkout sources and optional explicit output, never durable work state."""
     schema = "pinboard-mcp-brief-sources-result/v1"
     token.checkpoint()
@@ -342,7 +343,9 @@ def _brief_sources(raw: dict[str, JsonValue], token: execution.CancellationToken
     )
 
 
-def _read_item_definition(raw: dict[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
+def _read_item_definition(
+    raw: Mapping[str, JsonValue], token: execution.CancellationToken
+) -> execution.OperationResult:
     token.checkpoint()
     try:
         request = msgspec.convert(raw, type=contracts.ItemDefinitionEnvelope, strict=True).request
@@ -398,7 +401,7 @@ def _brief_review_correction(project_root: str, work_root: str, brief_artifact_r
     }
 
 
-def _brief_review(raw: dict[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
+def _brief_review(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
     token.checkpoint()
     schema = "pinboard-mcp-brief-review-result/v1"
     try:
@@ -517,7 +520,7 @@ def _read_overview(project_root: str, work_root: str, token: execution.Cancellat
     return execution.OperationResult(content, "ok", overview.revision)
 
 
-def _order(raw: dict[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
+def _order(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
     """Decode human-authorized order, commit under the shared lock, then refresh selected views."""
     token.checkpoint()
     try:
@@ -601,7 +604,7 @@ def _order(raw: dict[str, JsonValue], token: execution.CancellationToken) -> exe
     )
 
 
-def _parallel_preview(raw: dict[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
+def _parallel_preview(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
     """Read only exact selected constraints or explicit current portfolio facts; never launch work."""
     token.checkpoint()
     try:
@@ -688,7 +691,7 @@ def _action_failure_details(
 
 
 def _read_actions(
-    raw: dict[str, JsonValue],
+    raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
 ) -> execution.OperationResult:
     token.checkpoint()
@@ -1375,7 +1378,7 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
     project_root: str,
     work_root: str,
     attempt_id: str,
-    reconciliation: dict[str, JsonValue] | None,
+    reconciliation: Mapping[str, JsonValue] | None,
     token: execution.CancellationToken,
 ) -> execution.OperationResult:
     token.checkpoint()

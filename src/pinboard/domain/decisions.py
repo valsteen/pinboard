@@ -371,14 +371,14 @@ def _project_attempt_context(
 
 def _item_actions(
     snapshot: LedgerSnapshot, item: work_models.WorkItem, factory: ActionCapabilityFactory
-) -> list[decision_models.Action]:
+) -> tuple[decision_models.Action, ...]:
     subject_revision = _subject_revision(snapshot, item.work_item_id)
     close = decision_models.CloseAction(
         factory.make(item.work_item_id, f"Record a terminal decision for {item.work_item_id}", subject_revision)
     )
     match item.state:
         case work_models.WorkState.READY:
-            return [
+            return (
                 decision_models.BlockWorkItemAction(
                     factory.make(item.work_item_id, f"Block unstarted work item {item.work_item_id}", subject_revision)
                 ),
@@ -388,11 +388,11 @@ def _item_actions(
                     )
                 ),
                 close,
-            ]
+            )
         case work_models.WorkState.PAUSED | work_models.WorkState.BLOCKED:
             dependencies_live = any(dependency in snapshot.work_items_by_id() for dependency in item.depends_on)
             if not dependencies_live and _replacement_resolved(snapshot, item.work_item_id):
-                return [
+                return (
                     decision_models.ResumeAction(
                         factory.make(item.work_item_id, f"Return {item.work_item_id} to ready", subject_revision)
                     ),
@@ -402,17 +402,17 @@ def _item_actions(
                         )
                     ),
                     close,
-                ]
-            return [close]
+                )
+            return (close,)
         case work_models.WorkState.DEFERRED:
-            return [
+            return (
                 decision_models.ReopenAction(
                     factory.make(item.work_item_id, f"Reopen {item.work_item_id} to ready", subject_revision)
                 ),
                 close,
-            ]
+            )
         case work_models.WorkState.ACTIVE | work_models.WorkState.REVIEW:
-            return []
+            return ()
         case _ as unreachable:
             assert_never(unreachable)
 

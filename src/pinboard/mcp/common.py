@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -83,7 +84,7 @@ def compose_store(durable: DurableRoots) -> SQLiteWorkStore:
 
 
 def select_capture_item(  # noqa: C901 - one MCP boundary interprets its supported item and attempt selectors
-    shared_repository: Path, work_root: str | None, arguments: dict[str, JsonValue]
+    shared_repository: Path, work_root: str | None, arguments: Mapping[str, JsonValue]
 ) -> str | None:
     request = arguments.get("request")
     selected = request if isinstance(request, dict) else arguments

@@ -1,7 +1,9 @@
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 
 from pinboard.adapters.files.errors import (
     ArtifactError,
@@ -22,12 +24,14 @@ from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, Bri
 from pinboard.domain import work_models
 from pinboard.domain.errors import ChangedSurface, EffectDisposition, FailureDetails, FailureFact, RetryDisposition
 
-_DIRECTORIES: dict[work_models.ArtifactKind, str] = {
-    work_models.ArtifactKind.REQUIREMENTS: "requirements",
-    work_models.ArtifactKind.BRIEF: "briefs",
-    work_models.ArtifactKind.RESULT: "results",
-    work_models.ArtifactKind.EVIDENCE: "evidence",
-}
+_DIRECTORIES: Mapping[work_models.ArtifactKind, str] = MappingProxyType(
+    {
+        work_models.ArtifactKind.REQUIREMENTS: "requirements",
+        work_models.ArtifactKind.BRIEF: "briefs",
+        work_models.ArtifactKind.RESULT: "results",
+        work_models.ArtifactKind.EVIDENCE: "evidence",
+    }
+)
 
 
 def _validate_identity_component(value: str, *, label: str) -> str:

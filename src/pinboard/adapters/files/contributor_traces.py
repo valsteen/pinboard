@@ -5,8 +5,10 @@ from __future__ import annotations
 import secrets
 import stat
 import subprocess
+from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal
 
 import msgspec
@@ -24,7 +26,7 @@ TRACE_LIMIT = 100
 
 class ContributorTraceSettings(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     unsafe_persist_exact_pinboard_traces: Literal["off", "on"]
-    item_overrides: dict[str, Literal["inherit", "off", "on"]]
+    item_overrides: Mapping[str, Literal["inherit", "off", "on"]]
 
 
 def _project_data_root(project_root: Path) -> Path | None:
@@ -74,7 +76,7 @@ def _decode_settings(path: Path) -> ContributorTraceSettings | None:
                 overrides[item] = value
             else:
                 raise ValueError("Contributor trace settings contain an unknown key or mode.")
-        return ContributorTraceSettings(project_mode, overrides) if project_mode is not None else None
+        return ContributorTraceSettings(project_mode, MappingProxyType(overrides)) if project_mode is not None else None
     except (OSError, UnicodeError) as error:
         raise ValueError("Contributor trace settings are invalid or unreadable.") from error
 

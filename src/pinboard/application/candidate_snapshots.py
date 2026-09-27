@@ -1,6 +1,7 @@
 """Canonical immutable evidence for one protected review candidate."""
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Literal, Protocol, assert_never
@@ -204,7 +205,7 @@ def verify_candidate_snapshot_context(
 
 def validate_candidate_snapshot_history(
     state: CandidateSnapshotState,
-    artifact_bytes: dict[ArtifactRefId, bytes],
+    artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> tuple[CandidateSnapshotEvidence, ...]:
     """Verify every retained review snapshot and every live-review correlation."""
 

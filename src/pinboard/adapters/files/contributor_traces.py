@@ -29,27 +29,39 @@ class ContributorTraceSettings(msgspec.Struct, frozen=True, forbid_unknown_field
     item_overrides: Mapping[str, Literal["inherit", "off", "on"]]
 
 
-def _project_data_root(project_root: Path) -> Path | None:
+def _project_data_root(project_root: Path, work_root: Path | None) -> Path | None:
     try:
         checkout = resolve_source_checkout_root(project_root)
         shared_repository = resolve_shared_repository_root(checkout)
     except RootError:
         return None
-    data_root = shared_repository / ".pinboard"
-    if not data_root.is_dir():
-        return None
+    data_root = work_root.absolute() if work_root is not None else shared_repository / ".pinboard"
     if data_root.is_symlink():
         raise ValueError("Contributor trace work root must be a real directory.")
-    ignored = subprocess.run(
-        ["git", "check-ignore", "-q", "--", f".pinboard/{SETTINGS_NAME}"],
-        cwd=shared_repository,
-        check=False,
-    )
-    if ignored.returncode != 0:
+    if not data_root.is_dir():
+        return None
+    data_root = data_root.resolve()
+    if not _ignored_or_external(data_root, SETTINGS_NAME):
         if (data_root / SETTINGS_NAME).exists(follow_symlinks=False):
             raise ValueError("Contributor trace settings must be Git-ignored before Pinboard can use them.")
         return None
     return data_root
+
+
+def _ignored_or_external(data_root: Path, name: str) -> bool:
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-q", "--", name],
+        cwd=data_root,
+        check=False,
+        capture_output=True,
+    )
+    if ignored.returncode == 0:
+        return True
+    if ignored.returncode == 1:
+        return False
+    if ignored.returncode == 128 and not any((parent / ".git").exists() for parent in (data_root, *data_root.parents)):
+        return True
+    raise ValueError(f"Contributor trace Git status could not be verified for {data_root / name}.")
 
 
 def _decode_settings(path: Path) -> ContributorTraceSettings | None:
@@ -115,14 +127,7 @@ def _settings(data_root: Path) -> SettingResolution[ContributorTraceSettings]:
 
 def _trace_directory(data_root: Path) -> Path:
     path = data_root / TRACE_DIRECTORY
-    if (
-        subprocess.run(
-            ["git", "check-ignore", "-q", "--", f".pinboard/{TRACE_DIRECTORY}/"],
-            cwd=data_root.parent,
-            check=False,
-        ).returncode
-        != 0
-    ):
+    if not _ignored_or_external(data_root, f"{TRACE_DIRECTORY}/"):
         raise ValueError("Contributor trace directory must be Git-ignored before Pinboard can use it.")
     with suppress(FileExistsError):
         path.mkdir(mode=0o700)
@@ -143,8 +148,10 @@ def prune_traces(directory: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-def read_project_trace_settings(project_root: Path) -> tuple[Path, SettingResolution[ContributorTraceSettings]] | None:
-    data_root = _project_data_root(project_root)
+def read_project_trace_settings(
+    project_root: Path, work_root: Path | None
+) -> tuple[Path, SettingResolution[ContributorTraceSettings]] | None:
+    data_root = _project_data_root(project_root, work_root)
     return None if data_root is None else (data_root, _settings(data_root))
 
 
@@ -156,6 +163,7 @@ def automatic_trace_directory(data_root: Path, settings: ContributorTraceSetting
 
 def select_cli_trace(arguments: tuple[str, ...]) -> Path | None:
     project_root: Path | None = None
+    work_root: Path | None = None
     position = 0
     while position < len(arguments):
         argument = arguments[position]
@@ -169,8 +177,10 @@ def select_cli_trace(arguments: tuple[str, ...]) -> Path | None:
             break
         if argument == "--project-root":
             project_root = Path(value)
+        elif argument == "--work-root":
+            work_root = Path(value)
     selected = project_root if project_root is not None else Path.cwd()
-    state = read_project_trace_settings(selected)
+    state = read_project_trace_settings(selected, work_root)
     if state is None:
         return None
     item_id = (
@@ -188,7 +198,6 @@ def select_cli_trace(arguments: tuple[str, ...]) -> Path | None:
 def prune_cli_traces(selected: Path) -> None:
     if (
         selected.parent.name != TRACE_DIRECTORY
-        or selected.parent.parent.name != ".pinboard"
         or not selected.name.startswith("pinboard-auto-cli-")
         or selected.suffix != ".json"
     ):

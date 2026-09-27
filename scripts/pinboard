@@ -454,18 +454,31 @@ if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
     fi
 fi
 
+check_trace_git_status() {
+    if git -C "$selected_work_root" check-ignore -q -- "$1" 2>/dev/null; then ignored_status=0; else ignored_status=$?; fi
+    [ "$ignored_status" -eq 128 ] || return 0
+    trace_parent=$(CDPATH= cd -- "$selected_work_root" 2>/dev/null && pwd -P) || return 0
+    while :; do
+        if [ -e "$trace_parent/.git" ] || [ -L "$trace_parent/.git" ]; then return 0; fi
+        if [ "$trace_parent" = / ]; then ignored_status=0; return 0; fi
+        trace_parent=${trace_parent%/*}
+        [ -n "$trace_parent" ] || trace_parent=/
+    done
+}
+
 select_unprepared_cli_capture() {
     selected_project=$PWD
+    selected_work_root=
     selected_item=
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --project-root|--work-root)
                 [ "$#" -ge 2 ] || break
-                if [ "$1" = --project-root ]; then selected_project=$2; fi
+                if [ "$1" = --project-root ]; then selected_project=$2; else selected_work_root=$2; fi
                 shift 2
                 ;;
             --project-root=*) selected_project=${1#*=}; shift ;;
-            --work-root=*) shift ;;
+            --work-root=*) selected_work_root=${1#*=}; shift ;;
             *) break ;;
         esac
     done
@@ -476,11 +489,17 @@ select_unprepared_cli_capture() {
     }
     [ "${common_dir##*/}" = .git ] || { printf 'off\n'; return 0; }
     shared_project=${common_dir%/.git}
-    [ -d "$shared_project/.pinboard" ] || { printf 'off\n'; return 0; }
-    settings="$shared_project/.pinboard/contributor-traces.config"
-    if ! git -C "$shared_project" check-ignore -q -- .pinboard/contributor-traces.config; then
+    if [ -z "$selected_work_root" ]; then selected_work_root="$shared_project/.pinboard"; fi
+    [ -d "$selected_work_root" ] || { printf 'off\n'; return 0; }
+    settings="$selected_work_root/contributor-traces.config"
+    check_trace_git_status contributor-traces.config
+    if [ "$ignored_status" -gt 1 ]; then
+        printf 'Contributor trace Git status could not be verified for %s. Inspect Git metadata or use a work root outside Git; the target did not run.\n' "$settings" >&2
+        return 1
+    fi
+    if [ "$ignored_status" -eq 1 ]; then
         if [ -e "$settings" ] || [ -L "$settings" ]; then
-            printf 'Contributor trace settings must be Git-ignored before Pinboard can use them.\n' >&2
+            printf 'Contributor trace settings must be Git-ignored before Pinboard can use them: %s. The target did not run.\n' "$settings" >&2
             return 1
         fi
         printf 'off\n'
@@ -490,17 +509,17 @@ select_unprepared_cli_capture() {
         (umask 077; set -C; : > "$settings") 2>/dev/null || :
     fi
     if [ ! -f "$settings" ] || [ -L "$settings" ]; then
-        printf 'Contributor trace settings must be a regular file.\n' >&2
+        printf 'Contributor trace settings must be a regular file: %s. The target did not run.\n' "$settings" >&2
         return 1
     fi
     listing=$(git config --file "$settings" --list) || {
-        printf 'Contributor trace settings are invalid or unreadable.\n' >&2
+        printf 'Contributor trace settings are invalid or unreadable: %s. The target did not run.\n' "$settings" >&2
         return 1
     }
     listed_lines=$(git config --file "$settings" --list | wc -l)
     key_lines=$(git config --file "$settings" --name-only --list | wc -l)
     if [ "$listed_lines" -ne "$key_lines" ]; then
-        printf 'Contributor trace settings contain a multiline value.\n' >&2
+        printf 'Contributor trace settings contain a multiline value: %s. The target did not run.\n' "$settings" >&2
         return 1
     fi
     project_mode=
@@ -511,22 +530,31 @@ select_unprepared_cli_capture() {
         key=${entry%%=*}
         value=${entry#*=}
         if [ "$entry" = "$key" ] || printf '%s\n' "$seen_keys" | grep -Fxq -- "$key"; then
-            printf 'Contributor trace settings are invalid or duplicated.\n' >&2
+            printf 'Contributor trace settings are invalid or duplicated: %s. The target did not run.\n' "$settings" >&2
             return 1
         fi
         seen_keys="$seen_keys
 $key"
         case "$key" in
             pinboard.unsafe_persist_exact_pinboard_traces.mode)
-                case "$value" in on|off) project_mode=$value ;; *) return 1 ;; esac
+                case "$value" in
+                    on|off) project_mode=$value ;;
+                    *) printf 'Contributor trace project mode is invalid in %s. Correct it; the target did not run.\n' "$settings" >&2; return 1 ;;
+                esac
                 ;;
             item.*.mode)
-                case "$value" in on|off|inherit) : ;; *) return 1 ;; esac
-                [ "$key" != item..mode ] || return 1
+                case "$value" in
+                    on|off|inherit) : ;;
+                    *) printf 'Contributor trace item mode is invalid in %s. Correct it; the target did not run.\n' "$settings" >&2; return 1 ;;
+                esac
+                if [ "$key" = item..mode ]; then
+                    printf 'Contributor trace item ID is missing in %s. Correct it; the target did not run.\n' "$settings" >&2
+                    return 1
+                fi
                 if [ -n "$selected_item" ] && [ "$key" = "item.$selected_item.mode" ]; then item_mode=$value; fi
                 ;;
             *)
-                printf 'Contributor trace settings contain an unknown key.\n' >&2
+                printf 'Contributor trace settings contain an unknown key: %s. The target did not run.\n' "$settings" >&2
                 return 1
                 ;;
         esac
@@ -535,26 +563,45 @@ $listing
 EOF
     if [ -z "$project_mode" ]; then
         git config --file "$settings" --add pinboard.unsafe_persist_exact_pinboard_traces.mode off || {
-            printf 'Cannot write Contributor trace project mode in %s.\n' "$settings" >&2
+            printf 'Cannot write Contributor trace project mode in %s. Grant write access to the selected work root; the target did not run.\n' "$settings" >&2
             return 1
         }
-        project_mode=$(git config --file "$settings" --get-all pinboard.unsafe_persist_exact_pinboard_traces.mode) || return 1
-        [ "$project_mode" = off ] || return 1
+        project_mode=$(git config --file "$settings" --get-all pinboard.unsafe_persist_exact_pinboard_traces.mode) || {
+            printf 'Cannot verify Contributor trace project mode in %s. Inspect it; the target did not run.\n' "$settings" >&2
+            return 1
+        }
+        if [ "$project_mode" != off ]; then
+            printf 'Contributor trace project mode in %s changed unexpectedly. Inspect it; the target did not run.\n' "$settings" >&2
+            return 1
+        fi
     fi
     effective_mode=$project_mode
     if [ "$item_mode" != inherit ]; then effective_mode=$item_mode; fi
     if [ "$effective_mode" = off ]; then printf 'off\n'; return 0; fi
-    if ! git -C "$shared_project" check-ignore -q -- .pinboard/invocation-traces/; then
-        printf 'Contributor trace directory must be Git-ignored before Pinboard can use it.\n' >&2
+    check_trace_git_status invocation-traces/
+    if [ "$ignored_status" -gt 1 ]; then
+        printf 'Contributor trace Git status could not be verified for %s/invocation-traces. Inspect Git metadata or use a work root outside Git; the target did not run.\n' "$selected_work_root" >&2
         return 1
     fi
-    trace_directory="$shared_project/.pinboard/invocation-traces"
-    if [ ! -e "$trace_directory" ] && [ ! -L "$trace_directory" ]; then mkdir -m 700 "$trace_directory" || return 1; fi
+    if [ "$ignored_status" -eq 1 ]; then
+        printf 'Contributor trace directory must be Git-ignored before Pinboard can use it: %s/invocation-traces. The target did not run.\n' "$selected_work_root" >&2
+        return 1
+    fi
+    trace_directory="$selected_work_root/invocation-traces"
+    if [ ! -e "$trace_directory" ] && [ ! -L "$trace_directory" ]; then
+        mkdir -m 700 "$trace_directory" || {
+            printf 'Cannot create private Contributor trace directory at %s. Grant write access to the selected work root; the target did not run.\n' "$trace_directory" >&2
+            return 1
+        }
+    fi
     if [ -L "$trace_directory" ] || [ "$(find "$trace_directory" -prune -type d -perm 0700 -print)" != "$trace_directory" ]; then
-        printf 'Contributor trace directory must be a real private directory (0700).\n' >&2
+        printf 'Contributor trace directory must be a real private directory (0700): %s. Correct its mode or path; the target did not run.\n' "$trace_directory" >&2
         return 1
     fi
-    trace_nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]') || return 1
+    trace_nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]') || {
+        printf 'Cannot allocate a Contributor trace name in %s. Inspect local random-source availability; the target did not run.\n' "$trace_directory" >&2
+        return 1
+    }
     printf '%s/pinboard-auto-cli-%s.json\n' "$trace_directory" "$trace_nonce"
 }
 

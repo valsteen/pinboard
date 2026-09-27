@@ -22,6 +22,7 @@ from pinboard import __version__
 from pinboard.adapters.files import contributor_traces
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
 from pinboard.adapters.files.file_io import create_immutable
+from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.domain.errors import (
     EffectDisposition,
@@ -170,14 +171,20 @@ class AutomaticCapture:
         request = arguments.get("request")
         selected = request if isinstance(request, dict) else arguments
         work_root = selected.get("work_root")
+        if not isinstance(work_root, str):
+            return None
         try:
-            state = contributor_traces.read_project_trace_settings(Path(project_root))
+            state = contributor_traces.read_project_trace_settings(Path(project_root), Path(work_root))
             if state is None:
                 return None
             data_root, resolution = state
             settings = resolution.value
             item_id = (
-                self._select_item(data_root.parent, work_root if isinstance(work_root, str) else None, arguments)
+                self._select_item(
+                    resolve_shared_repository_root(resolve_source_checkout_root(Path(project_root))),
+                    work_root,
+                    arguments,
+                )
                 if settings.item_overrides
                 else None
             )
@@ -187,7 +194,9 @@ class AutomaticCapture:
             if isinstance(error, StorageError) and error.invariant_violation:
                 raise
             raise ToolError(
-                "Automatic Pinboard trace settings or destination are unavailable; the target did not run."
+                f"Automatic Pinboard trace preflight failed at selected work root {work_root}: {error}. "
+                "The target did not run. Inspect that root's contributor-traces.config and private "
+                "invocation-traces directory, correct the named problem, then retry."
             ) from error
 
 
@@ -426,7 +435,10 @@ async def _run_request(  # noqa: C901 - one execution boundary owns callback and
             None,
         )
         emit_request_event("result", "cancelled", None)
-        raise ToolError("The request was cancelled at a cooperative checkpoint.") from error
+        raise ToolError(
+            "The request was cancelled at a cooperative checkpoint. Its effect is unknown; inspect current "
+            "item or attempt state before deciding whether another call is safe."
+        ) from error
     except ToolError:
         capture_effect(
             lambda selected: selected.unavailable(operation, captured_arguments, "callback-rejected", "rejected", None),

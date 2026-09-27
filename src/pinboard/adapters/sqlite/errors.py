@@ -40,7 +40,7 @@ class SQLiteReadOnlyError(StorageError):
         self.database_path = database_path
         super().__init__(
             StorageErrorCode.READ_ONLY,
-            "SQLite could not write the Pinboard database; grant the narrow project-data permission described in "
-            "the failure observations.",
+            f"SQLite could not write the Pinboard database at {database_path}; request write access only to "
+            f"{database_path.parent} and inspect current Pinboard state before retrying.",
             retryable=False,
         )

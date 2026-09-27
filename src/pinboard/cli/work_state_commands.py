@@ -46,7 +46,10 @@ def contributor_capture_control(arguments: Sequence[str]) -> int:
     except (ValueError, OSError, FileIOError, StorageError) as error:
         if isinstance(error, StorageError) and error.invariant_violation:
             raise
-        print(f"Contributor trace setup failed before Pinboard ran: {error}", file=sys.stderr)
+        if arguments[0] == "--contributor-capture-select":
+            print(f"Contributor trace setup failed before Pinboard ran: {error}", file=sys.stderr)
+        else:
+            print(f"Contributor trace retention cleanup failed after Pinboard ran: {error}", file=sys.stderr)
         return 64
     return 0
 

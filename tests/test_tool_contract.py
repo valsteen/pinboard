@@ -13,6 +13,19 @@ from pinboard.cli.errors import CommandFailure
 
 
 class ToolContractTest(unittest.TestCase):
+    def test_text_contract_presentation_names_each_detail_kind(self) -> None:
+        for selector, expected in (
+            (None, "OK TOOL_CONTRACT operations="),
+            ("presentation/help", "OK TOOL_CONTRACT_PRESENTATION presentation=help"),
+            ("status", "OK TOOL_CONTRACT_DETAIL identity=status"),
+        ):
+            with self.subTest(selector=selector):
+                stdout = io.StringIO()
+                arguments = ("tool-contract",) if selector is None else ("tool-contract", "--operation", selector)
+                with contextlib.redirect_stdout(stdout):
+                    self.assertEqual(0, main(arguments))
+                self.assertIn(expected, stdout.getvalue())
+
     def test_cli_only_index_and_every_returned_selector_are_static_and_exact(self) -> None:
         with patch("pinboard.cli.entrypoint.work_state_commands.resolve_roots") as roots:
             stdout = io.StringIO()

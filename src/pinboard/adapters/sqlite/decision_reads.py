@@ -9,7 +9,7 @@ import msgspec
 
 from pinboard.adapters.sqlite.database import decode_row
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.adapters.sqlite.lifecycle import read_current_definition
+from pinboard.adapters.sqlite.lifecycle import read_current_definition, validate_current_attempt_relation
 from pinboard.adapters.sqlite.proposals import decode_proposal_relation
 from pinboard.application import query_models, stored_state
 from pinboard.domain import authority_models, work_models
@@ -481,6 +481,22 @@ def read_current_snapshot(
         )
     )
     attempts_by_item = {row.item_id: row.attempt_id for row in attempt_rows}
+    attempt_states = {row.item_id: row.state for row in attempt_rows}
+    for item in item_rows:
+        validate_current_attempt_relation(
+            "read_current_snapshot",
+            item.item_id,
+            item.state,
+            attempt_states.get(item.item_id),
+            StorageErrorCode.INVALID_STATE,
+        )
+    for attempt in attempt_rows:
+        if attempt.item_id not in live_item_ids:
+            raise StorageError(
+                StorageErrorCode.INVALID_STATE,
+                f"read_current_snapshot: open attempt '{attempt.attempt_id}' has no live work item "
+                f"'{attempt.item_id}'; expected one matching live item; effect unchanged.",
+            )
     dependency_rows = tuple(
         decode_row(row, _DependencyRow)
         for item in item_rows
@@ -777,6 +793,27 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         if linked_attempt is not None:
             selected_attempt = decode_row(linked_attempt, _AttemptLineageRow)
             attempts[selected_attempt.attempt_id] = selected_attempt
+
+    attempt_states = {
+        attempt.item_id: attempt.state
+        for attempt in attempts.values()
+        if attempt.state != work_models.AttemptState.DONE
+    }
+    for item_id in contextual_item_ids:
+        validate_current_attempt_relation(
+            "read_selected_decision_facts",
+            item_id,
+            item_rows[item_id].state,
+            attempt_states.get(item_id),
+            StorageErrorCode.INVALID_STATE,
+        )
+    for attempt in attempts.values():
+        if attempt.state != work_models.AttemptState.DONE and attempt.item_id not in item_rows:
+            raise StorageError(
+                StorageErrorCode.INVALID_STATE,
+                f"read_selected_decision_facts: open attempt '{attempt.attempt_id}' has no live work item "
+                f"'{attempt.item_id}'; expected one matching live item; effect unchanged.",
+            )
 
     evidence: dict[ProposalId, list[str]] = defaultdict(list)
     freshness: dict[ProposalId, list[str]] = defaultdict(list)

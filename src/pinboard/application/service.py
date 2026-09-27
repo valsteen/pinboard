@@ -455,18 +455,25 @@ def create_proposal(
     with store.write() as transaction:
         allocation = transaction.read_mutation_allocation()
         live_item_count = transaction.read_live_item_count()
-        relation_item = operation.intake.relation.work_item_id
         proposal_item = WorkItemId(operation.intake.proposal_id)
         primary_items = (proposal_item,)
         related_items: tuple[WorkItemId, ...] = ()
-        if relation_item is not None:
-            if isinstance(
-                operation.intake.relation,
-                work_models.PrerequisiteProposalRelation | work_models.PlannedReplacementProposalRelation,
+        match operation.intake.relation:
+            case (
+                work_models.PrerequisiteProposalRelation(work_item_id=related_item)
+                | work_models.PlannedReplacementProposalRelation(work_item_id=related_item)
             ):
-                primary_items = (*primary_items, relation_item)
-            else:
-                related_items = (relation_item,)
+                primary_items = (*primary_items, related_item)
+            case (
+                work_models.FollowUpProposalRelation(work_item_id=related_item)
+                | work_models.DuplicateProposalRelation(work_item_id=related_item)
+                | work_models.ContradictionProposalRelation(work_item_id=related_item)
+            ):
+                related_items = (related_item,)
+            case work_models.IndependentProposalRelation() | work_models.ClarificationProposalRelation():
+                pass
+            case _ as unreachable:
+                assert_never(unreachable)
         decision_context = transaction.read_decision_facts(
             query_models.DecisionScope(
                 work_item_ids=primary_items,

@@ -221,7 +221,7 @@ def _select_repository_disposition(
     )
 
 
-def select_resumed_review_operation(
+def select_resumed_review_operation(  # noqa: C901, PLR0912 - distinct reviewed-candidate relations remain explicit
     reconciliation: query_models.AttemptReconciliation,
     *,
     attempt_id: str,
@@ -267,20 +267,24 @@ def select_resumed_review_operation(
         query_models.IntegrationRelation.CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE,
     ):
         return _select_repository_disposition(reconciliation, candidate_lineage, actions)
-    if reconciliation.phase == query_models.RepositoryPhase.CLEANUP:
-        return query_models.RepositoryCleanupContinuation(reconciliation.target_revision)
-    for action in actions:
-        if isinstance(action, decision_models.CompleteAction):
-            return query_models.ActionContinuation(
-                decision_models.action_id(action),
-                action.kind,
-                "Complete after the integrated candidate and required repository effects are verified.",
+    match relation:
+        case query_models.IntegrationRelation.CANDIDATE_INTEGRATED:
+            if reconciliation.phase == query_models.RepositoryPhase.CLEANUP:
+                return query_models.RepositoryCleanupContinuation(reconciliation.target_revision)
+            for action in actions:
+                if isinstance(action, decision_models.CompleteAction):
+                    return query_models.ActionContinuation(
+                        decision_models.action_id(action),
+                        action.kind,
+                        "Complete after the integrated candidate and required repository effects are verified.",
+                    )
+            return DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                "Reviewed candidate completion is not currently available.",
+                None,
             )
-    return DecisionFailure(
-        DecisionFailureCode.ACTION_NOT_AVAILABLE,
-        "Reviewed candidate completion is not currently available.",
-        None,
-    )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuation selection
@@ -431,14 +435,12 @@ def _parallel_item_key(value: query_models.ParallelItem) -> str:
 
 
 def _project_preparation_status(
-    retained: tuple[stored_state.StoredPreparationLease, stored_state.PreparationLeaseGeneration | None] | None,
+    retained: tuple[stored_state.StoredPreparationLease, stored_state.PreparationLeaseGeneration] | None,
     now: datetime,
 ) -> query_models.PreparationStatusView | None:
     if retained is None:
         return None
     lease, anchor = retained
-    if anchor is None:
-        return None
     status = (
         authority_models.PreparationLeaseStatus.EXPIRED
         if lease.state == authority_models.PreparationLeaseStatus.ACTIVE and lease.expires_at <= now
@@ -543,10 +545,16 @@ def _proposal_origin(
 def _next_unstarted(items: tuple[query_models.OverviewItem, ...]) -> query_models.NextUnstarted | None:
     live_ids = frozenset(item.item_id for item in items)
     for item in items:
-        if item.attempt_id is None and item.state not in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}:
-            return query_models.NextUnstarted(
-                item.item_id, tuple(dependency for dependency in item.depends_on if dependency in live_ids)
-            )
+        match item.state:
+            case work_models.WorkState.READY | work_models.WorkState.BLOCKED | work_models.WorkState.DEFERRED:
+                if item.attempt_id is None:
+                    return query_models.NextUnstarted(
+                        item.item_id, tuple(dependency for dependency in item.depends_on if dependency in live_ids)
+                    )
+            case work_models.WorkState.ACTIVE | work_models.WorkState.PAUSED | work_models.WorkState.REVIEW:
+                pass
+            case _ as unreachable:
+                assert_never(unreachable)
     return None
 
 
@@ -568,7 +576,7 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
         (anchor.item_id, anchor.generation): anchor for anchor in state.authority.preparation_generations
     }
     preparations = {
-        lease.item_id: (lease, preparation_anchors.get((lease.item_id, lease.generation)))
+        lease.item_id: (lease, preparation_anchors[(lease.item_id, lease.generation)])
         for lease in state.authority.preparation_leases
     }
     live_items = _select_live_items(state)
@@ -907,13 +915,23 @@ def _classify_parallel_exclusion_reasons(
     operation_time: datetime,
 ) -> tuple[query_models.ParallelReason, ...]:
     item_id = item.work_item_id
-    if item.state not in {work_models.WorkState.READY, work_models.WorkState.ACTIVE}:
-        return (
-            query_models.ParallelReason(
-                query_models.ParallelReasonCode.STATE_NOT_LAUNCHABLE,
-                f"Item '{item_id}' is {item.state.value}; only ready items and unowned active attempts can launch.",
-            ),
-        )
+    match item.state:
+        case work_models.WorkState.READY | work_models.WorkState.ACTIVE:
+            pass
+        case (
+            work_models.WorkState.PAUSED
+            | work_models.WorkState.BLOCKED
+            | work_models.WorkState.DEFERRED
+            | work_models.WorkState.REVIEW
+        ):
+            return (
+                query_models.ParallelReason(
+                    query_models.ParallelReasonCode.STATE_NOT_LAUNCHABLE,
+                    f"Item '{item_id}' is {item.state.value}; only ready items and unowned active attempts can launch.",
+                ),
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
     if (
         item.preparation is not None
         and item.preparation.status == authority_models.PreparationLeaseStatus.ACTIVE

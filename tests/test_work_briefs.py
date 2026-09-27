@@ -196,6 +196,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         self.assertEqual("pinboard-work-brief/v3", legacy.schema)
         self.assertEqual(legacy_bytes, canonical_work_brief_bytes(legacy))
         self.assertIn(b"authority: pinboard-work-brief/v3", render_work_brief_markdown(legacy))
+        self.assertIn(b"- Boundary: `cross-boundary`", render_work_brief_markdown(legacy))
         self.assertIsNone(validate_work_brief_review(review, legacy))
 
     def test_definition_agreement_requires_complete_ids_and_permitted_checkout_and_deferral(self) -> None:

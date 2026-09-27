@@ -1,7 +1,7 @@
 """Static discovery of the installed human and maintenance CLI only."""
 
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Literal, assert_never, get_args
 
 import msgspec
 
@@ -272,14 +272,20 @@ def show_tool_contract(command: cli_commands.ToolContractCommand) -> CommandResu
         return selected
     if command.json:
         write_json(selected)
-    elif isinstance(selected, ToolContractIndex):
-        print(f"OK TOOL_CONTRACT operations={len(selected.operations)}")
-        print("Use --json for the CLI-only index and a returned selector for exact execution facts.")
-    elif isinstance(selected, PresentationContract):
-        print(f"OK TOOL_CONTRACT_PRESENTATION presentation={selected.presentation}")
-        print(f"postcondition={selected.success_postcondition}")
     else:
-        print(f"OK TOOL_CONTRACT_DETAIL identity={selected.operation_id} mutation_class={selected.mutation_class}")
-        print(f"purpose={selected.purpose}")
-        print(f"retry_semantics={selected.retry_semantics}")
+        match selected:
+            case ToolContractIndex():
+                print(f"OK TOOL_CONTRACT operations={len(selected.operations)}")
+                print("Use --json for the CLI-only index and a returned selector for exact execution facts.")
+            case PresentationContract():
+                print(f"OK TOOL_CONTRACT_PRESENTATION presentation={selected.presentation}")
+                print(f"postcondition={selected.success_postcondition}")
+            case OperationContract():
+                print(
+                    f"OK TOOL_CONTRACT_DETAIL identity={selected.operation_id} mutation_class={selected.mutation_class}"
+                )
+                print(f"purpose={selected.purpose}")
+                print(f"retry_semantics={selected.retry_semantics}")
+            case _ as unreachable:
+                assert_never(unreachable)
     return 0

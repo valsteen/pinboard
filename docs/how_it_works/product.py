@@ -64,7 +64,7 @@ DIAGRAM = Diagram(
     slug="product",
     title="Work items, attempts, and related facts",
     description=(
-        "A work item moves through its work-item lifecycle while its execution attempt, accepted definition, mutation "
+        "A work item moves through its work-item lifecycle while its execution attempt, recorded definition, mutation "
         "ownership, and evidence remain separate related facts."
     ),
     width=1200,
@@ -175,7 +175,7 @@ DIAGRAM = Diagram(
         Box(
             "attempt-review",
             "Review",
-            "Candidate protected",
+            "Change in review",
             ("accept + continue → active", "accept checkpoint → paused"),
             ("AttemptState.REVIEW",),
             650,
@@ -187,7 +187,7 @@ DIAGRAM = Diagram(
             "attempt-done",
             "Done",
             "Execution record",
-            ("review state", "protected candidate"),
+            ("review outcome", "saved change"),
             ("AttemptState.DONE",),
             970,
             470,
@@ -218,7 +218,7 @@ DIAGRAM = Diagram(
         ),
         Box(
             "scope",
-            "Accepted scope",
+            "Agreed scope",
             "Exact authorized version",
             ("revision + digest bound to attempt",),
             (),
@@ -242,7 +242,7 @@ DIAGRAM = Diagram(
             "evidence",
             "Review candidate",
             "Exact result under review",
-            ("candidate id · accepted evidence", "review context keeps candidate fixed"),
+            ("change id · review evidence", "review keeps this version fixed"),
             (),
             890,
             780,

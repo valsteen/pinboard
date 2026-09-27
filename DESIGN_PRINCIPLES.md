@@ -268,7 +268,7 @@ Avoid generic `utils`, `writer`, `manager`, and `handlers` modules. A module ear
 
 Reader attention is finite. When adding durable documentation, first identify the reader, the decision or action the material supports, and its smallest authoritative owner. New material should replace, consolidate, or displace lower-value detail at that owner rather than accumulate beside it.
 
-In visitor-facing examples, write quoted user requests and agent replies as people discussing goals, results, and choices; keep workflow terminology in explanation only when it clarifies a real distinction.
+In visitor-facing prose, dialogue, and diagrams, describe goals, saved changes, review results, and choices in ordinary language. Use workflow terminology only where an exact technical distinction needs it.
 
 Net growth is justified only when a genuinely new reader need has no existing owner. An exhaustive hybrid document such as the architecture map or this design method preserves every operative semantic distinction, not every paragraph accumulated while discovering it. Semantic completeness may require detail; it does not require repeated rationale, delivery history, or locally complete inventories at each consumer. Do not impose a rigid word or line quota, because compression is not evidence that a contract survived.
 

@@ -22,9 +22,9 @@ def validate() -> None:
 
 DIAGRAM = Diagram(
     slug="ambiguity-closure",
-    title="Ambiguity closes around one accepted brief",
+    title="One agreed brief guides the work",
     description=(
-        "Structured intake and discussion become a reviewed, accepted brief. That exact brief anchors implementation "
+        "Discussion becomes a reviewed brief. That exact brief guides implementation "
         "and independent candidate review. Implementation defects return to the same attempt; discoveries outside "
         "delegated product or architecture authority return to a human and revise the agreement before work resumes."
     ),
@@ -45,7 +45,7 @@ DIAGRAM = Diagram(
             ((680, 230), (680, 205), (805, 205), (805, 135), (850, 135)),
             "brief-review",
             "accepted-brief",
-            "accepted",
+            "agreed",
             (742, 194),
         ),
         Connector(
@@ -61,7 +61,7 @@ DIAGRAM = Diagram(
             ((1160, 135), (1190, 135), (1190, 490), (1160, 490)),
             "accepted-brief",
             "candidate-reviewer",
-            "same accepted brief",
+            "same brief",
             (1100, 212),
         ),
         Connector(
@@ -139,7 +139,7 @@ DIAGRAM = Diagram(
         Box(
             "accepted-brief",
             "Shared anchor",
-            "One accepted brief",
+            "One agreed brief",
             ("the exact current agreement",),
             ("WorkBrief · immutable bytes",),
             850,
@@ -183,8 +183,8 @@ DIAGRAM = Diagram(
         Box(
             "accepted-candidate",
             "Reviewed result",
-            "Candidate is ready",
-            ("human owns repository disposition",),
+            "Reviewed change is ready",
+            ("you choose what happens to it",),
             (),
             850,
             650,

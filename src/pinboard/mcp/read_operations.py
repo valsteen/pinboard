@@ -195,6 +195,8 @@ def _read_correction_context(
             snapshot.recorded_at,
             base64.b64encode(snapshot.diff).decode("ascii"),
         ),
+        context.reuse_eligible,
+        context.reuse_blockers,
         False,
         "unchanged",
         "safe-to-repeat",

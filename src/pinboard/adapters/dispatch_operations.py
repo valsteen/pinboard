@@ -54,6 +54,7 @@ from pinboard.application.work_briefs import (
     ready_review_key_sha256,
     validate_executable_work_brief,
     validate_local_correction_source_review,
+    validate_reused_coverage_correction_review,
     validate_reviewed_authority_digests,
     validate_work_brief_review,
 )
@@ -127,7 +128,11 @@ class OrdinaryDispatch:
 
 @dataclass(frozen=True, slots=True)
 class CorrectionDispatch:
-    review: work_brief_models.CorrectionSourceReview | work_brief_models.LocalCorrectionSourceReview
+    review: (
+        work_brief_models.CorrectionSourceReview
+        | work_brief_models.ReusedCoverageCorrectionReview
+        | work_brief_models.LocalCorrectionSourceReview
+    )
     review_id: ReviewId
     correction_history_id: HistoryId
 
@@ -139,6 +144,8 @@ class CorrectionContext:
     starting_snapshot: candidate_snapshots.CandidateSnapshot
     correction_reason: str
     correction_history_id: HistoryId
+    reuse_eligible: bool
+    reuse_blockers: tuple[str, ...]
 
 
 type DispatchPreparationChoice = OrdinaryDispatch | ReviewedDispatch | CorrectionDispatch
@@ -723,7 +730,7 @@ def _read_correction_start(
     )
 
 
-def read_correction_context(  # noqa: C901 - one read binds current return, brief and accepted snapshot
+def read_correction_context(  # noqa: C901, PLR0912 - one read binds current return, brief and accepted snapshot
     store: WorkStore,
     artifacts: DispatchArtifactPort,
     source_checkout_root: Path,
@@ -790,11 +797,28 @@ def read_correction_context(  # noqa: C901 - one read binds current return, brie
     )
     if isinstance(snapshot, DispatchFailure):
         return snapshot
-    return CorrectionContext(effective_brief, identity, snapshot, outcome.evidence, correction_history_id)
+    if isinstance(brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint):
+        ready = _read_reusable_ready_review(store, artifacts, brief, effective_brief)
+        reuse_blockers = (ready.message,) if isinstance(ready, DispatchFailure) else ()
+    else:
+        reuse_blockers = ("Local checkpoints use the local correction review.",)
+    return CorrectionContext(
+        effective_brief,
+        identity,
+        snapshot,
+        outcome.evidence,
+        correction_history_id,
+        not reuse_blockers,
+        reuse_blockers,
+    )
 
 
 def _correction_review_subject(
-    review: work_brief_models.CorrectionSourceReview | work_brief_models.LocalCorrectionSourceReview,
+    review: (
+        work_brief_models.CorrectionSourceReview
+        | work_brief_models.ReusedCoverageCorrectionReview
+        | work_brief_models.LocalCorrectionSourceReview
+    ),
     snapshot: candidate_snapshots.CandidateSnapshot,
 ) -> str:
     # Recording/receipt identities are provenance, not new semantic subjects.
@@ -805,7 +829,10 @@ def _correction_review_subject(
                 contract_review.checkpoint_sha256,
                 contract_review.reviewed_authority_set_sha256,
             )
-        case work_brief_models.LocalCorrectionSourceReview(accepted_brief_sha256=accepted_brief_sha256):
+        case (
+            work_brief_models.LocalCorrectionSourceReview(accepted_brief_sha256=accepted_brief_sha256)
+            | work_brief_models.ReusedCoverageCorrectionReview(accepted_brief_sha256=accepted_brief_sha256)
+        ):
             brief_binding = (accepted_brief_sha256,)
         case _ as unreachable:
             assert_never(unreachable)
@@ -840,7 +867,8 @@ def _effective_correction_brief(
         if isinstance(selected, BriefSourceFailure):
             return DispatchFailure(
                 DispatchErrorCode.DISPATCH_AUTHORITY_UNREADABLE,
-                f"Cannot read reviewed authority '{authority.authority_id}': {selected.message}",
+                f"Cannot read reviewed authority '{authority.authority_id}': {selected.message} "
+                "Restore that source before the full cross-boundary correction review.",
                 None,
             )
         refreshed.append(
@@ -848,6 +876,46 @@ def _effective_correction_brief(
         )
     effective_checkpoint = msgspec.structs.replace(checkpoint, reviewed_authorities=tuple(refreshed))
     return msgspec.structs.replace(brief, checkpoint=effective_checkpoint)
+
+
+def _read_reusable_ready_review(
+    store: WorkStore,
+    artifacts: DispatchArtifactPort,
+    accepted_brief: work_brief_models.WorkBrief,
+    effective_brief: work_brief_models.WorkBrief,
+) -> DispatchResult[bytes]:
+    if canonical_work_brief_bytes(accepted_brief) != canonical_work_brief_bytes(effective_brief):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+            "Reviewed sources changed; use the full cross-boundary correction review.",
+            _fresh_review_details((), ()),
+        )
+    reference = find_dispatch_review(
+        store, AttemptId(accepted_brief.attempt_id), ready_review_key_sha256(accepted_brief)
+    )
+    if isinstance(reference, ApplicationDispatchFailure):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_MISSING,
+            "Accepted ready coverage is missing; use the full cross-boundary correction review.",
+            _fresh_review_details((), ()),
+        )
+    try:
+        ready_bytes = artifacts.read(reference)
+    except ArtifactError as error:
+        if error.code == ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION:
+            raise
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_MISSING,
+            f"Accepted ready coverage is unreadable: {error}. Use the full cross-boundary correction review.",
+            _fresh_review_details((), ()),
+        )
+    if (failure := _validate_accepted_review(effective_brief, ready_bytes)) is not None:
+        return DispatchFailure(
+            failure.code,
+            f"Accepted ready coverage is invalid: {failure.message} Use the full cross-boundary correction review.",
+            failure.details,
+        )
+    return ready_bytes
 
 
 def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispatch-family choices
@@ -881,6 +949,14 @@ def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispa
                     return ReuseAcceptedDispatchReview(ready_review_key_sha256(brief))
                 case ReviewedDispatch():
                     review = choice.review
+                case CorrectionDispatch(review=work_brief_models.ReusedCoverageCorrectionReview() as reused):
+                    if (failure := validate_reused_coverage_correction_review(reused, brief)) is not None:
+                        return review_failure(failure)
+                    return PublishSuppliedDispatchReview(
+                        ready_review_key_sha256(brief),
+                        canonical_correction_source_review_bytes(reused),
+                        choice.review_id,
+                    )
                 case CorrectionDispatch():
                     if not isinstance(choice.review, work_brief_models.CorrectionSourceReview):
                         return DispatchFailure(
@@ -1018,6 +1094,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
         )
     ) is not None:
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, failure.message, None)
+    reusable_ready_bytes: bytes | None = None
     if isinstance(choice, CorrectionDispatch):
         if (
             failure := _validate_correction_history(
@@ -1028,10 +1105,16 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
             )
         ) is not None:
             return failure
+        accepted_source_brief = validated_brief
         effective_brief = _effective_correction_brief(source_checkout_root, validated_brief)
         if isinstance(effective_brief, DispatchFailure):
             return effective_brief
         validated_brief = effective_brief
+        if isinstance(choice.review, work_brief_models.ReusedCoverageCorrectionReview):
+            reusable = _read_reusable_ready_review(store, artifacts, accepted_source_brief, effective_brief)
+            if isinstance(reusable, DispatchFailure):
+                return reusable
+            reusable_ready_bytes = reusable
     review_choice = _select_dispatch_review(validated_brief, choice)
     if isinstance(review_choice, DispatchFailure):
         return review_choice
@@ -1108,7 +1191,12 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
             accepted_review_bytes = None
             failure = None
         else:
-            accepted_review_bytes = canonical_work_brief_review_bytes(choice.review.contract_review)
+            accepted_review_bytes = (
+                reusable_ready_bytes
+                if isinstance(choice.review, work_brief_models.ReusedCoverageCorrectionReview)
+                else canonical_work_brief_review_bytes(choice.review.contract_review)
+            )
+            assert accepted_review_bytes is not None
             assert isinstance(checkpoint_value, work_brief_models.CrossBoundaryCheckpoint)
             failure = validate_reviewed_authority_digests(
                 partial(select_checkout_brief_source, source_checkout_root),

@@ -108,6 +108,7 @@ from pinboard.mcp.contracts import (
     ReviewJobReady,
     ReviewJobRejected,
     TerminalAttemptInspectionSuccess,
+    TracePreflightResult,
     TransitionCommitted,
     TransitionFailedAfterPublication,
     TransitionRejected,
@@ -581,6 +582,8 @@ def _apply_job_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
 
 def union_schema_for(boundary_types: tuple[ResultBoundary, ...]) -> dict[str, JsonSchemaValue]:
     """Return one closed MCP result schema from separate correlated records."""
+    if ExecutorBusyResult in boundary_types:
+        boundary_types = (*boundary_types, TracePreflightResult)
     components = msgspec.json.schema_components(boundary_types)
     schemas: tuple[dict[str, JsonSchemaValue], ...] = components[0]
     definitions: dict[str, JsonSchemaValue] = components[1]
@@ -602,6 +605,32 @@ def union_schema_for(boundary_types: tuple[ResultBoundary, ...]) -> dict[str, Js
                 }
             }
             for changed in (False, True)
+        ]
+    preflight = definitions.get("TracePreflightResult")
+    if isinstance(preflight, dict):
+        properties = preflight.get("properties")
+        if isinstance(properties, dict):
+            properties["target_ran"] = {"type": "boolean", "const": False}
+        preflight["anyOf"] = [
+            {
+                "properties": {
+                    "state_changed": {"const": changed},
+                    "effect": {"const": effect},
+                    "changed_surfaces": {"const": list[JsonSchemaValue](surfaces)},
+                }
+            }
+            for changed, effect, surfaces in (
+                (False, "unchanged", ()),
+                (True, "committed", ("work-root",)),
+                (None, "unconfirmed", ()),
+                (None, "unconfirmed", ("work-root",)),
+            )
+        ]
+    correction = definitions.get("CorrectionContextReady")
+    if isinstance(correction, dict):
+        correction["anyOf"] = [
+            {"properties": {"reuse_eligible": {"const": True}, "reuse_blockers": {"maxItems": 0}}},
+            {"properties": {"reuse_eligible": {"const": False}, "reuse_blockers": {"minItems": 1}}},
         ]
     return {"type": "object", "anyOf": list[JsonSchemaValue](schemas), "$defs": definitions}
 
@@ -643,7 +672,11 @@ def validate_brief_preparation_result(content: dict[str, JsonValue]) -> dict[str
             else:
                 msgspec.convert(content, type=BriefSourcesRejected, strict=True)
         case "pinboard-mcp-execution-result/v1":
-            msgspec.convert(content, type=ExecutorBusyResult, strict=True)
+            msgspec.convert(
+                content,
+                type=TracePreflightResult if content.get("status") == "rejected" else ExecutorBusyResult,
+                strict=True,
+            )
         case unexpected:
             raise ValueError(f"Unsupported brief preparation result schema: {unexpected}")
     return content
@@ -658,7 +691,7 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     code = content.get("code")
     surfaces = content.get("changed_surfaces")
     if schema == "pinboard-mcp-execution-result/v1":
-        msgspec.convert(content, type=ExecutorBusyResult, strict=True)
+        msgspec.convert(content, type=TracePreflightResult if status == "rejected" else ExecutorBusyResult, strict=True)
     elif tool_name == "pinboard_order":
         msgspec.convert(content, type=OrderRejected if status == "rejected" else OrderCommitted, strict=True)
     elif tool_name == "pinboard_pr_review":

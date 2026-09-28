@@ -8,6 +8,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, tzinfo
 from itertools import count
 from pathlib import Path
+from typing import Literal
 from unittest.mock import patch
 
 import msgspec
@@ -40,8 +41,10 @@ from tests.work_brief_support import ready_review, work_a_brief
 
 
 class CorrectionSourceReviewTest(CheckpointPackageSupport):
-    def correction_fixture(self) -> CheckpointFixture:
-        fixture = self.checkpoint_fixture()
+    def correction_fixture(
+        self, *, review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner"] = "ready"
+    ) -> CheckpointFixture:
+        fixture = self.checkpoint_fixture(review_condition=review_condition)
         payload = fixture.work / "bootstrap-return.json"
         payload.write_text('{"reason":"Prepare the real correction scenario."}', encoding="utf-8")
         self.transition_json(fixture, self.project_action(fixture, "return-for-correction:work-a-1"), payload)
@@ -139,6 +142,133 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         return mcp_jobs._dispatch_job(
             str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
         ).content
+
+    def reuse_choice(self, fixture: CheckpointFixture, choice: JsonObject) -> JsonObject:
+        selected = deepcopy(choice)
+        original = self.json_object(selected["brief_review"])
+        contract = self.json_object(original["contract_review"])
+        selected["kind"] = "reuse-correction"
+        selected["brief_review"] = {
+            "schema": "pinboard-correction-source-review/v2",
+            "accepted_brief_sha256": hashlib.sha256(work_briefs.canonical_work_brief_bytes(fixture.brief)).hexdigest(),
+            "reviewer_task_id": contract["reviewer_task_id"],
+            "starting_candidate": original["starting_candidate"],
+            "correction_input": original["correction_input"],
+            "assessment": original["assessment"],
+        }
+        return selected
+
+    def test_reuse_correction_requires_fresh_independent_candidate_assessment(self) -> None:
+        fixture = self.correction_fixture()
+        history_id, full = self.submit_and_return(fixture, "reuse-review", committed=True)
+        choice = self.reuse_choice(fixture, full)
+        context = call_native_tool(
+            server.CORRECTION_CONTEXT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "correction_history_id": history_id,
+            },
+        )
+        self.assertTrue(context["reuse_eligible"])
+        self.assertEqual([], context["reuse_blockers"])
+        before = fixture.store.validated_snapshot()
+        changes: tuple[tuple[str, work_brief_models.WorkBriefJsonValue, str], ...] = (
+            ("reviewer_task_id", fixture.brief.owner_task_id, "DISPATCH_BRIEF_REVIEW_NOT_INDEPENDENT"),
+            ("accepted_brief_sha256", "f" * 64, "DISPATCH_BRIEF_REVIEW_STALE"),
+            ("correction_input", {"reason": "different"}, "DISPATCH_BRIEF_REVIEW_STALE"),
+        )
+        for field, value, code in changes:
+            invalid = deepcopy(choice)
+            self.json_object(invalid["brief_review"])[field] = value
+            self.assertEqual(code, self.dispatch_native(fixture, invalid)["code"])
+            self.assertEqual(before, fixture.store.validated_snapshot())
+        invalid = deepcopy(choice)
+        self.json_object(self.json_object(invalid["brief_review"])["starting_candidate"])["content_sha256"] = "f" * 64
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", self.dispatch_native(fixture, invalid)["code"])
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        malformed = deepcopy(choice)
+        self.json_object(malformed["brief_review"])["unknown"] = True
+        self.assertEqual("DISPATCH_INVALID", self.dispatch_native(fixture, malformed)["code"])
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        ready = call_native_tool(
+            server.DISPATCH_TOOL,
+            {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
+        )
+        self.assertEqual("ready", ready["status"])
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        persisted = [
+            (fixture.work / reference.selector).read_bytes()
+            for reference in fresh.artifact_references
+            if reference.kind == work_models.ArtifactKind.EVIDENCE
+            and b"pinboard-correction-source-review/v2" in (fixture.work / reference.selector).read_bytes()
+        ]
+        self.assertEqual(1, len(persisted))
+        decoded = msgspec.json.decode(persisted[0], type=work_brief_models.ReusedCoverageCorrectionReview)
+        self.assertEqual(persisted[0], work_briefs.canonical_correction_source_review_bytes(decoded))
+
+    def test_reuse_correction_reports_changed_source_and_missing_review(self) -> None:
+        review_conditions: tuple[Literal["ready", "missing", "malformed", "stale", "wrong-owner"], ...] = (
+            "ready",
+            "missing",
+            "malformed",
+            "stale",
+            "wrong-owner",
+        )
+        for review_condition in review_conditions:
+            with self.subTest(review_condition=review_condition):
+                fixture = self.correction_fixture(review_condition=review_condition)
+                if review_condition == "ready":
+                    (fixture.project / "architecture.md").write_text(
+                        "# Architecture\n\n## Contract\n\nChanged after accepted review.\n", encoding="utf-8"
+                    )
+                history_id, full = self.submit_and_return(fixture, review_condition, committed=True)
+                choice = self.reuse_choice(fixture, full)
+                before = fixture.store.validated_snapshot()
+                context = call_native_tool(
+                    server.CORRECTION_CONTEXT_TOOL,
+                    {
+                        "project_root": str(fixture.project),
+                        "work_root": str(fixture.work),
+                        "attempt_id": "work-a-1",
+                        "correction_history_id": history_id,
+                    },
+                )
+                self.assertFalse(context["reuse_eligible"])
+                self.assertTrue(context["reuse_blockers"])
+                self.assertIn("full cross-boundary correction review", str(context["reuse_blockers"]))
+                rejected = self.dispatch_native(fixture, choice)
+                self.assertIn(
+                    rejected["code"],
+                    (
+                        "DISPATCH_BRIEF_REVIEW_STALE",
+                        "DISPATCH_BRIEF_REVIEW_MISSING",
+                        "DISPATCH_BRIEF_REVIEW_INVALID",
+                        "DISPATCH_BRIEF_REVIEW_NOT_INDEPENDENT",
+                    ),
+                )
+                self.assertEqual(before, fixture.store.validated_snapshot())
+
+    def test_reuse_correction_reports_missing_reviewed_source(self) -> None:
+        fixture = self.correction_fixture()
+        history_id, full = self.submit_and_return(fixture, "missing-source", committed=True)
+        (fixture.project / "architecture.md").unlink()
+        choice = self.reuse_choice(fixture, full)
+        before = fixture.store.validated_snapshot()
+        context = call_native_tool(
+            server.CORRECTION_CONTEXT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "correction_history_id": history_id,
+            },
+        )
+        self.assertEqual("DISPATCH_AUTHORITY_UNREADABLE", context["code"])
+        self.assertIn("Restore that source", str(context["message"]))
+        self.assertEqual("DISPATCH_AUTHORITY_UNREADABLE", self.dispatch_native(fixture, choice)["code"])
+        self.assertEqual(before, fixture.store.validated_snapshot())
 
     def test_local_return_dispatches_and_corrected_commit_reaches_disposition(self) -> None:  # noqa: PLR0915 - one native recovery journey
         fixture = self.checkpoint_fixture(local=True)

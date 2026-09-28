@@ -768,6 +768,21 @@ class CorrectionSourceReview(msgspec.Struct, frozen=True, forbid_unknown_fields=
             raise ValueError("Correction review requires one accepted candidate Evidence identity.")
 
 
+class ReusedCoverageCorrectionReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Independent correction assessment reusing exact accepted ready coverage."""
+
+    schema: Literal["pinboard-correction-source-review/v2"]
+    accepted_brief_sha256: Sha256
+    reviewer_task_id: NonEmptyLine
+    starting_candidate: PortableArtifactIdentity
+    correction_input: action_models.ReasonInputPayload
+    assessment: NonEmptyText
+
+    def __post_init__(self) -> None:
+        if (self.starting_candidate.role, self.starting_candidate.kind) != ("candidate", "evidence"):
+            raise ValueError("Correction review requires one accepted candidate Evidence identity.")
+
+
 class LocalCorrectionSourceReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """Independent local assessment of the accepted brief and returned candidate."""
 

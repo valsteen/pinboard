@@ -18,7 +18,6 @@ from unittest.mock import patch
 
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.server.mcpserver.exceptions import ToolError
 
 from pinboard.adapters.files import contributor_traces, git_config
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
@@ -35,6 +34,28 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class ContributorTraceTest(unittest.TestCase):
+    def preflight_result(self, project: Path, work_root: Path) -> dict[str, JsonValue]:
+        def forbidden_callback(_token: execution.CancellationToken) -> execution.OperationResult:
+            raise AssertionError("The target callback ran after trace preflight failed.")
+
+        async def run() -> dict[str, JsonValue]:
+            executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+            try:
+                return await execution._run_request(
+                    executor,
+                    execution.Diagnostics(io.StringIO(), event_limit=10, line_limit=300),
+                    1,
+                    server.ITEM_STATUS_TOOL,
+                    str(project),
+                    forbidden_callback,
+                    arguments={"project_root": str(project), "work_root": str(work_root), "item_id": "one"},
+                    capture=execution.AutomaticCapture(common.select_capture_item),
+                )
+            finally:
+                executor.shutdown()
+
+        return asyncio.run(run())
+
     def project(self, temporary: Path) -> tuple[Path, Path]:
         primary = temporary / "project"
         primary.mkdir()
@@ -525,15 +546,108 @@ class ContributorTraceTest(unittest.TestCase):
             ):
                 self.assertEqual({"ok": True}, asyncio.run(run()))
                 self.assertEqual(1, called)
+
                 self.assertFalse((primary / ".pinboard" / contributor_traces.SETTINGS_NAME).exists())
                 selected_settings = selected_root / contributor_traces.SETTINGS_NAME
                 self.assertIn("mode = off", selected_settings.read_text())
                 selected_settings.write_text('[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = on\n')
                 trace_directory = selected_root / contributor_traces.TRACE_DIRECTORY
                 trace_directory.mkdir(mode=0o755)
-                with self.assertRaisesRegex(ToolError, "selected-work-root.*private directory.*target did not run"):
-                    asyncio.run(run())
+                rejected = asyncio.run(run())
+                self.assertEqual("TRACE_PREFLIGHT_FAILED", rejected["code"])
+                self.assertEqual(str(trace_directory), rejected["resource"])
+                self.assertEqual(False, rejected["target_ran"])
+                self.assertIn("0700", str(rejected["repair"]))
+                self.assertEqual("unchanged", rejected["effect"])
                 self.assertEqual(1, called)
+
+    def test_preflight_reports_settings_created_before_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            with patch.object(
+                contributor_traces, "_decode_settings", side_effect=[None, ValueError("invalid setting")]
+            ):
+                result = self.preflight_result(worktree, work_root)
+            self.assertEqual("TRACE_PREFLIGHT_FAILED", result["code"])
+            self.assertEqual(str((work_root / contributor_traces.SETTINGS_NAME).resolve()), result["resource"])
+            self.assertEqual("committed", result["effect"])
+            self.assertEqual(["work-root"], result["changed_surfaces"])
+            self.assertEqual("confirmed", result["settings_file_creation"])
+            self.assertEqual("acknowledged", result["settings_mode_write"])
+            self.assertEqual(False, result["target_ran"])
+
+    def test_preflight_reports_directory_created_before_capture_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            self.settings(primary, "on", {})
+            with patch.object(execution, "SemanticCapture", side_effect=ValueError("capture probe denied")):
+                result = self.preflight_result(worktree, work_root)
+            self.assertEqual("TRACE_PREFLIGHT_FAILED", result["code"])
+            self.assertEqual(str(work_root / contributor_traces.TRACE_DIRECTORY), result["resource"])
+            self.assertEqual("unconfirmed", result["effect"])
+            self.assertEqual("confirmed", result["trace_directory_creation"])
+            self.assertEqual("unconfirmed", result["capture_probe_effect"])
+            self.assertEqual(False, result["target_ran"])
+
+    def test_preflight_keeps_confirmed_creation_and_uncertain_mode_write_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            setting = work_root / contributor_traces.SETTINGS_NAME
+            with patch.object(
+                git_config,
+                "add",
+                return_value=git_config.WriteUnconfirmed(
+                    setting, "pinboard.unsafe_persist_exact_pinboard_traces.mode", "write unconfirmed"
+                ),
+            ):
+                result = self.preflight_result(worktree, work_root)
+            self.assertTrue(setting.exists())
+            self.assertEqual("unconfirmed", result["effect"])
+            self.assertIsNone(result["state_changed"])
+            self.assertEqual(["work-root"], result["changed_surfaces"])
+            self.assertEqual("confirmed", result["settings_file_creation"])
+            self.assertEqual("unconfirmed", result["settings_mode_write"])
+            self.assertEqual(False, result["target_ran"])
+
+    def test_preflight_names_malformed_settings_and_symlinked_work_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            setting = work_root / contributor_traces.SETTINGS_NAME
+            setting.write_text("[pinboard]\n\tbroken = yes\n", encoding="utf-8")
+            malformed = self.preflight_result(worktree, work_root)
+            self.assertEqual(str(setting.resolve()), malformed["resource"])
+            self.assertEqual("unchanged", malformed["effect"])
+            self.assertEqual(False, malformed["target_ran"])
+            link = Path(temporary) / "linked-work-root"
+            link.symlink_to(work_root, target_is_directory=True)
+            rejected = self.preflight_result(worktree, link)
+            self.assertEqual(str(link), rejected["resource"])
+            self.assertEqual("unchanged", rejected["effect"])
+            self.assertEqual(False, rejected["target_ran"])
+            self.assertIn(str(work_root.resolve()), str(rejected["repair"]))
+            self.assertIn("work_root", str(rejected["repair"]))
+            loop = Path(temporary) / "looped-work-root"
+            loop.symlink_to(loop, target_is_directory=True)
+            looped = self.preflight_result(worktree, loop)
+            self.assertEqual("TRACE_PREFLIGHT_FAILED", looped["code"])
+            self.assertIn("existing real directory", str(looped["repair"]))
+
+    def test_preflight_repairs_unverifiable_git_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, worktree = self.project(Path(temporary))
+            work_root = Path(temporary) / "selected-work-root"
+            work_root.mkdir()
+            (work_root / ".git").write_text("gitdir: /missing\n", encoding="utf-8")
+            rejected = self.preflight_result(worktree, work_root)
+            self.assertEqual(str(work_root / contributor_traces.SETTINGS_NAME), rejected["resource"])
+            self.assertEqual("unchanged", rejected["effect"])
+            self.assertEqual(False, rejected["target_ran"])
+            self.assertIn(str(work_root / ".git"), str(rejected["repair"]))
+            self.assertIn("git -C", str(rejected["repair"]))
 
     def test_unprepared_launcher_uses_explicit_trace_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -619,8 +733,9 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertIsNone(capture.resolve(str(Path(temporary)), {"work_root": str(work_root), "item_id": "work-a"}))
             self.assertIsNotNone(capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "work-a"}))
             self.settings(primary, "off", {"work-a": "invalid"})
-            with self.assertRaises(ToolError):
-                capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "work-a"})
+            rejected = capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "work-a"})
+            self.assertIsInstance(rejected, execution.OperationResult)
+            self.assertEqual("TRACE_PREFLIGHT_FAILED", rejected.content["code"])
 
     def test_mcp_startup_uses_automatic_mode_unless_manual_capture_was_declared(self) -> None:
         async def no_transport() -> None:
@@ -896,7 +1011,7 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertEqual(64, cli.returncode)
             self.assertEqual(b"", cli.stdout)
 
-            async def mcp_call() -> tuple[bool, str]:
+            async def mcp_call() -> tuple[bool, dict[str, JsonValue]]:
                 parameters = StdioServerParameters(
                     command=str(ROOT / "scripts" / "pinboard"), args=("--mcp",), cwd=ROOT
                 )
@@ -906,12 +1021,16 @@ class ContributorTraceTest(unittest.TestCase):
                         server.ITEM_STATUS_TOOL,
                         {"project_root": str(primary), "work_root": str(primary / ".pinboard"), "item_id": "one"},
                     )
-                    return result.is_error, str(result.content)
+                    assert isinstance(result.structured_content, dict)
+                    return result.is_error, result.structured_content
 
-            rejected, message = asyncio.run(mcp_call())
-            self.assertTrue(rejected)
-            self.assertIn(str(primary / ".pinboard"), message)
-            self.assertIn("private directory", message)
+            rejected, response = asyncio.run(mcp_call())
+            self.assertFalse(rejected)
+            self.assertEqual("TRACE_PREFLIGHT_FAILED", response["code"])
+            self.assertEqual(str(directory), response["resource"])
+            self.assertEqual(False, response["target_ran"])
+            self.assertEqual("unchanged", response["effect"])
+            self.assertIn("private directory", str(response["message"]))
             self.assertEqual((), tuple(directory.glob("pinboard-auto-*.json")))
 
     def test_long_lived_mcp_process_reloads_item_mode_before_each_call(self) -> None:

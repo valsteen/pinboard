@@ -1,5 +1,7 @@
 """Generate negotiated MCP schemas and validate emitted transport results."""
 
+from typing import get_args
+
 import msgspec
 
 from pinboard.adapters import dispatch_operations
@@ -11,7 +13,6 @@ from pinboard.mcp.contracts import (
     _BLOCKED_CONTINUATION_ACTION_KINDS,
     _PAUSED_CONTINUATION_ACTION_KINDS,
     _REVIEW_CONTINUATION_ACTION_KINDS,
-    TRANSITION_REQUEST_TYPES,
     ActionsEnvelope,
     ActionsInvalid,
     ActionsSuccess,
@@ -112,6 +113,7 @@ from pinboard.mcp.contracts import (
     TransitionCommitted,
     TransitionFailedAfterPublication,
     TransitionRejected,
+    TransitionRequest,
     _committed_transition_surfaces,
     _fixed_state_changed,
 )
@@ -206,7 +208,9 @@ def attempt_authority_request_schema() -> dict[str, JsonSchemaValue]:
 
 
 def transition_request_schema() -> dict[str, JsonSchemaValue]:
-    schemas, definitions = msgspec.json.schema_components(TRANSITION_REQUEST_TYPES)
+    """Advertise exactly the leaves of the union that the transition decoder returns."""
+
+    schemas, definitions = msgspec.json.schema_components(get_args(TransitionRequest.__value__))
     return {
         "type": "object",
         "additionalProperties": False,

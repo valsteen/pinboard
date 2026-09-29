@@ -105,6 +105,136 @@ async def _await_after_ready[Result](
     return await execution.result()
 
 
+def _representative_transition_requests() -> tuple[dict[str, contracts.JsonValue], ...]:
+    """Return one valid raw request for each exact transition leaf the decoder selects."""
+
+    reason: dict[str, contracts.JsonValue] = {"reason": "Accepted reason."}
+    evidence: dict[str, contracts.JsonValue] = {"evidence": "Independent review evidence."}
+    definition: dict[str, contracts.JsonValue] = {
+        "schema": "pinboard-work-item-definition/v2",
+        "title": "Item",
+        "objective": "Change one consumer.",
+        "hypothesis": "It remains observable.",
+        "evidence": [],
+        "scope": ["One consumer."],
+        "non_scope": [],
+        "acceptance_criteria": ["The change persists."],
+        "dependencies": [],
+        "effect": "Changed consumer.",
+        "unlock": "Use the consumer.",
+        "checkout_policy": "coordinator-selected",
+        "obligations": [
+            {
+                "obligation_id": "use-consumer",
+                "statement": "Use the consumer.",
+                "deferral_policy": "forbidden",
+            }
+        ],
+    }
+    cases: tuple[tuple[str, str, dict[str, contracts.JsonValue]], ...] = (
+        ("accept-checkpoint", "project", {"checkpoint": "checkpoint-1", "candidate": "candidate", **evidence}),
+        ("accept-review-and-continue", "project", {"candidate": "candidate", **evidence}),
+        ("activate", "preparer", {"brief_artifact_ref_id": 1}),
+        ("block", "project", reason),
+        ("block-item", "project", reason),
+        ("complete", "project", evidence),
+        (
+            "complete",
+            "project",
+            {
+                "schema": "pinboard-covered-completion/v1",
+                "candidate": "candidate",
+                **evidence,
+                "reviewer_task_id": "reviewer",
+                "result_sha256": "a" * 64,
+                "review_sha256": "b" * 64,
+                "packages": [{"history_id": 1, "package_sha256": "c" * 64, "disposition": "revalidated", **evidence}],
+            },
+        ),
+        (
+            "complete",
+            "project",
+            {
+                "schema": "pinboard-reviewed-completion/v2",
+                "candidate": "candidate",
+                **evidence,
+                "reviewer_task_id": "reviewer",
+                "result_sha256": "a" * 64,
+                "review_sha256": "b" * 64,
+                "packages": [],
+            },
+        ),
+        ("close", "project", {"outcome": "done", **reason}),
+        ("defer", "project", {"timing": "safe-to-defer", "reopen_condition": "A supported consumer needs it."}),
+        ("merge-proposal", "project", {"target": "item-2"}),
+        ("pause", "project", reason),
+        ("reject-proposal", "project", reason),
+        ("reopen", "project", evidence),
+        (
+            "record-replacement",
+            "project",
+            {
+                "schema": "pinboard-planned-replacement/v1",
+                "expected_relation_revision": 0,
+                "replacement_item": "item-2",
+                "replacement_cost": "One retained owner.",
+                "status": "current",
+                "recorded_by": "coordinator",
+            },
+        ),
+        (
+            "rebind-attempt",
+            "project",
+            {
+                "branch": "codex/candidate",
+                "base_revision": "base",
+                "brief_artifact_ref_id": 1,
+            },
+        ),
+        ("resume", "project", {}),
+        ("return-for-correction", "project", reason),
+        (
+            "retain-temporarily",
+            "project",
+            {
+                "schema": "pinboard-replacement-disposition/v1",
+                "relation_revision": 1,
+                "rationale": "Current consumer remains necessary.",
+                "accepted_cost": "One owner.",
+                "recorded_by": "coordinator",
+            },
+        ),
+        (
+            "revise-item",
+            "project",
+            {
+                "schema": "pinboard-item-revision/v1",
+                "expected_revision": 1,
+                "expected_digest": "a" * 64,
+                "source_task": "coordinator",
+                **reason,
+                "definition": definition,
+            },
+        ),
+        ("submit-review", "worker", {"candidate": "candidate"}),
+    )
+    return tuple(
+        {
+            "project_root": "/project",
+            "work_root": "/work",
+            "role": role,
+            "receipt": {"action_id": {"kind": kind, "subject": "item-1"}, "subject_revision": "1"},
+            "payload": payload,
+            **(
+                {"actor_task_id": "coordinator", "actor_host_id": "local"}
+                if role == "project"
+                else {"lease_id": "lease", "generation": 1}
+            ),
+        }
+        for kind, role, payload in cases
+    )
+
+
 class BoundedExecutorTest(unittest.TestCase):
     def test_worker_and_admission_limits_reject_before_effect(self) -> None:
         async def scenario() -> None:
@@ -1571,13 +1701,7 @@ class McpTransportTest(unittest.TestCase):
         self.assertEqual("paused", attempt.state.value)
 
     def test_transition_request_contract_has_only_exact_mutating_leaves(self) -> None:
-        schema = contract_schemas.transition_request_schema()
-        encoded_schema = msgspec.json.encode(schema)
-        properties = schema["properties"]
-        assert isinstance(properties, dict) and isinstance(properties["request"], dict)
-        leaves = properties["request"]["oneOf"]
-        assert isinstance(leaves, list)
-        self.assertEqual(20, len(leaves))
+        encoded_schema = msgspec.json.encode(contract_schemas.transition_request_schema())
         for advisory_kind in (b'"continue"', b'"dispatch"', b'"inspect"', b'"report-blocker"'):
             self.assertNotIn(advisory_kind, encoded_schema)
 
@@ -1961,121 +2085,10 @@ class McpTransportTest(unittest.TestCase):
             resolve.assert_not_called()
 
     def test_transition_decoder_covers_each_advertised_leaf_with_positive_and_negative_payloads(self) -> None:
-        reason: dict[str, contracts.JsonValue] = {"reason": "Accepted reason."}
-        evidence: dict[str, contracts.JsonValue] = {"evidence": "Independent review evidence."}
-        definition: dict[str, contracts.JsonValue] = {
-            "schema": "pinboard-work-item-definition/v2",
-            "title": "Item",
-            "objective": "Change one consumer.",
-            "hypothesis": "It remains observable.",
-            "evidence": [],
-            "scope": ["One consumer."],
-            "non_scope": [],
-            "acceptance_criteria": ["The change persists."],
-            "dependencies": [],
-            "effect": "Changed consumer.",
-            "unlock": "Use the consumer.",
-            "checkout_policy": "coordinator-selected",
-            "obligations": [
-                {
-                    "obligation_id": "use-consumer",
-                    "statement": "Use the consumer.",
-                    "deferral_policy": "forbidden",
-                }
-            ],
-        }
-        cases: tuple[tuple[str, str, dict[str, contracts.JsonValue]], ...] = (
-            ("accept-checkpoint", "project", {"checkpoint": "checkpoint-1", "candidate": "candidate", **evidence}),
-            ("accept-review-and-continue", "project", {"candidate": "candidate", **evidence}),
-            ("activate", "preparer", {"brief_artifact_ref_id": 1}),
-            ("block", "project", reason),
-            ("block-item", "project", reason),
-            ("complete", "project", evidence),
-            (
-                "complete",
-                "project",
-                {
-                    "schema": "pinboard-covered-completion/v1",
-                    "candidate": "candidate",
-                    **evidence,
-                    "reviewer_task_id": "reviewer",
-                    "result_sha256": "a" * 64,
-                    "review_sha256": "b" * 64,
-                    "packages": [
-                        {"history_id": 1, "package_sha256": "c" * 64, "disposition": "revalidated", **evidence}
-                    ],
-                },
-            ),
-            ("close", "project", {"outcome": "done", **reason}),
-            ("defer", "project", {"timing": "safe-to-defer", "reopen_condition": "A supported consumer needs it."}),
-            ("merge-proposal", "project", {"target": "item-2"}),
-            ("pause", "project", reason),
-            ("reject-proposal", "project", reason),
-            ("reopen", "project", evidence),
-            (
-                "record-replacement",
-                "project",
-                {
-                    "schema": "pinboard-planned-replacement/v1",
-                    "expected_relation_revision": 0,
-                    "replacement_item": "item-2",
-                    "replacement_cost": "One retained owner.",
-                    "status": "current",
-                    "recorded_by": "coordinator",
-                },
-            ),
-            (
-                "rebind-attempt",
-                "project",
-                {
-                    "branch": "codex/candidate",
-                    "base_revision": "base",
-                    "brief_artifact_ref_id": 1,
-                },
-            ),
-            ("resume", "project", {}),
-            ("return-for-correction", "project", reason),
-            (
-                "retain-temporarily",
-                "project",
-                {
-                    "schema": "pinboard-replacement-disposition/v1",
-                    "relation_revision": 1,
-                    "rationale": "Current consumer remains necessary.",
-                    "accepted_cost": "One owner.",
-                    "recorded_by": "coordinator",
-                },
-            ),
-            (
-                "revise-item",
-                "project",
-                {
-                    "schema": "pinboard-item-revision/v1",
-                    "expected_revision": 1,
-                    "expected_digest": "a" * 64,
-                    "source_task": "coordinator",
-                    **reason,
-                    "definition": definition,
-                },
-            ),
-            ("submit-review", "worker", {"candidate": "candidate"}),
-        )
-        self.assertEqual(len(contracts.TRANSITION_REQUEST_TYPES), len(cases))
-        for kind, role, payload in cases:
-            authority: dict[str, contracts.JsonValue] = (
-                {"actor_task_id": "coordinator", "actor_host_id": "local"}
-                if role == "project"
-                else {"lease_id": "lease", "generation": 1}
-            )
-            raw: dict[str, contracts.JsonValue] = {
-                "project_root": "/project",
-                "work_root": "/work",
-                "role": role,
-                "receipt": {"action_id": {"kind": kind, "subject": "item-1"}, "subject_revision": "1"},
-                "payload": payload,
-                **authority,
-            }
-            with self.subTest(kind=kind, payload=payload):
+        for raw in _representative_transition_requests():
+            with self.subTest(receipt=raw["receipt"], payload=raw["payload"]):
+                payload = raw["payload"]
+                assert isinstance(payload, dict)
                 decoded = contracts.decode_transition_request({"request": raw})
                 self.assertIsInstance(decoded.payload, msgspec.Struct)
                 with self.assertRaises((msgspec.ValidationError, ValueError)):
@@ -2084,6 +2097,57 @@ class McpTransportTest(unittest.TestCase):
                     )
                 with self.assertRaises((msgspec.ValidationError, ValueError)):
                     contracts.decode_transition_request({"request": {**raw, "role": "observer"}})
+
+    def test_registered_transition_schema_advertises_exactly_the_decoder_leaves(self) -> None:
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        server = mcp_server.create_server(
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
+        )
+        tools = _run_async(server.list_tools())
+        schema = next(tool for tool in tools if tool.name == mcp_server.TRANSITION_TOOL).input_schema
+        definitions = schema["$defs"]
+
+        def resolve(reference: contracts.JsonSchemaValue) -> tuple[str, dict[str, contracts.JsonSchemaValue]]:
+            assert isinstance(reference, dict)
+            pointer = reference["$ref"]
+            assert isinstance(pointer, str) and pointer.startswith("#/$defs/")
+            name = pointer.removeprefix("#/$defs/")
+            definition = definitions[name]
+            assert isinstance(definition, dict)
+            return name, definition
+
+        def single(field: contracts.JsonSchemaValue) -> str:
+            assert isinstance(field, dict)
+            values = field["enum"]
+            assert isinstance(values, list) and len(values) == 1 and isinstance(values[0], str)
+            return values[0]
+
+        advertised: list[tuple[str, str, str]] = []
+        for leaf in schema["properties"]["request"]["oneOf"]:
+            _name, request = resolve(leaf)
+            properties = request["properties"]
+            assert isinstance(properties, dict)
+            _receipt_name, receipt = resolve(properties["receipt"])
+            receipt_properties = receipt["properties"]
+            assert isinstance(receipt_properties, dict)
+            _identity_name, action_identity = resolve(receipt_properties["action_id"])
+            identity_properties = action_identity["properties"]
+            assert isinstance(identity_properties, dict)
+            payload_name, _payload = resolve(properties["payload"])
+            advertised.append((single(properties["role"]), single(identity_properties["kind"]), payload_name))
+
+        decoded: set[tuple[str, str, str]] = set()
+        for raw in _representative_transition_requests():
+            request = contracts.decode_transition_request({"request": raw})
+            role = type(request).__struct_config__.tag
+            assert isinstance(role, str)
+            decoded.add((role, request.receipt.action_id.kind, type(request.payload).__name__))
+
+        self.assertEqual(len(advertised), len(set(advertised)))
+        self.assertEqual(decoded, set(advertised))
+        self.assertIn(("project", "complete", "ReviewedCompleteInputPayload"), set(advertised))
 
     def test_attempt_acquisition_selects_initial_or_transfer_only_under_the_write_lock(self) -> None:
         temporary, _project, roots = self._project()

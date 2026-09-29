@@ -883,30 +883,6 @@ def decode_transition_request(raw: Mapping[str, JsonValue]) -> TransitionRequest
     return request
 
 
-TRANSITION_REQUEST_TYPES: tuple[Any, ...] = (
-    AcceptCheckpointTransitionRequest,
-    AcceptReviewAndContinueTransitionRequest,
-    ActivateTransitionRequest,
-    BlockTransitionRequest,
-    BlockItemTransitionRequest,
-    DirectCompleteTransitionRequest,
-    CoveredCompleteTransitionRequest,
-    CloseTransitionRequest,
-    DeferTransitionRequest,
-    MergeProposalTransitionRequest,
-    PauseTransitionRequest,
-    RejectProposalTransitionRequest,
-    ReopenTransitionRequest,
-    RecordReplacementTransitionRequest,
-    RebindAttemptTransitionRequest,
-    ResumeTransitionRequest,
-    ReturnForCorrectionTransitionRequest,
-    RetainTemporarilyTransitionRequest,
-    ReviseItemTransitionRequest,
-    SubmitReviewTransitionRequest,
-)
-
-
 class AuthorityRequestBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     project_root: RootPath
     work_root: RootPath

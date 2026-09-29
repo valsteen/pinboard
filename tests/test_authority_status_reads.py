@@ -29,7 +29,16 @@ from pinboard.application.work_briefs import canonical_work_brief_bytes
 from pinboard.cli.entrypoint import main
 from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.history import work_item_definition_digest
-from pinboard.domain.identifiers import ActionId, AttemptId, HostId, LeaseId, TaskId, WorkItemId
+from pinboard.domain.identifiers import (
+    ActionId,
+    AttemptId,
+    HistoryId,
+    HistorySubjectId,
+    HostId,
+    LeaseId,
+    TaskId,
+    WorkItemId,
+)
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server as mcp_server
 from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
@@ -96,6 +105,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
             mcp_server.ATTEMPT_AUTHORITY_TOOL,
             mcp_server.PREPARATION_AUTHORITY_TOOL,
             mcp_server.ITEM_DEFINITION_TOOL,
+            mcp_server.ITEM_STATUS_TOOL,
             mcp_server.ACTIONS_TOOL,
             mcp_server.PARALLEL_PREVIEW_TOOL,
         }:
@@ -550,7 +560,9 @@ class AuthorityStatusReadTest(unittest.TestCase):
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
             self.record_store_reads() as item_reads,
         ):
-            stdout = self.native(mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"item_id": "work-c"})
+            stdout = self.native(
+                mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"operation": "item", "item_id": "work-c"}
+            )
 
         self.assertNotIn("code", stdout)
         self.assertEqual("work-c", stdout["item_id"])
@@ -616,7 +628,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
             with self.subTest(item_state=item_state.value, attempt_state=attempt_state):
                 with self.record_store_reads() as selected_reads:
                     status_stdout = self.native(
-                        mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"item_id": "work-a"}
+                        mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"operation": "item", "item_id": "work-a"}
                     )
                 overview_stdout = self.native(mcp_server.OVERVIEW_TOOL, str(project), str(work), {})
 
@@ -635,13 +647,16 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 ("label", "label"),
                 ("state", "state"),
                 ("timing", "timing"),
-                ("next_action", "next_action"),
                 ("source", "source"),
-                ("notes", "notes"),
                 ("queue_position", "position"),
                 ("preparation", "preparation"),
             ):
                 self.assertEqual(status[status_field], overview_item[overview_field], status_field)
+            intake_context = self.json_object(status["intake_context"])
+            self.assertEqual("original-context", intake_context["label"])
+            self.assertEqual(overview_item["next_action"], intake_context["next_action"])
+            self.assertEqual(overview_item["notes"], intake_context["notes"])
+            self.assertNotIn("review_verdict", overview_item)
             attempts = self.json_array(status["attempts"])
             current_attempt = None if not attempts else self.json_object(attempts[0])["attempt_id"]
             self.assertEqual(current_attempt, overview_item["attempt_id"])
@@ -665,7 +680,9 @@ class AuthorityStatusReadTest(unittest.TestCase):
             project, work, _store = self.initialized_state(state)
 
             with self.subTest(state=terminal_state.value), self.record_store_reads() as item_reads:
-                stdout = self.native(mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"item_id": "work-b"})
+                stdout = self.native(
+                    mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"operation": "item", "item_id": "work-b"}
+                )
 
             self.assertNotIn("code", stdout)
             self.assertEqual(terminal_state.value, stdout["state"])
@@ -677,6 +694,112 @@ class AuthorityStatusReadTest(unittest.TestCase):
             )
             self.assertEqual(1, len(attempt_selects))
             self.assertIn("state != 'done'", attempt_selects[0])
+
+    def test_item_leaf_and_overview_leave_unrelated_attempts_and_receipts_unread(self) -> None:
+        base = self.state_with_unrelated_attempt_authority(count=64)
+        template = base.transition_receipts[0]
+        activation = replace(
+            template,
+            history_id=HistoryId(2),
+            project_revision=7,
+            action_id=ActionId("activate:work-a"),
+            action_kind=decision_models.ActionKind.ACTIVATE,
+            subject_id=HistorySubjectId("work-a"),
+            artifact_ref_id=None,
+            authorization=decision_models.AuthorizationKind.PREPARATION,
+        )
+        before_activation = tuple(
+            replace(
+                template,
+                history_id=HistoryId(10 + revision),
+                project_revision=revision,
+                action_id=ActionId("return-for-correction:work-a-1"),
+                action_kind=decision_models.ActionKind.RETURN_FOR_CORRECTION,
+                artifact_ref_id=None,
+                authorization=decision_models.AuthorizationKind.PROJECT,
+            )
+            for revision in range(1, 7)
+        )
+        unrelated = tuple(
+            replace(
+                template,
+                history_id=HistoryId(100 + index),
+                project_revision=13 + index,
+                action_id=ActionId(f"return-for-correction:unrelated-{index}"),
+                action_kind=decision_models.ActionKind.RETURN_FOR_CORRECTION,
+                subject_id=HistorySubjectId(f"unrelated-{index}"),
+                artifact_ref_id=None,
+                authorization=decision_models.AuthorizationKind.PROJECT,
+            )
+            for index in range(64)
+        )
+        state = replace(
+            base,
+            lifecycle=replace(
+                base.lifecycle,
+                project=replace(base.lifecycle.project, revision=13 + len(unrelated)),
+            ),
+            transition_receipts=(*before_activation, activation, *base.transition_receipts, *unrelated),
+        )
+        project, work, _store = self.initialized_state(state)
+
+        with self.record_store_reads() as item_reads:
+            status = self.native(
+                mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"operation": "item", "item_id": "work-a"}
+            )
+        with self.record_store_reads() as overview_reads:
+            overview = self.native(mcp_server.OVERVIEW_TOOL, str(project), str(work), {})
+
+        self.assertEqual({"kind": "none"}, status["review_verdict"])
+        self.assertEqual(
+            ["work-a-1"], [self.json_object(value)["attempt_id"] for value in self.json_array(status["attempts"])]
+        )
+        self.assertNotIn("unrelated", json.dumps(status))
+        _tables, statements = item_reads
+        self.assert_keyed_status_queries(work / "state.sqlite3", statements)
+        walks = [statement for statement in statements if "from transition_history" in statement.lower()]
+        self.assertEqual(1, len(walks))
+        self.assertIn("project_revision <= 8", walks[0])
+        attempt_selects = [statement for statement in statements if "from attempts" in statement.lower()]
+        self.assertEqual(1, len(attempt_selects))
+        self.assertIn("state != 'done'", attempt_selects[0])
+        self.assertNotIn("transition_history", overview_reads[0])
+        for value in self.json_array(overview["items"]):
+            self.assertNotIn("review_verdict", self.json_object(value))
+
+    def test_branch_leaf_scans_only_attempt_identity_and_reads_owning_items_by_key(self) -> None:
+        project, work, _store = self.initialized_state(self.state_with_unrelated_attempt_authority(count=64))
+
+        with (
+            patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
+            self.record_store_reads() as branch_reads,
+        ):
+            owners = self.native(
+                mcp_server.ITEM_STATUS_TOOL,
+                str(project),
+                str(work),
+                {"operation": "branch", "branch": "codex/unrelated-7"},
+            )
+
+        self.assertEqual("pinboard-branch-owners/v1", owners["schema"], owners)
+        self.assertEqual(
+            [{"item_id": "work-b", "item_state": "superseded", "attempt_id": "unrelated-7", "attempt_state": "done"}],
+            owners["owners"],
+        )
+        read_tables, statements = branch_reads
+        self.assertEqual({"attempts", "project_meta", "work_items"}, read_tables)
+        selects = tuple(statement for statement in statements if statement.lstrip().upper().startswith("SELECT"))
+        connection = sqlite3.connect(work / "state.sqlite3")
+        try:
+            plans = tuple(
+                str(row[3]).upper()
+                for statement in selects
+                for row in connection.execute(f"EXPLAIN QUERY PLAN {statement}").fetchall()
+            )
+        finally:
+            connection.close()
+        self.assertEqual(["SCAN ATTEMPT"], [detail for detail in plans if detail.startswith("SCAN ")], plans)
+        self.assertTrue(any(detail.startswith("SEARCH ITEM ") for detail in plans), plans)
 
     def test_selected_parallel_preview_reads_only_selected_facts_and_preserves_metadata(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_unrelated_attempt_authority())
@@ -761,7 +884,10 @@ class AuthorityStatusReadTest(unittest.TestCase):
         with (
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")),
             patch.object(
-                SQLiteWorkStore, "read_attempt_context", autospec=True, side_effect=SQLiteWorkStore.read_attempt_context
+                SQLiteWorkStore,
+                "read_attempt_inspection_context",
+                autospec=True,
+                side_effect=SQLiteWorkStore.read_attempt_inspection_context,
             ) as contexts,
             patch.object(
                 SQLiteWorkStore,
@@ -1033,7 +1159,9 @@ class AuthorityStatusReadTest(unittest.TestCase):
         finally:
             connection.close()
 
-        stdout = self.native(mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"item_id": "work-c"})
+        stdout = self.native(
+            mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"operation": "item", "item_id": "work-c"}
+        )
         self.assertNotIn("code", stdout)
         self.assertEqual("work-c", stdout["item_id"])
         validation, validation_stdout, _validation_stderr = self.run_cli(*common, "validate")
@@ -1051,7 +1179,12 @@ class AuthorityStatusReadTest(unittest.TestCase):
         finally:
             selected_connection.close()
         with self.rejected_storage():
-            self.native(mcp_server.ITEM_STATUS_TOOL, str(selected_project), str(selected_work), {"item_id": "work-c"})
+            self.native(
+                mcp_server.ITEM_STATUS_TOOL,
+                str(selected_project),
+                str(selected_work),
+                {"operation": "item", "item_id": "work-c"},
+            )
 
         authority_project, authority_work, _authority_store = self.initialized_state(state)
         authority_connection = sqlite3.connect(authority_work / "state.sqlite3")
@@ -1065,7 +1198,12 @@ class AuthorityStatusReadTest(unittest.TestCase):
         finally:
             authority_connection.close()
         with self.rejected_storage():
-            self.native(mcp_server.ITEM_STATUS_TOOL, str(authority_project), str(authority_work), {"item_id": "work-c"})
+            self.native(
+                mcp_server.ITEM_STATUS_TOOL,
+                str(authority_project),
+                str(authority_work),
+                {"operation": "item", "item_id": "work-c"},
+            )
 
     def test_item_status_explains_both_inconsistency_directions_and_validation_does_not_repair(self) -> None:
         for item_id, mutation, expected_state, observed_attempt in (
@@ -1084,12 +1222,14 @@ class AuthorityStatusReadTest(unittest.TestCase):
             common = ("--project-root", str(project), "--work-root", str(work))
 
             with self.subTest(item_id=item_id), self.record_store_reads() as selected_reads:
-                stdout = self.native(mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"item_id": item_id})
+                stdout = self.native(
+                    mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"operation": "item", "item_id": item_id}
+                )
 
             self.assertEqual("rejected", stdout["status"])
 
             rejection = stdout
-            self.assertEqual("pinboard-mcp-item-status-result/v1", rejection["schema"])
+            self.assertEqual("pinboard-mcp-item-status-result/v2", rejection["schema"])
             self.assertEqual("ITEM_STATUS_INCONSISTENT", rejection["code"])
             self.assertFalse(rejection["state_changed"])
             self.assertEqual([], rejection["changed_surfaces"])

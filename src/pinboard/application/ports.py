@@ -116,6 +116,8 @@ class WorkStore(Protocol):
 
     def read_item_status(self, work_item_id: WorkItemId) -> query_models.ItemStatusFacts | None: ...
 
+    def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts: ...
+
     def read_parallel_preview(
         self, work_item_ids: tuple[WorkItemId, ...]
     ) -> query_models.ParallelPreviewFacts | None: ...
@@ -163,8 +165,26 @@ class ItemStatusReader(Protocol):
     def read_item_status(self, work_item_id: WorkItemId) -> query_models.ItemStatusFacts | None: ...
 
 
+class ReadyCandidateReviewReader(Protocol):
+    """Read the record-ready review bound to an attempt's current candidate, brief, result, and review."""
+
+    def read_ready_candidate_review(self, attempt_id: AttemptId) -> query_models.ReadyCandidateReview | None: ...
+
+
+class BranchOwnerReader(Protocol):
+    def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts: ...
+
+
 class AttemptContextReader(Protocol):
     def read_attempt_context(self, attempt_id: AttemptId) -> query_models.AttemptContextFacts | None: ...
+
+
+class AttemptInspectionContextReader(Protocol):
+    """Read one attempt context, naming a damaged consumed pause receipt instead of rejecting the state."""
+
+    def read_attempt_inspection_context(
+        self, attempt_id: AttemptId
+    ) -> query_models.AttemptContextFacts | query_models.DamagedTransitionReceipt | None: ...
 
 
 class ReviewJobContextReader(Protocol):

@@ -416,9 +416,12 @@ class PluginPackagingTests(unittest.TestCase):
                         result = await session.call_tool(
                             "pinboard_item_status",
                             {
-                                "project_root": str(project),
-                                "work_root": str(project / ".pinboard"),
-                                "item_id": "packaged-proposal",
+                                "request": {
+                                    "project_root": str(project),
+                                    "work_root": str(project / ".pinboard"),
+                                    "operation": "item",
+                                    "item_id": "packaged-proposal",
+                                }
                             },
                         )
                         self.assertFalse(result.is_error)

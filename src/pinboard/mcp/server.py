@@ -193,17 +193,19 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=ITEM_STATUS_TOOL,
-        description="Read one current Pinboard item status from an explicit local project and work root.",
+        description=(
+            "Read one current Pinboard item status, or map an exact branch to the items and attempts that own it."
+        ),
     )
-    async def item_status(project_root: str, work_root: str, item_id: str) -> dict[str, JsonValue]:
+    async def item_status(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         return await execution._run_request(
             executor,
             diagnostics,
             next(request_ids),
             ITEM_STATUS_TOOL,
-            project_root,
-            partial(read_operations._read_item_status, project_root, work_root, item_id),
-            arguments={"project_root": project_root, "work_root": work_root, "item_id": item_id},
+            str(request.get("project_root", "")),
+            partial(read_operations._read_item_status, {"request": request}),
+            arguments={"request": request},
             capture=capture,
         )
 
@@ -635,7 +637,7 @@ def _install_boundary_contracts(server: MCPServer) -> None:
         ),
         (
             ITEM_STATUS_TOOL,
-            contract_schemas.schema_for(contracts.ItemStatusRequest),
+            contract_schemas.schema_for(contracts.ItemStatusEnvelope),
             contract_schemas.union_schema_for(contracts.ITEM_STATUS_RESULT_TYPES),
         ),
         (

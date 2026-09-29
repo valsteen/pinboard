@@ -229,10 +229,22 @@ def _require_publication_surfaces(surfaces: tuple[JobPublicationSurface, ...]) -
         raise ValueError("Publication must retain exact terminal publication surfaces.")
 
 
-class ItemStatusRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ItemStatusItemRequest(msgspec.Struct, tag="item", tag_field="operation", frozen=True, forbid_unknown_fields=True):
     project_root: RootPath
     work_root: RootPath
     item_id: PathComponent
+
+
+class ItemStatusBranchRequest(
+    msgspec.Struct, tag="branch", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    branch: action_models.NonEmptyLine
+
+
+class ItemStatusEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: ItemStatusItemRequest | ItemStatusBranchRequest
 
 
 class ProposalCreateRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1010,7 +1022,7 @@ class FailureMismatch(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class ItemStatusInvalid(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-item-status-result/v1"]
+    schema: Literal["pinboard-mcp-item-status-result/v2"]
     status: Literal["rejected"]
     code: Literal["ITEM_STATUS_INVALID"]
     message: NonEmptyText
@@ -1023,7 +1035,7 @@ class ItemStatusInvalid(_UnchangedResult, msgspec.Struct, frozen=True, forbid_un
 
 
 class ItemStatusUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-item-status-result/v1"]
+    schema: Literal["pinboard-mcp-item-status-result/v2"]
     status: Literal["rejected"]
     code: Literal["ITEM_NOT_FOUND", "ITEM_DEFINITION_INVALID"]
     message: NonEmptyText
@@ -1036,7 +1048,7 @@ class ItemStatusUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, forbi
 
 
 class ItemStatusInconsistent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-item-status-result/v1"]
+    schema: Literal["pinboard-mcp-item-status-result/v2"]
     status: Literal["rejected"]
     code: Literal["ITEM_STATUS_INCONSISTENT"]
     message: NonEmptyText
@@ -1046,6 +1058,37 @@ class ItemStatusInconsistent(_UnchangedResult, msgspec.Struct, frozen=True, forb
     changed_surfaces: Empty
     observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
     mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
+
+
+class BranchOwnerNotFound(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-item-status-result/v2"]
+    status: Literal["rejected"]
+    code: Literal["BRANCH_OWNER_NOT_FOUND"]
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["correct-input"]
+    changed_surfaces: Empty
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=2)]
+    mismatches: Empty
+    recovery: NonEmptyText
+
+
+class DamagedReceiptResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    status: Literal["rejected"]
+    code: Literal["TRANSITION_RECEIPT_DAMAGED"]
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: Empty
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=4)]
+    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
+    recovery: NonEmptyText
+
+
+class ItemStatusReceiptDamaged(DamagedReceiptResult, frozen=True):
+    schema: Literal["pinboard-mcp-item-status-result/v2"]
 
 
 class OverviewRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1123,6 +1166,10 @@ class AttemptBriefInvalid(RejectedReadResult, frozen=True):
     retry: Literal["do-not-retry"]
     observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
     mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
+
+
+class AttemptReceiptDamaged(DamagedReceiptResult, frozen=True):
+    schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
 
 
 class AttemptActionUnavailable(RejectedReadResult, frozen=True):
@@ -2811,9 +2858,12 @@ BRIEF_REVIEW_RESULT_TYPES = (
 
 ITEM_STATUS_RESULT_TYPES = (
     query_models.ItemStatus,
+    query_models.BranchOwners,
     ItemStatusInvalid,
     ItemStatusUnavailable,
     ItemStatusInconsistent,
+    BranchOwnerNotFound,
+    ItemStatusReceiptDamaged,
     ExecutorBusyResult,
 )
 OVERVIEW_RESULT_TYPES = (query_models.WorkOverview, OverviewRejected, ExecutorBusyResult)
@@ -2833,6 +2883,7 @@ ATTEMPT_INSPECTION_RESULT_TYPES = (
     AttemptInspectInvalid,
     AttemptNotFound,
     AttemptBriefInvalid,
+    AttemptReceiptDamaged,
     AttemptActionUnavailable,
     ExecutorBusyResult,
 )
@@ -2889,7 +2940,7 @@ TRANSITION_RESULT_TYPES = (
 type RequestBoundary = (
     type[BriefContractEnvelope]
     | type[BriefSourcesEnvelope]
-    | type[ItemStatusRequest]
+    | type[ItemStatusEnvelope]
     | type[ProposalCreateRequest]
     | type[BriefPublishRequest]
     | type[OverviewRequest]
@@ -2918,9 +2969,12 @@ type ResultBoundary = (
     | type[BriefSourcesRejected]
     | type[BriefSourcesPublishedFailure]
     | type[query_models.ItemStatus]
+    | type[query_models.BranchOwners]
     | type[ItemStatusInvalid]
     | type[ItemStatusUnavailable]
     | type[ItemStatusInconsistent]
+    | type[BranchOwnerNotFound]
+    | type[ItemStatusReceiptDamaged]
     | type[ExecutorBusyResult]
     | type[TracePreflightResult]
     | type[ProposalCommitted]
@@ -2952,6 +3006,7 @@ type ResultBoundary = (
     | type[AttemptInspectInvalid]
     | type[AttemptNotFound]
     | type[AttemptBriefInvalid]
+    | type[AttemptReceiptDamaged]
     | type[AttemptActionUnavailable]
     | type[ArtifactVerificationInvalid]
     | type[ArtifactReferenceMismatch]

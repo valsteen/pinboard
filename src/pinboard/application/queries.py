@@ -12,7 +12,14 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.application import ports, query_models, released_v6_compatibility, stored_state, work_brief_models
+from pinboard.application import (
+    checkpoint_packages,
+    ports,
+    query_models,
+    released_v6_compatibility,
+    stored_state,
+    work_brief_models,
+)
 from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.decisions import ActionCapabilityFactory, project_attempt_action_groups
 from pinboard.domain.errors import (
@@ -63,28 +70,92 @@ def select_review_job_context(
     return selected
 
 
-def recorded_pause_reason(
+def decode_recorded_pause_reason(
+    attempt_id: AttemptId,
     attempt_state: work_models.AttemptState,
+    history_id: HistoryId,
+    committed_at: datetime,
     action_kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind,
     outcome_schema: str,
     outcome_payload: bytes,
-) -> str | None:
+) -> query_models.RecordedPauseReason:
     """Return the human pause reason carried by a paused attempt's latest receipt.
 
     The caller supplies only the receipt whose project revision is the attempt's
     subject revision. A pause keeps its reason as receipt evidence and a paused
     rebind carries it forward; checkpoint acceptance and every other receipt
-    present no pause reason.
+    present no pause reason. A pause or rebind receipt whose outcome does not
+    decode is returned as damaged for the consuming read to name.
     """
 
-    if attempt_state != work_models.AttemptState.PAUSED or action_kind not in (
-        decision_models.ActionKind.PAUSE,
-        decision_models.ActionKind.REBIND_ATTEMPT,
-    ):
+    if attempt_state != work_models.AttemptState.PAUSED:
         return None
-    if outcome_schema != "transition-receipt/v1":
-        raise ValueError("A pause or rebind receipt must use the transition receipt outcome.")
-    return msgspec.json.Decoder(history.TransitionReceiptOutcome, strict=True).decode(outcome_payload).evidence
+    match action_kind:
+        case decision_models.ActionKind.PAUSE | decision_models.ActionKind.REBIND_ATTEMPT as pause_action:
+            if outcome_schema != "transition-receipt/v1":
+                defect = f"The pause outcome uses {outcome_schema!r} instead of transition-receipt/v1."
+            else:
+                try:
+                    return (
+                        msgspec.json.Decoder(history.TransitionReceiptOutcome, strict=True)
+                        .decode(outcome_payload)
+                        .evidence
+                    )
+                except msgspec.DecodeError as error:
+                    defect = f"The pause outcome does not decode as transition-receipt/v1: {error}"
+            return query_models.DamagedTransitionReceipt(attempt_id, history_id, committed_at, pause_action, defect)
+        case _:
+            return None
+
+
+def damaged_receipt_message(damaged: query_models.DamagedTransitionReceipt) -> str:
+    return (
+        f"Transition receipt {damaged.history_id} ({damaged.action_kind.value}, committed "
+        f"{damaged.committed_at.isoformat()}) for attempt '{damaged.attempt_id}' is damaged: {damaged.defect}"
+    )
+
+
+def damaged_receipt_diagnosis(
+    action_kind: query_models.DamagedReceiptActionKind,
+) -> query_models.DamagedReceiptDiagnosis:
+    """Name the read that can diagnose a damaged consumed receipt without repairing it.
+
+    Validation derives every item view, which decodes a paused attempt's pause or
+    rebind receipt, so it names that damage. Item-view derivation does not decode
+    a review-verdict receipt, so validation does not name its damage and the read
+    reports the receipt and defect for the human to diagnose.
+    """
+
+    match action_kind:
+        case decision_models.ActionKind.PAUSE | decision_models.ActionKind.REBIND_ATTEMPT:
+            return query_models.DamagedReceiptDiagnosis.VALIDATION
+        case (
+            decision_models.ActionKind.RETURN_FOR_CORRECTION
+            | decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
+            | decision_models.ActionKind.ACCEPT_CHECKPOINT
+        ):
+            return query_models.DamagedReceiptDiagnosis.HUMAN
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def damaged_receipt_recovery(damaged: query_models.DamagedTransitionReceipt) -> str:
+    match damaged_receipt_diagnosis(damaged.action_kind):
+        case query_models.DamagedReceiptDiagnosis.VALIDATION:
+            return (
+                f"Report damaged transition receipt {damaged.history_id} to the human and diagnose it with "
+                "'pinboard validate --json'; Pinboard does not repair receipts, so do not edit the ledger or retry "
+                "this read."
+            )
+        case query_models.DamagedReceiptDiagnosis.HUMAN:
+            return (
+                f"Report to the human that transition receipt {damaged.history_id} "
+                f"({damaged.action_kind.value}, committed {damaged.committed_at.isoformat()}) for attempt "
+                f"'{damaged.attempt_id}' is damaged: {damaged.defect} Pinboard does not repair receipts; do not "
+                "retry this read or edit the ledger."
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def validate_attempt_brief_identity(
@@ -793,11 +864,229 @@ def project_item_overview(facts: query_models.ItemOverviewFacts, now: datetime) 
     )
 
 
+def _stored_receipt(
+    attempt_id: AttemptId,
+    receipt: query_models.ConsumedTransitionReceipt,
+    action_kind: query_models.DamagedReceiptActionKind,
+) -> stored_state.StoredTransitionReceipt | query_models.DamagedTransitionReceipt:
+    for column, text in (("input_json", receipt.input_json), ("outcome_json", receipt.outcome_json)):
+        try:
+            msgspec.json.decode(text.encode("utf-8"), type=msgspec.Raw)
+        except msgspec.DecodeError as error:
+            return _damaged(attempt_id, receipt, action_kind, f"Column {column!r} is not valid JSON: {error}")
+    return stored_state.StoredTransitionReceipt(
+        receipt.history_id,
+        receipt.project_revision,
+        receipt.action_id,
+        receipt.action_kind,
+        receipt.subject_id,
+        receipt.artifact_ref_id,
+        receipt.authorization,
+        receipt.actor_task_id,
+        receipt.actor_host_id,
+        receipt.input_schema,
+        work_models.CanonicalJson(receipt.input_json.encode("utf-8")),
+        receipt.outcome_schema,
+        work_models.CanonicalJson(receipt.outcome_json.encode("utf-8")),
+        receipt.committed_at,
+    )
+
+
+def _damaged(
+    attempt_id: AttemptId,
+    receipt: query_models.ConsumedTransitionReceipt,
+    action_kind: query_models.DamagedReceiptActionKind,
+    defect: str,
+) -> query_models.DamagedTransitionReceipt:
+    return query_models.DamagedTransitionReceipt(
+        attempt_id, receipt.history_id, receipt.committed_at, action_kind, defect
+    )
+
+
+def _historical_receipt_outcome(
+    receipt: query_models.ConsumedTransitionReceipt,
+) -> history.TransitionReceiptOutcome | None:
+    """Read a retained historical receipt's outcome when it decodes; its absence is never damage."""
+
+    if receipt.outcome_schema != "transition-receipt/v1":
+        return None
+    try:
+        return msgspec.json.decode(
+            receipt.outcome_json.encode("utf-8"), type=history.TransitionReceiptOutcome, strict=True
+        )
+    except msgspec.DecodeError:
+        return None
+
+
+def _returned_verdict(
+    attempt_id: AttemptId, event: query_models.ReviewEventFacts
+) -> query_models.ReturnedForCorrectionVerdict | query_models.DamagedTransitionReceipt:
+    receipt = event.receipt
+    returned = decision_models.ActionKind.RETURN_FOR_CORRECTION
+    match receipt.input_schema:
+        case "return-for-correction/v1":
+            stored = _stored_receipt(attempt_id, receipt, returned)
+            if isinstance(stored, query_models.DamagedTransitionReceipt):
+                return stored
+            outcome = checkpoint_packages.decode_correction_outcome(stored, str(attempt_id))
+            if isinstance(outcome, DecisionFailure):
+                return _damaged(attempt_id, receipt, returned, outcome.message)
+            reason = outcome.evidence
+        case "decision/v1":
+            historical = _historical_receipt_outcome(receipt)
+            reason = None if historical is None else historical.evidence
+        case _:
+            return _damaged(attempt_id, receipt, returned, f"Unsupported return input schema {receipt.input_schema!r}.")
+    return query_models.ReturnedForCorrectionVerdict(int(receipt.history_id), reason, event.rebound_since)
+
+
+def _continued_verdict(
+    attempt_id: AttemptId, receipt: query_models.ConsumedTransitionReceipt
+) -> query_models.AcceptedAndContinuedVerdict | query_models.DamagedTransitionReceipt:
+    continued = decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
+    if receipt.outcome_schema != "transition-receipt/v1":
+        return _damaged(attempt_id, receipt, continued, f"Unsupported outcome schema {receipt.outcome_schema!r}.")
+    try:
+        outcome = msgspec.json.decode(
+            receipt.outcome_json.encode("utf-8"), type=history.TransitionReceiptOutcome, strict=True
+        )
+    except msgspec.DecodeError as error:
+        return _damaged(
+            attempt_id, receipt, continued, f"The outcome does not decode as transition-receipt/v1: {error}"
+        )
+    if outcome.outcome != continued.value:
+        return _damaged(
+            attempt_id, receipt, continued, "The outcome does not record review acceptance and continuation."
+        )
+    return query_models.AcceptedAndContinuedVerdict(outcome.evidence)
+
+
+def _checkpoint_verdict(
+    attempt_id: AttemptId, receipt: query_models.ConsumedTransitionReceipt
+) -> query_models.CheckpointAcceptedVerdict | query_models.DamagedTransitionReceipt:
+    accepted = decision_models.ActionKind.ACCEPT_CHECKPOINT
+    match receipt.outcome_schema:
+        case "checkpoint-acceptance/v2":
+            try:
+                outcome = msgspec.json.decode(
+                    receipt.outcome_json.encode("utf-8"), type=history.CheckpointAcceptanceOutcome, strict=True
+                )
+            except msgspec.DecodeError as error:
+                return _damaged(
+                    attempt_id, receipt, accepted, f"The outcome does not decode as checkpoint-acceptance/v2: {error}"
+                )
+            return query_models.CheckpointAcceptedVerdict(outcome.checkpoint)
+        case "transition-receipt/v1":
+            historical = _historical_receipt_outcome(receipt)
+            return query_models.CheckpointAcceptedVerdict(None if historical is None else historical.checkpoint)
+        case _:
+            return _damaged(attempt_id, receipt, accepted, f"Unsupported outcome schema {receipt.outcome_schema!r}.")
+
+
+def _review_verdict(
+    attempt: query_models.ItemStatusAttemptFacts,
+    reviews: ports.ReadyCandidateReviewReader,
+) -> query_models.ReviewVerdict | query_models.DamagedTransitionReceipt:
+    """Derive the current attempt's verdict from its latest review-relevant receipt."""
+
+    event = attempt.review_event
+    if event is None:
+        return query_models.NoReviewVerdict()
+    match event.action_kind:
+        case decision_models.ActionKind.SUBMIT_REVIEW:
+            if attempt.state != work_models.AttemptState.REVIEW:
+                return query_models.NoReviewVerdict()
+            ready = reviews.read_ready_candidate_review(attempt.attempt_id)
+            if ready is None:
+                return query_models.NoReviewVerdict()
+            reference = ready.reference
+            return query_models.ReadyReviewVerdict(
+                ready.candidate_revision,
+                query_models.CandidateReviewArtifact(
+                    int(reference.artifact_ref_id),
+                    reference.selector,
+                    reference.content_sha256,
+                    reference.size_bytes,
+                    reference.accepted_revision,
+                ),
+            )
+        case decision_models.ActionKind.RETURN_FOR_CORRECTION:
+            return _returned_verdict(attempt.attempt_id, event)
+        case decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE:
+            return _continued_verdict(attempt.attempt_id, event.receipt)
+        case decision_models.ActionKind.ACCEPT_CHECKPOINT:
+            return _checkpoint_verdict(attempt.attempt_id, event.receipt)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _closure_action(
+    kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind,
+) -> query_models.ItemClosureAction | None:
+    match kind:
+        case decision_models.ActionKind.COMPLETE:
+            return query_models.ItemClosureAction.COMPLETE
+        case decision_models.ActionKind.CLOSE:
+            return query_models.ItemClosureAction.CLOSE
+        case decision_models.ActionKind.MERGE_PROPOSAL:
+            return query_models.ItemClosureAction.MERGE_PROPOSAL
+        case decision_models.ActionKind.CLOSE_PR_REVIEW:
+            return query_models.ItemClosureAction.CLOSE_PR_REVIEW
+        case (
+            decision_models.ActionKind.START_PR_REVIEW
+            | decision_models.ActionKind.REVIEW_PR_BRIEF
+            | decision_models.ActionKind.OBSERVE_PR_HEAD
+            | decision_models.ActionKind.RECORD_PR_ROUND
+            | decision_models.ActionKind.ACCEPT_CHECKPOINT
+            | decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
+            | decision_models.ActionKind.ACTIVATE
+            | decision_models.ActionKind.BLOCK
+            | decision_models.ActionKind.BLOCK_ITEM
+            | decision_models.ActionKind.CONTINUE
+            | decision_models.ActionKind.DEFER
+            | decision_models.ActionKind.DISPATCH
+            | decision_models.ActionKind.INSPECT
+            | decision_models.ActionKind.PAUSE
+            | decision_models.ActionKind.REJECT_PROPOSAL
+            | decision_models.ActionKind.REOPEN
+            | decision_models.ActionKind.RECORD_REPLACEMENT
+            | decision_models.ActionKind.REBIND_ATTEMPT
+            | decision_models.ActionKind.REPORT_BLOCKER
+            | decision_models.ActionKind.RESUME
+            | decision_models.ActionKind.RETURN_FOR_CORRECTION
+            | decision_models.ActionKind.RETAIN_TEMPORARILY
+            | decision_models.ActionKind.REVISE_ITEM
+            | decision_models.ActionKind.SUBMIT_REVIEW
+            | released_v6_compatibility.HistoricalActionKind.ACCEPT_PROPOSAL
+            | released_v6_compatibility.HistoricalActionKind.MARK_READY
+            | released_v6_compatibility.HistoricalActionKind.RETURN_PROPOSAL
+        ):
+            return None
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _project_closure(facts: query_models.ItemClosureFacts | None) -> query_models.ItemClosure | None:
+    """Project closure from receipt row columns only; a non-terminal receipt yields no closure."""
+
+    if facts is None or (action := _closure_action(facts.action_kind)) is None:
+        return None
+    closing = facts.closing_attempt
+    return query_models.ItemClosure(
+        action,
+        facts.committed_at.isoformat(),
+        None
+        if closing is None
+        else query_models.ClosingAttempt(str(closing.attempt_id), closing.branch, closing.candidate_revision),
+    )
+
+
 def project_item_status(
     reader: ports.ItemStatusReader,
+    reviews: ports.ReadyCandidateReviewReader,
     work_item_id: WorkItemId,
     now: datetime,
-) -> DecisionResult[query_models.ItemStatus]:
+) -> DecisionResult[query_models.ItemStatus] | query_models.DamagedTransitionReceipt:
     facts = reader.read_item_status(work_item_id)
     if facts is None:
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' was not found.", None)
@@ -836,14 +1125,26 @@ def project_item_status(
                 alternatives=(),
             ),
         )
-    attempts = tuple(
-        query_models.ItemStatusAttempt(
-            str(attempt.attempt_id), attempt.state, attempt.candidate_revision, attempt.pause_reason
+    attempts: list[query_models.ItemStatusAttempt] = []
+    verdict: query_models.ReviewVerdict = query_models.NoReviewVerdict()
+    for selected in facts.attempts:
+        if isinstance(selected.pause_reason, query_models.DamagedTransitionReceipt):
+            return selected.pause_reason
+        attempts.append(
+            query_models.ItemStatusAttempt(
+                str(selected.attempt_id),
+                selected.state,
+                selected.branch,
+                selected.candidate_revision,
+                selected.pause_reason,
+            )
         )
-        for attempt in facts.attempts
-    )
+        selected_verdict = _review_verdict(selected, reviews)
+        if isinstance(selected_verdict, query_models.DamagedTransitionReceipt):
+            return selected_verdict
+        verdict = selected_verdict
     return query_models.ItemStatus(
-        "pinboard-item-status/v1",
+        "pinboard-item-status/v2",
         "sqlite-v7",
         str(facts.project_revision),
         str(item.work_item_id),
@@ -851,12 +1152,33 @@ def project_item_status(
         stored_state.StoredWorkItemState.READY if item.state == stored_state.StoredWorkItemState.INTAKE else item.state,
         item.timing,
         item.outcome_evidence,
-        item.next_action,
         item.source,
-        item.notes,
         item.queue_position,
-        attempts,
+        query_models.IntakeContext("original-context", item.next_action, item.notes),
+        tuple(attempts),
+        verdict,
+        _project_closure(facts.closure),
         _project_selected_preparation_status(facts.preparation, now),
+    )
+
+
+def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query_models.BranchOwners | None:
+    """Return every retained item and attempt that recorded this exact branch, or None when none did."""
+
+    facts = reader.read_branch_owners(branch)
+    if not facts.owners:
+        return None
+    return query_models.BranchOwners(
+        "pinboard-branch-owners/v1",
+        "sqlite-v7",
+        str(facts.project_revision),
+        branch,
+        tuple(
+            query_models.BranchOwner(
+                str(owner.work_item_id), owner.item_state, str(owner.attempt_id), owner.attempt_state
+            )
+            for owner in facts.owners
+        ),
     )
 
 

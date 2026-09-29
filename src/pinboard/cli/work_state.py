@@ -27,6 +27,7 @@ from pinboard.application import (
     checkpoint_packages,
     ports,
     project_export,
+    queries,
     stored_state,
     work_brief_models,
     work_briefs,
@@ -528,7 +529,17 @@ def validate_loaded_work_state(
                 _error_diagnostic(completion_packages.code.value, work_root, completion_packages.message)
             )
     view_root = work_root / "views"
-    for selector, expected in derive_expected_view_bytes(state, attempt_briefs, now=now).items():
+    expected_views = derive_expected_view_bytes(state, attempt_briefs, now=now)
+    diagnostics.extend(
+        _error_diagnostic(
+            "TRANSITION_RECEIPT_DAMAGED",
+            view_root / "history" / f"{damaged.history_id}.md",
+            queries.damaged_receipt_message(damaged),
+            queries.damaged_receipt_recovery(damaged),
+        )
+        for damaged in expected_views.damaged
+    )
+    for selector, expected in expected_views.views.items():
         path = view_root / selector
         try:
             actual_view_bytes = path.read_bytes()

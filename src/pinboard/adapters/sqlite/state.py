@@ -9,7 +9,6 @@ persisted-invariant failures remain exceptional; the transaction owner stays in
 import sqlite3
 from collections import Counter
 from collections.abc import Mapping, Set
-from datetime import datetime
 from itertools import pairwise
 from types import MappingProxyType
 
@@ -19,20 +18,20 @@ from pinboard.adapters.sqlite.artifacts import read_artifacts
 from pinboard.adapters.sqlite.authority import read_authority, validate_attempt_authority
 from pinboard.adapters.sqlite.database import decode_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.adapters.sqlite.lifecycle import read_lifecycle, validate_current_attempt_relation
+from pinboard.adapters.sqlite.lifecycle import (
+    TransitionHistoryRow,
+    decode_history_action_kind,
+    read_lifecycle,
+    validate_current_attempt_relation,
+)
 from pinboard.adapters.sqlite.pr_review import validate_review_history
 from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
-from pinboard.application import project_export, released_v6_compatibility, stored_state
-from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.application import project_export, stored_state
+from pinboard.domain import authority_models, work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import (
-    ActionId,
-    ArtifactRefId,
     AttemptId,
     HistoryId,
-    HistorySubjectId,
-    HostId,
-    TaskId,
     WorkItemId,
 )
 
@@ -46,43 +45,23 @@ def _stored_json(column: str, value: str) -> work_models.CanonicalJson:
     return work_models.CanonicalJson(encoded)
 
 
-class _StoredTransitionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    history_id: HistoryId
-    project_revision: int
-    action_id: ActionId
-    action_kind: str
-    subject_id: HistorySubjectId
-    artifact_ref_id: ArtifactRefId | None
-    authorization: decision_models.AuthorizationKind
-    actor_task_id: TaskId | None
-    actor_host_id: HostId | None
-    input_schema: str
-    input_json: str
-    outcome_schema: str
-    outcome_json: str
-    committed_at: datetime
-
-    def receipt(self) -> stored_state.StoredTransitionReceipt:
-        try:
-            action_kind = released_v6_compatibility.decode_released_v6_action_kind(self.action_kind)
-        except ValueError as error:
-            raise StorageError(StorageErrorCode.INVALID_STATE, "Stored history has an unknown action kind.") from error
-        return stored_state.StoredTransitionReceipt(
-            self.history_id,
-            self.project_revision,
-            self.action_id,
-            action_kind,
-            self.subject_id,
-            self.artifact_ref_id,
-            self.authorization,
-            self.actor_task_id,
-            self.actor_host_id,
-            self.input_schema,
-            _stored_json("input_json", self.input_json),
-            self.outcome_schema,
-            _stored_json("outcome_json", self.outcome_json),
-            self.committed_at,
-        )
+def _stored_receipt(value: TransitionHistoryRow) -> stored_state.StoredTransitionReceipt:
+    return stored_state.StoredTransitionReceipt(
+        value.history_id,
+        value.project_revision,
+        value.action_id,
+        decode_history_action_kind(value.action_kind),
+        value.subject_id,
+        value.artifact_ref_id,
+        value.authorization,
+        value.actor_task_id,
+        value.actor_host_id,
+        value.input_schema,
+        _stored_json("input_json", value.input_json),
+        value.outcome_schema,
+        _stored_json("outcome_json", value.outcome_json),
+        value.committed_at,
+    )
 
 
 class _StateCountRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -133,7 +112,7 @@ def _read_project(connection: sqlite3.Connection) -> stored_state.ProjectRecord:
 
 def _read_history(connection: sqlite3.Connection) -> tuple[stored_state.StoredTransitionReceipt, ...]:
     return tuple(
-        decode_row(row, _StoredTransitionRow).receipt()
+        _stored_receipt(decode_row(row, TransitionHistoryRow))
         for row in connection.execute(
             """
             SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
@@ -158,7 +137,7 @@ def read_history_receipt(
         """,
         (history_id,),
     ).fetchone()
-    return None if row is None else decode_row(row, _StoredTransitionRow).receipt()
+    return None if row is None else _stored_receipt(decode_row(row, TransitionHistoryRow))
 
 
 def read_history_receipts_by_ids(
@@ -167,7 +146,7 @@ def read_history_receipts_by_ids(
     return {
         receipt.history_id: receipt
         for receipt in (
-            decode_row(row, _StoredTransitionRow).receipt()
+            _stored_receipt(decode_row(row, TransitionHistoryRow))
             for row in select_by_ids(
                 connection,
                 """SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
@@ -184,7 +163,7 @@ def read_checkpoint_receipts(
     connection: sqlite3.Connection, attempt_id: AttemptId
 ) -> tuple[stored_state.StoredTransitionReceipt, ...]:
     return tuple(
-        decode_row(row, _StoredTransitionRow).receipt()
+        _stored_receipt(decode_row(row, TransitionHistoryRow))
         for row in connection.execute(
             """SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
                       authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
@@ -211,7 +190,7 @@ def read_review_history_for_items(
            ORDER BY history_id""",
         item_ids,
     ):
-        receipt = decode_row(row, _StoredTransitionRow).receipt()
+        receipt = _stored_receipt(decode_row(row, TransitionHistoryRow))
         grouped.setdefault(WorkItemId(str(receipt.subject_id)), []).append(receipt)
     return {item_id: tuple(receipts) for item_id, receipts in grouped.items()}
 

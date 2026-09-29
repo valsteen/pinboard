@@ -288,7 +288,9 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
 
     def assert_pause_reason(self, fixture: CheckpointFixture, expected: str | None) -> None:
         roots = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
-        status = call_advertised_tool(mcp_server.ITEM_STATUS_TOOL, {**roots, "item_id": "work-a"})
+        status = call_advertised_tool(
+            mcp_server.ITEM_STATUS_TOOL, {"request": {**roots, "operation": "item", "item_id": "work-a"}}
+        )
         (status_attempt,) = self.json_array(status["attempts"])
         self.assertEqual(expected, self.json_object(status_attempt)["pause_reason"])
         inspected = call_advertised_tool(

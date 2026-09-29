@@ -16,7 +16,12 @@ from pinboard.adapters.files.errors import FileIOError
 from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory, remove_replaceable
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
 from pinboard.application import pr_reviews, query_models, stored_state
-from pinboard.application.queries import project_overview, recorded_pause_reason
+from pinboard.application.queries import (
+    damaged_receipt_message,
+    damaged_receipt_recovery,
+    decode_recorded_pause_reason,
+    project_overview,
+)
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, WorkItemId
 
@@ -86,12 +91,12 @@ def _render_item(
     if overview_item is not None and overview_item.state == work_models.WorkState.READY:
         next_step = (
             "Saving this work did not start an attempt. To start it, ask the agent to check current "
-            "dependencies and holds, prepare the agreed brief, and obtain start authorization."
+            "dependencies and holds, prepare the agreed brief, and obtain start authorization.\n\n"
         )
     elif overview_item is not None:
-        next_step = f"The agent's recorded next action is {overview_item.next_action or 'not specified'}."
+        next_step = ""
     else:
-        next_step = "No current action is recorded for this finished item."
+        next_step = "No current action is recorded for this finished item.\n\n"
     return (
         _render_header("work-item-view")
         + f"# {accepted.title}\n\n{accepted.objective}\n\n"
@@ -100,7 +105,11 @@ def _render_item(
         + f"- Current attempt: {attempt or 'none'}\n"
         + ("" if pause_reason is None else f"- Pause reason: {pause_reason}\n")
         + f"- Dependency eligibility: {'yes' if overview_item is not None and overview_item.eligible else 'no'}\n\n"
-        + f"{next_step}\n\n"
+        + next_step
+        + "## Original intake context\n\n"
+        + "Recorded when this work was saved; original context, not the current plan.\n\n"
+        + f"- Next action at intake: {item.next_action if item.next_action is not None else 'none'}\n"
+        + f"- Notes at intake: {item.notes if item.notes is not None else 'none'}\n\n"
         + "## Expected result\n\n"
         + f"{accepted.effect}\n\n"
         + f"**What this unlocks:** {accepted.unlock}\n\n"
@@ -129,7 +138,6 @@ def _render_item(
         + f"- Item: {item.item_id}\n"
         + f"- Queue position: {item.queue_position if item.queue_position is not None else 'none'}\n"
         + f"- Source: {item.source if item.source is not None else 'none'}\n"
-        + f"- Notes: {item.notes if item.notes is not None else 'none'}\n"
         + f"- Subject revision: {item.subject_revision}\n"
         + f"- Preparation: {overview_item.preparation.status.value if overview_item is not None and overview_item.preparation is not None else 'none'}\n"
         + f"- Proposal source task: {origin.source_task_id if origin is not None else 'none'}\n"
@@ -185,6 +193,10 @@ def _render_history(receipt: stored_state.StoredTransitionReceipt) -> bytes:
     ).encode()
 
 
+def _damaged_view_message(damaged: tuple[query_models.DamagedTransitionReceipt, ...]) -> str:
+    return " ".join(damaged_receipt_message(value) for value in damaged)
+
+
 def refresh_facts(
     facts: query_models.GeneratedViewFacts,
     work_root: Path,
@@ -193,13 +205,22 @@ def refresh_facts(
     """Write only selectors named by exact post-commit projection facts."""
 
     try:
-        _write_facts(facts, work_root, attempt_briefs)
+        damaged = _write_facts(facts, work_root, attempt_briefs)
     except FileIOError as error:
         return ViewRefreshResult(
             facts.project_revision,
             ViewWarning(
                 f"The SQLite transition succeeded, but generated views need repair: {error}",
                 "Run 'pinboard views rebuild'.",
+            ),
+        )
+    if damaged:
+        return ViewRefreshResult(
+            facts.project_revision,
+            ViewWarning(
+                "The SQLite transition succeeded, but an item view was not refreshed: "
+                f"{_damaged_view_message(damaged)}",
+                damaged_receipt_recovery(damaged[0]),
             ),
         )
     return ViewRefreshResult(facts.project_revision, None)
@@ -209,12 +230,18 @@ def _write_facts(
     facts: query_models.GeneratedViewFacts,
     work_root: Path,
     attempt_briefs: Mapping[AttemptId, bytes],
-) -> None:
+) -> tuple[query_models.DamagedTransitionReceipt, ...]:
+    """Write every derivable view and return consumed receipts that left an item view underivable."""
+
+    damaged: list[query_models.DamagedTransitionReceipt] = []
     view_root = ensure_child_directory(work_root, "views")
     if facts.items:
         item_root = ensure_child_directory(view_root, "items")
         for selected in facts.items:
             item = selected.work_item
+            if isinstance(selected.pause_reason, query_models.DamagedTransitionReceipt):
+                damaged.append(selected.pause_reason)
+                continue
             atomic_replace(
                 item_root / f"{item.item_id}.md",
                 _render_item(
@@ -235,6 +262,7 @@ def _write_facts(
         history_root = ensure_child_directory(view_root, "history")
         for receipt in facts.receipts:
             atomic_replace(history_root / f"{receipt.history_id}.md", _render_history(receipt))
+    return tuple(damaged)
 
 
 def rebuild_facts(
@@ -248,7 +276,7 @@ def rebuild_facts(
         view_root = ensure_child_directory(work_root, "views")
         remove_replaceable(view_root / "queue.md")
         remove_replaceable(view_root / "history.md")
-        _write_facts(facts, work_root, attempt_briefs)
+        damaged = _write_facts(facts, work_root, attempt_briefs)
     except FileIOError as error:
         return ViewRefreshResult(
             facts.project_revision,
@@ -257,7 +285,23 @@ def rebuild_facts(
                 "Resolve the filesystem problem and run 'pinboard views rebuild' again.",
             ),
         )
+    if damaged:
+        return ViewRefreshResult(
+            facts.project_revision,
+            ViewWarning(
+                f"Generated views could not be rebuilt: {_damaged_view_message(damaged)}",
+                damaged_receipt_recovery(damaged[0]),
+            ),
+        )
     return ViewRefreshResult(facts.project_revision, None)
+
+
+@dataclass(frozen=True, slots=True)
+class ExpectedViews:
+    """Canonical bytes for every derivable view and the consumed receipts that prevented the rest."""
+
+    views: Mapping[str, bytes]
+    damaged: tuple[query_models.DamagedTransitionReceipt, ...]
 
 
 def derive_expected_view_bytes(
@@ -265,37 +309,43 @@ def derive_expected_view_bytes(
     attempt_briefs: Mapping[AttemptId, bytes],
     *,
     now: datetime,
-) -> Mapping[str, bytes]:
+) -> ExpectedViews:
     """Return every generated selector and its canonical bytes for one SQLite snapshot."""
 
     view_inputs = _project_view_inputs(state, now)
     receipts_by_revision = {receipt.project_revision: receipt for receipt in state.transition_receipts}
-    pause_reasons: dict[WorkItemId, str | None] = {}
+    pause_reasons: dict[WorkItemId, query_models.RecordedPauseReason] = {}
     for attempt in state.lifecycle.attempts:
         if attempt.state != work_models.AttemptState.DONE:
             latest = receipts_by_revision.get(attempt.subject_revision)
             pause_reasons[attempt.item_id] = (
                 None
                 if latest is None
-                else recorded_pause_reason(
-                    attempt.state, latest.action_kind, latest.outcome_schema, bytes(latest.outcome_payload)
+                else decode_recorded_pause_reason(
+                    attempt.attempt_id,
+                    attempt.state,
+                    latest.history_id,
+                    latest.committed_at,
+                    latest.action_kind,
+                    latest.outcome_schema,
+                    bytes(latest.outcome_payload),
                 )
             )
     expected_views: dict[str, bytes] = {}
-    expected_views.update(
-        (
-            f"items/{item.item_id}.md",
-            _render_item(
-                item,
-                view_inputs.dependencies[item.item_id],
-                view_inputs.overview_items.get(str(item.item_id)),
-                view_inputs.definitions[item.item_id],
-                tuple(receipt for receipt in state.transition_receipts if receipt.subject_id == item.item_id),
-                pause_reasons.get(item.item_id),
-            ),
+    damaged: list[query_models.DamagedTransitionReceipt] = []
+    for item in state.lifecycle.work_items:
+        pause_reason = pause_reasons.get(item.item_id)
+        if isinstance(pause_reason, query_models.DamagedTransitionReceipt):
+            damaged.append(pause_reason)
+            continue
+        expected_views[f"items/{item.item_id}.md"] = _render_item(
+            item,
+            view_inputs.dependencies[item.item_id],
+            view_inputs.overview_items.get(str(item.item_id)),
+            view_inputs.definitions[item.item_id],
+            tuple(receipt for receipt in state.transition_receipts if receipt.subject_id == item.item_id),
+            pause_reason,
         )
-        for item in state.lifecycle.work_items
-    )
     expected_views.update(
         (f"attempts/{attempt.attempt_id}.md", _render_attempt(attempt, attempt_briefs))
         for attempt in state.lifecycle.attempts
@@ -303,4 +353,4 @@ def derive_expected_view_bytes(
     expected_views.update(
         (f"history/{receipt.history_id}.md", _render_history(receipt)) for receipt in state.transition_receipts
     )
-    return MappingProxyType(expected_views)
+    return ExpectedViews(MappingProxyType(expected_views), tuple(damaged))

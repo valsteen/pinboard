@@ -56,7 +56,7 @@ For example: “The change is ready, but it hasn't been reviewed yet. I can send
 
 The agent can track an experiment like any other work, including on a scratch board you name, and have it reviewed. Before it starts, it says where the result will stay: on its own branch, not in `main`. When you close the experiment, it says what closed and what did not reach `main`.
 
-If you later ask to include the useful part, the agent says whether it is in `main` and where it lives, and prefers the already reviewed commit over redoing the work. If it cannot find the earlier review, for example on a scratch board you did not name, it says so rather than assuming one. After you merge something yourself, it says whether the earlier review covered exactly what you merged: “The review covered exactly the commit you merged. Your merge commit itself wasn't reviewed, but it adds nothing else. I haven't seen CI results.”
+If you later ask to include the useful part, the agent says whether it is in `main` and where it lives, and prefers the already reviewed commit over redoing the work. When you keep an experiment's changes, the agent records where its scratch board is on the owning item, so a later question about that branch leads back to the board and its review. If it cannot find the earlier review, for example because the board was never recorded or no longer exists, it says so rather than assuming one. After you merge something yourself, it says whether the earlier review covered exactly what you merged: “The review covered exactly the commit you merged. Your merge commit itself wasn't reviewed, but it adds nothing else. I haven't seen CI results.”
 
 ## Explore parallel work
 

@@ -6,6 +6,7 @@ import base64
 import hashlib
 import shlex
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -27,6 +28,7 @@ from pinboard.application import (
     brief_source_models,
     brief_sources,
     candidate_snapshots,
+    ports,
     queries,
     query_models,
     service,
@@ -63,71 +65,97 @@ from pinboard.mcp.contracts import JsonValue
 type IntegerBoundaryValue = bool | int | float | str | None
 
 
-def _item_status_json(status: query_models.ItemStatus) -> dict[str, JsonValue]:
-    preparation = status.preparation
-    return {
-        "schema": status.schema,
-        "authority": status.authority,
-        "revision": status.revision,
-        "item_id": status.item_id,
-        "label": status.label,
-        "state": status.state.value,
-        "timing": None if status.timing is None else status.timing.value,
-        "outcome_evidence": status.outcome_evidence,
-        "next_action": status.next_action,
-        "source": status.source,
-        "notes": status.notes,
-        "queue_position": status.queue_position,
-        "attempts": [
-            {
-                "attempt_id": attempt.attempt_id,
-                "state": attempt.state.value,
-                "candidate_revision": attempt.candidate_revision,
-                "pause_reason": attempt.pause_reason,
-            }
-            for attempt in status.attempts
-        ],
-        "preparation": (
-            None
-            if preparation is None
-            else {
-                "definition_revision": preparation.definition_revision,
-                "definition_digest": preparation.definition_digest,
-                "task_id": preparation.task_id,
-                "host_id": preparation.host_id,
-                "lease_id": preparation.lease_id,
-                "generation": preparation.generation,
-                "expires_at": preparation.expires_at,
-                "status": preparation.status.value,
-            }
-        ),
-    }
+@dataclass(frozen=True, slots=True)
+class _AttemptReviewEvidence:
+    """Read a record-ready candidate review from accepted artifacts and the attempt's current evidence files."""
+
+    durable: DurableRoots
+    store: WorkStore
+
+    def read_ready_candidate_review(self, attempt_id: AttemptId) -> query_models.ReadyCandidateReview | None:
+        context = self.store.read_attempt_context(attempt_id)
+        if not (
+            isinstance(context, query_models.NonterminalAttemptContextFacts)
+            and context.state == work_models.AttemptState.REVIEW
+            and context.candidate_revision is not None
+        ):
+            return None
+        attempt_root = self.durable.work_root / "attempts" / str(attempt_id)
+        try:
+            brief = work_briefs.decode_canonical_work_brief(
+                read_reference(self.durable.work_root, context.brief_reference)
+            )
+            if isinstance(brief, work_brief_models.WorkBriefFailure):
+                return None
+            result = _evidence_reference(attempt_root / "result.md")
+            review = _evidence_reference(attempt_root / "review.md")
+            current, _reference = _current_candidate_review(self.durable, self.store, context, brief, result, review)
+        except ArtifactError, OSError:
+            return None
+        if current is None:
+            return None
+        return query_models.ReadyCandidateReview(context.candidate_revision, current.reference)
 
 
-def _read_item_status(
-    project_root: str,
-    work_root: str,
-    item_id: str,
-    token: execution.CancellationToken,
-) -> execution.OperationResult:
+def _branch_owner_not_found(branch: str, work_root: Path) -> execution.OperationResult:
+    return execution.OperationResult(
+        {
+            "schema": "pinboard-mcp-item-status-result/v2",
+            "status": "rejected",
+            "code": "BRANCH_OWNER_NOT_FOUND",
+            "message": f"No retained attempt in work root {work_root} records branch '{branch}'.",
+            "state_changed": False,
+            **common._details_json(
+                FailureDetails(
+                    observed=(FailureFact("branch", branch), FailureFact("work_root", str(work_root))),
+                    mismatches=(),
+                    retry=RetryDisposition.CORRECT_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                )
+            ),
+            "recovery": (
+                "Check the exact branch name and work root, then read the owning item with operation item when its "
+                "id is known. A branch recorded before a rebind is not found because rebind overwrites the "
+                "attempt's branch."
+            ),
+        },
+        "rejected",
+        None,
+    )
+
+
+def _read_item_status(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
     token.checkpoint()
     try:
-        request = msgspec.convert(
-            {"project_root": project_root, "work_root": work_root, "item_id": item_id},
-            type=contracts.ItemStatusRequest,
-            strict=True,
-        )
+        request = msgspec.convert(raw, type=contracts.ItemStatusEnvelope, strict=True).request
         durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
     token.checkpoint()
-    projected = queries.project_item_status(
-        common.compose_store(durable), WorkItemId(request.item_id), datetime.now(UTC)
-    )
-    if isinstance(projected, DecisionFailure):
-        return common._item_status_failure(projected.code.value, projected.message, projected.details)
+    store = common.compose_store(durable)
+    match request:
+        case contracts.ItemStatusItemRequest():
+            projected = queries.project_item_status(
+                store, _AttemptReviewEvidence(durable, store), WorkItemId(request.item_id), datetime.now(UTC)
+            )
+            if isinstance(projected, DecisionFailure):
+                return common._item_status_failure(projected.code.value, projected.message, projected.details)
+            if isinstance(projected, query_models.DamagedTransitionReceipt):
+                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v2", projected)
+            selected: query_models.ItemStatus | query_models.BranchOwners = projected
+        case contracts.ItemStatusBranchRequest():
+            owners = queries.project_branch_owners(store, request.branch)
+            if owners is None:
+                return _branch_owner_not_found(request.branch, durable.work_root)
+            selected = owners
+        case _ as unreachable:
+            assert_never(unreachable)
     token.checkpoint()
-    return execution.OperationResult(_item_status_json(projected), "ok", projected.revision)
+    content = msgspec.to_builtins(selected)
+    assert isinstance(content, dict)
+    return execution.OperationResult(content, "ok", selected.revision)
 
 
 def _read_correction_context(
@@ -1381,6 +1409,22 @@ def _candidate_lineage_for_disposition(
     return lineage
 
 
+def _inspection_context(
+    store: ports.AttemptInspectionContextReader, attempt_id: AttemptId
+) -> query_models.AttemptContextFacts | execution.OperationResult:
+    context = store.read_attempt_inspection_context(attempt_id)
+    if context is None:
+        return common._read_failure(
+            "pinboard-mcp-attempt-inspection-result/v1",
+            "ATTEMPT_NOT_FOUND",
+            f"Attempt '{attempt_id}' does not exist.",
+            None,
+        )
+    if isinstance(context, query_models.DamagedTransitionReceipt):
+        return common._damaged_receipt_failure("pinboard-mcp-attempt-inspection-result/v1", context)
+    return context
+
+
 def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independent evidence and failure gates
     project_root: str,
     work_root: str,
@@ -1409,14 +1453,9 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
             None,
         )
     store = common.compose_store(durable)
-    context = queries.select_attempt_context(store, AttemptId(request.attempt_id))
-    if isinstance(context, DecisionFailure):
-        return common._read_failure(
-            "pinboard-mcp-attempt-inspection-result/v1",
-            "ATTEMPT_NOT_FOUND",
-            context.message,
-            context.details,
-        )
+    context = _inspection_context(store, AttemptId(request.attempt_id))
+    if isinstance(context, execution.OperationResult):
+        return context
     token.checkpoint()
     accepted_brief: contracts.AcceptedBriefIdentity | None = None
     owner_task_id: TaskId | None = None

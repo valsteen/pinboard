@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import pairwise
-from typing import assert_never
+from typing import NoReturn, assert_never
 
 import msgspec
 
@@ -24,7 +24,16 @@ from pinboard.domain.history import (
     work_item_definition_bytes,
     work_item_definition_digest,
 )
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, TaskId, WorkItemId
+from pinboard.domain.identifiers import (
+    ActionId,
+    ArtifactRefId,
+    AttemptId,
+    HistoryId,
+    HistorySubjectId,
+    HostId,
+    TaskId,
+    WorkItemId,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,28 +111,92 @@ class _QueuePositionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     queue_position: int
 
 
-class _LatestAttemptReceiptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class TransitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """One transition-history row with its stored JSON columns still as text."""
+
+    history_id: HistoryId
     project_revision: int
+    action_id: ActionId
     action_kind: str
+    subject_id: HistorySubjectId
+    artifact_ref_id: ArtifactRefId | None
+    authorization: decision_models.AuthorizationKind
+    actor_task_id: TaskId | None
+    actor_host_id: HostId | None
+    input_schema: str
+    input_json: str
     outcome_schema: str
     outcome_json: str
+    committed_at: datetime
+
+
+_CONSUMED_RECEIPT_COLUMNS = """history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
+       authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
+       input_json, outcome_schema, outcome_json, committed_at"""
+
+
+def decode_history_action_kind(
+    value: str,
+) -> decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind:
+    try:
+        return released_v6_compatibility.decode_released_v6_action_kind(value)
+    except ValueError as error:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Stored history has an unknown action kind.") from error
+
+
+def _consumed_receipt(row: sqlite3.Row) -> query_models.ConsumedTransitionReceipt:
+    """Decode receipt columns while leaving stored JSON text for the consuming read to diagnose."""
+
+    value = decode_row(row, TransitionHistoryRow)
+    return query_models.ConsumedTransitionReceipt(
+        value.history_id,
+        value.project_revision,
+        value.action_id,
+        decode_history_action_kind(value.action_kind),
+        value.subject_id,
+        value.artifact_ref_id,
+        value.authorization,
+        value.actor_task_id,
+        value.actor_host_id,
+        value.input_schema,
+        value.input_json,
+        value.outcome_schema,
+        value.outcome_json,
+        value.committed_at,
+    )
 
 
 class _ItemStatusAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: AttemptId
     state: work_models.AttemptState
+    branch: str
     candidate_revision: str | None
     subject_revision: int
 
 
-def read_pause_reasons(
+class _ClosureReceiptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    action_kind: str
+    subject_id: HistorySubjectId
+    committed_at: datetime
+
+
+class _BranchOwnerRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    attempt_state: work_models.AttemptState
+    item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
+
+
+def read_recorded_pause_reasons(
     connection: sqlite3.Connection,
     attempts: Iterable[tuple[AttemptId, work_models.AttemptState, int]],
-) -> dict[AttemptId, str]:
+) -> dict[AttemptId, query_models.RecordedPauseReason]:
     """Read each paused attempt's recorded pause reason from exactly its latest receipt.
 
     An attempt's subject revision names the project revision of its latest
     receipt, so each reason is one keyed history read rather than a history scan.
+    A receipt whose columns decode but whose outcome does not is returned as a
+    damaged receipt for status reads and view generation to name.
     """
 
     paused = {
@@ -131,28 +204,141 @@ def read_pause_reasons(
         for attempt_id, state, subject_revision in attempts
         if state == work_models.AttemptState.PAUSED
     }
-    reasons: dict[AttemptId, str] = {}
+    reasons: dict[AttemptId, query_models.RecordedPauseReason] = {}
     for row in select_by_ids(
         connection,
-        """SELECT project_revision, action_kind, outcome_schema, outcome_json
-           FROM transition_history WHERE project_revision IN ({ids})""",
+        f"SELECT {_CONSUMED_RECEIPT_COLUMNS} FROM transition_history WHERE project_revision IN ({{ids}})",
         paused,
     ):
-        receipt = decode_row(row, _LatestAttemptReceiptRow)
-        try:
-            reason = queries.recorded_pause_reason(
-                work_models.AttemptState.PAUSED,
-                released_v6_compatibility.decode_released_v6_action_kind(receipt.action_kind),
-                receipt.outcome_schema,
-                receipt.outcome_json.encode("utf-8"),
-            )
-        except (ValueError, msgspec.DecodeError) as error:
-            raise StorageError(
-                StorageErrorCode.INVALID_STATE, "A paused attempt's latest receipt is not canonical."
-            ) from error
-        if reason is not None:
-            reasons[paused[receipt.project_revision]] = reason
+        receipt = _consumed_receipt(row)
+        attempt_id = paused[receipt.project_revision]
+        reasons[attempt_id] = queries.decode_recorded_pause_reason(
+            attempt_id,
+            work_models.AttemptState.PAUSED,
+            receipt.history_id,
+            receipt.committed_at,
+            receipt.action_kind,
+            receipt.outcome_schema,
+            receipt.outcome_json.encode("utf-8"),
+        )
     return reasons
+
+
+def read_pause_reasons(
+    connection: sqlite3.Connection,
+    attempts: Iterable[tuple[AttemptId, work_models.AttemptState, int]],
+) -> dict[AttemptId, str]:
+    """Read pause reasons for decision reads, which reject a damaged receipt as invalid state."""
+
+    reasons: dict[AttemptId, str] = {}
+    for attempt_id, reason in read_recorded_pause_reasons(connection, attempts).items():
+        if isinstance(reason, query_models.DamagedTransitionReceipt):
+            reject_damaged_pause_receipt(reason)
+        if reason is not None:
+            reasons[attempt_id] = reason
+    return reasons
+
+
+def reject_damaged_pause_receipt(_damaged: query_models.DamagedTransitionReceipt) -> NoReturn:
+    """Keep the generic invalid-state rejection for decision reads of a damaged pause receipt."""
+
+    raise StorageError(StorageErrorCode.INVALID_STATE, "A paused attempt's latest receipt is not canonical.")
+
+
+def _read_review_event(
+    connection: sqlite3.Connection,
+    item_id: WorkItemId,
+    attempt_id: AttemptId,
+    subject_revision: int,
+) -> query_models.ReviewEventFacts | None:
+    """Walk this attempt's receipts backward to its latest review-relevant receipt.
+
+    The walk descends the unique project-revision index from the attempt's latest
+    receipt and stops at the first review-relevant receipt or at the item's
+    activation receipt, which starts the current attempt.
+    """
+
+    rebound = False
+    cursor = connection.execute(
+        f"""
+        SELECT {_CONSUMED_RECEIPT_COLUMNS}
+        FROM transition_history
+        WHERE project_revision <= ?
+          AND ((subject_id = ? AND action_kind IN (
+                  'submit-review', 'return-for-correction', 'accept-review-and-continue',
+                  'accept-checkpoint', 'rebind-attempt'))
+               OR (subject_id = ? AND action_kind = 'activate'))
+        ORDER BY project_revision DESC
+        """,
+        (subject_revision, attempt_id, item_id),
+    )
+    for row in cursor:
+        receipt = _consumed_receipt(row)
+        match receipt.action_kind:
+            case decision_models.ActionKind.REBIND_ATTEMPT:
+                rebound = True
+            case (
+                decision_models.ActionKind.SUBMIT_REVIEW
+                | decision_models.ActionKind.RETURN_FOR_CORRECTION
+                | decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
+                | decision_models.ActionKind.ACCEPT_CHECKPOINT
+            ) as review_action:
+                return query_models.ReviewEventFacts(review_action, receipt, rebound)
+            case decision_models.ActionKind.ACTIVATE:
+                return None
+            case _:
+                raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "The review walk selected another receipt.")
+    return None
+
+
+def _read_item_closure(
+    connection: sqlite3.Connection,
+    item_id: WorkItemId,
+    subject_revision: int,
+) -> query_models.ItemClosureFacts | None:
+    """Read closure facts from the row columns of the receipt at a terminal item's subject revision."""
+
+    row = connection.execute(
+        "SELECT action_kind, subject_id, committed_at FROM transition_history WHERE project_revision = ?",
+        (subject_revision,),
+    ).fetchone()
+    if row is None:
+        return None
+    receipt = decode_row(row, _ClosureReceiptRow)
+    action_kind = decode_history_action_kind(receipt.action_kind)
+    closing_attempt = None
+    if action_kind == decision_models.ActionKind.COMPLETE:
+        attempt_row = connection.execute(
+            "SELECT attempt_id, branch, candidate_revision FROM attempts WHERE attempt_id = ? AND item_id = ?",
+            (receipt.subject_id, item_id),
+        ).fetchone()
+        closing_attempt = None if attempt_row is None else decode_row(attempt_row, query_models.ClosingAttemptFacts)
+    return query_models.ItemClosureFacts(action_kind, receipt.committed_at, closing_attempt)
+
+
+def read_branch_owners(connection: sqlite3.Connection, branch: str) -> query_models.BranchOwnersFacts:
+    """Scan retained attempts for an exact branch; read owning items by key and no history or artifacts."""
+
+    project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_revision_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    rows = connection.execute(
+        """
+        SELECT attempt.attempt_id, attempt.state AS attempt_state, attempt.item_id, item.state AS item_state
+        FROM attempts AS attempt
+        JOIN work_items AS item ON item.item_id = attempt.item_id
+        WHERE attempt.branch = ?
+        ORDER BY attempt.item_id, attempt.attempt_id
+        """,
+        (branch,),
+    ).fetchall()
+    return query_models.BranchOwnersFacts(
+        decode_row(project_revision_row, _ProjectRevisionRow).revision,
+        tuple(
+            query_models.BranchOwnerFacts(value.item_id, value.item_state, value.attempt_id, value.attempt_state)
+            for value in (decode_row(row, _BranchOwnerRow) for row in rows)
+        ),
+    )
 
 
 def increment_item_state_count(
@@ -208,7 +394,7 @@ class NonterminalAttemptContextSelection:
     candidate_revision: str | None
     brief_artifact_ref_id: ArtifactRefId
     work_item: query_models.AttemptContextItemFacts
-    pause_reason: str | None
+    pause_reason: query_models.RecordedPauseReason
 
 
 type AttemptContextSelection = TerminalAttemptContextSelection | NonterminalAttemptContextSelection
@@ -396,7 +582,8 @@ def read_item_status(
     project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
     item_row = connection.execute(
         """
-        SELECT item_id AS work_item_id, state, timing, outcome_evidence, next_action, source, notes, queue_position
+        SELECT item_id AS work_item_id, state, timing, outcome_evidence, next_action, source, notes, queue_position,
+               subject_revision
         FROM work_items
         WHERE item_id = ?
         """,
@@ -420,7 +607,7 @@ def read_item_status(
     definition = None if definition_row is None else decode_definition_revision(definition_row)
     attempt_row = connection.execute(
         """
-        SELECT attempt_id, state, candidate_revision, subject_revision
+        SELECT attempt_id, state, branch, candidate_revision, subject_revision
         FROM attempts INDEXED BY one_live_attempt_per_item
         WHERE item_id = ? AND state != 'done'
         """,
@@ -429,7 +616,7 @@ def read_item_status(
     attempts: tuple[query_models.ItemStatusAttemptFacts, ...] = ()
     if attempt_row is not None:
         selected_attempt = decode_row(attempt_row, _ItemStatusAttemptRow)
-        pause_reasons = read_pause_reasons(
+        pause_reasons = read_recorded_pause_reasons(
             connection,
             ((selected_attempt.attempt_id, selected_attempt.state, selected_attempt.subject_revision),),
         )
@@ -437,15 +624,25 @@ def read_item_status(
             query_models.ItemStatusAttemptFacts(
                 selected_attempt.attempt_id,
                 selected_attempt.state,
+                selected_attempt.branch,
                 selected_attempt.candidate_revision,
                 pause_reasons.get(selected_attempt.attempt_id),
+                _read_review_event(
+                    connection, item.work_item_id, selected_attempt.attempt_id, selected_attempt.subject_revision
+                ),
             ),
         )
+    closure = (
+        _read_item_closure(connection, item.work_item_id, item.subject_revision)
+        if stored_state.live_work_state(item.state) is None
+        else None
+    )
     return query_models.ItemStatusLifecycleFacts(
         project_revision,
         item,
         None if definition is None else definition.definition.title,
         attempts,
+        closure,
     )
 
 
@@ -633,7 +830,7 @@ def read_attempt_context(
             None,
             True,
         ),
-        read_pause_reasons(connection, ((attempt.attempt_id, attempt_state, attempt.subject_revision),)).get(
+        read_recorded_pause_reasons(connection, ((attempt.attempt_id, attempt_state, attempt.subject_revision),)).get(
             attempt.attempt_id
         ),
     )

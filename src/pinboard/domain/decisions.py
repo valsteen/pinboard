@@ -752,7 +752,7 @@ def _pause_or_block(
     if item.state != work_models.WorkState.ACTIVE:
         return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "The named attempt is not active.", None)
     match command:
-        case decision_models.PauseCommand():
+        case decision_models.PauseCommand(value=value):
             change: decision_models.NonCheckpointDecisionChange = decision_models.AttemptStateChange(
                 item.work_item_id,
                 item.state,
@@ -761,6 +761,7 @@ def _pause_or_block(
                 work_models.AttemptState.ACTIVE,
                 work_models.AttemptState.PAUSED,
             )
+            evidence: str | None = value.reason
         case decision_models.BlockCommand(value=value):
             dependencies = _block_dependencies(snapshot, item, value)
             if isinstance(dependencies, DecisionFailure):
@@ -772,6 +773,7 @@ def _pause_or_block(
                 work_models.AttemptState.ACTIVE,
                 dependencies,
             )
+            evidence = None
         case _ as unreachable:
             assert_never(unreachable)
     return _accepted_transition_decision(
@@ -779,6 +781,7 @@ def _pause_or_block(
         now,
         change,
         work_item_id=item.work_item_id,
+        evidence=evidence,
     )
 
 
@@ -1055,6 +1058,8 @@ def _rebind_attempt(
             None,
         )
     authority = authorities[0]
+    # A paused attempt's latest receipt is its only readable pause reason, so the rebind receipt carries it forward.
+    carried_pause_reason = attempt.pause_reason if expected_attempt_state == work_models.AttemptState.PAUSED else None
     return _accepted_transition_decision(
         action,
         now,
@@ -1073,6 +1078,7 @@ def _rebind_attempt(
             ),
         ),
         work_item_id=item.work_item_id,
+        evidence=carried_pause_reason,
     )
 
 

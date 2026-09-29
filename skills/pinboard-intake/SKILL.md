@@ -9,17 +9,17 @@ Convert one explicit concern into immutable proposal facts and a same-identity r
 
 Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) for native MCP discovery, coding-agent identity and optional messaging. Intake persistence remains the correctness boundary.
 
-Intake may be standalone or embedded in ongoing Pinboard work. Standalone intake may end after its persistence receipt only when the user did not also ask to begin the new work. Before embedded intake, retain a compact continuation anchor containing the pre-intake objective, the next promised action, and the exact durable owner selector. Intake changes queue state but preserves active attempts, so return control to that anchor after persistence and any explicitly requested notification handling.
+Intake may be standalone or embedded in ongoing Pinboard work. Standalone intake may end after its persistence receipt only when the user did not also ask to begin the new work. Before embedded intake, retain the main skill's [continuation anchor](../pinboard/SKILL.md#safe-boundaries). Intake changes queue state but preserves active attempts, so return control to that anchor after persistence and any explicitly requested notification handling.
 
 ## Preserve immediate-start intent
 
 When the same request says `start`, `begin`, `work on`, `implement`, `fix now`, or otherwise clearly asks for immediate execution, treat intake as the first atomic step rather than the requested outcome. After persistence and before work-brief composition, load the complete main Pinboard skill through the runtime's advertised native coordinator skill loader (`Skill` for `pinboard:pinboard` in Claude). If that loader is unavailable, read the actual sibling `../pinboard/SKILL.md` completely; unavailable complete content stops the continuation. A `$pinboard` mention is not a loaded skill. Follow that loaded owner to prepare and activate the same-identity ready item, then use `$pinboard-deliver` to complete its accepted work. Do not end with a save-for-later receipt merely because the user explicitly named `$pinboard-intake`.
 
-Follow the main Pinboard skill's user-facing detail threshold during that continuation. Preserve every higher-level required first-use skill disclosure, keep each one concise and outcome-oriented, and add no separate Pinboard explanation of companion-skill selection or internal routing.
+Report through the main skill's [human's picture](../pinboard/SKILL.md#keep-the-humans-picture-current) during that continuation. Preserve every higher-level required first-use skill disclosure, keep each one concise and outcome-oriented, and add no separate Pinboard explanation of companion-skill selection or internal routing.
 
 Intake remains a thin caller of the main Pinboard interaction owner. Do not duplicate its collaboration rules or select `$technical-writing` merely because the proposal has a human-readable label or generated summary. When the same user request materially creates or revises a document, let the main Pinboard route make that separate selection.
 
-Immediate-start language authorizes continuing now; it does not prove that the human agreed with an unspoken magnitude interpretation. When the work is broad, route through Pinboard's one-sentence scope confirmation before preparation: state the outcome, principal read and touch surfaces, approximate magnitude, and any surprising exclusion, then continue without asking redundant permission. Ask only if that sentence exposes a real unresolved choice.
+Immediate-start language authorizes continuing now; it does not prove that the human agreed with an unspoken outcome, landing place, or magnitude. Give the main skill's [start sentence](../pinboard/SKILL.md#keep-the-humans-picture-current) before preparation, then continue without asking redundant permission.
 
 Ask one quick confirmation only when the human phrasing leaves a material choice between queueing for later and beginning now. An explicit immediate-work verb is sufficient and needs no confirmation. Intake remains standalone when the request only asks to add, queue, preserve, or save work for later.
 
@@ -94,22 +94,13 @@ When delivery was explicitly requested but transport or the requested target is 
 
 ## Result language
 
-Keep the active work as the main topic and lead with the practical outcome:
-
-- After committed proposal creation, say `Saved for later — <concern> is now <proposal-id> at position <n>; current work <continues | is blocked by it>.` When the generated item Markdown is confirmed available, make `<proposal-id>` the native clickable item-view link; otherwise keep the persistence receipt accurate without linking an unavailable view.
-- For exact prior coverage, say `Saved for later — <concern> was already recorded at <selector and state>; current work <continues | is blocked by it>.` Make the human-facing selector a native clickable link whenever its readable Markdown is confirmed available.
-- When the user explicitly dismisses the concern, say `Not saved — <concern> was dismissed at your request; no follow-up remains.`
+Report through the main skill's [concern receipts](../pinboard/SKILL.md#reconcile-material-concerns-before-reporting-them) and [the human's picture](../pinboard/SKILL.md#keep-the-humans-picture-current). Intake adds only its proposal facts: after committed creation, the owner is the new ready item `<proposal-id>` at position `<n>` on the named board, not started. Link `<proposal-id>` to its item view only when that Markdown is confirmed available; otherwise keep the receipt accurate without a link.
 
 The `Saved for later` forms apply only when intake is the terminal action requested. For immediate-start intent, keep the persistence receipt and, only when its readable view is confirmed available, its accepted-definition-summary link subordinate while continuing the same turn. Keep that confirmed link on every later item reference. An unavailable item summary does not undo persistence or stop immediate-start continuation; report the work as started only after the normal Pinboard activation succeeds.
 
 Use `now` only after committed proposal creation; it means this turn before the update. Notification delivery never upgrades persistence into priority. If persistence happened in response to the user's question, say that directly instead of implying the exact concern was present earlier. When delivery is user-requested or materially affects the result, report it after the durable outcome without implying that optional transport changes persistence.
 
-When proposal creation fails, `not recorded` is an unresolved state, not a terminal receipt. Give one compact formal announcement containing:
-
-- `Cause`: the exact failure classification;
-- `Durable state`: not saved and no owner;
-- `Current work`: blocked or continuing;
-- `Next owner`: this task for a safe retry, or the human for one named decision.
+When proposal creation fails, apply the main skill's unresolved `not recorded` rule: name the exact failure classification as the cause, the durable state as not saved with no owner, the current-work impact, and this task or the human as the next owner.
 
 Treat a stale proposal view or a change in the requested target's identity or availability during explicitly requested delivery as expected concurrency. Re-resolve that same requested target and retry once when doing so needs no new authority. If requested delivery remains unavailable after persistence, stop notification work with no human action because the ledger is authoritative; this does not end an embedded caller's surrounding turn. If retry needs new authority, changes scope, or overrides another owner, ask exactly one concrete approval question. If persistence was never authorized, ask whether to preserve or dismiss the concern. Never tell the human to contact or notify the requested task.
 

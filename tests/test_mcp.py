@@ -68,7 +68,7 @@ from pinboard.mcp import read_operations as mcp_reads
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointPackageSupport
 from tests.domain_support import action
-from tests.native_support import call_native_tool
+from tests.native_support import call_advertised_tool, call_native_tool
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 from tests.test_proposals import proposal as proposal_input
 from tests.work_brief_support import example_work_brief, needs_correction_review, work_a_brief, work_c_brief
@@ -3062,6 +3062,7 @@ class McpTransportTest(unittest.TestCase):
                 query_models.ActionContinuation("resume:item-1", decision_models.ActionKind.RESUME, "Resume."),
                 ("resume:item-1",),
                 forbidden,
+                "Waiting for the maintainer's choice.",
             ),
             query_models.BlockedAttemptContinuation(
                 *common,
@@ -3118,9 +3119,10 @@ class McpTransportTest(unittest.TestCase):
             contracts.RelativeActionIdentity("item", decision_models.ActionKind.RESUME),
             contracts.RelativeActionIdentity("item", decision_models.ActionKind.CLOSE),
         )
-        for continuation_type in (contracts.PausedAttemptContinuation, contracts.BlockedAttemptContinuation):
-            with self.subTest(state=continuation_type.__name__), self.assertRaises(ValueError):
-                continuation_type(*common, resume, legal_actions, forbidden)
+        with self.subTest(state="paused"), self.assertRaises(ValueError):
+            contracts.PausedAttemptContinuation(*common, resume, legal_actions, forbidden, None)
+        with self.subTest(state="blocked"), self.assertRaises(ValueError):
+            contracts.BlockedAttemptContinuation(*common, resume, legal_actions, forbidden)
 
     def test_sdk_stdio_workflow_discovery_and_verification_are_read_only(self) -> None:
         temporary, project, roots = self._project()
@@ -4661,8 +4663,13 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         self.assertEqual("rejected", relaunch["status"], relaunch)
         self.assertEqual("ACTION_NOT_AVAILABLE", relaunch["code"])
         self.assertNotIn("native_launch", relaunch)
+        relaunch_message = relaunch["message"]
+        assert isinstance(relaunch_message, str)
+        self.assertIn(f"Candidate {fixture.candidate_revision} is already favorably reviewed", relaunch_message)
+        self.assertIn("repository reconciliation", relaunch_message)
+        self.assertNotIn("requires the current review attempt", relaunch_message)
 
-        unreconciled = call_native_tool(
+        unreconciled = call_advertised_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -4671,9 +4678,15 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
                 "reconciliation": None,
             },
         )
-        self.assertEqual("rejected", unreconciled["status"], unreconciled)
-        self.assertEqual("ACTION_NOT_AVAILABLE", unreconciled["code"])
+        self.assertEqual("ok", unreconciled["status"], unreconciled)
+        self.assertFalse(unreconciled["state_changed"])
         self.assertNotIn("native_launch", unreconciled)
+        unreconciled_continuation = self.json_object(unreconciled["continuation"])
+        self.assertEqual("review", unreconciled_continuation["state"])
+        reconcile = self.json_object(unreconciled_continuation["next_operation"])
+        self.assertEqual("reconcile-repository", reconcile["kind"])
+        self.assertEqual(fixture.candidate_revision, reconcile["candidate_revision"])
+        self.assertTrue(reconcile["condition"])
 
         reconciliation: dict[str, contracts.JsonValue] = {
             "target_revision": "squash-equivalent-head",

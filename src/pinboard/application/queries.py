@@ -10,8 +10,10 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import assert_never
 
+import msgspec
+
 from pinboard.application import ports, query_models, released_v6_compatibility, stored_state, work_brief_models
-from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.decisions import ActionCapabilityFactory, project_attempt_action_groups
 from pinboard.domain.errors import (
     DecisionFailure,
@@ -59,6 +61,30 @@ def select_review_job_context(
             None,
         )
     return selected
+
+
+def recorded_pause_reason(
+    attempt_state: work_models.AttemptState,
+    action_kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind,
+    outcome_schema: str,
+    outcome_payload: bytes,
+) -> str | None:
+    """Return the human pause reason carried by a paused attempt's latest receipt.
+
+    The caller supplies only the receipt whose project revision is the attempt's
+    subject revision. A pause keeps its reason as receipt evidence and a paused
+    rebind carries it forward; checkpoint acceptance and every other receipt
+    present no pause reason.
+    """
+
+    if attempt_state != work_models.AttemptState.PAUSED or action_kind not in (
+        decision_models.ActionKind.PAUSE,
+        decision_models.ActionKind.REBIND_ATTEMPT,
+    ):
+        return None
+    if outcome_schema != "transition-receipt/v1":
+        raise ValueError("A pause or rebind receipt must use the transition receipt outcome.")
+    return msgspec.json.Decoder(history.TransitionReceiptOutcome, strict=True).decode(outcome_payload).evidence
 
 
 def validate_attempt_brief_identity(
@@ -134,6 +160,7 @@ def project_attempt_continuation(
                 context.accepted_scope_digest,
                 None if context.candidate_revision is None else CandidateId(context.candidate_revision),
                 context.brief_artifact_ref_id,
+                pause_reason=context.pause_reason,
             )
             groups = project_attempt_action_groups(
                 work_models.ProjectAttemptActionContext(
@@ -186,7 +213,7 @@ def project_attempt_continuation(
                 case work_models.AttemptState.REVIEW:
                     return query_models.ReviewAttemptContinuation(*continuation_arguments)
                 case work_models.AttemptState.PAUSED:
-                    return query_models.PausedAttemptContinuation(*continuation_arguments)
+                    return query_models.PausedAttemptContinuation(*continuation_arguments, context.pause_reason)
                 case work_models.AttemptState.BLOCKED:
                     return query_models.BlockedAttemptContinuation(*continuation_arguments)
                 case _ as unreachable:
@@ -333,10 +360,12 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 actions=actions,
             )
         if ready_review:
-            return DecisionFailure(
-                DecisionFailureCode.ACTION_NOT_AVAILABLE,
-                "A ready review requires current repository reconciliation.",
-                None,
+            return query_models.ReconcileRepositoryContinuation(
+                context.candidate_revision,
+                "The candidate is favorably reviewed and not yet reconciled with the repository. Observe the "
+                "integration target, the candidate's relation to it, the repository phase, and the runtime effects "
+                "that phase needs; then inspect again with those reconciliation facts to select disposition, "
+                "refresh, correction, cleanup, or completion.",
             )
     if isinstance(brief, work_brief_models.WorkBrief) and isinstance(
         brief.checkpoint.disposition, work_brief_models.TerminalCheckpointDisposition
@@ -808,7 +837,9 @@ def project_item_status(
             ),
         )
     attempts = tuple(
-        query_models.ItemStatusAttempt(str(attempt.attempt_id), attempt.state, attempt.candidate_revision)
+        query_models.ItemStatusAttempt(
+            str(attempt.attempt_id), attempt.state, attempt.candidate_revision, attempt.pause_reason
+        )
         for attempt in facts.attempts
     )
     return query_models.ItemStatus(

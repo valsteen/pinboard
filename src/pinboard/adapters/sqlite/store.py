@@ -48,6 +48,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_current_definitions,
     read_item_status,
     read_parallel_preview_lifecycle,
+    read_pause_reasons,
 )
 from pinboard.adapters.sqlite.lifecycle import (
     read_item_definition as select_item_definition,
@@ -88,6 +89,8 @@ class _SelectedDependencyViewRow(msgspec.Struct, frozen=True, forbid_unknown_fie
 class _SelectedAttemptLinkRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: WorkItemId
     attempt_id: AttemptId
+    state: work_models.AttemptState
+    subject_revision: int
 
 
 def _read_generated_view_facts(
@@ -131,18 +134,19 @@ def _read_generated_view_facts(
         for item_id in item_ids
         if item_id in selected_items and stored_state.live_work_state(selected_items[item_id].state) is not None
     )
-    selected_attempts = {
-        link.item_id: link.attempt_id
-        for link in (
-            decode_row(row, _SelectedAttemptLinkRow)
-            for row in select_by_ids(
-                connection,
-                """SELECT item_id, attempt_id FROM attempts INDEXED BY one_live_attempt_per_item
-                   WHERE item_id IN ({ids}) AND state != 'done'""",
-                live_item_ids,
-            )
+    attempt_links = tuple(
+        decode_row(row, _SelectedAttemptLinkRow)
+        for row in select_by_ids(
+            connection,
+            """SELECT item_id, attempt_id, state, subject_revision FROM attempts INDEXED BY one_live_attempt_per_item
+               WHERE item_id IN ({ids}) AND state != 'done'""",
+            live_item_ids,
         )
-    }
+    )
+    selected_attempts = {link.item_id: link.attempt_id for link in attempt_links}
+    pause_reasons = read_pause_reasons(
+        connection, ((link.attempt_id, link.state, link.subject_revision) for link in attempt_links)
+    )
     proposal_ids = tuple(
         dict.fromkeys(
             ProposalId(proposal_id)
@@ -211,6 +215,7 @@ def _read_generated_view_facts(
                 projected,
                 definition,
                 review_history_by_item.get(item_id, ()),
+                None if (attempt_id := selected_attempts.get(item_id)) is None else pause_reasons.get(attempt_id),
             )
         )
     selected_attempt_records = {
@@ -324,6 +329,7 @@ def _read_attempt_context_facts(
                     replacement_resolved=replacement is None or bool(dispositions),
                 ),
                 reference,
+                selected.pause_reason,
             )
         case _ as unreachable:
             assert_never(unreachable)

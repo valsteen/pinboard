@@ -254,7 +254,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                 "accepted requirement",
                 "Current work remains bounded.",
                 2,
-                (query_models.ItemStatusAttempt("work-a-1", work_models.AttemptState.ACTIVE, None),),
+                (query_models.ItemStatusAttempt("work-a-1", work_models.AttemptState.ACTIVE, None, None),),
                 None,
             ),
             live,
@@ -337,7 +337,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             attempts = (
                 ()
                 if attempt_state is None
-                else (query_models.ItemStatusAttemptFacts(AttemptId("selected-1"), attempt_state, None),)
+                else (query_models.ItemStatusAttemptFacts(AttemptId("selected-1"), attempt_state, None, None),)
             )
             facts = query_models.ItemStatusFacts(
                 12,
@@ -383,7 +383,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             3,
         )
         attempt = query_models.ItemStatusAttemptFacts(
-            AttemptId("selected-1"), work_models.AttemptState.ACTIVE, "candidate-a"
+            AttemptId("selected-1"), work_models.AttemptState.ACTIVE, "candidate-a", None
         )
         for selected_item, attempts, expected, observed in (
             (item, (attempt,), "none", "active"),
@@ -509,6 +509,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             query_models.ActionContinuation("resume:item-1", decision_models.ActionKind.RESUME, "Resume."),
             ("resume:item-1",),
             forbidden,
+            None,
         )
         blocked = query_models.BlockedAttemptContinuation(
             "pinboard-attempt-continuation/v1",

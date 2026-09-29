@@ -23,7 +23,7 @@ from pinboard.mcp import server as mcp_server
 from pinboard.mcp.contracts import JsonValue
 from tests import test_dispatch
 from tests.checkpoint_support import CheckpointPackageSupport
-from tests.native_support import call_native_tool
+from tests.native_support import call_advertised_tool, call_native_tool
 from tests.work_brief_support import ready_review
 
 
@@ -32,7 +32,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         active = self.terminalize_brief(self.checkpoint_fixture())
         self.return_for_correction(active, "Protect the terminal candidate.", "terminal-routing")
 
-        active_result = call_native_tool(
+        active_result = call_advertised_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL,
             {
                 "project_root": str(active.project),
@@ -46,7 +46,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         self.assertEqual({"target": "attempt", "action_kind": "complete"}, active_operation["action"])
 
         review = self.terminalize_brief(self.checkpoint_fixture())
-        review_result = call_native_tool(
+        review_result = call_advertised_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL,
             {
                 "project_root": str(review.project),

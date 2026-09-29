@@ -193,6 +193,7 @@ class TypedTransitionContractTest(unittest.TestCase):
                     WorkItemId("ready-item"),
                     work_models.AttemptState.PAUSED,
                     brief_artifact_ref_id=ArtifactRefId(1),
+                    pause_reason=None,
                 ),
             ),
             artifacts=(

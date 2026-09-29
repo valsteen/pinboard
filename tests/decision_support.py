@@ -2,6 +2,7 @@ from datetime import datetime
 
 from pinboard.application import stored_state
 from pinboard.application.actions import discover_current_actions
+from pinboard.application.queries import recorded_pause_reason
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import AttemptId, CandidateId, LeaseId, ProposalId, WorkItemId
@@ -201,6 +202,7 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
         freshness_groups[freshness.proposal_id].append(freshness.assumption)
     freshness_by_proposal = {proposal_id: tuple(values) for proposal_id, values in freshness_groups.items()}
 
+    receipts_by_revision = {receipt.project_revision: receipt for receipt in state.transition_receipts}
     return LedgerSnapshot(
         revision=str(state.lifecycle.project.revision),
         items=work_items,
@@ -213,6 +215,11 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
                 attempt.accepted_scope_digest,
                 CandidateId(attempt.candidate_revision) if attempt.candidate_revision is not None else None,
                 attempt.brief_artifact_ref_id,
+                pause_reason=None
+                if (latest := receipts_by_revision.get(attempt.subject_revision)) is None
+                else recorded_pause_reason(
+                    attempt.state, latest.action_kind, latest.outcome_schema, bytes(latest.outcome_payload)
+                ),
             )
             for attempt in state.lifecycle.attempts
         ),

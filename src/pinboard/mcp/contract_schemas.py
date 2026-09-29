@@ -449,7 +449,9 @@ def _apply_attempt_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
             "ActiveAttemptContinuation",
             (
                 _action_continuation(decision_models.ActionKind.CONTINUE),
+                _action_continuation(decision_models.ActionKind.REBIND_ATTEMPT),
                 _action_continuation(decision_models.ActionKind.PAUSE),
+                _action_continuation(decision_models.ActionKind.COMPLETE),
             ),
             _ACTIVE_CONTINUATION_ACTION_KINDS,
         ),
@@ -457,9 +459,11 @@ def _apply_attempt_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
             "ReviewAttemptContinuation",
             (
                 {"$ref": "#/$defs/ContinuationReview"},
+                {"$ref": "#/$defs/ContinuationReconcileRepository"},
                 {"$ref": "#/$defs/ContinuationRefreshTarget"},
                 {"$ref": "#/$defs/ContinuationPermissionRecovery"},
                 {"$ref": "#/$defs/ContinuationRepositoryDisposition"},
+                {"$ref": "#/$defs/ContinuationCommitThenReinspect"},
                 {"$ref": "#/$defs/ContinuationRepositoryCleanup"},
                 _action_continuation(decision_models.ActionKind.COMPLETE),
                 _action_continuation(decision_models.ActionKind.RETURN_FOR_CORRECTION),

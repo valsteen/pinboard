@@ -50,7 +50,7 @@ For a **Separate task**:
 
 1. Use the environment's native task creation capability. This is authorized by the user's exact batch request.
 2. Give it the repository root, item identity, confirmed item-view link when available, and fresh preview revision, with an instruction to use Pinboard to inspect the item and apply only its own legal transitions. When its checkout or worktree must be selected, use the main skill's project-specific baseline inference and confirmation rule; do not assume that a local branch named `main` is current or that any fixed remote name is authoritative.
-3. Tell the human to follow that independent outcome in the new task. It reports and requests decisions there; do not use task-to-task messaging to return its result to the current task.
+3. Name that task as the one to follow for its outcome, as part of the main skill's [current-activity fact](../SKILL.md#keep-the-humans-picture-current). It reports and requests decisions there; do not use task-to-task messaging to return its result to the current task.
 4. Do not replace it with a subagent when separate-task creation is unavailable, because the human selected a separate outcome and conversation.
 
 For a **Subagent**:
@@ -70,4 +70,4 @@ Keep the report compact and exact:
 | --- | --- | --- |
 | linked item label | separate task or subagent | created with task identifier, or not created with exact cause |
 
-Make each item value a native clickable link to its confirmed item view. Use a plain item label only when that readable view is unavailable; never invent a path. Say `batch launched` only when every authorized item was created. Otherwise say `partial launch`, identify what exists, name the first changed-state or transport failure, and state whether retry needs user action. Never count a prepared prompt, retained proposal, or attempted message as a created task.
+Link each item under the main skill's readable-artifact rule. Say `batch launched` only when every authorized item was created. Otherwise say `partial launch`, identify what exists, name the first changed-state or transport failure, and state whether retry needs user action. Never count a prepared prompt, retained proposal, or attempted message as a created task.

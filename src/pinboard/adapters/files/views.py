@@ -16,7 +16,7 @@ from pinboard.adapters.files.errors import FileIOError
 from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory, remove_replaceable
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
 from pinboard.application import pr_reviews, query_models, stored_state
-from pinboard.application.queries import project_overview
+from pinboard.application.queries import project_overview, recorded_pause_reason
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, WorkItemId
 
@@ -72,6 +72,7 @@ def _render_item(
     overview_item: query_models.OverviewItem | None,
     definition: stored_state.ItemDefinitionRevision,
     review_history: tuple[stored_state.StoredTransitionReceipt, ...],
+    pause_reason: str | None,
 ) -> bytes:
     dependency_reasons = (
         tuple(f"{value.item_id}: {value.reason}" for value in overview_item.dependency_reasons)
@@ -97,6 +98,7 @@ def _render_item(
         + "## Current position\n\n"
         + f"- State: {overview_item.state.value if overview_item is not None else item.state.value}\n"
         + f"- Current attempt: {attempt or 'none'}\n"
+        + ("" if pause_reason is None else f"- Pause reason: {pause_reason}\n")
         + f"- Dependency eligibility: {'yes' if overview_item is not None and overview_item.eligible else 'no'}\n\n"
         + f"{next_step}\n\n"
         + "## Expected result\n\n"
@@ -216,7 +218,12 @@ def _write_facts(
             atomic_replace(
                 item_root / f"{item.item_id}.md",
                 _render_item(
-                    item, selected.dependencies, selected.overview, selected.definition, selected.review_history
+                    item,
+                    selected.dependencies,
+                    selected.overview,
+                    selected.definition,
+                    selected.review_history,
+                    selected.pause_reason,
                 ),
             )
     if facts.attempts:
@@ -262,6 +269,18 @@ def derive_expected_view_bytes(
     """Return every generated selector and its canonical bytes for one SQLite snapshot."""
 
     view_inputs = _project_view_inputs(state, now)
+    receipts_by_revision = {receipt.project_revision: receipt for receipt in state.transition_receipts}
+    pause_reasons: dict[WorkItemId, str | None] = {}
+    for attempt in state.lifecycle.attempts:
+        if attempt.state != work_models.AttemptState.DONE:
+            latest = receipts_by_revision.get(attempt.subject_revision)
+            pause_reasons[attempt.item_id] = (
+                None
+                if latest is None
+                else recorded_pause_reason(
+                    attempt.state, latest.action_kind, latest.outcome_schema, bytes(latest.outcome_payload)
+                )
+            )
     expected_views: dict[str, bytes] = {}
     expected_views.update(
         (
@@ -272,6 +291,7 @@ def derive_expected_view_bytes(
                 view_inputs.overview_items.get(str(item.item_id)),
                 view_inputs.definitions[item.item_id],
                 tuple(receipt for receipt in state.transition_receipts if receipt.subject_id == item.item_id),
+                pause_reasons.get(item.item_id),
             ),
         )
         for item in state.lifecycle.work_items

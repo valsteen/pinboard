@@ -599,6 +599,11 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
     if isinstance(continuation, DecisionFailure):
         return continuation
     operation = continuation.next_operation
+    if isinstance(operation, query_models.ReconcileRepositoryContinuation):
+        return _review_job_failure(
+            f"Candidate {operation.candidate_revision} is already favorably reviewed and needs repository "
+            f"reconciliation, not another review. {operation.condition}"
+        )
     if not isinstance(operation, query_models.ReviewContinuation) or operation.candidate_revision != candidate_revision:
         return unavailable
     brief_path = work_root / reference.selector

@@ -4,19 +4,21 @@ Pinboard helps you keep development work and its decisions available across conv
 
 Saving a **work item** records a goal for later. Starting it creates an **attempt** with an agreed brief. A separate coding agent reviews an implementation candidate before Pinboard records completion. You remain responsible for product decisions and what happens to reviewed repository changes. For the underlying model, see [How Pinboard works](HOW_IT_WORKS.md).
 
+Replies are written for someone who may come back hours later. Before work starts, the agent says what it will produce and where it will land. Replies lead with what needs you. When something you might forget is still open, such as a decision, an unmerged change, or a review, a reply ends with a short “Still open” line. Words like done, saved, reviewed, and merged say what they cover, including whether a change is in `main`.
+
 ## Save an idea, or start it now
 
 > I'm worried about invalid database records. Save that issue for later, and keep going with what we're doing.
 
 The agent records a ready work item with the concern, evidence, and relationship to any current work. It gives you a link to the saved item when its readable view is available, then returns to the current task. Saving does not begin implementation or raise its priority automatically. If it is already recorded with the same consequence, the agent points you to that item.
 
-A typical reply is: “I've saved the database issue. I'll keep working on this change, and we can come back to the database later.”
+A typical reply is: “Saved for later: the database issue is on the board, not started. I'll keep working on this change.” Saved means recorded; it does not mean scheduled or in a release.
 
 > Let's fix the database issue now.
 
 Here, saving is only the first step. The agent checks the goal you agreed on, dependencies, checkout, and any choice that could change the result. It prepares a brief and starts the work when those conditions are settled. You decide material changes to scope or behavior; routine implementation choices stay with the agent.
 
-If the intended fix is unclear, it may ask: “Should this change prevent new invalid records, repair existing records, or both?” Your answer shapes the goal before implementation.
+If the intended fix is unclear, it asks only what would change the result, each question with its recommendation: “Should this change prevent new invalid records, repair existing records, or both? I'd start with preventing new ones.” It also says where the work will land: “It will be done on its own branch and reviewed; nothing reaches `main` unless you choose.” Your answer shapes the goal before implementation.
 
 ## Decide what to do next
 
@@ -46,7 +48,15 @@ If the reviewer finds an implementation defect, the agent can correct the same w
 
 The agent reads the saved goal, brief, current work, and review evidence, then explains the next supported step. It can continue active work, resume paused work, or restore the saved change into a suitable clean checkout when that recovery applies. If the agreed scope or Git history changed, it updates the brief through the supported path before continuing. A pause preserves the work; it is not proof of completion. The agent asks you only when a material choice or missing authority blocks the next step.
 
-For example: “The change is ready, but it hasn't been reviewed yet. I can send the saved version for review.”
+For example: “The change is ready, but it hasn't been reviewed yet. I can send the saved version for review.” A pause keeps its reason on the board, so a later conversation can still see what the work waits on. When paused work waits on your choice, the agent names the choice and its recommended default, then says what it will do once you answer.
+
+## Try something without committing to it
+
+> On a throwaway branch, make the parser skip comment lines. I'm not committing to merging it; I just want to see whether it's worth it.
+
+The agent can track an experiment like any other work, including on a scratch board you name, and have it reviewed. Before it starts, it says where the result will stay: on its own branch, not in `main`. When you close the experiment, it says what closed and what did not reach `main`.
+
+If you later ask to include the useful part, the agent says whether it is in `main` and where it lives, and prefers the already reviewed commit over redoing the work. If it cannot find the earlier review, for example on a scratch board you did not name, it says so rather than assuming one. After you merge something yourself, it says whether the earlier review covered exactly what you merged: “The review covered exactly the commit you merged. Your merge commit itself wasn't reviewed, but it adds nothing else. I haven't seen CI results.”
 
 ## Explore parallel work
 
@@ -66,13 +76,13 @@ That request authorizes the displayed safe batch. The agent checks it again befo
 
 The agent compares the repository result with the goal you agreed on, the saved change, and its review. It checks whether review, your repository decision, or cleanup is still missing and continues the same work where possible. A merge or closed pull request alone does not prove the work is complete. If work was saved but never started, you can instead decide to close it as completed or dropped; the agent records that choice without inventing an implementation review.
 
-An honest reply might be: “The change is merged, but its review isn't finished. I'll check the saved change before marking the work done.” If the work was never started, your decision to mark it completed or dropped takes the shorter close route.
+An honest reply might be: “The change is in `main`, but no review covered it. I'd have a separate reviewer check the commit as it landed before the work is closed.” If the work was never started, your decision to mark it completed or dropped takes the shorter close route.
 
 ## Review a pull request owned by a person
 
 > Can you review my pull request? I wrote the code; please tell me what you find as it changes.
 
-This route is for a ready item whose PR author is a person rather than a Pinboard worker. The agent records a brief linking the PR to current requirements, expected behavior, consumers, owners, and repository criteria. A separate reviewer checks that brief before the first review round. Each round records the full commit the reviewing agent observed, where it observed it, findings, verification limits, and what happened to earlier findings. The agent reports the findings to you in conversation.
+This route is for a ready item whose PR author is a person rather than a Pinboard worker. When the review should be recorded on the board, the agent records a brief linking the PR to current requirements, expected behavior, consumers, owners, and repository criteria, and a separate reviewer checks that brief before the first recorded round. Each round records the full commit the reviewing agent observed, where it observed it, findings, verification limits, and what happened to earlier findings. The agent reports the findings to you in conversation; when it reviews only in conversation, it says that no review round is recorded on the board.
 
 For example: “I found one concern in the commit I reviewed. I've since seen a newer commit. Would you like me to review that too, or finish with the review I've completed?” Your choice controls the next round or close; it does not turn an unreviewed commit into reviewed evidence.
 

@@ -66,6 +66,7 @@ def attempt_record(
         accepted_scope_revision,
         accepted_scope_digest,
         CandidateId(protected_candidate_revision) if protected_candidate_revision is not None else None,
+        pause_reason=None,
     )
 
 

@@ -11,6 +11,7 @@ from pinboard.adapters.sqlite.database import decode_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     read_current_definitions,
+    read_pause_reasons,
     validate_current_attempt_relation,
 )
 from pinboard.adapters.sqlite.proposals import decode_proposal_relation
@@ -419,15 +420,25 @@ def _work_item_record(
     )
 
 
-def _attempt_record(attempt: _AttemptRow | _AttemptLineageRow) -> work_models.AttemptRecord:
-    return work_models.AttemptRecord(
-        attempt.attempt_id,
-        attempt.item_id,
-        attempt.state,
-        attempt.accepted_scope_revision,
-        attempt.accepted_scope_digest,
-        None if attempt.candidate_revision is None else CandidateId(attempt.candidate_revision),
-        attempt.brief_artifact_ref_id,
+def _attempt_records(
+    connection: sqlite3.Connection, attempts: Iterable[_AttemptRow | _AttemptLineageRow]
+) -> tuple[work_models.AttemptRecord, ...]:
+    selected = tuple(attempts)
+    pause_reasons = read_pause_reasons(
+        connection, ((attempt.attempt_id, attempt.state, attempt.subject_revision) for attempt in selected)
+    )
+    return tuple(
+        work_models.AttemptRecord(
+            attempt.attempt_id,
+            attempt.item_id,
+            attempt.state,
+            attempt.accepted_scope_revision,
+            attempt.accepted_scope_digest,
+            None if attempt.candidate_revision is None else CandidateId(attempt.candidate_revision),
+            attempt.brief_artifact_ref_id,
+            pause_reason=pause_reasons.get(attempt.attempt_id),
+        )
+        for attempt in selected
     )
 
 
@@ -607,7 +618,7 @@ def read_current_snapshot(
             _work_item_record(item, tuple(dependencies[item.item_id]), attempts_by_item.get(item.item_id))
             for item in item_rows
         ),
-        attempts=tuple(_attempt_record(attempt) for attempt in attempt_rows),
+        attempts=_attempt_records(connection, attempt_rows),
         artifacts=(),
         proposals=tuple(
             _proposal_record(
@@ -934,7 +945,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
             _work_item_record(item, tuple(dependencies[item.item_id]), attempts_by_item.get(item.item_id))
             for item in item_rows.values()
         ),
-        attempts=tuple(_attempt_record(attempt) for attempt in attempts.values()),
+        attempts=_attempt_records(connection, attempts.values()),
         artifacts=tuple(artifacts),
         proposals=proposal_records,
         subject_revisions=tuple(

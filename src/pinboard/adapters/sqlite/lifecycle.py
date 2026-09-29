@@ -6,6 +6,7 @@ reads the filesystem, or obtains time. Expected stale CAS writes return a
 """
 
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import pairwise
@@ -15,7 +16,7 @@ import msgspec
 
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.application import query_models, stored_state
+from pinboard.application import queries, query_models, released_v6_compatibility, stored_state
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.history import (
@@ -101,6 +102,59 @@ class _QueuePositionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     queue_position: int
 
 
+class _LatestAttemptReceiptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_revision: int
+    action_kind: str
+    outcome_schema: str
+    outcome_json: str
+
+
+class _ItemStatusAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    candidate_revision: str | None
+    subject_revision: int
+
+
+def read_pause_reasons(
+    connection: sqlite3.Connection,
+    attempts: Iterable[tuple[AttemptId, work_models.AttemptState, int]],
+) -> dict[AttemptId, str]:
+    """Read each paused attempt's recorded pause reason from exactly its latest receipt.
+
+    An attempt's subject revision names the project revision of its latest
+    receipt, so each reason is one keyed history read rather than a history scan.
+    """
+
+    paused = {
+        subject_revision: attempt_id
+        for attempt_id, state, subject_revision in attempts
+        if state == work_models.AttemptState.PAUSED
+    }
+    reasons: dict[AttemptId, str] = {}
+    for row in select_by_ids(
+        connection,
+        """SELECT project_revision, action_kind, outcome_schema, outcome_json
+           FROM transition_history WHERE project_revision IN ({ids})""",
+        paused,
+    ):
+        receipt = decode_row(row, _LatestAttemptReceiptRow)
+        try:
+            reason = queries.recorded_pause_reason(
+                work_models.AttemptState.PAUSED,
+                released_v6_compatibility.decode_released_v6_action_kind(receipt.action_kind),
+                receipt.outcome_schema,
+                receipt.outcome_json.encode("utf-8"),
+            )
+        except (ValueError, msgspec.DecodeError) as error:
+            raise StorageError(
+                StorageErrorCode.INVALID_STATE, "A paused attempt's latest receipt is not canonical."
+            ) from error
+        if reason is not None:
+            reasons[paused[receipt.project_revision]] = reason
+    return reasons
+
+
 def increment_item_state_count(
     connection: sqlite3.Connection,
     state: stored_state.StoredWorkItemState,
@@ -154,6 +208,7 @@ class NonterminalAttemptContextSelection:
     candidate_revision: str | None
     brief_artifact_ref_id: ArtifactRefId
     work_item: query_models.AttemptContextItemFacts
+    pause_reason: str | None
 
 
 type AttemptContextSelection = TerminalAttemptContextSelection | NonterminalAttemptContextSelection
@@ -365,14 +420,27 @@ def read_item_status(
     definition = None if definition_row is None else decode_definition_revision(definition_row)
     attempt_row = connection.execute(
         """
-        SELECT attempt_id, state, candidate_revision
+        SELECT attempt_id, state, candidate_revision, subject_revision
         FROM attempts INDEXED BY one_live_attempt_per_item
         WHERE item_id = ? AND state != 'done'
         """,
         (item_id,),
     ).fetchone()
-    selected_attempt = None if attempt_row is None else decode_row(attempt_row, query_models.ItemStatusAttemptFacts)
-    attempts = () if selected_attempt is None else (selected_attempt,)
+    attempts: tuple[query_models.ItemStatusAttemptFacts, ...] = ()
+    if attempt_row is not None:
+        selected_attempt = decode_row(attempt_row, _ItemStatusAttemptRow)
+        pause_reasons = read_pause_reasons(
+            connection,
+            ((selected_attempt.attempt_id, selected_attempt.state, selected_attempt.subject_revision),),
+        )
+        attempts = (
+            query_models.ItemStatusAttemptFacts(
+                selected_attempt.attempt_id,
+                selected_attempt.state,
+                selected_attempt.candidate_revision,
+                pause_reasons.get(selected_attempt.attempt_id),
+            ),
+        )
     return query_models.ItemStatusLifecycleFacts(
         project_revision,
         item,
@@ -564,6 +632,9 @@ def read_attempt_context(
             ),
             None,
             True,
+        ),
+        read_pause_reasons(connection, ((attempt.attempt_id, attempt_state, attempt.subject_revision),)).get(
+            attempt.attempt_id
         ),
     )
 

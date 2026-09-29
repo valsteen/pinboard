@@ -1274,6 +1274,13 @@ class ContinuationReview(
     required_capability: Literal["runtime-subagent"]
 
 
+class ContinuationReconcileRepository(
+    msgspec.Struct, tag="reconcile-repository", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    candidate_revision: NonEmptyText
+    condition: NonEmptyText
+
+
 class ContinuationDependencies(
     msgspec.Struct, tag="wait-for-dependencies", tag_field="kind", frozen=True, forbid_unknown_fields=True
 ):
@@ -1344,7 +1351,11 @@ type ReconciliationContinuation = (
     | ContinuationRepositoryCleanup
 )
 type ContinuationOperation = (
-    ContinuationAction | ContinuationReview | ContinuationDependencies | ReconciliationContinuation
+    ContinuationAction
+    | ContinuationReview
+    | ContinuationReconcileRepository
+    | ContinuationDependencies
+    | ReconciliationContinuation
 )
 
 
@@ -1476,6 +1487,7 @@ class ReviewAttemptContinuation(
                 operation,
                 (
                     ContinuationReview,
+                    ContinuationReconcileRepository,
                     ContinuationRefreshTarget,
                     ContinuationPermissionRecovery,
                     ContinuationRepositoryDisposition,
@@ -1513,6 +1525,8 @@ class PausedAttemptContinuation(
     frozen=True,
     forbid_unknown_fields=True,
 ):
+    pause_reason: NonEmptyText | None
+
     def __post_init__(self) -> None:
         self._validate_dependency_or_resume()
         self._validate_legal_action_kinds(_PAUSED_CONTINUATION_ACTION_KINDS)

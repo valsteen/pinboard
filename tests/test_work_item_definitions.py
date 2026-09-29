@@ -260,6 +260,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             work_models.AttemptState.ACTIVE,
             1,
             accepted_digest,
+            pause_reason=None,
         )
         authority = work_models.AttemptAuthority(attempt_id, item.work_item_id, LeaseId("worker-lease"), 1)
         snapshot = LedgerSnapshot(

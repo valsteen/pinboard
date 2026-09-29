@@ -83,6 +83,7 @@ def _item_status_json(status: query_models.ItemStatus) -> dict[str, JsonValue]:
                 "attempt_id": attempt.attempt_id,
                 "state": attempt.state.value,
                 "candidate_revision": attempt.candidate_revision,
+                "pause_reason": attempt.pause_reason,
             }
             for attempt in status.attempts
         ],
@@ -1147,6 +1148,8 @@ def _continuation_operation(
             return contracts.ContinuationAction(action, condition)
         case query_models.ReviewContinuation(candidate_revision=candidate, required_capability=capability):
             return contracts.ContinuationReview(candidate, capability)
+        case query_models.ReconcileRepositoryContinuation(candidate_revision=candidate, condition=condition):
+            return contracts.ContinuationReconcileRepository(candidate, condition)
         case query_models.DependencyContinuation(dependencies=dependencies):
             return contracts.ContinuationDependencies(dependencies)
         case query_models.RefreshTargetContinuation(target_revision=target_revision):
@@ -1212,8 +1215,8 @@ def _mcp_attempt_continuation(
                     return contracts.ActiveAttemptContinuation(*arguments)
                 case query_models.ReviewAttemptContinuation():
                     return contracts.ReviewAttemptContinuation(*arguments)
-                case query_models.PausedAttemptContinuation():
-                    return contracts.PausedAttemptContinuation(*arguments)
+                case query_models.PausedAttemptContinuation(pause_reason=pause_reason):
+                    return contracts.PausedAttemptContinuation(*arguments, pause_reason)
                 case query_models.BlockedAttemptContinuation():
                     return contracts.BlockedAttemptContinuation(*arguments)
                 case _ as unreachable:

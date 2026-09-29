@@ -45,7 +45,11 @@ class PlannedReplacementTests(unittest.TestCase):
         attempts = (
             ()
             if attempt_state is None
-            else (work_models.AttemptRecord(AttemptId("old-work-1"), WorkItemId("old-work"), attempt_state),)
+            else (
+                work_models.AttemptRecord(
+                    AttemptId("old-work-1"), WorkItemId("old-work"), attempt_state, pause_reason=None
+                ),
+            )
         )
         return LedgerSnapshot(
             "7",

@@ -62,6 +62,7 @@ class ItemProjectionFacts:
     overview: OverviewItem | None
     definition: stored_state.ItemDefinitionRevision
     review_history: tuple[stored_state.StoredTransitionReceipt, ...]
+    pause_reason: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +293,15 @@ class RepositoryCleanupContinuation(
     target_revision: str
 
 
+class ReconcileRepositoryContinuation(
+    msgspec.Struct, tag="reconcile-repository", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    """A favorably reviewed candidate waits for the caller's repository observations."""
+
+    candidate_revision: str
+    condition: str
+
+
 type ReconciliationContinuation = (
     RefreshTargetContinuation
     | PermissionRecoveryContinuation
@@ -300,7 +310,11 @@ type ReconciliationContinuation = (
     | RepositoryCleanupContinuation
 )
 type NonterminalContinuationOperation = (
-    ActionContinuation | ReviewContinuation | DependencyContinuation | ReconciliationContinuation
+    ActionContinuation
+    | ReviewContinuation
+    | ReconcileRepositoryContinuation
+    | DependencyContinuation
+    | ReconciliationContinuation
 )
 
 
@@ -409,6 +423,10 @@ class NonterminalAttemptContinuationBase(AttemptContinuationIdentity, frozen=Tru
             )
             if not any(action in self.legal_actions for action in review_actions):
                 raise ValueError("review continuation requires a matching checkpoint or completion action")
+        elif isinstance(operation, ReconcileRepositoryContinuation) and (
+            not operation.candidate_revision or not operation.condition
+        ):
+            raise ValueError("repository reconciliation continuation requires its reviewed candidate and condition")
         elif isinstance(operation, DependencyContinuation) and (
             not operation.dependencies or len(set(operation.dependencies)) != len(operation.dependencies)
         ):
@@ -457,6 +475,7 @@ class ReviewAttemptContinuation(
                 operation,
                 (
                     ReviewContinuation,
+                    ReconcileRepositoryContinuation,
                     RefreshTargetContinuation,
                     PermissionRecoveryContinuation,
                     RepositoryDispositionContinuation,
@@ -480,12 +499,17 @@ class PausedAttemptContinuation(
     frozen=True,
     forbid_unknown_fields=True,
 ):
+    pause_reason: str | None
+    """The human reason recorded by the current pause; null for a checkpoint pause or an unrecorded reason."""
+
     @property
     def state(self) -> work_models.AttemptState:
         return work_models.AttemptState.PAUSED
 
     def __post_init__(self) -> None:
         self._validate_common()
+        if self.pause_reason is not None and not self.pause_reason.strip():
+            raise ValueError("a recorded pause reason must be nonempty")
         operation = self.next_operation
         if not (
             isinstance(operation, DependencyContinuation)
@@ -567,6 +591,7 @@ class NonterminalAttemptContextFacts:
     brief_artifact_ref_id: ArtifactRefId
     work_item: AttemptContextItemFacts
     brief_reference: artifacts.BriefArtifactRef
+    pause_reason: str | None
 
 
 type AttemptContextFacts = TerminalAttemptContextFacts | NonterminalAttemptContextFacts
@@ -656,6 +681,7 @@ class ItemStatusAttemptFacts:
     attempt_id: AttemptId
     state: work_models.AttemptState
     candidate_revision: str | None
+    pause_reason: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -679,6 +705,8 @@ class ItemStatusAttempt(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     attempt_id: str
     state: work_models.AttemptState
     candidate_revision: str | None
+    pause_reason: str | None
+    """The reason recorded when the attempt was paused; null unless a recorded pause is current."""
 
 
 class PreparationStatusView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

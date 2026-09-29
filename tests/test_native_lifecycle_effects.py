@@ -23,12 +23,12 @@ from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.ports import WorkStore
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionResult
-from pinboard.domain.identifiers import HostId, TaskId
+from pinboard.domain.identifiers import HostId, TaskId, WorkItemId
 from pinboard.mcp import common as mcp_common
 from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
-from tests.native_support import call_native_tool
+from tests.native_support import call_advertised_tool, call_native_tool
 from tests.support import SQLITE_NOW, JsonObject
 from tests.work_brief_support import work_c_brief
 
@@ -285,6 +285,133 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assertIn("rebind-attempt:work-a-1", actions)
         self.assertIn("revise-item:work-a", actions)
         self.assertNotIn("close:work-a", actions)
+
+    def assert_pause_reason(self, fixture: CheckpointFixture, expected: str | None) -> None:
+        roots = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
+        status = call_advertised_tool(mcp_server.ITEM_STATUS_TOOL, {**roots, "item_id": "work-a"})
+        (status_attempt,) = self.json_array(status["attempts"])
+        self.assertEqual(expected, self.json_object(status_attempt)["pause_reason"])
+        inspected = call_advertised_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL, {**roots, "attempt_id": "work-a-1", "reconciliation": None}
+        )
+        self.assertEqual("ok", inspected["status"], inspected)
+        continuation = self.json_object(inspected["continuation"])
+        if continuation["state"] == "paused":
+            self.assertEqual(expected, continuation["pause_reason"])
+        else:
+            self.assertIsNone(expected)
+            self.assertNotIn("pause_reason", continuation)
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").read_item_status(WorkItemId("work-a"))
+        assert fresh is not None
+        self.assertEqual((expected,), tuple(attempt.pause_reason for attempt in fresh.attempts))
+        view = (fixture.work / "views" / "items" / "work-a.md").read_text(encoding="utf-8")
+        view_lines = [line for line in view.splitlines() if line.startswith("- Pause reason:")]
+        self.assertEqual([] if expected is None else [f"- Pause reason: {expected}"], view_lines)
+        validated, stdout, stderr = self.run_cli(*fixture.common, "validate", "--json")
+        self.assertEqual(0, validated, f"{stdout}\n{stderr}")
+
+    def test_pause_reason_stays_readable_through_paused_rebind_and_reload_until_resume(self) -> None:
+        fixture = self.active_fixture()
+        closed, stdout, stderr = self.run_cli(
+            *fixture.common,
+            "close",
+            "work-c",
+            "--outcome",
+            "done",
+            "--reason",
+            "The prerequisite is satisfied.",
+            "--task-id",
+            "review-owner",
+            "--host-id",
+            "local",
+        )
+        self.assertEqual(0, closed, f"{stdout}\n{stderr}")
+        before = next(
+            value for value in fixture.store.validated_snapshot().lifecycle.work_items if str(value.item_id) == "work-a"
+        )
+        reason = "Needs the maintainer to choose rejecting or replacing invalid input."
+
+        pause = self.project_action(fixture, "pause:work-a-1")
+        self.assertEqual("committed", self.transition_result(fixture, pause, {"reason": reason})["status"])
+        self.assert_pause_reason(fixture, reason)
+
+        brief = replace_struct(fixture.brief, artifact_revision=2)
+        published = call_native_tool(
+            mcp_server.BRIEF_PUBLISH_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "brief": self.json_object(msgspec.json.decode(msgspec.json.encode(brief))),
+            },
+        )
+        self.assertEqual("committed", published["status"], published)
+        reference = self.json_object(published["reference"])
+        rebind = self.project_action(fixture, "rebind-attempt:work-a-1")
+        rebound = self.transition_result(
+            fixture,
+            rebind,
+            {
+                "branch": brief.branch,
+                "base_revision": brief.base_revision,
+                "brief_artifact_ref_id": reference["artifact_ref_id"],
+            },
+        )
+        self.assertEqual("committed", rebound["status"], rebound)
+        reloaded = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        latest = reloaded.transition_receipts[-1]
+        self.assertEqual(decision_models.ActionKind.REBIND_ATTEMPT, latest.action_kind)
+        self.assertEqual(reason, msgspec.json.decode(bytes(latest.outcome_payload))["evidence"])
+        self.assert_pause_reason(fixture, reason)
+
+        resume = self.project_action(fixture, "resume:work-a")
+        self.assertEqual("committed", self.transition_result(fixture, resume, {})["status"])
+        self.assert_pause_reason(fixture, None)
+        after = next(
+            value
+            for value in SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot().lifecycle.work_items
+            if str(value.item_id) == "work-a"
+        )
+        self.assertEqual((before.next_action, before.notes), (after.next_action, after.notes))
+
+    def test_active_rebind_carries_no_pause_reason(self) -> None:
+        fixture = self.active_fixture()
+        brief = replace_struct(fixture.brief, artifact_revision=2)
+        published = call_native_tool(
+            mcp_server.BRIEF_PUBLISH_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "brief": self.json_object(msgspec.json.decode(msgspec.json.encode(brief))),
+            },
+        )
+        self.assertEqual("committed", published["status"], published)
+        reference = self.json_object(published["reference"])
+        rebind = self.project_action(fixture, "rebind-attempt:work-a-1")
+        rebound = self.transition_result(
+            fixture,
+            rebind,
+            {
+                "branch": brief.branch,
+                "base_revision": brief.base_revision,
+                "brief_artifact_ref_id": reference["artifact_ref_id"],
+            },
+        )
+        self.assertEqual("committed", rebound["status"], rebound)
+        reloaded = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        latest = reloaded.transition_receipts[-1]
+        self.assertEqual(decision_models.ActionKind.REBIND_ATTEMPT, latest.action_kind)
+        self.assertIsNone(msgspec.json.decode(bytes(latest.outcome_payload)).get("evidence"))
+        self.assert_pause_reason(fixture, None)
+
+    def test_checkpoint_pause_presents_remaining_work_without_a_pause_reason(self) -> None:
+        fixture = self.accepted_package_fixture()
+        attempt = next(
+            value
+            for value in fixture.store.validated_snapshot().lifecycle.attempts
+            if str(value.attempt_id) == "work-a-1"
+        )
+        self.assertEqual(work_models.AttemptState.PAUSED, attempt.state)
+        self.assert_pause_reason(fixture, None)
 
     def test_retained_human_close_rejects_selected_subject_change_under_shared_lock(self) -> None:
         fixture = self.active_fixture()

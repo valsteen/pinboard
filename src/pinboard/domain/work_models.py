@@ -433,6 +433,8 @@ class AttemptRecord:
     accepted_scope_digest: str | None = None
     protected_candidate_revision: CandidateId | None = None
     brief_artifact_ref_id: ArtifactRefId | None = None
+    pause_reason: str | None = field(kw_only=True)
+    """The human reason recorded by the latest pause, or its rebind carry-forward, while the attempt is paused."""
 
 
 @dataclass(frozen=True, slots=True)

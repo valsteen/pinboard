@@ -137,7 +137,7 @@ Direct launcher commands, which agents rarely need, run through Claude's Bash to
 }
 ```
 
-For an autonomous repository-writing run, also use Claude's normal edit-accepting mode and include any selected linked worktree in the session's allowed directories. Pinboard records the intended access but cannot grant it; `dontAsk` may deny an uncovered write instead of asking.
+For an autonomous repository-writing run, also use Claude's normal edit-accepting mode. A linked worktree under `.claude/worktrees/` inside the session's launch directory needed no extra directory grant in an observed auto-mode worker run in this repository; treat that as an observation rather than a guarantee. A selected linked worktree or work root outside the launch directory must be in the session's allowed directories. Pinboard records the intended access but cannot grant it; `dontAsk` may deny an uncovered write instead of asking.
 
 This route uses Claude Code's marketplace mechanism with this repository as the marketplace. Pinboard is not published in or installed from Anthropic's official marketplace, and it does not claim live sharing between Codex and Claude Code.
 

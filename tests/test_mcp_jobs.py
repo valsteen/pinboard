@@ -215,6 +215,14 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertIn(name, tuple(tools))
                 self.assertIsNotNone(tools[name].output_schema)
                 self.assertEqual(tools[name].input_schema["additionalProperties"], False)
+            dispatch = tools["pinboard_dispatch"]
+            self.assertIn("ReuseCorrectionDispatchChoice", dispatch.input_schema["$defs"])
+            self.assertIn("CorrectionDispatchChoice", dispatch.input_schema["$defs"])
+            assert dispatch.description is not None
+            self.assertIn("reuse-correction", dispatch.description)
+            self.assertIn("pinboard-correction-source-review/v1", dispatch.description)
+            assert dispatch.output_schema is not None
+            self.assertIn("TracePreflightResult", dispatch.output_schema["$defs"])
         finally:
             executor.shutdown()
 

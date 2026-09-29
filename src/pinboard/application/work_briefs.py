@@ -229,9 +229,35 @@ def canonical_work_brief_review_bytes(review: WorkBriefReviewValue) -> bytes:
 
 
 def canonical_correction_source_review_bytes(
-    review: work_brief_models.CorrectionSourceReview | work_brief_models.LocalCorrectionSourceReview,
+    review: (
+        work_brief_models.CorrectionSourceReview
+        | work_brief_models.ReusedCoverageCorrectionReview
+        | work_brief_models.LocalCorrectionSourceReview
+    ),
 ) -> bytes:
     return _canonical_bytes(review) + b"\n"
+
+
+def validate_reused_coverage_correction_review(
+    review: work_brief_models.ReusedCoverageCorrectionReview,
+    brief: work_brief_models.WorkBrief,
+) -> work_brief_models.WorkBriefFailure | None:
+    if not isinstance(brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint):
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,
+            "Coverage reuse requires a cross-boundary checkpoint.",
+        )
+    if review.reviewer_task_id == brief.owner_task_id:
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT,
+            "The correction reviewer must be a different task from the attempt owner.",
+        )
+    if review.accepted_brief_sha256 != hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest():
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_STALE,
+            "Correction review is not bound to the exact accepted brief.",
+        )
+    return None
 
 
 def validate_local_correction_source_review(

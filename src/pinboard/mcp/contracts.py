@@ -591,6 +591,12 @@ class CorrectionDispatchChoice(DispatchChoiceBase, tag="correction", tag_field="
     correction_history_id: PositiveInt
 
 
+class ReuseCorrectionDispatchChoice(DispatchChoiceBase, tag="reuse-correction", tag_field="kind", frozen=True):
+    brief_review: work_brief_models.ReusedCoverageCorrectionReview
+    review_id: PathComponent
+    correction_history_id: PositiveInt
+
+
 class LocalCorrectionDispatchChoice(DispatchChoiceBase, tag="local-correction", tag_field="kind", frozen=True):
     brief_review: work_brief_models.LocalCorrectionSourceReview
     review_id: PathComponent
@@ -598,7 +604,11 @@ class LocalCorrectionDispatchChoice(DispatchChoiceBase, tag="local-correction", 
 
 
 type DispatchChoice = (
-    OrdinaryDispatchChoice | ReviewedDispatchChoice | CorrectionDispatchChoice | LocalCorrectionDispatchChoice
+    OrdinaryDispatchChoice
+    | ReviewedDispatchChoice
+    | CorrectionDispatchChoice
+    | ReuseCorrectionDispatchChoice
+    | LocalCorrectionDispatchChoice
 )
 
 
@@ -1644,10 +1654,17 @@ class CorrectionContextReady(_UnchangedResult, msgspec.Struct, frozen=True, forb
     reviewed_authority_set_sha256: Sha256 | None
     starting_candidate: work_brief_models.PortableArtifactIdentity
     starting_snapshot: CorrectionSnapshot
+    reuse_eligible: bool
+    reuse_blockers: tuple[NonEmptyText, ...]
     state_changed: bool
     effect: Literal["unchanged"]
     retry: Literal["safe-to-repeat"]
     changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.reuse_eligible == bool(self.reuse_blockers):
+            raise ValueError("Correction reuse eligibility and blockers disagree.")
 
 
 class CorrectionContextRejected(RejectedReadResult, frozen=True):
@@ -1675,6 +1692,50 @@ class ArtifactVerified(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unk
         _require_fixed_state_changed(self)
         if not self.verified:
             raise ValueError("verified must be true for a verified artifact result.")
+
+
+class TracePreflightResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-execution-result/v1"]
+    status: Literal["rejected"]
+    code: Literal["TRACE_PREFLIGHT_FAILED"]
+    message: NonEmptyText
+    resource: NonEmptyText
+    repair: NonEmptyText
+    target_ran: bool
+    state_changed: bool | None
+    effect: Literal["unchanged", "committed", "unconfirmed"]
+    retry: Literal["correct-input"]
+    changed_surfaces: tuple[Literal["work-root"], ...]
+    settings_parent_creation: Literal["none", "unconfirmed"]
+    settings_file_creation: Literal["none", "confirmed", "unconfirmed"]
+    settings_mode_write: Literal["none", "acknowledged", "unconfirmed"]
+    trace_directory_creation: Literal["none", "confirmed", "unconfirmed"]
+    capture_probe_effect: Literal["none", "unconfirmed"]
+
+    def __post_init__(self) -> None:
+        if self.target_ran:
+            raise ValueError("Trace preflight must precede its target callback.")
+        confirmed = (
+            self.settings_file_creation == "confirmed"
+            or self.settings_mode_write == "acknowledged"
+            or self.trace_directory_creation == "confirmed"
+        )
+        unconfirmed = (
+            self.settings_parent_creation == "unconfirmed"
+            or self.settings_file_creation == "unconfirmed"
+            or self.settings_mode_write == "unconfirmed"
+            or self.trace_directory_creation == "unconfirmed"
+            or self.capture_probe_effect == "unconfirmed"
+        )
+        expected = {
+            "unchanged": (False, ()),
+            "committed": (True, ("work-root",)),
+            "unconfirmed": (None, ("work-root",) if confirmed else ()),
+        }
+        if self.effect != ("unconfirmed" if unconfirmed else "committed" if confirmed else "unchanged"):
+            raise ValueError("Trace preflight effect disagrees with its auxiliary effects.")
+        if (self.state_changed, self.changed_surfaces) != expected[self.effect]:
+            raise ValueError("Trace preflight effect and changed surfaces disagree.")
 
 
 class ExecutorBusyResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -2885,6 +2946,7 @@ type ResultBoundary = (
     | type[ItemStatusUnavailable]
     | type[ItemStatusInconsistent]
     | type[ExecutorBusyResult]
+    | type[TracePreflightResult]
     | type[ProposalCommitted]
     | type[ProposalCommittedWithWarning]
     | type[ProposalRejected]

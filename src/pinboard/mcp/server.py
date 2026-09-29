@@ -88,7 +88,8 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "project_root and work_root. When its sole top-level property is request, keep the selected leaf inside "
             "that request object instead of flattening it. These instructions grant no identity, authority or permissions. "
             "A missing required MCP tool stops its operation; retired agent-workflow CLI commands are not "
-            "substitutes."
+            "substitutes. Automatic trace preflight may return TRACE_PREFLIGHT_FAILED before the target callback; "
+            "read its exact resource, repair, target_ran and auxiliary-effect fields before retrying."
         ),
     )
     request_ids = itertools.count(1)
@@ -339,7 +340,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=CORRECTION_CONTEXT_TOOL,
-        description="Read the exact effective correction brief and accepted starting snapshot for a current returned candidate; does not dispatch or change state.",
+        description="Read the exact effective correction brief, accepted starting snapshot, and advisory coverage-reuse eligibility and blockers for a current returned candidate; dispatch rechecks every fact and this read changes no state.",
     )
     async def correction_context(
         project_root: str,
@@ -468,7 +469,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         description=(
             "Publish verified Pinboard worker launch instructions; creates no worker or worker authority. "
             "Arguments are project_root, work_root and dispatch (no request wrapper). Unknown fields reject.\n"
-            "All four dispatch leaves require kind, receipt, checkpoint_id, environment and prompt. "
+            "All five dispatch leaves require kind, receipt, checkpoint_id, environment and prompt. "
             "receipt contains ONLY action_id:{kind:'dispatch',subject:<attempt_id>} and subject_revision "
             "copied from the fresh project dispatch action returned by pinboard_actions, not the whole action. "
             "checkpoint_id is the accepted brief's stable checkpoint ID. Use explicit prompt:null for "
@@ -484,6 +485,8 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "and brief_review:<complete independent ready WorkBriefReview>. kind:'correction' additionally "
             "requires review_id, correction_history_id:<positive ID of the selected current canonical "
             "return-for-correction/v1 receipt>, and brief_review:<CorrectionSourceReview>, not an initial review. "
+            "kind:'reuse-correction' takes the same correction fields with brief_review:<ReusedCoverageCorrectionReview> "
+            "only when the accepted brief, every reviewed source, and accepted ready review are unchanged. "
             "kind:'local-correction' takes the same correction fields with "
             "brief_review:<LocalCorrectionSourceReview> for a local checkpoint.\n"
             "WorkBriefReview requires schema:'pinboard-work-brief-review/v3', attempt_id, checkpoint_id, "
@@ -500,6 +503,11 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "assessment:<independent assessment>. starting_candidate requires role:'candidate', "
             "kind:'evidence', key, revision:<positive integer>, selector, content_sha256 and "
             "size_bytes:<nonnegative integer>. Preserve candidate/history binding and fresh source review.\n"
+            "ReusedCoverageCorrectionReview requires schema:'pinboard-correction-source-review/v2', "
+            "accepted_brief_sha256:<exact accepted brief digest>, reviewer_task_id:<independent task>, "
+            "starting_candidate:<exact accepted candidate identity>, correction_input:{reason:<exact selected "
+            "correction reason>}, and assessment:<fresh independent candidate-bound assessment>. "
+            "Changed or missing ready coverage requires kind:'correction' with a complete new contract review.\n"
             "LocalCorrectionSourceReview requires schema:'pinboard-local-correction-source-review/v1', "
             "accepted_brief_sha256:<exact accepted brief digest>, reviewer_task_id:<independent task>, "
             "starting_candidate:<exact accepted candidate identity>, "

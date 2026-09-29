@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import secrets
+import shlex
 import threading
 import time
 from collections.abc import Callable
@@ -23,6 +24,7 @@ from pinboard.adapters.files import contributor_traces
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
 from pinboard.adapters.files.file_io import create_immutable
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
+from pinboard.adapters.files.setting_resolution import SettingEffects, SettingResolutionError
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.domain.errors import (
     EffectDisposition,
@@ -167,18 +169,28 @@ class AutomaticCapture:
     def __init__(self, select_item: Callable[[Path, str | None, dict[str, JsonValue]], str | None]) -> None:
         self._select_item = select_item
 
-    def resolve(self, project_root: str, arguments: dict[str, JsonValue]) -> SemanticCapture | None:
+    def resolve(  # noqa: C901, PLR0912, PLR0915 - one preflight owns settings, destination and partial effects
+        self, project_root: str, arguments: dict[str, JsonValue]
+    ) -> SemanticCapture | OperationResult | None:
         request = arguments.get("request")
         selected = request if isinstance(request, dict) else arguments
         work_root = selected.get("work_root")
         if not isinstance(work_root, str):
             return None
+        settings_path = Path(work_root) / contributor_traces.SETTINGS_NAME
+        directory_path = Path(work_root) / contributor_traces.TRACE_DIRECTORY
+        settings_effects = SettingEffects("none", "none", "none")
+        directory_existed = directory_path.exists()
+        resource = settings_path
+        probe_effect: Literal["none", "unconfirmed"] = "none"
         try:
             state = contributor_traces.read_project_trace_settings(Path(project_root), Path(work_root))
             if state is None:
                 return None
             data_root, resolution = state
+            settings_effects = resolution.effects
             settings = resolution.value
+            resource = Path(work_root) if settings.item_overrides else settings_path
             item_id = (
                 self._select_item(
                     resolve_shared_repository_root(resolve_source_checkout_root(Path(project_root))),
@@ -188,16 +200,94 @@ class AutomaticCapture:
                 if settings.item_overrides
                 else None
             )
+            resource = directory_path
             directory = contributor_traces.automatic_trace_directory(data_root, settings, item_id)
-            return None if directory is None else SemanticCapture(directory, automatic=True)
+            if directory is None:
+                return None
+            try:
+                return SemanticCapture(directory, automatic=True)
+            except ValueError, OSError, FileIOError:
+                probe_effect = "unconfirmed"
+                raise
         except (ValueError, OSError, FileIOError, StorageError) as error:
             if isinstance(error, StorageError) and error.invariant_violation:
                 raise
-            raise ToolError(
-                f"Automatic Pinboard trace preflight failed at selected work root {work_root}: {error}. "
-                "The target did not run. Inspect that root's contributor-traces.config and private "
-                "invocation-traces directory, correct the named problem, then retry."
-            ) from error
+            if isinstance(error, SettingResolutionError):
+                settings_effects = error.effects
+                resource = error.path
+            elif "work root" in str(error).lower() and resource == settings_path:
+                resource = Path(work_root)
+            directory_created = not directory_existed and directory_path.exists()
+            confirmed = (
+                settings_effects.file_creation == "confirmed"
+                or settings_effects.key_write == "acknowledged"
+                or directory_created
+            )
+            unconfirmed = (
+                settings_effects.parent_creation == "unconfirmed"
+                or settings_effects.file_creation == "unconfirmed"
+                or settings_effects.key_write == "unconfirmed"
+                or probe_effect == "unconfirmed"
+            )
+            effect = "unconfirmed" if unconfirmed else "committed" if confirmed else "unchanged"
+            if isinstance(error, StorageError):
+                repair = f"Inspect Pinboard state under {resource} and resolve this read error before retrying."
+            elif "work root must be a real directory" in str(error):
+                try:
+                    real_root = Path(work_root).resolve()
+                except OSError, RuntimeError:
+                    real_root = None
+                repair = (
+                    f"Pass the real directory {real_root} as work_root, then retry."
+                    if real_root is not None and real_root.is_dir()
+                    else f"Pass an existing real directory instead of the symlink {work_root} as work_root, then retry."
+                )
+            elif "Git status could not be verified" in str(error):
+                root = Path(work_root)
+                metadata = next(
+                    (
+                        parent / ".git"
+                        for parent in (root, *root.parents)
+                        if (parent / ".git").exists(follow_symlinks=False)
+                    ),
+                    root,
+                )
+                checked_name = f"{resource.name}/" if resource == directory_path else resource.name
+                command = f"git -C {shlex.quote(work_root)} check-ignore -q -- {shlex.quote(checked_name)}"
+                repair = f"Restore valid Git metadata at {metadata} so `{command}` succeeds, then retry."
+            elif "Git-ignored" in str(error):
+                repair = f"Keep {resource} Git-ignored, then retry."
+            elif resource == settings_path:
+                repair = (
+                    f"Grant write access to {resource} and retry."
+                    if "write" in str(error).lower() or isinstance(error, PermissionError)
+                    else f"Correct {resource} and retry."
+                )
+            elif "private directory" in str(error):
+                repair = f"Make {resource} a real private directory with mode 0700, then retry."
+            elif isinstance(error, PermissionError) or "writable" in str(error).lower():
+                repair = f"Grant write access to {resource}, then retry."
+            else:
+                repair = f"Correct {resource}, then retry."
+            content: dict[str, JsonValue] = {
+                "schema": "pinboard-mcp-execution-result/v1",
+                "status": "rejected",
+                "code": "TRACE_PREFLIGHT_FAILED",
+                "message": f"Automatic Pinboard trace preflight failed: {error}. The target callback did not run.",
+                "resource": str(resource),
+                "repair": repair,
+                "target_ran": False,
+                "state_changed": None if unconfirmed else confirmed,
+                "effect": effect,
+                "retry": "correct-input",
+                "changed_surfaces": ["work-root"] if confirmed else [],
+                "settings_parent_creation": settings_effects.parent_creation,
+                "settings_file_creation": settings_effects.file_creation,
+                "settings_mode_write": settings_effects.key_write,
+                "trace_directory_creation": "confirmed" if directory_created else "none",
+                "capture_probe_effect": probe_effect,
+            }
+            return OperationResult(content, "rejected", None)
 
 
 class ExecutorBusy(RuntimeError):
@@ -343,7 +433,7 @@ class Diagnostics:
             self._stream.flush()
 
 
-async def _run_request(  # noqa: C901 - one execution boundary owns callback and capture aftermath
+async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns callback and capture aftermath
     executor: BoundedExecutor,
     diagnostics: Diagnostics,
     request_id: int,
@@ -355,7 +445,10 @@ async def _run_request(  # noqa: C901 - one execution boundary owns callback and
     capture: SemanticCapture | AutomaticCapture | None,
 ) -> dict[str, JsonValue]:
     if isinstance(capture, AutomaticCapture):
-        capture = capture.resolve(project_root, arguments)
+        selected_capture = capture.resolve(project_root, arguments)
+        if isinstance(selected_capture, OperationResult):
+            return contract_schemas.validate_result(operation, selected_capture.content)
+        capture = selected_capture
     captured_arguments = deepcopy(arguments) if capture is not None else arguments
     project_id = hashlib.sha256(project_root.encode()).hexdigest()[:12]
     started = time.monotonic_ns()

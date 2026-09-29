@@ -457,7 +457,7 @@ class McpCaptureTest(unittest.TestCase):
             }
             original_request = json.loads(json.dumps(request))
             rejected: dict[str, execution.JsonValue] = {
-                "schema": "pinboard-mcp-item-status-result/v1",
+                "schema": "pinboard-mcp-item-status-result/v2",
                 "status": "rejected",
                 "code": "ITEM_NOT_FOUND",
                 "message": "Missing.",
@@ -567,7 +567,7 @@ class McpCaptureTest(unittest.TestCase):
             self.assertIn("commit=revision-7", diagnostics_stream.getvalue())
 
     def test_result_validation_failure_preserves_unavailable_capture_context(self) -> None:
-        invalid: dict[str, execution.JsonValue] = {"schema": "pinboard-item-status/v1"}
+        invalid: dict[str, execution.JsonValue] = {"schema": "pinboard-item-status/v2"}
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             capture = execution.SemanticCapture(directory)
@@ -812,9 +812,12 @@ class McpCaptureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             arguments = {
-                "project_root": "/missing/project",
-                "work_root": "/missing/work",
-                "item_id": "item",
+                "request": {
+                    "project_root": "/missing/project",
+                    "work_root": "/missing/work",
+                    "operation": "item",
+                    "item_id": "item",
+                }
             }
 
             async def scenario() -> dict[str, object]:

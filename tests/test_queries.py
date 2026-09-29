@@ -31,6 +31,7 @@ from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
 from tests.support import (
     SQLITE_NOW,
+    NoReadyCandidateReviews,
     complete_sqlite_state,
     initialize_store,
     test_definition,
@@ -237,12 +238,12 @@ class SQLiteQueriesTest(unittest.TestCase):
             )
         )
 
-        live = expect_success(project_item_status(store, WorkItemId("work-a"), SQLITE_NOW))
-        done = expect_success(project_item_status(store, done_item.item_id, SQLITE_NOW))
+        live = project_item_status(store, NoReadyCandidateReviews(), WorkItemId("work-a"), SQLITE_NOW)
+        done = project_item_status(store, NoReadyCandidateReviews(), done_item.item_id, SQLITE_NOW)
 
         self.assertEqual(
             query_models.ItemStatus(
-                "pinboard-item-status/v1",
+                "pinboard-item-status/v2",
                 "sqlite-v7",
                 "12",
                 "work-a",
@@ -250,18 +251,23 @@ class SQLiteQueriesTest(unittest.TestCase):
                 stored_state.StoredWorkItemState.ACTIVE,
                 work_models.Timing.MUST_NOW,
                 None,
-                "continue",
                 "accepted requirement",
-                "Current work remains bounded.",
                 2,
-                (query_models.ItemStatusAttempt("work-a-1", work_models.AttemptState.ACTIVE, None, None),),
+                query_models.IntakeContext("original-context", "continue", "Current work remains bounded."),
+                (
+                    query_models.ItemStatusAttempt(
+                        "work-a-1", work_models.AttemptState.ACTIVE, active.branch, None, None
+                    ),
+                ),
+                query_models.NoReviewVerdict(),
+                None,
                 None,
             ),
             live,
         )
         self.assertEqual(
             query_models.ItemStatus(
-                "pinboard-item-status/v1",
+                "pinboard-item-status/v2",
                 "sqlite-v7",
                 "12",
                 "work-b",
@@ -271,9 +277,10 @@ class SQLiteQueriesTest(unittest.TestCase):
                 "accepted completion",
                 None,
                 None,
-                None,
-                None,
+                query_models.IntakeContext("original-context", None, None),
                 (),
+                query_models.NoReviewVerdict(),
+                None,
                 None,
             ),
             done,
@@ -305,10 +312,11 @@ class SQLiteQueriesTest(unittest.TestCase):
             )
 
             with self.subTest(terminal=terminal.value):
-                status = expect_success(project_item_status(store, terminal_item.item_id, SQLITE_NOW))
+                status = project_item_status(store, NoReadyCandidateReviews(), terminal_item.item_id, SQLITE_NOW)
+                assert isinstance(status, query_models.ItemStatus)
                 self.assertEqual(terminal.value, status.state.value)
                 self.assertEqual((), status.attempts)
-                self.assertIsNone(status.notes)
+                self.assertIsNone(status.intake_context.notes)
 
     def test_item_status_accepts_every_legal_item_and_current_attempt_shape(self) -> None:
         class Reader:
@@ -337,20 +345,35 @@ class SQLiteQueriesTest(unittest.TestCase):
             attempts = (
                 ()
                 if attempt_state is None
-                else (query_models.ItemStatusAttemptFacts(AttemptId("selected-1"), attempt_state, None, None),)
+                else (
+                    query_models.ItemStatusAttemptFacts(
+                        AttemptId("selected-1"), attempt_state, "codex/selected", None, None, None
+                    ),
+                )
             )
             facts = query_models.ItemStatusFacts(
                 12,
                 query_models.ItemStatusItemFacts(
-                    WorkItemId("selected"), item_state, work_models.Timing.MUST_NOW, None, "continue", "source", None, 1
+                    WorkItemId("selected"),
+                    item_state,
+                    work_models.Timing.MUST_NOW,
+                    None,
+                    "continue",
+                    "source",
+                    None,
+                    1,
+                    4,
                 ),
                 "Selected work",
                 attempts,
                 None,
+                None,
             )
 
             with self.subTest(item_state=item_state.value, attempt_state=attempt_state):
-                status = project_item_status(Reader(facts), WorkItemId("selected"), SQLITE_NOW)
+                status = project_item_status(
+                    Reader(facts), NoReadyCandidateReviews(), WorkItemId("selected"), SQLITE_NOW
+                )
 
             self.assertIsInstance(status, query_models.ItemStatus)
             assert isinstance(status, query_models.ItemStatus)
@@ -381,9 +404,10 @@ class SQLiteQueriesTest(unittest.TestCase):
             "source",
             "notes",
             3,
+            4,
         )
         attempt = query_models.ItemStatusAttemptFacts(
-            AttemptId("selected-1"), work_models.AttemptState.ACTIVE, "candidate-a", None
+            AttemptId("selected-1"), work_models.AttemptState.ACTIVE, "codex/selected", "candidate-a", None, None
         )
         for selected_item, attempts, expected, observed in (
             (item, (attempt,), "none", "active"),
@@ -394,10 +418,12 @@ class SQLiteQueriesTest(unittest.TestCase):
                 "none",
             ),
         ):
-            facts = query_models.ItemStatusFacts(12, selected_item, "Selected work", attempts, None)
+            facts = query_models.ItemStatusFacts(12, selected_item, "Selected work", attempts, None, None)
 
             with self.subTest(item_state=selected_item.state.value, observed=observed):
-                failure = project_item_status(Reader(facts), WorkItemId("selected"), SQLITE_NOW)
+                failure = project_item_status(
+                    Reader(facts), NoReadyCandidateReviews(), WorkItemId("selected"), SQLITE_NOW
+                )
 
             self.assertIsInstance(failure, DecisionFailure)
             assert isinstance(failure, DecisionFailure)
@@ -420,7 +446,7 @@ class SQLiteQueriesTest(unittest.TestCase):
     def test_item_status_rejects_an_unknown_canonical_identity(self) -> None:
         store = self._store()
 
-        missing = project_item_status(store, WorkItemId("missing-item"), SQLITE_NOW)
+        missing = project_item_status(store, NoReadyCandidateReviews(), WorkItemId("missing-item"), SQLITE_NOW)
 
         self.assertIsInstance(missing, DecisionFailure)
         assert isinstance(missing, DecisionFailure)

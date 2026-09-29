@@ -15,6 +15,8 @@ from pinboard.adapters.files.views import refresh_facts
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     candidate_snapshots,
+    queries,
+    query_models,
     stored_state,
     work_brief_models,
     work_briefs,
@@ -26,6 +28,8 @@ from pinboard.domain.errors import (
     ChangedSurface,
     EffectDisposition,
     FailureDetails,
+    FailureFact,
+    FailureMismatch,
     RetryDisposition,
 )
 from pinboard.domain.identifiers import AttemptId
@@ -41,12 +45,44 @@ def _item_status_failure(
     rendered = _details_json(details)
     return execution.OperationResult(
         {
-            "schema": "pinboard-mcp-item-status-result/v1",
+            "schema": "pinboard-mcp-item-status-result/v2",
             "status": "rejected",
             "code": code,
             "message": message,
             "state_changed": False,
             **rendered,
+        },
+        "rejected",
+        None,
+    )
+
+
+def _damaged_receipt_failure(schema: str, damaged: query_models.DamagedTransitionReceipt) -> execution.OperationResult:
+    """Name a consumed receipt whose outcome does not decode, with a diagnosis-only next step."""
+
+    return execution.OperationResult(
+        {
+            "schema": schema,
+            "status": "rejected",
+            "code": "TRANSITION_RECEIPT_DAMAGED",
+            "message": queries.damaged_receipt_message(damaged),
+            "state_changed": False,
+            **_details_json(
+                FailureDetails(
+                    observed=(
+                        FailureFact("attempt_id", str(damaged.attempt_id)),
+                        FailureFact("history_id", int(damaged.history_id)),
+                        FailureFact("committed_at", damaged.committed_at.isoformat()),
+                        FailureFact("action_kind", damaged.action_kind.value),
+                    ),
+                    mismatches=(FailureMismatch("receipt", "decodable current-format receipt", damaged.defect),),
+                    retry=RetryDisposition.DO_NOT_RETRY,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                )
+            ),
+            "recovery": queries.damaged_receipt_recovery(damaged),
         },
         "rejected",
         None,

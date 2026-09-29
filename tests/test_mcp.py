@@ -69,7 +69,7 @@ from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointPackageSupport
 from tests.domain_support import action
 from tests.native_support import call_advertised_tool, call_native_tool
-from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
+from tests.support import SQLITE_NOW, NoReadyCandidateReviews, complete_sqlite_state, initialize_store
 from tests.test_proposals import proposal as proposal_input
 from tests.work_brief_support import example_work_brief, needs_correction_review, work_a_brief, work_c_brief
 
@@ -87,6 +87,7 @@ def _mcp_arguments(tool: str, request: Mapping[str, contracts.JsonValue]) -> dic
         mcp_server.TRANSITION_TOOL,
         mcp_server.ORDER_TOOL,
         mcp_server.PARALLEL_PREVIEW_TOOL,
+        mcp_server.ITEM_STATUS_TOOL,
     }:
         return {"request": dict(request)}
     return dict(request)
@@ -894,14 +895,18 @@ class McpTransportTest(unittest.TestCase):
                 executor,
                 mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
             )
-            accepted = await server.call_tool(mcp_server.ITEM_STATUS_TOOL, common | {"item_id": "work-a"})
-            invalid_path = await server.call_tool(mcp_server.ITEM_STATUS_TOOL, common | {"item_id": ".."})
+            accepted = await server.call_tool(
+                mcp_server.ITEM_STATUS_TOOL, {"request": common | {"operation": "item", "item_id": "work-a"}}
+            )
+            invalid_path = await server.call_tool(
+                mcp_server.ITEM_STATUS_TOOL, {"request": common | {"operation": "item", "item_id": ".."}}
+            )
             invalid_identity = await server.call_tool(
                 mcp_server.ACTIONS_TOOL,
                 {"request": common | {"role": "worker", "lease_id": "lease ", "generation": 1}},
             )
             assert isinstance(accepted, CallToolResult) and isinstance(accepted.structured_content, dict)
-            self.assertEqual("pinboard-item-status/v1", accepted.structured_content["schema"])
+            self.assertEqual("pinboard-item-status/v2", accepted.structured_content["schema"])
             for result, code in (
                 (invalid_path, "ITEM_STATUS_INVALID"),
                 (invalid_identity, "ACTIONS_INVALID"),
@@ -2685,10 +2690,10 @@ class McpTransportTest(unittest.TestCase):
 
     def _expected_bytes(self, roots: DurableRoots, item_id: str) -> bytes:
         projected = queries.project_item_status(
-            SQLiteWorkStore(roots.database_path), WorkItemId(item_id), datetime.now(UTC)
+            SQLiteWorkStore(roots.database_path), NoReadyCandidateReviews(), WorkItemId(item_id), datetime.now(UTC)
         )
-        if isinstance(projected, DecisionFailure):
-            raise AssertionError(projected.message)
+        if not isinstance(projected, query_models.ItemStatus):
+            raise AssertionError(str(projected))
         return msgspec.json.encode(projected)
 
     def test_action_and_continuation_results_reject_cross_correlated_content(self) -> None:  # noqa: PLR0915 - one correlated contract matrix
@@ -3575,9 +3580,7 @@ class McpTransportTest(unittest.TestCase):
         original_cancel = mcp_execution.CancellationToken.cancel
 
         def controlled_read(
-            _project_root: str,
-            _work_root: str,
-            _item_id: str,
+            _raw: Mapping[str, contracts.JsonValue],
             token: mcp_execution.CancellationToken,
         ) -> mcp_execution.OperationResult:
             nonlocal call_count
@@ -3653,7 +3656,14 @@ class McpTransportTest(unittest.TestCase):
                 server_tasks.start_soon(run_server)
                 async with client_send, ClientSession(client_receive, client_send) as session:
                     await session.initialize()
-                    arguments = {"project_root": "/project", "work_root": "/work", "item_id": "item"}
+                    arguments = {
+                        "request": {
+                            "project_root": "/project",
+                            "work_root": "/work",
+                            "operation": "item",
+                            "item_id": "item",
+                        }
+                    }
                     with (
                         patch.object(mcp_reads, "_read_item_status", controlled_read),
                         patch.object(executor, "submit", observed_submit),
@@ -3795,17 +3805,19 @@ class McpTransportTest(unittest.TestCase):
                 {
                     "project_root": str(first_project),
                     "work_root": str(first_roots.work_root),
+                    "operation": "item",
                     "item_id": "work-a",
                 },
                 {
                     "project_root": str(second_project),
                     "work_root": str(second_roots.work_root),
+                    "operation": "item",
                     "item_id": "work-c",
                 },
             )
             with patch.object(mcp_common, "compose_store", compose):
                 first, second = await asyncio.gather(
-                    *(server.call_tool(mcp_server.ITEM_STATUS_TOOL, value) for value in arguments)
+                    *(server.call_tool(mcp_server.ITEM_STATUS_TOOL, {"request": value}) for value in arguments)
                 )
             if not isinstance(first, CallToolResult) or not isinstance(second, CallToolResult):
                 raise AssertionError("The representative tool returned an unexpected MCP result.")
@@ -4040,7 +4052,7 @@ class McpTransportTest(unittest.TestCase):
         requests = (
             (
                 mcp_server.ITEM_STATUS_TOOL,
-                {"project_root": "/project", "work_root": "/work", "item_id": "work-a"},
+                {"project_root": "/project", "work_root": "/work", "operation": "item", "item_id": "work-a"},
                 "ITEM_STATUS_INVALID",
             ),
             (
@@ -4224,9 +4236,7 @@ class McpTransportTest(unittest.TestCase):
         )
 
         def contradictory_result(
-            _project_root: str,
-            _work_root: str,
-            _item_id: str,
+            _raw: Mapping[str, contracts.JsonValue],
             _token: mcp_execution.CancellationToken,
         ) -> mcp_execution.OperationResult:
             return mcp_execution.OperationResult(
@@ -4254,7 +4264,14 @@ class McpTransportTest(unittest.TestCase):
                 _run_async(
                     server.call_tool(
                         mcp_server.ITEM_STATUS_TOOL,
-                        {"project_root": "/project", "work_root": "/work", "item_id": "item"},
+                        {
+                            "request": {
+                                "project_root": "/project",
+                                "work_root": "/work",
+                                "operation": "item",
+                                "item_id": "item",
+                            }
+                        },
                     )
                 )
         finally:
@@ -4328,39 +4345,22 @@ class McpTransportTest(unittest.TestCase):
                 initialized = await session.initialize()
                 self.assertTrue(initialized.instructions and initialized.instructions.strip())
                 tools = await session.list_tools()
+                roots_request = {"project_root": str(project), "work_root": str(roots.work_root)}
                 result = await session.call_tool(
                     mcp_server.ITEM_STATUS_TOOL,
-                    {
-                        "project_root": str(project),
-                        "work_root": str(roots.work_root),
-                        "item_id": "work-a",
-                    },
+                    {"request": {**roots_request, "operation": "item", "item_id": "work-a"}},
                 )
                 rejected = await session.call_tool("unsupported_tool", {})
                 invalid = await session.call_tool(
                     mcp_server.ITEM_STATUS_TOOL,
-                    {
-                        "project_root": str(project),
-                        "work_root": str(roots.work_root),
-                        "item_id": "",
-                    },
+                    {"request": {**roots_request, "operation": "item", "item_id": ""}},
                 )
                 missing = await session.call_tool(
                     mcp_server.ITEM_STATUS_TOOL,
-                    {
-                        "project_root": str(project),
-                        "work_root": str(roots.work_root),
-                        "item_id": "missing-item",
-                    },
+                    {"request": {**roots_request, "operation": "item", "item_id": "missing-item"}},
                 )
                 unknown_field = await session.call_tool(
-                    mcp_server.ITEM_STATUS_TOOL,
-                    {
-                        "project_root": str(project),
-                        "work_root": str(roots.work_root),
-                        "item_id": "work-a",
-                        "unknown": True,
-                    },
+                    mcp_server.ITEM_STATUS_TOOL, {**roots_request, "item_id": "work-a"}
                 )
                 return result, tuple(tools.tools), rejected, invalid, missing, unknown_field
 
@@ -4403,7 +4403,6 @@ class McpTransportTest(unittest.TestCase):
         expected_required = {
             mcp_server.DISPATCH_TOOL: {"project_root", "work_root", "dispatch"},
             mcp_server.REVIEW_JOB_TOOL: {"project_root", "work_root", "review"},
-            mcp_server.ITEM_STATUS_TOOL: {"project_root", "work_root", "item_id"},
             mcp_server.PROPOSAL_CREATE_TOOL: {
                 "project_root",
                 "work_root",
@@ -4427,7 +4426,9 @@ class McpTransportTest(unittest.TestCase):
             self.assertIn("anyOf", tool.output_schema)
             self.assertIn("$defs", tool.output_schema)
         item_schema = tools_by_name[mcp_server.ITEM_STATUS_TOOL].input_schema
-        self.assertIn("pattern", item_schema["properties"]["item_id"])
+        self.assertEqual(["request"], item_schema["required"])
+        self.assertIn("pattern", item_schema["$defs"]["ItemStatusItemRequest"]["properties"]["item_id"])
+        self.assertIn("pattern", item_schema["$defs"]["ItemStatusBranchRequest"]["properties"]["branch"])
         proposal_schema = tools_by_name[mcp_server.PROPOSAL_CREATE_TOOL].input_schema
         self.assertEqual("#/$defs/Proposal", proposal_schema["properties"]["proposal"]["$ref"])
         self.assertFalse(proposal_schema["$defs"]["Proposal"]["additionalProperties"])

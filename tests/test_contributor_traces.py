@@ -48,7 +48,14 @@ class ContributorTraceTest(unittest.TestCase):
                     server.ITEM_STATUS_TOOL,
                     str(project),
                     forbidden_callback,
-                    arguments={"project_root": str(project), "work_root": str(work_root), "item_id": "one"},
+                    arguments={
+                        "request": {
+                            "project_root": str(project),
+                            "work_root": str(work_root),
+                            "operation": "item",
+                            "item_id": "one",
+                        }
+                    },
                     capture=execution.AutomaticCapture(common.select_capture_item),
                 )
             finally:
@@ -377,7 +384,14 @@ class ContributorTraceTest(unittest.TestCase):
                     await session.initialize()
                     result = await session.call_tool(
                         server.ITEM_STATUS_TOOL,
-                        {"project_root": str(worktree), "work_root": str(primary / ".pinboard"), "item_id": "missing"},
+                        {
+                            "request": {
+                                "project_root": str(worktree),
+                                "work_root": str(primary / ".pinboard"),
+                                "operation": "item",
+                                "item_id": "missing",
+                            }
+                        },
                     )
                     self.assertFalse(result.is_error)
                     assert isinstance(result.structured_content, dict)
@@ -503,9 +517,12 @@ class ContributorTraceTest(unittest.TestCase):
             selected_root = Path(temporary) / "selected-work-root"
             selected_root.mkdir()
             arguments: dict[str, JsonValue] = {
-                "project_root": str(worktree),
-                "work_root": str(selected_root),
-                "item_id": "missing",
+                "request": {
+                    "project_root": str(worktree),
+                    "work_root": str(selected_root),
+                    "operation": "item",
+                    "item_id": "missing",
+                }
             }
             called = 0
 
@@ -713,6 +730,7 @@ class ContributorTraceTest(unittest.TestCase):
             self.settings(primary, "off", {"work-a": "on"})
             examples: tuple[dict[str, JsonValue], ...] = (
                 {"item_id": "work-a"},
+                {"request": {"operation": "item", "item_id": "work-a"}},
                 {"brief": {"item_id": "work-a"}},
                 {"proposal": {"relation": {"item": "work-a"}}},
                 {"request": {"attempt_id": "work-a-1"}},
@@ -732,6 +750,15 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertIsNone(capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "another"}))
             self.assertIsNone(capture.resolve(str(Path(temporary)), {"work_root": str(work_root), "item_id": "work-a"}))
             self.assertIsNotNone(capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "work-a"}))
+            item_leaf: dict[str, JsonValue] = {
+                "request": {"work_root": str(work_root), "operation": "item", "item_id": "work-a"}
+            }
+            branch_leaf: dict[str, JsonValue] = {
+                "request": {"work_root": str(work_root), "operation": "branch", "branch": "codex/work-a"}
+            }
+            self.assertIsNone(common.select_capture_item(primary, str(work_root), branch_leaf))
+            self.assertIsNotNone(capture.resolve(str(worktree), item_leaf))
+            self.assertIsNone(capture.resolve(str(worktree), branch_leaf))
             self.settings(primary, "off", {"work-a": "invalid"})
             rejected = capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "work-a"})
             self.assertIsInstance(rejected, execution.OperationResult)
@@ -779,7 +806,9 @@ class ContributorTraceTest(unittest.TestCase):
                 patch.object(contributor_traces, "prune_traces", side_effect=OSError("retention unavailable")),
                 self.assertRaises(ImmutableFilePublishedError) as published,
             ):
-                capture.available("pinboard_item_status", {"item_id": "one"}, {"status": "ok"})
+                capture.available(
+                    "pinboard_item_status", {"request": {"operation": "item", "item_id": "one"}}, {"status": "ok"}
+                )
             self.assertEqual(FileIOErrorCode.FILE_PUBLISH_FAILED, published.exception.code)
             self.assertTrue(published.exception.path.is_file())
             self.assertEqual(1, len(tuple(directory.glob("pinboard-auto-mcp-*.json"))))
@@ -1019,7 +1048,14 @@ class ContributorTraceTest(unittest.TestCase):
                     await session.initialize()
                     result = await session.call_tool(
                         server.ITEM_STATUS_TOOL,
-                        {"project_root": str(primary), "work_root": str(primary / ".pinboard"), "item_id": "one"},
+                        {
+                            "request": {
+                                "project_root": str(primary),
+                                "work_root": str(primary / ".pinboard"),
+                                "operation": "item",
+                                "item_id": "one",
+                            }
+                        },
                     )
                     assert isinstance(result.structured_content, dict)
                     return result.is_error, result.structured_content
@@ -1045,9 +1081,12 @@ class ContributorTraceTest(unittest.TestCase):
                 async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
                     await session.initialize()
                     arguments = {
-                        "project_root": str(worktree),
-                        "work_root": str(primary / ".pinboard"),
-                        "item_id": "one",
+                        "request": {
+                            "project_root": str(worktree),
+                            "work_root": str(primary / ".pinboard"),
+                            "operation": "item",
+                            "item_id": "one",
+                        }
                     }
                     await session.call_tool(server.ITEM_STATUS_TOOL, arguments)
                     self.assertEqual(1, len(tuple(directory.glob("pinboard-auto-mcp-*.json"))))

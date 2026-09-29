@@ -342,7 +342,7 @@ def _transition_current_state_route(kind: decision_models.ActionKind) -> str:
         case decision_models.ActionSubjectKind.ATTEMPT:
             return "Inspect this attempt with pinboard_attempt_inspect and follow its next_operation; do not replay."
         case decision_models.ActionSubjectKind.ITEM:
-            return "Read this item with pinboard_item_status, then discover its current action; do not replay."
+            return "Read this item with pinboard_item_status operation item, then discover its current action; do not replay."
         case decision_models.ActionSubjectKind.PROPOSAL:
             return "Read the current proposal or item in pinboard_overview before another action; do not replay."
         case decision_models.ActionSubjectKind.LEDGER:

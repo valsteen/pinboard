@@ -45,10 +45,12 @@ from pinboard.adapters.sqlite.lifecycle import (
     NonterminalAttemptContextSelection,
     TerminalAttemptContextSelection,
     read_attempt_context,
+    read_branch_owners,
     read_current_definitions,
     read_item_status,
     read_parallel_preview_lifecycle,
-    read_pause_reasons,
+    read_recorded_pause_reasons,
+    reject_damaged_pause_receipt,
 )
 from pinboard.adapters.sqlite.lifecycle import (
     read_item_definition as select_item_definition,
@@ -144,7 +146,7 @@ def _read_generated_view_facts(
         )
     )
     selected_attempts = {link.item_id: link.attempt_id for link in attempt_links}
-    pause_reasons = read_pause_reasons(
+    pause_reasons = read_recorded_pause_reasons(
         connection, ((link.attempt_id, link.state, link.subject_revision) for link in attempt_links)
     )
     proposal_ids = tuple(
@@ -285,10 +287,10 @@ def _read_overview_proposals(
     return tuple(proposal for proposal_id in proposal_ids if (proposal := selected.get(proposal_id)) is not None)
 
 
-def _read_attempt_context_facts(
+def _read_attempt_inspection_facts(
     connection: sqlite3.Connection,
     attempt_id: AttemptId,
-) -> query_models.AttemptContextFacts | None:
+) -> query_models.AttemptContextFacts | query_models.DamagedTransitionReceipt | None:
     selected = read_attempt_context(connection, attempt_id)
     if selected is None:
         return None
@@ -300,6 +302,8 @@ def _read_attempt_context_facts(
                 selected.item_id,
             )
         case NonterminalAttemptContextSelection():
+            if isinstance(selected.pause_reason, query_models.DamagedTransitionReceipt):
+                return selected.pause_reason
             reference = read_brief_artifact_reference(connection, selected.brief_artifact_ref_id)
             if reference is None:
                 raise StorageError(
@@ -333,6 +337,18 @@ def _read_attempt_context_facts(
             )
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _read_attempt_context_facts(
+    connection: sqlite3.Connection,
+    attempt_id: AttemptId,
+) -> query_models.AttemptContextFacts | None:
+    """Read one attempt context for decision reads, which reject a damaged pause receipt as invalid state."""
+
+    selected = _read_attempt_inspection_facts(connection, attempt_id)
+    if isinstance(selected, query_models.DamagedTransitionReceipt):
+        reject_damaged_pause_receipt(selected)
+    return selected
 
 
 def _read_candidate_snapshot_context_facts(
@@ -698,8 +714,17 @@ class SQLiteWorkStore:
                     lifecycle.work_item,
                     lifecycle.definition_title,
                     lifecycle.attempts,
+                    lifecycle.closure,
                     preparation,
                 )
+        finally:
+            connection.close()
+
+    def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_branch_owners(connection, branch)
         finally:
             connection.close()
 
@@ -708,6 +733,16 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return _read_attempt_context_facts(connection, attempt_id)
+        finally:
+            connection.close()
+
+    def read_attempt_inspection_context(
+        self, attempt_id: AttemptId
+    ) -> query_models.AttemptContextFacts | query_models.DamagedTransitionReceipt | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return _read_attempt_inspection_facts(connection, attempt_id)
         finally:
             connection.close()
 

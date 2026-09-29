@@ -535,8 +535,8 @@ class PreparationAuthorityTest(unittest.TestCase):
         assert not isinstance(at_parallel, query_models.ParallelSelectionInvalid)
         self.assertFalse(before_parallel.safe)
         self.assertTrue(at_parallel.safe)
-        before_views = derive_expected_view_bytes(reloaded, {}, now=expires_at - timedelta(microseconds=1))
-        at_views = derive_expected_view_bytes(reloaded, {}, now=expires_at)
+        before_views = derive_expected_view_bytes(reloaded, {}, now=expires_at - timedelta(microseconds=1)).views
+        at_views = derive_expected_view_bytes(reloaded, {}, now=expires_at).views
         self.assertIn(b"- Preparation: active", before_views["items/work-c.md"])
         self.assertIn(b"- Preparation: expired", at_views["items/work-c.md"])
         self.assertNotEqual(before_views["items/work-c.md"], at_views["items/work-c.md"])

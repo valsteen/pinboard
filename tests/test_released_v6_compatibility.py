@@ -5,6 +5,7 @@ import io
 import json
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from contextlib import closing, redirect_stdout
@@ -14,16 +15,18 @@ from pathlib import Path
 from pinboard.adapters.sqlite.database import migrate_v6_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import queries, service, stored_state
+from pinboard.application import queries, query_models, service, stored_state
 from pinboard.application.artifacts import WorkBriefIdentity
 from pinboard.cli.entrypoint import main
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.decisions import available_actions
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId, HostId, LeaseId, TaskId, WorkItemId
+from pinboard.mcp import server as mcp_server
 from tests.decision_support import project_decision_snapshot
 from tests.domain_support import expect_success
-from tests.support import SQLITE_NOW
+from tests.native_support import call_advertised_tool
+from tests.support import SQLITE_NOW, NoReadyCandidateReviews
 
 FIXTURES = (
     ("intake", "54630c601c4dea4a6647453d6a678dd51a516c1b034cb5257ab7ed7e19a99ff3"),
@@ -74,7 +77,10 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                         if value.item_id == WorkItemId("intake-work")
                     ),
                 )
-                status = expect_success(queries.project_item_status(store, WorkItemId("intake-work"), SQLITE_NOW))
+                status = queries.project_item_status(
+                    store, NoReadyCandidateReviews(), WorkItemId("intake-work"), SQLITE_NOW
+                )
+                assert isinstance(status, query_models.ItemStatus)
                 self.assertEqual(stored_state.StoredWorkItemState.READY, status.state)
                 overview = queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW)
                 self.assertEqual("pinboard-overview/v6", overview.schema)
@@ -95,6 +101,24 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                     result = main(("--project-root", str(project), "--work-root", str(work_root), "status", "--json"))
                 self.assertEqual(0, result)
                 self.assertEqual(counts, json.loads(output.getvalue())["counts"])
+                subprocess.run(["git", "init", "--quiet"], cwd=project, check=True)
+                roots = {"project_root": str(project), "work_root": str(work_root)}
+                terminal = call_advertised_tool(
+                    mcp_server.ITEM_STATUS_TOOL, {"request": {**roots, "operation": "item", "item_id": "work-b"}}
+                )
+                self.assertEqual(
+                    ("superseded", None, []), (terminal["state"], terminal["closure"], terminal["attempts"])
+                )
+                active = call_advertised_tool(
+                    mcp_server.ITEM_STATUS_TOOL, {"request": {**roots, "operation": "item", "item_id": "work-a"}}
+                )
+                self.assertEqual({"kind": "none"}, active["review_verdict"])
+                attempts = active["attempts"]
+                assert isinstance(attempts, list)
+                self.assertEqual(
+                    [("work-a-1", "codex/work-a")],
+                    [(attempt["attempt_id"], attempt["branch"]) for attempt in attempts if isinstance(attempt, dict)],
+                )
 
     def test_raw_intake_and_ready_prepare_and_activate_from_a_fresh_store(self) -> None:
         for name, _digest in FIXTURES:

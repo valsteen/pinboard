@@ -7,9 +7,20 @@ from typing import Annotated, Literal, assert_never
 
 import msgspec
 
-from pinboard.application import artifacts, stored_state
+from pinboard.application import artifacts, released_v6_compatibility, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, LeaseId, ProposalId, TaskId, WorkItemId
+from pinboard.domain.identifiers import (
+    ActionId,
+    ArtifactRefId,
+    AttemptId,
+    HistoryId,
+    HistorySubjectId,
+    HostId,
+    LeaseId,
+    ProposalId,
+    TaskId,
+    WorkItemId,
+)
 from pinboard.domain.ledger import LedgerSnapshot
 
 
@@ -62,7 +73,7 @@ class ItemProjectionFacts:
     overview: OverviewItem | None
     definition: stored_state.ItemDefinitionRevision
     review_history: tuple[stored_state.StoredTransitionReceipt, ...]
-    pause_reason: str | None
+    pause_reason: RecordedPauseReason
 
 
 @dataclass(frozen=True, slots=True)
@@ -660,8 +671,75 @@ class CompletionRecoveryRequired:
     reason: str
 
 
-type ItemStatusSchema = Literal["pinboard-item-status/v1"]
+type ItemStatusSchema = Literal["pinboard-item-status/v2"]
 type ItemStatusAuthority = Literal["sqlite-v7"]
+
+
+type DamagedReceiptActionKind = Literal[
+    decision_models.ActionKind.PAUSE,
+    decision_models.ActionKind.REBIND_ATTEMPT,
+    decision_models.ActionKind.RETURN_FOR_CORRECTION,
+    decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE,
+    decision_models.ActionKind.ACCEPT_CHECKPOINT,
+]
+
+
+class DamagedReceiptDiagnosis(Enum):
+    """Where a damaged consumed receipt can be diagnosed without repair."""
+
+    VALIDATION = "validation"
+    HUMAN = "human"
+
+
+@dataclass(frozen=True, slots=True)
+class DamagedTransitionReceipt:
+    """A consumed receipt whose columns decode but whose current-format outcome or input does not."""
+
+    attempt_id: AttemptId
+    history_id: HistoryId
+    committed_at: datetime
+    action_kind: DamagedReceiptActionKind
+    defect: str
+
+
+type RecordedPauseReason = str | DamagedTransitionReceipt | None
+
+
+@dataclass(frozen=True, slots=True)
+class ConsumedTransitionReceipt:
+    """One selected transition-history row with its stored JSON text still undecoded."""
+
+    history_id: HistoryId
+    project_revision: int
+    action_id: ActionId
+    action_kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind
+    subject_id: HistorySubjectId
+    artifact_ref_id: ArtifactRefId | None
+    authorization: decision_models.AuthorizationKind
+    actor_task_id: TaskId | None
+    actor_host_id: HostId | None
+    input_schema: str
+    input_json: str
+    outcome_schema: str
+    outcome_json: str
+    committed_at: datetime
+
+
+type ReviewActionKind = Literal[
+    decision_models.ActionKind.SUBMIT_REVIEW,
+    decision_models.ActionKind.RETURN_FOR_CORRECTION,
+    decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE,
+    decision_models.ActionKind.ACCEPT_CHECKPOINT,
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewEventFacts:
+    """An attempt's latest review-relevant receipt, its review action, and whether a rebind followed it."""
+
+    action_kind: ReviewActionKind
+    receipt: ConsumedTransitionReceipt
+    rebound_since: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -674,14 +752,33 @@ class ItemStatusItemFacts:
     source: str | None
     notes: str | None
     queue_position: int | None
+    subject_revision: int
 
 
 @dataclass(frozen=True, slots=True)
 class ItemStatusAttemptFacts:
     attempt_id: AttemptId
     state: work_models.AttemptState
+    branch: str
     candidate_revision: str | None
-    pause_reason: str | None
+    pause_reason: RecordedPauseReason
+    review_event: ReviewEventFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class ClosingAttemptFacts:
+    attempt_id: AttemptId
+    branch: str
+    candidate_revision: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemClosureFacts:
+    """Row columns of the receipt at a terminal item's subject revision."""
+
+    action_kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind
+    committed_at: datetime
+    closing_attempt: ClosingAttemptFacts | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -690,6 +787,7 @@ class ItemStatusLifecycleFacts:
     work_item: ItemStatusItemFacts
     definition_title: str | None
     attempts: tuple[ItemStatusAttemptFacts, ...]
+    closure: ItemClosureFacts | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -698,15 +796,99 @@ class ItemStatusFacts:
     work_item: ItemStatusItemFacts
     definition_title: str | None
     attempts: tuple[ItemStatusAttemptFacts, ...]
+    closure: ItemClosureFacts | None
     preparation: PreparationAuthorityStatus | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReadyCandidateReview:
+    candidate_revision: str
+    reference: stored_state.ArtifactReference
 
 
 class ItemStatusAttempt(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: str
     state: work_models.AttemptState
+    branch: str
     candidate_revision: str | None
     pause_reason: str | None
     """The reason recorded when the attempt was paused; null unless a recorded pause is current."""
+
+
+class IntakeContext(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Proposal-time next action and notes recorded at intake; original context, never the current plan."""
+
+    label: Literal["original-context"]
+    next_action: str | None
+    notes: str | None
+
+
+class NoReviewVerdict(msgspec.Struct, tag="none", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    pass
+
+
+class ReturnedForCorrectionVerdict(
+    msgspec.Struct, tag="returned-for-correction", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    history_id: int
+    reason: str | None
+    rebound_since_return: bool
+    """True when a rebind followed the return: the verdict is then history, not correction authority."""
+
+
+class CandidateReviewArtifact(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    artifact_ref_id: int
+    selector: str
+    sha256: str
+    size_bytes: int
+    accepted_revision: int
+
+
+class ReadyReviewVerdict(msgspec.Struct, tag="ready", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    candidate_revision: str
+    candidate_review: CandidateReviewArtifact
+
+
+class AcceptedAndContinuedVerdict(
+    msgspec.Struct, tag="accepted-and-continued", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    evidence: str | None
+
+
+class CheckpointAcceptedVerdict(
+    msgspec.Struct, tag="checkpoint-accepted", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    checkpoint: str | None
+
+
+type ReviewVerdict = (
+    NoReviewVerdict
+    | ReturnedForCorrectionVerdict
+    | ReadyReviewVerdict
+    | AcceptedAndContinuedVerdict
+    | CheckpointAcceptedVerdict
+)
+
+
+class ItemClosureAction(Enum):
+    COMPLETE = "complete"
+    CLOSE = "close"
+    MERGE_PROPOSAL = "merge-proposal"
+    CLOSE_PR_REVIEW = "close-pr-review"
+
+
+class ClosingAttempt(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: str
+    branch: str
+    candidate_revision: str | None
+
+
+class ItemClosure(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """When and by which action a terminal item closed; never a claim that its change was integrated."""
+
+    action: ItemClosureAction
+    committed_at: str
+    closing_attempt: ClosingAttempt | None
 
 
 class PreparationStatusView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -729,12 +911,42 @@ class ItemStatus(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     state: stored_state.StoredWorkItemState
     timing: work_models.Timing | None
     outcome_evidence: str | None
-    next_action: str | None
     source: str | None
-    notes: str | None
     queue_position: int | None
+    intake_context: IntakeContext
     attempts: tuple[ItemStatusAttempt, ...]
+    review_verdict: ReviewVerdict
+    closure: ItemClosure | None
     preparation: PreparationStatusView | None
+
+
+@dataclass(frozen=True, slots=True)
+class BranchOwnerFacts:
+    work_item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
+    attempt_id: AttemptId
+    attempt_state: work_models.AttemptState
+
+
+@dataclass(frozen=True, slots=True)
+class BranchOwnersFacts:
+    project_revision: int
+    owners: tuple[BranchOwnerFacts, ...]
+
+
+class BranchOwner(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: str
+    item_state: stored_state.StoredWorkItemState
+    attempt_id: str
+    attempt_state: work_models.AttemptState
+
+
+class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-branch-owners/v1"]
+    authority: ItemStatusAuthority
+    revision: str
+    branch: str
+    owners: Annotated[tuple[BranchOwner, ...], msgspec.Meta(min_length=1)]
 
 
 class ParallelSelection(Enum):

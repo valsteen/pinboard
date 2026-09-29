@@ -11,12 +11,11 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import pr_reviews, queries
-from pinboard.domain.errors import DecisionFailure
+from pinboard.application import pr_reviews, queries, query_models
 from pinboard.domain.identifiers import WorkItemId
 from pinboard.mcp import contracts
 from tests.native_support import call_native_tool
-from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, initialize_store
+from tests.support import SQLITE_NOW, JsonObject, NoReadyCandidateReviews, complete_sqlite_state, initialize_store
 
 
 class HumanOwnedPrReviewTest(unittest.TestCase):
@@ -155,10 +154,12 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
             self.assertEqual("unverified", started.remote_freshness)
             brief_history_id = started.brief_history_id
             assert brief_history_id is not None
-            item_status = queries.project_item_status(SQLiteWorkStore(roots.database_path), item_id, SQLITE_NOW)
-            self.assertNotIsInstance(item_status, DecisionFailure)
-            assert not isinstance(item_status, DecisionFailure)
+            item_status = queries.project_item_status(
+                SQLiteWorkStore(roots.database_path), NoReadyCandidateReviews(), item_id, SQLITE_NOW
+            )
+            assert isinstance(item_status, query_models.ItemStatus)
             self.assertEqual((), item_status.attempts)
+            self.assertEqual(query_models.NoReviewVerdict(), item_status.review_verdict)
 
             premature = action(
                 "round",

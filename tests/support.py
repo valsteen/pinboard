@@ -30,6 +30,14 @@ from tests.decision_support import project_decision_snapshot
 from tests.sqlite_support import insert_initial_state
 
 
+class NoReadyCandidateReviews:
+    """Status reader stand-in for tests whose attempts have no record-ready candidate review."""
+
+    def read_ready_candidate_review(self, attempt_id: AttemptId) -> query_models.ReadyCandidateReview | None:
+        del attempt_id
+        return None
+
+
 def mutation_allocation(state: stored_state.StoredWorkState) -> CheckpointMutationAllocation:
     return CheckpointMutationAllocation(
         state.lifecycle.project.revision,

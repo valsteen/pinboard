@@ -1,8 +1,8 @@
 from datetime import datetime
 
-from pinboard.application import stored_state
+from pinboard.application import query_models, stored_state
 from pinboard.application.actions import discover_current_actions
-from pinboard.application.queries import recorded_pause_reason
+from pinboard.application.queries import decode_recorded_pause_reason
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import AttemptId, CandidateId, LeaseId, ProposalId, WorkItemId
@@ -88,6 +88,23 @@ def _project_work_item(
         value.queue_position,
         value.outcome_evidence,
     )
+
+
+def _decision_pause_reason(
+    attempt: stored_state.StoredAttempt, latest: stored_state.StoredTransitionReceipt
+) -> str | None:
+    reason = decode_recorded_pause_reason(
+        attempt.attempt_id,
+        attempt.state,
+        latest.history_id,
+        latest.committed_at,
+        latest.action_kind,
+        latest.outcome_schema,
+        bytes(latest.outcome_payload),
+    )
+    if isinstance(reason, query_models.DamagedTransitionReceipt):
+        raise ValueError(reason.defect)
+    return reason
 
 
 def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime) -> LedgerSnapshot:
@@ -217,9 +234,7 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
                 attempt.brief_artifact_ref_id,
                 pause_reason=None
                 if (latest := receipts_by_revision.get(attempt.subject_revision)) is None
-                else recorded_pause_reason(
-                    attempt.state, latest.action_kind, latest.outcome_schema, bytes(latest.outcome_payload)
-                ),
+                else _decision_pause_reason(attempt, latest),
             )
             for attempt in state.lifecycle.attempts
         ),

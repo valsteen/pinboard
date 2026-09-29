@@ -57,12 +57,12 @@ class GeneratedViewsTest(unittest.TestCase):
         self.assertFalse((work_root / "views" / "history.md").exists())
         sparse_item = (work_root / "views" / "items" / "intake-work.md").read_text(encoding="utf-8")
         self.assertIn("- Source: none", sparse_item)
-        self.assertIn("- Notes: none", sparse_item)
+        self.assertIn("- Notes at intake: none", sparse_item)
         self.assertIn("- Current attempt: none", sparse_item)
         self.assertLess(sparse_item.index("## Current position"), sparse_item.index("## Record details"))
         populated_item = (work_root / "views" / "items" / "work-a.md").read_text(encoding="utf-8")
         self.assertIn("- Source: accepted requirement", populated_item)
-        self.assertIn("- Notes: Current work remains bounded.", populated_item)
+        self.assertIn("- Notes at intake: Current work remains bounded.", populated_item)
         self.assertIn("### Scope\n\n- The state becomes explicit.", populated_item)
         self.assertIn("### Evidence\n\n- artifacts/design.md", populated_item)
         self.assertIn(
@@ -80,8 +80,8 @@ class GeneratedViewsTest(unittest.TestCase):
             lifecycle=replace(state.lifecycle, project=replace(state.lifecycle.project, revision=13)),
         )
         self.assertEqual(
-            derive_expected_view_bytes(state, {}, now=SQLITE_NOW),
-            derive_expected_view_bytes(advanced, {}, now=SQLITE_NOW),
+            derive_expected_view_bytes(state, {}, now=SQLITE_NOW).views,
+            derive_expected_view_bytes(advanced, {}, now=SQLITE_NOW).views,
         )
 
     def test_item_view_labels_allowed_deferral(self) -> None:
@@ -109,7 +109,7 @@ class GeneratedViewsTest(unittest.TestCase):
             ),
         )
 
-        item = derive_expected_view_bytes(state, {}, now=SQLITE_NOW)["items/work-a.md"].decode()
+        item = derive_expected_view_bytes(state, {}, now=SQLITE_NOW).views["items/work-a.md"].decode()
         self.assertIn("- next-decision (deferral allowed): The next decision can run.", item)
 
     def test_post_commit_refresh_failure_is_a_repairable_warning(self) -> None:

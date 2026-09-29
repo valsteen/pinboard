@@ -82,7 +82,7 @@ An action names its subject once; its payload supplies the change specific to th
 
 - `proposal_create`, `brief_contract`, `brief_sources`, `brief_publish`, and `brief_review` preserve direction, construct the exact brief, select source evidence, and record independent brief findings.
 - `actions` exposes only legal current operations and their exact payloads. `preparation_authority` and `attempt_authority` fence who may prepare or implement; `dispatch` publishes verified launch instructions without granting that authority.
-- `artifact_verify` checks immutable accepted bytes. `candidate_observe` identifies the actual tracked working-tree candidate, and `review_job` binds that candidate, brief, result, and selected history into a separate reviewer launch.
+- `artifact_verify` checks immutable accepted bytes. `candidate_observe` identifies the actual tracked working-tree candidate. At submission, the worker can declare exact untracked local files to leave untouched during committed candidate checks and recovery. `review_job` binds the candidate, brief, result, and selected history into a separate reviewer launch.
 - `pr_review` records the brief, separate brief review, harness-observed commits, exact-head rounds, and human-directed close for a human-owned PR.
 - `attempt_inspect` exposes one attempt's current continuation, including a paused attempt's recorded reason or, for a favorably reviewed candidate, the repository reconciliation needed next. `candidate_restore` can restore its accepted candidate into an exact clean checkout, while `transition` alone applies a freshly discovered lifecycle mutation.
 

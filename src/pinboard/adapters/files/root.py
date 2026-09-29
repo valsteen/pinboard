@@ -223,22 +223,15 @@ def read_current_head_candidate(
     cwd: Path,
     candidate_revision: str,
     comparison_revision: str,
+    *,
+    excluded_untracked_paths: tuple[str, ...],
 ) -> CommittedCandidateObservation:
     """Read a clean exact-HEAD candidate from a comparison revision without changing Git."""
 
     current_head = _git_text(cwd, "rev-parse", "--verify", "HEAD")
     if current_head != candidate_revision:
         return DifferentHeadCandidate(candidate_revision, current_head)
-    status = _git_bytes(
-        cwd,
-        "--no-optional-locks",
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "--untracked-files=all",
-        unavailable_message=f"Cannot read the working-tree status at '{cwd}'.",
-    )
-    if status:
+    if _has_unexcluded_changes(_working_tree_status(cwd), excluded_untracked_paths):
         return DirtyHeadCandidate(candidate_revision)
     diff = _git_bytes(
         cwd,
@@ -264,6 +257,13 @@ def _working_tree_status(cwd: Path) -> bytes:
     )
 
 
+def _has_unexcluded_changes(status: bytes, excluded_untracked_paths: tuple[str, ...]) -> bool:
+    """Only exact untracked records qualify; tracked rename/copy records reject first."""
+
+    allowed = {b"?? " + path.encode() for path in excluded_untracked_paths}
+    return any(record not in allowed for record in status.split(b"\0") if record)
+
+
 def restore_working_tree_candidate(
     cwd: Path,
     *,
@@ -271,6 +271,7 @@ def restore_working_tree_candidate(
     preimage_revision: str,
     candidate: str,
     diff: bytes,
+    excluded_untracked_paths: tuple[str, ...],
 ) -> CandidateRestoreResult:
     """Apply one exact working-tree snapshot with index participation."""
 
@@ -281,10 +282,10 @@ def restore_working_tree_candidate(
         return CandidateRestoreRejection("wrong-head", branch, head)
     current = read_working_tree_candidate(cwd)
     if current.identity == candidate and current.diff == diff:
-        if any(record.startswith(b"?? ") for record in _working_tree_status(cwd).split(b"\0")):
+        if set(read_untracked_paths(cwd)) - set(excluded_untracked_paths):
             return CandidateRestoreRejection("dirty-working-tree", branch, head)
         return CandidateRestoreSuccess(False, candidate)
-    if _working_tree_status(cwd):
+    if _has_unexcluded_changes(_working_tree_status(cwd), excluded_untracked_paths):
         return CandidateRestoreRejection("dirty-working-tree", branch, head)
     applied = subprocess.run(
         ["git", "apply", "--index", "--binary", "-"],
@@ -318,13 +319,14 @@ def restore_commit_candidate(
     accepted_base_revision: str,
     candidate: str,
     diff: bytes,
+    excluded_untracked_paths: tuple[str, ...],
 ) -> CandidateRestoreResult:
     """Reuse or fast-forward one exact clean commit candidate."""
 
     branch, head = observe_checkout_identity(cwd)
     if branch != expected_branch:
         return CandidateRestoreRejection("wrong-branch", branch, head)
-    if _working_tree_status(cwd):
+    if _has_unexcluded_changes(_working_tree_status(cwd), excluded_untracked_paths):
         return CandidateRestoreRejection("dirty-working-tree", branch, head)
     if head not in {preimage_revision, candidate}:
         return CandidateRestoreRejection("wrong-head", branch, head)
@@ -365,7 +367,11 @@ def restore_commit_candidate(
             error.code,
             "Candidate restoration changed the checkout before exact commit verification failed.",
         ) from error
-    if restored_branch != expected_branch or restored_head != candidate or restored_status:
+    if (
+        restored_branch != expected_branch
+        or restored_head != candidate
+        or _has_unexcluded_changes(restored_status, excluded_untracked_paths)
+    ):
         raise CandidateRestoreAfterMutationError(
             RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
             "Candidate restoration changed the checkout but did not produce the exact clean commit.",

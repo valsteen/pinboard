@@ -639,7 +639,7 @@ class RebindAttemptCommand:
 @dataclass(frozen=True, slots=True)
 class SubmitReviewCommand:
     action: SubmitReviewAction
-    value: work_models.SubmitReviewInput
+    value: work_models.SubmitReviewInput | work_models.DeclaredSubmitReviewInput
 
 
 @dataclass(frozen=True, slots=True)

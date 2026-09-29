@@ -27,6 +27,7 @@ from pinboard.application import (
     brief_source_codec,
     brief_source_models,
     brief_sources,
+    candidate_snapshot_compatibility_models,
     candidate_snapshots,
     ports,
     queries,
@@ -201,6 +202,33 @@ def _read_correction_context(
         else None
     )
     snapshot = context.starting_snapshot
+    snapshot_fields = (
+        candidate_snapshots.candidate_kind(snapshot),
+        snapshot.attempt_id,
+        snapshot.item_id,
+        snapshot.candidate,
+        snapshot.branch,
+        snapshot.preimage_revision,
+        snapshot.accepted_base_revision,
+        snapshot.recorded_at,
+        base64.b64encode(snapshot.diff).decode("ascii"),
+    )
+    snapshot_view: contracts.CorrectionSnapshot
+    match snapshot:
+        case (
+            candidate_snapshots.DeclaredWorkingTreeCandidateSnapshot()
+            | candidate_snapshots.DeclaredCommitCandidateSnapshot()
+        ):
+            snapshot_view = contracts.DeclaredCorrectionSnapshot(*snapshot_fields, snapshot.excluded_untracked_paths)
+        case candidate_snapshots.WorkingTreeCandidateSnapshot():
+            snapshot_view = contracts.CorrectionSnapshotV2(*snapshot_fields)
+        case (
+            candidate_snapshots.CommitCandidateSnapshot()
+            | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot()
+        ):
+            snapshot_view = contracts.CorrectionSnapshotV1(*snapshot_fields)
+        case _ as unreachable:
+            assert_never(unreachable)
     result = contracts.CorrectionContextReady(
         "pinboard-correction-context/v1",
         "ready",
@@ -212,18 +240,7 @@ def _read_correction_context(
         hashlib.sha256(work_briefs.canonical_checkpoint_bytes(checkpoint)).hexdigest(),
         reviewed_set_sha256,
         context.starting_candidate,
-        contracts.CorrectionSnapshot(
-            snapshot.schema,
-            candidate_snapshots.candidate_kind(snapshot),
-            snapshot.attempt_id,
-            snapshot.item_id,
-            snapshot.candidate,
-            snapshot.branch,
-            snapshot.preimage_revision,
-            snapshot.accepted_base_revision,
-            snapshot.recorded_at,
-            base64.b64encode(snapshot.diff).decode("ascii"),
-        ),
+        snapshot_view,
         context.reuse_eligible,
         context.reuse_blockers,
         False,

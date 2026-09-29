@@ -132,7 +132,9 @@ class RootResolutionTest(unittest.TestCase):
         index = repository / ".git" / "index"
         original_index = index.read_bytes()
         os.utime(tracked, (1, 1))
-        observed = read_current_head_candidate(repository, candidate_revision, base_revision)
+        observed = read_current_head_candidate(
+            repository, candidate_revision, base_revision, excluded_untracked_paths=()
+        )
 
         self.assertIsInstance(observed, CurrentHeadCandidate)
         assert isinstance(observed, CurrentHeadCandidate)

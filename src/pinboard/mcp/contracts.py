@@ -783,6 +783,9 @@ type ReviseItemTransitionRequest = ProjectTransitionRequest[
 type SubmitReviewTransitionRequest = WorkerTransitionRequest[
     Literal["submit-review"], action_models.SubmitReviewInputPayload
 ]
+type DeclaredSubmitReviewTransitionRequest = WorkerTransitionRequest[
+    Literal["submit-review"], action_models.DeclaredSubmitReviewInputPayload
+]
 
 type TransitionRequest = (
     AcceptCheckpointTransitionRequest
@@ -806,6 +809,7 @@ type TransitionRequest = (
     | RetainTemporarilyTransitionRequest
     | ReviseItemTransitionRequest
     | SubmitReviewTransitionRequest
+    | DeclaredSubmitReviewTransitionRequest
 )
 
 
@@ -889,7 +893,16 @@ def decode_transition_request(raw: Mapping[str, JsonValue]) -> TransitionRequest
         case "revise-item":
             request = msgspec.convert(raw, type=TransitionEnvelope[ReviseItemTransitionRequest], strict=True).request
         case "submit-review":
-            request = msgspec.convert(raw, type=TransitionEnvelope[SubmitReviewTransitionRequest], strict=True).request
+            payload = inner.get("payload") if isinstance(inner, dict) else None
+            schema = payload.get("schema") if isinstance(payload, dict) else None
+            if schema is None:
+                request = msgspec.convert(
+                    raw, type=TransitionEnvelope[SubmitReviewTransitionRequest], strict=True
+                ).request
+            else:
+                request = msgspec.convert(
+                    raw, type=TransitionEnvelope[DeclaredSubmitReviewTransitionRequest], strict=True
+                ).request
         case _:
             raise ValueError(f"Action '{kind}' is not a supported MCP transition.")
     return request
@@ -1652,8 +1665,7 @@ class NonterminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, froz
     changed_surfaces: Empty
 
 
-class CorrectionSnapshot(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-candidate-snapshot/v1", "pinboard-candidate-snapshot/v2"]
+class _CorrectionSnapshotFields(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     candidate_kind: Literal["working-tree", "commit"]
     attempt_id: NonEmptyText
     item_id: NonEmptyText
@@ -1663,6 +1675,42 @@ class CorrectionSnapshot(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     accepted_base_revision: NonEmptyText
     recorded_at: NonEmptyText
     diff_base64: str
+
+
+class CorrectionSnapshotV1(
+    _CorrectionSnapshotFields,
+    tag="pinboard-candidate-snapshot/v1",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    pass
+
+
+class CorrectionSnapshotV2(
+    _CorrectionSnapshotFields,
+    tag="pinboard-candidate-snapshot/v2",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    pass
+
+
+class DeclaredCorrectionSnapshot(
+    _CorrectionSnapshotFields,
+    tag="pinboard-candidate-snapshot/v3",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    excluded_untracked_paths: tuple[action_models.CanonicalRepoRelativeFile, ...]
+
+    def __post_init__(self) -> None:
+        action_models.require_canonical_excluded_paths(self.excluded_untracked_paths)
+
+
+type CorrectionSnapshot = CorrectionSnapshotV1 | CorrectionSnapshotV2 | DeclaredCorrectionSnapshot
 
 
 class CorrectionContextReady(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):

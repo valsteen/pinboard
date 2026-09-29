@@ -15,6 +15,7 @@ def restore_working_tree_candidate(
         preimage_revision=preimage_revision,
         candidate=working_tree_identity(preimage_revision, diff),
         diff=diff,
+        excluded_untracked_paths=(),
     )
     if isinstance(restored, root.CandidateRestoreRejection):
         return restored

@@ -239,6 +239,12 @@ class SubmitReviewInput:
 
 
 @dataclass(frozen=True, slots=True)
+class DeclaredSubmitReviewInput:
+    candidate: CandidateId
+    excluded_untracked_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ReasonInput:
     reason: str
 

@@ -58,24 +58,33 @@ def observe_candidate_lineage(
     evidence: candidate_snapshots.CandidateSnapshotEvidence,
 ) -> DecisionResult[query_models.CandidateLineage]:
     snapshot = evidence.snapshot
+    excluded = candidate_snapshots.excluded_untracked_paths(snapshot)
     try:
         branch, head = root.observe_candidate_checkout_identity(source_checkout)
         if branch != snapshot.branch:
             return query_models.CandidateLineage.DRIFTED
         match snapshot:
-            case candidate_snapshots.WorkingTreeCandidateSnapshot():
+            case (
+                candidate_snapshots.WorkingTreeCandidateSnapshot()
+                | candidate_snapshots.DeclaredWorkingTreeCandidateSnapshot()
+            ):
                 current = root.read_working_tree_candidate(source_checkout)
                 if current.preimage_revision == snapshot.preimage_revision and current.diff == snapshot.diff:
                     return query_models.CandidateLineage.WORKING_TREE_CURRENT
-                committed = root.read_current_head_candidate(source_checkout, head, snapshot.preimage_revision)
+                committed = root.read_current_head_candidate(
+                    source_checkout, head, snapshot.preimage_revision, excluded_untracked_paths=excluded
+                )
                 if isinstance(committed, root.CurrentHeadCandidate) and committed.diff == snapshot.diff:
                     return query_models.CandidateLineage.COMMIT_CURRENT
                 return query_models.CandidateLineage.DRIFTED
             case candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot():
                 return query_models.CandidateLineage.DRIFTED
-            case candidate_snapshots.CommitCandidateSnapshot():
+            case candidate_snapshots.CommitCandidateSnapshot() | candidate_snapshots.DeclaredCommitCandidateSnapshot():
                 current = root.read_current_head_candidate(
-                    source_checkout, snapshot.candidate, snapshot.accepted_base_revision
+                    source_checkout,
+                    snapshot.candidate,
+                    snapshot.accepted_base_revision,
+                    excluded_untracked_paths=excluded,
                 )
                 if isinstance(current, root.CurrentHeadCandidate) and current.diff == snapshot.diff:
                     return query_models.CandidateLineage.COMMIT_CURRENT
@@ -101,15 +110,20 @@ def restore_candidate(
     if isinstance(evidence, DecisionFailure):
         return evidence
     snapshot = evidence.snapshot
+    excluded = candidate_snapshots.excluded_untracked_paths(snapshot)
     try:
         match snapshot:
-            case candidate_snapshots.WorkingTreeCandidateSnapshot():
+            case (
+                candidate_snapshots.WorkingTreeCandidateSnapshot()
+                | candidate_snapshots.DeclaredWorkingTreeCandidateSnapshot()
+            ):
                 restored = root.restore_working_tree_candidate(
                     source_checkout,
                     expected_branch=snapshot.branch,
                     preimage_revision=snapshot.preimage_revision,
                     candidate=snapshot.candidate,
                     diff=snapshot.diff,
+                    excluded_untracked_paths=excluded,
                 )
             case candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot():
                 restored = candidate_compatibility.restore_working_tree_candidate(
@@ -119,7 +133,7 @@ def restore_candidate(
                     candidate=snapshot.candidate,
                     diff=snapshot.diff,
                 )
-            case candidate_snapshots.CommitCandidateSnapshot():
+            case candidate_snapshots.CommitCandidateSnapshot() | candidate_snapshots.DeclaredCommitCandidateSnapshot():
                 restored = root.restore_commit_candidate(
                     source_checkout,
                     expected_branch=snapshot.branch,
@@ -127,6 +141,7 @@ def restore_candidate(
                     accepted_base_revision=snapshot.accepted_base_revision,
                     candidate=snapshot.candidate,
                     diff=snapshot.diff,
+                    excluded_untracked_paths=excluded,
                 )
             case _ as unreachable:
                 assert_never(unreachable)

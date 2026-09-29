@@ -666,7 +666,10 @@ def _read_correction_snapshot(
     branch, head = root.observe_checkout_identity(source_checkout_root)
     checkout_mismatches = [FailureMismatch("checkout_branch", snapshot.branch, branch)]
     match snapshot:
-        case candidate_snapshots.WorkingTreeCandidateSnapshot():
+        case (
+            candidate_snapshots.WorkingTreeCandidateSnapshot()
+            | candidate_snapshots.DeclaredWorkingTreeCandidateSnapshot()
+        ):
             current = root.read_working_tree_candidate(source_checkout_root)
             checkout_mismatches.extend(
                 (
@@ -679,9 +682,12 @@ def _read_correction_snapshot(
                     ),
                 )
             )
-        case candidate_snapshots.CommitCandidateSnapshot():
+        case candidate_snapshots.CommitCandidateSnapshot() | candidate_snapshots.DeclaredCommitCandidateSnapshot():
             committed = root.read_current_head_candidate(
-                source_checkout_root, snapshot.candidate, snapshot.accepted_base_revision
+                source_checkout_root,
+                snapshot.candidate,
+                snapshot.accepted_base_revision,
+                excluded_untracked_paths=candidate_snapshots.excluded_untracked_paths(snapshot),
             )
             match committed:
                 case root.CurrentHeadCandidate():

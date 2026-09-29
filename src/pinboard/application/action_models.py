@@ -19,6 +19,20 @@ type Sha256 = Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
 type PositiveInt = Annotated[int, msgspec.Meta(ge=1)]
 type JsonSchema = dict[str, Any]
 type ActionAuthorization = Literal["observer", "project", "attempt", "preparation"]
+type CanonicalRepoRelativeFile = Annotated[
+    str,
+    msgspec.Meta(
+        pattern=(
+            r"\A(?:[^./\\\x00-\x1f\x7f\u2028\u2029*?\[\]]|\.[^./\\\x00-\x1f\x7f\u2028\u2029*?\[\]]|\.\.[^/\\\x00-\x1f\x7f\u2028\u2029*?\[\]])[^/\\\x00-\x1f\x7f\u2028\u2029*?\[\]]*"
+            r"(?:/(?:[^./\\\x00-\x1f\x7f\u2028\u2029*?\[\]]|\.[^./\\\x00-\x1f\x7f\u2028\u2029*?\[\]]|\.\.[^/\\\x00-\x1f\x7f\u2028\u2029*?\[\]])[^/\\\x00-\x1f\x7f\u2028\u2029*?\[\]]*)*\z"
+        )
+    ),
+]
+
+
+def require_canonical_excluded_paths(paths: tuple[str, ...]) -> None:
+    if paths != tuple(sorted(set(paths))):
+        raise ValueError("excluded_untracked_paths must be unique and sorted")
 
 
 def _require_unique_dependencies(depends_on: tuple[Identity, ...]) -> None:
@@ -42,6 +56,15 @@ class ActivateInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
 
 class SubmitReviewInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     candidate: NonEmptyLine
+
+
+class DeclaredSubmitReviewInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-candidate-declaration/v1"]
+    candidate: NonEmptyLine
+    excluded_untracked_paths: tuple[CanonicalRepoRelativeFile, ...]
+
+    def __post_init__(self) -> None:
+        require_canonical_excluded_paths(self.excluded_untracked_paths)
 
 
 class ReasonInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -158,6 +181,7 @@ type InputPayload = (
     | RebindAttemptInputPayload
     | ActivateInputPayload
     | SubmitReviewInputPayload
+    | DeclaredSubmitReviewInputPayload
     | ReasonInputPayload
     | BlockInputPayload
     | EvidenceInputPayload
@@ -238,6 +262,13 @@ def action_input_model(kind: decision_models.ActionKind) -> InputModel | None:  
 def action_payload_schema(kind: decision_models.ActionKind) -> JsonSchema | None:
     """Return the canonical strict payload schema for one action kind."""
 
+    if kind == decision_models.ActionKind.SUBMIT_REVIEW:
+        legacy = msgspec.json.schema(SubmitReviewInputPayload)
+        declared = msgspec.json.schema(DeclaredSubmitReviewInputPayload)
+        return {
+            "oneOf": [{"$ref": legacy["$ref"]}, {"$ref": declared["$ref"]}],
+            "$defs": {**legacy["$defs"], **declared["$defs"]},
+        }
     if kind == decision_models.ActionKind.COMPLETE:
         direct = msgspec.json.schema(EvidenceInputPayload)
         retained = msgspec.json.schema(CoveredCompleteInputPayload)

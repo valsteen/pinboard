@@ -71,6 +71,48 @@ def revise_item_payload_with_definition(*, omit_schema: bool = False, **changes:
 
 
 class TransitionInputTest(unittest.TestCase):
+    def test_declared_submission_preserves_exact_paths_and_rejects_noncanonical_input(self) -> None:
+        submit = action(decision_models.SubmitReviewAction, AttemptId("attempt-1"))
+        payload = {
+            "schema": "pinboard-candidate-declaration/v1",
+            "candidate": "candidate-1",
+            "excluded_untracked_paths": [".DS_Store", ".idea/workspace.xml"],
+        }
+        expected = decision_models.SubmitReviewCommand(
+            submit,
+            work_models.DeclaredSubmitReviewInput(CandidateId("candidate-1"), (".DS_Store", ".idea/workspace.xml")),
+        )
+        self.assertEqual(expected, parse_transition_input(submit, json.dumps(payload)))
+        typed = msgspec.json.decode(json.dumps(payload), type=action_models.DeclaredSubmitReviewInputPayload)
+        self.assertEqual(expected, parse_transition_input(submit, typed))
+        invalid_paths = (
+            "",
+            ".",
+            "..",
+            "/local",
+            "./local",
+            "a/../local",
+            "a//local",
+            "a/",
+            "a\\local",
+            "*.txt",
+            "a?",
+            "a[0]",
+            "a\x00",
+            "a\n",
+            "a\u2028",
+        )
+        invalid_payloads = (
+            *(payload | {"excluded_untracked_paths": [path]} for path in invalid_paths),
+            payload | {"excluded_untracked_paths": ["same", "same"]},
+            payload | {"excluded_untracked_paths": ["z", "a"]},
+            payload | {"schema": "unknown"},
+            payload | {"unknown": True},
+        )
+        for invalid in invalid_payloads:
+            with self.subTest(payload=invalid):
+                self.assertIsInstance(parse_transition_input(submit, json.dumps(invalid)), TransitionInputFailure)
+
     def test_selected_action_decodes_directly_to_its_exact_command(self) -> None:
         submit = action(decision_models.SubmitReviewAction, AttemptId("attempt-1"))
 

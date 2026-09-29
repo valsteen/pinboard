@@ -280,8 +280,17 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
                 return payload
             return decision_models.ReviseWorkItemCommand(action, _revise_item_input(payload))
         case decision_models.SubmitReviewAction():
-            if isinstance(payload := _decode(data, transition_models.SubmitReviewInputPayload), TransitionInputFailure):
-                return payload
+            payload = _decode(data, transition_models.SubmitReviewInputPayload)
+            if isinstance(payload, TransitionInputFailure):
+                declared = _decode(data, transition_models.DeclaredSubmitReviewInputPayload)
+                if isinstance(declared, TransitionInputFailure):
+                    return declared
+                return decision_models.SubmitReviewCommand(
+                    action,
+                    work_models.DeclaredSubmitReviewInput(
+                        CandidateId(declared.candidate), declared.excluded_untracked_paths
+                    ),
+                )
             return decision_models.SubmitReviewCommand(
                 action, work_models.SubmitReviewInput(CandidateId(payload.candidate))
             )

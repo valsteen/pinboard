@@ -218,6 +218,15 @@ def _representative_transition_requests() -> tuple[dict[str, contracts.JsonValue
             },
         ),
         ("submit-review", "worker", {"candidate": "candidate"}),
+        (
+            "submit-review",
+            "worker",
+            {
+                "schema": "pinboard-candidate-declaration/v1",
+                "candidate": "candidate",
+                "excluded_untracked_paths": [".DS_Store", ".idea/workspace.xml"],
+            },
+        ),
     )
     return tuple(
         {
@@ -2102,6 +2111,14 @@ class McpTransportTest(unittest.TestCase):
                     )
                 with self.assertRaises((msgspec.ValidationError, ValueError)):
                     contracts.decode_transition_request({"request": {**raw, "role": "observer"}})
+                if payload.get("schema") == "pinboard-candidate-declaration/v1":
+                    invalid_payloads: tuple[dict[str, contracts.JsonValue], ...] = (
+                        {**payload, "schema": "unknown"},
+                        {**payload, "excluded_untracked_paths": ["../outside"]},
+                    )
+                    for invalid in invalid_payloads:
+                        with self.assertRaises((msgspec.ValidationError, ValueError)):
+                            contracts.decode_transition_request({"request": {**raw, "payload": invalid}})
 
     def test_registered_transition_schema_advertises_exactly_the_decoder_leaves(self) -> None:
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)

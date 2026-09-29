@@ -17,8 +17,10 @@ from pinboard.adapters.files.root import (
     DifferentHeadCandidate,
     DirtyHeadCandidate,
     RootError,
+    WorkingTreeCandidate,
     observe_checkout_identity,
     read_current_head_candidate,
+    read_untracked_paths,
     read_working_tree_candidate,
 )
 from pinboard.adapters.lifecycle_operations import SelectedTransition
@@ -194,6 +196,72 @@ def _publication_terminal_result(
     return ArtifactTransitionSuccess(result, created)
 
 
+def _verify_review_exclusions(
+    source_checkout: Path,
+    value: work_models.SubmitReviewInput | work_models.DeclaredSubmitReviewInput,
+) -> DecisionResult[tuple[str, ...]]:
+    match value:
+        case work_models.SubmitReviewInput():
+            return ()
+        case work_models.DeclaredSubmitReviewInput():
+            try:
+                missing = set(value.excluded_untracked_paths) - set(read_untracked_paths(source_checkout))
+            except RootError as error:
+                return _unchanged(f"Cannot verify declared untracked paths: {error}", candidate=str(value.candidate))
+            if missing:
+                return _unchanged(
+                    f"Declared exclusions are not current untracked files: {', '.join(sorted(missing))}.",
+                    candidate=str(value.candidate),
+                )
+            return value.excluded_untracked_paths
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _review_snapshot(
+    context: query_models.NonterminalAttemptContextFacts,
+    value: work_models.SubmitReviewInput | work_models.DeclaredSubmitReviewInput,
+    branch: str,
+    recorded_at: datetime,
+    observed: WorkingTreeCandidate | CurrentHeadCandidate,
+) -> candidate_snapshots.CandidateSnapshot:
+    """Convert qualified Git facts and the selected input to their exact snapshot form."""
+
+    fields = (
+        str(context.attempt_id),
+        str(context.work_item_id),
+        str(value.candidate),
+        branch,
+        observed.preimage_revision if isinstance(observed, WorkingTreeCandidate) else context.base_revision,
+        context.base_revision,
+        recorded_at.isoformat(),
+        observed.diff,
+    )
+    match observed:
+        case WorkingTreeCandidate():
+            match value:
+                case work_models.DeclaredSubmitReviewInput():
+                    return candidate_snapshots.DeclaredWorkingTreeCandidateSnapshot(
+                        "pinboard-candidate-snapshot/v3", *fields, value.excluded_untracked_paths
+                    )
+                case work_models.SubmitReviewInput():
+                    return candidate_snapshots.WorkingTreeCandidateSnapshot("pinboard-candidate-snapshot/v2", *fields)
+                case _ as unreachable:
+                    assert_never(unreachable)
+        case CurrentHeadCandidate():
+            match value:
+                case work_models.DeclaredSubmitReviewInput():
+                    return candidate_snapshots.DeclaredCommitCandidateSnapshot(
+                        "pinboard-candidate-snapshot/v3", *fields, value.excluded_untracked_paths
+                    )
+                case work_models.SubmitReviewInput():
+                    return candidate_snapshots.CommitCandidateSnapshot("pinboard-candidate-snapshot/v1", *fields)
+                case _ as unreachable:
+                    assert_never(unreachable)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _observe_review_candidate(
     source_checkout: Path,
     store: ports.WorkStore,
@@ -210,6 +278,9 @@ def _observe_review_candidate(
         return _unchanged(f"Cannot observe the review candidate checkout: {error}", candidate=candidate)
     if branch != context.branch:
         return _unchanged("Review submission requires the attempt's exact branch.", candidate=candidate)
+    excluded = _verify_review_exclusions(source_checkout, command.value)
+    if isinstance(excluded, DecisionFailure):
+        return excluded
     if candidate.startswith("working-tree-state-sha256:"):
         try:
             observed = read_working_tree_candidate(source_checkout)
@@ -217,34 +288,16 @@ def _observe_review_candidate(
             return _unchanged(f"Cannot read the working-tree candidate: {error}", candidate=candidate)
         if observed.identity != candidate:
             return _unchanged("Review submission requires the exact current binary HEAD diff.", candidate=candidate)
-        return candidate_snapshots.WorkingTreeCandidateSnapshot(
-            "pinboard-candidate-snapshot/v2",
-            str(context.attempt_id),
-            str(context.work_item_id),
-            candidate,
-            branch,
-            observed.preimage_revision,
-            context.base_revision,
-            recorded_at.isoformat(),
-            observed.diff,
-        )
+        return _review_snapshot(context, command.value, branch, recorded_at, observed)
     try:
-        observed_commit = read_current_head_candidate(source_checkout, candidate, context.base_revision)
+        observed_commit = read_current_head_candidate(
+            source_checkout, candidate, context.base_revision, excluded_untracked_paths=excluded
+        )
     except RootError as error:
         return _unchanged(f"Cannot read the commit candidate: {error}", candidate=candidate)
     match observed_commit:
         case CurrentHeadCandidate():
-            return candidate_snapshots.CommitCandidateSnapshot(
-                "pinboard-candidate-snapshot/v1",
-                str(context.attempt_id),
-                str(context.work_item_id),
-                candidate,
-                branch,
-                context.base_revision,
-                context.base_revision,
-                recorded_at.isoformat(),
-                observed_commit.diff,
-            )
+            return _review_snapshot(context, command.value, branch, recorded_at, observed_commit)
         case DifferentHeadCandidate():
             return _unchanged(
                 "Review submission requires a commit candidate to match the exact current HEAD.", candidate=None
@@ -291,7 +344,7 @@ def _submit_review(
     )
     try:
         result = service.decide_and_commit_review_submission(
-            store, command, operation_time, reference, read_authorization_time=read_authorization_time
+            store, command, operation_time, reference, snapshot.schema, read_authorization_time=read_authorization_time
         )
     except StorageError as error:
         if error.invariant_violation:

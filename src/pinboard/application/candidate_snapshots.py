@@ -8,7 +8,7 @@ from typing import Annotated, Literal, Protocol, assert_never
 
 import msgspec
 
-from pinboard.application import candidate_snapshot_compatibility_models, query_models, stored_state
+from pinboard.application import action_models, candidate_snapshot_compatibility_models, query_models, stored_state
 from pinboard.application.candidate_identity import working_tree_identity
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId
@@ -57,11 +57,67 @@ class CommitCandidateSnapshot(
     diff: bytes
 
 
+class DeclaredWorkingTreeCandidateSnapshot(
+    msgspec.Struct, tag="working-tree", tag_field="candidate_kind", frozen=True, forbid_unknown_fields=True
+):
+    schema: Literal["pinboard-candidate-snapshot/v3"]
+    attempt_id: NonEmptyLine
+    item_id: NonEmptyLine
+    candidate: Annotated[str, msgspec.Meta(pattern=r"\Aworking-tree-state-sha256:[0-9a-f]{64}\z")]
+    branch: NonEmptyLine
+    preimage_revision: Annotated[str, msgspec.Meta(pattern=r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z")]
+    accepted_base_revision: NonEmptyLine
+    recorded_at: NonEmptyLine
+    diff: bytes
+    excluded_untracked_paths: tuple[action_models.CanonicalRepoRelativeFile, ...]
+
+    def __post_init__(self) -> None:
+        action_models.require_canonical_excluded_paths(self.excluded_untracked_paths)
+        if self.candidate != working_tree_identity(self.preimage_revision, self.diff):
+            raise ValueError("working-tree candidate identity must match its actual preimage and binary diff")
+
+
+class DeclaredCommitCandidateSnapshot(
+    msgspec.Struct, tag="commit", tag_field="candidate_kind", frozen=True, forbid_unknown_fields=True
+):
+    schema: Literal["pinboard-candidate-snapshot/v3"]
+    attempt_id: NonEmptyLine
+    item_id: NonEmptyLine
+    candidate: Annotated[str, msgspec.Meta(pattern=r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z")]
+    branch: NonEmptyLine
+    preimage_revision: NonEmptyLine
+    accepted_base_revision: NonEmptyLine
+    recorded_at: NonEmptyLine
+    diff: bytes
+    excluded_untracked_paths: tuple[action_models.CanonicalRepoRelativeFile, ...]
+
+    def __post_init__(self) -> None:
+        action_models.require_canonical_excluded_paths(self.excluded_untracked_paths)
+
+
 type CandidateSnapshot = (
     WorkingTreeCandidateSnapshot
     | CommitCandidateSnapshot
     | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot
+    | DeclaredWorkingTreeCandidateSnapshot
+    | DeclaredCommitCandidateSnapshot
 )
+
+
+def excluded_untracked_paths(snapshot: CandidateSnapshot) -> tuple[str, ...]:
+    """Convert the persisted declaration to the exact Git qualification allowance."""
+
+    match snapshot:
+        case DeclaredWorkingTreeCandidateSnapshot() | DeclaredCommitCandidateSnapshot():
+            return snapshot.excluded_untracked_paths
+        case (
+            WorkingTreeCandidateSnapshot()
+            | CommitCandidateSnapshot()
+            | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot()
+        ):
+            return ()
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 class CandidateSnapshotReceiptInput(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -93,9 +149,13 @@ def canonical_candidate_snapshot_bytes(snapshot: CandidateSnapshot) -> bytes:
 
 def candidate_kind(snapshot: CandidateSnapshot) -> Literal["working-tree", "commit"]:
     match snapshot:
-        case WorkingTreeCandidateSnapshot() | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot():
+        case (
+            WorkingTreeCandidateSnapshot()
+            | DeclaredWorkingTreeCandidateSnapshot()
+            | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot()
+        ):
             return "working-tree"
-        case CommitCandidateSnapshot():
+        case CommitCandidateSnapshot() | DeclaredCommitCandidateSnapshot():
             return "commit"
         case _ as unreachable:
             assert_never(unreachable)
@@ -103,11 +163,18 @@ def candidate_kind(snapshot: CandidateSnapshot) -> Literal["working-tree", "comm
 
 def decode_candidate_snapshot(value: bytes) -> CandidateSnapshot:
     try:
-        decoded = msgspec.json.decode(value, type=WorkingTreeCandidateSnapshot | CommitCandidateSnapshot, strict=True)
-    except msgspec.DecodeError:
         decoded = msgspec.json.decode(
-            value, type=candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot, strict=True
+            value, type=DeclaredWorkingTreeCandidateSnapshot | DeclaredCommitCandidateSnapshot, strict=True
         )
+    except msgspec.DecodeError:
+        try:
+            decoded = msgspec.json.decode(
+                value, type=WorkingTreeCandidateSnapshot | CommitCandidateSnapshot, strict=True
+            )
+        except msgspec.DecodeError:
+            decoded = msgspec.json.decode(
+                value, type=candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot, strict=True
+            )
     if canonical_candidate_snapshot_bytes(decoded) != value:
         raise ValueError("candidate snapshot is not canonical")
     return decoded
@@ -160,7 +227,8 @@ def verify_candidate_snapshot_context(
         bytes(receipt.input_payload)
     )
     if (
-        receipt.input_schema not in {"pinboard-candidate-snapshot/v1", "pinboard-candidate-snapshot/v2"}
+        receipt.input_schema
+        not in {"pinboard-candidate-snapshot/v1", "pinboard-candidate-snapshot/v2", "pinboard-candidate-snapshot/v3"}
         or msgspec.json.encode(receipt_input, order="sorted") != bytes(receipt.input_payload)
         or receipt_input.snapshot_artifact_ref_id != int(reference.artifact_ref_id)
     ):
@@ -220,7 +288,12 @@ def validate_candidate_snapshot_history(
             legacy_review_candidates.add((AttemptId(str(receipt.subject_id)), receipt.committed_at, legacy_candidate))
             continue
         if (
-            receipt.input_schema not in {"pinboard-candidate-snapshot/v1", "pinboard-candidate-snapshot/v2"}
+            receipt.input_schema
+            not in {
+                "pinboard-candidate-snapshot/v1",
+                "pinboard-candidate-snapshot/v2",
+                "pinboard-candidate-snapshot/v3",
+            }
             or receipt.artifact_ref_id is None
         ):
             raise ValueError("Every review submission must retain one accepted candidate snapshot.")

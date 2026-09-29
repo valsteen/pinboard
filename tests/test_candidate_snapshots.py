@@ -313,7 +313,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             ),
             self.assertRaises(RootError) as unreadable_diff,
         ):
-            read_current_head_candidate(source, head, preimage)
+            read_current_head_candidate(source, head, preimage, excluded_untracked_paths=())
         self.assertIn(f"comparison revision '{preimage}'", str(unreadable_diff.exception))
         self.assertNotIn(base, str(unreadable_diff.exception))
         with patch(
@@ -550,6 +550,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             preimage_revision=base,
             candidate=snapshot.candidate,
             diff=snapshot.diff,
+            excluded_untracked_paths=(),
         )
         self.assertEqual(CandidateRestoreSuccess(True, snapshot.candidate), restored)
         self.assertIn("M  tracked.txt", self.git(target, "status", "--short"))
@@ -563,6 +564,7 @@ class CandidateSnapshotTest(unittest.TestCase):
                     preimage_revision=base,
                     candidate=snapshot.candidate,
                     diff=snapshot.diff,
+                    excluded_untracked_paths=(),
                 )
             ).reason,
         )
@@ -575,6 +577,7 @@ class CandidateSnapshotTest(unittest.TestCase):
                 preimage_revision=base,
                 candidate=snapshot.candidate,
                 diff=snapshot.diff,
+                excluded_untracked_paths=(),
             ),
         )
 
@@ -627,6 +630,7 @@ class CandidateSnapshotTest(unittest.TestCase):
                     preimage_revision=base,
                     candidate=observed.identity,
                     diff=observed.diff,
+                    excluded_untracked_paths=(),
                 )
             ).reason,
         )
@@ -639,6 +643,7 @@ class CandidateSnapshotTest(unittest.TestCase):
                     preimage_revision="0" * 40,
                     candidate=observed.identity,
                     diff=observed.diff,
+                    excluded_untracked_paths=(),
                 )
             ).reason,
         )
@@ -652,6 +657,7 @@ class CandidateSnapshotTest(unittest.TestCase):
                     preimage_revision=base,
                     candidate=observed.identity,
                     diff=observed.diff,
+                    excluded_untracked_paths=(),
                 )
             ).reason,
         )
@@ -666,6 +672,7 @@ class CandidateSnapshotTest(unittest.TestCase):
                     preimage_revision=base,
                     candidate=f"working-tree-sha256:{hashlib.sha256(invalid_diff).hexdigest()}",
                     diff=invalid_diff,
+                    excluded_untracked_paths=(),
                 )
             ).reason,
         )
@@ -689,6 +696,7 @@ class CandidateSnapshotTest(unittest.TestCase):
                 preimage_revision=base,
                 candidate=observed.identity,
                 diff=observed.diff,
+                excluded_untracked_paths=(),
             )
 
     def test_commit_snapshot_fast_forwards_only_from_exact_clean_preimage(self) -> None:
@@ -735,6 +743,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             accepted_base_revision=base,
             candidate=candidate,
             diff=diff,
+            excluded_untracked_paths=(),
         )
         self.assertIsInstance(rejected, CandidateRestoreRejection)
 
@@ -780,6 +789,7 @@ class CandidateSnapshotTest(unittest.TestCase):
                 accepted_base_revision=base,
                 candidate=candidate_revision,
                 diff=candidate_diff,
+                excluded_untracked_paths=(),
             )
 
         self.assertEqual("wrong-branch", self.rejection(restore(expected_branch="other")).reason)

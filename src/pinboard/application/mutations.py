@@ -283,6 +283,7 @@ def project_review_submission_mutation(
     allocation: CheckpointMutationAllocation,
     decision: decision_models.TransitionDecision,
     candidate_snapshot: EvidenceArtifactRef,
+    candidate_snapshot_schema: str,
 ) -> ReviewSubmissionMutation:
     """Project one review submission and its exact snapshot acceptance."""
 
@@ -299,9 +300,7 @@ def project_review_submission_mutation(
             snapshot_id,
             None,
             None,
-            "pinboard-candidate-snapshot/v2"
-            if str(decision.change.protected_candidate_after).startswith("working-tree-state-sha256:")
-            else "pinboard-candidate-snapshot/v1",
+            candidate_snapshot_schema,
             work_models.CanonicalJson(
                 msgspec.json.encode(
                     {

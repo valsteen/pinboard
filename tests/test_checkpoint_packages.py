@@ -283,6 +283,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 preimage_revision=snapshot.preimage_revision,
                 candidate=snapshot.candidate,
                 diff=snapshot.diff,
+                excluded_untracked_paths=(),
             )
             self.assertEqual(CandidateRestoreSuccess(True, package.candidate), restored)
             self.assertEqual("committed surrounding state\n", (target / "context.txt").read_text())

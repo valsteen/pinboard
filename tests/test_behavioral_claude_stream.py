@@ -82,12 +82,14 @@ class FakeClaude:
         environment: Mapping[str, str],
         stdin: str | None,
         timeout_seconds: float,
+        window: processes.Window,
     ) -> processes.Completed:
+        window.timeout(timeout_seconds)
         self.calls.append(FakeCall(tool, list(arguments), cwd, dict(environment), stdin, timeout_seconds))
         if "--debug-file" in arguments:
             Path(arguments[arguments.index("--debug-file") + 1]).write_text(self.debug_log)
         stream = "\n".join(json.dumps(event) for event in self.streams.pop(0))
-        return processes.Completed(self.exit_codes.pop(0), stream + "\n", "")
+        return processes.Completed(self.exit_codes.pop(0), stream + "\n", "", False)
 
 
 class ClaudeTurnTest(unittest.TestCase):

@@ -35,6 +35,7 @@ class World:
     origin: Path
     scratch_board: Path | None
     launcher: Path
+    window: processes.Window
 
     @property
     def work_root(self) -> Path:
@@ -71,7 +72,7 @@ def agents_file(runtime: Runtime) -> str:
 
 
 def build_world(
-    root: Path, scenario: Scenario, runtime: Runtime, plugin_root: Path, owner: str
+    root: Path, scenario: Scenario, runtime: Runtime, plugin_root: Path, owner: str, window: processes.Window
 ) -> tuple[World, list[SeededItem]]:
     """Build and seed the scenario's world, then verify every declared item reached its declared state."""
     root.mkdir(parents=True, exist_ok=False)
@@ -82,16 +83,17 @@ def build_world(
         origin=root / "origin.git",
         scratch_board=root / "scratch-board" if scenario.world is WorldKind.MINIMAL else None,
         launcher=launcher,
+        window=window,
     )
     create_project(world, runtime)
-    init_board(world.launcher, world.project, None)
+    init_board(world.launcher, world.project, None, window)
     seeded: list[SeededItem] = []
     match scenario.world:
         case WorldKind.FULL:
             asyncio.run(_seed(world, owner, full=True))
             seeded += verify_seed(world, "project", world.work_root, FULL_WORLD_STATES)
         case WorldKind.MINIMAL:
-            init_board(world.launcher, world.project, world.scratch_board)
+            init_board(world.launcher, world.project, world.scratch_board, window)
         case _ as unreachable:
             raise AssertionError(unreachable)
     match scenario.world_extra:
@@ -110,7 +112,9 @@ def build_world(
 def verify_seed(
     world: World, board_name: Literal["project", "scratch"], work_root: Path, declared: dict[str, str]
 ) -> list[SeededItem]:
-    observed = asyncio.run(board.item_states(world.launcher, world.mcp_log, world.project, work_root, tuple(declared)))
+    observed = asyncio.run(
+        board.item_states(world.launcher, world.mcp_log, world.project, work_root, tuple(declared), world.window)
+    )
     mismatches = [f"{item} is {state}, not {declared[item]}" for item, state in observed if state != declared[item]]
     if mismatches:
         raise SeedFailure(f"the seeded {board_name} board differs from the world facts: {'; '.join(mismatches)}")
@@ -121,7 +125,7 @@ async def _seed(world: World, owner: str, *, full: bool) -> None:
     work_root = world.work_root if full else world.scratch_board
     if work_root is None:
         raise SeedFailure("the scratch-board experiment needs a minimal world with a scratch board")
-    async with board.connect(world.launcher, world.mcp_log) as client:
+    async with board.connect(world.launcher, world.mcp_log, world.window) as client:
         seeder = seeding.Seeder(board=client, project=world.project, work_root=work_root, owner=owner)
         if full:
             await seed_full_world(seeder)
@@ -130,11 +134,13 @@ async def _seed(world: World, owner: str, *, full: bool) -> None:
 
 
 def create_project(world: World, runtime: Runtime) -> None:
-    processes.git_checked(["init", "-q", "--bare", "-b", "main", str(world.origin)], cwd=world.root)
-    processes.git_checked(["init", "-q", "-b", "main", str(world.project)], cwd=world.root)
+    processes.git_checked(
+        ["init", "-q", "--bare", "-b", "main", str(world.origin)], cwd=world.root, window=world.window
+    )
+    processes.git_checked(["init", "-q", "-b", "main", str(world.project)], cwd=world.root, window=world.window)
     project = world.project
-    processes.git_checked(["config", "user.name", MAINTAINER[0]], cwd=project)
-    processes.git_checked(["config", "user.email", MAINTAINER[1]], cwd=project)
+    processes.git_checked(["config", "user.name", MAINTAINER[0]], cwd=project, window=world.window)
+    processes.git_checked(["config", "user.email", MAINTAINER[1]], cwd=project, window=world.window)
     files = {
         "README.md": (FIXTURE / "README.md").read_text(),
         "tally.sh": (FIXTURE / "tally.sh").read_text(),
@@ -151,14 +157,14 @@ def create_project(world: World, runtime: Runtime) -> None:
         path.write_text(content)
     for script in ("tally.sh", "test.sh"):
         (project / script).chmod(0o755)
-    processes.git_checked(["add", "-A"], cwd=project)
-    processes.git_checked(["commit", "-q", "-m", "Initial tally CLI"], cwd=project)
-    processes.git_checked(["remote", "add", "origin", str(world.origin)], cwd=project)
-    processes.git_checked(["push", "-q", "-u", "origin", "main"], cwd=project)
+    processes.git_checked(["add", "-A"], cwd=project, window=world.window)
+    processes.git_checked(["commit", "-q", "-m", "Initial tally CLI"], cwd=project, window=world.window)
+    processes.git_checked(["remote", "add", "origin", str(world.origin)], cwd=project, window=world.window)
+    processes.git_checked(["push", "-q", "-u", "origin", "main"], cwd=project, window=world.window)
 
 
-def init_board(launcher: Path, project: Path, work_root: Path | None) -> None:
-    completed = processes.launcher_init(launcher, project, work_root)
+def init_board(launcher: Path, project: Path, work_root: Path | None, window: processes.Window) -> None:
+    completed = processes.launcher_init(launcher, project, work_root, window)
     for stream in (completed.stdout, completed.stderr):
         try:
             recovery = msgspec.json.decode(stream.strip(), type=LauncherResult)
@@ -183,26 +189,33 @@ def merge_experiment(world: World) -> str:
     """The maintainer commits pending experiment changes, then merges the most-ahead local branch on origin."""
     project = world.project
     log: list[str] = []
-    processes.git_checked(["fetch", "-q", "origin"], cwd=project)
-    listing = processes.git_checked(["worktree", "list", "--porcelain"], cwd=project)
+    processes.git_checked(["fetch", "-q", "origin"], cwd=project, window=world.window)
+    listing = processes.git_checked(["worktree", "list", "--porcelain"], cwd=project, window=world.window)
     for line in listing.splitlines():
         if not line.startswith("worktree "):
             continue
         checkout = Path(line.removeprefix("worktree "))
-        branch = processes.git_checked(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout).strip()
-        if branch == "main" or not processes.git_checked(["status", "--porcelain"], cwd=checkout).strip():
+        branch = processes.git_checked(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout, window=world.window).strip()
+        if (
+            branch == "main"
+            or not processes.git_checked(["status", "--porcelain"], cwd=checkout, window=world.window).strip()
+        ):
             continue
-        processes.git_checked(["add", "-A"], cwd=checkout)
-        processes.git_checked(["commit", "-q", "-m", "Commit experiment changes before merging"], cwd=checkout)
-        commit = processes.git_checked(["rev-parse", "HEAD"], cwd=checkout).strip()
+        processes.git_checked(["add", "-A"], cwd=checkout, window=world.window)
+        processes.git_checked(
+            ["commit", "-q", "-m", "Commit experiment changes before merging"], cwd=checkout, window=world.window
+        )
+        commit = processes.git_checked(["rev-parse", "HEAD"], cwd=checkout, window=world.window).strip()
         log.append(f"merge-experiment: committed uncommitted changes in {checkout} on {branch} as {commit}")
     best, best_count = "", 0
     for branch in processes.git_checked(
-        ["for-each-ref", "--format=%(refname:short)", "refs/heads"], cwd=project
+        ["for-each-ref", "--format=%(refname:short)", "refs/heads"], cwd=project, window=world.window
     ).split():
         if branch == "main":
             continue
-        count = int(processes.git_checked(["rev-list", "--count", f"origin/main..{branch}"], cwd=project))
+        count = int(
+            processes.git_checked(["rev-list", "--count", f"origin/main..{branch}"], cwd=project, window=world.window)
+        )
         if count > best_count:
             best, best_count = branch, count
     if not best:
@@ -210,13 +223,17 @@ def merge_experiment(world: World) -> str:
         return "\n".join(log) + "\n"
     with tempfile.TemporaryDirectory() as temporary:
         clone = Path(temporary) / "c"
-        processes.git_checked(["clone", "-q", str(world.origin), str(clone)], cwd=world.root)
-        configure_maintainer(clone)
-        processes.git_checked(["fetch", "-q", str(project), f"{best}:refs/remotes/local/{best}"], cwd=clone)
-        processes.git_checked(["merge", "-q", "--no-ff", "-m", f"Merge branch '{best}'", f"local/{best}"], cwd=clone)
-        processes.git_checked(["push", "-q", "origin", "main"], cwd=clone)
-        branch_head = processes.git_checked(["rev-parse", best], cwd=project).strip()
-        merged = processes.git_checked(["rev-parse", "HEAD"], cwd=clone).strip()
+        processes.git_checked(["clone", "-q", str(world.origin), str(clone)], cwd=world.root, window=world.window)
+        configure_maintainer(clone, world.window)
+        processes.git_checked(
+            ["fetch", "-q", str(project), f"{best}:refs/remotes/local/{best}"], cwd=clone, window=world.window
+        )
+        processes.git_checked(
+            ["merge", "-q", "--no-ff", "-m", f"Merge branch '{best}'", f"local/{best}"], cwd=clone, window=world.window
+        )
+        processes.git_checked(["push", "-q", "origin", "main"], cwd=clone, window=world.window)
+        branch_head = processes.git_checked(["rev-parse", best], cwd=project, window=world.window).strip()
+        merged = processes.git_checked(["rev-parse", "HEAD"], cwd=clone, window=world.window).strip()
     log.append(f"merge-experiment: merged {best} ({best_count} commits, head {branch_head}) into origin/main {merged}")
     return "\n".join(log) + "\n"
 
@@ -226,31 +243,35 @@ def push_sam_fix(world: World) -> str:
     with tempfile.TemporaryDirectory() as temporary:
         clone = Path(temporary) / "c"
         processes.git_checked(
-            ["clone", "-q", "-b", "sam/readme-example", str(world.origin), str(clone)], cwd=world.root
+            ["clone", "-q", "-b", "sam/readme-example", str(world.origin), str(clone)],
+            cwd=world.root,
+            window=world.window,
         )
-        configure_maintainer(clone)
+        configure_maintainer(clone, world.window)
         readme = clone / "README.md"
         readme.write_text("".join("9\n" if line == "10\n" else line for line in readme.read_text().splitlines(True)))
-        processes.git_checked(["commit", "-q", "-am", "Fix blank-line example total"], cwd=clone)
-        processes.git_checked(["push", "-q", "origin", "sam/readme-example"], cwd=clone)
-        head = processes.git_checked(["rev-parse", "HEAD"], cwd=clone).strip()
+        processes.git_checked(["commit", "-q", "-am", "Fix blank-line example total"], cwd=clone, window=world.window)
+        processes.git_checked(["push", "-q", "origin", "sam/readme-example"], cwd=clone, window=world.window)
+        head = processes.git_checked(["rev-parse", "HEAD"], cwd=clone, window=world.window).strip()
     return f"push-sam-fix: sam/readme-example now at {head}\n"
 
 
-def configure_maintainer(checkout: Path) -> None:
-    processes.git_checked(["config", "user.name", MAINTAINER[0]], cwd=checkout)
-    processes.git_checked(["config", "user.email", MAINTAINER[1]], cwd=checkout)
+def configure_maintainer(checkout: Path, window: processes.Window) -> None:
+    processes.git_checked(["config", "user.name", MAINTAINER[0]], cwd=checkout, window=window)
+    processes.git_checked(["config", "user.email", MAINTAINER[1]], cwd=checkout, window=window)
 
 
 def snapshot(world: World, name: str) -> ObservedState:
     sections = [
         (
             "git (main checkout)",
-            _git_text(["log", "--oneline", "--graph", "--all", "--decorate", "-n", "30"], world.project),
+            _git_text(
+                ["log", "--oneline", "--graph", "--all", "--decorate", "-n", "30"], world.project, window=world.window
+            ),
         ),
-        ("origin main", _git_text(["log", "--oneline", "-n", "10", "main"], world.origin)),
-        ("origin branches", _git_text(["branch", "-a"], world.origin)),
-        ("worktrees", _git_text(["worktree", "list"], world.project)),
+        ("origin main", _git_text(["log", "--oneline", "-n", "10", "main"], world.origin, window=world.window)),
+        ("origin branches", _git_text(["branch", "-a"], world.origin, window=world.window)),
+        ("worktrees", _git_text(["worktree", "list"], world.project, window=world.window)),
         ("board", _board_text(world, world.work_root, scratch=False)),
     ]
     if world.scratch_board is not None:
@@ -258,14 +279,14 @@ def snapshot(world: World, name: str) -> ObservedState:
     return ObservedState(name=name, text="".join(f"## {title}\n{body}" for title, body in sections))
 
 
-def _git_text(arguments: list[str], cwd: Path) -> str:
-    completed = processes.git(arguments, cwd=cwd)
+def _git_text(arguments: list[str], cwd: Path, window: processes.Window) -> str:
+    completed = processes.git(arguments, cwd=cwd, window=window)
     return completed.stdout + completed.stderr
 
 
 def _board_text(world: World, work_root: Path, *, scratch: bool) -> str:
     try:
-        items = asyncio.run(board.overview(world.launcher, world.mcp_log, world.project, work_root)).items
+        items = asyncio.run(board.overview(world.launcher, world.mcp_log, world.project, work_root, world.window)).items
     except SeedFailure as failure:
         return f"(overview unavailable: {failure})\n"
     lines = []

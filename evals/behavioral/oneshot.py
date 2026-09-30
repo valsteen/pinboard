@@ -30,13 +30,13 @@ class OneshotText(msgspec.Struct, frozen=True):
 
 @dataclass(frozen=True)
 class Answer:
-    cost_usd: float
+    cost_usd: float | None
     text: str | None
     stdout: str
     problem: str | None
 
 
-def ask(prompt: str, model: str) -> Answer:
+def ask(prompt: str, model: str, window: processes.Window) -> Answer:
     with tempfile.TemporaryDirectory(prefix="pinboard-eval-oneshot-") as empty:
         completed = processes.run_tool(
             processes.Tool.CLAUDE,
@@ -57,12 +57,15 @@ def ask(prompt: str, model: str) -> Answer:
             environment=os.environ | {"ENABLE_CLAUDEAI_MCP_SERVERS": "false"},
             stdin=prompt,
             timeout_seconds=SESSION_TIMEOUT_SECONDS,
+            window=window,
         )
+    if completed.timed_out:
+        return Answer(None, None, completed.stdout, "session timed out; partial output retained and cost unknown")
     try:
         result = msgspec.json.decode(completed.stdout.encode(), type=OneshotResult)
     except msgspec.DecodeError as error:
         return Answer(
-            0.0, None, completed.stdout, f"no decodable claude result: {error}; {completed.stderr.strip()}"[:2000]
+            None, None, completed.stdout, f"no decodable claude result: {error}; {completed.stderr.strip()}"[:2000]
         )
     if result.is_error:
         return Answer(result.total_cost_usd, None, completed.stdout, "the claude session reported an error")

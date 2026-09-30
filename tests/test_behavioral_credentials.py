@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from typing import override
 
-from evals.behavioral import credentials
+from evals.behavioral import credentials, processes
 from evals.behavioral.credentials import CredentialSettlement
 
 
@@ -25,7 +25,7 @@ class IsolatedHomeTest(unittest.TestCase):
         self.homes.mkdir()
 
     def test_the_home_is_private_holds_a_private_copy_and_is_removed_after_an_unchanged_run(self) -> None:
-        with credentials.isolated_home(self.source, self.homes) as home:
+        with credentials.isolated_home(self.source, self.homes, processes.Window(None)) as home:
             copy = home.path / "auth.json"
             self.assertEqual(b'{"tokens": "original"}', copy.read_bytes())
             self.assertEqual(0o700, stat.S_IMODE(home.path.stat().st_mode))
@@ -35,7 +35,7 @@ class IsolatedHomeTest(unittest.TestCase):
         self.assertEqual(b'{"tokens": "original"}', self.source.read_bytes())
 
     def test_a_refreshed_copy_is_written_back_privately_when_the_source_is_unchanged(self) -> None:
-        with credentials.isolated_home(self.source, self.homes) as home:
+        with credentials.isolated_home(self.source, self.homes, processes.Window(None)) as home:
             (home.path / "auth.json").write_bytes(b'{"tokens": "refreshed"}')
         self.assertIs(CredentialSettlement.WRITTEN_BACK, home.settlement)
         self.assertEqual(b'{"tokens": "refreshed"}', self.source.read_bytes())
@@ -43,7 +43,7 @@ class IsolatedHomeTest(unittest.TestCase):
         self.assertEqual(["auth.json"], sorted(path.name for path in self.source_directory.iterdir()))
 
     def test_nothing_is_written_back_when_the_source_changed_during_the_run(self) -> None:
-        with credentials.isolated_home(self.source, self.homes) as home:
+        with credentials.isolated_home(self.source, self.homes, processes.Window(None)) as home:
             (home.path / "auth.json").write_bytes(b'{"tokens": "refreshed"}')
             self.source.write_bytes(b'{"tokens": "human login"}')
         self.assertIs(CredentialSettlement.REFUSED_SOURCE_CHANGED, home.settlement)
@@ -52,7 +52,10 @@ class IsolatedHomeTest(unittest.TestCase):
 
     def test_the_home_is_removed_and_the_failure_propagates_when_a_run_raises(self) -> None:
         holder: list[Path] = []
-        with self.assertRaises(RuntimeError), credentials.isolated_home(self.source, self.homes) as home:
+        with (
+            self.assertRaises(RuntimeError),
+            credentials.isolated_home(self.source, self.homes, processes.Window(None)) as home,
+        ):
             holder.append(home.path)
             raise RuntimeError("run failed")
         self.assertFalse(holder[0].exists())

@@ -49,6 +49,7 @@ from evals.behavioral.board import (
     Receipt,
     RecordReady,
     Relation,
+    ReviewCommission,
     ReviewedCompletion,
     ReviewJob,
     Status,
@@ -101,8 +102,12 @@ class Seeder:
 
     async def prepare_activate(self, item: str, title: str, criterion: str, scope: str) -> None:
         worktree = self.worktree(item)
-        processes.git_checked(["worktree", "add", "-q", str(worktree), "-b", f"pinboard/{item}"], cwd=self.project)
-        base = processes.git_checked(["rev-parse", "HEAD"], cwd=worktree).strip()
+        processes.git_checked(
+            ["worktree", "add", "-q", str(worktree), "-b", f"pinboard/{item}"],
+            cwd=self.project,
+            window=self.board.window,
+        )
+        base = processes.git_checked(["rev-parse", "HEAD"], cwd=worktree, window=self.board.window).strip()
         preparation = await self.board.call(
             "pinboard_preparation_authority",
             Enveloped(
@@ -192,7 +197,7 @@ class Seeder:
     async def worker_submit(self, item: str, lease: Lease, text: str) -> None:
         worktree = self.worktree(item)
         attempt = f"{item}-1"
-        candidate = head(worktree)
+        candidate = head(worktree, self.board.window)
         result = self.work_root / "attempts" / attempt / "result.md"
         result.parent.mkdir(parents=True, exist_ok=True)
         result.write_text(
@@ -246,10 +251,10 @@ class Seeder:
         )
         require(released.status, ("committed",), f"release {item}")
 
-    async def review_publish(self, item: str, text: str) -> None:
+    async def review_publish(self, item: str, text: str) -> str:
         worktree = self.worktree(item)
         attempt = f"{item}-1"
-        candidate = head(worktree)
+        candidate = head(worktree, self.board.window)
         job = await self.board.call(
             "pinboard_review_job",
             ReviewJob(
@@ -263,7 +268,7 @@ class Seeder:
                     background=False,
                 ),
             ),
-            Status,
+            ReviewCommission,
         )
         require(job.status, ("ready",), f"review job {item}")
         (self.work_root / "attempts" / attempt / "review.md").write_text(
@@ -271,10 +276,12 @@ class Seeder:
             f"Reviewed candidate: commit {candidate} on branch pinboard/{item}\n\n{text}\n"
         )
 
-    async def review_ready(self, item: str) -> None:
+        return job.prompt_reference.sha256
+
+    async def review_ready(self, item: str, prompt_sha256: str) -> None:
         worktree = self.worktree(item)
         attempt = f"{item}-1"
-        candidate = head(worktree)
+        candidate = head(worktree, self.board.window)
         inspection = await self.board.call(
             "pinboard_attempt_inspect",
             AttemptInspect(
@@ -296,6 +303,7 @@ class Seeder:
                     result_sha256=self.evidence_sha256(attempt, "result.md"),
                     review_sha256=self.evidence_sha256(attempt, "review.md"),
                     reviewer_task_id=f"review-{item}",
+                    reviewer_prompt_sha256=prompt_sha256,
                     verdict="ready",
                     acceptance_evidence="Separate reviewer found the candidate satisfies the accepted criterion",
                 ),
@@ -338,7 +346,7 @@ class Seeder:
         attempt = f"{item}-1"
         completion = ReviewedCompletion(
             schema="pinboard-reviewed-completion/v2",
-            candidate=head(self.worktree(item)),
+            candidate=head(self.worktree(item), self.board.window),
             evidence=evidence,
             reviewer_task_id=f"review-{item}",
             result_sha256=self.evidence_sha256(attempt, "result.md"),
@@ -350,15 +358,15 @@ class Seeder:
     def commit_change(self, item: str, file: str, message: str, content: str) -> None:
         worktree = self.worktree(item)
         (worktree / file).write_text(content)
-        processes.git_checked(["add", file], cwd=worktree)
-        processes.git_checked(["commit", "-q", "-m", message], cwd=worktree)
+        processes.git_checked(["add", file], cwd=worktree, window=self.board.window)
+        processes.git_checked(["commit", "-q", "-m", message], cwd=worktree, window=self.board.window)
 
     def evidence_sha256(self, attempt: str, name: str) -> str:
         return hashlib.sha256((self.work_root / "attempts" / attempt / name).read_bytes()).hexdigest()
 
 
-def head(checkout: Path) -> str:
-    return processes.git_checked(["rev-parse", "HEAD"], cwd=checkout).strip()
+def head(checkout: Path, window: processes.Window) -> str:
+    return processes.git_checked(["rev-parse", "HEAD"], cwd=checkout, window=window).strip()
 
 
 def first_revision(actions: Actions, what: str) -> str:

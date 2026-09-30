@@ -1,9 +1,15 @@
 """Codex output reading: replies, commentary, refusals and token pricing from synthetic event text."""
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-from evals.behavioral import codex_driver
+from evals.behavioral import codex_driver, processes, runner, world
+from evals.behavioral.layout import Layout
+from evals.behavioral.records import Completed, ExportRecord, RunKey, Scenario, Stopped, Turn, WorldKind
+from evals.behavioral.scenarios import RegisteredSet
 
 type Json = str | int | bool | list[Json] | dict[str, Json] | None
 
@@ -77,25 +83,94 @@ class ReadEventsTest(unittest.TestCase):
         self.assertTrue(codex_driver.read_events(stream).git_write_denied)
 
 
-class RolloutRefusalTest(unittest.TestCase):
-    def test_refusals_that_never_reached_the_event_stream_are_found_in_the_rollout(self) -> None:
-        rollout = (
-            '{"type":"response_item","payload":{"output":"error: cannot lock ref \'ORIG_HEAD\': Unable to create '
-            "'/w/tally/.git/ORIG_HEAD.lock': Operation not permitted\"}}\n"
-            '{"type":"response_item","payload":{"output":"exec requires approval, but approval policy is never"}}\n'
-        )
-        refusals = codex_driver.rollout_refusals(rollout)
-        self.assertEqual(1, len(refusals.git_writes))
-        self.assertEqual(1, len(refusals.approvals))
+def native_rollout(outcome: str) -> str:
+    """A source-supported guardian decision fixture; actual experimental evidence observed allows only."""
+    records: list[dict[str, Json]] = [
+        {"type": "turn_context", "payload": {"turn_id": "primary", "model": "gpt-6-sol"}},
+        {"type": "turn_context", "payload": {"turn_id": "review", "model": "codex-auto-review"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "failed-git",
+                "internal_chat_message_metadata_passthrough": {"turn_id": "primary"},
+                "output": [
+                    {
+                        "type": "input_text",
+                        "text": event(
+                            {
+                                "exit_code": 128,
+                                "output": "fatal: Unable to create '/w/tally/.git/index.lock': Operation not permitted",
+                            }
+                        ),
+                    }
+                ],
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "thread_id": "guardian",
+                "turn_id": "review",
+                "item": {
+                    "type": "AgentMessage",
+                    "phase": "final_answer",
+                    "content": [
+                        {
+                            "type": "Text",
+                            "text": event(
+                                {
+                                    "outcome": outcome,
+                                    "risk_level": "medium",
+                                    "user_authorization": "high",
+                                    "rationale": "exact action decision",
+                                }
+                            ),
+                        }
+                    ],
+                },
+            },
+        },
+    ]
+    return "\n".join(event(r) for r in records) + "\n"
 
-    def test_guidance_that_mentions_git_and_approval_is_not_a_refusal(self) -> None:
-        text = (
-            "Sibling .codex, .git, and the installed plugin cache remain read-only. "
-            "Approval policy is currently never. Do not provide the sandbox_permissions for any reason."
+
+class RolloutRefusalTest(unittest.TestCase):
+    def test_recovered_sandbox_failure_remains_evidence_without_a_terminal_rejection(self) -> None:
+        reading = codex_driver.rollout_refusals(native_rollout("allow"))
+        self.assertEqual(1, len(reading.git_writes))
+        self.assertEqual([], reading.approvals)
+
+    def test_a_genuine_reviewer_denial_stops_but_quoted_history_does_not(self) -> None:
+        reading = codex_driver.rollout_refusals(native_rollout("deny"))
+        self.assertEqual(["exact action decision"], reading.approvals)
+        quoted = event(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": native_rollout("deny")}],
+                },
+            }
         )
-        refusals = codex_driver.rollout_refusals(text)
-        self.assertEqual([], refusals.git_writes)
-        self.assertEqual([], refusals.approvals)
+        self.assertEqual([], codex_driver.rollout_refusals(quoted).approvals)
+
+    def test_guidance_and_successful_output_that_quotes_a_failure_are_not_refusals(self) -> None:
+        quoted = native_rollout("allow").replace('\\"exit_code\\": 128', '\\"exit_code\\": 0')
+        self.assertEqual([], codex_driver.rollout_refusals(quoted).git_writes)
+        text = event(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "Approval policy is never; .git remains read-only"}],
+                },
+            }
+        )
+        self.assertEqual([], codex_driver.rollout_refusals(text).approvals)
 
 
 def completed_turn(input_tokens: int, cached: int, output: int, reasoning: int) -> str:
@@ -135,7 +210,9 @@ class ResumedUsageTest(unittest.TestCase):
         self.assertEqual(7_089, turns[1].output_tokens)
         self.assertEqual(3_453, turns[1].reasoning_output_tokens)
         assert second.usage is not None
-        self.assertAlmostEqual(codex_driver.turn_cost("gpt-6-sol", second.usage), sum(t.cost_usd for t in turns))
+        self.assertAlmostEqual(
+            codex_driver.turn_cost("gpt-6-sol", second.usage), sum(t.cost_usd for t in turns if t.cost_usd is not None)
+        )
 
     def test_cumulative_usage_that_falls_is_refused(self) -> None:
         first = codex_driver.read_events(completed_turn(500, 100, 50, 10)).usage
@@ -144,11 +221,107 @@ class ResumedUsageTest(unittest.TestCase):
         with self.assertRaises(codex_driver.CodexStreamError):
             codex_driver.usage_since(first, second)
 
-    def test_a_turn_without_reported_usage_costs_nothing(self) -> None:
+    def test_a_turn_without_reported_usage_has_unknown_cost(self) -> None:
         reading = codex_driver.read_events(event({"type": "thread.started", "thread_id": "t-1"}))
         previous = codex_driver.read_events(completed_turn(500, 100, 50, 10)).usage
         evidence = codex_driver.turn_evidence(2, "question", None, "t-1", reading, previous, "gpt-6-sol", "t0")
-        self.assertEqual(0.0, evidence.cost_usd)
+        self.assertIsNone(evidence.cost_usd)
+
+
+class AccountingTest(unittest.TestCase):
+    def test_primary_and_reviewer_thread_totals_are_separate_and_replayed_responses_are_not_added(self) -> None:
+        def usage(thread: str, turn: str, response: str, tokens: int) -> dict[str, Json]:
+            return {
+                "type": "token_usage_record",
+                "payload": {
+                    "thread_id": thread,
+                    "turn_id": turn,
+                    "response_id": response,
+                    "thread_token_usage": {
+                        "input_tokens": tokens,
+                        "cached_input_tokens": 0,
+                        "cache_write_input_tokens": 0,
+                        "output_tokens": 1,
+                        "reasoning_output_tokens": 0,
+                    },
+                },
+            }
+
+        records: list[dict[str, Json]] = [
+            {"type": "turn_context", "payload": {"turn_id": "primary", "model": "gpt-6-sol"}},
+            {"type": "turn_context", "payload": {"turn_id": "review", "model": "codex-auto-review"}},
+            usage("main", "primary", "p1", 10),
+            usage("reviewer", "review", "r1", 100),
+            usage("main", "primary", "p2", 20),
+            usage("reviewer", "review", "r2", 150),
+            usage("reviewer", "review", "r1", 100),
+        ]
+        result = codex_driver.rollout_accounting("\n".join(event(r) for r in records), "gpt-6-sol", True)
+        self.assertAlmostEqual(
+            codex_driver.turn_cost(
+                "gpt-6-sol",
+                codex_driver.Usage(
+                    input_tokens=20,
+                    cached_input_tokens=0,
+                    cache_write_input_tokens=0,
+                    output_tokens=1,
+                    reasoning_output_tokens=0,
+                ),
+            ),
+            result.main_known_cost_usd,
+        )
+        self.assertTrue(result.main_usage_complete)
+        self.assertEqual(1, len(result.reviewer_usage))
+        self.assertEqual(150, result.reviewer_usage[0].input_tokens)
+        self.assertIsNone(result.reviewer_price_usd)
+        self.assertFalse(codex_driver.rollout_accounting("", "gpt-6-sol", True).main_usage_complete)
+
+
+class RecoveryRunTest(unittest.TestCase):
+    def test_recovery_can_complete_while_independent_reviewer_rejection_stops(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scenario = Scenario(
+                id="scenario",
+                title="action",
+                world=WorldKind.MINIMAL,
+                world_extra=None,
+                source="accepted native route",
+                ground_truth="authorized action",
+                turns=[Turn(human="commit", before=None)],
+            )
+            plan = runner.RunPlan(
+                Layout(root),
+                root / "worlds",
+                ExportRecord(
+                    schema="pinboard-behavioral-export/v1",
+                    commit="0" * 40,
+                    skills_sha256="0" * 64,
+                    plugin_root="/plugin",
+                ),
+                "candidate",
+                RegisteredSet("native", (scenario,), ()),
+                1,
+                1,
+                "gpt-6-sol",
+                processes.Window(None),
+            )
+            built = world.World(root, root / "project", root / "origin", None, root / "launcher", plan.window)
+            for decision, expected in [("allow", Completed), ("deny", Stopped)]:
+                with self.subTest(decision=decision):
+                    state = runner.start(plan, scenario, RunKey(scenario_id="scenario", variant=decision, index=1))
+                    reading = codex_driver.read_events(completed_turn(100, 10, 10, 0))
+                    with (
+                        patch.object(
+                            codex_driver, "run_turn", return_value=(processes.Completed(0, "", "", False), reading)
+                        ),
+                        patch.object(codex_driver, "rollout_text", return_value=native_rollout(decision)),
+                        patch.object(runner.RunState, "run_hook"),
+                        patch.object(runner.RunState, "snapshot"),
+                    ):
+                        outcome = runner.codex_thread(state, built, root, runner.CodexPlan(plan, "high", root / "auth"))
+                    self.assertIsInstance(outcome, expected)
+                    self.assertTrue(state.turns[0].permission_denials)
 
 
 class PriceTest(unittest.TestCase):

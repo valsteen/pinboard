@@ -16,6 +16,7 @@ import msgspec
 
 from evals.behavioral.records import (
     AssessmentRecord,
+    CodexAccounting,
     LabelMapping,
     ProbeRecord,
     RunKey,
@@ -74,3 +75,9 @@ class Layout:
     def probes(self) -> Iterator[ProbeRecord]:
         for path in sorted((self.root / "probes").glob("*/probe.json")):
             yield msgspec.json.decode(path.read_bytes(), type=ProbeRecord)
+
+    def codex_accounting(self) -> Iterator[tuple[Path, CodexAccounting]]:
+        for path in sorted(
+            [*(self.root / "runs").glob("*/*/accounting.json"), *(self.root / "probes").glob("*/accounting.json")]
+        ):
+            yield path, msgspec.json.decode(path.read_bytes(), type=CodexAccounting)

@@ -110,7 +110,7 @@ class ScoringRun:
             directory.mkdir(parents=True)
             text = prompt(scenario, source, label)
             (directory / "prompt.txt").write_text(text)
-            answer = oneshot.ask(text, SCORER_MODEL)
+            answer = oneshot.ask(text, SCORER_MODEL, self.budget.window)
             (directory / "raw.json").write_text(answer.stdout)
             decoded = (
                 decode_score(answer.text, label, len(scenario.turns))

@@ -239,6 +239,7 @@ class ClaudeSession:
                 environment=os.environ | ISOLATION_ENVIRONMENT,
                 stdin=None,
                 timeout_seconds=TURN_TIMEOUT_SECONDS,
+                window=processes.Window(None),
             )
             if index == 1:
                 self.provenance = skill_provenance(debug_file.read_text() if debug_file.is_file() else "")
@@ -405,7 +406,13 @@ def host_environment() -> InventoryEntry:
 
 def claude_version() -> str:
     completed = processes.run_tool(
-        processes.Tool.CLAUDE, ["--version"], cwd=Path.cwd(), environment=os.environ, stdin=None, timeout_seconds=60
+        processes.Tool.CLAUDE,
+        ["--version"],
+        cwd=Path.cwd(),
+        environment=os.environ,
+        stdin=None,
+        timeout_seconds=60,
+        window=processes.Window(None),
     )
     return completed.stdout.strip()
 

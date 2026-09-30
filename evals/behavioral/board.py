@@ -400,11 +400,13 @@ def read_result[T: Projection](tool: str, result: CallToolResult, projection: ty
 async def connect(launcher: Path, log: Path, window: processes.Window) -> AsyncGenerator[BoardClient]:
     """Serve the evaluated revision's MCP server over stdio; its diagnostics append to ``log``."""
     parameters = StdioServerParameters(command=str(launcher), args=["--mcp"], env=os.environ.copy())
+    # SDK teardown bounds: 0.5s writer flush, 2s grace, 2s termination, 2s reap, and exit polling.
+    operation_window = window.reserving(7)
     try:
-        with anyio.fail_after(window.timeout(300)), log.open("a") as errlog:
+        with anyio.fail_after(operation_window.timeout(300)), log.open("a") as errlog:
             async with stdio_client(parameters, errlog=errlog) as streams, ClientSession(*streams) as session:
                 await session.initialize()
-                yield BoardClient(session, window)
+                yield BoardClient(session, operation_window)
     except OSError as error:
         raise SeedFailure(f"the evaluated launcher could not serve MCP: {error}") from error
 

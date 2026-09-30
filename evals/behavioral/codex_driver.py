@@ -264,7 +264,7 @@ def codex(
         processes.Tool.CODEX,
         arguments,
         cwd=cwd,
-        environment=os.environ | {"CODEX_HOME": str(home)},
+        environment=os.environ | {"CODEX_HOME": str(home), "RUST_LOG": "warn"},
         stdin=None,
         timeout_seconds=timeout_seconds,
         window=window,
@@ -413,8 +413,12 @@ def run_turn(
     try:
         completed = codex(arguments, home=home, cwd=project, timeout_seconds=TURN_TIMEOUT_SECONDS, window=window)
     except (processes.ProcessInterrupted, processes.CleanupUnconfirmed) as interrupted:
-        raw_path.write_text(interrupted.stdout)
-        raw_path.with_suffix(".stderr").write_text(interrupted.stderr)
+        try:
+            raw_path.write_text(interrupted.stdout)
+            raw_path.with_suffix(".stderr").write_text(interrupted.stderr)
+        except BaseException as evidence_failure:
+            interrupted.args = (*interrupted.args, f"partial-output capture failed: {evidence_failure!r}")
+            raise interrupted from evidence_failure
         raise
     raw_path.write_text(completed.stdout)
     raw_path.with_suffix(".stderr").write_text(completed.stderr)

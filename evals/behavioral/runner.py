@@ -360,17 +360,27 @@ def codex_run(plan: CodexPlan, scenario: Scenario, key: RunKey) -> RunRecord:
 
 
 def codex_turns(state: RunState, built: world.World, home: credentials.IsolatedHome, plan: CodexPlan) -> RunOutcome:
+    unconfirmed: processes.CleanupUnconfirmed | None = None
     try:
         return codex_thread(state, built, home.path, plan)
+    except processes.CleanupUnconfirmed as failure:
+        unconfirmed = failure
+        raise
     finally:
-        rollout = credentials.without_login(codex_driver.rollout_text(home.path), home.copied)
-        (state.directory / "rollout.jsonl").write_text(rollout)
-        accounting = codex_driver.rollout_accounting(
-            rollout,
-            plan.run.model,
-            len(state.turns) == len(state.scenario.turns) and all(t.cost_usd is not None for t in state.turns),
-        )
-        write_new(state.directory / "accounting.json", accounting)
+        try:
+            rollout = credentials.without_login(codex_driver.rollout_text(home.path), home.copied)
+            (state.directory / "rollout.jsonl").write_text(rollout)
+            accounting = codex_driver.rollout_accounting(
+                rollout,
+                plan.run.model,
+                len(state.turns) == len(state.scenario.turns) and all(t.cost_usd is not None for t in state.turns),
+            )
+            write_new(state.directory / "accounting.json", accounting)
+        except BaseException as evidence_failure:
+            if unconfirmed is not None:
+                unconfirmed.args = (*unconfirmed.args, f"rollout capture failed: {evidence_failure!r}")
+                raise unconfirmed from evidence_failure
+            raise
 
 
 def codex_thread(state: RunState, built: world.World, home: Path, plan: CodexPlan) -> RunOutcome:

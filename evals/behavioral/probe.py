@@ -80,15 +80,8 @@ def probe_codex(
             findings = codex_driver.isolation_findings(context, home.path / "plugins" / "cache", built.project)
             entries.extend(served_tools(home.path / "plugins" / "cache", root / "mcp.log", budget.window))
             if not findings:
-                complete = False
-                try:
-                    cost, turn_findings = probe_turns(home.path, built.project, model, directory, budget.window)
-                    findings.extend(turn_findings)
-                    complete = not turn_findings
-                finally:
-                    rollout = credentials.without_login(codex_driver.rollout_text(home.path), home.copied)
-                    (directory / "rollout.jsonl").write_text(rollout)
-                    write_new(directory / "accounting.json", codex_driver.rollout_accounting(rollout, model, complete))
+                cost, turn_findings = probe_thread(home, built.project, model, directory, budget.window)
+                findings.extend(turn_findings)
         settlement = home.settlement
         entries.append(
             InventoryEntry(
@@ -113,6 +106,31 @@ def probe_codex(
         return record
     finally:
         budget.release(projected)
+
+
+def probe_thread(
+    home: credentials.IsolatedHome, project: Path, model: str, directory: Path, window: processes.Window
+) -> tuple[float | None, list[str]]:
+    """Keep the probe's rollout without allowing an evidence failure to confirm unsafe cleanup."""
+    complete = False
+    unconfirmed: processes.CleanupUnconfirmed | None = None
+    try:
+        cost, findings = probe_turns(home.path, project, model, directory, window)
+        complete = not findings
+        return cost, findings
+    except processes.CleanupUnconfirmed as failure:
+        unconfirmed = failure
+        raise
+    finally:
+        try:
+            rollout = credentials.without_login(codex_driver.rollout_text(home.path), home.copied)
+            (directory / "rollout.jsonl").write_text(rollout)
+            write_new(directory / "accounting.json", codex_driver.rollout_accounting(rollout, model, complete))
+        except BaseException as evidence_failure:
+            if unconfirmed is not None:
+                unconfirmed.args = (*unconfirmed.args, f"probe rollout capture failed: {evidence_failure!r}")
+                raise unconfirmed from evidence_failure
+            raise
 
 
 def served_tools(plugin_cache: Path, log: Path, window: processes.Window) -> list[InventoryEntry]:

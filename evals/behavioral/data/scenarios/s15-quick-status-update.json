@@ -1,0 +1,14 @@
+{
+  "id": "s15-quick-status-update",
+  "title": "Quick status in a busy board, fresh wording",
+  "world": "full",
+  "world_extra": null,
+  "source": "GUIDE.md quick orientation; round-1 residual noise and open-item completeness failures.",
+  "ground_truth": "Full world (see world facts). A quick status should orient Sam on what waits on him and what is in progress without method detail. Items waiting on Sam: unicode-input (his reject-or-replace choice), sort-flag (reviewed, needs his repository decision), trim-whitespace (in main without any review), json-output (done, its reviewed change kept off main on pinboard/json-output), csv-export (header row and delimiter undecided, if raised). Agent-owned or background: strict-parse correction owed after a returned review, help-text background worker. The reply length is also compared mechanically with the baseline.",
+  "turns": [
+    {
+      "human": "Quick update please: where do things stand?",
+      "before": null
+    }
+  ]
+}

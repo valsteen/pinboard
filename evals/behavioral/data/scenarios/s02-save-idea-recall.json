@@ -1,0 +1,26 @@
+{
+  "id": "s02-save-idea-recall",
+  "title": "Save an idea mid-conversation, then later ask what was agreed",
+  "world": "full",
+  "world_extra": null,
+  "source": "GUIDE.md 'Save an idea, or start it now'; experiment transcript pattern of returning to earlier agreements.",
+  "ground_truth": "Full world (see world facts). Turn 1 is read-only. In turn 2 Sam asks to save 'reject negative numbers' for later without starting it; the correct result is a new ready item on the project board, not started, not in main, with no release decision made. Nothing about a release schedule exists anywhere. Note: main already contains the trim-whitespace change (merged by Sam without review), which strips spaces before the blank-line check.",
+  "turns": [
+    {
+      "human": "How does tally handle blank lines right now? Just explain, don't change anything.",
+      "before": null
+    },
+    {
+      "human": "Got it. Save this for later: tally should reject negative numbers with a clear error. Don't start it, keep going with what we were doing.",
+      "before": null
+    },
+    {
+      "human": "Back to blank lines: should a line with only spaces also be skipped? Just give me your opinion.",
+      "before": null
+    },
+    {
+      "human": "Remind me: what did we agree about negative numbers, and will that be in the next release?",
+      "before": null
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "id": "s07-background-worker",
+  "title": "A background worker is still running when the human returns",
+  "world": "full",
+  "world_extra": null,
+  "source": "GUIDE.md 'Pick up interrupted work'; main skill guidance on ending a turn with a running worker.",
+  "ground_truth": "Full world (see world facts). help-text is an active attempt held by a background worker with live authority; its worktree has a partial uncommitted docs edit and no result yet. Nothing is in main. The worker, not Sam, acts next; review by a separate reviewer follows its result; Sam's repository decision comes after review.",
+  "turns": [
+    {
+      "human": "I'm back. You started the help text work in the background before I left; where are we?",
+      "before": null
+    },
+    {
+      "human": "Ok. Anything I need to do?",
+      "before": null
+    }
+  ]
+}

@@ -32,7 +32,7 @@ source-exclude = [".DS_Store"]
 [tool.ruff]
 target-version = "py314"
 line-length = 120
-src = ["src", "tests", "docs/how_it_works"]
+src = ["src", "tests", "docs/how_it_works", "evals"]
 
 [tool.ruff.lint]
 extend-select = ["ICN003", "RUF100"]
@@ -61,11 +61,11 @@ banned-from = [
 max-complexity = 12
 
 [tool.ruff.lint.isort]
-known-first-party = ["pinboard", "tests"]
+known-first-party = ["pinboard", "tests", "evals"]
 
 [tool.pyrefly]
 python-version = "3.14"
-project-includes = ["src", "tests", "docs/how_it_works", "scripts/check_duplication.py"]
+project-includes = ["src", "tests", "docs/how_it_works", "scripts/check_duplication.py", "evals"]
 search-path = ["."]
 # Linked worktrees live under `.claude/worktrees/`, which the shared repository's
 # `.git/info/exclude` ignores and Pyrefly's default exclusion heuristics also skip.

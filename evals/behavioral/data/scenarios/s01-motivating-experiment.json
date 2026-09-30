@@ -1,0 +1,30 @@
+{
+  "id": "s01-motivating-experiment",
+  "title": "Isolated experiment whose useful reviewed changes are later asked about, then merged by the human",
+  "world": "minimal",
+  "world_extra": null,
+  "source": "Replay of experiment transcript 2026-09-28T16:46-19:12 (local time): 'include in scope those changes', 'are the changes in main already', merge of PR #124 after local review, 'what's the status of the work item'.",
+  "ground_truth": "Minimal world: project tally on main with an empty project board, plus an initialized scratch Pinboard board at ../scratch-board (outside the project). The human (Sam) asks for a throwaway experiment tracked on the scratch board, not committing to merge. Everything the agent does is observable in the per-turn state snapshots. Before turn 4 the harness (acting as Sam) merges the experiment branch into origin/main with a merge commit; the hooks log records the merged branch head. Local main is not updated by that merge. Any review happened on the branch commits before that merge.",
+  "turns": [
+    {
+      "human": "I want to try a quick experiment. On a throwaway branch, make tally.sh skip lines that start with '#' so input files can carry comments, and add one sentence about it to docs/usage.md. Track it on the scratch Pinboard board at ../scratch-board instead of our real board, I don't want to clutter it. I'm not committing to merging this; I just want to see whether it's worth it. Have it reviewed like normal work.",
+      "before": null
+    },
+    {
+      "human": "Nice. Keep it where it is for now, it was just an experiment. You can close it out.",
+      "before": null
+    },
+    {
+      "human": "We probably learned something useful there, I suppose? Ok, I forgot if we are on a work item now. Can we include those comment changes in scope, in a worktree if we don't have one yet?",
+      "before": null
+    },
+    {
+      "human": "I went ahead and merged that branch into main on origin myself. So that change is reviewed and done now, right?",
+      "before": "merge-experiment"
+    },
+    {
+      "human": "Ok, what's the status of the work item?",
+      "before": null
+    }
+  ]
+}

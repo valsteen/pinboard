@@ -59,6 +59,20 @@ The local scan uses four-line and 40-token limits. It is intentionally sensitive
 
 Every pull request and main-branch update runs the supported checks on macOS and Linux, including plugin and skill validation.
 
+## Evaluate guidance behavior
+
+Changes to the guidance that shapes how agents talk to people are measured with the behavioral evaluation harness in `evals/behavioral/`, not with unit tests. It exports a skills revision, runs a registered scenario set against a Claude Code or Codex agent, blind-scores every reply with a frozen checklist, compares a baseline with a candidate per checklist rule, deciding on the total and the rules the scenario set declares as targeted, and totals the spend:
+
+```sh
+uv run --locked python -m evals.behavioral export --revision <commit> --dest <exports>/<name>
+uv run --locked python -m evals.behavioral run claude --export <exports>/<name> --scenario-set <set> --variant <label> --runs <n> --model <model> --out <out> --worlds <worlds> --cap-usd <usd>
+uv run --locked python -m evals.behavioral score --out <out> --cap-usd <usd>
+uv run --locked python -m evals.behavioral compare --out <out> --scenario-set <set> --baseline <label> --candidate <label>
+uv run --locked python -m evals.behavioral spend --out <out>
+```
+
+[The harness guide](evals/behavioral/README.md) covers Codex runs, the isolation probe and the substance assessment. [CRITERIA.md](evals/behavioral/CRITERIA.md) sets the run count per scenario, the improved, no worse or inconclusive decision rule and the expected cost of one comparison; cite both by path and revision when a guidance change uses them as its acceptance check. Live runs call paid models and are verified on macOS. CI and the default checks only lint, type-check and unit-test the harness.
+
 ## Build and inspect the package
 
 Build without workspace sources, then exercise `<pinboard-source>/scripts/pinboard`, the same launcher boundary used from an installed plugin root:

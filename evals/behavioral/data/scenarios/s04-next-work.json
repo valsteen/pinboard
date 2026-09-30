@@ -1,0 +1,18 @@
+{
+  "id": "s04-next-work",
+  "title": "Decide what to do next, then ask what is waiting on the human",
+  "world": "full",
+  "world_extra": null,
+  "source": "GUIDE.md 'Decide what to do next'.",
+  "ground_truth": "Full world (see world facts). Items waiting on Sam: unicode-input (paused for his reject-or-replace choice), sort-flag (reviewed, needs his repository decision), trim-whitespace (merged into main without review; review still missing), csv-export format question if it is recommended. json-output is done but its useful change is still off main (only on pinboard/json-output). Agent-owned or background: strict-parse correction, help-text background worker.",
+  "turns": [
+    {
+      "human": "What should we work on next, and why?",
+      "before": null
+    },
+    {
+      "human": "Sounds reasonable, but not today. Is there anything waiting on me before I leave?",
+      "before": null
+    }
+  ]
+}

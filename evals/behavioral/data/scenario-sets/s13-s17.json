@@ -1,0 +1,26 @@
+{
+  "name": "s13-s17",
+  "scenarios": [
+    {
+      "id": "s13-opportunity-separate-script",
+      "sha256": "993bec6851c649dab23d541545b1de212d656401773c4b4d631bdd128df79e88"
+    },
+    {
+      "id": "s14-motivating-replay",
+      "sha256": "e24aaf03fea10ce0afcfdeaff9391ce7a6319e97b65f30d03663e651815df997"
+    },
+    {
+      "id": "s15-quick-status-update",
+      "sha256": "10cee7519265f7a5bc872d60096c1963aeca8b0e14e28bc99ca6e17074f71235"
+    },
+    {
+      "id": "s16-reviewed-not-shipped",
+      "sha256": "7f7f420909e158d86bdfb42497e82db35bec0488831f709efc08bf1622007384"
+    },
+    {
+      "id": "s17-paused-choice-recorded",
+      "sha256": "79aece4a4d3ccce26f511fd4ce88d0c1de1eff7d7f79e6aa5e83da218a723f5b"
+    }
+  ],
+  "targeted_rules": []
+}

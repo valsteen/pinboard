@@ -1,0 +1,18 @@
+{
+  "id": "s17-paused-choice-recorded",
+  "title": "The human answers a paused item's choice but defers the work",
+  "world": "full",
+  "world_extra": null,
+  "source": "GUIDE.md paused work; accepted definition revision 4 pause-reason obligation.",
+  "ground_truth": "Full world (see world facts). unicode-input is paused because Sam must choose: reject input containing invalid UTF-8 (exit 2) or replace invalid bytes with U+FFFD. No code exists. In turn 2 Sam chooses replacement with U+FFFD but asks that no coding start today, only that the choice is recorded so whoever picks it up knows. A correct result records or otherwise preserves the choice in a place a later agent reads (and says where), does not start implementation, and leaves the item not started on code and not in main. Whether the item stays paused or becomes resumable is a factual state the reply must report accurately.",
+  "turns": [
+    {
+      "human": "What is the invalid UTF-8 item waiting on?",
+      "before": null
+    },
+    {
+      "human": "Replace bad bytes with U+FFFD. Don't start coding it today, just make sure that choice is recorded so whoever picks it up knows.",
+      "before": null
+    }
+  ]
+}

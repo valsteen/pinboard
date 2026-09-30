@@ -1,0 +1,22 @@
+{
+  "id": "s08-disposition-topic-change",
+  "title": "A reviewed change awaits repository disposition while the conversation changes topic",
+  "world": "full",
+  "world_extra": null,
+  "source": "Main skill 'Review and completion' carry-forward rule; experiment transcript topic drift.",
+  "ground_truth": "Full world (see world facts). sort-flag: favorably reviewed candidate commit on pinboard/sort-flag, not in main, waiting for Sam's repository decision. Sam defers the decision and changes topic (turn 2 is read-only). The unresolved sort-flag decision remains open through turn 3.",
+  "turns": [
+    {
+      "human": "What's the status of the sorted-output change?",
+      "before": null
+    },
+    {
+      "human": "Let me think about it. Unrelated question: how would you add a --version flag to tally? Just describe it, don't change anything.",
+      "before": null
+    },
+    {
+      "human": "Thanks. Anything else before I go?",
+      "before": null
+    }
+  ]
+}

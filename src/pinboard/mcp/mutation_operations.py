@@ -551,8 +551,9 @@ def _transition(
         if identity.kind == decision_models.ActionKind.CLOSE:
             return _close_route_rejected(
                 identity,
-                "pinboard_transition does not apply close; close is applied only through pinboard_close, which asks "
-                "the human to confirm and records their decision.",
+                "pinboard_transition does not apply close; close is applied only through pinboard_close, which "
+                "records the human's decision. Claude Code v2.1.199 or later asks the human to confirm that call; "
+                "Codex and earlier Claude Code versions may not ask.",
                 FailureFact("close_tool", tool_names.CLOSE_TOOL),
             )
         return _transition_rejected(

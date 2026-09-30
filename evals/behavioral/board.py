@@ -273,6 +273,7 @@ class RecordReady(Request, frozen=True):
     accepted_brief_sha256: str
     result_sha256: str
     review_sha256: str
+    reviewer_prompt_sha256: str
     reviewer_task_id: str
     reviewer_prompt_sha256: str
     verdict: Literal["ready"]

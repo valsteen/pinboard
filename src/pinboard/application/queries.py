@@ -1081,6 +1081,12 @@ def _project_closure(facts: query_models.ItemClosureFacts | None) -> query_model
     )
 
 
+def presented_item_state(value: stored_state.StoredWorkItemState) -> stored_state.StoredWorkItemState:
+    """Present released v6 intake state as the current ready state."""
+
+    return stored_state.StoredWorkItemState.READY if value == stored_state.StoredWorkItemState.INTAKE else value
+
+
 def project_item_status(
     reader: ports.ItemStatusReader,
     reviews: ports.ReadyCandidateReviewReader,
@@ -1149,7 +1155,7 @@ def project_item_status(
         str(facts.project_revision),
         str(item.work_item_id),
         facts.definition_title,
-        stored_state.StoredWorkItemState.READY if item.state == stored_state.StoredWorkItemState.INTAKE else item.state,
+        presented_item_state(item.state),
         item.timing,
         item.outcome_evidence,
         item.source,
@@ -1180,6 +1186,99 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
             for owner in facts.owners
         ),
     )
+
+
+def _checkpoint_selection(
+    work_item_id: WorkItemId,
+    state: stored_state.StoredWorkItemState,
+    attempt_id: AttemptId,
+    checkpoint: query_models.IntegrationCheckpointFacts,
+) -> (
+    query_models.CheckpointSelection
+    | query_models.IntegrationCandidateUnavailable
+    | query_models.DamagedTransitionReceipt
+):
+    accepted = decision_models.ActionKind.ACCEPT_CHECKPOINT
+    stored = _stored_receipt(attempt_id, checkpoint.receipt, accepted)
+    if isinstance(stored, query_models.DamagedTransitionReceipt):
+        return stored
+    try:
+        outcome = msgspec.json.decode(
+            bytes(stored.outcome_payload), type=history.CheckpointAcceptanceOutcome, strict=True
+        )
+    except msgspec.DecodeError as error:
+        return _damaged(
+            attempt_id,
+            checkpoint.receipt,
+            accepted,
+            f"The outcome does not decode as checkpoint-acceptance/v2: {error}",
+        )
+    if outcome.outcome != accepted.value:
+        return _damaged(attempt_id, checkpoint.receipt, accepted, "The outcome does not record checkpoint acceptance.")
+    if checkpoint.package_reference is None:
+        return query_models.IntegrationCandidateUnavailable(
+            work_item_id,
+            state,
+            attempt_id,
+            query_models.IntegrationUnavailableReason.CHECKPOINT_WITHOUT_CANDIDATE_SNAPSHOT,
+        )
+    return query_models.CheckpointSelection(
+        attempt_id, work_item_id, outcome.checkpoint, outcome.candidate, stored, checkpoint.package_reference
+    )
+
+
+def select_integration_source(
+    facts: query_models.IntegrationFacts,
+) -> (
+    query_models.IntegrationSourceSelection
+    | query_models.IntegrationCandidateUnavailable
+    | query_models.DamagedTransitionReceipt
+):
+    """Select the item's reviewed candidate whose accepted diff an integration check compares.
+
+    A live attempt's protected candidate wins; otherwise that attempt's latest checkpoint
+    acceptance applies. A done item uses its completion's closing candidate. Accepted-and-
+    continued candidates and earlier checkpoints are never selected.
+    """
+
+    state = presented_item_state(facts.state)
+    unavailable = query_models.IntegrationUnavailableReason
+    if stored_state.live_work_state(facts.state) is None:
+        closing = facts.closing_attempt
+        if facts.closure_action != decision_models.ActionKind.COMPLETE:
+            return query_models.IntegrationCandidateUnavailable(
+                facts.work_item_id, state, None, unavailable.CLOSED_WITHOUT_COMPLETION
+            )
+        if closing is None:
+            return query_models.IntegrationCandidateUnavailable(
+                facts.work_item_id, state, None, unavailable.NO_REVIEWED_CANDIDATE
+            )
+        if closing.candidate_snapshot is None:
+            return query_models.IntegrationCandidateUnavailable(
+                facts.work_item_id,
+                state,
+                closing.attempt_id,
+                unavailable.NO_REVIEWED_CANDIDATE
+                if closing.candidate_revision is None
+                else unavailable.PRE_SNAPSHOT_CANDIDATE,
+            )
+        return query_models.CompletionSelection(closing.candidate_snapshot)
+    attempt = facts.current_attempt
+    if attempt is None:
+        return query_models.IntegrationCandidateUnavailable(
+            facts.work_item_id, state, None, unavailable.NO_REVIEWED_CANDIDATE
+        )
+    if attempt.candidate_revision is not None:
+        if attempt.candidate_snapshot is None:
+            return query_models.IntegrationCandidateUnavailable(
+                facts.work_item_id, state, attempt.attempt_id, unavailable.PRE_SNAPSHOT_CANDIDATE
+            )
+        return query_models.ProtectedReviewSelection(attempt.candidate_snapshot)
+    if attempt.latest_checkpoint is None:
+        return query_models.IntegrationCandidateUnavailable(
+            facts.work_item_id, state, attempt.attempt_id, unavailable.NO_REVIEWED_CANDIDATE
+        )
+    return _checkpoint_selection(facts.work_item_id, state, attempt.attempt_id, attempt.latest_checkpoint)
 
 
 def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:

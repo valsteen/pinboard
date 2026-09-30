@@ -161,6 +161,22 @@ def candidate_kind(snapshot: CandidateSnapshot) -> Literal["working-tree", "comm
             assert_never(unreachable)
 
 
+def compared_from_revision(snapshot: CandidateSnapshot) -> str:
+    """Name the revision the recorded diff starts from: a working tree's preimage or a commit's accepted base."""
+
+    match snapshot:
+        case (
+            WorkingTreeCandidateSnapshot()
+            | DeclaredWorkingTreeCandidateSnapshot()
+            | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot()
+        ):
+            return snapshot.preimage_revision
+        case CommitCandidateSnapshot() | DeclaredCommitCandidateSnapshot():
+            return snapshot.accepted_base_revision
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def decode_candidate_snapshot(value: bytes) -> CandidateSnapshot:
     try:
         decoded = msgspec.json.decode(

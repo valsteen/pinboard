@@ -457,7 +457,7 @@ class McpCaptureTest(unittest.TestCase):
             }
             original_request = json.loads(json.dumps(request))
             rejected: dict[str, execution.JsonValue] = {
-                "schema": "pinboard-mcp-item-status-result/v2",
+                "schema": "pinboard-mcp-item-status-result/v3",
                 "status": "rejected",
                 "code": "ITEM_NOT_FOUND",
                 "message": "Missing.",

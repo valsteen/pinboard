@@ -1,5 +1,7 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -56,6 +58,30 @@ type CandidateRestoreResult = CandidateRestoreSuccess | CandidateRestoreRejectio
 
 class CandidateRestoreAfterMutationError(RootError):
     """The checkout changed before exact restoration verification failed."""
+
+
+@dataclass(frozen=True, slots=True)
+class TargetUnresolved:
+    """The caller-named target does not name a commit in the local repository."""
+
+    target: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewedDiffPresent:
+    """The reviewed diff reverse-applies cleanly to the resolved target commit's tree."""
+
+    target_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewedDiffAbsent:
+    """The reviewed diff does not reverse-apply cleanly to the resolved target commit's tree."""
+
+    target_revision: str
+
+
+type TargetContentObservation = ReviewedDiffPresent | ReviewedDiffAbsent | TargetUnresolved
 
 
 def _resolve_git_path(cwd: Path, selector: str, unavailable_message: str) -> Path:
@@ -217,6 +243,88 @@ def read_untracked_paths(cwd: Path) -> tuple[str, ...]:
         unavailable_message=f"Cannot read untracked paths at '{cwd}'.",
     )
     return tuple(path.decode() for path in paths.split(b"\0") if path)
+
+
+def resolve_target_commit(cwd: Path, target: str) -> str | TargetUnresolved:
+    """Resolve one caller-named revision to a full local commit without fetching."""
+
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    revision = result.stdout.strip()
+    if result.returncode == 0 and revision:
+        return revision
+    if result.returncode == 1:
+        return TargetUnresolved(target)
+    raise RootError(
+        RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+        result.stderr.strip() or f"Cannot resolve '{target}' in the Git checkout at '{cwd}'.",
+    )
+
+
+def observe_reviewed_diff_at_target(cwd: Path, target: str, diff: bytes) -> TargetContentObservation:
+    """Check whether one nonempty reviewed binary diff is present in a target commit's tree.
+
+    Git reads the target tree into an index inside a private temporary directory and
+    reverse-applies the diff against that index only. The repository's working tree,
+    real index, refs, objects and other Git metadata stay unchanged and may be read-only.
+    The check ignores user whitespace and split-index configuration.
+    """
+
+    resolved = resolve_target_commit(cwd, target)
+    if isinstance(resolved, TargetUnresolved):
+        return resolved
+    try:
+        with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as directory:
+            environment = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
+            loaded = subprocess.run(
+                ["git", "-c", "core.splitIndex=false", "read-tree", resolved],
+                cwd=cwd,
+                env=environment,
+                capture_output=True,
+                check=False,
+            )
+            if loaded.returncode != 0:
+                raise RootError(
+                    RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                    loaded.stderr.decode(errors="replace").strip() or f"Cannot read the tree of '{resolved}'.",
+                )
+            applied = subprocess.run(
+                [
+                    "git",
+                    "apply",
+                    "--cached",
+                    "--check",
+                    "--reverse",
+                    "--whitespace=nowarn",
+                    "--no-ignore-whitespace",
+                    "-",
+                ],
+                cwd=cwd,
+                env=environment,
+                input=diff,
+                capture_output=True,
+                check=False,
+            )
+    except OSError as error:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            f"Cannot check the reviewed diff in a private temporary index: {error}",
+        ) from error
+    match applied.returncode:
+        case 0:
+            return ReviewedDiffPresent(resolved)
+        case 1:
+            return ReviewedDiffAbsent(resolved)
+        case _:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                applied.stderr.decode(errors="replace").strip() or f"Cannot check the reviewed diff at '{resolved}'.",
+            )
 
 
 def read_current_head_candidate(

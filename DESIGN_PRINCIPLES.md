@@ -30,7 +30,7 @@ File size and total lines are separate signals, not objectives. A reduction help
 
 Use a module cohesion budget as a review trigger, not a pass/fail metric. At 1,500 source lines or 24 direct imports, inventory the module's top-level responsibilities and import neighborhoods. Split it when two groups can name independent product effects or verbs and each can depend on fewer collaborators. Keep a larger declarative catalog or one closed decision family together when extraction would add re-exports, translation, cycles, or scattered branching. Stop when every remaining module has one thematic owner and another move would increase dependency fan-out.
 
-Agent-facing schemas, values, and entry points are product surfaces when agents can use them to steer work. Unless a public API or CLI already makes the contract obvious, keep the consumer, semantic effect or deliberate non-effect, and owner discoverable from the definition or direct entry point. Remove a surface that survives only because a schema can carry it.
+Agent-facing schemas, values, and entry points are product surfaces when agents can use them to steer work. Unless a public API or CLI already makes the contract obvious, keep the consumer, semantic effect or deliberate non-effect, and owner discoverable from the definition or direct entry point. Remove a surface that survives only because a schema can carry it. Procedural complexity may sit on the agent side when the human surface stays simple and safe.
 
 Check a representative native success and expected rejection as a fresh agent would: identify the entry preconditions, what the result observed, whether anything committed, the retry or authority limit, and one supported next action or exact current-action lookup. Confirm those claims from the advertised result and a focused behavior check. Use a fresh-agent scenario only when deterministic evidence leaves a real route ambiguity; do not turn one gap into a command-wide rewrite.
 
@@ -106,6 +106,14 @@ Translate an external protocol into operation-specific typed observations at its
 
 MCP decodes strict request records and correlates typed results before application use. The Git-config adapter turns Git process and NUL-framed output into typed reads and write acknowledgment; each setting owner validates its values and reports its path and first-use effects. SQLite adapters convert rows and stale-write observations into operation-specific values. An effect-boundary exception becomes a typed use-case failure where a caller assigns effect, retry, recovery, or stable diagnostic meaning. These boundaries need their own useful shapes, not one generic result wrapper.
 
+### Leave evidence an agent can diagnose from
+
+Treat logs and diagnostics as agent-facing interfaces when designing or changing an operation. Use stable event codes, a correlation identifier across participating processes, before and after identities, effect and retry disposition, and a short human message. Keep the code catalog at one owner; guidance refers to those codes rather than depending on message wording.
+
+Provide one diagnostic read that explains selected mode and configuration, versions, unfinished procedures, and recent events. Keep full validation distinct from ordinary reads. Recovery uses ordinary, previewable operations rather than hand-editing storage. Explain which state Pinboard owns and can recover, and which adjacent state it can only warn about or require the human to address first.
+
+Size evidence to the state and effects the program owns. Keep routine diagnostics bounded under a declared retention policy; retain provenance according to its product-owned contract. Exact payload capture requires explicit opt-in because it may contain private data. These design requirements do not turn an assessment into authority to retrofit existing operations. Use the [cross-project agentic-readiness method](skills/repository-readiness/references/agentic-readiness.md) when assessing another repository.
+
 ### Make effect contracts locally complete
 
 The caller should be able to determine whether a function can mutate state, perform external I/O, end a transaction, obtain ambient values, invoke caller-supplied behavior, or exit normally with an expected rejection.
@@ -124,6 +132,14 @@ When an optional diagnostic or setting resolver runs before every core operation
 Every internal parameter must serve current behavior, validation, conversion, or a required interface. When a parameter has no such consumer, remove it and any transport-only arguments or resource sampling left in its caller chain. A no-op assignment or explanatory comment cannot justify keeping it.
 
 A helper that takes bread and cheese may return a sandwich. It must not also collect the mail, call another service, or decide whether the meal was authorized.
+
+### Make multi-step procedures previewable, resumable, and explainable
+
+When designing or changing an operation spanning several steps, processes, or machines, return a plan before effects and execute only that exact plan. Bind the plan to its observed identities so changed preconditions reject rather than silently selecting a different procedure.
+
+Give the procedure one commit point. Interruption before it leaves the prior authority valid and usable; interruption after it requires completion. Never leave two authorities, or none, accepting writes without a recorded step explaining the authority state. Durably record each step's produced identity and the next step, and make steps idempotent so a fresh agent can discover where execution stopped and continue safely.
+
+Retain predecessors read-only until a separate human deletion decision. Back up before migration, and perform reversal through the same previewable procedure. A procedure does not destroy retained data as an intermediate step. Keep the plan, commit point, durable progress, and recovery together at the operation's effect owner; do not create a framework for an ordinary atomic effect.
 
 ### Keep resource work proportional to the result
 

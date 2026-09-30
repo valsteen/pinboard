@@ -1,6 +1,6 @@
 ---
 name: repository-readiness
-description: Assess whether an unfamiliar repository can be changed reliably by mapping semantic authority through consumers, projections, and validation, then make only authorized improvements. Use for onboarding vibe-coded, inherited, or long-lived multi-team codebases. Do not use for a known cleanup-only task or a routine guidance correction with an already settled owner.
+description: Assess whether an unfamiliar repository can be changed reliably by mapping semantic authority through consumers, projections, and validation, then make only authorized improvements. Use for onboarding vibe-coded, inherited, or long-lived multi-team codebases, or requests to make a project agent-ready, assess agentic readiness, or perform a readiness check. Do not use for a known cleanup-only task or a routine guidance correction with an already settled owner.
 ---
 
 # Make an unfamiliar repository safe to change
@@ -57,9 +57,15 @@ For each comprehension finding, identify the exact owner, the question a reader 
 
 In assessment-only work, recommend the concrete repair and its owning location. When improvements are authorized, apply the repair within scope and reread the affected path without relying on the investigation notes. The next agent should not need to repeat that investigation to understand current behavior. An audit explanation alone does not repair opaque code; stop when the understanding is locally discoverable and further edits would merely restyle clear work.
 
+## Assess agentic readiness
+
+For an agent-ready or agentic-readiness request, including a readiness check, read [agentic-readiness.md](references/agentic-readiness.md) and apply its capability checks within the selected assessment boundary. Trace authority, consumers, projections, and validation before assigning a capability status. Propose the proportionality tier from observed project effects; keep it proposed until the human confirms it.
+
+Produce the findings, actions, and decisions report under [readiness-report.md](references/readiness-report.md). Present it in the conversation until the human chooses a save path, normally outside tracked files. The report does not authorize improvements or record project policy.
+
 ## Present the diagnosis
 
-Scale the result to the selected mode. Include:
+When agentic readiness was assessed, present the report under its linked contract and carry the relevant authority map and limitations into its findings. Otherwise scale the diagnosis to the selected mode. Include:
 
 - an executive assessment of how safely a newcomer can make the selected change;
 - the authority → consumers → projections → validation map;
@@ -81,8 +87,10 @@ When agents are supported consumers, leave the selected change path usable by a 
 
 When authorized improvement includes durable limitation handling, establish complementary owners rather than copied boilerplate: current architecture or equivalent documentation owns implemented facts; a design authority owns the reusable classification, materiality, acknowledgement, and reopening method; scoped agent guidance provides only the automatic route; and specialized workflows retain only their boundary-specific behavior. Use the target repository's vocabulary and evidence. Do not copy Pinboard-specific limitations into another project.
 
+When readiness improvements are authorized, reuse an already confirmed project tier or obtain the human's confirmation of a proposed tier before recording it in the project's own current architecture notes or scoped agent guidance. Use its existing current-truth owner, with the rationale and observable condition for reconsidering the tier; never record the tier in the Pinboard ledger. A proposed tier alone creates no mandatory guarantee.
+
 Before implementing an improvement that would introduce, widen, preserve, mask, or deepen an unacknowledged material limitation, present one architecture checkpoint using the target project's method. Begin with **Architecture checkpoint**, give numbered consequences and a recommendation, place a bold practical-consequence summary immediately before an ordinary approval question, and proceed only after an explicit answer to that exact decision. Do not require a forced phrase, treat generic improvement authority as acknowledgement, or let the answer expand the authorized improvement scope. Do not repeat an unchanged acknowledged limitation unless its consequence changes materially.
 
 Pause for a human decision when outward behavior, compatibility, persisted data, product identity, or architectural responsibility remains ambiguous. Validate every changed authority, consumer, and projection through the repository's existing checks. Stop when the selected change path is discoverable and another edit would merely restyle clear work or settle unsupported intent.
 
-Confirmed unsupported residue belongs to `$slop-cleanup` when that skill is available; report the candidate and obtain deletion authority rather than copying its recursive removal workflow here. A durable AI-guidance ownership problem may use `$maintaining-agent-guidance` when available. Pinboard may preserve an accepted improvement campaign when the user already uses it. These are optional enhancements: never require or invoke a sibling skill, create work, or initialize Pinboard merely to complete this assessment.
+Confirmed unsupported residue belongs to `$slop-cleanup` when that skill is available; report the candidate and obtain deletion authority rather than copying its recursive removal workflow here. A durable AI-guidance ownership problem may use `$maintaining-agent-guidance` when available. Pinboard may preserve an accepted improvement campaign when the user already uses it. These are optional enhancements. In a project already using Pinboard, offer to save only the actions the human selects as proposals, then use `$pinboard-intake` only after that explicit request. Do not create work automatically or initialize Pinboard to complete an assessment; an offer to save does not authorize implementation. Do not require a sibling skill for the assessment itself.

@@ -72,6 +72,8 @@ Keep the obligations about the product or repository outcome that implementation
 
 Use `follow-up` when the new ready item depends on the related item. Use `prerequisite` when the live related item depends on the new ready item; persistence advances that target item's immutable definition history as well as its relational dependency projection. Use `planned-replacement` when the proposed intake item would replace its affected `relation.item`; proposal creation records the ready item and explicit replacement relation together or accepts neither. Use `duplicate`, `contradiction`, or `clarification` to preserve proposal origin for later evaluation rather than inventing a dependency. Encode `relation.item` as JSON `null` for `independent` and `clarification`; the other relations require a string identity. Every new proposal also creates definition revision 1 from its immutable facts, so do not add parallel semantic prose after intake.
 
+When the concern itself is a readiness gap, name the affected agentic-readiness capability in `why_it_matters` or `effect`.
+
 Do not create work merely because a question was asked. Require an explicit request to preserve or submit the concern.
 
 Before creating a proposal, distinguish exact prior coverage from a merely related theme. If the exact observation and consequence already exist in a known canonical item or proposal, do not create a duplicate merely to produce a receipt. Report `already recorded` with the exact durable selector and current state. If only a broader item exists, treat the exact concern as unrecorded.

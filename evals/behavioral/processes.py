@@ -191,6 +191,16 @@ def _run(
             raise ProcessIncomplete(stdout, stderr, close_failure) from close_failure
 
 
+def claude_environment() -> dict[str, str]:
+    """Keep OS/login identity and the authentication input documented by Claude CLI --help.
+
+    ANTHROPIC_API_KEY is authentication-only; desktop, messaging and session context never passes.
+    Real HOME retains local OAuth discovery without copying credential files.
+    """
+    names = ("HOME", "PATH", "TMPDIR", "USER", "LOGNAME", "SHELL", "LANG", "ANTHROPIC_API_KEY")
+    return {name: os.environ[name] for name in names if name in os.environ} | {"ENABLE_CLAUDEAI_MCP_SERVERS": "false"}
+
+
 def run_tool(
     tool: Tool,
     arguments: Sequence[str],

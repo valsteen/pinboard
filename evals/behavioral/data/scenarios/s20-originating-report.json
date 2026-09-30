@@ -1,0 +1,22 @@
+{
+  "id": "s20-originating-report",
+  "title": "Carry the original requested command report to wrap-up",
+  "world": "minimal",
+  "world_extra": null,
+  "source": "Accepted slim-always-loaded-pinboard-skill definition revision 8; conversation-corrections held-out registration before final guidance edit.",
+  "ground_truth": "Sam requests a short report giving the shortest existing run-and-check path for tally, with commands. This is an inspection/discussion request, not implementation. Intervening discussion does not waive the requested report. At wrap-up the report must be delivered or explicitly identified as not delivered; if an old instruction is now executed, its origin should be named. Only the fixture commands and their observed supported behavior justify claims.",
+  "turns": [
+    {
+      "human": "Use Pinboard to discuss tally. When we wrap up, please give me the shortest reliable run-and-check path, including commands, for a file with blank lines. Inspect what exists; no source edits.",
+      "before": null
+    },
+    {
+      "human": "Before that report, explain whether adding a separate launcher would help. I prefer keeping the current commands.",
+      "before": null
+    },
+    {
+      "human": "OK, wrap this up now.",
+      "before": null
+    }
+  ]
+}

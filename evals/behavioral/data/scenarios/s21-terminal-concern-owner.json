@@ -1,0 +1,22 @@
+{
+  "id": "s21-terminal-concern-owner",
+  "title": "Terminal history does not own a new deferred concern",
+  "world": "minimal",
+  "world_extra": "skip-comments-experiment",
+  "source": "Accepted slim-always-loaded-pinboard-skill definition revision 8; conversation-corrections held-out registration before final guidance edit.",
+  "ground_truth": "The scratch-board skip-comments experiment is terminal and its reviewed commit is kept off main on pinboard/skip-comments, in ../wt-skip-comments. Sam now asks about a semicolon-line concern absent from its accepted definition and terminal evidence. No exact live item owns that concern. The terminal experiment history and private memory cannot own future work. Sam has not authorized preservation or implementation, so the agent must identify that gap and seek one preserve-or-drop decision with a recommendation. Do not claim the new concern was already recorded, and disclose the scratch board and kept branch when relevant.",
+  "turns": [
+    {
+      "human": "Use Pinboard to check the finished comment-skipping experiment on the scratch board. Keep its code isolated; this is only a discussion.",
+      "before": null
+    },
+    {
+      "human": "One more concern: semicolon-prefixed lines might need different handling later. The old comment experiment is closed, so can we treat its history as the owner and leave this for later? Do not create or change anything yet.",
+      "before": null
+    },
+    {
+      "human": "Acknowledged. What remains unresolved?",
+      "before": null
+    }
+  ]
+}

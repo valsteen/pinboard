@@ -410,7 +410,12 @@ def run_turn(
         if thread_id is None
         else ["exec", "resume", "--strict-config", "--json", thread_id, human]
     )
-    completed = codex(arguments, home=home, cwd=project, timeout_seconds=TURN_TIMEOUT_SECONDS, window=window)
+    try:
+        completed = codex(arguments, home=home, cwd=project, timeout_seconds=TURN_TIMEOUT_SECONDS, window=window)
+    except (processes.ProcessInterrupted, processes.CleanupUnconfirmed) as interrupted:
+        raw_path.write_text(interrupted.stdout)
+        raw_path.with_suffix(".stderr").write_text(interrupted.stderr)
+        raise
     raw_path.write_text(completed.stdout)
     raw_path.with_suffix(".stderr").write_text(completed.stderr)
     return completed, read_events(completed.stdout)

@@ -18,6 +18,7 @@ from evals.behavioral import board, cli, credentials, export, oneshot, processes
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
     Assessed,
+    AssessmentFailure,
     AssessmentRecord,
     CodexRunDetails,
     Completed,
@@ -25,11 +26,13 @@ from evals.behavioral.records import (
     ExportRecord,
     LabelMapping,
     ProbeRecord,
+    RunKey,
     RunRecord,
     Runtime,
     Scored,
     ScorerInput,
     ScorerSession,
+    ScoringFailure,
     SubstanceAnswer,
     SubstanceVerdict,
     TurnEvidence,
@@ -66,20 +69,27 @@ class EffectDeadlineTest(unittest.TestCase):
         self.assertEqual("partial", result.stdout)
         self.assertEqual(3, child.communicate.call_args_list[0].kwargs["timeout"])
         self.assertTrue(start.call_args.kwargs["start_new_session"])
-        kill.assert_called_once_with(777, signal.SIGKILL)
+        kill.assert_called_once_with(777, signal.SIGINT)
 
     def test_child_cleanup_precedes_credential_settlement_and_removal(self) -> None:
         order: list[str] = []
         child = MagicMock()
-        child.pid, child.returncode = 777, -9
+        child.pid, child.returncode = 777, 1
         child.communicate.side_effect = [subprocess.TimeoutExpired("codex", 3), (b"", b"")]
 
-        def cleaned(_pid: int, _signal: int) -> None:
-            order.append("cleanup")
+        detached_tool_alive = [True]
+
+        def native_shutdown(selected: signal.Signals) -> None:
+            self.assertEqual(signal.SIGINT, selected)
+            detached_tool_alive[0] = False
+            order.append("native shutdown")
+
+        child.send_signal.side_effect = native_shutdown
 
         original = credentials.settle
 
         def settled(home: credentials.IsolatedHome) -> credentials.CredentialSettlement:
+            self.assertFalse(detached_tool_alive[0])
             order.append("settle")
             return original(home)
 
@@ -90,7 +100,7 @@ class EffectDeadlineTest(unittest.TestCase):
             with (
                 patch.object(credentials, "settle", side_effect=settled),
                 patch.object(processes.subprocess, "Popen") as start,
-                patch.object(processes.os, "killpg", side_effect=cleaned),
+                patch.object(processes.os, "killpg") as forced,
             ):
                 start.return_value.__enter__.return_value = child
                 with credentials.isolated_home(source, root, processes.Window(None)) as home:
@@ -104,7 +114,47 @@ class EffectDeadlineTest(unittest.TestCase):
                         window=processes.Window(None),
                     )
                 self.assertFalse(home.path.exists())
-        self.assertEqual(["cleanup", "settle"], order)
+        self.assertEqual(["native shutdown", "settle"], order)
+        forced.assert_not_called()
+
+    def test_unconfirmed_native_shutdown_retains_home_and_prevents_credential_settlement(self) -> None:
+        child = MagicMock()
+        child.pid, child.returncode = 777, -9
+        child.communicate.side_effect = [
+            subprocess.TimeoutExpired("codex", 1),
+            subprocess.TimeoutExpired("shutdown", 10),
+            (b"partial", b"still uncertain"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "auth.json"
+            source.write_bytes(b"{}")
+            with (
+                patch.object(processes.subprocess, "Popen") as start,
+                patch.object(processes.os, "killpg") as force,
+                patch.object(credentials, "settle") as settle,
+            ):
+                start.return_value.__enter__.return_value = child
+                with (
+                    self.assertRaises(processes.CleanupUnconfirmed) as failure,
+                    credentials.isolated_home(source, root, processes.Window(None)) as home,
+                ):
+                    processes.run_tool(
+                        processes.Tool.CODEX,
+                        [],
+                        cwd=root,
+                        environment={},
+                        stdin=None,
+                        timeout_seconds=1,
+                        window=processes.Window(None),
+                    )
+                self.assertTrue(home.path.exists())
+                self.assertEqual(b"{}", source.read_bytes())
+                self.assertIn(str(home.path), str(failure.exception))
+                self.assertEqual("partial", failure.exception.stdout)
+                settle.assert_not_called()
+                child.send_signal.assert_called_once_with(signal.SIGINT)
+                force.assert_called_once_with(777, signal.SIGKILL)
 
     def test_busy_credential_lock_observes_the_same_deadline_before_copying_a_login(self) -> None:
         with (
@@ -126,6 +176,72 @@ class EffectDeadlineTest(unittest.TestCase):
         self.assertIsNone(answer.cost_usd)
         self.assertEqual("partial", answer.stdout)
         self.assertEqual(123, run.call_args.kwargs["window"].deadline)
+
+
+class PaidInterruptionTest(unittest.TestCase):
+    def test_started_scorer_and_assessor_preserve_partial_output_and_unknown_usage(self) -> None:
+        for owner in ("scorer", "assessor"):
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as directory:
+                layout = Layout(Path(directory))
+                budget = spend.Budget(layout, 120, processes.Window(None), True)
+                key = RunKey(scenario_id="s14-motivating-replay", variant="candidate", index=1)
+                source = ScorerInput(
+                    schema="pinboard-behavioral-scorer-input/v1",
+                    run=key,
+                    replies=["reply"] * 6,
+                    states=[],
+                    hooks_log=None,
+                    redactions=[],
+                )
+                child = MagicMock()
+                child.pid, child.returncode = 777, 0
+                child.communicate.side_effect = [KeyboardInterrupt(), (b"paid partial bytes", b"diagnostic")]
+                with (
+                    patch.object(scoring, "prompt", return_value="prompt"),
+                    patch.object(processes.subprocess, "Popen") as start,
+                    patch.object(processes.os, "killpg"),
+                ):
+                    start.return_value.__enter__.return_value = child
+                    with self.assertRaises(processes.ProcessInterrupted):
+                        if owner == "scorer":
+                            scoring.ScoringRun(layout, budget).score(source)
+                        else:
+                            record = MagicMock(spec=RunRecord)
+                            record.run = key
+                            with (
+                                patch.object(substance, "prompt", return_value="prompt"),
+                                patch.object(substance, "turn_words", return_value=[]),
+                            ):
+                                substance.assess_run(record, layout.assessment_directory(key), budget.window)
+                self.assertTrue(spend.main_usage_unknown(layout))
+                self.assertEqual(0, spend.total(spend.items(layout)))
+                self.assertIsNone(budget.reserve(spend.Category.SCORER))
+                raw = next(layout.root.rglob("raw.json"))
+                self.assertEqual("paid partial bytes", raw.read_text())
+                records = list(layout.scorer_sessions()) if owner == "scorer" else list(layout.assessments())
+                self.assertEqual(1, len(records))
+                self.assertIsNone(records[0].cost_usd)
+
+    def test_prestart_refusal_does_not_invent_started_paid_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            layout = Layout(Path(directory))
+            budget = spend.Budget(layout, 120, processes.Window(None), True)
+            source = ScorerInput(
+                schema="pinboard-behavioral-scorer-input/v1",
+                run=RunKey(scenario_id="s14-motivating-replay", variant="candidate", index=1),
+                replies=[],
+                states=[],
+                hooks_log=None,
+                redactions=[],
+            )
+            with (
+                patch.object(scoring, "prompt", return_value="prompt"),
+                patch.object(oneshot, "ask", side_effect=TimeoutError("expired before process start")),
+                self.assertRaises(TimeoutError),
+            ):
+                scoring.ScoringRun(layout, budget).score(source)
+            self.assertEqual([], list(layout.scorer_sessions()))
+            self.assertFalse(spend.main_usage_unknown(layout))
 
 
 class McpDeadlineTest(unittest.IsolatedAsyncioTestCase):
@@ -167,6 +283,83 @@ class McpDeadlineTest(unittest.IsolatedAsyncioTestCase):
 
 
 class CoverageDeadlineTest(unittest.TestCase):
+    def test_missing_both_target_scores_is_incomplete_even_when_iteration_returns_normally(self) -> None:
+        evaluated = ExportRecord(
+            schema="pinboard-behavioral-export/v1", commit="0" * 40, skills_sha256="0" * 64, plugin_root="/plugin"
+        )
+        observed = ProbeRecord(
+            schema="pinboard-behavioral-probe/v1",
+            name="isolation",
+            runtime=Runtime.CODEX,
+            description="controlled",
+            cost_usd=0,
+            passed=True,
+            findings=[],
+            inventory=[],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command = cli.CoverageCodex(
+                root,
+                "0" * 40,
+                root / "export",
+                Path("evals/behavioral/data/scenario-sets/s13-s17.json"),
+                "candidate",
+                1,
+                100,
+                "gpt-6-sol",
+                "high",
+                root / "out",
+                root / "worlds",
+                120,
+                True,
+            )
+            with (
+                patch.object(runner, "require_codex_world_location"),
+                patch.object(export, "export_revision", return_value=evaluated),
+                patch.object(cli.probe, "probe_codex", return_value=observed),
+                patch.object(runner, "run_codex", return_value=[]),
+            ):
+                self.assertEqual(2, cli.coverage_codex(command))
+            result = msgspec.json.decode((command.out / "coverage.json").read_bytes(), type=CoverageResult)
+            self.assertEqual("incomplete", result.status)
+            self.assertEqual([], result.scored_runs)
+            self.assertIn("s14-motivating-replay", result.reason)
+
+    def test_malformed_score_or_assessment_is_retained_as_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            layout = Layout(Path(directory))
+            budget = spend.Budget(layout, 120, processes.Window(None), True)
+            key = RunKey(scenario_id="s14-motivating-replay", variant="candidate", index=1)
+            source = ScorerInput(
+                schema="pinboard-behavioral-scorer-input/v1",
+                run=key,
+                replies=[],
+                states=[],
+                hooks_log=None,
+                redactions=[],
+            )
+            write_new(layout.run_directory(key) / "scorer-input.json", source)
+            with (
+                patch.object(scoring.ScoringRun, "score", return_value=ScoringFailure(reason="malformed")),
+                self.assertRaises(ValueError),
+            ):
+                cli.score_pending(layout, budget)
+            write_new(
+                layout.assessment_directory(key) / "assessment.json",
+                AssessmentRecord(
+                    schema="pinboard-behavioral-substance/v1",
+                    run=key,
+                    assessor_model="test",
+                    cost_usd=0.01,
+                    words=[],
+                    outcome=AssessmentFailure(reason="malformed"),
+                ),
+            )
+            with patch.object(substance, "assess", return_value=[]), self.assertRaises(ValueError):
+                cli.assess_pending(layout, budget)
+            self.assertIsInstance(next(layout.assessments()).outcome, AssessmentFailure)
+
     def test_export_probe_run_scoring_and_assessment_share_one_window_and_preserve_completed_evidence(self) -> None:
         stages: list[str] = []
         windows: list[processes.Window] = []

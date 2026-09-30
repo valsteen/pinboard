@@ -11,6 +11,7 @@ import signal
 import subprocess
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -60,6 +61,56 @@ def executable(tool: Tool) -> str:
     return found
 
 
+class ProcessInterrupted(KeyboardInterrupt):
+    """A started subprocess was interrupted after bounded cleanup; preserve its partial output."""
+
+    def __init__(self, stdout: bytes, stderr: bytes) -> None:
+        super().__init__("started subprocess interrupted; usage may be unreported")
+        self.stdout = stdout.decode(errors="replace")
+        self.stderr = stderr.decode(errors="replace")
+
+
+class CleanupUnconfirmed(subprocess.SubprocessError):
+    """Native shutdown did not complete; owned effects may remain and credentials must be retained."""
+
+    def __init__(self, pid: int, stdout: bytes, stderr: bytes) -> None:
+        super().__init__(
+            f"native shutdown for process {pid} unconfirmed; stop and inspect owned effects before credential cleanup"
+        )
+        self.stdout = stdout.decode(errors="replace")
+        self.stderr = stderr.decode(errors="replace")
+
+
+def _cancel(child: subprocess.Popen[bytes], native_shutdown: bool) -> tuple[bytes, bytes]:
+    """Request Codex's SIGINT turn interruption and shutdown before any forceful fallback.
+
+    Its supported tools own separate sessions; only completed native shutdown establishes their cleanup.
+    Other harness commands receive SIGINT in their inherited group. A forced fallback is never confirmation.
+    """
+    with suppress(ProcessLookupError):
+        if native_shutdown:
+            child.send_signal(signal.SIGINT)
+        else:
+            os.killpg(child.pid, signal.SIGINT)
+    try:
+        stdout, stderr = child.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        with suppress(ProcessLookupError):
+            os.killpg(child.pid, signal.SIGKILL)
+        try:
+            stdout, stderr = child.communicate(timeout=10)
+        except subprocess.TimeoutExpired as incomplete:
+            stdout, stderr = incomplete.output or b"", incomplete.stderr or b""
+        raise CleanupUnconfirmed(child.pid, stdout, stderr) from None
+    if native_shutdown and (
+        child.returncode < 0
+        or b"in-process app-server shutdown failed" in stderr
+        or b"thread/unsubscribe failed during shutdown" in stderr
+    ):
+        raise CleanupUnconfirmed(child.pid, stdout, stderr)
+    return stdout, stderr
+
+
 def _run(
     argv: Sequence[str],
     *,
@@ -68,10 +119,12 @@ def _run(
     stdin: bytes | None,
     timeout_seconds: float,
     window: Window,
+    native_shutdown: bool,
 ) -> tuple[int, bytes, bytes, bool]:
-    """Bound a subprocess and its inherited process group; retain partial bytes on timeout.
+    """Bound a subprocess; finish supported shutdown before returning to credential settlement.
 
-    Cleanup completes before returning to credential settlement. macOS and Linux both support POSIX groups.
+    Interrupted output crosses this effect boundary in ProcessInterrupted. CleanupUnconfirmed prevents
+    settlement when the native owner could not finish stopping its separate tool groups.
     """
     timeout = window.timeout(timeout_seconds)
     with subprocess.Popen(
@@ -86,12 +139,13 @@ def _run(
         try:
             stdout, stderr = child.communicate(stdin, timeout=timeout)
         except subprocess.TimeoutExpired:
-            os.killpg(child.pid, signal.SIGKILL)
-            stdout, stderr = child.communicate(timeout=10)
+            stdout, stderr = _cancel(child, native_shutdown)
             return child.returncode, stdout, stderr, True
+        except KeyboardInterrupt:
+            stdout, stderr = _cancel(child, native_shutdown)
+            raise ProcessInterrupted(stdout, stderr) from None
         except BaseException:
-            os.killpg(child.pid, signal.SIGKILL)
-            child.communicate(timeout=10)
+            _cancel(child, native_shutdown)
             raise
         return child.returncode, stdout, stderr, False
 
@@ -113,6 +167,7 @@ def run_tool(
         stdin=None if stdin is None else stdin.encode(),
         timeout_seconds=timeout_seconds,
         window=window,
+        native_shutdown=tool is Tool.CODEX,
     )
     return Completed(code, stdout.decode(errors="replace"), stderr.decode(errors="replace"), timed_out)
 
@@ -140,6 +195,7 @@ def git_archive(commit: str, *, cwd: Path, window: Window) -> bytes:
         stdin=None,
         timeout_seconds=300,
         window=window,
+        native_shutdown=False,
     )
     if timed_out:
         raise TimeoutError("candidate archive timed out")
@@ -169,5 +225,6 @@ def _launcher(argv: list[str], window: Window) -> Completed:
         stdin=None,
         timeout_seconds=1800,
         window=window,
+        native_shutdown=False,
     )
     return Completed(code, stdout.decode(errors="replace"), stderr.decode(errors="replace"), timed_out)

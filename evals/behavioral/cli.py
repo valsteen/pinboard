@@ -18,11 +18,13 @@ from evals.behavioral.credentials import default_source
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
     Assessed,
+    AssessmentFailure,
     Completed,
     CoverageResult,
     CoverageWindow,
     RegisteredScenario,
     ScenarioId,
+    Scored,
     ScorerInput,
     write_new,
 )
@@ -505,9 +507,14 @@ def coverage_codex(c: CoverageCodex) -> int:
                 skipped = runner.run_codex(runner.CodexPlan(plan, c.reasoning_effort, default_source()), budget)
                 if skipped:
                     raise ValueError("known-priced cap or unreported usage prevents another paid run")
+                key = plan.planned()[0][1]
+                record = next((r for r in layout.run_records() if r.run == key), None)
+                if record is None or not isinstance(record.outcome, Completed):
+                    raise ValueError(
+                        f"{key.display()} did not complete; inspect its retained evidence before further paid work"
+                    )
                 score_pending(layout, budget)
-                if substance.assess(layout, budget):
-                    raise ValueError("cap or unreported usage prevents substance assessment")
+                assess_pending(layout, budget)
                 print(
                     f"recorded {scenario.id}/{c.variant}-{index}; "
                     f"completed {sum(isinstance(r.outcome, Completed) for r in layout.run_records())}; "
@@ -518,7 +525,16 @@ def coverage_codex(c: CoverageCodex) -> int:
                 )
                 if spend.main_usage_unknown(layout):
                     raise ValueError("a started session has unreported usage; no further paid work starts")
+        counts = scoring.valid_score_counts(layout)
+        covered = {
+            r.run.scenario_id
+            for r in layout.run_records()
+            if isinstance(r.outcome, Completed) and r.run.display() in counts
+        }
+        if missing := {s.id for s in targets} - covered:
+            raise ValueError("no completed, validly blind-scored minimum for: " + ", ".join(sorted(missing)))
     except (
+        processes.CleanupUnconfirmed,
         TimeoutError,
         ValueError,
         runner.IsolationBreachError,
@@ -557,8 +573,18 @@ def score_pending(layout: Layout, budget: spend.Budget) -> None:
     for source in layout.scorer_inputs():
         if source.run.display() in counts:
             continue
-        if scoring.ScoringRun(layout, budget).score(source) is None:
+        outcome = scoring.ScoringRun(layout, budget).score(source)
+        if outcome is None:
             raise ValueError("cap or unreported usage prevents blind scoring")
+        if not isinstance(outcome, Scored):
+            raise ValueError("blind scoring failed; retained outcome is incomplete")
+
+
+def assess_pending(layout: Layout, budget: spend.Budget) -> None:
+    if substance.assess(layout, budget):
+        raise ValueError("cap or unreported usage prevents substance assessment")
+    if any(isinstance(a.outcome, AssessmentFailure) for a in layout.assessments()):
+        raise ValueError("substance assessment failed; retained outcome is incomplete")
 
 
 def report_skipped(skipped: list[str]) -> None:

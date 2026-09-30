@@ -230,6 +230,19 @@ def project_transition_mutation(
         input_payload = work_models.CanonicalJson(
             msgspec.json.encode({"reason": decision.receipt.evidence}, order="sorted")
         )
+    elif isinstance(decision.change, decision_models.WorkItemClosureChange):
+        closure = decision.change
+        input_schema = "pinboard-close-decision/v1"
+        input_payload = work_models.CanonicalJson(
+            msgspec.json.encode(
+                {
+                    "human_decision": closure.human_decision,
+                    "outcome": closure.terminal_state.value,
+                    "reason": closure.evidence,
+                },
+                order="sorted",
+            )
+        )
     elif isinstance(decision.change, decision_models.PlannedReplacementChange):
         relation = decision.change.relation
         input_schema = "pinboard-planned-replacement/v1"

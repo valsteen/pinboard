@@ -9,7 +9,7 @@ from typing import Literal, assert_never
 
 import msgspec
 
-from pinboard.adapters import candidate_evidence
+from pinboard.adapters import candidate_evidence, review_operations
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode, FileIOError
 from pinboard.adapters.files.root import (
@@ -737,6 +737,18 @@ def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure v
                 supplied.evidence,
             )
         )
+    if (
+        failure := review_operations.commissioned_review_failure(
+            store,
+            artifacts,
+            attempt=attempt,
+            brief=brief,
+            result_sha256=command.value.result_sha256,
+            review_sha256=command.value.review_sha256,
+            reviewer_task_id=str(command.value.reviewer_task_id),
+        )
+    ) is not None:
+        return failure
     return _CompletionContext(
         brief,
         attempt.brief_reference,

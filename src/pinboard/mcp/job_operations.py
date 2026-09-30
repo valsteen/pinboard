@@ -35,6 +35,7 @@ from pinboard.domain import decision_models
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
+    DecisionFailureCode,
     EffectDisposition,
     FailureDetails,
     FailureFact,
@@ -207,17 +208,30 @@ def _record_ready_review(
         durable.work_root,
         store,
         ArtifactRepository(durable),
-        AttemptId(choice.attempt_id),
-        choice.candidate_revision,
-        choice.candidate_snapshot_sha256,
-        choice.accepted_brief_sha256,
-        choice.result_sha256,
-        choice.review_sha256,
-        choice.reviewer_task_id,
-        choice.acceptance_evidence,
+        review_operations.ReadyReviewClaim(
+            AttemptId(choice.attempt_id),
+            choice.candidate_revision,
+            choice.candidate_snapshot_sha256,
+            choice.accepted_brief_sha256,
+            choice.result_sha256,
+            choice.review_sha256,
+            choice.reviewer_prompt_sha256,
+            choice.reviewer_task_id,
+            choice.acceptance_evidence,
+        ),
     )
     if isinstance(recorded, DecisionFailure):
-        return _job_failure(schema, choice.attempt_id, recorded.code.value, recorded.message, recorded.details, False)
+        details = recorded.details
+        if recorded.code == DecisionFailureCode.REVIEWER_PROMPT_NOT_COMMISSIONED and details is not None:
+            details = FailureDetails(
+                observed=(*details.observed, FailureFact("next_step_tool", tool_names.REVIEW_JOB_TOOL)),
+                mismatches=details.mismatches,
+                retry=details.retry,
+                effect=details.effect,
+                changed_surfaces=details.changed_surfaces,
+                alternatives=details.alternatives,
+            )
+        return _job_failure(schema, choice.attempt_id, recorded.code.value, recorded.message, details, False)
     if isinstance(recorded, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         return _job_failure(
             schema,

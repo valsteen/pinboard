@@ -165,6 +165,11 @@ class PluginPackagingTests(unittest.TestCase):
             fresh = self.run_permission_hook(payload, home, project)
             self.assert_permission_decision(fresh, "allow")
             self.assertEqual("", fresh.stderr)
+            # The close prompt comes from Claude Code's requiresUserInteraction handling, not from this hook.
+            close_payload = json.dumps(
+                {**event, "tool_name": "mcp__plugin_pinboard_pinboard__pinboard_close", "tool_input": {}}
+            )
+            self.assert_permission_decision(self.run_permission_hook(close_payload, home, project), "allow")
             for sensitive in ("sensitive-parent-session", "/sensitive/", "permission_mode"):
                 self.assertNotIn(sensitive, fresh.stdout)
             # Saved rules are Claude Code's to enforce; the hook neither reads them nor changes its answer.
@@ -398,7 +403,7 @@ class PluginPackagingTests(unittest.TestCase):
                         initialized = await session.initialize()
                         self.assertEqual("pinboard", initialized.server_info.name)
                         discovered = await session.list_tools()
-                        self.assertEqual(22, len(discovered.tools))
+                        self.assertEqual(23, len(discovered.tools))
                         if manifest_index == 0:
                             created = await session.call_tool(
                                 "pinboard_proposal_create",

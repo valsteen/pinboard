@@ -388,6 +388,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                     "accepted_brief_sha256": attempt.brief_reference.content_sha256,
                     "result_sha256": hashlib.sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
                     "review_sha256": hashlib.sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
+                    "reviewer_prompt_sha256": self.json_object(review_job["prompt_reference"])["sha256"],
                     "reviewer_task_id": "independent-candidate-reviewer",
                     "verdict": "ready",
                     "acceptance_evidence": "The corrected commit satisfies the same accepted local brief.",

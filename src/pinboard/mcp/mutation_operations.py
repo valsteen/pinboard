@@ -19,6 +19,7 @@ from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewWarning
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.application import (
+    action_models,
     authority_operations,
     ports,
     proposal_models,
@@ -318,7 +319,11 @@ def _transition_rejected(
                     "then discover this action through pinboard_actions."
                 )
         case RetryDisposition.DO_NOT_RETRY:
-            continuation = _transition_current_state_route(action_id.kind)
+            continuation = (
+                _COMMISSIONED_REVIEW_ROUTE
+                if failure.code == DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED
+                else _transition_current_state_route(action_id.kind)
+            )
         case _ as unreachable:
             assert_never(unreachable)
     return execution.OperationResult(
@@ -331,6 +336,49 @@ def _transition_rejected(
             "state_changed": False,
             **details,
             "continuation": continuation,
+        },
+        "rejected",
+        None,
+    )
+
+
+_COMMISSIONED_REVIEW_ROUTE = (
+    "Do not replay this completion. Commission the review first: run pinboard_review_job for the round that "
+    "pinboard_attempt_inspect reports, launch exactly the returned native reviewer, record its ready verdict with "
+    "pinboard_review_job kind:'record-ready' and the returned prompt_reference.sha256 as reviewer_prompt_sha256, then "
+    "rediscover completion through pinboard_actions and complete with that reviewer's reviewer_task_id."
+)
+_CLOSE_DECISION_ROUTE = (
+    "Close only through pinboard_close with the human's explicit close decision in their own words as "
+    "payload.human_decision. If you do not have that decision, ask the human and stop; never write it yourself. If "
+    "the host denies pinboard_close, report that the human must confirm the close and seek no other route."
+)
+
+
+def _close_route_rejected(
+    identity: contracts.ActionIdentity, message: str, observed: FailureFact
+) -> execution.OperationResult:
+    """Refuse a close attempt unchanged and send the agent back to the human-confirmed close route."""
+
+    return execution.OperationResult(
+        {
+            "schema": "pinboard-mcp-transition-result/v1",
+            "status": "rejected",
+            "action_id": common._transition_action_json(identity),
+            "code": DecisionFailureCode.TRANSITION_INPUT_INVALID.value,
+            "message": message,
+            "state_changed": False,
+            **common._details_json(
+                FailureDetails(
+                    observed=(observed,),
+                    mismatches=(),
+                    retry=RetryDisposition.CORRECT_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                )
+            ),
+            "continuation": _CLOSE_DECISION_ROUTE,
         },
         "rejected",
         None,
@@ -357,29 +405,51 @@ def _with_completion_reinspection(
     project_root: str,
     work_root: str,
 ) -> DecisionFailure:
-    """Attach the read-only focused route after any rejected completion receipt."""
+    """Attach the read-only focused route after any rejected completion receipt.
+
+    A missing commissioned review keeps its own retry and gains the exact review route ahead of reinspection.
+    """
     if identity.kind != decision_models.ActionKind.COMPLETE:
         return failure
     details = failure.details
+    roots: dict[str, JsonValue] = {"project_root": project_root, "work_root": work_root}
     request: dict[str, JsonValue] = {
         "request": {
-            "project_root": project_root,
-            "work_root": work_root,
+            **roots,
             "role": "project",
             "action_id": {"kind": "complete", "subject": identity.subject},
         }
     }
+    review_route: tuple[FailureFact, ...] = ()
+    retry = RetryDisposition.REFRESH_ACTION
+    if failure.code == DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED and details is not None:
+        retry = details.retry
+        inspection: dict[str, JsonValue] = {**roots, "attempt_id": identity.subject, "reconciliation": None}
+        review_route = (
+            FailureFact("review_round_tool", tool_names.ATTEMPT_INSPECT_TOOL),
+            FailureFact("review_round_input", msgspec.json.encode(inspection, order="sorted").decode()),
+            FailureFact("review_commission_tool", tool_names.REVIEW_JOB_TOOL),
+            FailureFact("review_launch", "Launch exactly the native_launch the review job returns."),
+            FailureFact("review_record_tool", tool_names.REVIEW_JOB_TOOL),
+            FailureFact(
+                "review_record_input",
+                "kind:'record-ready' with the returned prompt_reference.sha256 as reviewer_prompt_sha256 and the "
+                "launched reviewer's reviewer_task_id",
+            ),
+            FailureFact("completion_reviewer", "Complete with the same reviewer_task_id that record-ready recorded."),
+        )
     return DecisionFailure(
         failure.code,
         failure.message,
         FailureDetails(
             observed=(
                 *(() if details is None else details.observed),
+                *review_route,
                 FailureFact("completion_reinspection_tool", tool_names.ACTIONS_TOOL),
                 FailureFact("completion_reinspection_input", msgspec.json.encode(request, order="sorted").decode()),
             ),
             mismatches=() if details is None else details.mismatches,
-            retry=RetryDisposition.REFRESH_ACTION,
+            retry=retry,
             effect=EffectDisposition.UNCHANGED if details is None else details.effect,
             changed_surfaces=() if details is None else details.changed_surfaces,
             alternatives=() if details is None else details.alternatives,
@@ -458,7 +528,7 @@ def _with_retained_brief_recovery(
     )
 
 
-def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-result boundary
+def _transition(
     raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
 ) -> execution.OperationResult:
@@ -476,7 +546,15 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
         try:
             identity = msgspec.convert(raw_identity, type=contracts.ActionIdentity, strict=True)
         except msgspec.ValidationError:
-            identity = contracts.ActionIdentity(decision_models.ActionKind.CLOSE, "invalid")
+            # An undecodable identity names no action, so it must never select the close route.
+            identity = contracts.ActionIdentity(decision_models.ActionKind.INSPECT, "invalid")
+        if identity.kind == decision_models.ActionKind.CLOSE:
+            return _close_route_rejected(
+                identity,
+                "pinboard_transition does not apply close; close is applied only through pinboard_close, which asks "
+                "the human to confirm and records their decision.",
+                FailureFact("close_tool", tool_names.CLOSE_TOOL),
+            )
         return _transition_rejected(
             identity,
             DecisionFailure(
@@ -507,17 +585,15 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
     identity = contracts.ActionIdentity(
         decision_models.ActionKind(request.receipt.action_id.kind), request.receipt.action_id.subject
     )
-    action_id = ActionId(f"{identity.kind.value}:{identity.subject}")
-    store = common.compose_store(durable)
-    artifacts = ArtifactRepository(durable)
-    operation_time = datetime.now(UTC)
-    selected = lifecycle_operations.select_transition(
+    return _apply_transition(
         source_checkout,
-        store,
-        artifacts,
+        durable,
+        request.project_root,
+        request.work_root,
+        identity,
         lifecycle_operations.TransitionReceipt(
             selected_role,
-            action_id,
+            ActionId(f"{identity.kind.value}:{identity.subject}"),
             request.receipt.subject_revision,
             selected_lease,
             selected_generation,
@@ -525,12 +601,92 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
             selected_host,
         ),
         request.payload,
-        operation_time,
+        token,
+    )
+
+
+def _close(
+    project_root: str,
+    work_root: str,
+    receipt: Mapping[str, JsonValue],
+    payload: Mapping[str, JsonValue],
+    actor_task_id: str,
+    actor_host_id: str,
+    token: execution.CancellationToken,
+) -> execution.OperationResult:
+    """Apply one human-confirmed close; a request without the human's own decision never reaches the ledger."""
+
+    token.checkpoint()
+    try:
+        request = msgspec.convert(
+            {
+                "project_root": project_root,
+                "work_root": work_root,
+                "receipt": receipt,
+                "payload": payload,
+                "actor_task_id": actor_task_id,
+                "actor_host_id": actor_host_id,
+            },
+            type=contracts.CloseRequest,
+            strict=True,
+        )
+        source_checkout = resolve_source_checkout_root(Path(request.project_root))
+        durable = common._require_initialized_durable(
+            resolve_shared_repository_root(source_checkout), Path(request.work_root)
+        )
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        raw_subject = receipt.get("action_id")
+        subject = raw_subject.get("subject") if isinstance(raw_subject, dict) else None
+        identity = contracts.ActionIdentity(
+            decision_models.ActionKind.CLOSE, subject if isinstance(subject, str) and subject else "invalid"
+        )
+        decision = payload.get("human_decision")
+        return _close_route_rejected(
+            identity,
+            f"Cannot decode close request: {error}",
+            FailureFact("human_decision_valid", isinstance(decision, str) and bool(decision) and "\n" not in decision),
+        )
+    identity = contracts.ActionIdentity(decision_models.ActionKind.CLOSE, request.receipt.action_id.subject)
+    return _apply_transition(
+        source_checkout,
+        durable,
+        request.project_root,
+        request.work_root,
+        identity,
+        lifecycle_operations.TransitionReceipt(
+            decision_models.Role.PROJECT,
+            ActionId(f"{identity.kind.value}:{identity.subject}"),
+            request.receipt.subject_revision,
+            None,
+            0,
+            TaskId(request.actor_task_id),
+            HostId(request.actor_host_id),
+        ),
+        request.payload,
+        token,
+    )
+
+
+def _apply_transition(
+    source_checkout: Path,
+    durable: DurableRoots,
+    project_root: str,
+    work_root: str,
+    identity: contracts.ActionIdentity,
+    receipt: lifecycle_operations.TransitionReceipt,
+    payload: action_models.InputPayload,
+    token: execution.CancellationToken,
+) -> execution.OperationResult:
+    store = common.compose_store(durable)
+    artifacts = ArtifactRepository(durable)
+    operation_time = datetime.now(UTC)
+    selected = lifecycle_operations.select_transition(
+        source_checkout, store, artifacts, receipt, payload, operation_time
     )
     if isinstance(selected, DecisionFailure):
         return _transition_rejected(
             identity,
-            _with_completion_reinspection(selected, identity, request.project_root, request.work_root),
+            _with_completion_reinspection(selected, identity, project_root, work_root),
         )
     token.checkpoint()
     if isinstance(
@@ -590,10 +746,10 @@ def _transition(  # noqa: PLR0912, PLR0915 - one strict request-to-terminal-resu
         return _transition_rejected(
             identity,
             _with_retained_brief_recovery(
-                _with_completion_reinspection(committed, identity, request.project_root, request.work_root),
+                _with_completion_reinspection(committed, identity, project_root, work_root),
                 identity,
-                request.project_root,
-                request.work_root,
+                project_root,
+                work_root,
             ),
         )
     changed_surfaces: list[JsonValue]

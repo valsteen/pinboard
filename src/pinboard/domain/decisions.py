@@ -911,7 +911,9 @@ def _close(
     return _accepted_transition_decision(
         action,
         now,
-        decision_models.WorkItemClosureChange(item.work_item_id, item.state, value.outcome, value.reason),
+        decision_models.WorkItemClosureChange(
+            item.work_item_id, item.state, value.outcome, value.reason, value.human_decision
+        ),
         work_item_id=item.work_item_id,
         outcome=value.outcome.value,
         evidence=value.reason,

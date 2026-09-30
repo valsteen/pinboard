@@ -133,34 +133,11 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         return candidate
 
     def record_ready(self, fixture: CheckpointFixture, candidate: str) -> JsonObject:
-        store = SQLiteWorkStore(fixture.work / "state.sqlite3")
-        snapshot = store.read_candidate_snapshot_context(AttemptId("work-a-1"))
-        attempt = store.read_attempt_context(AttemptId("work-a-1"))
-        assert snapshot is not None and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
-        attempt_root = fixture.work / "attempts" / "work-a-1"
-        recorded = call_native_tool(
-            mcp_server.REVIEW_JOB_TOOL,
-            {
-                **self.roots(fixture),
-                "review": {
-                    "kind": "record-ready",
-                    "attempt_id": "work-a-1",
-                    "candidate_revision": candidate,
-                    "candidate_snapshot_sha256": snapshot.reference.content_sha256,
-                    "accepted_brief_sha256": attempt.brief_reference.content_sha256,
-                    "result_sha256": hashlib.sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
-                    "review_sha256": hashlib.sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
-                    "reviewer_task_id": "independent-reviewer",
-                    "verdict": "ready",
-                    "acceptance_evidence": "The protected candidate satisfies the accepted brief.",
-                },
-            },
-        )
-        self.assertEqual("recorded", recorded["status"], recorded)
-        return recorded
+        return self.record_commissioned_review(fixture, candidate, "independent-reviewer")
 
     def complete(self, fixture: CheckpointFixture, evidence: str) -> None:
         fixture = self.terminalize_brief(fixture)
+        self.record_ready(fixture, fixture.candidate_revision)
         attempt_root = fixture.work / "attempts" / "work-a-1"
         with patch("pinboard.mcp.mutation_operations.datetime") as clock:
             clock.now.return_value = COMPLETED_AT

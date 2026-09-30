@@ -1,0 +1,6 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "Agent", "Skill", "ToolSearch", "mcp__plugin_pinboard_pinboard__*"]
+  }
+}

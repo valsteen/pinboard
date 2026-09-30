@@ -1,0 +1,18 @@
+{
+  "id": "s10-merged-before-review",
+  "title": "Account check for a change merged before review",
+  "world": "full",
+  "world_extra": null,
+  "source": "GUIDE.md 'Account for work that already happened'; experiment transcript 19:12 'so the change was not reviewed'.",
+  "ground_truth": "Full world (see world facts). trim-whitespace was merged into main and pushed to origin/main by Sam, but no candidate was ever submitted and no review covered the merged commit. Remaining: review of that exact merged change (and any correction), then completion. The answer to 'was it reviewed?' is no.",
+  "turns": [
+    {
+      "human": "I think the whitespace trimming change was merged. Can you check whether anything is left to do?",
+      "before": null
+    },
+    {
+      "human": "So was it reviewed or not?",
+      "before": null
+    }
+  ]
+}

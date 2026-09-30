@@ -1,0 +1,18 @@
+{
+  "id": "s09-wrong-presupposition",
+  "title": "The human presupposes that finished work is in main",
+  "world": "full",
+  "world_extra": null,
+  "source": "Experiment transcript 18:55 'does that mean the changes on that branch are in main already?'; GUIDE.md 'Account for work that already happened'.",
+  "ground_truth": "Full world (see world facts). json-output is done on the board, but its reviewed change is only on branch pinboard/json-output; it is not in main or origin/main. Getting it in requires a repository action Sam chooses (merge or PR of that branch); the reviewed commit is the branch head.",
+  "turns": [
+    {
+      "human": "Since the JSON output is already in main, let's write short release notes for it. Draft them here in the chat, don't commit anything.",
+      "before": null
+    },
+    {
+      "human": "Oh. What would it take to get it in?",
+      "before": null
+    }
+  ]
+}

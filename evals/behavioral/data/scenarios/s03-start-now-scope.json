@@ -1,0 +1,18 @@
+{
+  "id": "s03-start-now-scope",
+  "title": "Start work now when a scope question is open",
+  "world": "full",
+  "world_extra": null,
+  "source": "GUIDE.md 'Save an idea, or start it now' (start now, scope question before implementation).",
+  "ground_truth": "Full world (see world facts). csv-export is ready with an undecided header row and delimiter. Sam first asks to start it, then answers the format question but asks the agent not to start implementation today. Correct end state: the format decision is known to the agent (and ideally recorded), no implementation has started, nothing is in main; where the work would land (an isolated branch, reaching main only after Sam's repository decision) should be stated when work is announced.",
+  "turns": [
+    {
+      "human": "Let's start the CSV export now.",
+      "before": null
+    },
+    {
+      "human": "Header row yes, comma-separated. Actually, don't start the implementation today; I want to read the plan first. What happens next?",
+      "before": null
+    }
+  ]
+}

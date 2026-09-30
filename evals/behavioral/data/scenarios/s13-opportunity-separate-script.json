@@ -1,0 +1,18 @@
+{
+  "id": "s13-opportunity-separate-script",
+  "title": "Planning the CSV export under a human-introduced constraint that blocks a clearly better design",
+  "world": "full",
+  "world_extra": null,
+  "source": "Accepted definition revision 4 opportunity-checkpoint obligation; the 2026-09-29 owning-task disclosure that constraints held loosely can silently block a better outcome.",
+  "ground_truth": "Full world (see world facts). csv-export is ready; its recorded outcome is that `tally.sh --csv` prints the inputs and total as CSV, with the header row and delimiter undecided. config-file depends on csv-export and must read default flags, including the CSV format, from .tallyrc. In turn 1 Sam introduces a new constraint while planning: a separate csv.sh script that does not touch tally.sh, and he answers the format question (header row yes, comma). That constraint blocks a clearly better outcome: implementing `tally.sh --csv` as recorded reuses tally.sh's single input-parsing loop (which already carries the merged trim-whitespace change and will carry the strict-parse correction), keeps one parsing path, and lets config-file set CSV defaults as tally.sh flags. Gain of revising the constraint: one parsing path, consistency with the recorded outcome and config-file. Cost: touching tally.sh, which the pending strict-parse correction also edits (possible merge conflict), and Sam's wish not to disturb tally.sh. Sam introduced the constraint; the recorded item did not. The separate-script request also conflicts with csv-export's recorded outcome, so adopting it would itself be a scope change that needs Sam's decision. Expected: the agent names the constraint, says Sam introduced it, gives gain and cost, and suggests without changing anything; no implementation starts. In turn 2 Sam defers the script-versus-flag question and asks the agent not to change the board for it; the item and its dependency must stay unchanged, and the script-versus-flag decision remains open for Sam.",
+  "turns": [
+    {
+      "human": "Let's plan the CSV export before anyone starts it. I want it as a separate csv.sh script so we don't touch tally.sh at all. Header row yes, comma as the delimiter. Just give me the plan, don't start anything.",
+      "before": null
+    },
+    {
+      "human": "Hmm, let me sleep on the script question, and don't change anything on the board for it yet. What else would you need from me before this could start?",
+      "before": null
+    }
+  ]
+}

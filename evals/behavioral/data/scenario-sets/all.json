@@ -1,0 +1,78 @@
+{
+  "name": "all",
+  "scenarios": [
+    {
+      "id": "s01-motivating-experiment",
+      "sha256": "060dd1db80284f8a21623a2d93c7f4a66e1972847ad8dd7a5538748cbb779287"
+    },
+    {
+      "id": "s02-save-idea-recall",
+      "sha256": "484b96abb112b0d408220052c9d00a7c7e596dbfb93f43dbd3855ad292bc1aca"
+    },
+    {
+      "id": "s03-start-now-scope",
+      "sha256": "0c59bdfab69ba2d9b5ddd5ff1d92f9df89061459719cdf687898036195734ba9"
+    },
+    {
+      "id": "s04-next-work",
+      "sha256": "804b56ef1f2d3504e562cc0906e8c6e9b7d79f1e3e7497c2ecc064dbb2b1d079"
+    },
+    {
+      "id": "s05-review-correction",
+      "sha256": "e2a900ad97d90d16e76a9bb19ad58edf1f44cf6c408ee3e5d45c04c6e1b6f239"
+    },
+    {
+      "id": "s06-paused-decision",
+      "sha256": "89df37d92974300d16ca41636ebc83667408ec1f608e6e625c626abedac5b2e2"
+    },
+    {
+      "id": "s07-background-worker",
+      "sha256": "54ef129105102df05cb17157cb841dda4c37bbc7421b05c38bd6e0ff1fbf00f7"
+    },
+    {
+      "id": "s08-disposition-topic-change",
+      "sha256": "aae4bd25f27a2c8e2a6aa8fc6eb11f30d91f5911ab7603122c6356ccba1c7e79"
+    },
+    {
+      "id": "s09-wrong-presupposition",
+      "sha256": "5060540e9567d4c3b4e4813f5cfb38b08f4b00bba8869376a4d21aa5af6cd3c3"
+    },
+    {
+      "id": "s10-merged-before-review",
+      "sha256": "5b44628c011b76a9fc062aa2e163820d1a31d5225c42fa76890ea8b810a1db47"
+    },
+    {
+      "id": "s11-quick-status",
+      "sha256": "898418d67159736bbd10bbc5cb9ce63434a434978bc1bcf95916e177a1f2f985"
+    },
+    {
+      "id": "s12-human-pr-review",
+      "sha256": "18a168a5960a5bc05398d8fa5c77b9513a578301b7caeff662bfc12c2d9f9b84"
+    },
+    {
+      "id": "s13-opportunity-separate-script",
+      "sha256": "993bec6851c649dab23d541545b1de212d656401773c4b4d631bdd128df79e88"
+    },
+    {
+      "id": "s14-motivating-replay",
+      "sha256": "e24aaf03fea10ce0afcfdeaff9391ce7a6319e97b65f30d03663e651815df997"
+    },
+    {
+      "id": "s15-quick-status-update",
+      "sha256": "10cee7519265f7a5bc872d60096c1963aeca8b0e14e28bc99ca6e17074f71235"
+    },
+    {
+      "id": "s16-reviewed-not-shipped",
+      "sha256": "7f7f420909e158d86bdfb42497e82db35bec0488831f709efc08bf1622007384"
+    },
+    {
+      "id": "s17-paused-choice-recorded",
+      "sha256": "79aece4a4d3ccce26f511fd4ce88d0c1de1eff7d7f79e6aa5e83da218a723f5b"
+    },
+    {
+      "id": "s18-opportunity-tuning",
+      "sha256": "73011f9f7407c8e426d9f0b0b6abaf54c0f3ce546faa7be394575d649c095953"
+    }
+  ],
+  "targeted_rules": []
+}

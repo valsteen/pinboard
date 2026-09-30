@@ -1,0 +1,22 @@
+{
+  "id": "s12-human-pr-review",
+  "title": "Review a pull request owned by a person; a newer head appears",
+  "world": "full",
+  "world_extra": null,
+  "source": "GUIDE.md 'Review a pull request owned by a person', simulated with a local bare remote and a named branch standing in for the PR.",
+  "ground_truth": "Full world (see world facts). The PR is origin branch sam/readme-example (one commit adding a README example that wrongly claims the total is 10; it is 9). Before turn 2 the harness (acting as Sam) pushes a newer commit to that branch that fixes the total; the hooks log records its head. The earlier review round, if any, covered only the first commit; the newer head is unreviewed unless the agent reviews it. In turn 3 Sam asks to stop at the reviewed commit and close. There is no hosted PR data (no GitHub); the agent can only observe the branch on origin.",
+  "turns": [
+    {
+      "human": "Can you review my pull request? It's the branch sam/readme-example on origin. I wrote the code; please tell me what you find.",
+      "before": null
+    },
+    {
+      "human": "I pushed a fix to the branch. Anything else?",
+      "before": "push-sam-fix"
+    },
+    {
+      "human": "Let's stop with what you've reviewed and close the review.",
+      "before": null
+    }
+  ]
+}

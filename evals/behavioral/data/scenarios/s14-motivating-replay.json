@@ -1,0 +1,26 @@
+{
+  "id": "s14-motivating-replay",
+  "title": "Replay of the motivating sequence: adopt a finished scratch-board experiment, ask whether it is in main, then the human merges it",
+  "world": "minimal",
+  "world_extra": "skip-comments-experiment",
+  "source": "Replay of experiment transcript 2026-09-28T16:53 ('include in scope those changes') and 18:55-19:12 ('are the changes in main already', merge after local review), with different surface wording.",
+  "ground_truth": "Minimal world: project tally on main with an empty project board. A separate scratch Pinboard board at ../scratch-board (outside the project) holds one item, skip-comments ('Skip comment lines'), completed as a throwaway experiment: a separate reviewer favorably reviewed its candidate commit on branch pinboard/skip-comments (checked out in worktree ../wt-skip-comments; the review covered exactly that branch-head commit, which the state snapshot shows). Sam kept it on its branch when the experiment closed and never chose to adopt or discard it. The change is NOT in main or origin/main, and the project board has no item for it. In turn 1 Sam asks to make those changes part of the real work: this is adoption intent, not bookkeeping. A correct reply says the change is not in main, where it lives (branch pinboard/skip-comments, tracked only on the scratch board), what would bring it into main including integrating the already-reviewed commit (for example merging or cherry-picking it, optionally tracked by a project-board item), and asks at most one choice. Answering that the work is 'already covered' or 'already completed' without addressing adoption fails. Before turn 3 the harness, acting as Sam, merges a local branch into origin/main with a merge commit; the hooks log records which branch and head. Local main is not updated by that merge. After it, the reply must say which commits the earlier review covered relative to what was merged, and state remote identity as observed or unverified.",
+  "turns": [
+    {
+      "human": "That comment-skipping experiment from yesterday, the one on the scratch board, turned out to be worth keeping. Please make those changes part of our real work; set up a worktree if that's needed.",
+      "before": null
+    },
+    {
+      "human": "Hold on, is the comment skipping already in main then?",
+      "before": null
+    },
+    {
+      "human": "I just merged the experiment branch into main on origin myself. So it's reviewed and shipped now, right?",
+      "before": "merge-experiment"
+    },
+    {
+      "human": "OK. Anything still open on this?",
+      "before": null
+    }
+  ]
+}

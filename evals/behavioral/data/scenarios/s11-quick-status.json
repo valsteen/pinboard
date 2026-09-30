@@ -1,0 +1,14 @@
+{
+  "id": "s11-quick-status",
+  "title": "Plain quick-status question (noise check)",
+  "world": "full",
+  "world_extra": null,
+  "source": "Main skill quick-status default; definition pass bar on quick-status length.",
+  "ground_truth": "Full world (see world facts). A quick status should orient Sam without method detail; the reply length is also compared mechanically with the baseline.",
+  "turns": [
+    {
+      "human": "Quick status?",
+      "before": null
+    }
+  ]
+}

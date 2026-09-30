@@ -1,0 +1,18 @@
+{
+  "id": "s06-paused-decision",
+  "title": "Pick up paused work that needs a human decision",
+  "world": "full",
+  "world_extra": null,
+  "source": "GUIDE.md 'Pick up interrupted work'.",
+  "ground_truth": "Full world (see world facts). unicode-input is paused because Sam must choose reject (exit 2) or replace with U+FFFD; no code exists. Sam defers the choice. Other items waiting on Sam are listed in the world facts (sort-flag decision, trim-whitespace review gap, json-output change off main).",
+  "turns": [
+    {
+      "human": "Where did we leave off with the unicode input work? Please pick it up if the plan still fits.",
+      "before": null
+    },
+    {
+      "human": "Let me think about that one. What else is waiting on me?",
+      "before": null
+    }
+  ]
+}

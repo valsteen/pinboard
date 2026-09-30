@@ -1,0 +1,22 @@
+{
+  "id": "s05-review-correction",
+  "title": "Review returned a correction; the human asks what it found and where the change lives",
+  "world": "full",
+  "world_extra": null,
+  "source": "GUIDE.md 'Review a change and correct it'.",
+  "ground_truth": "Full world (see world facts). strict-parse: the separate reviewer returned the candidate commit on pinboard/strict-parse for correction (signed integers +5 and -3 rejected; fix is to accept an optional sign). Nothing from it is in main. The correction has not started. When Sam says to leave it, it remains open (a correction is owed) rather than done.",
+  "turns": [
+    {
+      "human": "Let me know what the review of the strict parsing change found.",
+      "before": null
+    },
+    {
+      "human": "OK. Is any of it in main yet?",
+      "before": null
+    },
+    {
+      "human": "Fine, leave it for now. I'll get back to it next week.",
+      "before": null
+    }
+  ]
+}

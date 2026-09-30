@@ -14,10 +14,10 @@ once read. A skill from anywhere but the exported plugin or Claude Code's own bu
 unexpected plugin or MCP server is an isolation finding that stops the run for a human decision.
 """
 
-import os
 import re
 import tempfile
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,10 +29,8 @@ from evals.behavioral.records import ClaudeRunDetails, Hook, InventoryEntry, Per
 
 TURN_TIMEOUT_SECONDS = 5400
 HOST_PATTERN = re.compile(r'host_id: "([^"]+)"')
-ISOLATION_ENVIRONMENT = {"ENABLE_CLAUDEAI_MCP_SERVERS": "false"}
 EXPORTED_SKILL_PREFIX = "pinboard:"
 EXPORTED_MCP_SERVER = "plugin:pinboard:pinboard"
-HOST_VARIABLE_PREFIXES = ("CLAUDE", "ANTHROPIC")
 LOADED_SKILLS = re.compile(
     r"Loaded \d+ unique skills \(\d+ unconditional, \d+ conditional, managed: (\d+), user: (\d+), project: (\d+), "
     r"additional: (\d+), legacy commands: (\d+)\)"
@@ -184,17 +182,18 @@ class ClaudeSession:
     hooks: set[str]
     observed_host_ids: list[str]
     reported_cost_usd: float
+    environment: dict[str, str]
 
     @classmethod
     def start(cls, plugin_root: Path, model: str, project: Path, available_tools: tuple[str, ...]) -> ClaudeSession:
-        return cls(plugin_root, model, project, available_tools, str(uuid.uuid4()), None, None, set(), [], 0.0)
+        return cls(plugin_root, model, project, available_tools, str(uuid.uuid4()), None, None, set(), [], 0.0, processes.claude_environment())
 
     def loaded_context(self) -> list[InventoryEntry]:
         hooks = [
             InventoryEntry(kind="hook", name=name, source="claude stream hook event") for name in sorted(self.hooks)
         ]
         started = [] if self.init is None else claude_inventory(self.init, self.plugin_root, self.provenance)
-        return [*started, host_environment(), *hooks, *instruction_files(self.project)]
+        return [*started, host_environment(self.environment), *hooks, *instruction_files(self.project)]
 
     def isolation_findings(self) -> list[str]:
         if self.init is None:
@@ -232,7 +231,7 @@ class ClaudeSession:
                     human,
                 ],
                 cwd=self.project,
-                environment=os.environ | ISOLATION_ENVIRONMENT,
+                environment=self.environment,
                 stdin=None,
                 timeout_seconds=TURN_TIMEOUT_SECONDS,
                 window=processes.Window(None),
@@ -393,13 +392,13 @@ def isolation_findings(init: InitEvent, plugin_root: Path, provenance: SkillProv
     return findings
 
 
-def host_environment() -> InventoryEntry:
-    """The names (never the values) of the Claude host variables the agent inherits; they change the bundled skills."""
-    names = sorted(name for name in os.environ if name.startswith(HOST_VARIABLE_PREFIXES))
+def host_environment(environment: Mapping[str, str]) -> InventoryEntry:
+    """Record only the names, never the values, of the environment actually passed to this agent."""
+    names = sorted(environment)
     return InventoryEntry(
         kind="runtime-bundled",
         name="host-environment",
-        source="inherited variables: " + (", ".join(names) if names else "none"),
+        source="passed variables: " + (", ".join(names) if names else "none"),
     )
 
 
@@ -408,7 +407,7 @@ def claude_version() -> str:
         processes.Tool.CLAUDE,
         ["--version"],
         cwd=Path.cwd(),
-        environment=os.environ,
+        environment=processes.claude_environment(),
         stdin=None,
         timeout_seconds=60,
         window=processes.Window(None),

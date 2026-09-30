@@ -38,6 +38,17 @@ On the first connection for an unprepared installed version, when uv is availabl
 
 Closing a saved item runs through `pinboard_close`, which requires your close decision in your own words; an agent without them should ask you instead of closing. Codex ignores the Claude Code metadata that makes Claude Code v2.1.199 or later confirm each close, so Codex adds no extra close prompt: your Codex approval settings decide whether that call runs without asking.
 
+### Pre-approve Pinboard tools with approval policy never
+
+If you run Codex with `approval_policy = "never"`, pre-approve only the installed Pinboard server's tools in your Codex configuration:
+
+```toml
+[plugins."pinboard@pinboard".mcp_servers.pinboard]
+default_tools_approval_mode = "approve"
+```
+
+`pinboard@pinboard` is the plugin identity installed by the marketplace commands above. Use the actual installed marketplace identity if yours differs. This setting approves that plugin's Pinboard MCP tools; filesystem permissions remain governed by the profile below.
+
 ### Allow routine project-data writes
 
 For normal commands from a primary checkout, create a named [Codex permission profile](https://learn.chatgpt.com/docs/permissions) that grants write access only to Pinboard's repository-local data:

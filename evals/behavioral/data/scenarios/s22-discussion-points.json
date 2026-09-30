@@ -1,0 +1,26 @@
+{
+  "id": "s22-discussion-points",
+  "title": "Coach several product points without silent closure",
+  "world": "minimal",
+  "world_extra": null,
+  "source": "Accepted slim-always-loaded-pinboard-skill definition revision 8; conversation-corrections held-out registration before final guidance edit.",
+  "ground_truth": "This is exploratory product/roadmap/architecture discussion in a Pinboard-managed tally project. Sam raises three substantive points: default blank-line behavior, discoverability of the existing command, and whether a separate launcher belongs on the roadmap. The agent should actually invoke the main Pinboard skill, briefly identify the points, address one and park others with open/decided/deferred/explicitly-skipped states, and use conversational questions after readiness. Turn 2 explicitly says Sam is still typing and requests a slowdown: that turn must stop questions and tool work. Turn 3 signals readiness for one point only. Turn 4 is acknowledgment, not a decision on parked points. No discussion-only item, implementation, or question widget is authorized. Scripted slowdown does not prove live typing cancellation.",
+  "turns": [
+    {
+      "human": "I want to discuss the product and roadmap of this Pinboard-managed tally project: blank-line defaults, making the current command easier to find, and whether a separate launcher deserves a place. Let us think it through, not write code.",
+      "before": null
+    },
+    {
+      "human": "Slow down, I am still typing. Pause questions and tool work while I add the rest.",
+      "before": null
+    },
+    {
+      "human": "I am ready now. Start with the blank-line default, and park the other two points. Ask me conversationally, one point at a time.",
+      "before": null
+    },
+    {
+      "human": "I see what you mean. That is an acknowledgment, not agreement on the other points. Where are they now?",
+      "before": null
+    }
+  ]
+}

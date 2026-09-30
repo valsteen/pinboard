@@ -184,9 +184,13 @@ def execute(
 
     pending = [(scenario, key) for scenario, key in plan.planned() if not (plan.layout.run_directory(key)).exists()]
     with ThreadPoolExecutor(max_workers=jobs) as executor:
-        futures = [executor.submit(guarded, scenario, key) for scenario, key in pending]
-    for future in futures:
-        future.result()
+        try:
+            futures = [executor.submit(guarded, scenario, key) for scenario, key in pending]
+            for future in futures:
+                future.result()
+        except BaseException:
+            halted.set()
+            raise
     return sorted(skipped)
 
 

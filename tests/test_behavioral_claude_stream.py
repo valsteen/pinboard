@@ -2,6 +2,7 @@
 stream text returned by a controlled fake in place of the claude CLI."""
 
 import json
+import os
 import tempfile
 import unittest
 from collections.abc import Mapping, Sequence
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import override
 from unittest import mock
 
-from evals.behavioral import claude_driver, processes
+from evals.behavioral import claude_driver, oneshot, processes
 
 type Json = str | int | float | bool | list[Json] | dict[str, Json] | None
 
@@ -210,6 +211,64 @@ class SkillProvenanceTest(unittest.TestCase):
         findings = session.isolation_findings()
         self.assertEqual(1, len(findings))
         self.assertIn("simplify", findings[0])
+
+
+class CleanEnvironmentTest(unittest.TestCase):
+    def test_agent_version_and_scorer_preserve_login_without_host_context_or_secret_inventory(self) -> None:
+        host = {
+            "HOME": "/synthetic/home",
+            "PATH": "/synthetic/bin",
+            "TMPDIR": "/synthetic/tmp",
+            "USER": "synthetic-user",
+            "LOGNAME": "synthetic-user",
+            "SHELL": "/bin/sh",
+            "LANG": "en_US.UTF-8",
+            "ANTHROPIC_API_KEY": "synthetic-auth-secret",
+            "CLAUDE_CODE_SESSION_ID": "foreign-session",
+            "CLAUDE_CODE_MESSAGING_SOCKET": "foreign-socket",
+            "CLAUDE_CODE_MESSAGING_TOKEN": "synthetic-bridge-secret",
+            "ANTHROPIC_BASE_URL": "foreign-provider",
+            "OTHER_HOST_CONTEXT": "foreign-context",
+            "ENABLE_CLAUDEAI_MCP_SERVERS": "true",
+        }
+        expected_names = {
+            "HOME",
+            "PATH",
+            "TMPDIR",
+            "USER",
+            "LOGNAME",
+            "SHELL",
+            "LANG",
+            "ANTHROPIC_API_KEY",
+            "ENABLE_CLAUDEAI_MCP_SERVERS",
+        }
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ, host, clear=True):
+            root = Path(temporary)
+            session = claude_driver.ClaudeSession.start(root / "plugin", "model", root)
+            fake = FakeClaude(
+                streams=[
+                    [init_event(root / "plugin"), result_event(0.1, subtype="success", is_error=False)],
+                    [result_event(0.1, subtype="success", is_error=False)],
+                    [result_event(0.1, subtype="success", is_error=False)],
+                ],
+                exit_codes=[0, 0, 0],
+                debug_log=PROVENANCE.format(user=0),
+                calls=[],
+            )
+            with mock.patch.object(processes, "run_tool", fake):
+                session.turn(1, "question", None, root / "turn.jsonl")
+                claude_driver.claude_version()
+                oneshot.ask("score this", "model")
+            for call in fake.calls:
+                self.assertEqual(expected_names, set(call.environment))
+                for name in expected_names - {"ENABLE_CLAUDEAI_MCP_SERVERS"}:
+                    self.assertEqual(host[name], call.environment[name])
+                self.assertEqual("false", call.environment["ENABLE_CLAUDEAI_MCP_SERVERS"])
+            inventory = next(entry for entry in session.loaded_context() if entry.name == "host-environment")
+            self.assertEqual("passed variables: " + ", ".join(sorted(fake.calls[0].environment)), inventory.source)
+            self.assertNotIn("synthetic-auth-secret", inventory.source)
+            self.assertNotIn("synthetic-bridge-secret", inventory.source)
+            self.assertNotIn("synthetic-auth-secret", (root / "turn.jsonl").read_text())
 
 
 if __name__ == "__main__":

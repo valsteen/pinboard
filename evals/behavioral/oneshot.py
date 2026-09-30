@@ -5,7 +5,6 @@ and no claude.ai account connectors, so no plugin, user setting or instruction f
 ``claude -p --output-format json`` result record, decoded at that accepted external boundary.
 """
 
-import os
 import re
 import tempfile
 from dataclasses import dataclass
@@ -59,7 +58,7 @@ def ask(prompt: str, model: str, window: processes.Window) -> Answer:
                         "json",
                     ],
                     cwd=Path(empty),
-                    environment=os.environ | {"ENABLE_CLAUDEAI_MCP_SERVERS": "false"},
+                    environment=processes.claude_environment(),
                     stdin=prompt,
                     timeout_seconds=SESSION_TIMEOUT_SECONDS,
                     window=window,

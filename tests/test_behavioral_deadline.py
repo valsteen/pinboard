@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import TextIO
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,7 +14,20 @@ import msgspec
 from mcp.client.stdio import StdioServerParameters
 from mcp_types import CallToolResult
 
-from evals.behavioral import board, cli, credentials, export, oneshot, processes, runner, scoring, spend, substance
+from evals.behavioral import (
+    board,
+    cli,
+    codex_driver,
+    credentials,
+    export,
+    oneshot,
+    probe,
+    processes,
+    runner,
+    scoring,
+    spend,
+    substance,
+)
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
     Assessed,
@@ -43,9 +56,9 @@ from evals.behavioral.records import (
 
 class EffectDeadlineTest(unittest.TestCase):
     def test_expired_window_prevents_subprocess_start_and_shortens_an_inflight_wait(self) -> None:
-        window = processes.Window(103)
+        window = processes.Window(123)
         with (
-            patch.object(processes.time, "monotonic", return_value=103),
+            patch.object(processes.time, "monotonic", return_value=123),
             patch.object(processes.subprocess, "Popen") as start,
         ):
             with self.assertRaises(TimeoutError):
@@ -61,7 +74,7 @@ class EffectDeadlineTest(unittest.TestCase):
             patch.object(processes.subprocess, "Popen") as start,
             patch.object(processes.os, "killpg") as kill,
         ):
-            start.return_value.__enter__.return_value = child
+            start.return_value = child
             result = processes.run_tool(
                 processes.Tool.GIT, [], cwd=Path(), environment={}, stdin=None, timeout_seconds=300, window=window
             )
@@ -102,7 +115,7 @@ class EffectDeadlineTest(unittest.TestCase):
                 patch.object(processes.subprocess, "Popen") as start,
                 patch.object(processes.os, "killpg") as forced,
             ):
-                start.return_value.__enter__.return_value = child
+                start.return_value = child
                 with credentials.isolated_home(source, root, processes.Window(None)) as home:
                     processes.run_tool(
                         processes.Tool.CODEX,
@@ -134,7 +147,7 @@ class EffectDeadlineTest(unittest.TestCase):
                 patch.object(processes.os, "killpg") as force,
                 patch.object(credentials, "settle") as settle,
             ):
-                start.return_value.__enter__.return_value = child
+                start.return_value = child
                 with (
                     self.assertRaises(processes.CleanupUnconfirmed) as failure,
                     credentials.isolated_home(source, root, processes.Window(None)) as home,
@@ -177,6 +190,195 @@ class EffectDeadlineTest(unittest.TestCase):
         self.assertEqual("partial", answer.stdout)
         self.assertEqual(123, run.call_args.kwargs["window"].deadline)
 
+    def test_reserved_shutdown_and_reap_never_wait_beyond_the_original_window(self) -> None:
+        child = MagicMock()
+        child.pid, child.returncode = 777, -9
+        child.communicate.side_effect = [
+            subprocess.TimeoutExpired("codex", 3, output=b"partial"),
+            subprocess.TimeoutExpired("shutdown", 10),
+            subprocess.TimeoutExpired("reap", 3),
+        ]
+        with (
+            patch.object(processes.time, "monotonic", side_effect=[100, 113, 120]),
+            patch.object(processes.subprocess, "Popen", return_value=child),
+            patch.object(processes.os, "killpg"),
+            self.assertRaises(processes.CleanupUnconfirmed) as failure,
+        ):
+            processes.run_tool(
+                processes.Tool.CODEX,
+                [],
+                cwd=Path(),
+                environment={},
+                stdin=None,
+                timeout_seconds=300,
+                window=processes.Window(123),
+            )
+        self.assertEqual([3, 10, 3], [call.kwargs["timeout"] for call in child.communicate.call_args_list])
+        self.assertEqual("partial", failure.exception.stdout)
+        child.wait.assert_not_called()
+        child.__exit__.assert_not_called()
+        with (
+            patch.object(processes.time, "monotonic", return_value=100),
+            patch.object(processes.subprocess, "Popen") as start,
+            self.assertRaises(TimeoutError),
+        ):
+            processes.run_tool(
+                processes.Tool.CODEX,
+                [],
+                cwd=Path(),
+                environment={},
+                stdin=None,
+                timeout_seconds=300,
+                window=processes.Window(103),
+            )
+        start.assert_not_called()
+
+    def test_exhausted_cleanup_retains_partial_bytes_without_another_wait(self) -> None:
+        child = MagicMock()
+        child.pid, child.returncode = 777, -9
+        child.communicate.side_effect = subprocess.TimeoutExpired("codex", 3, output=b"partial")
+        with (
+            patch.object(processes.time, "monotonic", side_effect=[100, 123, 123]),
+            patch.object(processes.subprocess, "Popen", return_value=child),
+            patch.object(processes.os, "killpg"),
+            self.assertRaises(processes.CleanupUnconfirmed) as failure,
+        ):
+            processes.run_tool(
+                processes.Tool.CODEX,
+                [],
+                cwd=Path(),
+                environment={},
+                stdin=None,
+                timeout_seconds=300,
+                window=processes.Window(123),
+            )
+        self.assertEqual("partial", failure.exception.stdout)
+        child.communicate.assert_called_once()
+        child.wait.assert_not_called()
+
+    def test_native_shutdown_failure_diagnostics_are_enabled_and_prevent_settlement(self) -> None:
+        with (
+            patch.dict(codex_driver.os.environ, {"RUST_LOG": "off"}),
+            patch.object(processes, "run_tool", return_value=processes.Completed(0, "", "", False)) as launch,
+        ):
+            codex_driver.codex([], home=Path("home"), cwd=Path(), timeout_seconds=300, window=processes.Window(None))
+        self.assertEqual("warn", launch.call_args.kwargs["environment"]["RUST_LOG"])
+        for diagnostic in (b"in-process app-server shutdown failed", b"thread/unsubscribe failed during shutdown"):
+            with self.subTest(diagnostic=diagnostic):
+                child = MagicMock()
+                child.pid, child.returncode = 777, 1
+                child.communicate.side_effect = [subprocess.TimeoutExpired("codex", 1), (b"", diagnostic)]
+                with (
+                    patch.object(processes.subprocess, "Popen", return_value=child),
+                    self.assertRaises(processes.CleanupUnconfirmed),
+                ):
+                    processes.run_tool(
+                        processes.Tool.CODEX,
+                        [],
+                        cwd=Path(),
+                        environment={},
+                        stdin=None,
+                        timeout_seconds=1,
+                        window=processes.Window(None),
+                    )
+
+
+class EvidenceFailureTest(unittest.TestCase):
+    def test_raw_write_failure_preserves_cleanup_uncertainty_and_the_private_home(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "auth.json"
+            source.write_bytes(b"{}")
+            original = processes.CleanupUnconfirmed(777, b"partial", b"failed shutdown")
+            with (
+                patch.object(codex_driver, "codex", side_effect=original),
+                patch.object(credentials, "settle") as settle,
+                self.assertRaises(processes.CleanupUnconfirmed) as failure,
+                credentials.isolated_home(source, root, processes.Window(None)) as home,
+            ):
+                codex_driver.run_turn(
+                    home.path, root, None, "no paid call", root / "absent" / "turn.jsonl", processes.Window(None)
+                )
+            self.assertIs(original, failure.exception)
+            self.assertIsInstance(failure.exception.__cause__, FileNotFoundError)
+            self.assertIn("partial-output capture failed", str(failure.exception))
+            self.assertTrue(home.path.exists())
+            settle.assert_not_called()
+
+    def test_run_rollout_failures_preserve_cleanup_uncertainty_and_the_private_home(self) -> None:
+        for malformed in (False, True):
+            with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "auth.json"
+                source.write_bytes(b"{}")
+                state = MagicMock(spec=runner.RunState)
+                state.directory = root if malformed else root / "absent"
+                turns: list[TurnEvidence] = []
+                state.turns = turns
+                state.scenario = MagicMock()
+                state.scenario.turns = [1]
+                plan = MagicMock(spec=runner.CodexPlan)
+                plan.run = MagicMock()
+                plan.run.model = "gpt-6-sol"
+                original = processes.CleanupUnconfirmed(777, b"partial", b"failed shutdown")
+                with (
+                    patch.object(runner, "codex_thread", side_effect=original),
+                    patch.object(codex_driver, "rollout_text", return_value='{"type":"turn_context","payload":{}}\n'),
+                    patch.object(credentials, "settle") as settle,
+                    self.assertRaises(processes.CleanupUnconfirmed) as failure,
+                    credentials.isolated_home(source, root, processes.Window(None)) as home,
+                ):
+                    runner.codex_turns(state, MagicMock(), home, plan)
+                self.assertIs(original, failure.exception)
+                self.assertIsInstance(failure.exception.__cause__, msgspec.ValidationError if malformed else OSError)
+                self.assertIn("rollout capture failed", str(failure.exception))
+                self.assertTrue(home.path.exists())
+                settle.assert_not_called()
+
+    def test_probe_rollout_failure_preserves_cleanup_uncertainty_and_the_private_home(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "auth.json"
+            source.write_bytes(b"{}")
+            budget = spend.Budget(Layout(root / "out"), 120, processes.Window(None), True)
+            evaluated = ExportRecord(
+                schema="pinboard-behavioral-export/v1", commit="0" * 40, skills_sha256="0" * 64, plugin_root="/plugin"
+            )
+            context = codex_driver.LoadedContext([], "sandbox", "on-request", [], "context")
+            original_home = credentials.isolated_home
+
+            def private_home(
+                source: Path, _parent: Path | None, window: processes.Window
+            ) -> AbstractContextManager[credentials.IsolatedHome]:
+                return original_home(source, root, window)
+
+            original = processes.CleanupUnconfirmed(777, b"partial", b"failed shutdown")
+            with (
+                patch.object(runner, "require_codex_world_location"),
+                patch.object(probe, "require_codex_world_location"),
+                patch.object(probe.world, "create_project"),
+                patch.object(probe.world, "init_board"),
+                patch.object(codex_driver, "write_config"),
+                patch.object(codex_driver, "loaded_context", return_value=context),
+                patch.object(codex_driver, "codex_version", return_value="controlled"),
+                patch.object(codex_driver, "isolation_findings", return_value=[]),
+                patch.object(probe, "served_tools", return_value=[]),
+                patch.object(probe, "probe_turns", side_effect=original),
+                patch.object(credentials, "exclusive_codex_session", return_value=nullcontext()),
+                patch.object(codex_driver, "rollout_text", return_value='{"type":"turn_context","payload":{}}\n'),
+                patch.object(credentials, "isolated_home", side_effect=private_home),
+                patch.object(credentials, "settle") as settle,
+                self.assertRaises(processes.CleanupUnconfirmed) as failure,
+            ):
+                probe.probe_codex(
+                    budget.layout, budget, evaluated, "controlled", "gpt-6-sol", "high", root / "worlds", source
+                )
+            self.assertIs(original, failure.exception)
+            self.assertIsInstance(failure.exception.__cause__, msgspec.ValidationError)
+            self.assertIn("probe rollout capture failed", str(failure.exception))
+            self.assertEqual(1, len(list(root.glob("pinboard-eval-codex-home-*"))))
+            settle.assert_not_called()
+
 
 class PaidInterruptionTest(unittest.TestCase):
     def test_started_scorer_and_assessor_preserve_partial_output_and_unknown_usage(self) -> None:
@@ -201,7 +403,7 @@ class PaidInterruptionTest(unittest.TestCase):
                     patch.object(processes.subprocess, "Popen") as start,
                     patch.object(processes.os, "killpg"),
                 ):
-                    start.return_value.__enter__.return_value = child
+                    start.return_value = child
                     with self.assertRaises(processes.ProcessInterrupted):
                         if owner == "scorer":
                             scoring.ScoringRun(layout, budget).score(source)
@@ -262,7 +464,7 @@ class McpDeadlineTest(unittest.IsolatedAsyncioTestCase):
         def bounded_wait(_seconds: float) -> nullcontext[None]:
             return nullcontext()
 
-        window = processes.Window(105)
+        window = processes.Window(112)
         with (
             tempfile.TemporaryDirectory() as directory,
             patch.object(processes.time, "monotonic", return_value=100),
@@ -275,11 +477,16 @@ class McpDeadlineTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("committed", result.status)
             self.assertEqual([5, 5], [call.args[0] for call in bounded.call_args_list])
             session.initialize.assert_awaited_once()
-        with patch.object(processes.time, "monotonic", return_value=105), patch.object(board, "stdio_client") as start:
-            with self.assertRaises(export.SeedFailure):
-                async with board.connect(Path("launcher"), Path("log"), window):
-                    self.fail("no expired connection")
-            start.assert_not_called()
+        for moment in (106, 112):
+            with (
+                self.subTest(moment=moment),
+                patch.object(processes.time, "monotonic", return_value=moment),
+                patch.object(board, "stdio_client") as start,
+            ):
+                with self.assertRaises(export.SeedFailure):
+                    async with board.connect(Path("launcher"), Path("log"), window):
+                        self.fail("no connection without its teardown allowance")
+                start.assert_not_called()
 
 
 class CoverageDeadlineTest(unittest.TestCase):

@@ -6,7 +6,7 @@ and to compare it; its contents are never logged, printed, hashed into a record 
 its values that Codex writes into a kept session rollout are replaced before the rollout is stored. If Codex
 rewrote the copy during the run (a token refresh), the refreshed bytes are written back atomically, at mode 0600,
 only while the source is still byte-identical to what was copied; otherwise nothing is written and further Codex
-runs must stop. The home is removed at the end of every run, including on failure.
+runs must stop. The home is removed after confirmed subprocess cleanup, including ordinary failure. Unconfirmed cleanup retains the home without credential settlement.
 """
 
 import fcntl

@@ -37,6 +37,10 @@ class Window:
 
     deadline: float | None
 
+    def reserving(self, seconds: float) -> Window:
+        """End work early enough for its existing owner to finish bounded cleanup."""
+        return Window(None if self.deadline is None else self.deadline - seconds)
+
     def timeout(self, ordinary: float) -> float:
         if self.deadline is None:
             return ordinary
@@ -81,7 +85,9 @@ class CleanupUnconfirmed(subprocess.SubprocessError):
         self.stderr = stderr.decode(errors="replace")
 
 
-def _cancel(child: subprocess.Popen[bytes], native_shutdown: bool) -> tuple[bytes, bytes]:
+def _cancel(
+    child: subprocess.Popen[bytes], native_shutdown: bool, window: Window, stdout: bytes, stderr: bytes
+) -> tuple[bytes, bytes]:
     """Request Codex's SIGINT turn interruption and shutdown before any forceful fallback.
 
     Its supported tools own separate sessions; only completed native shutdown establishes their cleanup.
@@ -93,14 +99,18 @@ def _cancel(child: subprocess.Popen[bytes], native_shutdown: bool) -> tuple[byte
         else:
             os.killpg(child.pid, signal.SIGINT)
     try:
-        stdout, stderr = child.communicate(timeout=10)
-    except subprocess.TimeoutExpired:
+        stdout, stderr = child.communicate(timeout=window.timeout(10))
+    except (subprocess.TimeoutExpired, TimeoutError) as interrupted:
+        if isinstance(interrupted, subprocess.TimeoutExpired):
+            stdout, stderr = interrupted.output or stdout, interrupted.stderr or stderr
         with suppress(ProcessLookupError):
             os.killpg(child.pid, signal.SIGKILL)
         try:
-            stdout, stderr = child.communicate(timeout=10)
+            stdout, stderr = child.communicate(timeout=window.timeout(10))
         except subprocess.TimeoutExpired as incomplete:
-            stdout, stderr = incomplete.output or b"", incomplete.stderr or b""
+            stdout, stderr = incomplete.output or stdout, incomplete.stderr or stderr
+        except TimeoutError:
+            pass
         raise CleanupUnconfirmed(child.pid, stdout, stderr) from None
     if native_shutdown and (
         child.returncode < 0
@@ -126,8 +136,8 @@ def _run(
     Interrupted output crosses this effect boundary in ProcessInterrupted. CleanupUnconfirmed prevents
     settlement when the native owner could not finish stopping its separate tool groups.
     """
-    timeout = window.timeout(timeout_seconds)
-    with subprocess.Popen(
+    timeout = window.reserving(20).timeout(timeout_seconds)
+    child = subprocess.Popen(
         argv,
         cwd=cwd,
         env=dict(environment),
@@ -135,19 +145,28 @@ def _run(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
-    ) as child:
+    )
+    try:
         try:
             stdout, stderr = child.communicate(stdin, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            stdout, stderr = _cancel(child, native_shutdown)
+        except subprocess.TimeoutExpired as interrupted:
+            stdout, stderr = _cancel(
+                child, native_shutdown, window, interrupted.output or b"", interrupted.stderr or b""
+            )
             return child.returncode, stdout, stderr, True
         except KeyboardInterrupt:
-            stdout, stderr = _cancel(child, native_shutdown)
+            stdout, stderr = _cancel(child, native_shutdown, window, b"", b"")
             raise ProcessInterrupted(stdout, stderr) from None
         except BaseException:
-            _cancel(child, native_shutdown)
+            _cancel(child, native_shutdown, window, b"", b"")
             raise
         return child.returncode, stdout, stderr, False
+    finally:
+        # Popen.__exit__ waits without a timeout, including after unconfirmed cleanup.
+        for stream in (child.stdin, child.stdout, child.stderr):
+            if stream is not None:
+                with suppress(OSError):
+                    stream.close()
 
 
 def run_tool(

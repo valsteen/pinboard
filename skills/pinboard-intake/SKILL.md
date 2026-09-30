@@ -1,6 +1,6 @@
 ---
 name: pinboard-intake
-description: Preserve one newly proposed piece of project work as a ready item on the pinboard. Use when the user explicitly asks to add, queue, intake, preserve, or send a prerequisite, bug, cleanup, feature, contradiction, or clarification for later work. Do not use merely because a conversation explores an idea.
+description: Preserve one newly proposed piece of project work as a ready item on the pinboard. Use when the user explicitly asks to add, queue, intake, preserve, save for later, or send a prerequisite, bug, cleanup, feature, contradiction, or clarification for later work, including when no board exists yet. Do not use merely because a conversation explores an idea.
 ---
 
 # Add to the pinboard
@@ -27,10 +27,10 @@ An explicitly requested notification remains subordinate to this continuation. S
 
 ## Preconditions
 
-1. Before selecting the first deferred Pinboard tool schema, read and follow the shared runtime adapter's [Packaged connection and first setup](../pinboard/references/runtime-adapters.md#packaged-connection-and-first-setup) procedure. It owns connection-first native discovery and any required setup.
+1. Before selecting the first deferred Pinboard tool schema, read and follow the shared runtime adapter's [Packaged connection and first setup](../pinboard/references/runtime-adapters.md#packaged-connection-and-first-setup) procedure. It owns connection-first native discovery and any required setup. Call Pinboard operations only through those connected MCP tools, never through Bash, Python, or `.pinboard/state.sqlite3`.
 2. Resolve both roots before the first call. `project_root` is the selected checkout. Unless the user or an existing Pinboard receipt selected another work root, a normal checkout uses `<project_root>/.pinboard`; never substitute the checkout, its parent, or a containing fixture directory. Call `pinboard_overview` with those exact roots.
 3. Require authority `sqlite-v7`. Intake is a direct trusted-local project action; its task and host values are audit attribution, not credentials, and it does not require a lease.
-4. If the workflow or required MCP tool is unavailable, stop. Do not infer shared state from titles, recency, nearby tasks, branches, or old audit files.
+4. If the workflow or required MCP tool is unavailable, stop. Do not infer shared state from titles, recency, nearby tasks, branches, or old audit files. When overview reports no initialized board at the default work root, nothing can be saved yet: tell the human the concern is not saved and ask whether to set up Pinboard in this project, following the main skill's setup rule. Never create board files or directories by hand, and never claim to remember the concern instead.
 5. Before constructing attributed proposal fields, read and follow the `Task and host identity` row in the [shared runtime adapters](../pinboard/references/runtime-adapters.md#packaged-connection-and-first-setup) to determine the current source task identity. If that source is unavailable, ask the human for the exact task ID rather than inventing one.
 
 ## Resolve conditional follow-up authority
@@ -64,9 +64,11 @@ Create a bounded JSON proposal containing:
 - exact `unlock`;
 - observed `urgency_evidence`, never an invented priority;
 - freshness-sensitive assumptions in `freshness_assumptions`;
+- `checkout_policy`: `main`, `isolated`, or `coordinator-selected`;
+- `obligations`: at least one object with a kebab-case `obligation_id`, a `statement` of the outcome implementation must produce, and `deferral_policy` `allowed` or `forbidden`;
 - optional one-based `position`; omit it to place the ready item at the back of live work.
 
-When the negotiated proposal schema includes checkout policy and obligations, keep the obligations about the product or repository outcome that implementation must produce. A user request to use isolation, obtain independent review, integrate or publish an accepted candidate, clean up disposable checkouts or branches, and terminally close the item authorizes the owning coordinator's outer workflow; it is not implementation scope and must not become a proposal obligation. Preserve that authority in the current task context and follow it after candidate review. Use `checkout_policy` for the selected checkout rule rather than restating isolation as an obligation.
+Keep the obligations about the product or repository outcome that implementation must produce. A user request to use isolation, obtain independent review, integrate or publish an accepted candidate, clean up disposable checkouts or branches, and terminally close the item authorizes the owning coordinator's outer workflow; it is not implementation scope and must not become a proposal obligation. Preserve that authority in the current task context and follow it after candidate review. Use `checkout_policy` for the selected checkout rule rather than restating isolation as an obligation.
 
 Use `follow-up` when the new ready item depends on the related item. Use `prerequisite` when the live related item depends on the new ready item; persistence advances that target item's immutable definition history as well as its relational dependency projection. Use `planned-replacement` when the proposed intake item would replace its affected `relation.item`; proposal creation records the ready item and explicit replacement relation together or accepts neither. Use `duplicate`, `contradiction`, or `clarification` to preserve proposal origin for later evaluation rather than inventing a dependency. Encode `relation.item` as JSON `null` for `independent` and `clarification`; the other relations require a string identity. Every new proposal also creates definition revision 1 from its immutable facts, so do not add parallel semantic prose after intake.
 

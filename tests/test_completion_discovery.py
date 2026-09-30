@@ -539,6 +539,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         review_bytes = b"Current independent terminal review\n"
         (attempt_root / "result.md").write_bytes(result_bytes)
         (attempt_root / "review.md").write_bytes(review_bytes)
+        self.record_commissioned_review(fixture, candidate, "terminal-reviewer")
 
         async def complete() -> None:
             parameters = StdioServerParameters(command=sys.executable, args=("-m", "pinboard.mcp"))

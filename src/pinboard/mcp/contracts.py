@@ -678,6 +678,7 @@ class RecordReadyReviewChoice(
     accepted_brief_sha256: Sha256
     result_sha256: Sha256
     review_sha256: Sha256
+    reviewer_prompt_sha256: Sha256
     reviewer_task_id: RuntimeIdentity
     verdict: Literal["ready"]
     acceptance_evidence: NonEmptyText
@@ -754,7 +755,6 @@ type CoveredCompleteTransitionRequest = ProjectTransitionRequest[
 type ReviewedCompleteTransitionRequest = ProjectTransitionRequest[
     Literal["complete"], action_models.ReviewedCompleteInputPayload
 ]
-type CloseTransitionRequest = ProjectTransitionRequest[Literal["close"], action_models.CloseInputPayload]
 type DeferTransitionRequest = ProjectTransitionRequest[Literal["defer"], action_models.DeferInputPayload]
 type MergeProposalTransitionRequest = ProjectTransitionRequest[
     Literal["merge-proposal"], action_models.MergeProposalInputPayload
@@ -796,7 +796,6 @@ type TransitionRequest = (
     | DirectCompleteTransitionRequest
     | CoveredCompleteTransitionRequest
     | ReviewedCompleteTransitionRequest
-    | CloseTransitionRequest
     | DeferTransitionRequest
     | MergeProposalTransitionRequest
     | PauseTransitionRequest
@@ -817,12 +816,24 @@ class TransitionEnvelope[RequestT](msgspec.Struct, frozen=True, forbid_unknown_f
     request: RequestT
 
 
+class CloseRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """The pinboard_close tool's ordinary top-level arguments; close has one project role and no wrapper."""
+
+    project_root: RootPath
+    work_root: RootPath
+    receipt: TransitionReceipt[Literal["close"]]
+    payload: action_models.CloseInputPayload
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+
+
 def decode_transition_request(raw: Mapping[str, JsonValue]) -> TransitionRequest:  # noqa: C901, PLR0912, PLR0915 - exhaustive exact wire leaves
     """Decode one strict envelope and exact leaf before resources or effects.
 
     Transition leaves share role tags, so receipt action identity selects the
     leaf. Complete additionally distinguishes its independently required payload
-    shapes. These relational choices cannot be an ordinary tagged union.
+    shapes. These relational choices cannot be an ordinary tagged union. Close
+    is not a leaf: it has its own human-confirmed pinboard_close request.
     """
 
     inner = raw.get("request")
@@ -860,8 +871,6 @@ def decode_transition_request(raw: Mapping[str, JsonValue]) -> TransitionRequest
                 request = msgspec.convert(
                     raw, type=TransitionEnvelope[DirectCompleteTransitionRequest], strict=True
                 ).request
-        case "close":
-            request = msgspec.convert(raw, type=TransitionEnvelope[CloseTransitionRequest], strict=True).request
         case "defer":
             request = msgspec.convert(raw, type=TransitionEnvelope[DeferTransitionRequest], strict=True).request
         case "merge-proposal":
@@ -2997,6 +3006,7 @@ type RequestBoundary = (
     | type[CandidateObserveRequest]
     | type[CandidateRestoreRequest]
     | type[ArtifactVerifyRequest]
+    | type[CloseRequest]
     | type[DispatchRequest]
     | type[ReviewJobRequest]
     | type[ActionsEnvelope]

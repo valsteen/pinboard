@@ -99,9 +99,13 @@ def close(
     selected_action = selected[0]
     if not isinstance(selected_action, decision_models.CloseAction):
         raise AssertionError("The exact close identity must select a close action.")
+    # The human types this command directly, so their --reason text is also their recorded close decision.
     decoded = parse_transition_input(
         selected_action,
-        msgspec.json.encode({"outcome": command.outcome.value, "reason": command.reason}, order="sorted"),
+        msgspec.json.encode(
+            {"human_decision": command.reason, "outcome": command.outcome.value, "reason": command.reason},
+            order="sorted",
+        ),
     )
     if isinstance(decoded, TransitionInputFailure):
         return CommandFailure(decoded.code, decoded.message, decoded.details)

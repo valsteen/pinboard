@@ -314,6 +314,7 @@ def candidate_review_key(
 ) -> str:
     identity = _canonical_bytes(
         (
+            "pinboard-candidate-review/v2",
             attempt_id,
             candidate,
             candidate_snapshot_sha256,

@@ -727,7 +727,13 @@ class PortableArtifactIdentity(msgspec.Struct, frozen=True, forbid_unknown_field
 
 
 class CandidateReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-candidate-review/v1"]
+    """A ready verdict recorded for the reviewer that one Pinboard-published reviewer prompt commissioned.
+
+    Retained pinboard-candidate-review/v1 artifacts carry no commission link; they stay opaque accepted history
+    and no current read decodes them.
+    """
+
+    schema: Literal["pinboard-candidate-review/v2"]
     attempt_id: KebabId
     item_id: KebabId
     candidate: NonEmptyLine
@@ -735,6 +741,7 @@ class CandidateReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     accepted_brief: PortableArtifactIdentity
     result_sha256: Sha256
     review_sha256: Sha256
+    reviewer_prompt_sha256: Sha256
     reviewer_task_id: NonEmptyLine
     verdict: Literal["ready"]
     acceptance_evidence: NonEmptyText

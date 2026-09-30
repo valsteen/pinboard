@@ -22,6 +22,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     candidate_snapshots,
     checkpoint_compatibility_models,
+    query_models,
     stored_state,
     work_brief_models,
     work_briefs,
@@ -162,6 +163,60 @@ class CheckpointPackageSupport(unittest.TestCase):
                 },
             },
         )
+
+    def commission_review(self, fixture: CheckpointFixture, candidate: str) -> str:
+        """Publish an initial reviewer launch for the current evidence and return its prompt digest."""
+
+        job = self.review_result(fixture, {"kind": "initial", "candidate_revision": candidate})
+        self.assertEqual("ready", job["status"], job)
+        digest = self.json_object(job["prompt_reference"])["sha256"]
+        assert isinstance(digest, str)
+        return digest
+
+    def ready_review_request(
+        self,
+        fixture: CheckpointFixture,
+        candidate: str,
+        reviewer_task_id: str,
+        reviewer_prompt_sha256: str,
+    ) -> JsonObject:
+        """Build the exact record-ready leaf for the current candidate, brief, result.md and review.md."""
+
+        store = SQLiteWorkStore(fixture.work / "state.sqlite3")
+        snapshot = store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        attempt = store.read_attempt_context(AttemptId("work-a-1"))
+        assert snapshot is not None and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        return {
+            "kind": "record-ready",
+            "attempt_id": "work-a-1",
+            "candidate_revision": candidate,
+            "candidate_snapshot_sha256": snapshot.reference.content_sha256,
+            "accepted_brief_sha256": attempt.brief_reference.content_sha256,
+            "result_sha256": hashlib.sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
+            "review_sha256": hashlib.sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
+            "reviewer_prompt_sha256": reviewer_prompt_sha256,
+            "reviewer_task_id": reviewer_task_id,
+            "verdict": "ready",
+            "acceptance_evidence": "The protected candidate satisfies the accepted brief.",
+        }
+
+    def record_commissioned_review(
+        self, fixture: CheckpointFixture, candidate: str, reviewer_task_id: str
+    ) -> JsonObject:
+        """Commission a reviewer through the review job, then record its ready verdict as completion requires."""
+
+        prompt = self.commission_review(fixture, candidate)
+        recorded = call_native_tool(
+            mcp_server.REVIEW_JOB_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "review": self.ready_review_request(fixture, candidate, reviewer_task_id, prompt),
+            },
+        )
+        self.assertEqual("recorded", recorded["status"], recorded)
+        return recorded
 
     def transition_result(self, fixture: CheckpointFixture, action: JsonObject, payload: JsonObject) -> JsonObject:
         return call_native_tool(

@@ -630,7 +630,9 @@ class SQLiteEffectContractTest(unittest.TestCase):
             project_decision_snapshot(state, SQLITE_NOW),
             decision_models.CloseCommand(
                 close_action,
-                work_models.CloseInput(work_models.CloseOutcome.DROPPED, "No longer needed."),
+                work_models.CloseInput(
+                    work_models.CloseOutcome.DROPPED, "No longer needed.", "The human asked to close it."
+                ),
             ),
             SQLITE_NOW,
         )

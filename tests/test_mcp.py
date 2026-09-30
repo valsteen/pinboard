@@ -165,7 +165,6 @@ def _representative_transition_requests() -> tuple[dict[str, contracts.JsonValue
                 "packages": [],
             },
         ),
-        ("close", "project", {"outcome": "done", **reason}),
         ("defer", "project", {"timing": "safe-to-defer", "reopen_condition": "A supported consumer needs it."}),
         ("merge-proposal", "project", {"target": "item-2"}),
         ("pause", "project", reason),
@@ -816,7 +815,7 @@ class McpTransportTest(unittest.TestCase):
 
         async def scenario() -> None:
             tools = await server.list_tools()
-            self.assertEqual(22, len(tools))
+            self.assertEqual(23, len(tools))
             for tool in tools:
                 with self.subTest(tool=tool.name):
                     self.assertEqual("object", tool.input_schema["type"])
@@ -4397,6 +4396,7 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.PREPARATION_AUTHORITY_TOOL,
                 mcp_server.ATTEMPT_AUTHORITY_TOOL,
                 mcp_server.TRANSITION_TOOL,
+                mcp_server.CLOSE_TOOL,
                 mcp_server.DISPATCH_TOOL,
                 mcp_server.REVIEW_JOB_TOOL,
                 mcp_server.CANDIDATE_RESTORE_TOOL,
@@ -4414,10 +4414,21 @@ class McpTransportTest(unittest.TestCase):
         )
         tools_by_name = {tool.name: tool for tool in tools}
         self.assertEqual(
-            {mcp_server.OVERVIEW_TOOL: {"anthropic/alwaysLoad": True}},
+            {
+                mcp_server.OVERVIEW_TOOL: {"anthropic/alwaysLoad": True},
+                mcp_server.CLOSE_TOOL: {"anthropic/requiresUserInteraction": True},
+            },
             {tool.name: tool.meta for tool in tools if tool.meta is not None},
         )
         expected_required = {
+            mcp_server.CLOSE_TOOL: {
+                "project_root",
+                "work_root",
+                "receipt",
+                "payload",
+                "actor_task_id",
+                "actor_host_id",
+            },
             mcp_server.DISPATCH_TOOL: {"project_root", "work_root", "dispatch"},
             mcp_server.REVIEW_JOB_TOOL: {"project_root", "work_root", "review"},
             mcp_server.PROPOSAL_CREATE_TOOL: {
@@ -4609,6 +4620,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
             "accepted_brief_sha256": attempt.brief_reference.content_sha256,
             "result_sha256": sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
             "review_sha256": sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
+            "reviewer_prompt_sha256": self.commission_review(fixture, fixture.candidate_revision),
             "reviewer_task_id": "independent-reviewer",
             "verdict": "ready",
             "acceptance_evidence": "The protected candidate satisfies the accepted brief.",
@@ -4678,6 +4690,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
             "accepted_brief_sha256": attempt.brief_reference.content_sha256,
             "result_sha256": sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
             "review_sha256": sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
+            "reviewer_prompt_sha256": self.commission_review(fixture, fixture.candidate_revision),
             "reviewer_task_id": "independent-reviewer",
             "verdict": "ready",
             "acceptance_evidence": "The exact candidate satisfies the accepted checkpoint.",

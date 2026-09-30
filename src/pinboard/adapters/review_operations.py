@@ -35,7 +35,17 @@ from pinboard.application.artifact_publication import (
 )
 from pinboard.application.artifacts import BriefArtifactRef, NewArtifact
 from pinboard.domain import work_models
-from pinboard.domain.errors import ChangedSurface, DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.errors import (
+    ChangedSurface,
+    DecisionFailure,
+    DecisionFailureCode,
+    DecisionResult,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    FailureMismatch,
+    RetryDisposition,
+)
 from pinboard.domain.identifiers import AttemptId, HistoryId, TaskId
 
 
@@ -155,18 +165,67 @@ def _portable(
     )
 
 
+def _reviewer_prompt_not_commissioned(
+    attempt_id: AttemptId, candidate_revision: str, result_sha256: str, reviewer_prompt_sha256: str
+) -> DecisionFailure:
+    return DecisionFailure(
+        DecisionFailureCode.REVIEWER_PROMPT_NOT_COMMISSIONED,
+        "No reviewer prompt that the review job published for this exact candidate, accepted brief and result.md "
+        "has the supplied reviewer_prompt_sha256, so this verdict is not attributable to a commissioned reviewer.",
+        FailureDetails(
+            observed=(
+                FailureFact("attempt_id", str(attempt_id)),
+                FailureFact("candidate_revision", candidate_revision),
+                FailureFact("result_sha256", result_sha256),
+                FailureFact("reviewer_prompt_sha256", reviewer_prompt_sha256),
+                FailureFact(
+                    "next_step",
+                    "Run the review job for the current candidate first, launch the reviewer it returns, then "
+                    "record that reviewer's ready verdict with the prompt digest the review job returned.",
+                ),
+            ),
+            mismatches=(),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def _commissioned_prompt_reference(
+    store: ports.WorkStore, subject: dispatch_models.ReviewerPromptSubject, reviewer_prompt_sha256: str
+) -> stored_state.ArtifactReference | None:
+    reference = store.read_artifact_reference(
+        work_models.ArtifactKind.EVIDENCE, dispatch_models.agent_prompt_key(subject, reviewer_prompt_sha256), 1
+    )
+    return None if reference is None or reference.content_sha256 != reviewer_prompt_sha256 else reference
+
+
+@dataclass(frozen=True, slots=True)
+class ReadyReviewClaim:
+    """A caller's ready verdict for one exact review subject and the reviewer prompt that commissioned it."""
+
+    attempt_id: AttemptId
+    candidate_revision: str
+    candidate_snapshot_sha256: str
+    accepted_brief_sha256: str
+    result_sha256: str
+    review_sha256: str
+    reviewer_prompt_sha256: str
+    reviewer_task_id: str
+    acceptance_evidence: str
+
+
 def _candidate_review_record(
     work_root: Path,
     store: ports.WorkStore,
-    attempt_id: AttemptId,
-    candidate_revision: str,
-    candidate_snapshot_sha256: str,
-    accepted_brief_sha256: str,
-    result_sha256: str,
-    review_sha256: str,
-    reviewer_task_id: str,
-    acceptance_evidence: str,
+    claim: ReadyReviewClaim,
 ) -> DecisionResult[work_brief_models.CandidateReview]:
+    attempt_id = claim.attempt_id
+    candidate_revision = claim.candidate_revision
+    result_sha256 = claim.result_sha256
+    review_sha256 = claim.review_sha256
     unavailable = _review_job_failure("Ready review requires the current review attempt and exact protected candidate.")
     facts = queries.select_review_job_context(store, attempt_id, None, None, result_sha256, review_sha256)
     if isinstance(facts, DecisionFailure):
@@ -201,14 +260,21 @@ def _candidate_review_record(
         result[1],
         implementation_review[1],
     ) != (
-        candidate_snapshot_sha256,
-        accepted_brief_sha256,
+        claim.candidate_snapshot_sha256,
+        claim.accepted_brief_sha256,
         result_sha256,
         review_sha256,
     ):
         return _review_job_failure("Ready review digests differ from the current candidate, brief, result, or review.")
+    subject = dispatch_models.ReviewerPromptSubject(
+        str(attempt_id), candidate_revision, claim.candidate_snapshot_sha256, claim.accepted_brief_sha256, result_sha256
+    )
+    if _commissioned_prompt_reference(store, subject, claim.reviewer_prompt_sha256) is None:
+        return _reviewer_prompt_not_commissioned(
+            attempt_id, candidate_revision, result_sha256, claim.reviewer_prompt_sha256
+        )
     review = work_brief_models.CandidateReview(
-        "pinboard-candidate-review/v1",
+        "pinboard-candidate-review/v2",
         str(attempt.attempt_id),
         str(attempt.work_item_id),
         candidate_revision,
@@ -216,9 +282,10 @@ def _candidate_review_record(
         _portable("accepted-brief", attempt.brief_reference),
         result_sha256,
         review_sha256,
-        reviewer_task_id,
+        claim.reviewer_prompt_sha256,
+        claim.reviewer_task_id,
         "ready",
-        acceptance_evidence,
+        claim.acceptance_evidence,
     )
     failure = work_briefs.validate_candidate_review(
         review,
@@ -236,31 +303,12 @@ def record_ready_candidate_review(
     work_root: Path,
     store: ports.WorkStore,
     artifacts: dispatch_models.DispatchArtifactPort,
-    attempt_id: AttemptId,
-    candidate_revision: str,
-    candidate_snapshot_sha256: str,
-    accepted_brief_sha256: str,
-    result_sha256: str,
-    review_sha256: str,
-    reviewer_task_id: str,
-    acceptance_evidence: str,
+    claim: ReadyReviewClaim,
 ) -> DecisionResult[RecordedCandidateReview | ArtifactAcceptanceFailure | ArtifactWriteFailure]:
-    arguments = (
-        work_root,
-        store,
-        attempt_id,
-        candidate_revision,
-        candidate_snapshot_sha256,
-        accepted_brief_sha256,
-        result_sha256,
-        review_sha256,
-        reviewer_task_id,
-        acceptance_evidence,
-    )
-    review = _candidate_review_record(*arguments)
+    review = _candidate_review_record(work_root, store, claim)
     if isinstance(review, DecisionFailure):
         return review
-    revalidated = _candidate_review_record(*arguments)
+    revalidated = _candidate_review_record(work_root, store, claim)
     if isinstance(revalidated, DecisionFailure):
         return revalidated
     if revalidated != review:
@@ -352,6 +400,111 @@ def _current_candidate_review_from_reference(
         review_sha256=review_sha256,
     )
     return None if failure is not None else CurrentCandidateReview(reference, review)
+
+
+def _candidate_review_required(
+    attempt: query_models.NonterminalAttemptContextFacts,
+    message: str,
+    result_sha256: str,
+    review_sha256: str,
+    recorded_reviewer_task_id: str | None,
+    mismatches: tuple[FailureMismatch, ...],
+) -> DecisionFailure:
+    return DecisionFailure(
+        DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED,
+        message,
+        FailureDetails(
+            observed=(
+                FailureFact("attempt_id", str(attempt.attempt_id)),
+                FailureFact("attempt_state", attempt.state.value),
+                FailureFact("candidate_revision", attempt.candidate_revision),
+                FailureFact("result_sha256", result_sha256),
+                FailureFact("review_sha256", review_sha256),
+                FailureFact("recorded_reviewer_task_id", recorded_reviewer_task_id),
+                FailureFact(
+                    "missing_step",
+                    "Commission a reviewer for this exact candidate through the review job, launch it, record its "
+                    "ready verdict with the returned prompt digest, then complete naming that reviewer.",
+                ),
+            ),
+            mismatches=mismatches,
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def commissioned_review_failure(
+    store: ports.WorkStore,
+    artifacts: dispatch_models.DispatchArtifactPort,
+    *,
+    attempt: query_models.NonterminalAttemptContextFacts,
+    brief: work_brief_models.ReadableWorkBrief,
+    result_sha256: str,
+    review_sha256: str,
+    reviewer_task_id: str,
+) -> DecisionFailure | None:
+    """Require a ready v2 review of the protected candidate by this reviewer under a Pinboard-published prompt."""
+
+    candidate = attempt.candidate_revision
+    snapshot = (
+        store.read_candidate_snapshot_context(attempt.attempt_id)
+        if candidate is not None and attempt.state == work_models.AttemptState.REVIEW
+        else None
+    )
+    current = (
+        None
+        if candidate is None or snapshot is None
+        else read_current_candidate_review(
+            store,
+            artifacts,
+            brief=brief,
+            candidate_revision=candidate,
+            candidate_snapshot=snapshot.reference,
+            accepted_brief=attempt.brief_reference,
+            result_sha256=result_sha256,
+            review_sha256=review_sha256,
+        )
+    )
+    if candidate is None or snapshot is None or current is None:
+        return _candidate_review_required(
+            attempt,
+            "Completion requires a ready candidate review recorded for the protected candidate, result.md and "
+            "review.md by a reviewer Pinboard commissioned; none is recorded.",
+            result_sha256,
+            review_sha256,
+            None,
+            (),
+        )
+    recorded = current.review
+    if recorded.reviewer_task_id != reviewer_task_id:
+        return _candidate_review_required(
+            attempt,
+            "The completion reviewer_task_id differs from the reviewer recorded for this candidate's ready review.",
+            result_sha256,
+            review_sha256,
+            recorded.reviewer_task_id,
+            (FailureMismatch("reviewer_task_id", recorded.reviewer_task_id, reviewer_task_id),),
+        )
+    subject = dispatch_models.ReviewerPromptSubject(
+        str(attempt.attempt_id),
+        candidate,
+        snapshot.reference.content_sha256,
+        attempt.brief_reference.content_sha256,
+        result_sha256,
+    )
+    if _commissioned_prompt_reference(store, subject, recorded.reviewer_prompt_sha256) is None:
+        return _candidate_review_required(
+            attempt,
+            "The recorded ready review names no reviewer prompt that the review job published for this candidate.",
+            result_sha256,
+            review_sha256,
+            recorded.reviewer_task_id,
+            (),
+        )
+    return None
 
 
 def _candidate_reconstruction(
@@ -651,8 +804,13 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
         publication = dispatch_models.publish_agent_prompt(
             store,
             artifacts,
-            prompt_role="reviewer",
-            attempt_id=str(attempt_id),
+            subject=dispatch_models.ReviewerPromptSubject(
+                str(attempt_id),
+                candidate_revision,
+                candidate.reference.content_sha256,
+                reference.content_sha256,
+                digest,
+            ),
             prompt=prompt,
             accepted_at=datetime.now(UTC),
         )

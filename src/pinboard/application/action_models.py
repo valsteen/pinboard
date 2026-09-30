@@ -149,8 +149,15 @@ class RetainTemporarilyInputPayload(msgspec.Struct, frozen=True, forbid_unknown_
 
 
 class CloseInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Close input and its stored pinboard-close-decision/v1 record.
+
+    human_decision carries the human's explicit close decision in their own words; it is attribution, not
+    authentication of the human.
+    """
+
     outcome: work_models.CloseOutcome
     reason: NonEmptyLine
+    human_decision: NonEmptyLine
 
 
 class DeferInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

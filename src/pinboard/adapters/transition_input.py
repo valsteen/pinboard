@@ -139,7 +139,9 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
         case decision_models.CloseAction():
             if isinstance(payload := _decode(data, transition_models.CloseInputPayload), TransitionInputFailure):
                 return payload
-            return decision_models.CloseCommand(action, work_models.CloseInput(payload.outcome, payload.reason))
+            return decision_models.CloseCommand(
+                action, work_models.CloseInput(payload.outcome, payload.reason, payload.human_decision)
+            )
         case decision_models.CompleteAction():
             if isinstance(data, msgspec.Struct):
                 schema = (

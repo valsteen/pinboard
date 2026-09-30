@@ -839,7 +839,9 @@ class LifecycleDecisionTest(unittest.TestCase):
             intake,
             decision_models.CloseCommand(
                 action(decision_models.CloseAction, WorkItemId("obsolete")),
-                work_models.CloseInput(work_models.CloseOutcome.DROPPED, "no longer needed"),
+                work_models.CloseInput(
+                    work_models.CloseOutcome.DROPPED, "no longer needed", "The human asked to close it."
+                ),
             ),
             NOW,
         )
@@ -1006,7 +1008,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 LedgerSnapshot("r", (active,), attempts=(attempt_active,)),
                 decision_models.CloseCommand(
                     action(decision_models.CloseAction, WorkItemId("target")),
-                    work_models.CloseInput(work_models.CloseOutcome.DONE, "done"),
+                    work_models.CloseInput(work_models.CloseOutcome.DONE, "done", "The human asked to close it."),
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),
@@ -1016,7 +1018,9 @@ class LifecycleDecisionTest(unittest.TestCase):
                 ),
                 decision_models.CloseCommand(
                     action(decision_models.CloseAction, WorkItemId("target")),
-                    work_models.CloseInput(work_models.CloseOutcome.DROPPED, "abandon review"),
+                    work_models.CloseInput(
+                        work_models.CloseOutcome.DROPPED, "abandon review", "The human asked to close it."
+                    ),
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),
@@ -1026,7 +1030,9 @@ class LifecycleDecisionTest(unittest.TestCase):
                 ),
                 decision_models.CloseCommand(
                     action(decision_models.CloseAction, WorkItemId("target")),
-                    work_models.CloseInput(work_models.CloseOutcome.DROPPED, "obsolete"),
+                    work_models.CloseInput(
+                        work_models.CloseOutcome.DROPPED, "obsolete", "The human asked to close it."
+                    ),
                 ),
                 "LIVE_DEPENDENTS",
             ),
@@ -1034,7 +1040,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 LedgerSnapshot("r", (ready,), history_items=(WorkItemId("target"),)),
                 decision_models.CloseCommand(
                     action(decision_models.CloseAction, WorkItemId("target")),
-                    work_models.CloseInput(work_models.CloseOutcome.DONE, "done"),
+                    work_models.CloseInput(work_models.CloseOutcome.DONE, "done", "The human asked to close it."),
                 ),
                 "HISTORY_RECORD_EXISTS",
             ),

@@ -39,6 +39,7 @@ from pinboard.application.dispatch_models import (
     DispatchEnvironment,
     DispatchRejectionCode,
     PublishedAgentPrompt,
+    WorkerPromptSubject,
     publish_agent_prompt,
 )
 from pinboard.application.dispatch_models import DispatchFailure as ApplicationDispatchFailure
@@ -1262,8 +1263,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
         published_prompt = publish_agent_prompt(
             store,
             artifacts,
-            prompt_role="worker",
-            attempt_id=str(attempt.attempt_id),
+            subject=WorkerPromptSubject(str(attempt.attempt_id)),
             prompt=rendered_prompt,
             accepted_at=datetime.now(UTC),
         )

@@ -260,7 +260,10 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                 service.decide_and_commit_transition(
                     store,
                     decision_models.CloseCommand(
-                        close_dependency, work_models.CloseInput(work_models.CloseOutcome.DONE, "Dependency complete.")
+                        close_dependency,
+                        work_models.CloseInput(
+                            work_models.CloseOutcome.DONE, "Dependency complete.", "The human asked to close it."
+                        ),
                     ),
                     SQLITE_NOW,
                     read_authorization_time=lambda: SQLITE_NOW,

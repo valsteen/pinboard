@@ -219,12 +219,14 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.CLOSE:
             return ActionSemantics(
-                "Record a terminal decision for eligible live work without an accepted attempt.",
+                "Record the human's explicit terminal decision for eligible live work without an accepted attempt.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.ITEM_WITHOUT_ATTEMPT,
-                "Record the done or dropped outcome and remove the item from live work.",
+                "Apply only through the dedicated human-confirmed close route, not the general lifecycle transition, "
+                "carrying the human's decision in their own words; record the done or dropped outcome and remove the "
+                "item from live work.",
             )
         case ActionKind.CONTINUE:
             return ActionSemantics(
@@ -885,6 +887,7 @@ class WorkItemClosureChange:
     item_before: work_models.WorkState
     terminal_state: work_models.CloseOutcome
     evidence: str
+    human_decision: str
 
 
 @dataclass(frozen=True, slots=True)

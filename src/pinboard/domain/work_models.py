@@ -317,6 +317,7 @@ class RetainTemporarilyInput:
 class CloseInput:
     outcome: CloseOutcome
     reason: str
+    human_decision: str
 
 
 @dataclass(frozen=True, slots=True)

@@ -112,7 +112,7 @@ claude plugin install pinboard@pinboard
 
 Start Claude Code in your project. The first session prepares the installed version's private runtime, which needs [uv](https://docs.astral.sh/uv/). Because the `pinboard` MCP server starts before that preparation finishes, the first session reports it as failed: reconnect it with `/mcp` or restart Claude Code once, then ask Claude Code to set up Pinboard there. Running `~/.claude/plugins/cache/pinboard/pinboard/*/scripts/pinboard --prepare-runtime` yourself before the first session avoids that one reconnect.
 
-Once prepared, the plugin approves its own MCP tool calls automatically, so Pinboard does not prompt for each tool while your saved deny and ask rules still apply. The [installation guide](INSTALL.md#permissions) explains how to be asked instead and the settings-rule fallback.
+Once prepared, the plugin approves its own MCP tool calls automatically, so Pinboard does not prompt for each tool while your saved deny and ask rules still apply. Closing a saved item is the exception: Claude Code v2.1.199 or later asks you to confirm each close, which records your decision in your own words. The [installation guide](INSTALL.md#permissions) explains how to be asked instead and the settings-rule fallback.
 
 <details>
 <summary>Try Pinboard for one Claude Code session without installing it</summary>

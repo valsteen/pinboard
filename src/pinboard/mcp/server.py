@@ -39,6 +39,7 @@ from pinboard.mcp.tool_names import (
     BRIEF_SOURCES_TOOL,
     CANDIDATE_OBSERVE_TOOL,
     CANDIDATE_RESTORE_TOOL,
+    CLOSE_TOOL,
     CORRECTION_CONTEXT_TOOL,
     DISPATCH_TOOL,
     ITEM_DEFINITION_TOOL,
@@ -81,10 +82,14 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "the pinboard skill and follow its start, pause and review route; do not implement or commit a saved "
             "item outside it unless the human chooses that. For a paused item, read pinboard_item_status operation "
             "item and bring its pause_reason decision to the human before resuming. Call board work done only when "
-            "the board records it complete; a merge is not completion or review. Close only an unstarted item on the "
-            "human's explicit decision, and never pause or block work to approximate a refused close. After your own "
+            "the board records it complete; a merge is not completion or review. Close only an unstarted item, only "
+            "through pinboard_close, and only with the human's explicit decision in their own words as "
+            "human_decision. An item with an attempt cannot be closed: say its change is unreviewed and offer a "
+            "separate review before completion. Never pause or block work to approximate a refused or denied close. "
+            "After your own "
             "source change for an item, do not close it unless the human explicitly asked you to close it, and do "
-            "not complete it without a separate reviewer: report the change and ask first. Reach board state only "
+            "not complete it until pinboard_review_job has commissioned a separate reviewer whose ready verdict is "
+            "recorded: report the change and ask first. Reach board state only "
             "through these tools, never through Bash, Python or .pinboard/state.sqlite3.\n\n"
             "For intake or coordination, load the complete existing workflow skill before constructing "
             "attributed calls: pinboard-intake for new work, or pinboard for coordination of existing work. "
@@ -468,7 +473,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=TRANSITION_TOOL,
-        description="Apply one current Pinboard lifecycle action. Put project_root, work_root, role, receipt, payload and authority fields inside request. receipt contains ONLY action_id and subject_revision from pinboard_actions, not the whole action. For role project, put actor_task_id and actor_host_id in request; for role worker or preparer, put lease_id and generation there instead. Get the action-specific payload schema from pinboard_actions. Never apply close in the same turn as your own source change for that item unless the human explicitly asked you to close it; otherwise report the change and ask the human first.",
+        description="Apply one current Pinboard lifecycle action other than close. Put project_root, work_root, role, receipt, payload and authority fields inside request. receipt contains ONLY action_id and subject_revision from pinboard_actions, not the whole action. For role project, put actor_task_id and actor_host_id in request; for role worker or preparer, put lease_id and generation there instead. Get the action-specific payload schema from pinboard_actions. Close is not accepted here: apply it only through pinboard_close with the human's own decision. Complete only after pinboard_review_job commissioned the reviewer and record-ready recorded its ready verdict, naming that reviewer_task_id.",
     )
     async def lifecycle_transition(
         request: dict[str, JsonValue],
@@ -481,6 +486,48 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             str(request.get("project_root", "")),
             partial(mutation_operations._transition, {"request": request}),
             arguments={"request": request},
+            capture=capture,
+        )
+
+    @server.tool(
+        name=CLOSE_TOOL,
+        description=(
+            "Close one unstarted Pinboard item as done or dropped on the human's explicit decision. Claude Code asks "
+            "the human to confirm every call. Arguments are project_root, work_root, receipt, payload, actor_task_id "
+            "and actor_host_id (no request wrapper, no role). receipt contains ONLY action_id:{kind:'close',"
+            "subject:<item_id>} and subject_revision from the close action pinboard_actions returned. payload is "
+            "{outcome:'done'|'dropped', reason:<one line>, human_decision:<the human's explicit close decision in "
+            "their own words, one line>}. If you do not have the human's own words, ask the human and stop; never "
+            "write them yourself. If this call is denied, report that the human must confirm the close and seek no "
+            "other route: no shell or CLI close, pause, block, defer or other transition."
+        ),
+        meta={"anthropic/requiresUserInteraction": True},
+    )
+    async def close(
+        project_root: str,
+        work_root: str,
+        receipt: dict[str, JsonValue],
+        payload: dict[str, JsonValue],
+        actor_task_id: str,
+        actor_host_id: str,
+    ) -> dict[str, JsonValue]:
+        return await execution._run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            CLOSE_TOOL,
+            project_root,
+            partial(
+                mutation_operations._close, project_root, work_root, receipt, payload, actor_task_id, actor_host_id
+            ),
+            arguments={
+                "project_root": project_root,
+                "work_root": work_root,
+                "receipt": receipt,
+                "payload": payload,
+                "actor_task_id": actor_task_id,
+                "actor_host_id": actor_host_id,
+            },
             capture=capture,
         )
 
@@ -598,7 +645,10 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         description=(
             "Publish one candidate-bound reviewer launch with exact caller-selected historical evidence, or record "
             "one exact favorable candidate review with kind:'record-ready'. Launch leaves require runtime:'codex' "
-            "or 'claude-code' and background:<boolean>; record-ready takes neither and returns no native launch. Run separate "
+            "or 'claude-code' and background:<boolean>; record-ready takes neither and returns no native launch. "
+            "record-ready requires reviewer_prompt_sha256: the prompt_reference.sha256 that the launch for this exact "
+            "candidate and result returned, with the reviewer_task_id of the reviewer launched from it. Completion "
+            "requires that recorded review and the same reviewer_task_id. Run separate "
             "full CLI validation before package reuse. On ready, call the exact returned native_launch.tool "
             "with exactly native_launch.arguments; do not add, remove or rewrite an argument. A rejection "
             "publishes no reviewer prompt: correct its precondition and never synthesize a substitute launch."
@@ -711,6 +761,11 @@ def _install_boundary_contracts(server: MCPServer) -> None:
         (
             TRANSITION_TOOL,
             contract_schemas.transition_request_schema(),
+            contract_schemas.union_schema_for(contracts.TRANSITION_RESULT_TYPES),
+        ),
+        (
+            CLOSE_TOOL,
+            contract_schemas.schema_for(contracts.CloseRequest),
             contract_schemas.union_schema_for(contracts.TRANSITION_RESULT_TYPES),
         ),
         (

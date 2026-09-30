@@ -331,7 +331,10 @@ class TransitionInputTest(unittest.TestCase):
                 action(decision_models.BlockWorkItemAction, WorkItemId("work-a")),
                 {"reason": "blocked", "depends_on": []},
             ),
-            (action(decision_models.CloseAction, WorkItemId("work-a")), {"outcome": "done", "reason": "complete"}),
+            (
+                action(decision_models.CloseAction, WorkItemId("work-a")),
+                {"outcome": "done", "reason": "complete", "human_decision": "Close it."},
+            ),
             (action(decision_models.CompleteAction, AttemptId("attempt-1")), {"evidence": "complete"}),
             (
                 action(decision_models.DeferAction, WorkItemId("work-a")),

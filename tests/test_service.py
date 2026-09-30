@@ -794,7 +794,11 @@ class ServiceTest(unittest.TestCase):
         close = non_checkpoint_command(
             decision_models.CloseCommand(
                 action(decision_models.CloseAction, WorkItemId("work-a")),
-                work_models.CloseInput(work_models.CloseOutcome.DROPPED, "The retained attempt is no longer needed."),
+                work_models.CloseInput(
+                    work_models.CloseOutcome.DROPPED,
+                    "The retained attempt is no longer needed.",
+                    "The human asked to close it.",
+                ),
             )
         )
 

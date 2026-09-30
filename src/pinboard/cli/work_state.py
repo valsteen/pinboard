@@ -488,6 +488,26 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
     return tuple(completed)
 
 
+def _close_decision_failure(receipt: stored_state.StoredTransitionReceipt) -> str | None:
+    """Strictly decode one close receipt's stored decision input; retained decision/v1 closes carry none."""
+
+    match receipt.input_schema:
+        case "decision/v1":
+            if bytes(receipt.input_payload) != b"{}":
+                return f"Close history {int(receipt.history_id)} has a retained decision/v1 input that is not empty."
+            return None
+        case "pinboard-close-decision/v1":
+            try:
+                value = msgspec.json.decode(bytes(receipt.input_payload), type=action_models.CloseInputPayload)
+            except (msgspec.DecodeError, ValueError) as error:
+                return f"Close history {int(receipt.history_id)} has an invalid close decision: {error}"
+            if msgspec.json.encode(value, order="sorted") != bytes(receipt.input_payload):
+                return f"Close history {int(receipt.history_id)} has a noncanonical close decision."
+            return None
+        case _:
+            return f"Close history {int(receipt.history_id)} has unsupported input schema {receipt.input_schema!r}."
+
+
 def validate_loaded_work_state(
     work_root: Path,
     state: stored_state.StoredWorkState,
@@ -528,6 +548,12 @@ def validate_loaded_work_state(
             diagnostics.append(
                 _error_diagnostic(completion_packages.code.value, work_root, completion_packages.message)
             )
+    diagnostics.extend(
+        _error_diagnostic("CLOSE_DECISION_INVALID", work_root, message)
+        for receipt in state.transition_receipts
+        if receipt.action_kind == decision_models.ActionKind.CLOSE
+        and (message := _close_decision_failure(receipt)) is not None
+    )
     view_root = work_root / "views"
     expected_views = derive_expected_view_bytes(state, attempt_briefs, now=now)
     diagnostics.extend(

@@ -2,7 +2,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Literal, Protocol, Self
+from typing import Annotated, Literal, Protocol, Self, assert_never
 
 import msgspec
 
@@ -177,12 +177,52 @@ def _reference_view(publication: AcceptedArtifactPublication) -> PromptReference
     )
 
 
+@dataclass(frozen=True, slots=True)
+class WorkerPromptSubject:
+    attempt_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewerPromptSubject:
+    """The exact review subject a reviewer prompt commissions; record-ready recomputes it from its digests."""
+
+    attempt_id: str
+    candidate: str
+    candidate_snapshot_sha256: str
+    accepted_brief_sha256: str
+    result_sha256: str
+
+
+type AgentPromptSubject = WorkerPromptSubject | ReviewerPromptSubject
+
+
+def agent_prompt_key(subject: AgentPromptSubject, prompt_sha256: str) -> str:
+    """Name one accepted prompt artifact; a reviewer key binds its prompt to the commissioned review subject."""
+
+    match subject:
+        case WorkerPromptSubject(attempt_id=attempt_id):
+            return f"{attempt_id}-worker-prompt-{prompt_sha256}"
+        case ReviewerPromptSubject():
+            identity = msgspec.json.encode(
+                (
+                    subject.attempt_id,
+                    subject.candidate,
+                    subject.candidate_snapshot_sha256,
+                    subject.accepted_brief_sha256,
+                    subject.result_sha256,
+                    prompt_sha256,
+                )
+            )
+            return f"{subject.attempt_id}-reviewer-prompt-{hashlib.sha256(identity).hexdigest()}"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def publish_agent_prompt(
     store: WorkStore,
     artifacts: DispatchArtifactPort,
     *,
-    prompt_role: Literal["worker", "reviewer"],
-    attempt_id: str,
+    subject: AgentPromptSubject,
     prompt: str,
     accepted_at: datetime,
 ) -> DecisionResult[PublishedAgentPrompt | ArtifactAcceptanceFailure | ArtifactWriteFailure]:
@@ -193,7 +233,7 @@ def publish_agent_prompt(
         artifacts,
         NewArtifact(
             work_models.ArtifactKind.EVIDENCE,
-            f"{attempt_id}-{prompt_role}-prompt-{digest}",
+            agent_prompt_key(subject, digest),
             1,
             ".txt",
             content,

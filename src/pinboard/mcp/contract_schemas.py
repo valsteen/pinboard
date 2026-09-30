@@ -801,7 +801,7 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         else:
             result_type = CandidateRestoreRejected
         msgspec.convert(content, type=result_type, strict=True)
-    elif tool_name == "pinboard_transition":
+    elif tool_name in {"pinboard_transition", "pinboard_close"}:
         if status in {"committed", "committed-with-warning"}:
             result_type = TransitionCommitted
         elif status == "failed-after-publication":

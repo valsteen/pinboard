@@ -829,6 +829,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 int(checkpoint.history_id), self.json_object(job["prior_checkpoint_package"])["history_id"]
             )
         fixture = self.terminalize_brief(fixture)
+        self.record_commissioned_review(fixture, candidate, "mixed-reviewer")
         attempt_root = fixture.work / "attempts" / "work-a-1"
         payload = fixture.project / "mixed-completion.json"
         payload.write_text(
@@ -922,6 +923,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
 
         terminal_candidate = self.submit_review(fixture, "terminal-candidate", "terminal-worker")
         covered_value["candidate"] = terminal_candidate
+        self.record_commissioned_review(fixture, terminal_candidate, "terminal-reviewer")
         complete_action = self.project_action(fixture, "complete:work-a-1")
 
         direct_payload = fixture.project / "direct-complete.json"

@@ -14,11 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import anyio
 import msgspec
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp_types import CallToolResult
 
+from evals.behavioral import processes
 from evals.behavioral.export import SeedFailure
 
 SEEDED_HOST_ID = "eval-host"
@@ -272,6 +274,7 @@ class RecordReady(Request, frozen=True):
     result_sha256: str
     review_sha256: str
     reviewer_task_id: str
+    reviewer_prompt_sha256: str
     verdict: Literal["ready"]
     acceptance_evidence: str
 
@@ -346,6 +349,11 @@ class Digest(Projection, frozen=True):
     sha256: str
 
 
+class ReviewCommission(Projection, frozen=True):
+    status: str
+    prompt_reference: Digest
+
+
 class Inspection(Projection, frozen=True):
     candidate_recovery: Digest
     accepted_brief: Digest
@@ -370,9 +378,11 @@ class Overview(Projection, frozen=True):
 @dataclass(frozen=True)
 class BoardClient:
     session: ClientSession
+    window: processes.Window
 
     async def call[T: Projection](self, tool: str, arguments: Request, projection: type[T]) -> T:
-        return read_result(tool, await self.session.call_tool(tool, msgspec.to_builtins(arguments)), projection)
+        with anyio.fail_after(self.window.timeout(300)):
+            return read_result(tool, await self.session.call_tool(tool, msgspec.to_builtins(arguments)), projection)
 
 
 def read_result[T: Projection](tool: str, result: CallToolResult, projection: type[T]) -> T:
@@ -387,14 +397,14 @@ def read_result[T: Projection](tool: str, result: CallToolResult, projection: ty
 
 
 @asynccontextmanager
-async def connect(launcher: Path, log: Path) -> AsyncGenerator[BoardClient]:
+async def connect(launcher: Path, log: Path, window: processes.Window) -> AsyncGenerator[BoardClient]:
     """Serve the evaluated revision's MCP server over stdio; its diagnostics append to ``log``."""
     parameters = StdioServerParameters(command=str(launcher), args=["--mcp"], env=os.environ.copy())
     try:
-        with log.open("a") as errlog:
+        with anyio.fail_after(window.timeout(300)), log.open("a") as errlog:
             async with stdio_client(parameters, errlog=errlog) as streams, ClientSession(*streams) as session:
                 await session.initialize()
-                yield BoardClient(session)
+                yield BoardClient(session, window)
     except OSError as error:
         raise SeedFailure(f"the evaluated launcher could not serve MCP: {error}") from error
 
@@ -404,22 +414,24 @@ def require(status: str, accepted: tuple[str, ...], what: str) -> None:
         raise SeedFailure(f"{what} returned status {status}")
 
 
-async def overview(launcher: Path, log: Path, project_root: Path, work_root: Path) -> Overview:
-    async with connect(launcher, log) as board:
+async def overview(
+    launcher: Path, log: Path, project_root: Path, work_root: Path, window: processes.Window
+) -> Overview:
+    async with connect(launcher, log, window) as board:
         return await board.call(
             "pinboard_overview", Roots(project_root=str(project_root), work_root=str(work_root)), Overview
         )
 
 
-async def tool_names(launcher: Path, log: Path) -> list[str]:
-    async with connect(launcher, log) as board:
+async def tool_names(launcher: Path, log: Path, window: processes.Window) -> list[str]:
+    async with connect(launcher, log, window) as board:
         return sorted(tool.name for tool in (await board.session.list_tools()).tools)
 
 
 async def item_states(
-    launcher: Path, log: Path, project_root: Path, work_root: Path, items: tuple[str, ...]
+    launcher: Path, log: Path, project_root: Path, work_root: Path, items: tuple[str, ...], window: processes.Window
 ) -> list[tuple[str, str]]:
-    async with connect(launcher, log) as board:
+    async with connect(launcher, log, window) as board:
         states = []
         for item in items:
             request = ItemStatus(project_root=str(project_root), work_root=str(work_root), item_id=item)

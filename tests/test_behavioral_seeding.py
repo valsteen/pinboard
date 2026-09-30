@@ -8,7 +8,7 @@ from mcp_types import CallToolResult, TextContent
 
 from evals.behavioral import board, export, world
 from evals.behavioral.export import SeedFailure
-from evals.behavioral.processes import Completed
+from evals.behavioral.processes import Completed, Window
 
 RECOVERY = (
     '{"schema":"pinboard-launcher-result/v1","status":"runtime-preparation-required","pinboard_started":false,'
@@ -22,24 +22,26 @@ RECOVERY = (
 class LauncherRecoveryTest(unittest.TestCase):
     def test_a_recovery_result_from_board_init_is_a_seed_failure(self) -> None:
         with (
-            patch.object(world.processes, "launcher_init", return_value=Completed(0, RECOVERY, "")),
+            patch.object(world.processes, "launcher_init", return_value=Completed(0, RECOVERY, "", False)),
             self.assertRaises(SeedFailure),
         ):
-            world.init_board(Path("launcher"), Path("project"), None)
+            world.init_board(Path("launcher"), Path("project"), None, Window(None))
 
     def test_an_unready_runtime_preparation_is_a_seed_failure(self) -> None:
         with (
-            patch.object(export.processes, "launcher_prepare_runtime", return_value=Completed(1, RECOVERY, "")),
+            patch.object(export.processes, "launcher_prepare_runtime", return_value=Completed(1, RECOVERY, "", False)),
             self.assertRaises(SeedFailure),
         ):
-            export.prepare_runtime(Path("plugin"))
+            export.prepare_runtime(Path("plugin"), Window(None))
 
     def test_preparation_without_a_launcher_result_is_a_seed_failure(self) -> None:
         with (
-            patch.object(export.processes, "launcher_prepare_runtime", return_value=Completed(127, "", "not found")),
+            patch.object(
+                export.processes, "launcher_prepare_runtime", return_value=Completed(127, "", "not found", False)
+            ),
             self.assertRaises(SeedFailure),
         ):
-            export.prepare_runtime(Path("plugin"))
+            export.prepare_runtime(Path("plugin"), Window(None))
 
 
 class ToolResultTest(unittest.TestCase):

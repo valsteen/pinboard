@@ -5,13 +5,15 @@ import unittest
 from pathlib import Path
 from typing import override
 
-from evals.behavioral import spend
+from evals.behavioral import processes, spend
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
     ClaudeRunDetails,
+    CodexAccounting,
     Completed,
     ExportRecord,
     ProbeRecord,
+    ReviewerUsage,
     RunKey,
     RunRecord,
     Runtime,
@@ -123,13 +125,13 @@ class SpendTest(unittest.TestCase):
 
     def test_a_session_whose_projection_exceeds_the_remaining_cap_does_not_start(self) -> None:
         record_run(self.layout, "repeat", 1, [3.0])
-        budget = Budget(self.layout, cap_usd=6.5)
+        budget = Budget(self.layout, cap_usd=6.5, window=processes.Window(None), allow_unknown_reviewer_price=False)
         self.assertEqual(3.0, budget.reserve(Category.CLAUDE_AGENT_RUN))
         self.assertIsNone(budget.reserve(Category.CLAUDE_AGENT_RUN))
 
     def test_a_released_reservation_frees_room_and_recorded_spend_uses_it(self) -> None:
         record_run(self.layout, "repeat", 1, [3.0])
-        budget = Budget(self.layout, cap_usd=7.0)
+        budget = Budget(self.layout, cap_usd=7.0, window=processes.Window(None), allow_unknown_reviewer_price=False)
         projected = budget.reserve(Category.CLAUDE_AGENT_RUN)
         assert projected is not None
         budget.release(projected)
@@ -137,8 +139,57 @@ class SpendTest(unittest.TestCase):
         self.assertAlmostEqual(1.0, budget.remaining())
         self.assertIsNone(budget.reserve(Category.CLAUDE_AGENT_RUN))
 
+    def test_interrupted_probe_keeps_known_spend_and_blocks_further_paid_work(self) -> None:
+        write_new(
+            self.layout.probe_file("cutoff").parent / "accounting.json",
+            CodexAccounting(
+                schema="pinboard-behavioral-codex-accounting/v1",
+                main_known_cost_usd=0.25,
+                main_usage_complete=False,
+                reviewer_usage=[],
+                reviewer_price_usd=None,
+            ),
+        )
+        self.assertEqual(0.25, spend.total(spend.items(self.layout)))
+        self.assertTrue(spend.main_usage_unknown(self.layout))
+        self.assertIsNone(Budget(self.layout, 120, processes.Window(None), True).reserve(Category.SCORER))
+        self.assertIn("total dollars unknown", spend.report(self.layout))
+
+    def test_unknown_reviewer_price_requires_exception_and_never_becomes_zero_dollars(self) -> None:
+        record_probe(self.layout, "isolation", 0.25)
+        write_new(
+            self.layout.probe_file("isolation").parent / "accounting.json",
+            CodexAccounting(
+                schema="pinboard-behavioral-codex-accounting/v1",
+                main_known_cost_usd=0.25,
+                main_usage_complete=True,
+                reviewer_usage=[
+                    ReviewerUsage(
+                        thread_id="reviewer",
+                        model="codex-auto-review",
+                        input_tokens=12,
+                        cached_input_tokens=3,
+                        cache_write_input_tokens=0,
+                        output_tokens=2,
+                        reasoning_output_tokens=1,
+                    )
+                ],
+                reviewer_price_usd=None,
+            ),
+        )
+        self.assertEqual(0.25, spend.total(spend.items(self.layout)))
+        self.assertIsNone(Budget(self.layout, 120, processes.Window(None), False).reserve(Category.SCORER))
+        self.assertIsNotNone(Budget(self.layout, 120, processes.Window(None), True).reserve(Category.SCORER))
+        self.assertIn("price unknown", spend.report(self.layout))
+        self.assertIn("total dollars unknown", spend.report(self.layout))
+
     def test_without_a_recorded_session_the_projection_is_the_category_default(self) -> None:
-        budget = Budget(self.layout, cap_usd=spend.DEFAULT_PROJECTION_USD[Category.SCORER])
+        budget = Budget(
+            self.layout,
+            cap_usd=spend.DEFAULT_PROJECTION_USD[Category.SCORER],
+            window=processes.Window(None),
+            allow_unknown_reviewer_price=False,
+        )
         self.assertIsNotNone(budget.reserve(Category.SCORER))
         self.assertIsNone(budget.reserve(Category.SCORER))
 

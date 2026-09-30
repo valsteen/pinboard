@@ -113,10 +113,10 @@ async def seed_full_world(seeder: Seeder) -> None:
     seeder.commit_change("json-output", "tally.sh", "Add --json output flag", JSON_TALLY)
     lease = await seeder.worker_acquire("json-output", "worker-json", 3600)
     await seeder.worker_submit("json-output", lease, 'Adds a --json flag that prints {"sum": N}.')
-    await seeder.review_publish(
+    prompt_sha256 = await seeder.review_publish(
         "json-output", "Verdict: ready. The --json flag prints the expected object and plain output is unchanged."
     )
-    await seeder.review_ready("json-output")
+    await seeder.review_ready("json-output", prompt_sha256)
     await seeder.complete_reviewed(
         "json-output",
         "Reviewed favorably; the maintainer chose to keep this change on branch pinboard/json-output as an "
@@ -145,10 +145,10 @@ async def seed_full_world(seeder: Seeder) -> None:
     seeder.commit_change("sort-flag", "tally.sh", "Add --sorted flag", SORTED_TALLY)
     lease = await seeder.worker_acquire("sort-flag", "worker-sort", 3600)
     await seeder.worker_submit("sort-flag", lease, "Adds a --sorted flag that prints sorted inputs and then the total.")
-    await seeder.review_publish(
+    prompt_sha256 = await seeder.review_publish(
         "sort-flag", "Verdict: ready. --sorted prints sorted inputs and the total; default output unchanged."
     )
-    await seeder.review_ready("sort-flag")
+    await seeder.review_ready("sort-flag", prompt_sha256)
 
     # strict-parse: review found a defect and returned it for correction.
     await seeder.propose(
@@ -237,8 +237,9 @@ async def seed_full_world(seeder: Seeder) -> None:
     processes.git_checked(
         ["merge", "-q", "--no-ff", "-m", "Merge branch 'pinboard/trim-whitespace'", "pinboard/trim-whitespace"],
         cwd=project,
+        window=seeder.board.window,
     )
-    processes.git_checked(["push", "-q", "origin", "main"], cwd=project)
+    processes.git_checked(["push", "-q", "origin", "main"], cwd=project, window=seeder.board.window)
 
     # help-text: a background worker holds the attempt and has partial, uncommitted work.
     await seeder.propose(
@@ -289,13 +290,17 @@ async def seed_full_world(seeder: Seeder) -> None:
     )
 
     # readme-pr-review: a person's pull request (branch sam/readme-example on origin) awaiting review.
-    processes.git_checked(["checkout", "-q", "-b", "sam/readme-example", "origin/main"], cwd=project)
+    processes.git_checked(
+        ["checkout", "-q", "-b", "sam/readme-example", "origin/main"], cwd=project, window=seeder.board.window
+    )
     readme = project / "README.md"
     readme.write_text(readme.read_text() + README_EXAMPLE)
-    processes.git_checked(["commit", "-q", "-am", "Document blank-line handling in README"], cwd=project)
-    processes.git_checked(["push", "-q", "origin", "sam/readme-example"], cwd=project)
-    processes.git_checked(["checkout", "-q", "main"], cwd=project)
-    processes.git_checked(["branch", "-q", "-D", "sam/readme-example"], cwd=project)
+    processes.git_checked(
+        ["commit", "-q", "-am", "Document blank-line handling in README"], cwd=project, window=seeder.board.window
+    )
+    processes.git_checked(["push", "-q", "origin", "sam/readme-example"], cwd=project, window=seeder.board.window)
+    processes.git_checked(["checkout", "-q", "main"], cwd=project, window=seeder.board.window)
+    processes.git_checked(["branch", "-q", "-D", "sam/readme-example"], cwd=project, window=seeder.board.window)
     await seeder.propose(
         "readme-pr-review",
         "Review Sam's README pull request",
@@ -336,14 +341,14 @@ async def seed_skip_comments_experiment(seeder: Seeder) -> None:
         "# Usage\n\nPipe one integer per line into `./tally.sh`. Blank lines are skipped. "
         "Lines that start with `#` are comments and are skipped too.\n"
     )
-    processes.git_checked(["add", "docs/usage.md"], cwd=worktree)
+    processes.git_checked(["add", "docs/usage.md"], cwd=worktree, window=seeder.board.window)
     seeder.commit_change(item, "tally.sh", "Skip comment lines in input", COMMENTS_TALLY)
     lease = await seeder.worker_acquire(item, "worker-skip", 3600)
     await seeder.worker_submit(item, lease, "Skips lines starting with '#' and documents it in docs/usage.md.")
-    await seeder.review_publish(
+    prompt_sha256 = await seeder.review_publish(
         item, "Verdict: ready. Comment lines are skipped, numbers still sum, and the docs sentence matches."
     )
-    await seeder.review_ready(item)
+    await seeder.review_ready(item, prompt_sha256)
     await seeder.complete_reviewed(
         item,
         "Throwaway experiment reviewed favorably; Sam kept the change on branch pinboard/skip-comments and did not "

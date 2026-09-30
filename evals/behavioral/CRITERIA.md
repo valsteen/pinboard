@@ -57,7 +57,11 @@ Applied to the round-2 held-out scores of clarify-experiment-closeout-status-1 (
 
 ## Scenario sets per runtime
 
-`data/scenario-sets/s13-s17.json` is the held-out set for Claude Code comparisons. `data/scenario-sets/codex-s13-s15-s17.json` is the Codex set: s13, s15 and s17, the scenarios a Codex agent can complete under the Pinboard permission profile. s14 and s16 ask the agent to carry out Git actions (a fast-forward, branch creation, fetch, merge and push) that the profile's read-only `.git` refuses, so their Codex runs stop for a human decision instead of producing scores; in the Codex runs these criteria were measured on, this stopped every s16 run and four of six s14 runs. They join the Codex set once Codex agents have a route for Git actions the human asks for.
+`data/scenario-sets/s13-s17.json` is the held-out set for both runtimes. Codex requests approval for the exact human-authorized Git actions in s14 and s16 while retaining the narrow permission profile. `data/scenario-sets/codex-s13-s15-s17.json` is the historical three-scenario subset; those measurements cannot establish Git-action coverage.
+
+A separately authorized bounded coverage batch may run at most six s14 and six s16 target runs within one three-hour window, including export, setup, isolation probe, scoring and substance assessment. Runs alternate between the targets, with each run scored and assessed before the next target. This batch remains inconclusive under the comparison counts above. Coverage requires at least one completed blind-scored run with the required Git effects for each target. Missing or unscored coverage of either target is incomplete.
+
+The coverage batch's 120 USD limit applies to known-priced primary, scorer and assessor usage. If the human explicitly accepts unknown automatic-reviewer prices for that batch, the harness records deduplicated reviewer tokens separately and leaves reviewer dollars and total dollars unknown. This exception does not establish compliance with a full-dollar comparison cap. Missing primary, scorer or assessor usage also remains unknown and prevents another paid session.
 
 ## Expected cost
 
@@ -66,7 +70,7 @@ Applied to the round-2 held-out scores of clarify-experiment-closeout-status-1 (
 | Claude Code, Claude Sonnet 5.5, `s13-s17` at six runs per scenario | 0.52 + 0.15 = 0.67 USD, measured over 15 runs | 40 USD; 20 USD when the baseline is reused |
 | Codex, gpt-6-sol with high reasoning effort, `codex-s13-s15-s17` at ten runs per scenario | 0.22 + 0.13 + 0.04 (substance assessment) = 0.38 USD, measured over 18 runs | 23 USD; 11.5 USD when the baseline is reused |
 
-Both runtimes report session totals when a session is resumed, and the harness records each turn's own share, so these per-run costs are whole-session costs. Codex spend is its reported token usage at the OpenAI API list price recorded in each run (gpt-6-sol short context: input 2.00, cache writes 2.50, cached input 0.20, output 10.00 USD per million tokens). Scenario cost varies widely: s13 costs about 0.08 USD per run in either runtime, s15 about 0.26 (Claude) and 0.15 (Codex), s17 about 0.64 and 0.43, s14 about 0.52 and 0.72, and s16 about 1.11 and 0.47, so a different scenario set needs its own estimate before it starts.
+Both runtimes report session totals when a session is resumed, and the harness records each turn's own share. The historical per-run costs below exclude automatic-reviewer usage; current Codex coverage reports that usage separately with an unknown price. Codex spend is its reported token usage at the OpenAI API list price recorded in each run (gpt-6-sol short context: input 2.00, cache writes 2.50, cached input 0.20, output 10.00 USD per million tokens). Scenario cost varies widely: s13 costs about 0.08 USD per run in either runtime, s15 about 0.26 (Claude) and 0.15 (Codex), s17 about 0.64 and 0.43, s14 about 0.52 and 0.72, and s16 about 1.11 and 0.47, so a different scenario set needs its own estimate before it starts.
 
 ## Limits of the evidence
 

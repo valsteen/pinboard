@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from evals.behavioral.layout import Layout
+from evals.behavioral.processes import Window
 from evals.behavioral.records import Runtime
 
 
@@ -37,6 +38,7 @@ class Item:
     category: Category
     group: str
     usd: float
+    unknown: bool
 
 
 def agent_category(runtime: Runtime) -> Category:
@@ -50,15 +52,44 @@ def agent_category(runtime: Runtime) -> Category:
 
 
 def items(layout: Layout) -> list[Item]:
-    recorded = [Item(agent_category(run.runtime), run.run.variant, run.cost_usd()) for run in layout.run_records()]
+    recorded: list[Item] = []
+    accounting_records = dict(layout.codex_accounting())
+    for run in layout.run_records():
+        file = layout.run_directory(run.run) / "accounting.json"
+        if file in accounting_records:
+            accounting = accounting_records.pop(file)
+            cost, unknown = accounting.main_known_cost_usd, not accounting.main_usage_complete
+        else:
+            cost, unknown = run.cost_usd(), any(turn.cost_usd is None for turn in run.turns)
+        recorded.append(Item(agent_category(run.runtime), run.run.variant, cost, unknown))
     recorded.extend(
-        Item(Category.SCORER, session.scorer_model, session.cost_usd) for session in layout.scorer_sessions()
+        Item(Category.SCORER, session.scorer_model, session.cost_usd or 0.0, session.cost_usd is None)
+        for session in layout.scorer_sessions()
     )
     recorded.extend(
-        Item(Category.SUBSTANCE_ASSESSMENT, record.assessor_model, record.cost_usd) for record in layout.assessments()
+        Item(Category.SUBSTANCE_ASSESSMENT, record.assessor_model, record.cost_usd or 0.0, record.cost_usd is None)
+        for record in layout.assessments()
     )
-    recorded.extend(Item(Category.PROBE, probe.name, probe.cost_usd) for probe in layout.probes())
+    for probe in layout.probes():
+        file = layout.probe_file(probe.name).parent / "accounting.json"
+        if file in accounting_records:
+            accounting = accounting_records.pop(file)
+            cost, unknown = accounting.main_known_cost_usd, not accounting.main_usage_complete
+        else:
+            cost, unknown = probe.cost_usd or 0.0, probe.cost_usd is None
+        recorded.append(Item(Category.PROBE, probe.name, cost, unknown))
+    for file, accounting in accounting_records.items():
+        category = Category.CODEX_AGENT_RUN if file.relative_to(layout.root).parts[0] == "runs" else Category.PROBE
+        recorded.append(
+            Item(category, file.parent.name, accounting.main_known_cost_usd, not accounting.main_usage_complete)
+        )
     return recorded
+
+
+def main_usage_unknown(layout: Layout) -> bool:
+    return any(item.unknown for item in items(layout)) or any(
+        not accounting.main_usage_complete for _, accounting in layout.codex_accounting()
+    )
 
 
 def total(recorded: list[Item]) -> float:
@@ -82,21 +113,44 @@ def report(layout: Layout) -> str:
         lines.extend(
             f"  {group}\t{len(values)}\t{sum(values):.4f}" for group, values in sorted(groups[category].items())
         )
-    lines.append(f"total\t{len(recorded)}\t{total(recorded):.4f}")
+    accounting = [a for _, a in layout.codex_accounting()]
+    reviewers = {entry.thread_id: entry for a in accounting for entry in a.reviewer_usage}
+    if reviewers or main_usage_unknown(layout):
+        lines.append(f"known-priced total\t{len(recorded)}\t{total(recorded):.4f}")
+        for thread, usage in sorted(reviewers.items()):
+            lines.append(
+                f"reviewer {thread} ({usage.model})\tinput {usage.input_tokens}\tcached {usage.cached_input_tokens}"
+                f"\tcache writes {usage.cache_write_input_tokens}\toutput {usage.output_tokens}"
+                f"\treasoning {usage.reasoning_output_tokens}\tprice unknown"
+            )
+        if main_usage_unknown(layout):
+            lines.append("started main/scorer/assessor usage incomplete; unreported cost unknown")
+        lines.append("total dollars unknown")
+    else:
+        lines.append(f"total\t{len(recorded)}\t{total(recorded):.4f}")
     return "\n".join(lines) + "\n"
 
 
 class Budget:
     """Reserve a projected cost before each paid session; refuse a session that would not fit the cap."""
 
-    def __init__(self, layout: Layout, cap_usd: float) -> None:
+    def __init__(self, layout: Layout, cap_usd: float, window: Window, allow_unknown_reviewer_price: bool) -> None:
         self.layout = layout
+        self.window = window
+        self.allow_unknown_reviewer_price = allow_unknown_reviewer_price
         self.cap_usd = cap_usd
         self.reserved = 0.0
         self.lock = threading.Lock()
 
     def reserve(self, category: Category) -> float | None:
         with self.lock:
+            self.window.timeout(300)
+            if main_usage_unknown(self.layout):
+                return None
+            if not self.allow_unknown_reviewer_price and any(
+                a.reviewer_usage for _, a in self.layout.codex_accounting()
+            ):
+                return None
             recorded = items(self.layout)
             projected = projection(category, recorded)
             if total(recorded) + self.reserved + projected > self.cap_usd:

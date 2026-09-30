@@ -5,16 +5,28 @@ compare (or report one variant), assess Codex reply substance, and total spend.
 """
 
 import argparse
+import datetime
+import hashlib
 import sys
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from evals.behavioral import decision, export, probe, runner, scoring, spend, substance
+from evals.behavioral import decision, export, probe, processes, runner, scoring, spend, substance
 from evals.behavioral.credentials import default_source
 from evals.behavioral.layout import Layout
-from evals.behavioral.records import ScorerInput
-from evals.behavioral.scenarios import load_set
+from evals.behavioral.records import (
+    Assessed,
+    Completed,
+    CoverageResult,
+    CoverageWindow,
+    RegisteredScenario,
+    ScenarioId,
+    ScorerInput,
+    write_new,
+)
+from evals.behavioral.scenarios import RegisteredSet, load_set, scenario_path
 
 
 @dataclass(frozen=True)
@@ -97,7 +109,24 @@ class Spend:
     out: Path
 
 
-type Command = Export | RunClaude | RunCodex | ProbeCodex | Score | Assess | Compare | Report | Spend
+@dataclass(frozen=True)
+class CoverageCodex:
+    source: Path
+    revision: str
+    export: Path
+    scenario_set: Path
+    variant: str
+    runs_per_target: int
+    maximum_seconds: int
+    model: str
+    reasoning_effort: str
+    out: Path
+    worlds: Path
+    cap_usd: float
+    accept_unknown_reviewer_price: bool
+
+
+type Command = Export | RunClaude | RunCodex | ProbeCodex | Score | Assess | Compare | Report | Spend | CoverageCodex
 
 
 def parser() -> argparse.ArgumentParser:
@@ -161,9 +190,30 @@ def parser() -> argparse.ArgumentParser:
     reporting.add_argument("--scenario-set", type=Path, required=True)
     reporting.add_argument("--variant", required=True)
 
+    add_coverage_parser(commands)
+
     spending = commands.add_parser("spend", help="itemize and total recorded spend")
     spending.add_argument("--out", type=Path, required=True)
     return root
+
+
+def add_coverage_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    coverage = commands.add_parser(
+        "coverage-codex", help="one timed s14/s16 operation-coverage batch; no comparison claim"
+    )
+    coverage.add_argument("--source", type=Path, default=Path())
+    coverage.add_argument("--revision", required=True)
+    coverage.add_argument("--export", type=Path, required=True)
+    coverage.add_argument("--scenario-set", type=Path, required=True)
+    coverage.add_argument("--variant", required=True)
+    coverage.add_argument("--runs-per-target", type=positive, required=True)
+    coverage.add_argument("--maximum-seconds", type=positive, required=True)
+    coverage.add_argument("--model", required=True)
+    coverage.add_argument("--reasoning-effort", required=True)
+    coverage.add_argument("--out", type=Path, required=True)
+    coverage.add_argument("--worlds", type=Path, required=True)
+    coverage.add_argument("--cap-usd", type=float, required=True)
+    coverage.add_argument("--accept-unknown-reviewer-price", action="store_true", required=True)
 
 
 def positive(value: str) -> int:
@@ -193,6 +243,24 @@ def decode(arguments: Sequence[str]) -> Command:
             return Report(options.out, options.scenario_set, options.variant)
         case "spend":
             return Spend(options.out)
+        case "coverage-codex":
+            if options.runs_per_target > 6 or options.maximum_seconds > 10800 or not 0 < options.cap_usd <= 120:
+                parser().error("coverage permits at most six runs per target, 10800 seconds and 120 known-priced USD")
+            return CoverageCodex(
+                options.source,
+                options.revision,
+                options.export,
+                options.scenario_set,
+                options.variant,
+                options.runs_per_target,
+                options.maximum_seconds,
+                options.model,
+                options.reasoning_effort,
+                options.out,
+                options.worlds,
+                options.cap_usd,
+                options.accept_unknown_reviewer_price,
+            )
         case _:
             raise AssertionError(command)
 
@@ -256,6 +324,7 @@ def run_plan(
     model: str,
     out: Path,
     worlds: Path,
+    window: processes.Window,
 ) -> runner.RunPlan:
     return runner.RunPlan(
         layout=Layout(out),
@@ -266,13 +335,14 @@ def run_plan(
         first_index=first_index,
         runs=runs,
         model=model,
+        window=window,
     )
 
 
 def dispatch(command: Command) -> int:
     match command:
         case Export(source=source, revision=revision, destination=destination):
-            record = export.export_revision(source, revision, destination)
+            record = export.export_revision(source, revision, destination, processes.Window(None))
             print(f"exported {record.commit} skills {record.skills_sha256} at {record.plugin_root}")
         case RunClaude() as c:
             return run_claude(c)
@@ -283,7 +353,9 @@ def dispatch(command: Command) -> int:
         case Score() as c:
             report_skipped(score(c))
         case Assess() as c:
-            report_skipped(substance.assess(Layout(c.out), spend.Budget(Layout(c.out), c.cap_usd)))
+            report_skipped(
+                substance.assess(Layout(c.out), spend.Budget(Layout(c.out), c.cap_usd, processes.Window(None), False))
+            )
             print(substance.summarize(Layout(c.out)), end="")
         case Compare() as c:
             registered = load_set(c.scenario_set)
@@ -292,6 +364,8 @@ def dispatch(command: Command) -> int:
         case Report() as c:
             ids = [scenario.id for scenario in load_set(c.scenario_set).scenarios]
             print(decision.report(Layout(c.out), ids, c.variant), end="")
+        case CoverageCodex() as c:
+            return coverage_codex(c)
         case Spend(out=out):
             print(spend.report(Layout(out)), end="")
         case _ as unreachable:
@@ -301,9 +375,13 @@ def dispatch(command: Command) -> int:
 
 def run_claude(command: RunClaude) -> int:
     c = command
-    plan = run_plan(c.export, c.scenario_set, c.variant, c.runs, c.first_index, c.model, c.out, c.worlds)
+    plan = run_plan(
+        c.export, c.scenario_set, c.variant, c.runs, c.first_index, c.model, c.out, c.worlds, processes.Window(None)
+    )
     try:
-        report_skipped(runner.run_claude(plan, spend.Budget(Layout(c.out), c.cap_usd), c.jobs))
+        report_skipped(
+            runner.run_claude(plan, spend.Budget(Layout(c.out), c.cap_usd, processes.Window(None), False), c.jobs)
+        )
     except runner.IsolationBreachError as stop:
         print(f"Claude Code runs stopped: {stop}")
         return 2
@@ -312,11 +390,14 @@ def run_claude(command: RunClaude) -> int:
 
 def run_codex(command: RunCodex) -> int:
     c = command
-    plan = run_plan(c.export, c.scenario_set, c.variant, c.runs, c.first_index, c.model, c.out, c.worlds)
+    plan = run_plan(
+        c.export, c.scenario_set, c.variant, c.runs, c.first_index, c.model, c.out, c.worlds, processes.Window(None)
+    )
     try:
         report_skipped(
             runner.run_codex(
-                runner.CodexPlan(plan, c.reasoning_effort, default_source()), spend.Budget(Layout(c.out), c.cap_usd)
+                runner.CodexPlan(plan, c.reasoning_effort, default_source()),
+                spend.Budget(Layout(c.out), c.cap_usd, processes.Window(None), False),
             )
         )
     except (runner.CredentialConflictError, runner.IsolationBreachError) as stop:
@@ -329,7 +410,7 @@ def probe_codex(command: ProbeCodex) -> int:
     c = command
     record = probe.probe_codex(
         Layout(c.out),
-        spend.Budget(Layout(c.out), c.cap_usd),
+        spend.Budget(Layout(c.out), c.cap_usd, processes.Window(None), False),
         export.load_export(c.export),
         c.name,
         c.model,
@@ -340,7 +421,7 @@ def probe_codex(command: ProbeCodex) -> int:
     if record is None:
         print("probe not started: the cap leaves no room for it")
         return 1
-    print(f"probe {record.name}: {'passed' if record.passed else 'failed'}; cost {record.cost_usd:.4f} USD")
+    print(f"probe {record.name}: {'passed' if record.passed else 'failed'}; cost {record.cost_usd} USD")
     for finding in record.findings:
         print(f"  finding: {finding}")
     return 0 if record.passed else 1
@@ -348,7 +429,7 @@ def probe_codex(command: ProbeCodex) -> int:
 
 def score(command: Score) -> list[str]:
     layout = Layout(command.out)
-    session = scoring.ScoringRun(layout, spend.Budget(layout, command.cap_usd))
+    session = scoring.ScoringRun(layout, spend.Budget(layout, command.cap_usd, processes.Window(None), False))
     counts = scoring.valid_score_counts(layout)
     skipped: list[str] = []
     pending: list[ScorerInput] = [
@@ -362,6 +443,122 @@ def score(command: Score) -> list[str]:
                 break
             print(f"scored {source.run.display()}: {type(outcome).__name__}")
     return skipped
+
+
+def coverage_codex(c: CoverageCodex) -> int:
+    """Export, prove isolation, then alternate one run/score/assessment under one immutable deadline."""
+    registered = load_set(c.scenario_set)
+    targets = tuple(s for s in registered.scenarios if s.id in {"s14-motivating-replay", "s16-reviewed-not-shipped"})
+    if len(targets) != 2 or registered.targeted_rules:
+        raise ValueError("coverage requires the unchanged registered s14/s16 and targeted_rules=[]")
+    runner.require_codex_world_location(c.worlds)
+    c.out.mkdir(parents=True, exist_ok=False)
+    started = datetime.datetime.now(datetime.UTC)
+    window = processes.Window(time.monotonic() + c.maximum_seconds)
+    deadline = started + datetime.timedelta(seconds=c.maximum_seconds)
+    write_new(
+        c.out / "window.json",
+        CoverageWindow(
+            schema="pinboard-behavioral-coverage-window/v1",
+            started_at=started.isoformat(),
+            deadline_at=deadline.isoformat(),
+            maximum_seconds=c.maximum_seconds,
+            maximum_runs=2 * c.runs_per_target,
+            candidate_revision=c.revision,
+            scenario_sha256=[
+                RegisteredScenario(
+                    id=s.id, sha256=hashlib.sha256(scenario_path(ScenarioId(s.id)).read_bytes()).hexdigest()
+                )
+                for s in targets
+            ],
+            targeted_rules=[],
+            known_price_cap_usd=c.cap_usd,
+            reviewer_price_exception="human-authorized-unknown-price",
+        ),
+    )
+    print(f"evaluation started {started.isoformat()}; deadline {deadline.isoformat()}", flush=True)
+    layout = Layout(c.out)
+    budget = spend.Budget(layout, c.cap_usd, window, c.accept_unknown_reviewer_price)
+    reason = ""
+    status = "completed"
+    try:
+        evaluated = export.export_revision(c.source, c.revision, c.export, window)
+        observed = probe.probe_codex(
+            layout, budget, evaluated, "isolation", c.model, c.reasoning_effort, c.worlds, default_source()
+        )
+        if observed is None or not observed.passed:
+            raise ValueError("isolation probe did not pass; no target run starts")
+        for index in range(1, c.runs_per_target + 1):
+            for scenario in targets:
+                window.timeout(300)
+                plan = runner.RunPlan(
+                    layout=layout,
+                    worlds=c.worlds,
+                    export=evaluated,
+                    variant=c.variant,
+                    scenarios=RegisteredSet(registered.name, (scenario,), registered.targeted_rules),
+                    first_index=index,
+                    runs=1,
+                    model=c.model,
+                    window=window,
+                )
+                skipped = runner.run_codex(runner.CodexPlan(plan, c.reasoning_effort, default_source()), budget)
+                if skipped:
+                    raise ValueError("known-priced cap or unreported usage prevents another paid run")
+                score_pending(layout, budget)
+                if substance.assess(layout, budget):
+                    raise ValueError("cap or unreported usage prevents substance assessment")
+                print(
+                    f"recorded {scenario.id}/{c.variant}-{index}; "
+                    f"completed {sum(isinstance(r.outcome, Completed) for r in layout.run_records())}; "
+                    f"scored {len(scoring.valid_score_counts(layout))}; "
+                    f"assessed {sum(isinstance(a.outcome, Assessed) for a in layout.assessments())}; "
+                    f"known-priced USD {spend.total(spend.items(layout)):.4f}",
+                    flush=True,
+                )
+                if spend.main_usage_unknown(layout):
+                    raise ValueError("a started session has unreported usage; no further paid work starts")
+    except (
+        TimeoutError,
+        ValueError,
+        runner.IsolationBreachError,
+        runner.CredentialConflictError,
+        export.SeedFailure,
+        processes.GitError,
+        OSError,
+    ) as failure:
+        status, reason = "incomplete", str(failure)
+    except BaseException as failure:
+        status, reason = "incomplete", f"{type(failure).__name__}: {failure}"
+        raise
+    finally:
+        write_new(
+            c.out / "coverage.json",
+            CoverageResult(
+                schema="pinboard-behavioral-coverage-result/v1",
+                status=status,
+                reason=reason,
+                completed_runs=[r.run.display() for r in layout.run_records() if isinstance(r.outcome, Completed)],
+                scored_runs=sorted(scoring.valid_score_counts(layout)),
+                assessed_runs=[a.run.display() for a in layout.assessments() if isinstance(a.outcome, Assessed)],
+                known_cost_usd=spend.total(spend.items(layout)),
+                unreported_main_usage=spend.main_usage_unknown(layout),
+                reviewer_cost_usd=None,
+                total_cost_usd=None,
+            ),
+        )
+        print(spend.report(layout), end="", flush=True)
+    return 0 if status == "completed" else 2
+
+
+def score_pending(layout: Layout, budget: spend.Budget) -> None:
+    """Blind-score each recorded run once before the next target starts."""
+    counts = scoring.valid_score_counts(layout)
+    for source in layout.scorer_inputs():
+        if source.run.display() in counts:
+            continue
+        if scoring.ScoringRun(layout, budget).score(source) is None:
+            raise ValueError("cap or unreported usage prevents blind scoring")
 
 
 def report_skipped(skipped: list[str]) -> None:

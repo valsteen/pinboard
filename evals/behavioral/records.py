@@ -139,12 +139,12 @@ class TurnEvidence(Record, frozen=True):
     commentary: list[str]
     started_at: NonEmpty
     finished_at: NonEmpty
-    cost_usd: Usd
-    uncached_input_tokens: Count
-    cached_input_tokens: Count
-    cache_write_input_tokens: Count
-    output_tokens: Count
-    reasoning_output_tokens: Count
+    cost_usd: Usd | None
+    uncached_input_tokens: Count | None | None
+    cached_input_tokens: Count | None
+    cache_write_input_tokens: Count | None
+    output_tokens: Count | None
+    reasoning_output_tokens: Count | None | None
     permission_denials: list[PermissionDenial]
 
 
@@ -207,7 +207,7 @@ class RunRecord(Record, frozen=True):
     outcome: RunOutcome
 
     def cost_usd(self) -> float:
-        return sum(turn.cost_usd for turn in self.turns)
+        return sum(turn.cost_usd for turn in self.turns if turn.cost_usd is not None)
 
 
 class ObservedState(Record, frozen=True):
@@ -289,7 +289,7 @@ class ScorerSession(Record, frozen=True):
     label: NonEmpty
     scorer_model: NonEmpty
     checklist_sha256: Sha256
-    cost_usd: Usd
+    cost_usd: Usd | None
     outcome: ScoringOutcome
 
 
@@ -338,7 +338,7 @@ class AssessmentRecord(Record, frozen=True):
     schema: Literal["pinboard-behavioral-substance/v1"]
     run: RunKey
     assessor_model: NonEmpty
-    cost_usd: Usd
+    cost_usd: Usd | None
     words: list[TurnWords]
     outcome: AssessmentOutcome
 
@@ -348,10 +348,54 @@ class ProbeRecord(Record, frozen=True):
     name: Identifier
     runtime: Runtime
     description: NonEmpty
-    cost_usd: Usd
+    cost_usd: Usd | None
     passed: bool
     findings: list[str]
     inventory: list[InventoryEntry]
+
+
+class ReviewerUsage(Record, frozen=True):
+    thread_id: NonEmpty
+    model: NonEmpty
+    input_tokens: Count
+    cached_input_tokens: Count
+    cache_write_input_tokens: Count
+    output_tokens: Count
+    reasoning_output_tokens: Count
+
+
+class CodexAccounting(Record, frozen=True):
+    schema: Literal["pinboard-behavioral-codex-accounting/v1"]
+    main_known_cost_usd: Usd
+    main_usage_complete: bool
+    reviewer_usage: list[ReviewerUsage]
+    reviewer_price_usd: None
+
+
+class CoverageWindow(Record, frozen=True):
+    schema: Literal["pinboard-behavioral-coverage-window/v1"]
+    started_at: NonEmpty
+    deadline_at: NonEmpty
+    maximum_seconds: Annotated[int, msgspec.Meta(ge=1, le=10800)]
+    maximum_runs: Annotated[int, msgspec.Meta(ge=1, le=12)]
+    candidate_revision: NonEmpty
+    scenario_sha256: list[RegisteredScenario]
+    targeted_rules: list[ChecklistItem]
+    known_price_cap_usd: Usd
+    reviewer_price_exception: Literal["human-authorized-unknown-price"]
+
+
+class CoverageResult(Record, frozen=True):
+    schema: Literal["pinboard-behavioral-coverage-result/v1"]
+    status: Literal["completed", "incomplete"]
+    reason: str
+    completed_runs: list[str]
+    scored_runs: list[str]
+    assessed_runs: list[str]
+    known_cost_usd: Usd
+    unreported_main_usage: bool
+    reviewer_cost_usd: None
+    total_cost_usd: None
 
 
 def encode(record: msgspec.Struct) -> bytes:

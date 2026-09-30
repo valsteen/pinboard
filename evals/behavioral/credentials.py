@@ -14,11 +14,14 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+
+from evals.behavioral.processes import Window
 
 AUTH_FILE = "auth.json"
 
@@ -42,10 +45,16 @@ def default_source() -> Path:
 
 
 @contextmanager
-def exclusive_codex_session(lock_directory: Path) -> Generator[None]:
+def exclusive_codex_session(lock_directory: Path, window: Window) -> Generator[None]:
     """Serialize Codex sessions across harness processes so concurrent refreshes cannot rotate the login."""
     with (lock_directory / "pinboard-behavioral-eval-codex.lock").open("a") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        while True:
+            window.timeout(300)
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                time.sleep(window.timeout(0.05))
         try:
             yield
         finally:
@@ -53,8 +62,9 @@ def exclusive_codex_session(lock_directory: Path) -> Generator[None]:
 
 
 @contextmanager
-def isolated_home(source: Path, parent: Path | None) -> Generator[IsolatedHome]:
+def isolated_home(source: Path, parent: Path | None, window: Window) -> Generator[IsolatedHome]:
     """Yield a private home holding a copy of ``source``; settle the credential, then remove the home."""
+    window.timeout(300)
     copied = source.read_bytes()
     path = Path(tempfile.mkdtemp(prefix="pinboard-eval-codex-home-", dir=parent))
     home = IsolatedHome(path=path, source=source, copied=copied, settlement=None)

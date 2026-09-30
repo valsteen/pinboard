@@ -11,7 +11,7 @@ from pathlib import Path
 
 import msgspec
 
-from evals.behavioral import oneshot
+from evals.behavioral import oneshot, processes
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
     Assessed,
@@ -89,18 +89,18 @@ def assess(layout: Layout, budget: Budget) -> list[str]:
             skipped.append(record.run.display())
             continue
         try:
-            assess_run(record, directory)
+            assess_run(record, directory, budget.window)
         finally:
             budget.release(projected)
     return skipped
 
 
-def assess_run(record: RunRecord, directory: Path) -> None:
+def assess_run(record: RunRecord, directory: Path, window: processes.Window) -> None:
     label = f"S{secrets.token_hex(4)}"
     directory.mkdir(parents=True)
     text = prompt(record, label)
     (directory / "prompt.txt").write_text(text)
-    answer = oneshot.ask(text, ASSESSOR_MODEL)
+    answer = oneshot.ask(text, ASSESSOR_MODEL, window)
     (directory / "raw.json").write_text(answer.stdout)
     decoded = (
         decode_answer(answer.text, label, len(record.turns))

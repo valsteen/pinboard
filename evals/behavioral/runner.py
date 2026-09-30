@@ -18,7 +18,7 @@ from pathlib import Path
 
 import msgspec
 
-from evals.behavioral import claude_driver, codex_driver, credentials, world
+from evals.behavioral import claude_driver, codex_driver, credentials, processes, world
 from evals.behavioral.board import SEEDED_HOST_ID
 from evals.behavioral.claude_driver import ClaudeSession, now
 from evals.behavioral.export import SeedFailure
@@ -58,6 +58,7 @@ class RunPlan:
     first_index: int
     runs: int
     model: str
+    window: processes.Window
 
     def planned(self) -> list[tuple[Scenario, RunKey]]:
         return [
@@ -196,7 +197,12 @@ def claude_run(plan: RunPlan, scenario: Scenario, key: RunKey) -> RunRecord:
     outcome: RunOutcome = Completed()
     try:
         built, state.seeded = world.build_world(
-            state.world_root(), scenario, Runtime.CLAUDE_CODE, Path(plan.export.plugin_root), str(uuid.uuid4())
+            state.world_root(),
+            scenario,
+            Runtime.CLAUDE_CODE,
+            Path(plan.export.plugin_root),
+            str(uuid.uuid4()),
+            plan.window,
         )
         state.snapshot(built)
         outcome = claude_turns(state, built, session)
@@ -244,11 +250,6 @@ class CodexPlan:
 
 
 ISOLATION_FAILED = "isolation check failed: "
-GIT_QUESTION = (
-    "question for the human: the Pinboard permission profile keeps .git read-only, so should a Codex agent leave "
-    "this Git action (commit, merge, push, fetch or worktree creation) to the human, or should Codex runs get Git "
-    "write access for it?"
-)
 
 
 class IsolationBreachError(Exception):
@@ -299,7 +300,7 @@ def run_codex(plan: CodexPlan, budget: Budget) -> list[str]:
 def codex_run(plan: CodexPlan, scenario: Scenario, key: RunKey) -> RunRecord:
     run_plan = plan.run
     state = start(run_plan, scenario, key)
-    version = codex_driver.codex_version()
+    version = codex_driver.codex_version(run_plan.window)
     project = state.world_root() / "tally"
     outcome: RunOutcome = Completed()
     interrupted: BaseException | None = None
@@ -307,17 +308,22 @@ def codex_run(plan: CodexPlan, scenario: Scenario, key: RunKey) -> RunRecord:
         entries=[], sandbox_mode="unreported", approval_policy="unreported", writable_roots=[], prompt_text=""
     )
     with (
-        credentials.exclusive_codex_session(Path(tempfile.gettempdir())),
-        credentials.isolated_home(plan.credential_source, None) as home,
+        credentials.exclusive_codex_session(Path(tempfile.gettempdir()), run_plan.window),
+        credentials.isolated_home(plan.credential_source, None, run_plan.window) as home,
     ):
         try:
             built, state.seeded = world.build_world(
-                state.world_root(), scenario, Runtime.CODEX, Path(run_plan.export.plugin_root), str(uuid.uuid4())
+                state.world_root(),
+                scenario,
+                Runtime.CODEX,
+                Path(run_plan.export.plugin_root),
+                str(uuid.uuid4()),
+                run_plan.window,
             )
             codex_driver.write_config(
-                home.path, Path(run_plan.export.plugin_root), run_plan.model, plan.reasoning_effort
+                home.path, Path(run_plan.export.plugin_root), run_plan.model, plan.reasoning_effort, run_plan.window
             )
-            context = codex_driver.loaded_context(home.path, project)
+            context = codex_driver.loaded_context(home.path, project, run_plan.window)
             (state.directory / "prompt-input.txt").write_text(context.prompt_text)
             findings = codex_driver.isolation_findings(context, home.path / "plugins" / "cache", project)
             if findings:
@@ -357,6 +363,12 @@ def codex_turns(state: RunState, built: world.World, home: credentials.IsolatedH
     finally:
         rollout = credentials.without_login(codex_driver.rollout_text(home.path), home.copied)
         (state.directory / "rollout.jsonl").write_text(rollout)
+        accounting = codex_driver.rollout_accounting(
+            rollout,
+            plan.run.model,
+            len(state.turns) == len(state.scenario.turns) and all(t.cost_usd is not None for t in state.turns),
+        )
+        write_new(state.directory / "accounting.json", accounting)
 
 
 def codex_thread(state: RunState, built: world.World, home: Path, plan: CodexPlan) -> RunOutcome:
@@ -367,7 +379,7 @@ def codex_thread(state: RunState, built: world.World, home: Path, plan: CodexPla
         state.run_hook(built, index)
         started = now()
         completed, reading = codex_driver.run_turn(
-            home, built.project, thread_id, turn.human, state.directory / f"turn-{index}.jsonl"
+            home, built.project, thread_id, turn.human, state.directory / f"turn-{index}.jsonl", plan.run.window
         )
         thread_id = thread_id or reading.thread_id
         if thread_id is None:
@@ -395,9 +407,9 @@ def codex_thread(state: RunState, built: world.World, home: Path, plan: CodexPla
         reported = reading.usage or reported
         state.snapshot(built)
         if reading.mcp_approval_denied:
-            return Stopped(reason=f"approval policy never rejected a tool call in turn {index}; ask the human")
-        if reading.git_write_denied:
-            return Stopped(reason=f"a .git or origin.git write was denied in turn {index}; {GIT_QUESTION}")
+            return Stopped(reason=f"runtime approval rejected a tool call in turn {index}; ask the human")
+        if completed.timed_out or reading.usage is None:
+            return Failed(stage=f"turn {index}", reason="session incomplete; unreported usage and cost unknown")
         if completed.returncode != 0 or reading.errors:
             return Failed(stage=f"turn {index}", reason="; ".join(reading.errors)[:2000] or completed.stderr[:2000])
     return Completed()

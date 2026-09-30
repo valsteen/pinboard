@@ -58,15 +58,17 @@ def skills_sha256(plugin_root: Path) -> str:
     return hashlib.sha256("".join(lines).encode()).hexdigest()
 
 
-def export_revision(source: Path, revision: str, destination: Path) -> ExportRecord:
-    commit = processes.git_checked(["rev-parse", "--verify", f"{revision}^{{commit}}"], cwd=source).strip()
+def export_revision(source: Path, revision: str, destination: Path, window: processes.Window) -> ExportRecord:
+    commit = processes.git_checked(
+        ["rev-parse", "--verify", f"{revision}^{{commit}}"], cwd=source, window=window
+    ).strip()
     destination.mkdir(parents=True, exist_ok=False)
     plugin_root = destination / PLUGIN_DIRECTORY
     plugin_root.mkdir()
-    archive = processes.git_archive(commit, cwd=source)
+    archive = processes.git_archive(commit, cwd=source, window=window)
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
         bundle.extractall(plugin_root, filter="data")
-    prepare_runtime(plugin_root)
+    prepare_runtime(plugin_root, window)
     record = ExportRecord(
         schema="pinboard-behavioral-export/v1",
         commit=commit,
@@ -77,8 +79,8 @@ def export_revision(source: Path, revision: str, destination: Path) -> ExportRec
     return record
 
 
-def prepare_runtime(plugin_root: Path) -> None:
-    completed = processes.launcher_prepare_runtime(plugin_root / "scripts" / "pinboard")
+def prepare_runtime(plugin_root: Path, window: processes.Window) -> None:
+    completed = processes.launcher_prepare_runtime(plugin_root / "scripts" / "pinboard", window=window)
     try:
         result = msgspec.json.decode(completed.stdout.strip() or completed.stderr.strip(), type=LauncherResult)
     except msgspec.DecodeError as error:

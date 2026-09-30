@@ -54,11 +54,26 @@ The first default initialization adds only `/.pinboard/` to the repository's loc
 
 Linked worktrees share the same repository-local exclusion, so repeating setup remains idempotent. If setup stops after making a durable change, Pinboard reports which surface changed so the coding agent can inspect it before retrying.
 
+### Git actions you request
+
+Keep the narrow profile above and enable approval requests in your Codex configuration:
+
+```toml
+approval_policy = "on-request"
+approvals_reviewer = "user"
+```
+
+When you request a commit, merge, push, fetch, branch change or worktree creation, the agent can request runtime approval for that exact command in the selected checkout. Your request authorizes the intended Git effect; Codex approval separately decides whether the command may cross the sandbox boundary. Approve the exact invocation, including its destination and target, without granting persistent `.git` access or a reusable broad command rule. Worktree creation needs approval for its Git metadata and selected destination; the linked checkout still uses the narrow shared-data rule below.
+
+[Auto-review](https://learn.chatgpt.com/docs/sandboxing/auto-review) is optional: set `approvals_reviewer = "auto_review"` to send eligible requests to a separate reviewer while keeping `approval_policy = "on-request"` and the same profile. It changes who reviews the request, not your authority or the default filesystem and network boundary. With `approval_policy = "never"`, the agent cannot request this approval.
+
+After execution, the agent checks the actual effects before reporting success or retrying: the resulting commit or refs, a created worktree, and, for a push, the destination's observed revision. A failed command can still have changed state. If approval is unavailable or rejected, the agent reports the exact action and reason, continues only with a materially safer authorized alternative, or stops for you. It must not retry a reviewer rejection through an indirect command or wider permissions.
+
 ### Linked worktrees and custom data locations
 
 A linked worktree uses the shared repository's Pinboard data, which is outside the linked checkout. Run `<launcher-root>/scripts/pinboard root` to obtain the exact resolved location, then add a direct write rule for only that absolute `.pinboard` directory under `[permissions.pinboard.filesystem]`.
 
-Do not add the shared repository as a workspace root. Do not grant access to its `.git` directory, sibling `.codex` paths, or the installed plugin cache.
+Do not add the shared repository as a workspace root. Do not grant persistent access to its `.git` directory, sibling `.codex` paths, or the installed plugin cache.
 
 If you deliberately use `--work-root`, add a direct write rule for only that exact selected directory.
 

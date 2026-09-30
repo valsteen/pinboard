@@ -275,7 +275,6 @@ class Seeder:
             f"# Review of {attempt}\n\nReviewer: separate Claude Code reviewer (task review-{item})\n"
             f"Reviewed candidate: commit {candidate} on branch pinboard/{item}\n\n{text}\n"
         )
-
         return job.prompt_reference.sha256
 
     async def review_ready(self, item: str, prompt_sha256: str) -> None:
@@ -302,6 +301,7 @@ class Seeder:
                     accepted_brief_sha256=inspection.accepted_brief.sha256,
                     result_sha256=self.evidence_sha256(attempt, "result.md"),
                     review_sha256=self.evidence_sha256(attempt, "review.md"),
+                    reviewer_prompt_sha256=prompt_sha256,
                     reviewer_task_id=f"review-{item}",
                     reviewer_prompt_sha256=prompt_sha256,
                     verdict="ready",

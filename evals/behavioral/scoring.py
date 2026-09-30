@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import msgspec
 
-from evals.behavioral import oneshot
+from evals.behavioral import oneshot, processes
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
     LabelMapping,
@@ -110,38 +110,48 @@ class ScoringRun:
             directory.mkdir(parents=True)
             text = prompt(scenario, source, label)
             (directory / "prompt.txt").write_text(text)
-            answer = oneshot.ask(text, SCORER_MODEL, self.budget.window)
-            (directory / "raw.json").write_text(answer.stdout)
-            decoded = (
-                decode_score(answer.text, label, len(scenario.turns))
-                if answer.problem is None
-                else ScoringFailure(reason=answer.problem)
-            )
-            outcome: ScoringOutcome
-            match decoded:
-                case ScoreRecord():
-                    write_new(directory / "score.json", decoded)
-                    outcome = Scored()
-                case ScoringFailure():
-                    outcome = decoded
-                case _ as unreachable:
-                    raise AssertionError(unreachable)
-            write_new(
-                directory / "session.json",
-                ScorerSession(
-                    schema="pinboard-behavioral-scorer-session/v1",
-                    label=label,
-                    scorer_model=SCORER_MODEL,
-                    checklist_sha256=CHECKLIST_SHA256,
-                    cost_usd=answer.cost_usd,
-                    outcome=outcome,
-                ),
-            )
-            write_new(
-                self.layout.label_file(label),
-                LabelMapping(schema="pinboard-behavioral-label/v1", label=label, run=source.run),
-            )
-            return outcome
+            answer: oneshot.Answer | None = None
+            interrupted: processes.ProcessInterrupted | processes.CleanupUnconfirmed | None = None
+            outcome: ScoringOutcome = ScoringFailure(reason="started scorer interrupted before publishing a result")
+            try:
+                answer = oneshot.ask(text, SCORER_MODEL, self.budget.window)
+                (directory / "raw.json").write_text(answer.stdout)
+                decoded = (
+                    decode_score(answer.text, label, len(scenario.turns))
+                    if answer.problem is None
+                    else ScoringFailure(reason=answer.problem)
+                )
+                match decoded:
+                    case ScoreRecord():
+                        write_new(directory / "score.json", decoded)
+                        outcome = Scored()
+                    case ScoringFailure():
+                        outcome = decoded
+                    case _ as unreachable:
+                        raise AssertionError(unreachable)
+                return outcome
+            except (processes.ProcessInterrupted, processes.CleanupUnconfirmed) as error:
+                interrupted = error
+                (directory / "raw.json").write_text(error.stdout)
+                (directory / "stderr.txt").write_text(error.stderr)
+                raise
+            finally:
+                if answer is not None or interrupted is not None:
+                    write_new(
+                        directory / "session.json",
+                        ScorerSession(
+                            schema="pinboard-behavioral-scorer-session/v1",
+                            label=label,
+                            scorer_model=SCORER_MODEL,
+                            checklist_sha256=CHECKLIST_SHA256,
+                            cost_usd=None if answer is None else answer.cost_usd,
+                            outcome=outcome,
+                        ),
+                    )
+                    write_new(
+                        self.layout.label_file(label),
+                        LabelMapping(schema="pinboard-behavioral-label/v1", label=label, run=source.run),
+                    )
         finally:
             self.budget.release(projected)
 

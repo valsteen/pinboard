@@ -100,24 +100,36 @@ def assess_run(record: RunRecord, directory: Path, window: processes.Window) -> 
     directory.mkdir(parents=True)
     text = prompt(record, label)
     (directory / "prompt.txt").write_text(text)
-    answer = oneshot.ask(text, ASSESSOR_MODEL, window)
-    (directory / "raw.json").write_text(answer.stdout)
-    decoded = (
-        decode_answer(answer.text, label, len(record.turns))
-        if answer.problem is None
-        else AssessmentFailure(reason=answer.problem)
-    )
-    write_new(
-        directory / "assessment.json",
-        AssessmentRecord(
-            schema="pinboard-behavioral-substance/v1",
-            run=record.run,
-            assessor_model=ASSESSOR_MODEL,
-            cost_usd=answer.cost_usd,
-            words=turn_words(record),
-            outcome=outcome_of(decoded),
-        ),
-    )
+    answer: oneshot.Answer | None = None
+    interrupted: processes.ProcessInterrupted | processes.CleanupUnconfirmed | None = None
+    outcome: AssessmentOutcome = AssessmentFailure(reason="started assessor interrupted before publishing a result")
+    try:
+        answer = oneshot.ask(text, ASSESSOR_MODEL, window)
+        (directory / "raw.json").write_text(answer.stdout)
+        decoded = (
+            decode_answer(answer.text, label, len(record.turns))
+            if answer.problem is None
+            else AssessmentFailure(reason=answer.problem)
+        )
+        outcome = outcome_of(decoded)
+    except (processes.ProcessInterrupted, processes.CleanupUnconfirmed) as error:
+        interrupted = error
+        (directory / "raw.json").write_text(error.stdout)
+        (directory / "stderr.txt").write_text(error.stderr)
+        raise
+    finally:
+        if answer is not None or interrupted is not None:
+            write_new(
+                directory / "assessment.json",
+                AssessmentRecord(
+                    schema="pinboard-behavioral-substance/v1",
+                    run=record.run,
+                    assessor_model=ASSESSOR_MODEL,
+                    cost_usd=None if answer is None else answer.cost_usd,
+                    words=turn_words(record),
+                    outcome=outcome,
+                ),
+            )
 
 
 def summarize(layout: Layout) -> str:

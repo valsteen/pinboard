@@ -331,6 +331,8 @@ def codex_run(plan: CodexPlan, scenario: Scenario, key: RunKey) -> RunRecord:
             else:
                 state.snapshot(built)
                 outcome = codex_turns(state, built, home, plan)
+        except processes.CleanupUnconfirmed:
+            raise
         except (SeedFailure, GitError, codex_driver.CodexUnavailableError) as failure:
             outcome = Failed(
                 stage="world" if not state.turns else f"after turn {len(state.turns)}", reason=str(failure)

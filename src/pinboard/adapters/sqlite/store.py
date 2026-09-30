@@ -47,7 +47,9 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_attempt_context,
     read_branch_owners,
     read_current_definitions,
+    read_item_closure,
     read_item_status,
+    read_latest_checkpoint_acceptance,
     read_parallel_preview_lifecycle,
     read_recorded_pause_reasons,
     reject_damaged_pause_receipt,
@@ -86,6 +88,21 @@ class _SelectedDependencyViewRow(msgspec.Struct, frozen=True, forbid_unknown_fie
     item_id: WorkItemId
     dependency_id: WorkItemId
     queue_position: int | None
+
+
+class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
+class _CandidateRecordedAtRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    candidate_recorded_at: datetime | None
+
+
+class _IntegrationAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    candidate_revision: str | None
 
 
 class _SelectedAttemptLinkRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -433,6 +450,109 @@ def _read_candidate_snapshot_context_facts(
     )
 
 
+def _read_closing_snapshot_context(
+    connection: sqlite3.Connection,
+    attempt_id: AttemptId,
+    candidate_revision: str,
+) -> query_models.CandidateSnapshotContextFacts | None:
+    """Read a completion's retained candidate snapshot; a candidate that predates snapshots has none."""
+
+    row = connection.execute(
+        "SELECT candidate_recorded_at FROM attempts WHERE attempt_id = ?",
+        (attempt_id,),
+    ).fetchone()
+    recorded_at = None if row is None else decode_row(row, _CandidateRecordedAtRow).candidate_recorded_at
+    if recorded_at is None or (
+        read_latest_artifact_reference(
+            connection,
+            work_models.ArtifactKind.EVIDENCE,
+            candidate_snapshots.candidate_snapshot_artifact_key(
+                str(attempt_id), candidate_revision, recorded_at.isoformat()
+            ),
+        )
+        is None
+    ):
+        return None
+    return _read_candidate_snapshot_context_facts(connection, attempt_id)
+
+
+def _read_integration_facts(
+    connection: sqlite3.Connection,
+    item_id: WorkItemId,
+) -> query_models.IntegrationFacts | None:
+    """Read the keyed and indexed facts an integration check selects its reviewed candidate from.
+
+    The read touches the item row, its live attempt or a completion's closing attempt,
+    the receipt at a terminal item's subject revision, the live attempt's latest
+    checkpoint acceptance and its package reference, and one candidate snapshot.
+    """
+
+    project_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    item_row = connection.execute(
+        "SELECT item_id, state, subject_revision FROM work_items WHERE item_id = ?",
+        (item_id,),
+    ).fetchone()
+    if item_row is None:
+        return None
+    item = decode_row(item_row, _IntegrationItemRow)
+    current_attempt = None
+    closure_action = None
+    closing_attempt = None
+    if stored_state.live_work_state(item.state) is None:
+        closure = read_item_closure(connection, item.item_id, item.subject_revision)
+        if closure is not None:
+            closure_action = closure.action_kind
+            closing = closure.closing_attempt
+            closing_attempt = (
+                None
+                if closing is None
+                else query_models.IntegrationClosingAttemptFacts(
+                    closing.attempt_id,
+                    closing.candidate_revision,
+                    None
+                    if closing.candidate_revision is None
+                    else _read_closing_snapshot_context(connection, closing.attempt_id, closing.candidate_revision),
+                )
+            )
+    else:
+        attempt_row = connection.execute(
+            """
+            SELECT attempt_id, candidate_revision
+            FROM attempts INDEXED BY one_live_attempt_per_item
+            WHERE item_id = ? AND state != 'done'
+            """,
+            (item.item_id,),
+        ).fetchone()
+        if attempt_row is not None:
+            attempt = decode_row(attempt_row, _IntegrationAttemptRow)
+            checkpoint = read_latest_checkpoint_acceptance(connection, attempt.attempt_id)
+            current_attempt = query_models.IntegrationLiveAttemptFacts(
+                attempt.attempt_id,
+                attempt.candidate_revision,
+                None
+                if attempt.candidate_revision is None
+                else _read_candidate_snapshot_context_facts(connection, attempt.attempt_id),
+                None
+                if checkpoint is None
+                else query_models.IntegrationCheckpointFacts(
+                    checkpoint,
+                    None
+                    if checkpoint.artifact_ref_id is None
+                    else read_artifact_reference_by_id(connection, checkpoint.artifact_ref_id),
+                ),
+            )
+    return query_models.IntegrationFacts(
+        decode_row(project_row, ProjectRevisionRow).revision,
+        item.item_id,
+        item.state,
+        current_attempt,
+        closure_action,
+        closing_attempt,
+    )
+
+
 class SQLiteWorkStore:
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -717,6 +837,14 @@ class SQLiteWorkStore:
                     lifecycle.closure,
                     preparation,
                 )
+        finally:
+            connection.close()
+
+    def read_integration_facts(self, work_item_id: WorkItemId) -> query_models.IntegrationFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return _read_integration_facts(connection, work_item_id)
         finally:
             connection.close()
 

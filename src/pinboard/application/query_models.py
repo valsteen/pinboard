@@ -949,6 +949,134 @@ class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     owners: Annotated[tuple[BranchOwner, ...], msgspec.Meta(min_length=1)]
 
 
+@dataclass(frozen=True, slots=True)
+class IntegrationCheckpointFacts:
+    """The current attempt's latest checkpoint-acceptance receipt and its linked package reference."""
+
+    receipt: ConsumedTransitionReceipt
+    package_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationLiveAttemptFacts:
+    attempt_id: AttemptId
+    candidate_revision: str | None
+    candidate_snapshot: CandidateSnapshotContextFacts | None
+    latest_checkpoint: IntegrationCheckpointFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationClosingAttemptFacts:
+    attempt_id: AttemptId
+    candidate_revision: str | None
+    candidate_snapshot: CandidateSnapshotContextFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationFacts:
+    """Keyed facts from which the item's reviewed candidate for an integration check is selected."""
+
+    project_revision: int
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    current_attempt: IntegrationLiveAttemptFacts | None
+    closure_action: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind | None
+    closing_attempt: IntegrationClosingAttemptFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedReviewSelection:
+    snapshot: CandidateSnapshotContextFacts
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointSelection:
+    attempt_id: AttemptId
+    work_item_id: WorkItemId
+    checkpoint: str
+    candidate: str
+    receipt: stored_state.StoredTransitionReceipt
+    package_reference: stored_state.ArtifactReference
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionSelection:
+    snapshot: CandidateSnapshotContextFacts
+
+
+type IntegrationSourceSelection = ProtectedReviewSelection | CheckpointSelection | CompletionSelection
+
+
+class IntegrationUnavailableReason(Enum):
+    NO_REVIEWED_CANDIDATE = "no-reviewed-candidate"
+    CLOSED_WITHOUT_COMPLETION = "closed-without-completion"
+    CHECKPOINT_WITHOUT_CANDIDATE_SNAPSHOT = "checkpoint-without-candidate-snapshot"
+    PRE_SNAPSHOT_CANDIDATE = "pre-snapshot-candidate"
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateUnavailable:
+    """No reviewed candidate with accepted snapshot bytes exists for the item's integration check."""
+
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    attempt_id: AttemptId | None
+    reason: IntegrationUnavailableReason
+
+
+class IntegrationPresence(Enum):
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+class ProtectedReviewIntegrationSource(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class AcceptedCheckpointIntegrationSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    checkpoint: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class CompletionIntegrationSource(
+    msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+type IntegrationSource = (
+    ProtectedReviewIntegrationSource | AcceptedCheckpointIntegrationSource | CompletionIntegrationSource
+)
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Whether one reviewed candidate's accepted diff is present in a caller-named target's current content.
+
+    content-present means the recorded diff reverse-applies cleanly to the target commit's tree;
+    content-not-present never proves that the change was not integrated.
+    """
+
+    schema: Literal["pinboard-item-integration/v1"]
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: str
+    target: str
+    target_revision: str
+    source: IntegrationSource
+    presence: IntegrationPresence
+
+
 class ParallelSelection(Enum):
     ALL_SAFE = "all-safe"
     SELECTED = "selected"

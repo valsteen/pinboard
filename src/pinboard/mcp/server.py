@@ -84,8 +84,9 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "item and bring its pause_reason decision to the human before resuming. Call board work done only when "
             "the board records it complete; a merge is not completion or review. Close only an unstarted item, only "
             "through pinboard_close, and only with the human's explicit decision in their own words as "
-            "human_decision. An item with an attempt cannot be closed: say its change is unreviewed and offer a "
-            "separate review before completion. Never pause or block work to approximate a refused or denied close. "
+            "human_decision. An item with an attempt cannot be closed: it completes only after a reviewer "
+            "commissioned through pinboard_review_job has its ready verdict recorded, so explain that and offer that "
+            "review. Never pause or block work to approximate a refused or denied close. "
             "After your own "
             "source change for an item, do not close it unless the human explicitly asked you to close it, and do "
             "not complete it until pinboard_review_job has commissioned a separate reviewer whose ready verdict is "
@@ -492,8 +493,10 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
     @server.tool(
         name=CLOSE_TOOL,
         description=(
-            "Close one unstarted Pinboard item as done or dropped on the human's explicit decision. Claude Code asks "
-            "the human to confirm every call. Arguments are project_root, work_root, receipt, payload, actor_task_id "
+            "Close one unstarted Pinboard item as done or dropped on the human's explicit decision. Never close in "
+            "the same turn as your own source change for that item unless the human explicitly asked you to close "
+            "it; otherwise report the change and ask the human first. Claude Code v2.1.199 or later asks the human "
+            "to confirm every call; Codex and earlier Claude Code versions may not ask. Arguments are project_root, work_root, receipt, payload, actor_task_id "
             "and actor_host_id (no request wrapper, no role). receipt contains ONLY action_id:{kind:'close',"
             "subject:<item_id>} and subject_revision from the close action pinboard_actions returned. payload is "
             "{outcome:'done'|'dropped', reason:<one line>, human_decision:<the human's explicit close decision in "

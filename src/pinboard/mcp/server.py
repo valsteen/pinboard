@@ -75,6 +75,17 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         instructions=(
             "Pinboard coordinates local repository work: intake, canonical briefs, status, legal actions, "
             "own leases, dispatch, independent review and recovery.\n\n"
+            "A project's saved work lives in its board at <project_root>/.pinboard. Before answering about or acting "
+            "on saved work, read pinboard_overview; if no board exists, say that nothing was saved and offer "
+            "Pinboard setup instead of claiming to remember. Before reading or editing source for a saved item, load "
+            "the pinboard skill and follow its start, pause and review route; do not implement or commit a saved "
+            "item outside it unless the human chooses that. For a paused item, read pinboard_item_status operation "
+            "item and bring its pause_reason decision to the human before resuming. Call board work done only when "
+            "the board records it complete; a merge is not completion or review. Close only an unstarted item on the "
+            "human's explicit decision, and never pause or block work to approximate a refused close. After your own "
+            "source change for an item, do not close it unless the human explicitly asked you to close it, and do "
+            "not complete it without a separate reviewer: report the change and ask first. Reach board state only "
+            "through these tools, never through Bash, Python or .pinboard/state.sqlite3.\n\n"
             "For intake or coordination, load the complete existing workflow skill before constructing "
             "attributed calls: pinboard-intake for new work, or pinboard for coordination of existing work. "
             "Use this runtime's advertised native skill loader; if unavailable, read that skill's actual "
@@ -277,7 +288,14 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=OVERVIEW_TOOL,
-        description="Read the current authoritative Pinboard work overview without changing durable state.",
+        description=(
+            "Read the current authoritative Pinboard work overview without changing durable state. "
+            "Call it before answering or acting on this project's saved work: status, what to do next, "
+            "priority, paused, merged or done work, or starting, continuing or closing a saved item. "
+            "work_root is <project_root>/.pinboard unless the user named another board. "
+            "Files under .pinboard/views are generated copies, not authority. "
+            "Before changing saved work, load the pinboard skill (pinboard-intake to save new work)."
+        ),
         meta={"anthropic/alwaysLoad": True},
     )
     async def overview(project_root: str, work_root: str) -> dict[str, JsonValue]:
@@ -450,7 +468,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=TRANSITION_TOOL,
-        description="Apply one current Pinboard lifecycle action. Put project_root, work_root, role, receipt, payload and authority fields inside request. receipt contains ONLY action_id and subject_revision from pinboard_actions, not the whole action. For role project, put actor_task_id and actor_host_id in request; for role worker or preparer, put lease_id and generation there instead. Get the action-specific payload schema from pinboard_actions.",
+        description="Apply one current Pinboard lifecycle action. Put project_root, work_root, role, receipt, payload and authority fields inside request. receipt contains ONLY action_id and subject_revision from pinboard_actions, not the whole action. For role project, put actor_task_id and actor_host_id in request; for role worker or preparer, put lease_id and generation there instead. Get the action-specific payload schema from pinboard_actions. Never apply close in the same turn as your own source change for that item unless the human explicitly asked you to close it; otherwise report the change and ask the human first.",
     )
     async def lifecycle_transition(
         request: dict[str, JsonValue],

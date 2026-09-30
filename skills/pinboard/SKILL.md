@@ -9,6 +9,17 @@ Coordinate shared work through one project-local ledger while keeping execution 
 
 Use [the coding-agent runtime adapters](references/runtime-adapters.md) for identity, checkout isolation, subagents and reviewers, permission declarations, waiting, and optional messaging. This skill owns the shared decisions in both integrations.
 
+## Route common requests
+
+These routes summarize rules owned by the sections below; follow those sections for detail. Call every Pinboard operation through its connected MCP tool, selected by its full advertised name and then called directly. Never reach Pinboard state through Bash, Python, or `.pinboard/state.sqlite3`; the launcher serves only the CLI-only operations named below.
+
+- **Where do we stand, what next, what can run together:** read `pinboard_overview`, and `pinboard_parallel_preview` for work at the same time. Report items in saved order with their dependency reasons. An active attempt means work was started; say whether anyone is working on it only after reading its attempt authority status. Keep leases, preparation claims, revisions, and attempt IDs out of the reply unless the human asks to inspect or troubleshoot Pinboard.
+- **Save for later:** use `$pinboard-intake`. Without a board nothing can be saved: say so and offer Pinboard setup; never create board files by hand.
+- **Pick up paused work:** read `pinboard_item_status` operation `item`; its `pause_reason` names what the work waits on. When that is a human decision, ask it with your recommended default, and change no source or lifecycle state until the human answers.
+- **Was it merged, is anything left:** check Git for the change, then `pinboard_item_status` operation `item`, whose `review_verdict` says whether a review is recorded for the current attempt. A merged change without a covering review is in `main` but unreviewed: recommend that a separate reviewer check the commit as it landed before the work is closed.
+- **Close, complete, or mark done:** first check that the human explicitly asked to close this item. If you fixed or implemented it yourself and they did not ask, report the change and where it landed, ask whether to close it, and stop. `close` applies only to live work without an attempt, on the human's explicit decision. When the item has an attempt, explain that its change needs review before completion and offer that route. Never pause, block, or resume work to approximate a close or completion.
+- **Fix, start, or implement a saved item now:** say in one sentence what will be produced and where it will land, ask only a question whose answer would change the result, with your recommendation, then follow [Prepare delegated attempts](#prepare-delegated-attempts). Do not edit or commit source for the item directly unless the human chooses to work outside Pinboard.
+
 ## Keep the human's picture current
 
 The human decides what reaches the product and often returns after hours with only your replies to go on. Keep four facts true in them: the **agreed outcome and where its results are meant to land**; **what is happening now** and who acts next, including which task to follow when another task was created or responsibility would otherwise be unclear; **where results live and whether they reach users**, meaning the integration target such as `main`; and **what remains open** for the human. This section owns what the human is told; intake, delivery, parallel-work, and runtime guidance report through it. Spend the human's attention on decisions and material state, not volume.

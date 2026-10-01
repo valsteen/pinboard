@@ -66,12 +66,22 @@ class InvestigationWorldTests(unittest.TestCase):
     def test_fresh_recovery_requires_new_identity_and_saved_evidence(self) -> None:
         case = investigation.load_set(investigation.DATA / "sets" / "heldout.json")[1][0]
         requested: list[str | None] = []
+        with tempfile.TemporaryDirectory() as temporary:
+            home = investigation.build_world(Path(temporary) / "world", case, processes.Window(None))
+            finding = home / "finding.md"
 
-        def controlled_send(_human: str, previous: str | None) -> tuple[str, bool, str | None]:
-            requested.append(previous)
-            return ("thread-b" if len(requested) == 3 else "thread-a", len(requested) == 3, None)
+            def controlled_send(_human: str, previous: str | None) -> tuple[str, bool, str | None]:
+                requested.append(previous)
+                if len(requested) == 2:
+                    finding.write_text("Worker w9 changed tags only; Nia dismissed the flush lead.\n")
+                if len(requested) == 3:
+                    self.assertIsNone(previous)
+                    saved = finding.read_text()
+                    self.assertIn("Nia dismissed the flush lead", saved)
+                    return "thread-b", bool(saved), None
+                return "thread-a", False, None
 
-        exercised, coverage = investigation.exercise_sessions(case, controlled_send)
+            exercised, coverage = investigation.exercise_sessions(case, controlled_send)
         self.assertEqual(requested, [None, "thread-a", None])
         self.assertEqual([turn.runtime_identity for turn in exercised], ["thread-a", "thread-a", "thread-b"])
         self.assertEqual(coverage, "unobserved")

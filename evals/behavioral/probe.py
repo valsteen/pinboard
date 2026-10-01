@@ -113,13 +113,13 @@ def probe_thread(
 ) -> tuple[float | None, list[str]]:
     """Keep the probe's rollout without allowing an evidence failure to confirm unsafe cleanup."""
     complete = False
-    unconfirmed: processes.CleanupUnconfirmed | None = None
+    incomplete: processes.ProcessIncomplete | processes.CleanupUnconfirmed | None = None
     try:
         cost, findings = probe_turns(home.path, project, model, directory, window)
         complete = not findings
         return cost, findings
-    except processes.CleanupUnconfirmed as failure:
-        unconfirmed = failure
+    except (processes.ProcessIncomplete, processes.CleanupUnconfirmed) as failure:
+        incomplete = failure
         raise
     finally:
         try:
@@ -127,9 +127,10 @@ def probe_thread(
             (directory / "rollout.jsonl").write_text(rollout)
             write_new(directory / "accounting.json", codex_driver.rollout_accounting(rollout, model, complete))
         except BaseException as evidence_failure:
-            if unconfirmed is not None:
-                unconfirmed.args = (*unconfirmed.args, f"probe rollout capture failed: {evidence_failure!r}")
-                raise unconfirmed from evidence_failure
+            if incomplete is not None:
+                incomplete.args = (*incomplete.args, f"probe rollout capture failed: {evidence_failure!r}")
+                evidence_failure.__cause__ = incomplete.__cause__
+                raise incomplete from evidence_failure
             raise
 
 

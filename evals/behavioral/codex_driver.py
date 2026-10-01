@@ -412,12 +412,13 @@ def run_turn(
     )
     try:
         completed = codex(arguments, home=home, cwd=project, timeout_seconds=TURN_TIMEOUT_SECONDS, window=window)
-    except (processes.ProcessInterrupted, processes.CleanupUnconfirmed) as interrupted:
+    except (processes.ProcessIncomplete, processes.CleanupUnconfirmed) as interrupted:
         try:
             raw_path.write_text(interrupted.stdout)
             raw_path.with_suffix(".stderr").write_text(interrupted.stderr)
         except BaseException as evidence_failure:
             interrupted.args = (*interrupted.args, f"partial-output capture failed: {evidence_failure!r}")
+            evidence_failure.__cause__ = interrupted.__cause__
             raise interrupted from evidence_failure
         raise
     raw_path.write_text(completed.stdout)

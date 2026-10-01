@@ -93,32 +93,40 @@ def _cancel(
     Its supported tools own separate sessions; only completed native shutdown establishes their cleanup.
     Other harness commands receive SIGINT in their inherited group. A forced fallback is never confirmation.
     """
-    with suppress(ProcessLookupError):
-        if native_shutdown:
-            child.send_signal(signal.SIGINT)
-        else:
-            os.killpg(child.pid, signal.SIGINT)
     try:
-        stdout, stderr = child.communicate(timeout=window.timeout(10))
-    except (subprocess.TimeoutExpired, TimeoutError) as interrupted:
-        if isinstance(interrupted, subprocess.TimeoutExpired):
-            stdout, stderr = interrupted.output or stdout, interrupted.stderr or stderr
         with suppress(ProcessLookupError):
-            os.killpg(child.pid, signal.SIGKILL)
+            if native_shutdown:
+                child.send_signal(signal.SIGINT)
+            else:
+                os.killpg(child.pid, signal.SIGINT)
         try:
             stdout, stderr = child.communicate(timeout=window.timeout(10))
-        except subprocess.TimeoutExpired as incomplete:
-            stdout, stderr = incomplete.output or stdout, incomplete.stderr or stderr
-        except TimeoutError:
-            pass
-        raise CleanupUnconfirmed(child.pid, stdout, stderr) from None
-    if native_shutdown and (
-        child.returncode < 0
-        or b"in-process app-server shutdown failed" in stderr
-        or b"thread/unsubscribe failed during shutdown" in stderr
-    ):
-        raise CleanupUnconfirmed(child.pid, stdout, stderr)
-    return stdout, stderr
+        except (subprocess.TimeoutExpired, TimeoutError) as interrupted:
+            if isinstance(interrupted, subprocess.TimeoutExpired):
+                stdout, stderr = interrupted.output or stdout, interrupted.stderr or stderr
+            with suppress(ProcessLookupError):
+                os.killpg(child.pid, signal.SIGKILL)
+            try:
+                stdout, stderr = child.communicate(timeout=window.timeout(10))
+            except subprocess.TimeoutExpired as incomplete:
+                stdout, stderr = incomplete.output or stdout, incomplete.stderr or stderr
+                raise CleanupUnconfirmed(child.pid, stdout, stderr) from incomplete
+            except TimeoutError as exhausted:
+                raise CleanupUnconfirmed(child.pid, stdout, stderr) from exhausted
+            raise CleanupUnconfirmed(child.pid, stdout, stderr) from interrupted
+        if native_shutdown and (
+            child.returncode < 0
+            or b"in-process app-server shutdown failed" in stderr
+            or b"thread/unsubscribe failed during shutdown" in stderr
+        ):
+            raise CleanupUnconfirmed(child.pid, stdout, stderr)
+        return stdout, stderr
+    except CleanupUnconfirmed:
+        raise
+    except BaseException as failure:
+        unconfirmed = CleanupUnconfirmed(child.pid, stdout, stderr)
+        unconfirmed.args = (*unconfirmed.args, f"shutdown failed: {failure!r}")
+        raise unconfirmed from failure
 
 
 def _run(
@@ -146,6 +154,7 @@ def _run(
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
+    interruption: ProcessInterrupted | CleanupUnconfirmed | None = None
     try:
         try:
             stdout, stderr = child.communicate(stdin, timeout=timeout)
@@ -161,12 +170,21 @@ def _run(
             _cancel(child, native_shutdown, window, b"", b"")
             raise
         return child.returncode, stdout, stderr, False
+    except (ProcessInterrupted, CleanupUnconfirmed) as failure:
+        interruption = failure
+        raise
     finally:
         # Popen.__exit__ waits without a timeout, including after unconfirmed cleanup.
-        for stream in (child.stdin, child.stdout, child.stderr):
-            if stream is not None:
-                with suppress(OSError):
+        try:
+            for stream in (child.stdin, child.stdout, child.stderr):
+                if stream is not None:
                     stream.close()
+        except BaseException as close_failure:
+            if interruption is not None:
+                interruption.args = (*interruption.args, f"pipe close failed: {close_failure!r}")
+                close_failure.__cause__ = interruption.__cause__
+                raise interruption from close_failure
+            raise
 
 
 def run_tool(

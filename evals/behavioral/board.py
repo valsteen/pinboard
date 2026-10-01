@@ -298,6 +298,7 @@ class Roots(Request, frozen=True):
 
 
 class ItemStatus(Request, frozen=True):
+    operation: Literal["item"]
     project_root: str
     work_root: str
     item_id: str
@@ -305,7 +306,13 @@ class ItemStatus(Request, frozen=True):
 
 class Enveloped(Request, frozen=True):
     request: (
-        PreparationStart | DefinitionCurrent | LeasedActions | ProjectActions | LeasedTransition | ProjectTransition
+        PreparationStart
+        | DefinitionCurrent
+        | LeasedActions
+        | ProjectActions
+        | LeasedTransition
+        | ProjectTransition
+        | ItemStatus
     )
 
 
@@ -436,6 +443,8 @@ async def item_states(
     async with connect(launcher, log, window) as board:
         states = []
         for item in items:
-            request = ItemStatus(project_root=str(project_root), work_root=str(work_root), item_id=item)
+            request = Enveloped(
+                ItemStatus(operation="item", project_root=str(project_root), work_root=str(work_root), item_id=item)
+            )
             states.append((item, (await board.call("pinboard_item_status", request, ItemState)).state))
         return states

@@ -6,6 +6,7 @@ The output home retains raw turns and a strict run record; it is never exported 
 
 import hashlib
 import re
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -13,10 +14,17 @@ from typing import Annotated, Literal
 
 import msgspec
 
-from evals.behavioral import codex_driver, credentials, investigation, runner
+from evals.behavioral import codex_driver, credentials, investigation, oneshot, processes, runner
 from evals.behavioral.claude_driver import now
 from evals.behavioral.layout import Layout
-from evals.behavioral.records import ExportRecord, InvestigationRunRecord, InvestigationTurnRecord, write_new
+from evals.behavioral.records import (
+    ExportRecord,
+    InvestigationAssessmentRecord,
+    InvestigationRunRecord,
+    InvestigationTurnRecord,
+    Sha256,
+    write_new,
+)
 from evals.behavioral.spend import Budget, Category
 
 ARMS = Path(__file__).parent / "data" / "investigation" / "arms"
@@ -27,6 +35,11 @@ class Batch(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-investigation-batch/v1"]
     start_usd: Annotated[float, msgspec.Meta(ge=0)]
     cap_usd: Annotated[float, msgspec.Meta(ge=0)]
+
+
+class PrivateKeys(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-investigation-private-registry/v1"]
+    keys: dict[str, Sha256]
 
 
 class Finding(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -86,13 +99,18 @@ def run(
     case = next((member for member in cases if member.id == case_id), None)
     if case is None:
         raise ValueError(f"case {case_id} is not registered")
-    projected = budget.reserve(Category.CODEX_AGENT_RUN)
-    if projected is None:
-        return None
-    try:
-        return _run_reserved(layout, budget, exported, scenario_set, case, arm, index, worlds)
-    finally:
-        budget.release(projected)
+    # Hold the existing cross-process lock before reserving or creating a run. An occupied lock leaves no
+    # misleading unknown-cost record, and the explicit deadline prevents an indefinite setup wait.
+    with credentials.exclusive_codex_session(
+        Path(tempfile.gettempdir()), processes.Window(time.monotonic() + 60)
+    ):
+        projected = budget.reserve(Category.CODEX_AGENT_RUN)
+        if projected is None:
+            return None
+        try:
+            return _run_reserved(layout, budget, exported, scenario_set, case, arm, index, worlds)
+        finally:
+            budget.release(projected)
 
 
 def _run_reserved(  # noqa: C901, PLR0912, PLR0915
@@ -108,7 +126,16 @@ def _run_reserved(  # noqa: C901, PLR0912, PLR0915
     directory = layout.root / "investigations" / case.id / f"{arm}-{index}"
     directory.mkdir(parents=True, exist_ok=False)
     world_root = worlds / f"{case.id}-{arm}-{index}"
-    inquiry = investigation.build_world(world_root, case, budget.window)
+    case_bytes = (investigation.DATA / "scenarios" / f"{case.id}.json").read_bytes()
+    case_sha = hashlib.sha256(case_bytes).hexdigest()
+    seed_root = worlds / "source-seeds" / f"{case.id}-{case_sha[:12]}"
+    if not seed_root.exists():
+        investigation.build_world(seed_root, case, budget.window)
+        (seed_root / ".ready").write_text(case_sha)
+    if (seed_root / ".ready").read_text() != case_sha:
+        raise ValueError("source seed is incomplete or names another scenario")
+    shutil.copytree(seed_root, world_root)
+    inquiry = world_root / "inquiry"
     guide = arm_text(arm)
     if guide:
         (inquiry / "ARM.md").write_text(guide)
@@ -119,10 +146,7 @@ def _run_reserved(  # noqa: C901, PLR0912, PLR0915
     version = codex_driver.codex_version(budget.window)
     started_at = now()
     try:
-        with (
-            credentials.exclusive_codex_session(Path(tempfile.gettempdir()), budget.window),
-            credentials.isolated_home(credentials.default_source(), None, budget.window) as home,
-        ):
+        with credentials.isolated_home(credentials.default_source(), None, budget.window) as home:
             codex_driver.write_config(
                 home.path, Path(exported.plugin_root), "gpt-6-luna", "high", budget.window
             )
@@ -202,7 +226,7 @@ def _run_reserved(  # noqa: C901, PLR0912, PLR0915
     record = InvestigationRunRecord(
         schema="pinboard-investigation-run/v1",
         case_id=case.id,
-        scenario_sha256=hashlib.sha256((investigation.DATA / "scenarios" / f"{case.id}.json").read_bytes()).hexdigest(),
+        scenario_sha256=case_sha,
         set_sha256=hashlib.sha256(scenario_set.read_bytes()).hexdigest(),
         arm=arm,
         arm_sha256=arm_sha,
@@ -229,3 +253,66 @@ def valid_note(path: Path) -> bool:
     except msgspec.DecodeError:
         return False
     return note.last_turn > 0
+
+
+def assess(
+    layout: Layout,
+    budget: Budget,
+    scenario_set: Path,
+    key_directory: Path,
+    case_id: str,
+    arm: str,
+    index: int,
+) -> InvestigationAssessmentRecord | None:
+    """Blindly assess one completed trial against its private key; keep malformed usage blocking."""
+    run_file = layout.root / "investigations" / case_id / f"{arm}-{index}" / "run.json"
+    run = msgspec.json.decode(run_file.read_bytes(), type=InvestigationRunRecord)
+    if run.outcome != "completed" or run.accounting is None or not run.accounting.main_usage_complete:
+        raise ValueError("investigation run is incomplete")
+    _, cases = investigation.load_set(scenario_set)
+    case = next((member for member in cases if member.id == case_id), None)
+    if case is None:
+        raise ValueError(f"case {case_id} is not registered")
+    if run.set_sha256 != hashlib.sha256(scenario_set.read_bytes()).hexdigest():
+        raise ValueError("investigation run used another scenario registration")
+    registry = msgspec.json.decode((key_directory / "registry.json").read_bytes(), type=PrivateKeys)
+    key = investigation.load_key(key_directory / f"{case_id}.json", case, registry.keys[case_id])
+    projected = budget.reserve(Category.SUBSTANCE_ASSESSMENT)
+    if projected is None:
+        return None
+    directory = layout.root / "investigation-assessments" / case_id / f"{arm}-{index}"
+    directory.mkdir(parents=True, exist_ok=False)
+    answer_text = "\n\n".join(f"Turn {turn.index}: {turn.final_reply}" for turn in run.turns)
+    prompt = investigation.assessment_prompt(case, key, answer_text)
+    (directory / "prompt.txt").write_text(prompt)
+    answer: oneshot.Answer | None = None
+    problem: str | None = None
+    try:
+        answer = oneshot.ask(prompt, "claude-opus-5-5", budget.window)
+        (directory / "raw.json").write_text(answer.stdout)
+        if answer.cost_usd is None:
+            problem = answer.problem or "assessor cost unknown"
+        elif answer.problem is not None or answer.text is None:
+            problem = answer.problem or "assessor returned no answer"
+        else:
+            block = oneshot.last_json_block(answer.text) or answer.text
+            try:
+                result = investigation.decode_assessment(block.encode(), case)
+                write_new(directory / "assessment.json", result)
+            except (msgspec.DecodeError, ValueError) as error:
+                problem = str(error)
+    except Exception as error:
+        problem = str(error)
+    finally:
+        budget.release(projected)
+        session = InvestigationAssessmentRecord(
+            schema="pinboard-investigation-assessment-session/v1",
+            case_id=case_id,
+            arm=arm,
+            index=index,
+            assessor_model="claude-opus-5-5",
+            cost_usd=answer.cost_usd if answer is not None else None,
+            problem=problem,
+        )
+        write_new(directory / "session.json", session)
+    return session

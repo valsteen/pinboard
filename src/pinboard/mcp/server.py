@@ -95,8 +95,14 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "not complete it until pinboard_review_job has commissioned a separate reviewer whose ready verdict is "
             "recorded: report the change and ask first. Reach board state only "
             "through these tools, never through Bash, Python or .pinboard/state.sqlite3.\n\n"
-            "Before any review claim, read pinboard_item_status operation item and its current review_verdict. "
-            "Overview omits that verdict; omission never proves no review. Before any worker claim, read "
+            "Before current-attempt review claims, read pinboard_item_status operation item and its review_verdict. "
+            "That verdict selects the nonterminal attempt; terminal none and overview omission do not deny "
+            "historical review. For historical candidate or merged-commit coverage, verify selected available "
+            "evidence for that exact subject and time; retain verified coverage and qualify unavailable or "
+            "conflicting coverage. An informal favorable note cannot authorize ready recording or completion. "
+            "Preserve the effect of explicit human retention or deferral: product absence does not reopen it. "
+            "Distinguish unresolved landing from retained work and merged-unreviewed work from implementation "
+            "in flight. Before any worker claim, read "
             "pinboard_attempt_authority operation status for the exact attempt. Overview's preparation is a "
             "different authority; its release or revocation never proves worker release or revocation. A rejected "
             "or malformed read provides no observation: keep unavailable facts unknown. Every separate decision "
@@ -222,7 +228,8 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         description=(
             "Read one current Pinboard item status, map an exact branch to the items and attempts that own it, "
             "or check whether an item's reviewed change is present by content in a named local Git target. "
-            "Use operation item and its review_verdict before review claims; overview omission is not no review."
+            "Use operation item and its review_verdict for current-attempt review claims; terminal none and overview "
+            "omission do not deny historical exact coverage. Qualify unavailable or conflicting historical evidence."
         ),
     )
     async def item_status(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -314,7 +321,9 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "Before answering, including quick read-only status, load the complete pinboard main skill through "
             "the native loader or read its actual resolved SKILL.md completely, then its status-and-selection "
             "reference. Overview omits review_verdict and its preparation is not worker authority: read "
-            "pinboard_item_status operation item for review claims and pinboard_attempt_authority operation "
+            "pinboard_item_status operation item for current-attempt review claims; terminal none is not historical "
+            "denial. Verify selected historical coverage when needed, qualify unknowns and preserve settled "
+            "human retention decisions. Read pinboard_attempt_authority operation "
             "status for worker claims. Use pinboard-intake to save new work."
         ),
         meta={"anthropic/alwaysLoad": True},

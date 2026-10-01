@@ -360,11 +360,11 @@ def codex_run(plan: CodexPlan, scenario: Scenario, key: RunKey) -> RunRecord:
 
 
 def codex_turns(state: RunState, built: world.World, home: credentials.IsolatedHome, plan: CodexPlan) -> RunOutcome:
-    unconfirmed: processes.CleanupUnconfirmed | None = None
+    incomplete: processes.ProcessIncomplete | processes.CleanupUnconfirmed | None = None
     try:
         return codex_thread(state, built, home.path, plan)
-    except processes.CleanupUnconfirmed as failure:
-        unconfirmed = failure
+    except (processes.ProcessIncomplete, processes.CleanupUnconfirmed) as failure:
+        incomplete = failure
         raise
     finally:
         try:
@@ -377,9 +377,10 @@ def codex_turns(state: RunState, built: world.World, home: credentials.IsolatedH
             )
             write_new(state.directory / "accounting.json", accounting)
         except BaseException as evidence_failure:
-            if unconfirmed is not None:
-                unconfirmed.args = (*unconfirmed.args, f"rollout capture failed: {evidence_failure!r}")
-                raise unconfirmed from evidence_failure
+            if incomplete is not None:
+                incomplete.args = (*incomplete.args, f"rollout capture failed: {evidence_failure!r}")
+                evidence_failure.__cause__ = incomplete.__cause__
+                raise incomplete from evidence_failure
             raise
 
 

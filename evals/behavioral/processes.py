@@ -65,11 +65,13 @@ def executable(tool: Tool) -> str:
     return found
 
 
-class ProcessInterrupted(KeyboardInterrupt):
-    """A started subprocess was interrupted after bounded cleanup; preserve its partial output."""
+class ProcessIncomplete(subprocess.SubprocessError):
+    """A started subprocess failed to deliver its result after confirmed cleanup; preserve available output."""
 
-    def __init__(self, stdout: bytes, stderr: bytes) -> None:
-        super().__init__("started subprocess interrupted; usage may be unreported")
+    def __init__(self, stdout: bytes, stderr: bytes, cause: BaseException) -> None:
+        super().__init__(
+            f"started subprocess result incomplete after confirmed cleanup: {cause!r}; usage may be unreported"
+        )
         self.stdout = stdout.decode(errors="replace")
         self.stderr = stderr.decode(errors="replace")
 
@@ -141,7 +143,7 @@ def _run(
 ) -> tuple[int, bytes, bytes, bool]:
     """Bound a subprocess; finish supported shutdown before returning to credential settlement.
 
-    Interrupted output crosses this effect boundary in ProcessInterrupted. CleanupUnconfirmed prevents
+    Every post-start failure preventing output delivery crosses this boundary in ProcessIncomplete. CleanupUnconfirmed prevents
     settlement when the native owner could not finish stopping its separate tool groups.
     """
     timeout = window.reserving(20).timeout(timeout_seconds)
@@ -154,7 +156,8 @@ def _run(
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
-    interruption: ProcessInterrupted | CleanupUnconfirmed | None = None
+    interruption: ProcessIncomplete | CleanupUnconfirmed | None = None
+    stdout, stderr = b"", b""
     try:
         try:
             stdout, stderr = child.communicate(stdin, timeout=timeout)
@@ -163,14 +166,11 @@ def _run(
                 child, native_shutdown, window, interrupted.output or b"", interrupted.stderr or b""
             )
             return child.returncode, stdout, stderr, True
-        except KeyboardInterrupt:
-            stdout, stderr = _cancel(child, native_shutdown, window, b"", b"")
-            raise ProcessInterrupted(stdout, stderr) from None
-        except BaseException:
-            _cancel(child, native_shutdown, window, b"", b"")
-            raise
+        except BaseException as failure:
+            stdout, stderr = _cancel(child, native_shutdown, window, stdout, stderr)
+            raise ProcessIncomplete(stdout, stderr, failure) from failure
         return child.returncode, stdout, stderr, False
-    except (ProcessInterrupted, CleanupUnconfirmed) as failure:
+    except (ProcessIncomplete, CleanupUnconfirmed) as failure:
         interruption = failure
         raise
     finally:
@@ -184,7 +184,7 @@ def _run(
                 interruption.args = (*interruption.args, f"pipe close failed: {close_failure!r}")
                 close_failure.__cause__ = interruption.__cause__
                 raise interruption from close_failure
-            raise
+            raise ProcessIncomplete(stdout, stderr, close_failure) from close_failure
 
 
 def run_tool(

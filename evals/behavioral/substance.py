@@ -101,8 +101,8 @@ def assess_run(record: RunRecord, directory: Path, window: processes.Window) -> 
     text = prompt(record, label)
     (directory / "prompt.txt").write_text(text)
     answer: oneshot.Answer | None = None
-    interrupted: processes.ProcessInterrupted | processes.CleanupUnconfirmed | None = None
-    outcome: AssessmentOutcome = AssessmentFailure(reason="started assessor interrupted before publishing a result")
+    interrupted: processes.ProcessIncomplete | processes.CleanupUnconfirmed | None = None
+    outcome: AssessmentOutcome = AssessmentFailure(reason="started assessor failed before publishing a result")
     try:
         answer = oneshot.ask(text, ASSESSOR_MODEL, window)
         (directory / "raw.json").write_text(answer.stdout)
@@ -112,10 +112,20 @@ def assess_run(record: RunRecord, directory: Path, window: processes.Window) -> 
             else AssessmentFailure(reason=answer.problem)
         )
         outcome = outcome_of(decoded)
-    except (processes.ProcessInterrupted, processes.CleanupUnconfirmed) as error:
+    except (processes.ProcessIncomplete, processes.CleanupUnconfirmed) as error:
         interrupted = error
-        (directory / "raw.json").write_text(error.stdout)
-        (directory / "stderr.txt").write_text(error.stderr)
+        outcome = AssessmentFailure(reason=str(error))
+        try:
+            (directory / "raw.json").write_text(error.stdout)
+            (directory / "stderr.txt").write_text(error.stderr)
+        except BaseException as evidence_failure:
+            error.args = (*error.args, f"partial-output capture failed: {evidence_failure!r}")
+            evidence_failure.__cause__ = error.__cause__
+            raise error from evidence_failure
+        raise
+    except BaseException as failure:
+        if answer is not None:
+            raise processes.ProcessIncomplete(answer.stdout.encode(), b"", failure) from failure
         raise
     finally:
         if answer is not None or interrupted is not None:

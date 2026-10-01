@@ -4,10 +4,10 @@ import signal
 import subprocess
 import tempfile
 import unittest
-from collections.abc import AsyncGenerator
-from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
+from collections.abc import AsyncGenerator, Generator
+from contextlib import AbstractContextManager, asynccontextmanager, contextmanager, nullcontext
 from pathlib import Path
-from typing import TextIO
+from typing import Never, TextIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import msgspec
@@ -33,6 +33,7 @@ from evals.behavioral.records import (
     Assessed,
     AssessmentFailure,
     AssessmentRecord,
+    CodexAccounting,
     CodexRunDetails,
     Completed,
     CoverageResult,
@@ -362,7 +363,7 @@ class EffectDeadlineTest(unittest.TestCase):
         child.stdout.close.side_effect = close_failure
         with (
             patch.object(processes.subprocess, "Popen", return_value=child),
-            self.assertRaises(processes.ProcessInterrupted) as failure,
+            self.assertRaises(processes.ProcessIncomplete) as failure,
         ):
             processes.run_tool(
                 processes.Tool.CODEX,
@@ -375,6 +376,42 @@ class EffectDeadlineTest(unittest.TestCase):
             )
         self.assertIs(close_failure, failure.exception.__cause__)
         self.assertEqual("partial", failure.exception.stdout)
+
+    def test_oneshot_directory_cleanup_cannot_erase_started_output_or_cleanup_uncertainty(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            primary_cause = OSError("native cleanup failed")
+            primary = processes.CleanupUnconfirmed(777, b"paid partial", b"diagnostic")
+            primary.__cause__ = primary_cause
+            secondary = OSError("session directory cleanup failed")
+
+            @contextmanager
+            def directory_cleanup_failure(*, prefix: str) -> Generator[str]:
+                self.assertTrue(prefix)
+                try:
+                    yield directory
+                finally:
+                    raise secondary
+
+            for uncertain in (False, True):
+                with (
+                    self.subTest(uncertain=uncertain),
+                    patch.object(oneshot.tempfile, "TemporaryDirectory", directory_cleanup_failure),
+                    patch.object(
+                        processes,
+                        "run_tool",
+                        side_effect=primary if uncertain else None,
+                        return_value=processes.Completed(0, "paid partial", "diagnostic", False),
+                    ),
+                    self.assertRaises(
+                        processes.CleanupUnconfirmed if uncertain else processes.ProcessIncomplete
+                    ) as failure,
+                ):
+                    oneshot.ask("prompt", "scorer", processes.Window(None))
+                self.assertEqual("paid partial", failure.exception.stdout)
+                self.assertIs(secondary, failure.exception.__cause__)
+                if uncertain:
+                    self.assertIs(primary, failure.exception)
+                    self.assertIs(primary_cause, secondary.__cause__)
 
 
 class EvidenceFailureTest(unittest.TestCase):
@@ -473,6 +510,60 @@ class EvidenceFailureTest(unittest.TestCase):
             self.assertEqual(1, len(list(root.glob("pinboard-eval-codex-home-*"))))
             settle.assert_not_called()
 
+    def test_confirmed_started_failure_retains_native_raw_and_unknown_accounting_without_retaining_login(self) -> None:
+        for owner in ("run", "probe"):
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "auth.json"
+                source.write_bytes(b"{}")
+                cause = OSError("started communication failed")
+                child = MagicMock()
+                child.pid, child.returncode = 777, 1
+                child.communicate.side_effect = [cause, (b"partial native output", b"diagnostic")]
+                state = MagicMock(spec=runner.RunState)
+                state.directory = root
+                turns: list[TurnEvidence] = []
+                state.turns = turns
+                state.scenario = MagicMock()
+                state.scenario.turns = [1]
+                plan = MagicMock(spec=runner.CodexPlan)
+                plan.run = MagicMock()
+                plan.run.model = "gpt-6-sol"
+                plan.run.window = processes.Window(None)
+
+                def run_thread(
+                    state: runner.RunState, _built: runner.world.World, home: Path, plan: runner.CodexPlan
+                ) -> Never:
+                    codex_driver.run_turn(
+                        home, state.directory, None, "no paid call", state.directory / "turn.jsonl", plan.run.window
+                    )
+                    raise AssertionError("controlled native call must fail")
+
+                def probe_turns(
+                    home: Path, project: Path, _model: str, directory: Path, window: processes.Window
+                ) -> Never:
+                    codex_driver.run_turn(home, project, None, "no paid call", directory / "turn.jsonl", window)
+                    raise AssertionError("controlled native call must fail")
+
+                with (
+                    patch.object(processes.subprocess, "Popen", return_value=child),
+                    patch.object(codex_driver, "rollout_text", return_value=""),
+                    patch.object(runner, "codex_thread", side_effect=run_thread),
+                    patch.object(probe, "probe_turns", side_effect=probe_turns),
+                    self.assertRaises(processes.ProcessIncomplete) as failure,
+                    credentials.isolated_home(source, root, processes.Window(None)) as home,
+                ):
+                    if owner == "run":
+                        runner.codex_turns(state, MagicMock(), home, plan)
+                    else:
+                        probe.probe_thread(home, root, "gpt-6-sol", root, processes.Window(None))
+                self.assertIs(cause, failure.exception.__cause__)
+                self.assertEqual("partial native output", (root / "turn.jsonl").read_text())
+                accounting = msgspec.json.decode((root / "accounting.json").read_bytes(), type=CodexAccounting)
+                self.assertFalse(accounting.main_usage_complete)
+                self.assertFalse(home.path.exists())
+                self.assertEqual(credentials.CredentialSettlement.UNCHANGED, home.settlement)
+
 
 class PaidInterruptionTest(unittest.TestCase):
     def test_started_scorer_and_assessor_preserve_partial_output_and_unknown_usage(self) -> None:
@@ -498,7 +589,7 @@ class PaidInterruptionTest(unittest.TestCase):
                     patch.object(processes.os, "killpg"),
                 ):
                     start.return_value = child
-                    with self.assertRaises(processes.ProcessInterrupted):
+                    with self.assertRaises(processes.ProcessIncomplete):
                         if owner == "scorer":
                             scoring.ScoringRun(layout, budget).score(source)
                         else:
@@ -563,6 +654,150 @@ class PaidInterruptionTest(unittest.TestCase):
                     self.assertIsNone(records[0].cost_usd)
                     self.assertTrue(spend.main_usage_unknown(layout))
                     self.assertIsNone(budget.reserve(spend.Category.SCORER))
+
+    def test_initial_io_and_completed_close_failures_publish_started_paid_usage(self) -> None:
+        for owner in ("scorer", "assessor"):
+            for stage in ("initial IO", "completed close"):
+                with self.subTest(owner=owner, stage=stage), tempfile.TemporaryDirectory() as directory:
+                    layout = Layout(Path(directory))
+                    budget = spend.Budget(layout, 120, processes.Window(None), True)
+                    key = RunKey(scenario_id="s14-motivating-replay", variant="candidate", index=1)
+                    source = ScorerInput(
+                        schema="pinboard-behavioral-scorer-input/v1",
+                        run=key,
+                        replies=[],
+                        states=[],
+                        hooks_log=None,
+                        redactions=[],
+                    )
+                    cause = OSError("started I/O failed")
+                    child = MagicMock()
+                    child.pid, child.returncode = 777, 0
+                    output = (
+                        b"partial paid output"
+                        if stage == "initial IO"
+                        else b'{"is_error":false,"total_cost_usd":0.3,"result":"available"}'
+                    )
+                    child.communicate.side_effect = (
+                        [cause, (output, b"diagnostic")] if stage == "initial IO" else [(output, b"diagnostic")]
+                    )
+                    if stage == "completed close":
+                        child.stdout.close.side_effect = cause
+                    with (
+                        patch.object(scoring, "prompt", return_value="prompt"),
+                        patch.object(processes.subprocess, "Popen", return_value=child),
+                        patch.object(processes.os, "killpg"),
+                        self.assertRaises(processes.ProcessIncomplete) as failure,
+                    ):
+                        if owner == "scorer":
+                            scoring.ScoringRun(layout, budget).score(source)
+                        else:
+                            record = MagicMock(spec=RunRecord)
+                            record.run = key
+                            with (
+                                patch.object(substance, "prompt", return_value="prompt"),
+                                patch.object(substance, "turn_words", return_value=[]),
+                            ):
+                                substance.assess_run(record, layout.assessment_directory(key), budget.window)
+                    self.assertIs(cause, failure.exception.__cause__)
+                    self.assertEqual(output.decode(), next(layout.root.rglob("raw.json")).read_text())
+                    records = list(layout.scorer_sessions()) if owner == "scorer" else list(layout.assessments())
+                    self.assertEqual(1, len(records))
+                    self.assertIsNone(records[0].cost_usd)
+                    self.assertTrue(spend.main_usage_unknown(layout))
+                    self.assertIsNone(budget.reserve(spend.Category.SCORER))
+
+    def test_raw_publication_failure_preserves_primary_failure_and_writable_unknown_session(self) -> None:
+        secondary = OSError("raw evidence unwritable")
+        original_write = Path.write_text
+
+        def raw_unwritable(path: Path, text: str) -> int:
+            if path.name == "raw.json":
+                raise secondary
+            return original_write(path, text)
+
+        for owner in ("scorer", "assessor"):
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as directory:
+                layout = Layout(Path(directory))
+                budget = spend.Budget(layout, 120, processes.Window(None), True)
+                key = RunKey(scenario_id="s14-motivating-replay", variant="candidate", index=1)
+                source = ScorerInput(
+                    schema="pinboard-behavioral-scorer-input/v1",
+                    run=key,
+                    replies=[],
+                    states=[],
+                    hooks_log=None,
+                    redactions=[],
+                )
+                primary_cause = OSError("started communication failed")
+                primary = processes.ProcessIncomplete(b"paid partial", b"diagnostic", primary_cause)
+                primary.__cause__ = primary_cause
+                with (
+                    patch.object(scoring, "prompt", return_value="prompt"),
+                    patch.object(oneshot, "ask", side_effect=primary),
+                    patch.object(Path, "write_text", raw_unwritable),
+                    self.assertRaises(processes.ProcessIncomplete) as failure,
+                ):
+                    if owner == "scorer":
+                        scoring.ScoringRun(layout, budget).score(source)
+                    else:
+                        record = MagicMock(spec=RunRecord)
+                        record.run = key
+                        with (
+                            patch.object(substance, "prompt", return_value="prompt"),
+                            patch.object(substance, "turn_words", return_value=[]),
+                        ):
+                            substance.assess_run(record, layout.assessment_directory(key), budget.window)
+                self.assertIs(primary, failure.exception)
+                self.assertIs(secondary, failure.exception.__cause__)
+                self.assertIs(primary_cause, secondary.__cause__)
+                self.assertIn("raw evidence unwritable", str(failure.exception))
+                records = list(layout.scorer_sessions()) if owner == "scorer" else list(layout.assessments())
+                self.assertEqual(1, len(records))
+                self.assertIsNone(records[0].cost_usd)
+                self.assertTrue(spend.main_usage_unknown(layout))
+                self.assertIsNone(budget.reserve(spend.Category.SCORER))
+
+    def test_strict_decode_failure_publishes_the_already_reported_paid_cost(self) -> None:
+        for owner in ("scorer", "assessor"):
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as directory:
+                layout = Layout(Path(directory))
+                budget = spend.Budget(layout, 120, processes.Window(None), True)
+                key = RunKey(scenario_id="s14-motivating-replay", variant="candidate", index=1)
+                source = ScorerInput(
+                    schema="pinboard-behavioral-scorer-input/v1",
+                    run=key,
+                    replies=[],
+                    states=[],
+                    hooks_log=None,
+                    redactions=[],
+                )
+                cause = msgspec.ValidationError("strict result rejected")
+                answer = oneshot.Answer(0.3, "invalid", "retained paid result", None)
+                with (
+                    patch.object(scoring, "prompt", return_value="prompt"),
+                    patch.object(oneshot, "ask", return_value=answer),
+                    patch.object(scoring, "decode_score", side_effect=cause),
+                    patch.object(substance, "decode_answer", side_effect=cause),
+                    self.assertRaises(processes.ProcessIncomplete) as failure,
+                ):
+                    if owner == "scorer":
+                        scoring.ScoringRun(layout, budget).score(source)
+                    else:
+                        record = MagicMock(spec=RunRecord)
+                        record.run, record.turns = key, [MagicMock()]
+                        with (
+                            patch.object(substance, "prompt", return_value="prompt"),
+                            patch.object(substance, "turn_words", return_value=[]),
+                        ):
+                            substance.assess_run(record, layout.assessment_directory(key), budget.window)
+                self.assertIs(cause, failure.exception.__cause__)
+                self.assertEqual("retained paid result", next(layout.root.rglob("raw.json")).read_text())
+                records = list(layout.scorer_sessions()) if owner == "scorer" else list(layout.assessments())
+                self.assertEqual(1, len(records))
+                self.assertEqual(0.3, records[0].cost_usd)
+                self.assertFalse(spend.main_usage_unknown(layout))
+                self.assertAlmostEqual(0.3, spend.total(spend.items(layout)))
 
     def test_prestart_refusal_does_not_invent_started_paid_usage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

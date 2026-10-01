@@ -37,28 +37,47 @@ class Answer:
 
 
 def ask(prompt: str, model: str, window: processes.Window) -> Answer:
-    with tempfile.TemporaryDirectory(prefix="pinboard-eval-oneshot-") as empty:
-        completed = processes.run_tool(
-            processes.Tool.CLAUDE,
-            [
-                "-p",
-                "--model",
-                model,
-                "--setting-sources",
-                "project",
-                "--strict-mcp-config",
-                "--disable-slash-commands",
-                "--tools",
-                "",
-                "--output-format",
-                "json",
-            ],
-            cwd=Path(empty),
-            environment=os.environ | {"ENABLE_CLAUDEAI_MCP_SERVERS": "false"},
-            stdin=prompt,
-            timeout_seconds=SESSION_TIMEOUT_SECONDS,
-            window=window,
-        )
+    completed: processes.Completed | None = None
+    incomplete: processes.ProcessIncomplete | processes.CleanupUnconfirmed | None = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="pinboard-eval-oneshot-") as empty:
+            try:
+                completed = processes.run_tool(
+                    processes.Tool.CLAUDE,
+                    [
+                        "-p",
+                        "--model",
+                        model,
+                        "--setting-sources",
+                        "project",
+                        "--strict-mcp-config",
+                        "--disable-slash-commands",
+                        "--tools",
+                        "",
+                        "--output-format",
+                        "json",
+                    ],
+                    cwd=Path(empty),
+                    environment=os.environ | {"ENABLE_CLAUDEAI_MCP_SERVERS": "false"},
+                    stdin=prompt,
+                    timeout_seconds=SESSION_TIMEOUT_SECONDS,
+                    window=window,
+                )
+            except (processes.ProcessIncomplete, processes.CleanupUnconfirmed) as failure:
+                incomplete = failure
+                raise
+    except BaseException as failure:
+        if incomplete is not None:
+            if failure is not incomplete:
+                incomplete.args = (*incomplete.args, f"session-directory cleanup failed: {failure!r}")
+                failure.__cause__ = incomplete.__cause__
+                raise incomplete from failure
+            raise
+        if completed is not None:
+            raise processes.ProcessIncomplete(
+                completed.stdout.encode(), completed.stderr.encode(), failure
+            ) from failure
+        raise
     if completed.timed_out:
         return Answer(None, None, completed.stdout, "session timed out; partial output retained and cost unknown")
     try:

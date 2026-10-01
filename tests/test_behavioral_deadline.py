@@ -178,6 +178,74 @@ class EffectDeadlineTest(unittest.TestCase):
                 child.send_signal.assert_called_once_with(signal.SIGINT)
                 force.assert_called_once_with(777, signal.SIGKILL)
 
+    def test_ordinary_native_cleanup_uncertainty_preserves_output_home_and_halts_continuation(self) -> None:
+        for communication_failure in (None, OSError("initial communication failed")):
+            for code, diagnostic in (
+                (0, b"in-process app-server shutdown failed: fixture"),
+                (0, b"thread/unsubscribe failed during shutdown: fixture"),
+                (-signal.SIGTERM, b"signal termination"),
+            ):
+                with self.subTest(code=code, diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    source = root / "auth.json"
+                    source.write_bytes(b"{}")
+                    child = MagicMock()
+                    child.pid, child.returncode = 777, code
+                    child.communicate.side_effect = (
+                        [(b"retained native output", diagnostic)]
+                        if communication_failure is None
+                        else [communication_failure, (b"retained native output", diagnostic)]
+                    )
+                    continuation = MagicMock()
+                    with (
+                        patch.object(processes.subprocess, "Popen", return_value=child),
+                        patch.object(credentials, "settle") as settle,
+                        self.assertRaises(processes.CleanupUnconfirmed) as failure,
+                        credentials.isolated_home(source, root, processes.Window(None)) as home,
+                    ):
+                        (home.path / "auth.json").write_bytes(b'{"refreshed":true}')
+                        codex_driver.run_turn(
+                            home.path, root, None, "controlled", root / "turn.jsonl", processes.Window(None)
+                        )
+                        continuation()
+                    self.assertEqual("retained native output", failure.exception.stdout)
+                    self.assertEqual(diagnostic.decode(), failure.exception.stderr)
+                    self.assertEqual("retained native output", (root / "turn.jsonl").read_text())
+                    self.assertEqual(diagnostic.decode(), (root / "turn.stderr").read_text())
+                    self.assertTrue(home.path.exists())
+                    self.assertIsNone(home.settlement)
+                    self.assertEqual(b"{}", source.read_bytes())
+                    settle.assert_not_called()
+                    continuation.assert_not_called()
+                    self.assertIs(communication_failure, failure.exception.__cause__)
+                    if communication_failure is None:
+                        child.send_signal.assert_not_called()
+                    else:
+                        child.send_signal.assert_called_once_with(signal.SIGINT)
+
+    def test_ordinary_confirmed_native_failure_and_other_tools_still_return(self) -> None:
+        for tool, code, diagnostic in (
+            (processes.Tool.CODEX, 0, b""),
+            (processes.Tool.CODEX, 1, b"ordinary turn failure"),
+            (processes.Tool.GIT, -signal.SIGTERM, b"in-process app-server shutdown failed"),
+        ):
+            with self.subTest(tool=tool, code=code):
+                child = MagicMock()
+                child.pid, child.returncode = 777, code
+                child.communicate.return_value = (b"output", diagnostic)
+                with patch.object(processes.subprocess, "Popen", return_value=child):
+                    result = processes.run_tool(
+                        tool,
+                        [],
+                        cwd=Path(),
+                        environment={},
+                        stdin=None,
+                        timeout_seconds=300,
+                        window=processes.Window(None),
+                    )
+                self.assertEqual(processes.Completed(code, "output", diagnostic.decode(), False), result)
+                child.send_signal.assert_not_called()
+
     def test_busy_credential_lock_observes_the_same_deadline_before_copying_a_login(self) -> None:
         with (
             tempfile.TemporaryDirectory() as directory,
@@ -575,6 +643,117 @@ class EvidenceFailureTest(unittest.TestCase):
                 self.assertFalse(accounting.main_usage_complete)
                 self.assertFalse(home.path.exists())
                 self.assertEqual(credentials.CredentialSettlement.UNCHANGED, home.settlement)
+
+
+class ProbeCompletionTest(unittest.TestCase):
+    def test_timeout_in_either_required_turn_keeps_probe_incomplete_and_blocks_target_work(self) -> None:
+        usage = codex_driver.Usage(10, 0, 0, 2, 0)
+        rollout = (
+            "\n".join(
+                (
+                    '{"type":"turn_context","payload":{"turn_id":"probe-turn","model":"gpt-6-sol"}}',
+                    msgspec.json.encode(
+                        {
+                            "type": "token_usage_record",
+                            "payload": codex_driver.UsageRecord("probe-thread", "probe-turn", "response", usage),
+                        }
+                    ).decode(),
+                )
+            )
+            + "\n"
+        )
+        for timeout_turn in (1, 2, None):
+            with self.subTest(timeout_turn=timeout_turn), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "auth.json"
+                source.write_bytes(b"{}")
+                layout = Layout(root / "probe-out")
+                budget = spend.Budget(layout, 120, processes.Window(None), True)
+                evaluated = ExportRecord(
+                    schema="pinboard-behavioral-export/v1",
+                    commit="0" * 40,
+                    skills_sha256="0" * 64,
+                    plugin_root="/plugin",
+                )
+                context = codex_driver.LoadedContext([], "sandbox", "on-request", [], "context")
+                turns = [
+                    (
+                        processes.Completed(0, "", "", index == timeout_turn),
+                        codex_driver.TurnReading(
+                            "probe-thread",
+                            ["OK"],
+                            usage,
+                            [],
+                            False,
+                            False,
+                            [] if index == 1 else ["pinboard.pinboard_overview"],
+                            [],
+                        ),
+                    )
+                    for index in (1, 2)
+                ]
+                with (
+                    patch.object(probe, "require_codex_world_location"),
+                    patch.object(probe.world, "create_project"),
+                    patch.object(probe.world, "init_board"),
+                    patch.object(codex_driver, "write_config"),
+                    patch.object(codex_driver, "loaded_context", return_value=context),
+                    patch.object(codex_driver, "codex_version", return_value="controlled"),
+                    patch.object(codex_driver, "isolation_findings", return_value=[]),
+                    patch.object(probe, "served_tools", return_value=[]),
+                    patch.object(codex_driver, "run_turn", side_effect=turns) as run_turn,
+                    patch.object(codex_driver, "rollout_text", return_value=rollout),
+                    patch.object(credentials, "exclusive_codex_session", return_value=nullcontext()),
+                ):
+                    observed = probe.probe_codex(
+                        layout, budget, evaluated, "controlled", "gpt-6-sol", "high", root / "worlds", source
+                    )
+                assert observed is not None
+                self.assertEqual(timeout_turn or 2, run_turn.call_count)
+                self.assertEqual(timeout_turn is None, observed.passed)
+                self.assertEqual(codex_driver.turn_cost("gpt-6-sol", usage), observed.cost_usd)
+                accounting = msgspec.json.decode(
+                    (layout.probe_file("controlled").parent / "accounting.json").read_bytes(), type=CodexAccounting
+                )
+                self.assertEqual(timeout_turn is None, accounting.main_usage_complete)
+                self.assertEqual(
+                    observed, msgspec.json.decode(layout.probe_file("controlled").read_bytes(), type=ProbeRecord)
+                )
+                if timeout_turn is None:
+                    self.assertEqual([], observed.findings)
+                    self.assertEqual("probe-thread", run_turn.call_args.args[2])
+                    continue
+                self.assertTrue(any(f"turn {timeout_turn} timed out" in finding for finding in observed.findings))
+                command = cli.CoverageCodex(
+                    root,
+                    "0" * 40,
+                    root / "export",
+                    Path("evals/behavioral/data/scenario-sets/s13-s17.json"),
+                    "candidate",
+                    1,
+                    100,
+                    "gpt-6-sol",
+                    "high",
+                    root / "coverage-out",
+                    root / "worlds",
+                    120,
+                    True,
+                )
+                with (
+                    patch.object(runner, "require_codex_world_location"),
+                    patch.object(export, "export_revision", return_value=evaluated),
+                    patch.object(cli.probe, "probe_codex", return_value=observed),
+                    patch.object(runner, "run_codex") as target,
+                    patch.object(cli, "score_pending") as score,
+                    patch.object(cli, "assess_pending") as assess,
+                ):
+                    self.assertEqual(2, cli.coverage_codex(command))
+                target.assert_not_called()
+                score.assert_not_called()
+                assess.assert_not_called()
+                result = msgspec.json.decode((command.out / "coverage.json").read_bytes(), type=CoverageResult)
+                self.assertEqual("incomplete", result.status)
+                self.assertIn("isolation probe did not pass", result.reason)
 
 
 class ClaudeCompatibilityTest(unittest.TestCase):

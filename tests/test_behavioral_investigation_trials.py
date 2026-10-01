@@ -4,10 +4,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from evals.behavioral import codex_driver, investigation_trials, processes, spend
+from evals.behavioral import codex_driver, investigation, investigation_trials, oneshot, processes, spend
 from evals.behavioral.layout import Layout
-from evals.behavioral.records import CodexAccounting, InvestigationRunRecord, write_new
+from evals.behavioral.records import CodexAccounting, ExportRecord, InvestigationRunRecord, write_new
 
 
 class InvestigationTrialTests(unittest.TestCase):
@@ -65,6 +66,47 @@ class InvestigationTrialTests(unittest.TestCase):
         self.assertTrue(investigation_trials.saved_evidence_read(read))
         self.assertFalse(investigation_trials.saved_evidence_read(read.replace('"exit_code": 0', '"exit_code": 1')))
         self.assertFalse(investigation_trials.saved_evidence_read(read.replace("cat inquiry/evidence.json", "ls inquiry")))
+
+    def test_busy_codex_lock_leaves_no_started_run_or_unknown_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layout = Layout(root / "out")
+            exported = ExportRecord("pinboard-behavioral-export/v1", "0" * 40, "0" * 64, str(root))
+            with (
+                patch.object(investigation_trials.runner, "require_codex_world_location"),
+                patch.object(
+                    investigation_trials.credentials,
+                    "exclusive_codex_session",
+                    side_effect=TimeoutError("another evaluation owns the lock"),
+                ),
+                self.assertRaises(TimeoutError),
+            ):
+                investigation_trials.run(
+                    layout,
+                    spend.Budget(layout, 15, processes.Window(None), False),
+                    exported,
+                    investigation.DATA / "sets" / "tuning.json",
+                    "urgent-tuning",
+                    "ordinary",
+                    1,
+                    root / "worlds",
+                )
+            self.assertFalse((layout.root / "investigations").exists())
+            self.assertEqual([], spend.items(layout))
+
+    def test_invalid_assessor_cost_is_unknown_and_blocks_further_paid_work(self) -> None:
+        for payload in (
+            '{"is_error":false,"result":"ok"}',
+            '{"is_error":false,"total_cost_usd":-0.01,"result":"ok"}',
+        ):
+            with self.subTest(payload=payload), patch.object(
+                oneshot.processes,
+                "run_tool",
+                return_value=processes.Completed(0, payload, "", False),
+            ):
+                answer = oneshot.ask("prompt", "claude-opus-5-5", processes.Window(None))
+                self.assertIsNone(answer.cost_usd)
+                self.assertIsNotNone(answer.problem)
 
 
 if __name__ == "__main__":

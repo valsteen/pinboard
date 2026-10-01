@@ -70,6 +70,21 @@ def items(layout: Layout) -> list[Item]:
         Item(Category.SUBSTANCE_ASSESSMENT, record.assessor_model, record.cost_usd or 0.0, record.cost_usd is None)
         for record in layout.assessments()
     )
+    recorded.extend(
+        Item(
+            Category.CODEX_AGENT_RUN,
+            record.arm,
+            record.accounting.main_known_cost_usd if record.accounting is not None else 0.0,
+            record.accounting is None
+            or not record.accounting.main_usage_complete
+            or bool(record.accounting.reviewer_usage),
+        )
+        for record in layout.investigation_runs()
+    )
+    recorded.extend(
+        Item(Category.SUBSTANCE_ASSESSMENT, record.assessor_model, record.cost_usd or 0.0, record.cost_usd is None)
+        for record in layout.investigation_assessments()
+    )
     for probe in layout.probes():
         file = layout.probe_file(probe.name).parent / "accounting.json"
         if file in accounting_records:
@@ -115,6 +130,12 @@ def report(layout: Layout) -> str:
         )
     accounting = [a for _, a in layout.codex_accounting()]
     reviewers = {entry.thread_id: entry for a in accounting for entry in a.reviewer_usage}
+    reviewers.update(
+        (entry.thread_id, entry)
+        for trial in layout.investigation_runs()
+        if trial.accounting is not None
+        for entry in trial.accounting.reviewer_usage
+    )
     if reviewers or main_usage_unknown(layout):
         lines.append(f"known-priced total\t{len(recorded)}\t{total(recorded):.4f}")
         for thread, usage in sorted(reviewers.items()):

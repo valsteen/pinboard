@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 
 import msgspec
@@ -86,6 +87,8 @@ def ask(prompt: str, model: str, window: processes.Window) -> Answer:
         return Answer(
             None, None, completed.stdout, f"no decodable claude result: {error}; {completed.stderr.strip()}"[:2000]
         )
+    if not isfinite(result.total_cost_usd) or result.total_cost_usd < 0:
+        return Answer(None, None, completed.stdout, "the claude result has invalid cost")
     if result.is_error:
         return Answer(result.total_cost_usd, None, completed.stdout, "the claude session reported an error")
     try:

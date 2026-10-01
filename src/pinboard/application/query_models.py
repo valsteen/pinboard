@@ -39,6 +39,14 @@ class ProjectOverviewFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class LivePortfolioFacts:
+    """Live items with direct dependency reasons and open attempts; no authority, receipts, or artifacts."""
+
+    snapshot: LedgerSnapshot
+    proposals: tuple[stored_state.StoredProposal, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class DecisionScope:
     """Exact persisted relationships whose current facts can affect one decision."""
 

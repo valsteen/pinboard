@@ -845,6 +845,14 @@ def project_current_overview(facts: query_models.ProjectOverviewFacts, now: date
     )
 
 
+def project_live_portfolio(
+    facts: query_models.LivePortfolioFacts, now: datetime
+) -> tuple[query_models.OverviewItem, ...]:
+    """Project live items for generated presentations, which never render preparation authority."""
+
+    return project_current_overview(query_models.ProjectOverviewFacts(facts.snapshot, facts.proposals, ()), now).items
+
+
 def project_item_overview(facts: query_models.ItemOverviewFacts, now: datetime) -> query_models.OverviewItem:
     """Project one live item from its exact view relationships."""
 

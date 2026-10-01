@@ -1,8 +1,9 @@
 """Read accepted brief content and refresh replaceable generated views.
 
 An ordinary refresh reads only facts and accepted brief bytes named by the
-committed effect. Explicit rebuild reads the complete declared projection and
-reconciles its generated files. SQLite and accepted artifacts remain authoritative.
+committed effect, plus the live portfolio for the two board projections. Explicit
+rebuild reads the complete declared projection and reconciles its generated files.
+SQLite and accepted artifacts remain authoritative.
 """
 
 from collections.abc import Mapping
@@ -46,7 +47,7 @@ def refresh(
                 "Run 'pinboard views rebuild'.",
             ),
         )
-    return refresh_file_views(facts, durable.work_root, attempt_briefs)
+    return refresh_file_views(facts, durable.work_root, attempt_briefs, store, now)
 
 
 def refresh_effect(
@@ -72,4 +73,4 @@ def rebuild(durable: DurableRoots, store: ports.GeneratedViewSetReader, now: dat
                 "Resolve the accepted work-brief problem and run 'pinboard views rebuild' again.",
             ),
         )
-    return rebuild_file_views(facts, durable.work_root, attempt_briefs)
+    return rebuild_file_views(facts, durable.work_root, attempt_briefs, store, now)

@@ -436,6 +436,8 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                 self.assertEqual("Revised while paused", self.item_leaf_after_repair_title(fixture))
                 warning = self.json_object(revised["warning"])
                 self.assertIn(f"Transition receipt {history_id} ", str(warning["message"]))
+                board = (fixture.work / "views" / "board.md").read_text(encoding="utf-8")
+                self.assertIn("[Revised while paused](items/work-a.md) `work-a` (paused)", board)
 
                 validated, validation, validation_error = self.run_cli(*fixture.common, "validate", "--json")
                 self.assertEqual(10, validated, f"{validation}\n{validation_error}")

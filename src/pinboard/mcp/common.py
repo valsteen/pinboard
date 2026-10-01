@@ -254,7 +254,7 @@ def _refresh_affected_views(
                 "Run 'pinboard views rebuild'.",
             ),
         )
-    return refresh_facts(facts, durable.work_root, briefs)
+    return refresh_facts(facts, durable.work_root, briefs, store, now)
 
 
 def _artifact_reference_json(reference: stored_state.ArtifactReference) -> dict[str, JsonValue]:

@@ -79,7 +79,9 @@ def initialize_work_state(
                 database_path,
                 rendered_attempt_briefs,
             )
-        rebuild_result = rebuild_facts(projection_facts, roots.work_root, rendered_attempt_briefs)
+        rebuild_result = rebuild_facts(
+            projection_facts, roots.work_root, rendered_attempt_briefs, store, operation_time
+        )
         if rebuild_result.warning is not None:
             raise FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, rebuild_result.warning.message)
     except (StorageError, ArtifactError, FileIOError) as error:

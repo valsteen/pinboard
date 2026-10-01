@@ -421,11 +421,18 @@ def _work_item_record(
 
 
 def _attempt_records(
-    connection: sqlite3.Connection, attempts: Iterable[_AttemptRow | _AttemptLineageRow]
+    connection: sqlite3.Connection,
+    attempts: Iterable[_AttemptRow | _AttemptLineageRow],
+    *,
+    include_pause_reasons: bool,
 ) -> tuple[work_models.AttemptRecord, ...]:
     selected = tuple(attempts)
-    pause_reasons = read_pause_reasons(
-        connection, ((attempt.attempt_id, attempt.state, attempt.subject_revision) for attempt in selected)
+    pause_reasons = (
+        read_pause_reasons(
+            connection, ((attempt.attempt_id, attempt.state, attempt.subject_revision) for attempt in selected)
+        )
+        if include_pause_reasons
+        else {}
     )
     return tuple(
         work_models.AttemptRecord(
@@ -470,8 +477,12 @@ def read_current_snapshot(
     *,
     include_proposals: bool,
     include_action_authorities: bool,
+    include_pause_reasons: bool,
 ) -> LedgerSnapshot:
-    """Return only facts whose current meaning can affect ordinary project decisions."""
+    """Return only facts whose current meaning can affect ordinary project decisions.
+
+    Omitting pause reasons leaves every attempt's reason absent and reads no transition receipt.
+    """
 
     project = _project(connection)
     item_rows = tuple(
@@ -618,7 +629,7 @@ def read_current_snapshot(
             _work_item_record(item, tuple(dependencies[item.item_id]), attempts_by_item.get(item.item_id))
             for item in item_rows
         ),
-        attempts=_attempt_records(connection, attempt_rows),
+        attempts=_attempt_records(connection, attempt_rows, include_pause_reasons=include_pause_reasons),
         artifacts=(),
         proposals=tuple(
             _proposal_record(
@@ -945,7 +956,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
             _work_item_record(item, tuple(dependencies[item.item_id]), attempts_by_item.get(item.item_id))
             for item in item_rows.values()
         ),
-        attempts=_attempt_records(connection, attempts.values()),
+        attempts=_attempt_records(connection, attempts.values(), include_pause_reasons=True),
         artifacts=tuple(artifacts),
         proposals=proposal_records,
         subject_revisions=tuple(

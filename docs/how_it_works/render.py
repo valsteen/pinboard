@@ -111,7 +111,7 @@ At the repository decision, you choose what happens to the reviewed change. When
 
 ## The same workflow, viewed through the codebase
 
-Saving a proposal follows the story above. The MCP boundary decodes the proposal; the application reads current facts inside a write transaction; the domain decision gives the ready item the proposal's identity and accepted definition. SQLite commits those facts together, then the file adapter refreshes the new item view. The result reports the saved item and its position. No attempt is created by that path.
+Saving a proposal follows the story above. The MCP boundary decodes the proposal; the application reads current facts inside a write transaction; the domain decision gives the ready item the proposal's identity and accepted definition. SQLite commits those facts together, then the file adapter refreshes the new item view and the generated board list and page. The result reports the saved item and its position. No attempt is created by that path.
 
 Starting a preparation claim through MCP is one representative path through the same design. The interface decodes an exact request and samples operation time. Application code opens the transaction, reads the current definition and authority facts, and selects the claim operation. A pure domain decision accepts or rejects that requested change without reading files or issuing SQL. The application projects an accepted decision into a targeted mutation; the SQLite adapter commits it, and the filesystem adapter refreshes replaceable views before the interface presents the result.
 

@@ -659,6 +659,7 @@ class SQLiteWorkStore:
                     now,
                     include_proposals=include_proposals,
                     include_action_authorities=True,
+                    include_pause_reasons=True,
                 )
         finally:
             connection.close()
@@ -740,7 +741,11 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 snapshot = read_current_snapshot(
-                    connection, now, include_proposals=False, include_action_authorities=False
+                    connection,
+                    now,
+                    include_proposals=False,
+                    include_action_authorities=False,
+                    include_pause_reasons=True,
                 )
                 preparations = read_preparation_authority_statuses(
                     connection, tuple(item.work_item_id for item in snapshot.items)
@@ -752,6 +757,23 @@ class SQLiteWorkStore:
                         status for item in snapshot.items if (status := preparations.get(item.work_item_id)) is not None
                     ),
                 )
+        finally:
+            connection.close()
+
+    def read_live_portfolio(self, now: datetime) -> query_models.LivePortfolioFacts:
+        """Read live items, their direct dependencies and reasons, and open attempts for the board."""
+
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                snapshot = read_current_snapshot(
+                    connection,
+                    now,
+                    include_proposals=False,
+                    include_action_authorities=False,
+                    include_pause_reasons=False,
+                )
+                return query_models.LivePortfolioFacts(snapshot, _read_overview_proposals(connection, snapshot))
         finally:
             connection.close()
 

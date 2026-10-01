@@ -136,6 +136,8 @@ class WorkStore(Protocol):
 
     def read_project_overview(self, now: datetime) -> query_models.ProjectOverviewFacts: ...
 
+    def read_live_portfolio(self, now: datetime) -> query_models.LivePortfolioFacts: ...
+
     def read_generated_view_facts(
         self,
         work_item_ids: tuple[WorkItemId, ...],
@@ -206,7 +208,13 @@ class ParallelPreviewReader(Protocol):
     ) -> query_models.ParallelPreviewFacts | None: ...
 
 
-class GeneratedViewReader(Protocol):
+class LivePortfolioReader(Protocol):
+    """Current live-portfolio facts without retained history, terminal bodies, or artifacts."""
+
+    def read_live_portfolio(self, now: datetime) -> query_models.LivePortfolioFacts: ...
+
+
+class GeneratedViewReader(LivePortfolioReader, Protocol):
     def read_generated_view_facts(
         self,
         work_item_ids: tuple[WorkItemId, ...],
@@ -216,7 +224,7 @@ class GeneratedViewReader(Protocol):
     ) -> query_models.GeneratedViewFacts: ...
 
 
-class GeneratedViewSetReader(Protocol):
+class GeneratedViewSetReader(LivePortfolioReader, Protocol):
     """Project-wide generated-view facts without unrelated stored state."""
 
     def read_all_generated_view_facts(self, now: datetime) -> query_models.GeneratedViewFacts: ...

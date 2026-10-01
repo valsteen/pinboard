@@ -43,7 +43,7 @@ class GeneratedViewsTest(unittest.TestCase):
         state = store.validated_snapshot()
         facts = store.read_all_generated_view_facts(SQLITE_NOW)
 
-        result = rebuild_facts(facts, work_root, {})
+        result = rebuild_facts(facts, work_root, {}, store, SQLITE_NOW)
 
         self.assertIsNone(result.warning)
         for selector in (
@@ -123,6 +123,8 @@ class GeneratedViewsTest(unittest.TestCase):
                 store.read_generated_view_facts((), (), (receipt.history_id,), SQLITE_NOW),
                 work_root,
                 {},
+                store,
+                SQLITE_NOW,
             )
 
         self.assertEqual(12, result.database_revision)
@@ -138,7 +140,7 @@ class GeneratedViewsTest(unittest.TestCase):
         (view_root / "queue.md").write_text("legacy queue\n", encoding="utf-8")
         (view_root / "history.md").write_text("legacy history\n", encoding="utf-8")
 
-        first = rebuild_facts(store.read_all_generated_view_facts(SQLITE_NOW), work_root, {})
+        first = rebuild_facts(store.read_all_generated_view_facts(SQLITE_NOW), work_root, {}, store, SQLITE_NOW)
 
         self.assertIsNone(first.warning)
         self.assertFalse((view_root / "queue.md").exists())
@@ -146,7 +148,7 @@ class GeneratedViewsTest(unittest.TestCase):
         paths = tuple(path for path in view_root.rglob("*.md") if path.is_file())
         before = {path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns) for path in paths}
 
-        second = rebuild_facts(store.read_all_generated_view_facts(SQLITE_NOW), work_root, {})
+        second = rebuild_facts(store.read_all_generated_view_facts(SQLITE_NOW), work_root, {}, store, SQLITE_NOW)
 
         self.assertIsNone(second.warning)
         self.assertEqual(
@@ -181,7 +183,7 @@ class GeneratedViewsTest(unittest.TestCase):
             build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(roots))
         )
 
-        result = rebuild_facts(facts, roots.work_root, attempt_briefs)
+        result = rebuild_facts(facts, roots.work_root, attempt_briefs, store, SQLITE_NOW)
 
         self.assertIsNone(result.warning)
         path = roots.work_root / "views" / "attempts" / "work-a-1.md"
@@ -194,6 +196,8 @@ class GeneratedViewsTest(unittest.TestCase):
             facts,
             roots.work_root,
             expect_work_brief_success(build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(roots))),
+            store,
+            SQLITE_NOW,
         )
         self.assertEqual(text, path.read_text(encoding="utf-8"))
 

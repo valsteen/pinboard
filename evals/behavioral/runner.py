@@ -195,6 +195,7 @@ def claude_run(plan: RunPlan, scenario: Scenario, key: RunKey) -> RunRecord:
     version = claude_driver.claude_version()
     session = ClaudeSession.start(Path(plan.export.plugin_root), plan.model, state.world_root() / "tally")
     outcome: RunOutcome = Completed()
+    interruption: BaseException | None = None
     try:
         built, state.seeded = world.build_world(
             state.world_root(),
@@ -209,20 +210,17 @@ def claude_run(plan: RunPlan, scenario: Scenario, key: RunKey) -> RunRecord:
     except (SeedFailure, GitError) as failure:
         outcome = Failed(stage="world" if not state.turns else f"after turn {len(state.turns)}", reason=str(failure))
     except (claude_driver.StreamError, msgspec.DecodeError, subprocess.SubprocessError, OSError) as failure:
+        if isinstance(failure, (processes.ProcessIncomplete, processes.CleanupUnconfirmed)):
+            interruption = failure
         outcome = Failed(stage=f"turn {len(state.turns) + 1}", reason=str(failure) or type(failure).__name__)
     except BaseException as failure:
-        state.finish(
-            Runtime.CLAUDE_CODE,
-            version,
-            session.details(),
-            session.loaded_context(),
-            session.observed_host_ids,
-            Failed(stage="harness", reason=repr(failure)),
-        )
-        raise
+        outcome = Failed(stage="harness", reason=repr(failure))
+        interruption = failure
     record = state.finish(
         Runtime.CLAUDE_CODE, version, session.details(), session.loaded_context(), session.observed_host_ids, outcome
     )
+    if interruption is not None:
+        raise interruption
     if isinstance(outcome, Stopped) and outcome.reason.startswith(ISOLATION_FAILED):
         raise IsolationBreachError(f"{key.display()}: {outcome.reason}; no further Claude Code run starts")
     return record
@@ -232,7 +230,38 @@ def claude_turns(state: RunState, built: world.World, session: ClaudeSession) ->
     """Send every scripted turn; a turn Claude reports as failed, or an isolation finding, ends the run unscored."""
     for index, turn in enumerate(state.scenario.turns, start=1):
         state.run_hook(built, index)
-        sent = session.turn(index, turn.human, turn.before, state.directory / f"turn-{index}.jsonl")
+        started = now()
+        raw_path = state.directory / f"turn-{index}.jsonl"
+        try:
+            sent = session.turn(index, turn.human, turn.before, raw_path)
+        except (processes.ProcessIncomplete, processes.CleanupUnconfirmed) as failure:
+            state.turns.append(
+                TurnEvidence(
+                    index=index,
+                    human=turn.human,
+                    hook_ran=turn.before,
+                    session_id=session.session_id,
+                    final_reply="",
+                    commentary=[],
+                    started_at=started,
+                    finished_at=now(),
+                    cost_usd=None,
+                    uncached_input_tokens=None,
+                    cached_input_tokens=None,
+                    cache_write_input_tokens=None,
+                    output_tokens=None,
+                    reasoning_output_tokens=None,
+                    permission_denials=[],
+                )
+            )
+            try:
+                raw_path.write_text(failure.stdout)
+                raw_path.with_suffix(".stderr").write_text(failure.stderr)
+            except BaseException as evidence_failure:
+                failure.args = (*failure.args, f"Claude partial-output capture failed: {evidence_failure!r}")
+                evidence_failure.__cause__ = failure.__cause__
+                raise failure from evidence_failure
+            raise
         state.turns.append(sent.evidence)
         state.snapshot(built)
         if index == 1 and (findings := session.isolation_findings()):

@@ -7,7 +7,7 @@ import unittest
 from collections.abc import AsyncGenerator, Generator
 from contextlib import AbstractContextManager, asynccontextmanager, contextmanager, nullcontext
 from pathlib import Path
-from typing import Never, TextIO
+from typing import Never, TextIO, override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import msgspec
@@ -16,6 +16,7 @@ from mcp_types import CallToolResult
 
 from evals.behavioral import (
     board,
+    claude_driver,
     cli,
     codex_driver,
     credentials,
@@ -38,7 +39,9 @@ from evals.behavioral.records import (
     Completed,
     CoverageResult,
     ExportRecord,
+    Failed,
     LabelMapping,
+    ObservedState,
     ProbeRecord,
     RunKey,
     RunRecord,
@@ -53,9 +56,14 @@ from evals.behavioral.records import (
     TurnSubstance,
     write_new,
 )
+from evals.behavioral.scenarios import RegisteredSet, load_set
 
 
 class EffectDeadlineTest(unittest.TestCase):
+    @override
+    def setUp(self) -> None:
+        self.enterContext(patch.object(processes, "executable", return_value="controlled-cli"))
+
     def test_expired_window_prevents_subprocess_start_and_shortens_an_inflight_wait(self) -> None:
         window = processes.Window(123)
         with (
@@ -415,6 +423,10 @@ class EffectDeadlineTest(unittest.TestCase):
 
 
 class EvidenceFailureTest(unittest.TestCase):
+    @override
+    def setUp(self) -> None:
+        self.enterContext(patch.object(processes, "executable", return_value="controlled-cli"))
+
     def test_raw_write_failure_preserves_cleanup_uncertainty_and_the_private_home(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -565,7 +577,110 @@ class EvidenceFailureTest(unittest.TestCase):
                 self.assertEqual(credentials.CredentialSettlement.UNCHANGED, home.settlement)
 
 
+class ClaudeCompatibilityTest(unittest.TestCase):
+    @override
+    def setUp(self) -> None:
+        self.enterContext(patch.object(processes, "executable", return_value="controlled-cli"))
+
+    def test_started_human_interruption_halts_queued_runs_and_persists_unknown_turn_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            layout = Layout(root / "out")
+            registered = load_set(Path("evals/behavioral/data/scenario-sets/s13-s17.json"))
+            selected = RegisteredSet(registered.name, registered.scenarios[:2], registered.targeted_rules)
+            evaluated = ExportRecord(
+                schema="pinboard-behavioral-export/v1",
+                commit="0" * 40,
+                skills_sha256="0" * 64,
+                plugin_root="/controlled-plugin",
+            )
+            plan = runner.RunPlan(
+                layout, root / "worlds", evaluated, "candidate", selected, 1, 1, "controlled", processes.Window(None)
+            )
+            budget = spend.Budget(layout, 120, plan.window, False)
+            cause = KeyboardInterrupt("human interruption")
+            child = MagicMock()
+            child.pid, child.returncode = 777, 0
+            child.communicate.side_effect = [cause, (b"paid partial", b"diagnostic")]
+            with (
+                patch.object(claude_driver, "claude_version", return_value="controlled"),
+                patch.object(runner.world, "build_world", return_value=(MagicMock(), [])),
+                patch.object(
+                    runner.world, "snapshot", return_value=ObservedState(name="state-0", text="controlled observation")
+                ),
+                patch.object(processes.subprocess, "Popen", return_value=child) as launched,
+                patch.object(processes.os, "killpg"),
+                self.assertRaises(processes.ProcessIncomplete) as failure,
+            ):
+                runner.run_claude(plan, budget, 1)
+            self.assertIs(cause, failure.exception.__cause__)
+            launched.assert_called_once()
+            records = list(Layout(layout.root).run_records())
+            self.assertEqual(1, len(records))
+            self.assertIsInstance(records[0].outcome, Failed)
+            self.assertEqual(1, len(records[0].turns))
+            self.assertIsNone(records[0].turns[0].cost_usd)
+            self.assertIsNone(records[0].turns[0].output_tokens)
+            self.assertEqual("paid partial", next(layout.root.rglob("turn-1.jsonl")).read_text())
+            self.assertTrue(spend.main_usage_unknown(layout))
+            self.assertIsNone(budget.reserve(spend.Category.CLAUDE_AGENT_RUN))
+
+    def test_partial_write_error_keeps_standalone_stop_and_writable_unknown_run_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            layout = Layout(root / "out")
+            registered = load_set(Path("evals/behavioral/data/scenario-sets/s13-s17.json"))
+            selected = RegisteredSet(registered.name, registered.scenarios[:2], registered.targeted_rules)
+            evaluated = ExportRecord(
+                schema="pinboard-behavioral-export/v1",
+                commit="0" * 40,
+                skills_sha256="0" * 64,
+                plugin_root="/controlled-plugin",
+            )
+            plan = runner.RunPlan(
+                layout, root / "worlds", evaluated, "candidate", selected, 1, 1, "controlled", processes.Window(None)
+            )
+            budget = spend.Budget(layout, 120, plan.window, False)
+            cause = KeyboardInterrupt("human interruption")
+            secondary = OSError("raw evidence unwritable")
+            child = MagicMock()
+            child.pid, child.returncode = 777, 0
+            child.communicate.side_effect = [cause, (b"paid partial", b"diagnostic")]
+            original_write = Path.write_text
+
+            def raw_unwritable(path: Path, text: str) -> int:
+                if path.name == "turn-1.jsonl":
+                    raise secondary
+                return original_write(path, text)
+
+            with (
+                patch.object(claude_driver, "claude_version", return_value="controlled"),
+                patch.object(runner.world, "build_world", return_value=(MagicMock(), [])),
+                patch.object(
+                    runner.world, "snapshot", return_value=ObservedState(name="state-0", text="controlled observation")
+                ),
+                patch.object(processes.subprocess, "Popen", return_value=child) as launched,
+                patch.object(processes.os, "killpg"),
+                patch.object(Path, "write_text", raw_unwritable),
+                self.assertRaises(processes.ProcessIncomplete) as failure,
+            ):
+                runner.run_claude(plan, budget, 1)
+            self.assertIs(secondary, failure.exception.__cause__)
+            self.assertIs(cause, secondary.__cause__)
+            self.assertEqual("paid partial", failure.exception.stdout)
+            launched.assert_called_once()
+            records = list(Layout(layout.root).run_records())
+            self.assertEqual(1, len(records))
+            self.assertIsNone(records[0].turns[0].cost_usd)
+            self.assertTrue(spend.main_usage_unknown(layout))
+            self.assertIsNone(budget.reserve(spend.Category.CLAUDE_AGENT_RUN))
+
+
 class PaidInterruptionTest(unittest.TestCase):
+    @override
+    def setUp(self) -> None:
+        self.enterContext(patch.object(processes, "executable", return_value="controlled-cli"))
+
     def test_started_scorer_and_assessor_preserve_partial_output_and_unknown_usage(self) -> None:
         for owner in ("scorer", "assessor"):
             with self.subTest(owner=owner), tempfile.TemporaryDirectory() as directory:

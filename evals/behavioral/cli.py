@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from evals.behavioral import decision, export, probe, processes, runner, scoring, spend, substance
+from evals.behavioral import decision, export, investigation, probe, processes, runner, scoring, spend, substance
 from evals.behavioral.credentials import default_source
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
@@ -112,6 +112,13 @@ class Spend:
 
 
 @dataclass(frozen=True)
+class InvestigationWorld:
+    scenario_set: Path
+    case_id: str
+    out: Path
+
+
+@dataclass(frozen=True)
 class CoverageCodex:
     source: Path
     revision: str
@@ -128,10 +135,22 @@ class CoverageCodex:
     accept_unknown_reviewer_price: bool
 
 
-type Command = Export | RunClaude | RunCodex | ProbeCodex | Score | Assess | Compare | Report | Spend | CoverageCodex
+type Command = (
+    Export
+    | RunClaude
+    | RunCodex
+    | ProbeCodex
+    | Score
+    | Assess
+    | Compare
+    | Report
+    | Spend
+    | CoverageCodex
+    | InvestigationWorld
+)
 
 
-def parser() -> argparse.ArgumentParser:
+def parser() -> argparse.ArgumentParser:  # noqa: PLR0915
     root = argparse.ArgumentParser(prog="python -m evals.behavioral", description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
 
@@ -196,6 +215,12 @@ def parser() -> argparse.ArgumentParser:
 
     spending = commands.add_parser("spend", help="itemize and total recorded spend")
     spending.add_argument("--out", type=Path, required=True)
+    investigating = commands.add_parser(
+        "investigation-world", help="build one registered fictional investigation world"
+    )
+    investigating.add_argument("--scenario-set", type=Path, required=True)
+    investigating.add_argument("--case", required=True)
+    investigating.add_argument("--out", type=Path, required=True)
     return root
 
 
@@ -245,6 +270,8 @@ def decode(arguments: Sequence[str]) -> Command:
             return Report(options.out, options.scenario_set, options.variant)
         case "spend":
             return Spend(options.out)
+        case "investigation-world":
+            return InvestigationWorld(options.scenario_set, options.case, options.out)
         case "coverage-codex":
             if options.runs_per_target > 6 or options.maximum_seconds > 10800 or not 0 < options.cap_usd <= 120:
                 parser().error("coverage permits at most six runs per target, 10800 seconds and 120 known-priced USD")
@@ -341,7 +368,7 @@ def run_plan(
     )
 
 
-def dispatch(command: Command) -> int:
+def dispatch(command: Command) -> int:  # noqa: C901, PLR0912
     match command:
         case Export(source=source, revision=revision, destination=destination):
             record = export.export_revision(source, revision, destination, processes.Window(None))
@@ -370,6 +397,13 @@ def dispatch(command: Command) -> int:
             return coverage_codex(c)
         case Spend(out=out):
             print(spend.report(Layout(out)), end="")
+        case InvestigationWorld(scenario_set=scenario_set, case_id=case_id, out=out):
+            _, cases = investigation.load_set(scenario_set)
+            selected = next((case for case in cases if case.id == case_id), None)
+            if selected is None:
+                parser().error(f"case {case_id} is not registered in {scenario_set}")
+            inquiry = investigation.build_world(out, selected, processes.Window(None))
+            print(f"built {selected.id} at {inquiry}")
         case _ as unreachable:
             raise AssertionError(unreachable)
     return 0

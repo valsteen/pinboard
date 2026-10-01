@@ -1,0 +1,11 @@
+{"schema":"pinboard-investigation-scenario/v1","id":"urgent-tuning","kind":"urgent","repositories":[
+{"name":"edge-api","commits":[{"message":"Initial routing","files":{"routing.md":"Checkout forwards to ledger. Retry once on 503.","deploy.txt":"2026-09-18 08:10Z edge r31"}},{"message":"Raise retry limit","files":{"routing.md":"Checkout forwards to ledger. Retry twice on 503.","deploy.txt":"2026-10-01 08:10Z edge r32"}}]},
+{"name":"ledger-api","commits":[{"message":"Queue baseline","files":{"queue.md":"Writer drains 60/s. Alert above depth 100.","deploy.txt":"2026-09-29 14:00Z ledger r77"}},{"message":"Add trace labels","files":{"trace.md":"Original and replayed requests have separate tags. No capacity change.","deploy.txt":"2026-09-30 11:00Z ledger r78"}}]}],
+"files":[
+{"path":"dashboards/checkout.md","text":"Window 08:05-08:25Z. p95 rose 420 to 1290 ms at 08:13Z; 503 rate 0.2% to 7%; writer queue 240 at 08:16Z. Partial dashboard inventory."},
+{"path":"metrics/requests.csv","text":"window,original,replayed,commits\n08:00-08:10,3000,60,2900\n08:10-08:20,3100,920,2950\n08:20-08:30,3050,1000,2970\n"},
+{"path":"logs/edge.log","text":"08:12:03Z id=c17 attempt=1 503\n08:12:04Z id=c17 attempt=2 503\n08:12:05Z id=c17 attempt=3 200\n"},
+{"path":"traces/sample.txt","text":"c17: edge 12ms; ledger queue 970ms; writer 40ms. c18: edge 9ms; ledger queue 920ms; writer 38ms. Sample only."},
+{"path":"transcripts/oncall.md","text":"08:18Z Lia: Could ledger r78 be the trigger?\n08:21Z Omar: r78 only added labels; I have not compared retries.\n08:24Z Lia: Bound diagnosis to 25 minutes; flag impact now."},
+{"path":"docs/inventory.md","text":"Known: edge log, queue dashboard, sampled traces. Inaccessible: full writer shard breakdown. Unlisted telemetry was not searched."}],
+"turns":[{"human":"Checkout is slow. Find the likely trigger within 25 minutes and tell me if I need to act now. Sources are read-only; save notes in the inquiry home.","mode":"start"},{"human":"I suspect ledger r78. What distinguishes that from edge retries?","mode":"continue"},{"human":"New session: recover only from saved inquiry notes. Give leadership a short update with checkable evidence and uncertainty.","mode":"fresh"}]}

@@ -372,6 +372,51 @@ class CodexAccounting(Record, frozen=True):
     reviewer_price_usd: None
 
 
+class InvestigationTurnRecord(Record, frozen=True):
+    index: int
+    human: str
+    mode: str
+    runtime_identity: str
+    final_reply: str
+    commentary: list[str]
+    cost_usd: Usd | None
+    input_tokens: int | None
+    output_tokens: int | None
+    duration_seconds: float
+    saved_evidence_read: bool
+    compaction_event: str | None
+    record_valid: bool | None
+
+
+class InvestigationRunRecord(Record, frozen=True):
+    schema: Literal["pinboard-investigation-run/v1"]
+    case_id: str
+    scenario_sha256: Sha256
+    set_sha256: Sha256
+    arm: str
+    arm_sha256: Sha256
+    export_commit: str
+    model: str
+    reasoning_effort: str
+    cli_version: str
+    started_at: str
+    finished_at: str
+    turns: list[InvestigationTurnRecord]
+    accounting: CodexAccounting | None
+    outcome: str
+    problem: str | None
+
+
+class InvestigationAssessmentRecord(Record, frozen=True):
+    schema: Literal["pinboard-investigation-assessment-session/v1"]
+    case_id: str
+    arm: str
+    index: int
+    assessor_model: str
+    cost_usd: Usd | None
+    problem: str | None
+
+
 class CoverageWindow(Record, frozen=True):
     schema: Literal["pinboard-behavioral-coverage-window/v1"]
     started_at: NonEmpty

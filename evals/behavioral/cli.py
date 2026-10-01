@@ -13,7 +13,20 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from evals.behavioral import decision, export, investigation, probe, processes, runner, scoring, spend, substance
+import msgspec
+
+from evals.behavioral import (
+    decision,
+    export,
+    investigation,
+    investigation_trials,
+    probe,
+    processes,
+    runner,
+    scoring,
+    spend,
+    substance,
+)
 from evals.behavioral.credentials import default_source
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
@@ -119,6 +132,18 @@ class InvestigationWorld:
 
 
 @dataclass(frozen=True)
+class InvestigationCodex:
+    export: Path
+    scenario_set: Path
+    case_id: str
+    arm: str
+    index: int
+    out: Path
+    worlds: Path
+    batch: str
+
+
+@dataclass(frozen=True)
 class CoverageCodex:
     source: Path
     revision: str
@@ -147,6 +172,7 @@ type Command = (
     | Spend
     | CoverageCodex
     | InvestigationWorld
+    | InvestigationCodex
 )
 
 
@@ -221,6 +247,15 @@ def parser() -> argparse.ArgumentParser:  # noqa: PLR0915
     investigating.add_argument("--scenario-set", type=Path, required=True)
     investigating.add_argument("--case", required=True)
     investigating.add_argument("--out", type=Path, required=True)
+    trial = commands.add_parser("investigation-codex", help="run one staged Luna-high investigation trial")
+    trial.add_argument("--export", type=Path, required=True)
+    trial.add_argument("--scenario-set", type=Path, required=True)
+    trial.add_argument("--case", required=True)
+    trial.add_argument("--arm", choices=("ordinary", "guidance", "structured"), required=True)
+    trial.add_argument("--index", type=positive, required=True)
+    trial.add_argument("--out", type=Path, required=True)
+    trial.add_argument("--worlds", type=Path, required=True)
+    trial.add_argument("--batch", required=True)
     return root
 
 
@@ -250,7 +285,7 @@ def positive(value: str) -> int:
     return number
 
 
-def decode(arguments: Sequence[str]) -> Command:
+def decode(arguments: Sequence[str]) -> Command:  # noqa: C901, PLR0912
     options = parser().parse_args(arguments)
     command: str = options.command
     match command:
@@ -272,6 +307,17 @@ def decode(arguments: Sequence[str]) -> Command:
             return Spend(options.out)
         case "investigation-world":
             return InvestigationWorld(options.scenario_set, options.case, options.out)
+        case "investigation-codex":
+            return InvestigationCodex(
+                options.export,
+                options.scenario_set,
+                options.case,
+                options.arm,
+                options.index,
+                options.out,
+                options.worlds,
+                options.batch,
+            )
         case "coverage-codex":
             if options.runs_per_target > 6 or options.maximum_seconds > 10800 or not 0 < options.cap_usd <= 120:
                 parser().error("coverage permits at most six runs per target, 10800 seconds and 120 known-priced USD")
@@ -404,9 +450,46 @@ def dispatch(command: Command) -> int:  # noqa: C901, PLR0912
                 parser().error(f"case {case_id} is not registered in {scenario_set}")
             inquiry = investigation.build_world(out, selected, processes.Window(None))
             print(f"built {selected.id} at {inquiry}")
+        case InvestigationCodex() as trial:
+            return run_investigation_codex(trial)
         case _ as unreachable:
             raise AssertionError(unreachable)
     return 0
+
+
+def run_investigation_codex(command: InvestigationCodex) -> int:
+    if not command.batch.isascii() or not command.batch.replace("-", "").isalnum():
+        raise ValueError("batch must contain only ASCII letters, numbers and hyphens")
+    layout = Layout(command.out)
+    recorded = spend.items(layout)
+    if spend.main_usage_unknown(layout) or any(a.reviewer_usage for _, a in layout.codex_accounting()):
+        raise ValueError("previous session cost is unknown; no paid trial may start")
+    marker = command.out / "batches" / f"{command.batch}.json"
+    if marker.is_file():
+        batch = msgspec.json.decode(marker.read_bytes(), type=investigation_trials.Batch)
+    else:
+        batch = investigation_trials.Batch(
+            schema="pinboard-investigation-batch/v1", start_usd=spend.total(recorded), cap_usd=15.0
+        )
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        write_new(marker, batch)
+    cap = min(120.0, batch.start_usd + batch.cap_usd)
+    budget = spend.Budget(layout, cap, processes.Window(None), False)
+    result = investigation_trials.run(
+        layout,
+        budget,
+        export.load_export(command.export),
+        command.scenario_set,
+        command.case_id,
+        command.arm,
+        command.index,
+        command.worlds,
+    )
+    if result is None:
+        print(f"reservation does not fit batch or aggregate headroom; {spend.report(layout)}", end="")
+        return 1
+    print(f"{result.case_id} {result.arm}: {result.outcome}; {spend.report(layout)}", end="")
+    return 0 if result.outcome == "completed" else 1
 
 
 def run_claude(command: RunClaude) -> int:

@@ -7,6 +7,7 @@ or an unready runtime is a typed seed failure (``SeedFailure``), because the rev
 
 import hashlib
 import io
+import shutil
 import tarfile
 from pathlib import Path
 from typing import Literal
@@ -68,6 +69,10 @@ def export_revision(source: Path, revision: str, destination: Path, window: proc
     archive = processes.git_archive(commit, cwd=source, window=window)
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
         bundle.extractall(plugin_root, filter="data")
+    # Evaluation fixtures and their tests are never part of an agent's plugin.
+    shutil.rmtree(plugin_root / "evals", ignore_errors=True)
+    shutil.rmtree(plugin_root / "tests", ignore_errors=True)
+    (plugin_root / "docs" / "investigation-focus-decision.md").unlink(missing_ok=True)
     prepare_runtime(plugin_root, window)
     record = ExportRecord(
         schema="pinboard-behavioral-export/v1",

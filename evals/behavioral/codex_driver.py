@@ -39,9 +39,11 @@ PERMISSION_PROFILE = "pinboard"
 APPROVAL_POLICY = "on-request"
 MARKETPLACE_FILE = Path(".agents") / "plugins" / "marketplace.json"
 PRICE_SOURCE = (
-    "OpenAI API standard list price, short context, per 1M tokens (https://developers.openai.com/api/docs/pricing, "
-    "retrieved 2026-09-29): gpt-6-sol input 2.00, cached input 0.20, cache writes 2.50, output 10.00 USD; Codex "
-    "reports input tokens including cached and cache-write tokens, and output tokens including reasoning tokens"
+    "OpenAI API standard list price per 1M tokens (https://developers.openai.com/api/docs/models/gpt-6-luna, "
+    "checked 2026-10-02): gpt-6-luna short-context input 0.10, cached 0.01, cache writes 0.125, output 0.50 USD; "
+    "prompts above 272K input tokens cost twice the input/cache rates and 1.5 times output. "
+    "A turn above that threshold uses the long-context rates for all its tokens as a conservative upper bound. "
+    "gpt-6-sol retains its recorded short-context prices. Output includes reasoning tokens."
 )
 DENIAL_PATTERN = re.compile(r"Operation not permitted|Read-only file system|Permission denied|sandbox", re.IGNORECASE)
 GIT_PATTERN = re.compile(
@@ -57,7 +59,12 @@ class Price:
     output: float
 
 
-PRICES_PER_MILLION = {"gpt-6-sol": Price(uncached_input=2.00, cache_write=2.50, cached_input=0.20, output=10.00)}
+PRICES_PER_MILLION = {
+    "gpt-6-sol": Price(uncached_input=2.00, cache_write=2.50, cached_input=0.20, output=10.00),
+    "gpt-6-luna": Price(uncached_input=0.10, cache_write=0.125, cached_input=0.01, output=0.50),
+}
+LUNA_LONG_CONTEXT = Price(uncached_input=0.20, cache_write=0.25, cached_input=0.02, output=0.75)
+LUNA_SHORT_CONTEXT_MAX_INPUT = 272_000
 
 
 class CodexUnavailableError(Exception):
@@ -219,7 +226,7 @@ def write_config(home: Path, plugin_root: Path, model: str, reasoning_effort: st
     text = f"""model = {toml_string(model)}
 model_reasoning_effort = {toml_string(reasoning_effort)}
 approval_policy = {toml_string(APPROVAL_POLICY)}
-approvals_reviewer = "auto_review"
+approvals_reviewer = "user"
 default_permissions = {toml_string(PERMISSION_PROFILE)}
 
 [permissions.{PERMISSION_PROFILE}]
@@ -292,6 +299,8 @@ def price(model: str) -> Price:
 
 def turn_cost(model: str, usage: Usage) -> float:
     rates = price(model)
+    if model == "gpt-6-luna" and usage.input_tokens > LUNA_SHORT_CONTEXT_MAX_INPUT:
+        rates = LUNA_LONG_CONTEXT
     return (
         usage.uncached_input_tokens * rates.uncached_input
         + usage.cache_write_input_tokens * rates.cache_write

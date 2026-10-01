@@ -1,0 +1,5 @@
+# Structured investigation record
+
+Use the same focus practice as an ordinary inquiry. Keep cross-source breadth and let the human choose between grounded output options when the goal is diffuse. Put consequential findings and decisions first in your reply, with checkable source paths or excerpts and uncertainty.
+
+After every turn, write `evidence.json` in this inquiry directory. Use exactly this JSON shape: `{"schema":"investigation-evidence/v1","goal":"human-selected tangible result or unresolved choice","findings":[{"claim":"...","status":"observed|inferred|contradicted|unknown","source":"checkable relative source path and revision or excerpt","window":"relevant time or revision window"}],"unknowns":["..."],"human_decisions":["..."],"next_question":"...","last_turn":1}`. Update `last_turn` for each turn. Preserve corrections and dismissed leads as findings rather than silently removing them. A fresh session should read the record before making a new claim. Stop after a useful bounded answer with its limits.

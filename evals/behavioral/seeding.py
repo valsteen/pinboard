@@ -303,7 +303,6 @@ class Seeder:
                     review_sha256=self.evidence_sha256(attempt, "review.md"),
                     reviewer_prompt_sha256=prompt_sha256,
                     reviewer_task_id=f"review-{item}",
-                    reviewer_prompt_sha256=prompt_sha256,
                     verdict="ready",
                     acceptance_evidence="Separate reviewer found the candidate satisfies the accepted criterion",
                 ),

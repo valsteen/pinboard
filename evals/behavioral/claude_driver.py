@@ -186,7 +186,19 @@ class ClaudeSession:
 
     @classmethod
     def start(cls, plugin_root: Path, model: str, project: Path, available_tools: tuple[str, ...]) -> ClaudeSession:
-        return cls(plugin_root, model, project, available_tools, str(uuid.uuid4()), None, None, set(), [], 0.0, processes.claude_environment())
+        return cls(
+            plugin_root,
+            model,
+            project,
+            available_tools,
+            str(uuid.uuid4()),
+            None,
+            None,
+            set(),
+            [],
+            0.0,
+            processes.claude_environment(),
+        )
 
     def loaded_context(self) -> list[InventoryEntry]:
         hooks = [

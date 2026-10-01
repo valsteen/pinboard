@@ -1,4 +1,4 @@
 interface:
   display_name: "Pinboard"
-  short_description: "Plan, discuss and coordinate saved project work"
-  default_prompt: "Use $pinboard to plan saved work, coach product, roadmap and architecture discussions in a Pinboard-managed project, and coordinate requested work with clear recommendations and current product status."
+  short_description: "Plan saved work and coach project discussions"
+  default_prompt: "Use $pinboard before answering planning or ideation about a saved item, or product, roadmap or architecture discussion in a Pinboard-managed project. Coach one point at a time, preserve open decisions, state a recommendation beside each question, and load only the requested phase mechanics."

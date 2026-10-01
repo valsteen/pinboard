@@ -6,7 +6,7 @@ Use this workflow for requests such as:
 - “Let me choose a batch from the safe work.”
 - “Launch all safe work in parallel.”
 
-Do not use it merely because more than one item exists. Ordinary next-work selection stays in the main skill.
+Do not use it merely because more than one item exists. Ordinary next-work selection uses [status and selection](status-and-selection.md).
 
 Use [the coding-agent runtime adapters](runtime-adapters.md) for native task, subagent, worktree, permission, and waiting operations. This reference owns only the shared selection and launch decisions.
 
@@ -49,14 +49,14 @@ Work through the authorized items in the presented order. Before each external c
 For a **Separate task**:
 
 1. Use the environment's native task creation capability. This is authorized by the user's exact batch request.
-2. Give it the repository root, item identity, confirmed item-view link when available, and fresh preview revision, with an instruction to use Pinboard to inspect the item and apply only its own legal transitions. When its checkout or worktree must be selected, use the main skill's project-specific baseline inference and confirmation rule; do not assume that a local branch named `main` is current or that any fixed remote name is authoritative.
+2. Give it the repository root, item identity, confirmed item-view link when available, and fresh preview revision, with an instruction to use Pinboard to inspect the item and apply only its own legal transitions. When its checkout or worktree must be selected, use [preparation and dispatch](preparation-and-dispatch.md#checkout-and-baseline) for project-specific baseline inference and confirmation; do not assume that a local branch named `main` is current or that any fixed remote name is authoritative.
 3. Name that task as the one to follow for its outcome, as part of the main skill's [current-activity fact](../SKILL.md#keep-the-humans-picture-current). It reports and requests decisions there; do not use task-to-task messaging to return its result to the current task.
 4. Do not replace it with a subagent when separate-task creation is unavailable, because the human selected a separate outcome and conversation.
 
 For a **Subagent**:
 
 1. Keep the current task as the outcome owner and resolve incomplete, ambiguous, or interactive decisions there.
-2. Follow the main skill's delegated-attempt procedure, including the canonical attempt brief and exact dispatch prompt.
+2. Follow [preparation and dispatch](preparation-and-dispatch.md#prepare-delegated-attempts), including the canonical attempt brief and exact dispatch prompt.
 3. Launch it through the environment's subagent capability only after the dispatch check succeeds; its result returns automatically to the owning task.
 4. If the runtime lacks subagent capability, preserve the prepared attempt and report that exact limitation. Do not create or wake a user-owned task, return routine ownership to a parent task, or silently change the selected execution form.
 
@@ -71,3 +71,13 @@ Keep the report compact and exact:
 | linked item label | separate task or subagent | created with task identifier, or not created with exact cause |
 
 Link each item under the main skill's readable-artifact rule. Say `batch launched` only when every authorized item was created. Otherwise say `partial launch`, identify what exists, name the first changed-state or transport failure, and state whether retry needs user action. Never count a prepared prompt, retained proposal, or attempted message as a created task.
+
+## Preview and launch independent work
+
+When the user asks what can run in parallel, asks to choose a batch, or explicitly asks to launch independent work, read `references/parallel-work.md` and follow it completely.
+
+Use `pinboard_parallel_preview` as read-only structural evidence through its exact selected or all-safe request leaf. It does not certify readiness, acquire authority, authorize task creation or decide product priority. Keep these outcomes distinct:
+
+- listing or previewing creates no tasks;
+- an exact selected subset or “all safe work” is launch authority for that batch only;
+- each external creation receives a fresh structural check and an explainable separate-task or subagent recommendation.

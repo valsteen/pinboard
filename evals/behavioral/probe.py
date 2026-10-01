@@ -15,7 +15,7 @@ from evals.behavioral import board, codex_driver, credentials, processes, world
 from evals.behavioral.claude_driver import now
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import ExportRecord, InventoryEntry, ProbeRecord, Runtime, write_new
-from evals.behavioral.runner import CredentialConflictError, require_codex_world_location
+from evals.behavioral.runner import CredentialConflictError, codex_probe_inventory, require_codex_world_location
 from evals.behavioral.spend import Budget, Category
 
 PROBE_TURNS = (
@@ -75,9 +75,7 @@ def probe_codex(
                     InventoryEntry(kind="runtime-bundled", name="writable-root", source=root_path)
                     for root_path in context.writable_roots
                 ),
-                InventoryEntry(
-                    kind="runtime-bundled", name="cli-version", source=codex_driver.codex_version(budget.window)
-                ),
+                *codex_probe_inventory(codex_driver.codex_version(budget.window), export, model, reasoning_effort),
             ]
             findings = codex_driver.isolation_findings(context, home.path / "plugins" / "cache", built.project)
             entries.extend(served_tools(home.path / "plugins" / "cache", root / "mcp.log", budget.window))

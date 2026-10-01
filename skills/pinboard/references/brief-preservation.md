@@ -136,7 +136,7 @@ When reuse is blocked, prepare strict `pinboard-correction-source-review/v1` JSO
 - `correction_input`: the exact canonical `return-for-correction/v1` reason input;
 - `assessment`: the independent reviewer's concrete assessment of that complete starting candidate and proposed correction.
 
-When replacement of the accepted brief supersedes an outstanding correction, first follow the coordination skill's [replacement-brief review recovery](../SKILL.md#coordinate-review-responsibility-and-checkout-use). Historical return selection for review is not current correction-dispatch authority.
+When replacement of the accepted brief supersedes an outstanding correction, first follow the coordination skill's [replacement-brief review recovery](review-and-disposition.md#coordinate-review-responsibility-and-checkout-use). Historical return selection for review is not current correction-dispatch authority.
 
 Verify the selected accepted bytes and compare the checkout with the snapshot. A commit requires the exact clean HEAD and accepted-base binary diff; a working-tree candidate requires the exact branch, HEAD preimage and binary diff. Test-only changes belong to this complete candidate even when selected authority digests do not change. Both correction leaves require the exact current correction history identity; retained ready-review v2 evidence cannot authorize either. Current initial v3 review and historical checkpoint proof remain unchanged.
 

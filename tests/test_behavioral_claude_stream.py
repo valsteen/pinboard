@@ -244,7 +244,7 @@ class CleanEnvironmentTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ, host, clear=True):
             root = Path(temporary)
-            session = claude_driver.ClaudeSession.start(root / "plugin", "model", root)
+            session = claude_driver.ClaudeSession.start(root / "plugin", "model", root, ("default",))
             fake = FakeClaude(
                 streams=[
                     [init_event(root / "plugin"), result_event(0.1, subtype="success", is_error=False)],
@@ -258,7 +258,7 @@ class CleanEnvironmentTest(unittest.TestCase):
             with mock.patch.object(processes, "run_tool", fake):
                 session.turn(1, "question", None, root / "turn.jsonl")
                 claude_driver.claude_version()
-                oneshot.ask("score this", "model")
+                oneshot.ask("score this", "model", processes.Window(None))
             for call in fake.calls:
                 self.assertEqual(expected_names, set(call.environment))
                 for name in expected_names - {"ENABLE_CLAUDEAI_MCP_SERVERS"}:

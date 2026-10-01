@@ -17,6 +17,7 @@ from pathlib import Path
 import msgspec
 
 from evals.behavioral import (
+    codex_driver,
     decision,
     export,
     investigation,
@@ -640,7 +641,7 @@ def run_codex(command: RunCodex) -> int:
                 spend.Budget(Layout(c.out), c.cap_usd, processes.Window(None), False),
             )
         )
-    except (runner.CredentialConflictError, runner.IsolationBreachError) as stop:
+    except (runner.CredentialConflictError, runner.IsolationBreachError, codex_driver.CodexUnavailableError) as stop:
         print(f"Codex runs stopped: {stop}")
         return 2
     return 0

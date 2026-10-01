@@ -116,12 +116,6 @@ def _cancel(
             except TimeoutError as exhausted:
                 raise CleanupUnconfirmed(child.pid, stdout, stderr) from exhausted
             raise CleanupUnconfirmed(child.pid, stdout, stderr) from interrupted
-        if native_shutdown and (
-            child.returncode < 0
-            or b"in-process app-server shutdown failed" in stderr
-            or b"thread/unsubscribe failed during shutdown" in stderr
-        ):
-            raise CleanupUnconfirmed(child.pid, stdout, stderr)
         return stdout, stderr
     except CleanupUnconfirmed:
         raise
@@ -158,6 +152,8 @@ def _run(
     )
     interruption: ProcessIncomplete | CleanupUnconfirmed | None = None
     stdout, stderr = b"", b""
+    timed_out = False
+    communication_failure: BaseException | None = None
     try:
         try:
             stdout, stderr = child.communicate(stdin, timeout=timeout)
@@ -165,11 +161,19 @@ def _run(
             stdout, stderr = _cancel(
                 child, native_shutdown, window, interrupted.output or b"", interrupted.stderr or b""
             )
-            return child.returncode, stdout, stderr, True
+            timed_out = True
         except BaseException as failure:
             stdout, stderr = _cancel(child, native_shutdown, window, stdout, stderr)
-            raise ProcessIncomplete(stdout, stderr, failure) from failure
-        return child.returncode, stdout, stderr, False
+            communication_failure = failure
+        if native_shutdown and (
+            child.returncode < 0
+            or b"in-process app-server shutdown failed" in stderr
+            or b"thread/unsubscribe failed during shutdown" in stderr
+        ):
+            raise CleanupUnconfirmed(child.pid, stdout, stderr) from communication_failure
+        if communication_failure is not None:
+            raise ProcessIncomplete(stdout, stderr, communication_failure) from communication_failure
+        return child.returncode, stdout, stderr, timed_out
     except (ProcessIncomplete, CleanupUnconfirmed) as failure:
         interruption = failure
         raise

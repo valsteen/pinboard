@@ -164,6 +164,8 @@ def probe_turns(
         if thread is None:
             findings.append(f"turn {index} reported no thread")
             break
+        if completed.timed_out:
+            findings.append(f"turn {index} timed out; the required two-turn probe did not complete")
         if completed.returncode != 0 or reading.errors:
             findings.append(f"turn {index} failed: {'; '.join(reading.errors)[:500]} {completed.stderr.strip()[:500]}")
         findings.extend(f"turn {index} permission denial: {denial.tool}: {denial.detail}" for denial in reading.denials)

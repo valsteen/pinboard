@@ -330,10 +330,36 @@ def run_codex(plan: CodexPlan, budget: Budget) -> list[str]:
     return skipped
 
 
+def codex_probe_inventory(
+    version: str, export: ExportRecord, model: str, reasoning_effort: str
+) -> list[InventoryEntry]:
+    """The version and configuration a passing probe covers; historical records without them cannot qualify."""
+    return [
+        InventoryEntry(kind="runtime-bundled", name="cli-version", source=version),
+        InventoryEntry(kind="runtime-bundled", name="export-commit", source=export.commit),
+        InventoryEntry(kind="runtime-bundled", name="export-skills-sha256", source=export.skills_sha256),
+        InventoryEntry(kind="runtime-bundled", name="model", source=model),
+        InventoryEntry(kind="runtime-bundled", name="reasoning-effort", source=reasoning_effort),
+    ]
+
+
 def codex_run(plan: CodexPlan, scenario: Scenario, key: RunKey) -> RunRecord:
     run_plan = plan.run
-    state = start(run_plan, scenario, key)
     version = codex_driver.codex_version(run_plan.window)
+    required = codex_probe_inventory(version, run_plan.export, run_plan.model, plan.reasoning_effort)
+    if not any(
+        record.runtime is Runtime.CODEX
+        and record.passed
+        and not record.findings
+        and all(entry in record.inventory for entry in required)
+        for record in run_plan.layout.probes()
+    ):
+        raise codex_driver.CodexUnavailableError(
+            f"No prior passing probe covers {version}, export {run_plan.export.commit}, model {run_plan.model} "
+            f"and reasoning effort {plan.reasoning_effort}. No agent turn started. Run probe codex with the "
+            "same export, model, reasoning effort and output before continuing; old runs remain ineligible."
+        )
+    state = start(run_plan, scenario, key)
     project = state.world_root() / "tally"
     outcome: RunOutcome = Completed()
     interrupted: BaseException | None = None

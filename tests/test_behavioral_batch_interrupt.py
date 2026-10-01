@@ -10,6 +10,7 @@ from unittest import mock
 
 from evals.behavioral import runner
 from evals.behavioral.layout import Layout
+from evals.behavioral.processes import Window
 from evals.behavioral.records import RunKey, RunRecord, Scenario
 from evals.behavioral.spend import Budget, Category
 
@@ -21,7 +22,7 @@ class BatchInterruptTest(unittest.TestCase):
         queued: list[Callable[[], None]] = []
         reservation_at_shutdown: list[float] = []
         with tempfile.TemporaryDirectory() as temporary:
-            budget = Budget(Layout(Path(temporary)), 120)
+            budget = Budget(Layout(Path(temporary)), 120, Window(None), False)
             plan = mock.Mock(spec=runner.RunPlan)
             plan.layout = Layout(Path(temporary))
             scenario = mock.Mock()

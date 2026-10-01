@@ -275,7 +275,6 @@ class RecordReady(Request, frozen=True):
     review_sha256: str
     reviewer_prompt_sha256: str
     reviewer_task_id: str
-    reviewer_prompt_sha256: str
     verdict: Literal["ready"]
     acceptance_evidence: str
 

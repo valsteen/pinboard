@@ -282,6 +282,100 @@ class EffectDeadlineTest(unittest.TestCase):
                         window=processes.Window(None),
                     )
 
+    def test_failures_anywhere_before_shutdown_confirmation_retain_credentials_and_partial_output(self) -> None:
+        for stage in ("signal", "shutdown", "force", "reap", "close"):
+            for interrupted in (False, True):
+                with self.subTest(stage=stage, interrupted=interrupted), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    source = root / "auth.json"
+                    source.write_bytes(b"{}")
+                    cause = KeyboardInterrupt("second interrupt") if interrupted else OSError("cleanup I/O failed")
+                    child = MagicMock()
+                    child.pid, child.returncode = 777, None
+                    initial = subprocess.TimeoutExpired(
+                        "codex", 1, output=b"paid partial", stderr=b"initial diagnostic"
+                    )
+                    if stage == "signal":
+                        child.send_signal.side_effect = cause
+                        child.communicate.side_effect = [initial]
+                    elif stage == "shutdown":
+                        child.communicate.side_effect = [initial, cause]
+                    elif stage in ("force", "reap"):
+                        child.communicate.side_effect = [initial, subprocess.TimeoutExpired("shutdown", 10), cause]
+                    else:
+                        child.returncode = 1
+                        child.communicate.side_effect = [
+                            initial,
+                            (b"paid partial", b"in-process app-server shutdown failed"),
+                        ]
+                        child.stdout.close.side_effect = cause
+                    with (
+                        patch.object(processes.subprocess, "Popen", return_value=child),
+                        patch.object(processes.os, "killpg", side_effect=cause if stage == "force" else None),
+                        patch.object(credentials, "settle") as settle,
+                        self.assertRaises(processes.CleanupUnconfirmed) as failure,
+                        credentials.isolated_home(source, root, processes.Window(None)) as home,
+                    ):
+                        codex_driver.run_turn(
+                            home.path, root, None, "no paid call", root / "turn.jsonl", processes.Window(None)
+                        )
+                    self.assertIs(cause, failure.exception.__cause__)
+                    self.assertEqual("paid partial", failure.exception.stdout)
+                    self.assertEqual("paid partial", (root / "turn.jsonl").read_text())
+                    self.assertIn(str(cause), str(failure.exception))
+                    self.assertTrue(home.path.exists())
+                    self.assertIsNone(home.settlement)
+                    settle.assert_not_called()
+                    child.wait.assert_not_called()
+
+    def test_later_close_failure_keeps_the_original_shutdown_cause(self) -> None:
+        shutdown_failure = OSError("shutdown I/O failed")
+        close_failure = OSError("pipe close failed")
+        child = MagicMock()
+        child.pid, child.returncode = 777, None
+        child.communicate.side_effect = [subprocess.TimeoutExpired("codex", 1, output=b"partial"), shutdown_failure]
+        child.stdout.close.side_effect = close_failure
+        with (
+            patch.object(processes.subprocess, "Popen", return_value=child),
+            self.assertRaises(processes.CleanupUnconfirmed) as failure,
+        ):
+            processes.run_tool(
+                processes.Tool.CODEX,
+                [],
+                cwd=Path(),
+                environment={},
+                stdin=None,
+                timeout_seconds=1,
+                window=processes.Window(None),
+            )
+        self.assertIs(close_failure, failure.exception.__cause__)
+        self.assertIs(shutdown_failure, close_failure.__cause__)
+        self.assertEqual("partial", failure.exception.stdout)
+        self.assertIn("shutdown I/O failed", str(failure.exception))
+        self.assertIn("pipe close failed", str(failure.exception))
+
+    def test_close_failure_does_not_erase_confirmed_started_interruption_evidence(self) -> None:
+        close_failure = OSError("pipe close failed")
+        child = MagicMock()
+        child.pid, child.returncode = 777, 1
+        child.communicate.side_effect = [KeyboardInterrupt(), (b"partial", b"")]
+        child.stdout.close.side_effect = close_failure
+        with (
+            patch.object(processes.subprocess, "Popen", return_value=child),
+            self.assertRaises(processes.ProcessInterrupted) as failure,
+        ):
+            processes.run_tool(
+                processes.Tool.CODEX,
+                [],
+                cwd=Path(),
+                environment={},
+                stdin=None,
+                timeout_seconds=1,
+                window=processes.Window(None),
+            )
+        self.assertIs(close_failure, failure.exception.__cause__)
+        self.assertEqual("partial", failure.exception.stdout)
+
 
 class EvidenceFailureTest(unittest.TestCase):
     def test_raw_write_failure_preserves_cleanup_uncertainty_and_the_private_home(self) -> None:
@@ -423,6 +517,52 @@ class PaidInterruptionTest(unittest.TestCase):
                 records = list(layout.scorer_sessions()) if owner == "scorer" else list(layout.assessments())
                 self.assertEqual(1, len(records))
                 self.assertIsNone(records[0].cost_usd)
+
+    def test_cleanup_failures_publish_started_scorer_and_assessor_unknown_usage(self) -> None:
+        for owner in ("scorer", "assessor"):
+            for interrupted in (False, True):
+                with self.subTest(owner=owner, interrupted=interrupted), tempfile.TemporaryDirectory() as directory:
+                    layout = Layout(Path(directory))
+                    budget = spend.Budget(layout, 120, processes.Window(None), True)
+                    key = RunKey(scenario_id="s14-motivating-replay", variant="candidate", index=1)
+                    source = ScorerInput(
+                        schema="pinboard-behavioral-scorer-input/v1",
+                        run=key,
+                        replies=[],
+                        states=[],
+                        hooks_log=None,
+                        redactions=[],
+                    )
+                    cause = KeyboardInterrupt("second interrupt") if interrupted else OSError("cleanup I/O failed")
+                    child = MagicMock()
+                    child.pid, child.returncode = 777, None
+                    child.communicate.side_effect = [
+                        subprocess.TimeoutExpired("claude", 1, output=b"paid partial"),
+                        cause,
+                    ]
+                    with (
+                        patch.object(scoring, "prompt", return_value="prompt"),
+                        patch.object(processes.subprocess, "Popen", return_value=child),
+                        patch.object(processes.os, "killpg"),
+                        self.assertRaises(processes.CleanupUnconfirmed) as failure,
+                    ):
+                        if owner == "scorer":
+                            scoring.ScoringRun(layout, budget).score(source)
+                        else:
+                            record = MagicMock(spec=RunRecord)
+                            record.run = key
+                            with (
+                                patch.object(substance, "prompt", return_value="prompt"),
+                                patch.object(substance, "turn_words", return_value=[]),
+                            ):
+                                substance.assess_run(record, layout.assessment_directory(key), budget.window)
+                    self.assertIs(cause, failure.exception.__cause__)
+                    self.assertEqual("paid partial", next(layout.root.rglob("raw.json")).read_text())
+                    records = list(layout.scorer_sessions()) if owner == "scorer" else list(layout.assessments())
+                    self.assertEqual(1, len(records))
+                    self.assertIsNone(records[0].cost_usd)
+                    self.assertTrue(spend.main_usage_unknown(layout))
+                    self.assertIsNone(budget.reserve(spend.Category.SCORER))
 
     def test_prestart_refusal_does_not_invent_started_paid_usage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

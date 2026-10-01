@@ -77,7 +77,10 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "Pinboard coordinates local repository work: intake, canonical briefs, status, legal actions, "
             "own leases, dispatch, independent review and recovery.\n\n"
             "A project's saved work lives in its board at <project_root>/.pinboard. Before answering about or acting "
-            "on saved work, read pinboard_overview; if no board exists, say that nothing was saved and offer "
+            "on saved work, including quick read-only status and planning, load the complete pinboard main skill "
+            "through this runtime's native skill loader, or read its actual resolved SKILL.md completely if no "
+            "loader is available. Then load only its reference for the requested phase; status uses status and "
+            "selection. Read pinboard_overview; if no board exists, say that nothing was saved and offer "
             "Pinboard setup instead of claiming to remember. Before reading or editing source for a saved item, load "
             "the pinboard skill and follow its start, pause and review route; do not implement or commit a saved "
             "item outside it unless the human chooses that. For a paused item, read pinboard_item_status operation "
@@ -92,6 +95,12 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "not complete it until pinboard_review_job has commissioned a separate reviewer whose ready verdict is "
             "recorded: report the change and ask first. Reach board state only "
             "through these tools, never through Bash, Python or .pinboard/state.sqlite3.\n\n"
+            "Before any review claim, read pinboard_item_status operation item and its current review_verdict. "
+            "Overview omits that verdict; omission never proves no review. Before any worker claim, read "
+            "pinboard_attempt_authority operation status for the exact attempt. Overview's preparation is a "
+            "different authority; its release or revocation never proves worker release or revocation. A rejected "
+            "or malformed read provides no observation: keep unavailable facts unknown. Every separate decision "
+            "asked of the human carries its own recommendation or default beside that question.\n\n"
             "For intake or coordination, load the complete existing workflow skill before constructing "
             "attributed calls: pinboard-intake for new work, or pinboard for coordination of existing work. "
             "Use this runtime's advertised native skill loader; if unavailable, read that skill's actual "
@@ -212,7 +221,8 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         name=ITEM_STATUS_TOOL,
         description=(
             "Read one current Pinboard item status, map an exact branch to the items and attempts that own it, "
-            "or check whether an item's reviewed change is present by content in a named local Git target."
+            "or check whether an item's reviewed change is present by content in a named local Git target. "
+            "Use operation item and its review_verdict before review claims; overview omission is not no review."
         ),
     )
     async def item_status(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -301,7 +311,11 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "priority, paused, merged or done work, or starting, continuing or closing a saved item. "
             "work_root is <project_root>/.pinboard unless the user named another board. "
             "Files under .pinboard/views are generated copies, not authority. "
-            "Before changing saved work, load the pinboard skill (pinboard-intake to save new work)."
+            "Before answering, including quick read-only status, load the complete pinboard main skill through "
+            "the native loader or read its actual resolved SKILL.md completely, then its status-and-selection "
+            "reference. Overview omits review_verdict and its preparation is not worker authority: read "
+            "pinboard_item_status operation item for review claims and pinboard_attempt_authority operation "
+            "status for worker claims. Use pinboard-intake to save new work."
         ),
         meta={"anthropic/alwaysLoad": True},
     )
@@ -456,7 +470,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=ATTEMPT_AUTHORITY_TOOL,
-        description="Read or change one exact Pinboard attempt authority.",
+        description="Read or change one exact Pinboard attempt authority. Use operation status before worker claims; overview preparation release or revocation says nothing about this worker authority.",
         annotations=LOCAL_AUTHORITY_ANNOTATIONS,
     )
     async def attempt_authority(

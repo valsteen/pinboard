@@ -20,15 +20,11 @@ class InvestigationTrialTests(unittest.TestCase):
             marketplace = plugin / ".agents" / "plugins" / "marketplace.json"
             marketplace.parent.mkdir(parents=True)
             marketplace.write_text('{"name":"test-marketplace"}')
-            with patch.object(
-                codex_driver, "codex", return_value=processes.Completed(0, "", "", False)
-            ):
+            with patch.object(codex_driver, "codex", return_value=processes.Completed(0, "", "", False)):
                 for reviewer in ("auto_review", "user"):
                     home = root / reviewer
                     home.mkdir()
-                    codex_driver.write_config(
-                        home, plugin, "gpt-6-luna", "high", reviewer, processes.Window(None)
-                    )
+                    codex_driver.write_config(home, plugin, "gpt-6-luna", "high", reviewer, processes.Window(None))
                     config = tomllib.loads((home / "config.toml").read_text())
                     self.assertEqual(reviewer, config["approvals_reviewer"])
 
@@ -68,7 +64,9 @@ class InvestigationTrialTests(unittest.TestCase):
                 problem="incomplete usage",
             )
             write_new(directory / "run.json", record)
-            self.assertIsNone(spend.Budget(layout, 120, processes.Window(None), False).reserve(spend.Category.CODEX_AGENT_RUN))
+            self.assertIsNone(
+                spend.Budget(layout, 120, processes.Window(None), False).reserve(spend.Category.CODEX_AGENT_RUN)
+            )
 
     def test_fresh_recovery_requires_a_successful_saved_file_read_in_the_trace(self) -> None:
         read = json.dumps(
@@ -84,10 +82,16 @@ class InvestigationTrialTests(unittest.TestCase):
             }
         )
         self.assertTrue(investigation_trials.saved_evidence_read(read))
-        self.assertTrue(investigation_trials.saved_evidence_read(read.replace("cat inquiry/evidence.json", "cat inquiry.md")))
-        self.assertTrue(investigation_trials.saved_evidence_read(read.replace("cat inquiry/evidence.json", "cat inquiry-note.md")))
+        self.assertTrue(
+            investigation_trials.saved_evidence_read(read.replace("cat inquiry/evidence.json", "cat inquiry.md"))
+        )
+        self.assertTrue(
+            investigation_trials.saved_evidence_read(read.replace("cat inquiry/evidence.json", "cat inquiry-note.md"))
+        )
         self.assertFalse(investigation_trials.saved_evidence_read(read.replace('"exit_code": 0', '"exit_code": 1')))
-        self.assertFalse(investigation_trials.saved_evidence_read(read.replace("cat inquiry/evidence.json", "ls inquiry")))
+        self.assertFalse(
+            investigation_trials.saved_evidence_read(read.replace("cat inquiry/evidence.json", "ls inquiry"))
+        )
 
     def test_busy_codex_lock_leaves_no_started_run_or_unknown_cost(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -121,10 +125,13 @@ class InvestigationTrialTests(unittest.TestCase):
             '{"is_error":false,"result":"ok"}',
             '{"is_error":false,"total_cost_usd":-0.01,"result":"ok"}',
         ):
-            with self.subTest(payload=payload), patch.object(
-                oneshot.processes,
-                "run_tool",
-                return_value=processes.Completed(0, payload, "", False),
+            with (
+                self.subTest(payload=payload),
+                patch.object(
+                    oneshot.processes,
+                    "run_tool",
+                    return_value=processes.Completed(0, payload, "", False),
+                ),
             ):
                 answer = oneshot.ask("prompt", "claude-opus-5-5", processes.Window(None))
                 self.assertIsNone(answer.cost_usd)
@@ -186,8 +193,13 @@ class InvestigationTrialTests(unittest.TestCase):
                 self.assertRaises(TimeoutError),
             ):
                 investigation_trials.assess(
-                    layout, budget, investigation.DATA / "sets" / "tuning.json", Path(temporary),
-                    "urgent-tuning", "ordinary", 1,
+                    layout,
+                    budget,
+                    investigation.DATA / "sets" / "tuning.json",
+                    Path(temporary),
+                    "urgent-tuning",
+                    "ordinary",
+                    1,
                 )
             self.assertFalse((layout.root / "investigation-assessments").exists())
 

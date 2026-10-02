@@ -104,9 +104,7 @@ def run(
         raise ValueError(f"case {case_id} is not registered")
     # Hold the existing cross-process lock before reserving or creating a run. An occupied lock leaves no
     # misleading unknown-cost record, and the explicit deadline prevents an indefinite setup wait.
-    with credentials.exclusive_codex_session(
-        Path(tempfile.gettempdir()), processes.Window(time.monotonic() + 60)
-    ):
+    with credentials.exclusive_codex_session(Path(tempfile.gettempdir()), processes.Window(time.monotonic() + 60)):
         projected = budget.reserve(Category.CODEX_AGENT_RUN)
         if projected is None:
             return None
@@ -174,11 +172,7 @@ def _run_reserved(  # noqa: C901, PLR0912, PLR0915
                         home.path, inquiry, thread_id, human, directory / f"turn-{number}.jsonl", budget.window
                     )
                     identity = reading.thread_id or thread_id or ""
-                    own_usage = (
-                        codex_driver.usage_since(previous, reading.usage)
-                        if reading.usage is not None
-                        else None
-                    )
+                    own_usage = codex_driver.usage_since(previous, reading.usage) if reading.usage is not None else None
                     turns.append(
                         InvestigationTurnRecord(
                             index=number,
@@ -188,9 +182,7 @@ def _run_reserved(  # noqa: C901, PLR0912, PLR0915
                             final_reply=reading.messages[-1] if reading.messages else "",
                             commentary=reading.messages[:-1],
                             cost_usd=(
-                                codex_driver.turn_cost("gpt-6-luna", own_usage)
-                                if own_usage is not None
-                                else None
+                                codex_driver.turn_cost("gpt-6-luna", own_usage) if own_usage is not None else None
                             ),
                             input_tokens=own_usage.input_tokens if own_usage is not None else None,
                             output_tokens=own_usage.output_tokens if own_usage is not None else None,
@@ -201,9 +193,7 @@ def _run_reserved(  # noqa: C901, PLR0912, PLR0915
                                 else False
                             ),
                             compaction_event=None,
-                            record_valid=(
-                                valid_note(inquiry / "evidence.json") if arm == "structured" else None
-                            ),
+                            record_valid=(valid_note(inquiry / "evidence.json") if arm == "structured" else None),
                         )
                     )
                     thread_id, previous = identity, reading.usage
@@ -268,9 +258,7 @@ def assess(
     index: int,
 ) -> InvestigationAssessmentRecord | None:
     """Blindly assess one completed trial against its private key; keep malformed usage blocking."""
-    with credentials.exclusive_codex_session(
-        Path(tempfile.gettempdir()), processes.Window(time.monotonic() + 60)
-    ):
+    with credentials.exclusive_codex_session(Path(tempfile.gettempdir()), processes.Window(time.monotonic() + 60)):
         return _assess_locked(layout, budget, scenario_set, key_directory, case_id, arm, index)
 
 

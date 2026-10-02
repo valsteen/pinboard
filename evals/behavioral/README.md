@@ -121,6 +121,16 @@ uv run --locked python -m evals.behavioral investigation-assess \
   --out <private-out> --batch tuning-1
 ```
 
+The bounded Haiku comparison uses the same registered `bounded-heldout` source seed, exported skill revision and scripted human turns as the Luna-high `guidance` trial. It copies one world, starts a new Claude Code session for each turn in the same inquiry directory, and configures Claude Code's available tools to include only file and shell tools, excluding Pinboard MCP tools. It sends no effort or extended-thinking option. Before each session, the existing aggregate and batch guard reserves projected spend. The route writes that session's raw stream, final reply, token counts, actual Claude-reported cost and strict run record before it can start the next session. A missing cost, failed session or batch overshoot stops further paid work; an interrupted pair with a completed first record can continue its second turn with the same command and exact world. Claude and Codex investigation records retain separate accounting shapes, and `spend` totals both without pricing Claude tokens as Codex tokens.
+
+```sh
+uv run --locked python -m evals.behavioral investigation-claude \
+  --export <same-export> --scenario-set evals/behavioral/data/investigation/sets/heldout.json \
+  --case bounded-heldout --arm guidance --index 1 --out <private-out> --worlds <private-worlds> --batch <batch>
+```
+
+The two replies and `kiosk-brief.md` need direct review for completeness, source windows, consequential conclusions, dismissed leads and human effort. A successful saved-brief tool read and distinct session IDs establish this fictional fresh-turn route; they do not establish real-use continuity or a statistical model ranking.
+
 Each new batch records the spend at its start and reserves no more than the smaller remaining amount of its 15 USD target and the 120 USD aggregate. Keep all trials and assessments in the same output home. The assessor receives the private key and unlabeled replies in a fresh tool-free session; its cost and result stay private. New investigation measures are descriptive until separately calibrated, and `decision.py` remains exclusive to the frozen delivery checklist.
 
 `investigation.exercise_sessions` supplies no prior runtime identity for a new or fresh turn and the current identity for a continuation. `record_sessions` rejects a fresh turn that reuses an identity or fails to read saved inquiry evidence. A controlled driver can exercise this route without a paid call. A real agent run must record its actual session or thread identity; a same-session resumed turn is neither fresh-session recovery nor compaction. Compaction remains `unobserved` unless a runtime event is captured explicitly. This checkpoint's deterministic exercises do not establish actual agent recovery or compaction behavior.

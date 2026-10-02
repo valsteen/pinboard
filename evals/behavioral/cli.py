@@ -145,6 +145,18 @@ class InvestigationCodex:
 
 
 @dataclass(frozen=True)
+class InvestigationClaude:
+    export: Path
+    scenario_set: Path
+    case_id: str
+    arm: str
+    index: int
+    out: Path
+    worlds: Path
+    batch: str
+
+
+@dataclass(frozen=True)
 class InvestigationAssess:
     scenario_set: Path
     key_directory: Path
@@ -185,6 +197,7 @@ type Command = (
     | CoverageCodex
     | InvestigationWorld
     | InvestigationCodex
+    | InvestigationClaude
     | InvestigationAssess
 )
 
@@ -269,6 +282,13 @@ def parser() -> argparse.ArgumentParser:  # noqa: PLR0915
     trial.add_argument("--out", type=Path, required=True)
     trial.add_argument("--worlds", type=Path, required=True)
     trial.add_argument("--batch", required=True)
+    claude_trial = commands.add_parser("investigation-claude", help="run two fresh Haiku sessions on one inquiry")
+    for flag in ("export", "scenario-set", "out", "worlds"):
+        claude_trial.add_argument(f"--{flag}", type=Path, required=True)
+    claude_trial.add_argument("--case", choices=("bounded-heldout",), required=True)
+    claude_trial.add_argument("--arm", choices=("guidance",), required=True)
+    claude_trial.add_argument("--index", type=positive, required=True)
+    claude_trial.add_argument("--batch", required=True)
     trial_assess = commands.add_parser("investigation-assess", help="blindly assess one recorded investigation")
     trial_assess.add_argument("--scenario-set", type=Path, required=True)
     trial_assess.add_argument("--key-directory", type=Path, required=True)
@@ -330,6 +350,17 @@ def decode(arguments: Sequence[str]) -> Command:  # noqa: C901, PLR0912
             return InvestigationWorld(options.scenario_set, options.case, options.out)
         case "investigation-codex":
             return InvestigationCodex(
+                options.export,
+                options.scenario_set,
+                options.case,
+                options.arm,
+                options.index,
+                options.out,
+                options.worlds,
+                options.batch,
+            )
+        case "investigation-claude":
+            return InvestigationClaude(
                 options.export,
                 options.scenario_set,
                 options.case,
@@ -483,6 +514,8 @@ def dispatch(command: Command) -> int:  # noqa: C901, PLR0912
             print(f"built {selected.id} at {inquiry}")
         case InvestigationCodex() as trial:
             return run_investigation_codex(trial)
+        case InvestigationClaude() as trial:
+            return run_investigation_claude(trial)
         case InvestigationAssess() as assessment:
             return run_investigation_assess(assessment)
         case _ as unreachable:
@@ -508,6 +541,26 @@ def run_investigation_codex(command: InvestigationCodex) -> int:
         return 1
     print(f"{result.case_id} {result.arm}: {result.outcome}; {spend.report(layout)}", end="")
     return 0 if result.outcome == "completed" else 1
+
+
+def run_investigation_claude(command: InvestigationClaude) -> int:
+    layout = Layout(command.out)
+    budget = investigation_budget(layout, command.batch)
+    records = investigation_trials.run_claude(
+        layout,
+        budget,
+        export.load_export(command.export),
+        command.scenario_set,
+        command.case_id,
+        command.arm,
+        command.index,
+        command.worlds,
+    )
+    if not records:
+        print(f"reservation does not fit batch or aggregate headroom; {spend.report(layout)}", end="")
+        return 1
+    print(f"{command.case_id} {command.arm}: {len(records)} fresh session(s); {spend.report(layout)}", end="")
+    return 0 if len(records) == 2 and all(record.outcome == "completed" for record in records) else 1
 
 
 def run_investigation_assess(command: InvestigationAssess) -> int:

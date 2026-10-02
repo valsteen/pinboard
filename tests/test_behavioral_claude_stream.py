@@ -99,7 +99,7 @@ class ClaudeTurnTest(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         self.plugin_root = self.root / "plugin"
-        self.session = claude_driver.ClaudeSession.start(self.plugin_root, "model", self.root)
+        self.session = claude_driver.ClaudeSession.start(self.plugin_root, "model", self.root, ("default",))
 
     def run_turns(self, fake: FakeClaude, count: int) -> list[claude_driver.ClaudeTurn]:
         with mock.patch.object(claude_driver.processes, "run_tool", fake):
@@ -155,6 +155,7 @@ class ClaudeTurnTest(unittest.TestCase):
         self.assertIsNotNone(turn.problem)
         self.assertEqual("", turn.evidence.final_reply)
         self.assertEqual(0.125, turn.evidence.cost_usd)
+        self.assertNotIn("--tools", fake.calls[0].arguments)
 
     def test_an_error_flag_on_a_success_result_is_still_a_failed_turn(self) -> None:
         fake = FakeClaude(
@@ -176,7 +177,7 @@ class SkillProvenanceTest(unittest.TestCase):
         self.plugin_root = self.root / "plugin"
 
     def session_after_first_turn(self, debug_log: str) -> claude_driver.ClaudeSession:
-        session = claude_driver.ClaudeSession.start(self.plugin_root, "model", self.root)
+        session = claude_driver.ClaudeSession.start(self.plugin_root, "model", self.root, ("default",))
         fake = FakeClaude(
             streams=[[init_event(self.plugin_root), result_event(0.1, subtype="success", is_error=False)]],
             exit_codes=[0],
@@ -197,6 +198,12 @@ class SkillProvenanceTest(unittest.TestCase):
     def test_a_user_skill_is_an_isolation_finding(self) -> None:
         session = self.session_after_first_turn(PROVENANCE.format(user=1))
         self.assertNotEqual([], session.isolation_findings())
+
+    def test_a_claude_builtin_plugin_skill_is_not_foreign(self) -> None:
+        session = self.session_after_first_turn(
+            PROVENANCE.format(user=0).replace("0 builtin plugin skills", "1 builtin plugin skills")
+        )
+        self.assertEqual([], session.isolation_findings())
 
     def test_a_missing_provenance_summary_is_an_isolation_finding(self) -> None:
         session = self.session_after_first_turn("[DEBUG] nothing about skills\n")

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -33,6 +34,34 @@ class InvestigationWorldTests(unittest.TestCase):
                     self.assertTrue((root / "sources" / "dashboards").is_dir())
                     self.assertTrue((root / "sources" / "transcripts").is_dir())
                     self.assertTrue((root / "sources" / "traces").is_dir())
+
+    def test_source_histories_copy_without_detached_git_maintenance(self) -> None:
+        case = investigation.load_set(investigation.DATA / "sets" / "heldout.json")[1][0]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trace = root / "git.trace"
+            with patch.dict(
+                os.environ,
+                {
+                    "GIT_TRACE": str(trace),
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "maintenance.auto",
+                    "GIT_CONFIG_VALUE_0": "true",
+                },
+            ):
+                investigation.build_world(root / "seed", case, processes.Window(None))
+                shutil.copytree(root / "seed", root / "copy")
+            self.assertNotIn("maintenance run --auto", trace.read_text())
+            for repo in case.repositories:
+                histories = [
+                    processes.git_checked(
+                        ["log", "--format=%H %s"],
+                        cwd=root / name / "sources" / repo.name,
+                        window=processes.Window(None),
+                    )
+                    for name in ("seed", "copy")
+                ]
+                self.assertEqual(histories[0], histories[1])
 
     def test_changed_registered_bytes_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

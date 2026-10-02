@@ -1,17 +1,19 @@
 ---
 name: investigation-focus
-description: Guide a continuing, evidence-led investigation when a human needs to narrow a diffuse question, retain source context across sessions, or turn one inquiry into several decision-ready outputs. Do not use for ordinary repository delivery or a one-off factual answer.
+description: Guide a substantial evidence-led investigation, whether the requested result is already clear or the human needs to narrow a diffuse question, retain context across sessions, or make several decision-ready outputs. Do not use for ordinary repository delivery or a one-off factual answer.
 ---
 
 # Investigation focus
 
-Help the human choose one tangible outcome for the next bounded pass. Keep the inquiry broad enough to test that outcome against varied available sources. The human owns the direction, the inquiry home, and any action beyond investigation.
+Deliver the human's requested result through a bounded investigation. Keep the inquiry broad enough to test that result against varied available sources. The human owns the direction, any inquiry home, and any action beyond investigation.
 
 ## Start or resume
 
-Ask the caller to select a local inquiry home separate from the repositories and other evidence sources. Git is optional. Read the existing note there before resuming, including its last agreed direction, source windows, corrections, dismissed leads, gaps, and output relationships. If this is a new inquiry, create a human-readable note in that home with a stable inquiry ID, purpose, and first pass. Do not use the chat as the only continuity record or write into a source repository merely because it can be read.
+When the request already fixes a tangible result, audience or format, and usable sources, begin the investigation. Deliver the complete requested artifact at the authorized destination. Do not make selection of another outcome or inquiry home a prerequisite. Ask only for a choice that materially changes the result or is needed to proceed. Keep the first pass bounded by the request and available evidence; explain before expanding into materially different research or outputs.
 
-When the request branches into different results, present a few concrete outcomes grounded in what is known and ask the human to choose. Record that choice and a pass bound: time, effort, sources, or a stopping observation. A correction changes the next direction; retain the previous agreement and observations with their dates or revisions. Use [the note example](references/inquiry-note.md) when a concrete continuity shape helps; adapt it to the inquiry rather than filling empty sections mechanically.
+For a continuing inquiry, use the caller's selected local inquiry home separate from repositories and other evidence sources. Ask the caller to select one only when durable multi-session state is needed and no authorized home is available. Git is optional. Before resuming, read the existing note there, including the last agreed direction, source windows, corrections, dismissed leads, gaps, and output relationships. For a new continuing inquiry, create a human-readable note with a stable inquiry ID, purpose, and first pass. Do not use chat as the only continuity record or write into a source repository merely because it can be read.
+
+When the request genuinely branches into different results, present a few concrete outcomes grounded in what is known and ask the human to choose. Record that choice and a pass bound: time, effort, sources, or a stopping observation when using a continuing note. A correction changes the next direction; retain the previous agreement and observations with their dates or revisions. Use [the note example](references/inquiry-note.md) when a concrete continuity shape helps; adapt it to the inquiry rather than filling empty sections mechanically.
 
 ## Investigate and report
 
@@ -19,8 +21,8 @@ Check varied relevant source types that the caller permits. For each consequenti
 
 Make a bounded pass useful even when evidence is incomplete. Stop at the agreed bound, a supported answer with stated limits, diminishing returns, a necessary unavailable source, or an urgent finding that needs human attention. Put consequential findings, their checkable sources, uncertainty, and the human acknowledgement or decision needed before research detail. Surface urgent evidence promptly without changing production state, sending messages, or starting delivery work on that basis alone.
 
-Save each pass, including its stop reason and next useful question, in the inquiry note. Append new source windows and corrections rather than replacing earlier ones. For each audience output, record its own ID, revision, audience, purpose, and the observations and human decisions it uses. Revise one output deliberately without implying another changed. Use Technical Writing to shape substantial prose after the evidence and decision context is clear.
+When using an inquiry note, save each pass with its stop reason and next useful question. Append new source windows and corrections rather than replacing earlier ones. For each audience output, record its own ID, revision, audience, purpose, and the observations and human decisions it uses. Revise one output deliberately without implying another changed. Use Technical Writing to shape substantial prose after the evidence and decision context is clear. Return the complete requested output in its requested format; keep optional follow-up work behind it.
 
 ## Work-computer trial
 
-For the installed trial, read [the local collector and return instructions](references/trial.md). A caller-selected trial home may hold separate inquiry notes in its own subdirectories and one shared collector log. The collector records chronology and relations; it does not validate conclusions or judge usefulness. The caller reviews and sanitizes any return package before moving it off the work computer. Real multi-session usefulness remains to be tested.
+For a formal installed trial, read [the local collector and return instructions](references/trial.md). A caller-selected trial home may hold separate inquiry notes in its own subdirectories and one shared collector log. The collector records chronology and relations; it does not validate conclusions or judge usefulness. The caller reviews and sanitizes any return package before moving it off the work computer. Five reported fresh real-use sessions informed this guidance; note-based same-inquiry recovery remains untested there.

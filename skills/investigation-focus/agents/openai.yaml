@@ -1,4 +1,4 @@
 interface:
   display_name: "Investigation Focus"
-  short_description: "Keep a focused inquiry and its evidence usable across sessions"
-  default_prompt: "Use $investigation-focus to choose one bounded investigation outcome with me, preserve checkable evidence in my selected local inquiry home, and resume it across sessions."
+  short_description: "Investigate a clear request or focus a diffuse inquiry with checkable evidence"
+  default_prompt: "Use $investigation-focus to investigate my request, deliver the complete result I ask for, and keep important evidence checkable. Help me choose an outcome if my goal is diffuse; use a local inquiry note when I need continuity."

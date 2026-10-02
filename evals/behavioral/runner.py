@@ -350,8 +350,12 @@ def codex_run(plan: CodexPlan, scenario: Scenario, key: RunKey) -> RunRecord:
                 run_plan.window,
             )
             codex_driver.write_config(
-                home.path, Path(run_plan.export.plugin_root), run_plan.model, plan.reasoning_effort,
-                "auto_review", run_plan.window
+                home.path,
+                Path(run_plan.export.plugin_root),
+                run_plan.model,
+                plan.reasoning_effort,
+                "auto_review",
+                run_plan.window,
             )
             context = codex_driver.loaded_context(home.path, project, run_plan.window)
             (state.directory / "prompt-input.txt").write_text(context.prompt_text)

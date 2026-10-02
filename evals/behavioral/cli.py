@@ -543,10 +543,7 @@ def investigation_budget(layout: Layout, batch_id: str) -> spend.Budget:
     ]
     if previous:
         ordered = sorted((batch.start_usd, batch.cap_usd) for batch in previous)
-        if any(
-            later_start > start + cap
-            for (start, cap), (later_start, _) in pairwise(ordered)
-        ):
+        if any(later_start > start + cap for (start, cap), (later_start, _) in pairwise(ordered)):
             raise ValueError("previous batch overshot 15 USD; no paid trial may start")
         latest_start, latest_cap = ordered[-1]
         if spent > latest_start + latest_cap:
@@ -555,9 +552,7 @@ def investigation_budget(layout: Layout, batch_id: str) -> spend.Budget:
     if marker.is_file():
         batch = msgspec.json.decode(marker.read_bytes(), type=investigation_trials.Batch)
     else:
-        batch = investigation_trials.Batch(
-            schema="pinboard-investigation-batch/v1", start_usd=spent, cap_usd=15.0
-        )
+        batch = investigation_trials.Batch(schema="pinboard-investigation-batch/v1", start_usd=spent, cap_usd=15.0)
         marker.parent.mkdir(parents=True, exist_ok=True)
         write_new(marker, batch)
     if spent < batch.start_usd:

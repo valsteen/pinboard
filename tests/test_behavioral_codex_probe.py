@@ -139,8 +139,12 @@ class PriorProbeTest(unittest.TestCase):
                         runner.run_codex(plan, Budget(plan.run.layout, 120, Window(None), False))
                 paid.assert_not_called()
 
-    def test_missing_or_failed_version_observation_is_rejected(self) -> None:
-        for completed in (ProcessResult(1, "codex-cli test", "failed", False), ProcessResult(0, "", "", False)):
+    def test_missing_failed_or_timed_out_version_observation_is_rejected(self) -> None:
+        for completed in (
+            ProcessResult(1, "codex-cli test", "failed", False),
+            ProcessResult(0, "", "", False),
+            ProcessResult(0, "codex-cli test", "", True),
+        ):
             with (
                 self.subTest(completed=completed),
                 mock.patch.object(codex_driver.processes, "run_tool", return_value=completed),

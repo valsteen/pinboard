@@ -296,7 +296,7 @@ def codex_version(window: processes.Window) -> str:
         timeout_seconds=60,
         window=window,
     )
-    if completed.returncode != 0 or not completed.stdout.strip():
+    if completed.timed_out or completed.returncode != 0 or not completed.stdout.strip():
         raise CodexUnavailableError("Cannot observe the Codex CLI version; no paid agent turn may start.")
     return completed.stdout.strip()
 

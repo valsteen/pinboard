@@ -61,7 +61,9 @@ Every pull request and main-branch update runs the supported checks on macOS and
 
 ## Evaluate guidance behavior
 
-Changes to the guidance that shapes how agents talk to people are measured with the behavioral evaluation harness in `evals/behavioral/`, not with unit tests. It exports a skills revision, runs a registered scenario set against a Claude Code or Codex agent, blind-scores every reply with a frozen checklist, compares a baseline with a candidate per checklist rule, deciding on the total and the rules the scenario set declares as targeted, and totals the spend:
+Each change to the guidance that shapes how agents talk to people records a drift estimate in its brief or pull request: which replies it targets, what a miss or an over-application would cost, and which neighboring rules it could crowd, contradict or reorder. When the estimate finds a plausible effect on authority, lifecycle, review, safety or other correctness-relevant behavior, or the change rewrites or reorders existing rules, it recommends measuring the change with the behavioral evaluation harness in `evals/behavioral/`; unit tests never measure guidance behavior. Otherwise the recorded estimate and a review of the edited guidance against its neighbors accept the change.
+
+The harness exports a skills revision, runs a registered scenario set against a Claude Code or Codex agent, blind-scores every reply with a frozen checklist, compares a baseline with a candidate per checklist rule, deciding on the total and the rules the scenario set declares as targeted, and totals the spend:
 
 ```sh
 uv run --locked python -m evals.behavioral export --revision <commit> --dest <exports>/<name>

@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pinboard.application import query_models, stored_state
 from pinboard.application.actions import discover_current_actions
-from pinboard.application.queries import decode_recorded_pause_reason
+from pinboard.application.queries import decode_recorded_pause_reason, present_overview, project_portfolio
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import AttemptId, CandidateId, LeaseId, ProposalId, WorkItemId
@@ -322,4 +322,26 @@ def discover_actions(
         role,
         lease_id=lease_id,
         generation=generation,
+    )
+
+
+BOARD = query_models.BoardPages("/work-root/views/board.md", "/work-root/views/board.html")
+
+
+def project_overview(
+    state: stored_state.StoredWorkState, now: datetime, board: query_models.BoardPages
+) -> query_models.WorkOverview:
+    """Project a complete fixture's overview, the full-state counterpart of the focused overview read."""
+
+    return present_overview(
+        str(state.lifecycle.project.revision),
+        tuple(
+            sorted(
+                str(attempt.attempt_id)
+                for attempt in state.lifecycle.attempts
+                if attempt.state == work_models.AttemptState.ACTIVE
+            )
+        ),
+        project_portfolio(state, now),
+        board,
     )

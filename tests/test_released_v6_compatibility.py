@@ -23,7 +23,7 @@ from pinboard.domain.decisions import available_actions
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId, HostId, LeaseId, TaskId, WorkItemId
 from pinboard.mcp import server as mcp_server
-from tests.decision_support import project_decision_snapshot
+from tests.decision_support import BOARD, project_decision_snapshot
 from tests.domain_support import expect_success
 from tests.native_support import call_advertised_tool
 from tests.support import SQLITE_NOW, NoReadyCandidateReviews
@@ -78,12 +78,12 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                     ),
                 )
                 status = queries.project_item_status(
-                    store, NoReadyCandidateReviews(), WorkItemId("intake-work"), SQLITE_NOW
+                    store, NoReadyCandidateReviews(), WorkItemId("intake-work"), SQLITE_NOW, BOARD
                 )
                 assert isinstance(status, query_models.ItemStatus)
                 self.assertEqual(stored_state.StoredWorkItemState.READY, status.state)
-                overview = queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW)
-                self.assertEqual("pinboard-overview/v6", overview.schema)
+                overview = queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD)
+                self.assertEqual("pinboard-overview/v7", overview.schema)
                 proposal = next(value for value in overview.items if value.item_id == "zz-proposal-a")
                 self.assertEqual(work_models.WorkState.READY, proposal.state)
                 self.assertIsNotNone(proposal.proposal_origin)

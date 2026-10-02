@@ -2,7 +2,7 @@
 
 This harness measures how agents that load Pinboard's skills talk to a person. It replays scripted conversations against a Claude Code or Codex agent in disposable projects, has a blind scorer grade every reply against a frozen checklist, and compares a baseline skills revision with a candidate per checklist rule. Separate fictional investigation trials record evidence substance without applying that delivery verdict. [CRITERIA.md](CRITERIA.md) states how many runs a delivery comparison needs, how the result is classified as improved, no worse or inconclusive, and what one comparison costs.
 
-A guidance change cites this harness and its criteria by path and revision as its acceptance check. It does not copy the harness.
+A guidance change runs this harness when its recorded drift estimate finds a plausible effect on authority, lifecycle, review, safety or other correctness-relevant behavior, or when it rewrites or reorders existing rules; [CONTRIBUTING.md](../../CONTRIBUTING.md#evaluate-guidance-behavior) describes the estimate. A change that runs it cites this harness and its criteria by path and revision as its acceptance check and does not copy the harness.
 
 The harness is a development tool outside the installed Pinboard package. It evaluates Pinboard only as an external client: through an exported revision's own `scripts/pinboard` launcher, skills and MCP server. Live runs spend real money and are verified on macOS; the unit tests that cover its arithmetic and credential handling run on macOS and Linux in CI, which never runs an agent or a scorer.
 

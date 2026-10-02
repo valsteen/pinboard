@@ -567,7 +567,7 @@ class McpCaptureTest(unittest.TestCase):
             self.assertIn("commit=revision-7", diagnostics_stream.getvalue())
 
     def test_result_validation_failure_preserves_unavailable_capture_context(self) -> None:
-        invalid: dict[str, execution.JsonValue] = {"schema": "pinboard-item-status/v2"}
+        invalid: dict[str, execution.JsonValue] = {"schema": "pinboard-item-status/v3"}
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             capture = execution.SemanticCapture(directory)

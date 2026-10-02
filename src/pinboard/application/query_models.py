@@ -679,7 +679,7 @@ class CompletionRecoveryRequired:
     reason: str
 
 
-type ItemStatusSchema = Literal["pinboard-item-status/v2"]
+type ItemStatusSchema = Literal["pinboard-item-status/v3"]
 type ItemStatusAuthority = Literal["sqlite-v7"]
 
 
@@ -910,6 +910,16 @@ class PreparationStatusView(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     status: authority_models.PreparationLeaseStatus
 
 
+class BoardPages(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Absolute paths of the two generated board projections under the selected work root.
+
+    The paths name where the board is written, not proof that it has been written yet.
+    """
+
+    markdown: str
+    html: str
+
+
 class ItemStatus(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: ItemStatusSchema
     authority: ItemStatusAuthority
@@ -926,6 +936,7 @@ class ItemStatus(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     review_verdict: ReviewVerdict
     closure: ItemClosure | None
     preparation: PreparationStatusView | None
+    board: BoardPages
 
 
 @dataclass(frozen=True, slots=True)
@@ -1180,13 +1191,14 @@ class NextUnstarted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class WorkOverview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-overview/v6"]
+    schema: Literal["pinboard-overview/v7"]
     authority: Literal["sqlite-v7"]
     revision: str
     active_attempts: tuple[str, ...]
     items: tuple[OverviewItem, ...]
     immediate_options: tuple[str, ...]
     next_unstarted: NextUnstarted | None
+    board: BoardPages
 
 
 @dataclass(frozen=True, slots=True)

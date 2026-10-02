@@ -29,6 +29,7 @@ from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode, RootError, RootErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
+from pinboard.adapters.files.views import board_pages
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
@@ -67,6 +68,7 @@ from pinboard.mcp import mutation_operations as mcp_mutations
 from pinboard.mcp import read_operations as mcp_reads
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointPackageSupport
+from tests.decision_support import BOARD
 from tests.domain_support import action
 from tests.native_support import call_advertised_tool, call_native_tool
 from tests.support import SQLITE_NOW, NoReadyCandidateReviews, complete_sqlite_state, initialize_store
@@ -385,7 +387,9 @@ class McpTransportTest(unittest.TestCase):
         before = store.validated_snapshot()
         current = tuple(
             item.item_id
-            for item in queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW).items
+            for item in queries.project_current_overview(
+                store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD
+            ).items
         )
         requested = (*current[1:], current[0])
         request: dict[str, contracts.JsonValue] = {
@@ -448,7 +452,7 @@ class McpTransportTest(unittest.TestCase):
                 tuple(
                     item.item_id
                     for item in queries.project_current_overview(
-                        fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW
+                        fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD
                     ).items
                 ),
             )
@@ -479,7 +483,9 @@ class McpTransportTest(unittest.TestCase):
                 "requested_order": list[contracts.JsonValue](requested),
             }
             # Matching fresh order is identical before and after a no-op: it cannot prove our commit.
-            prior_overview = queries.project_current_overview(fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW)
+            prior_overview = queries.project_current_overview(
+                fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD
+            )
             with patch(
                 "pinboard.adapters.files.views.atomic_replace",
                 side_effect=FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, "injected view failure"),
@@ -491,7 +497,7 @@ class McpTransportTest(unittest.TestCase):
             self.assertEqual("current-state-only-not-caller-commit-proof", warning_view.recovery.meaning)
             self.assertEqual(
                 prior_overview.items,
-                queries.project_current_overview(fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW).items,
+                queries.project_current_overview(fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD).items,
             )
             self.assertNotEqual(committed["history_id"], warning["history_id"])
             assert warning_view.warning is not None
@@ -707,7 +713,9 @@ class McpTransportTest(unittest.TestCase):
         store = SQLiteWorkStore(roots.database_path)
         current = tuple(
             item.item_id
-            for item in queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW).items
+            for item in queries.project_current_overview(
+                store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD
+            ).items
         )
         executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=2)
         self.addCleanup(executor.shutdown)
@@ -786,7 +794,7 @@ class McpTransportTest(unittest.TestCase):
                 tuple(
                     item.item_id
                     for item in queries.project_current_overview(
-                        store.read_project_overview(SQLITE_NOW), SQLITE_NOW
+                        store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD
                     ).items
                 ),
             )
@@ -914,7 +922,7 @@ class McpTransportTest(unittest.TestCase):
                 {"request": common | {"role": "worker", "lease_id": "lease ", "generation": 1}},
             )
             assert isinstance(accepted, CallToolResult) and isinstance(accepted.structured_content, dict)
-            self.assertEqual("pinboard-item-status/v2", accepted.structured_content["schema"])
+            self.assertEqual("pinboard-item-status/v3", accepted.structured_content["schema"])
             for result, code in (
                 (invalid_path, "ITEM_STATUS_INVALID"),
                 (invalid_identity, "ACTIONS_INVALID"),
@@ -2706,7 +2714,11 @@ class McpTransportTest(unittest.TestCase):
 
     def _expected_bytes(self, roots: DurableRoots, item_id: str) -> bytes:
         projected = queries.project_item_status(
-            SQLiteWorkStore(roots.database_path), NoReadyCandidateReviews(), WorkItemId(item_id), datetime.now(UTC)
+            SQLiteWorkStore(roots.database_path),
+            NoReadyCandidateReviews(),
+            WorkItemId(item_id),
+            datetime.now(UTC),
+            board_pages(roots.work_root),
         )
         if not isinstance(projected, query_models.ItemStatus):
             raise AssertionError(str(projected))
@@ -3320,7 +3332,7 @@ class McpTransportTest(unittest.TestCase):
             self.assertIsInstance(successful.structured_content, dict)
         overview_content = overview.structured_content
         assert isinstance(overview_content, dict)
-        self.assertEqual("pinboard-overview/v6", overview_content["schema"])
+        self.assertEqual("pinboard-overview/v7", overview_content["schema"])
         self.assertEqual("sqlite-v7", overview_content["authority"])
         self.assertEqual(["work-a-1"], overview_content["active_attempts"])
         observer_content = observer.structured_content

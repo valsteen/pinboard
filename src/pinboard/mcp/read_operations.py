@@ -15,7 +15,7 @@ from typing import assert_never
 import msgspec
 
 from pinboard.adapters import candidate_evidence, dispatch_operations, review_operations
-from pinboard.adapters.files import root
+from pinboard.adapters.files import root, views
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, ImmutableFilePublishedError, RootError
@@ -290,7 +290,11 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
     match request:
         case contracts.ItemStatusItemRequest():
             projected = queries.project_item_status(
-                store, _AttemptReviewEvidence(durable, store), WorkItemId(request.item_id), datetime.now(UTC)
+                store,
+                _AttemptReviewEvidence(durable, store),
+                WorkItemId(request.item_id),
+                datetime.now(UTC),
+                views.board_pages(durable.work_root),
             )
             if isinstance(projected, DecisionFailure):
                 return common._item_status_failure(projected.code.value, projected.message, projected.details)
@@ -722,7 +726,9 @@ def _read_overview(project_root: str, work_root: str, token: execution.Cancellat
     token.checkpoint()
     operation_time = datetime.now(UTC)
     store = common.compose_store(durable)
-    overview = queries.project_current_overview(store.read_project_overview(operation_time), operation_time)
+    overview = queries.project_current_overview(
+        store.read_project_overview(operation_time), operation_time, views.board_pages(durable.work_root)
+    )
     token.checkpoint()
     content = msgspec.to_builtins(overview)
     assert isinstance(content, dict)

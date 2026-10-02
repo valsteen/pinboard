@@ -28,7 +28,7 @@ from pinboard.application.queries import (
     damaged_receipt_recovery,
     decode_recorded_pause_reason,
     project_live_portfolio,
-    project_overview,
+    project_portfolio,
 )
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, WorkItemId
@@ -60,20 +60,20 @@ def _deferral_label(policy: work_models.ObligationDeferralPolicy) -> str:
 
 @dataclass(frozen=True, slots=True)
 class _ViewInputs:
-    overview: query_models.WorkOverview
+    portfolio: tuple[query_models.OverviewItem, ...]
     overview_items: Mapping[str, query_models.OverviewItem]
     dependencies: Mapping[WorkItemId, tuple[WorkItemId, ...]]
     definitions: Mapping[WorkItemId, stored_state.ItemDefinitionRevision]
 
 
 def _project_view_inputs(state: stored_state.StoredWorkState, now: datetime) -> _ViewInputs:
-    overview = project_overview(state, now)
+    portfolio = project_portfolio(state, now)
     dependency_groups: dict[WorkItemId, list[WorkItemId]] = {item.item_id: [] for item in state.lifecycle.work_items}
     for dependency in sorted(state.lifecycle.dependencies, key=_dependency_key):
         dependency_groups[dependency.item_id].append(dependency.dependency_id)
     return _ViewInputs(
-        overview,
-        MappingProxyType({item.item_id: item for item in overview.items}),
+        portfolio,
+        MappingProxyType({item.item_id: item for item in portfolio}),
         MappingProxyType({item_id: tuple(dependencies) for item_id, dependencies in dependency_groups.items()}),
         MappingProxyType({definition.item_id: definition for definition in state.lifecycle.definition_revisions}),
     )
@@ -208,6 +208,13 @@ def _damaged_view_message(damaged: tuple[query_models.DamagedTransitionReceipt, 
 BOARD_MARKDOWN = "board.md"
 BOARD_HTML = "board.html"
 BOARD_LOCK = "board.lock"
+
+
+def board_pages(work_root: Path) -> query_models.BoardPages:
+    """Name both board projections under the selected work root, whether or not a refresh has written them yet."""
+
+    view_root = work_root / "views"
+    return query_models.BoardPages(str(view_root / BOARD_MARKDOWN), str(view_root / BOARD_HTML))
 
 
 class _BoardGroup(Enum):
@@ -779,6 +786,6 @@ def derive_expected_view_bytes(
     expected_views.update(
         (f"history/{receipt.history_id}.md", _render_history(receipt)) for receipt in state.transition_receipts
     )
-    expected_views[BOARD_MARKDOWN] = _render_board_markdown(view_inputs.overview.items)
-    expected_views[BOARD_HTML] = _render_board_html(view_inputs.overview.items)
+    expected_views[BOARD_MARKDOWN] = _render_board_markdown(view_inputs.portfolio)
+    expected_views[BOARD_HTML] = _render_board_html(view_inputs.portfolio)
     return ExpectedViews(MappingProxyType(expected_views), tuple(damaged))

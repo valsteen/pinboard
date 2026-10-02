@@ -442,7 +442,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
             mcp_server.ITEM_STATUS_TOOL,
             {"request": {**self.roots(fixture), "operation": "item", "item_id": "work-a"}},
         )
-        self.assertEqual("pinboard-item-status/v2", item["schema"])
+        self.assertEqual("pinboard-item-status/v3", item["schema"])
         self.assertNotIn("presence", self.json_object(item["closure"]))
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             connection.execute(
@@ -664,7 +664,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
             )
         self.assertEqual({"kind": "repository-cleanup", "target_revision": integrated["target_revision"]}, cleanup)
         self.assertEqual({"target": "attempt", "action_kind": "complete"}, terminal["action"])
-        self.assertEqual("pinboard-item-status/v2", item["schema"])
+        self.assertEqual("pinboard-item-status/v3", item["schema"])
         self.assertNotIn("presence", json.dumps(overview))
 
     def test_integration_reads_stay_keyed_as_retained_history_grows(self) -> None:

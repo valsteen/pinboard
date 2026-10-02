@@ -14,6 +14,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import pr_reviews, queries, query_models
 from pinboard.domain.identifiers import WorkItemId
 from pinboard.mcp import contracts
+from tests.decision_support import BOARD
 from tests.native_support import call_native_tool
 from tests.support import SQLITE_NOW, JsonObject, NoReadyCandidateReviews, complete_sqlite_state, initialize_store
 
@@ -155,7 +156,7 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
             brief_history_id = started.brief_history_id
             assert brief_history_id is not None
             item_status = queries.project_item_status(
-                SQLiteWorkStore(roots.database_path), NoReadyCandidateReviews(), item_id, SQLITE_NOW
+                SQLiteWorkStore(roots.database_path), NoReadyCandidateReviews(), item_id, SQLITE_NOW, BOARD
             )
             assert isinstance(item_status, query_models.ItemStatus)
             self.assertEqual((), item_status.attempts)

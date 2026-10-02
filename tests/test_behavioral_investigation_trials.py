@@ -7,12 +7,194 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from evals.behavioral import cli, codex_driver, investigation, investigation_trials, oneshot, processes, spend
+from evals.behavioral import (
+    claude_driver,
+    cli,
+    codex_driver,
+    investigation,
+    investigation_trials,
+    oneshot,
+    processes,
+    spend,
+)
 from evals.behavioral.layout import Layout
-from evals.behavioral.records import CodexAccounting, ExportRecord, InvestigationRunRecord, write_new
+from evals.behavioral.records import (
+    ClaudeInvestigationRunRecord,
+    CodexAccounting,
+    ExportRecord,
+    InvestigationRunRecord,
+    write_new,
+)
 
 
 class InvestigationTrialTests(unittest.TestCase):
+    def test_haiku_route_uses_two_fresh_sessions_one_world_and_records_actual_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layout = Layout(root / "out")
+            calls: list[list[str]] = []
+            actual_run_tool = processes.run_tool
+
+            def controlled(tool: processes.Tool, arguments: list[str], **kwargs: object) -> processes.Completed:
+                if tool is processes.Tool.GIT:
+                    return actual_run_tool(tool, arguments, **kwargs)  # type: ignore[arg-type]
+                self.assertIs(tool, processes.Tool.CLAUDE)
+                self.assertNotIn("--effort", arguments)
+                self.assertNotIn("--thinking", arguments)
+                self.assertEqual(arguments[arguments.index("--tools") + 1], "Bash,Read,Write,Edit,Glob,Grep")
+                self.assertIn("--session-id", arguments)
+                self.assertNotIn("--resume", arguments)
+                calls.append(arguments)
+                identity = arguments[arguments.index("--session-id") + 1]
+                inquiry = kwargs["cwd"]
+                assert isinstance(inquiry, Path)
+                brief = inquiry / "kiosk-brief.md"
+                events: list[dict[str, object]] = []
+                if len(calls) == 1:
+                    brief.write_text("Saved brief with source window 09:00-09:30Z\n")
+                else:
+                    self.assertIn("09:00-09:30Z", brief.read_text())
+                    events.extend(
+                        [
+                            {
+                                "type": "assistant",
+                                "message": {
+                                    "content": [
+                                        {
+                                            "type": "tool_use",
+                                            "id": "read-brief",
+                                            "name": "Bash",
+                                            "input": {"command": "cat kiosk-brief.md"},
+                                        }
+                                    ]
+                                },
+                            },
+                            {
+                                "type": "user",
+                                "message": {
+                                    "content": [
+                                        {
+                                            "type": "tool_result",
+                                            "tool_use_id": "read-brief",
+                                            "is_error": False,
+                                            "content": brief.read_text(),
+                                        }
+                                    ]
+                                },
+                            },
+                        ]
+                    )
+                events.append(
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "session_id": identity,
+                        "is_error": False,
+                        "total_cost_usd": 0.5,
+                        "usage": {
+                            "input_tokens": 100,
+                            "cache_read_input_tokens": 20,
+                            "cache_creation_input_tokens": 10,
+                            "output_tokens": 30,
+                        },
+                        "permission_denials": [],
+                        "result": "Complete brief",
+                    }
+                )
+                return processes.Completed(0, "\n".join(json.dumps(event) for event in events) + "\n", "", False)
+
+            exported = ExportRecord("pinboard-behavioral-export/v1", "0" * 40, "0" * 64, str(root))
+            with (
+                patch.object(claude_driver.processes, "run_tool", side_effect=controlled),
+                patch.object(claude_driver, "claude_version", return_value="test"),
+                patch.object(claude_driver.ClaudeSession, "isolation_findings", return_value=[]),
+            ):
+                records = investigation_trials.run_claude(
+                    layout,
+                    cli.investigation_budget(layout, "haiku"),
+                    exported,
+                    investigation.DATA / "sets" / "heldout.json",
+                    "bounded-heldout",
+                    "guidance",
+                    1,
+                    root / "worlds",
+                )
+            self.assertEqual(2, len(calls))
+            self.assertNotEqual(
+                calls[0][calls[0].index("--session-id") + 1], calls[1][calls[1].index("--session-id") + 1]
+            )
+            self.assertTrue(all(record.outcome == "completed" for record in records))
+            self.assertEqual(records[0].world, records[1].world)
+            self.assertTrue(records[1].turn and records[1].turn.saved_evidence_read)
+            self.assertEqual(1.0, spend.total(spend.items(layout)))
+            self.assertEqual(
+                2, sum(isinstance(record, ClaudeInvestigationRunRecord) for record in layout.investigation_runs())
+            )
+
+    def test_haiku_unknown_or_overshot_cost_stops_before_second_paid_session(self) -> None:
+        for reported_cost in (None, 16.0):
+            with self.subTest(reported_cost=reported_cost), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                layout = Layout(root / "out")
+                inquiry = root / "world" / "inquiry"
+                inquiry.mkdir(parents=True)
+                calls = 0
+
+                def controlled(
+                    _tool: processes.Tool, arguments: list[str], cost: float | None = reported_cost, **_kwargs: object
+                ) -> processes.Completed:
+                    nonlocal calls
+                    calls += 1
+                    result: dict[str, object] = {
+                        "type": "result",
+                        "subtype": "success",
+                        "session_id": arguments[arguments.index("--session-id") + 1],
+                        "is_error": False,
+                        "usage": {
+                            "input_tokens": 100,
+                            "cache_read_input_tokens": 0,
+                            "cache_creation_input_tokens": 0,
+                            "output_tokens": 10,
+                        },
+                        "permission_denials": [],
+                        "result": "brief",
+                    }
+                    if cost is not None:
+                        result["total_cost_usd"] = cost
+                    return processes.Completed(0, json.dumps(result) + "\n", "", False)
+
+                exported = ExportRecord("pinboard-behavioral-export/v1", "0" * 40, "0" * 64, str(root))
+                with (
+                    patch.object(
+                        investigation_trials, "prepare_world", return_value=(root / "world", "0" * 64, "0" * 64)
+                    ),
+                    patch.object(claude_driver.processes, "run_tool", side_effect=controlled),
+                    patch.object(claude_driver, "claude_version", return_value="test"),
+                    patch.object(claude_driver.ClaudeSession, "isolation_findings", return_value=[]),
+                ):
+                    records = investigation_trials.run_claude(
+                        layout,
+                        cli.investigation_budget(layout, "haiku"),
+                        exported,
+                        investigation.DATA / "sets" / "heldout.json",
+                        "bounded-heldout",
+                        "guidance",
+                        1,
+                        root / "worlds",
+                    )
+                self.assertEqual(1, calls)
+                self.assertEqual(1, len(records))
+                self.assertEqual(reported_cost, records[0].cost_usd)
+                self.assertIsNotNone(records[0].problem if reported_cost is None else records[0].cost_usd)
+                self.assertEqual(reported_cost or 0.0, spend.total(spend.items(layout)))
+                if reported_cost is None:
+                    self.assertTrue(spend.main_usage_unknown(layout))
+                    with self.assertRaisesRegex(ValueError, "unknown"):
+                        cli.investigation_budget(layout, "next")
+                else:
+                    with self.assertRaisesRegex(ValueError, "batch overshot"):
+                        cli.investigation_budget(layout, "next")
+
     def test_reviewer_choice_is_explicit_in_each_codex_home(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

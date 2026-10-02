@@ -16,6 +16,7 @@ import msgspec
 
 from evals.behavioral.records import (
     AssessmentRecord,
+    ClaudeInvestigationRunRecord,
     CodexAccounting,
     InvestigationAssessmentRecord,
     InvestigationRunRecord,
@@ -30,6 +31,10 @@ from evals.behavioral.records import (
 
 RUN_RECORD = "run.json"
 SCORER_INPUT = "scorer-input.json"
+
+
+class InvestigationSchema(msgspec.Struct, frozen=True):
+    schema: str
 
 
 @dataclass(frozen=True)
@@ -84,9 +89,17 @@ class Layout:
         ):
             yield path, msgspec.json.decode(path.read_bytes(), type=CodexAccounting)
 
-    def investigation_runs(self) -> Iterator[InvestigationRunRecord]:
+    def investigation_runs(self) -> Iterator[InvestigationRunRecord | ClaudeInvestigationRunRecord]:
         for path in sorted((self.root / "investigations").glob("*/*/run.json")):
-            yield msgspec.json.decode(path.read_bytes(), type=InvestigationRunRecord)
+            content = path.read_bytes()
+            schema = msgspec.json.decode(content, type=InvestigationSchema).schema
+            match schema:
+                case "pinboard-investigation-run/v1":
+                    yield msgspec.json.decode(content, type=InvestigationRunRecord)
+                case "pinboard-investigation-claude-run/v1":
+                    yield msgspec.json.decode(content, type=ClaudeInvestigationRunRecord)
+                case _:
+                    raise ValueError(f"unsupported investigation record schema in {path}: {schema}")
 
     def investigation_assessments(self) -> Iterator[InvestigationAssessmentRecord]:
         for path in sorted((self.root / "investigation-assessments").glob("*/*/session.json")):

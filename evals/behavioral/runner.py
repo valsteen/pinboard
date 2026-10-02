@@ -193,7 +193,7 @@ def execute(
 def claude_run(plan: RunPlan, scenario: Scenario, key: RunKey) -> RunRecord:
     state = start(plan, scenario, key)
     version = claude_driver.claude_version()
-    session = ClaudeSession.start(Path(plan.export.plugin_root), plan.model, state.world_root() / "tally")
+    session = ClaudeSession.start(Path(plan.export.plugin_root), plan.model, state.world_root() / "tally", ("default",))
     outcome: RunOutcome = Completed()
     interruption: BaseException | None = None
     try:

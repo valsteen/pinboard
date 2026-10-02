@@ -13,7 +13,7 @@ from enum import Enum
 
 from evals.behavioral.layout import Layout
 from evals.behavioral.processes import Window
-from evals.behavioral.records import Runtime
+from evals.behavioral.records import ClaudeInvestigationRunRecord, Runtime
 
 
 class Category(Enum):
@@ -70,17 +70,22 @@ def items(layout: Layout) -> list[Item]:
         Item(Category.SUBSTANCE_ASSESSMENT, record.assessor_model, record.cost_usd or 0.0, record.cost_usd is None)
         for record in layout.assessments()
     )
-    recorded.extend(
-        Item(
-            Category.CODEX_AGENT_RUN,
-            record.arm,
-            record.accounting.main_known_cost_usd if record.accounting is not None else 0.0,
-            record.accounting is None
-            or not record.accounting.main_usage_complete
-            or bool(record.accounting.reviewer_usage),
-        )
-        for record in layout.investigation_runs()
-    )
+    for record in layout.investigation_runs():
+        if isinstance(record, ClaudeInvestigationRunRecord):
+            recorded.append(
+                Item(Category.CLAUDE_AGENT_RUN, record.arm, record.cost_usd or 0.0, record.cost_usd is None)
+            )
+        else:
+            recorded.append(
+                Item(
+                    Category.CODEX_AGENT_RUN,
+                    record.arm,
+                    record.accounting.main_known_cost_usd if record.accounting is not None else 0.0,
+                    record.accounting is None
+                    or not record.accounting.main_usage_complete
+                    or bool(record.accounting.reviewer_usage),
+                )
+            )
     recorded.extend(
         Item(Category.SUBSTANCE_ASSESSMENT, record.assessor_model, record.cost_usd or 0.0, record.cost_usd is None)
         for record in layout.investigation_assessments()
@@ -133,7 +138,7 @@ def report(layout: Layout) -> str:
     reviewers.update(
         (entry.thread_id, entry)
         for trial in layout.investigation_runs()
-        if trial.accounting is not None
+        if not isinstance(trial, ClaudeInvestigationRunRecord) and trial.accounting is not None
         for entry in trial.accounting.reviewer_usage
     )
     if reviewers or main_usage_unknown(layout):

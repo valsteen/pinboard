@@ -143,7 +143,7 @@ class InvestigationWorldTests(unittest.TestCase):
             def send_claude(human: str, previous: str | None) -> tuple[str, bool, str | None]:
                 nonlocal session
                 if previous is None:
-                    session = claude_driver.ClaudeSession.start(root, "test-model", root)
+                    session = claude_driver.ClaudeSession.start(root, "test-model", root, ("default",))
                 assert session is not None
                 session.turn(1 if previous is None else 2, human, None, root / "claude.jsonl")
                 return session.session_id, previous is None and len(claude_calls) > 1, None

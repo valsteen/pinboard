@@ -407,6 +407,29 @@ class InvestigationRunRecord(Record, frozen=True):
     problem: str | None
 
 
+class ClaudeInvestigationRunRecord(Record, frozen=True):
+    """One fresh Claude session, recorded before another paid session can start."""
+
+    schema: Literal["pinboard-investigation-claude-run/v1"]
+    case_id: str
+    scenario_sha256: Sha256
+    set_sha256: Sha256
+    arm: str
+    arm_sha256: Sha256
+    export_commit: str
+    model: Literal["claude-haiku-4-5-20251001"]
+    cli_version: str
+    world: str
+    started_at: str
+    finished_at: str
+    turn: InvestigationTurnRecord | None
+    cache_read_input_tokens: Count | None
+    cache_creation_input_tokens: Count | None
+    cost_usd: Usd | None
+    outcome: Literal["completed", "failed"]
+    problem: str | None
+
+
 class InvestigationAssessmentRecord(Record, frozen=True):
     schema: Literal["pinboard-investigation-assessment-session/v1"]
     case_id: str

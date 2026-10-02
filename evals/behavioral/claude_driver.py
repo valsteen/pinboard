@@ -134,13 +134,7 @@ class SkillProvenance:
 
     def foreign(self) -> int:
         return (
-            self.managed
-            + self.user
-            + self.project
-            + self.additional
-            + self.legacy_commands
-            + self.skill_dir_commands
-            + self.builtin_plugin
+            self.managed + self.user + self.project + self.additional + self.legacy_commands + self.skill_dir_commands
         )
 
     def describe(self) -> str:
@@ -183,6 +177,7 @@ class ClaudeSession:
     plugin_root: Path
     model: str
     project: Path
+    available_tools: tuple[str, ...]
     session_id: str
     init: InitEvent | None
     provenance: SkillProvenance | None
@@ -191,8 +186,8 @@ class ClaudeSession:
     reported_cost_usd: float
 
     @classmethod
-    def start(cls, plugin_root: Path, model: str, project: Path) -> ClaudeSession:
-        return cls(plugin_root, model, project, str(uuid.uuid4()), None, None, set(), [], 0.0)
+    def start(cls, plugin_root: Path, model: str, project: Path, available_tools: tuple[str, ...]) -> ClaudeSession:
+        return cls(plugin_root, model, project, available_tools, str(uuid.uuid4()), None, None, set(), [], 0.0)
 
     def loaded_context(self) -> list[InventoryEntry]:
         hooks = [
@@ -227,6 +222,7 @@ class ClaudeSession:
                     str(self.plugin_root),
                     "--permission-mode",
                     "bypassPermissions",
+                    *(["--tools", ",".join(self.available_tools)] if self.available_tools != ("default",) else []),
                     "--output-format",
                     "stream-json",
                     "--verbose",
@@ -389,8 +385,11 @@ def isolation_findings(init: InitEvent, plugin_root: Path, provenance: SkillProv
         )
     if provenance.plugin != len(exported):
         findings.append(f"{len(exported)} exported skills listed but {provenance.plugin} plugin skills loaded")
-    if len(others) > provenance.bundled:
-        findings.append(f"{len(others)} unprefixed skills listed but only {provenance.bundled} bundled skills loaded")
+    if len(others) > provenance.bundled + provenance.builtin_plugin:
+        findings.append(
+            f"{len(others)} unprefixed skills listed but only {provenance.bundled} bundled and "
+            f"{provenance.builtin_plugin} built-in plugin skills loaded"
+        )
     return findings
 
 

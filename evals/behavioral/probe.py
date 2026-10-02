@@ -62,7 +62,9 @@ def probe_codex(
             credentials.exclusive_codex_session(Path(tempfile.gettempdir()), budget.window),
             credentials.isolated_home(credential_source, None, budget.window) as home,
         ):
-            codex_driver.write_config(home.path, Path(export.plugin_root), model, reasoning_effort, budget.window)
+            codex_driver.write_config(
+                home.path, Path(export.plugin_root), model, reasoning_effort, "auto_review", budget.window
+            )
             context = codex_driver.loaded_context(home.path, built.project, budget.window)
             (directory / "prompt-input.txt").write_text(context.prompt_text)
             entries = [

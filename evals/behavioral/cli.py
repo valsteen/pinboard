@@ -11,6 +11,7 @@ import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 
 import msgspec
@@ -535,16 +536,31 @@ def investigation_budget(layout: Layout, batch_id: str) -> spend.Budget:
     recorded = spend.items(layout)
     if spend.main_usage_unknown(layout) or any(a.reviewer_usage for _, a in layout.codex_accounting()):
         raise ValueError("previous session cost is unknown; no paid trial may start")
+    spent = spend.total(recorded)
+    previous: list[investigation_trials.Batch] = [
+        msgspec.json.decode(path.read_bytes(), type=investigation_trials.Batch)
+        for path in (layout.root / "batches").glob("*.json")
+    ]
+    if previous:
+        ordered = sorted((batch.start_usd, batch.cap_usd) for batch in previous)
+        if any(
+            later_start > start + cap
+            for (start, cap), (later_start, _) in pairwise(ordered)
+        ):
+            raise ValueError("previous batch overshot 15 USD; no paid trial may start")
+        latest_start, latest_cap = ordered[-1]
+        if spent > latest_start + latest_cap:
+            raise ValueError("previous batch overshot 15 USD; no paid trial may start")
     marker = layout.root / "batches" / f"{batch_id}.json"
     if marker.is_file():
         batch = msgspec.json.decode(marker.read_bytes(), type=investigation_trials.Batch)
     else:
         batch = investigation_trials.Batch(
-            schema="pinboard-investigation-batch/v1", start_usd=spend.total(recorded), cap_usd=15.0
+            schema="pinboard-investigation-batch/v1", start_usd=spent, cap_usd=15.0
         )
         marker.parent.mkdir(parents=True, exist_ok=True)
         write_new(marker, batch)
-    if spend.total(recorded) < batch.start_usd:
+    if spent < batch.start_usd:
         raise ValueError("batch start exceeds recorded spend")
     return spend.Budget(layout, min(120.0, batch.start_usd + batch.cap_usd), processes.Window(None), False)
 

@@ -32,6 +32,7 @@ SOFTWARE.
 """
 EXPECTED_SKILLS: Final = frozenset(
     {
+        "investigation-focus",
         "maintaining-agent-guidance",
         "pinboard",
         "pinboard-deliver",
@@ -42,6 +43,7 @@ EXPECTED_SKILLS: Final = frozenset(
     }
 )
 EXPECTED_SKILL_DISPLAY_NAMES: Final = {
+    "investigation-focus": "Investigation Focus",
     "maintaining-agent-guidance": "Maintaining Agent Guidance",
     "pinboard": "Pinboard",
     "pinboard-deliver": "Pinboard: Deliver",
@@ -424,7 +426,7 @@ def main() -> None:
     skill_paths = tuple(sorted((ROOT / "skills").glob("*/SKILL.md")))
     if {path.parent.name for path in skill_paths} != EXPECTED_SKILLS:
         raise ValueError(
-            "public skills must be exactly maintaining-agent-guidance, pinboard, pinboard-deliver, pinboard-intake, "
+            "public skills must be exactly investigation-focus, maintaining-agent-guidance, pinboard, pinboard-deliver, pinboard-intake, "
             "repository-readiness, slop-cleanup, and technical-writing"
         )
     for path in skill_paths:

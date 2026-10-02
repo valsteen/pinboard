@@ -65,6 +65,7 @@ You can ask naturally:
 
 Pinboard may activate a specialized skill automatically when the work calls for it. You can also invoke one directly:
 
+- **Investigation Focus** — `$investigation-focus` or `/pinboard:investigation-focus` — Choose one bounded inquiry outcome, gather checkable evidence from varied permitted sources, and keep a caller-owned local note so later sessions can revise direction and produce separate audience outputs. The [work-computer trial instructions](INSTALL.md#trial-investigation-focus-on-a-work-computer) cover the local collector and reviewed return.
 - **Technical Writing** — `$technical-writing` or `/pinboard:technical-writing` — Shape substantial technical documents and human-facing project artifacts.
 - **Repository Readiness** — `$repository-readiness` or `/pinboard:repository-readiness` — Map an unfamiliar repository before making reliable changes.
 - **Slop Cleanup** — `$slop-cleanup` or `/pinboard:slop-cleanup` — Remove abandoned code and the residue it leaves behind.

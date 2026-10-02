@@ -224,8 +224,15 @@ def run_tool(
 
 
 def git(arguments: Sequence[str], *, cwd: Path, window: Window) -> Completed:
+    """Suppress automatic maintenance before copying disposable fixture histories."""
     return run_tool(
-        Tool.GIT, arguments, cwd=cwd, environment=os.environ, stdin=None, timeout_seconds=300, window=window
+        Tool.GIT,
+        ["-c", "maintenance.auto=false", *arguments],
+        cwd=cwd,
+        environment=os.environ,
+        stdin=None,
+        timeout_seconds=300,
+        window=window,
     )
 
 

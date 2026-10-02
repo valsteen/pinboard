@@ -529,10 +529,6 @@ def _select_live_items(
     )
 
 
-def _attempt_key(value: stored_state.StoredAttempt) -> str:
-    return str(value.attempt_id)
-
-
 def _parallel_item_key(value: query_models.ParallelItem) -> str:
     return value.item_id
 
@@ -661,7 +657,43 @@ def _next_unstarted(items: tuple[query_models.OverviewItem, ...]) -> query_model
     return None
 
 
-def project_overview(state: stored_state.StoredWorkState, now: datetime) -> query_models.WorkOverview:
+def present_overview(
+    revision: str,
+    active_attempts: tuple[str, ...],
+    items: tuple[query_models.OverviewItem, ...],
+    board: query_models.BoardPages,
+) -> query_models.WorkOverview:
+    """Assemble the overview from live items in saved order and the selected work root's board pages."""
+
+    immediate = tuple(
+        item.item_id
+        for item in items
+        if item.eligible
+        and (item.planned_replacement is None or item.planned_replacement.temporarily_retained)
+        and (item.preparation is None or item.preparation.status != authority_models.PreparationLeaseStatus.ACTIVE)
+        and item.state
+        in {
+            work_models.WorkState.READY,
+            work_models.WorkState.DEFERRED,
+            work_models.WorkState.PAUSED,
+            work_models.WorkState.BLOCKED,
+        }
+    )
+    return query_models.WorkOverview(
+        "pinboard-overview/v7",
+        "sqlite-v7",
+        revision,
+        active_attempts,
+        items,
+        immediate,
+        _next_unstarted(items),
+        board,
+    )
+
+
+def project_portfolio(state: stored_state.StoredWorkState, now: datetime) -> tuple[query_models.OverviewItem, ...]:
+    """Project every live item in saved order from complete state, as generated views render it."""
+
     definitions = {value.item_id: value.definition for value in state.lifecycle.definition_revisions}
     attempts = {
         attempt.item_id: attempt.attempt_id
@@ -693,7 +725,7 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
         (value.affected_item_id, value.relation_revision): value for value in state.replacements.dispositions
     }
 
-    items = tuple(
+    return tuple(
         query_models.OverviewItem(
             str(item.item_id),
             definitions[item.item_id].title,
@@ -725,30 +757,6 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
             _project_preparation_status(preparations.get(item.item_id), now),
         )
         for item, live_state in live_items
-    )
-    immediate = tuple(
-        item.item_id
-        for item in items
-        if item.eligible
-        and (item.planned_replacement is None or item.planned_replacement.temporarily_retained)
-        and (item.preparation is None or item.preparation.status != authority_models.PreparationLeaseStatus.ACTIVE)
-        and (
-            item.state in {work_models.WorkState.READY, work_models.WorkState.DEFERRED}
-            or item.state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED}
-        )
-    )
-    return query_models.WorkOverview(
-        "pinboard-overview/v6",
-        "sqlite-v7",
-        str(state.lifecycle.project.revision),
-        tuple(
-            str(attempt.attempt_id)
-            for attempt in sorted(state.lifecycle.attempts, key=_attempt_key)
-            if attempt.state == work_models.AttemptState.ACTIVE
-        ),
-        items,
-        immediate,
-        _next_unstarted(items),
     )
 
 
@@ -793,16 +801,16 @@ def _project_overview_item(
     )
 
 
-def project_current_overview(facts: query_models.ProjectOverviewFacts, now: datetime) -> query_models.WorkOverview:
-    """Project overview output from current facts that exclude retained history."""
-
+def _project_current_items(
+    facts: query_models.ProjectOverviewFacts, now: datetime
+) -> tuple[query_models.OverviewItem, ...]:
     snapshot = facts.snapshot
     definitions = {value.work_item_id: value.definition for value in snapshot.definitions}
     live_ids = frozenset(item.work_item_id for item in snapshot.items)
     proposals, prerequisite_proposals = _proposal_maps(facts.proposals)
     preparations = {value.work_item_id: value for value in facts.preparations}
 
-    items = tuple(
+    return tuple(
         _project_overview_item(
             item,
             definitions[item.work_item_id],
@@ -818,30 +826,22 @@ def project_current_overview(facts: query_models.ProjectOverviewFacts, now: date
         )
         for item in sorted(snapshot.items, key=_decision_item_key)
     )
-    immediate = tuple(
-        item.item_id
-        for item in items
-        if item.eligible
-        and (item.planned_replacement is None or item.planned_replacement.temporarily_retained)
-        and (item.preparation is None or item.preparation.status != authority_models.PreparationLeaseStatus.ACTIVE)
-        and item.state
-        in {
-            work_models.WorkState.READY,
-            work_models.WorkState.DEFERRED,
-            work_models.WorkState.PAUSED,
-            work_models.WorkState.BLOCKED,
-        }
-    )
-    return query_models.WorkOverview(
-        "pinboard-overview/v6",
-        "sqlite-v7",
-        snapshot.revision,
+
+
+def project_current_overview(
+    facts: query_models.ProjectOverviewFacts, now: datetime, board: query_models.BoardPages
+) -> query_models.WorkOverview:
+    """Project overview output from current facts that exclude retained history."""
+
+    return present_overview(
+        facts.snapshot.revision,
         tuple(
-            str(attempt.attempt) for attempt in snapshot.attempts if attempt.state == work_models.AttemptState.ACTIVE
+            str(attempt.attempt)
+            for attempt in facts.snapshot.attempts
+            if attempt.state == work_models.AttemptState.ACTIVE
         ),
-        items,
-        immediate,
-        _next_unstarted(items),
+        _project_current_items(facts, now),
+        board,
     )
 
 
@@ -850,7 +850,7 @@ def project_live_portfolio(
 ) -> tuple[query_models.OverviewItem, ...]:
     """Project live items for generated presentations, which never render preparation authority."""
 
-    return project_current_overview(query_models.ProjectOverviewFacts(facts.snapshot, facts.proposals, ()), now).items
+    return _project_current_items(query_models.ProjectOverviewFacts(facts.snapshot, facts.proposals, ()), now)
 
 
 def project_item_overview(facts: query_models.ItemOverviewFacts, now: datetime) -> query_models.OverviewItem:
@@ -1100,6 +1100,7 @@ def project_item_status(
     reviews: ports.ReadyCandidateReviewReader,
     work_item_id: WorkItemId,
     now: datetime,
+    board: query_models.BoardPages,
 ) -> DecisionResult[query_models.ItemStatus] | query_models.DamagedTransitionReceipt:
     facts = reader.read_item_status(work_item_id)
     if facts is None:
@@ -1158,7 +1159,7 @@ def project_item_status(
             return selected_verdict
         verdict = selected_verdict
     return query_models.ItemStatus(
-        "pinboard-item-status/v2",
+        "pinboard-item-status/v3",
         "sqlite-v7",
         str(facts.project_revision),
         str(item.work_item_id),
@@ -1173,6 +1174,7 @@ def project_item_status(
         verdict,
         _project_closure(facts.closure),
         _project_selected_preparation_status(facts.preparation, now),
+        board,
     )
 
 

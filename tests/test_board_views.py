@@ -34,7 +34,9 @@ from pinboard.domain.identifiers import AttemptId, HostId, ProposalId, TaskId, W
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import read_operations as mcp_reads
-from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, test_definition
+from tests.decision_support import BOARD
+from tests.native_support import call_advertised_tool
+from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, initialize_store, test_definition
 
 HOSTILE_TITLE = "</script><img src=x onerror=alert(1)> & <!-- -->"
 HOSTILE_INTAKE = "</SCRIPT>\u2028<b>next</b>\u2029&amp;"
@@ -523,7 +525,9 @@ class BoardProjectionTest(unittest.TestCase):
             requested,
             [
                 value.item_id
-                for value in queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW).items
+                for value in queries.project_current_overview(
+                    store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD
+                ).items
             ],
         )
         with patch(
@@ -738,6 +742,56 @@ class BoardProjectionTest(unittest.TestCase):
         markdown = (project / ".pinboard" / "views" / "board.md").read_text(encoding="utf-8")
         self.assertIn("## Ready\n\n- None.\n", markdown)
         self.assertEqual([], _page_items((project / ".pinboard" / "views" / "board.html").read_text(encoding="utf-8")))
+
+
+class BoardPagePathTest(unittest.TestCase):
+    def _git(self, repository: Path, *arguments: str) -> None:
+        subprocess.run(
+            ("git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.com", *arguments),
+            check=True,
+            capture_output=True,
+        )
+
+    def test_overview_and_item_status_name_board_pages_under_the_selected_work_root(self) -> None:
+        for layout in ("linked-worktree", "external-work-root"):
+            with self.subTest(layout=layout):
+                temporary = tempfile.TemporaryDirectory()
+                self.addCleanup(temporary.cleanup)
+                base = Path(temporary.name).resolve()
+                repository = base / "repository"
+                subprocess.run(("git", "init", "--quiet", str(repository)), check=True)
+                (repository / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+                self._git(repository, "add", "tracked.txt")
+                self._git(repository, "commit", "--quiet", "-m", "initial")
+                if layout == "linked-worktree":
+                    project_root = base / "linked"
+                    self._git(repository, "worktree", "add", "--quiet", "-b", "linked", str(project_root))
+                    work_root = repository / ".pinboard"
+                    roots = resolve_durable_roots(repository)
+                else:
+                    project_root = repository
+                    work_root = base / "external-work"
+                    roots = resolve_durable_roots(repository, work_root)
+                initialize_database(roots, SQLITE_NOW)
+                initialize_store(SQLiteWorkStore(roots.database_path), complete_sqlite_state())
+                expected = {
+                    "markdown": str(work_root / "views" / "board.md"),
+                    "html": str(work_root / "views" / "board.html"),
+                }
+                selected: JsonObject = {"project_root": str(project_root), "work_root": str(work_root)}
+
+                overview = call_advertised_tool("pinboard_overview", selected)
+                status = call_advertised_tool(
+                    "pinboard_item_status", {"request": selected | {"operation": "item", "item_id": "work-c"}}
+                )
+
+                self.assertEqual("pinboard-overview/v7", overview["schema"])
+                self.assertEqual(expected, overview["board"])
+                self.assertEqual("pinboard-item-status/v3", status["schema"])
+                self.assertEqual(expected, status["board"])
+                self.assertNotEqual(project_root, work_root.parent)
+                self.assertFalse((work_root / "views" / "board.md").exists())
+                self.assertFalse((work_root / "views" / "board.html").exists())
 
 
 if __name__ == "__main__":

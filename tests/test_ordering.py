@@ -18,6 +18,7 @@ from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import HostId, LeaseId, TaskId, WorkItemId
 from pinboard.mcp import server as mcp_server
+from tests.decision_support import BOARD
 from tests.native_support import call_native_tool
 from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
 
@@ -101,7 +102,7 @@ class OrderingTest(unittest.TestCase):
         for path, previous in old_files.items():
             if path.name not in {f"{self.order[0]}.md", f"{self.order[1]}.md"}:
                 self.assertEqual(previous, (path.read_bytes(), path.stat().st_mtime_ns))
-        overview = queries.project_current_overview(fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW)
+        overview = queries.project_current_overview(fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD)
         self.assertEqual(requested, tuple(item.item_id for item in overview.items))
 
     def test_invalid_requests_and_stale_competitors_leave_ledger_unchanged(self) -> None:
@@ -170,7 +171,9 @@ class OrderingTest(unittest.TestCase):
             )
             attempts = tuple(replace(attempt, state=state) for attempt in snapshot.snapshot.attempts)
             overview = queries.project_current_overview(
-                replace(snapshot, snapshot=replace(snapshot.snapshot, items=items, attempts=attempts)), SQLITE_NOW
+                replace(snapshot, snapshot=replace(snapshot.snapshot, items=items, attempts=attempts)),
+                SQLITE_NOW,
+                BOARD,
             )
             assert overview.next_unstarted is not None
             self.assertEqual("zz-proposal-a", overview.next_unstarted.item_id)
@@ -232,7 +235,7 @@ class OrderingTest(unittest.TestCase):
                 initialize_store(store, state)
                 result = service.reorder(store, self.order, requested, TaskId("owner"), HostId("local"), SQLITE_NOW)
                 self.assertNotIsInstance(result, DecisionFailure)
-                overview = queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW)
+                overview = queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD)
                 assert overview.next_unstarted is not None
                 self.assertEqual(item, overview.next_unstarted.item_id)
                 self.assertEqual(retained, item in overview.immediate_options)
@@ -249,7 +252,7 @@ class OrderingTest(unittest.TestCase):
         self.assertNotIsInstance(prepared, DecisionFailure)
         before_authority = self.store.validated_snapshot().authority
         self.assertNotIsInstance(self.reorder(self.order, requested), DecisionFailure)
-        overview = queries.project_current_overview(self.store.read_project_overview(SQLITE_NOW), SQLITE_NOW)
+        overview = queries.project_current_overview(self.store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD)
         assert overview.next_unstarted is not None
         self.assertEqual(item, overview.next_unstarted.item_id)
         self.assertNotIn(item, overview.immediate_options)
@@ -262,6 +265,6 @@ class OrderingTest(unittest.TestCase):
         store = SQLiteWorkStore(roots.database_path)
         result = service.reorder(store, (), (), TaskId("owner"), HostId("local"), SQLITE_NOW)
         self.assertNotIsInstance(result, DecisionFailure)
-        overview = queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW)
+        overview = queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD)
         self.assertIsNone(overview.next_unstarted)
         self.assertEqual((), overview.items)

@@ -15,6 +15,7 @@ from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult
+from pinboard.adapters.files.views import board_pages
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import queries, query_models
@@ -56,7 +57,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         """Read the verdict through the advertised item leaf and again from a fresh store."""
 
         status = self.item_leaf(fixture)
-        self.assertEqual("pinboard-item-status/v2", status["schema"], status)
+        self.assertEqual("pinboard-item-status/v3", status["schema"], status)
         for attempt in self.json_array(status["attempts"]):
             self.assertEqual(fixture.brief.branch, self.json_object(attempt)["branch"])
         verdict = self.json_object(status["review_verdict"])
@@ -65,6 +66,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
             NoReadyCandidateReviews(),
             WorkItemId("work-a"),
             datetime.now(UTC),
+            board_pages(fixture.work),
         )
         assert isinstance(fresh, query_models.ItemStatus)
         if verdict["kind"] != "ready":

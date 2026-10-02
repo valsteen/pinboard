@@ -17,14 +17,14 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, service, stored_state
 from pinboard.application.mutation_models import PreparationStart
 from pinboard.application.mutations import project_transition_mutation
-from pinboard.application.queries import project_overview, select_parallel_preview
+from pinboard.application.queries import select_parallel_preview
 from pinboard.application.service import create_proposal, decide_and_commit_preparation_authority_change
 from pinboard.domain import authority_models, decision_models, decisions, work_models
 from pinboard.domain.authority_decisions import decide_preparation_authority
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import HostId, LeaseId, ProposalId, TaskId, WorkItemId
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
-from tests.decision_support import discover_actions, project_decision_snapshot
+from tests.decision_support import BOARD, discover_actions, project_decision_snapshot, project_overview
 from tests.domain_support import expect_success
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, mutation_allocation, reject_table_inserts
 
@@ -517,8 +517,8 @@ class PreparationAuthorityTest(unittest.TestCase):
         self.assertEqual(
             (WorkItemId("work-c"),), tuple(value.item_id for value in reloaded.authority.preparation_leases)
         )
-        before = project_overview(reloaded, expires_at - timedelta(microseconds=1))
-        at = project_overview(reloaded, expires_at)
+        before = project_overview(reloaded, expires_at - timedelta(microseconds=1), BOARD)
+        at = project_overview(reloaded, expires_at, BOARD)
         before_item = next(value for value in before.items if value.item_id == "work-c")
         at_item = next(value for value in at.items if value.item_id == "work-c")
         assert before_item.preparation is not None

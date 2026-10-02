@@ -28,7 +28,10 @@ from evals.behavioral.records import (
 from evals.behavioral.spend import Budget, Category
 
 ARMS = Path(__file__).parent / "data" / "investigation" / "arms"
-READ_COMMAND = re.compile(r"\b(cat|sed|rg|head|tail)\b.*(inquiry/|notes|evidence\.json)", re.IGNORECASE)
+READ_COMMAND = re.compile(
+    r"\b(cat|sed|rg|head|tail)\b.*(inquiry(?:-[\w-]+)?\.md|notes(?:-[\w-]+)?\.md|evidence\.json)",
+    re.IGNORECASE,
+)
 
 
 class Batch(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

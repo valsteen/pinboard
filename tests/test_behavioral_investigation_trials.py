@@ -64,6 +64,8 @@ class InvestigationTrialTests(unittest.TestCase):
             }
         )
         self.assertTrue(investigation_trials.saved_evidence_read(read))
+        self.assertTrue(investigation_trials.saved_evidence_read(read.replace("cat inquiry/evidence.json", "cat inquiry.md")))
+        self.assertTrue(investigation_trials.saved_evidence_read(read.replace("cat inquiry/evidence.json", "cat inquiry-note.md")))
         self.assertFalse(investigation_trials.saved_evidence_read(read.replace('"exit_code": 0', '"exit_code": 1')))
         self.assertFalse(investigation_trials.saved_evidence_read(read.replace("cat inquiry/evidence.json", "ls inquiry")))
 

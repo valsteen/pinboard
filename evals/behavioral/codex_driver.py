@@ -19,6 +19,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import msgspec
 
@@ -221,12 +222,19 @@ def marketplace_name(plugin_root: Path) -> str:
     return msgspec.json.decode((plugin_root / MARKETPLACE_FILE).read_bytes(), type=Marketplace).name
 
 
-def write_config(home: Path, plugin_root: Path, model: str, reasoning_effort: str, window: processes.Window) -> None:
+def write_config(
+    home: Path,
+    plugin_root: Path,
+    model: str,
+    reasoning_effort: str,
+    approval_reviewer: Literal["auto_review", "user"],
+    window: processes.Window,
+) -> None:
     marketplace = marketplace_name(plugin_root)
     text = f"""model = {toml_string(model)}
 model_reasoning_effort = {toml_string(reasoning_effort)}
 approval_policy = {toml_string(APPROVAL_POLICY)}
-approvals_reviewer = "user"
+approvals_reviewer = {toml_string(approval_reviewer)}
 default_permissions = {toml_string(PERMISSION_PROFILE)}
 
 [permissions.{PERMISSION_PROFILE}]

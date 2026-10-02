@@ -151,7 +151,7 @@ def _run_reserved(  # noqa: C901, PLR0912, PLR0915
     try:
         with credentials.isolated_home(credentials.default_source(), None, budget.window) as home:
             codex_driver.write_config(
-                home.path, Path(exported.plugin_root), "gpt-6-luna", "high", budget.window
+                home.path, Path(exported.plugin_root), "gpt-6-luna", "high", "user", budget.window
             )
             context = codex_driver.loaded_context(home.path, inquiry, budget.window)
             (directory / "prompt-input.txt").write_text(context.prompt_text)
@@ -268,6 +268,21 @@ def assess(
     index: int,
 ) -> InvestigationAssessmentRecord | None:
     """Blindly assess one completed trial against its private key; keep malformed usage blocking."""
+    with credentials.exclusive_codex_session(
+        Path(tempfile.gettempdir()), processes.Window(time.monotonic() + 60)
+    ):
+        return _assess_locked(layout, budget, scenario_set, key_directory, case_id, arm, index)
+
+
+def _assess_locked(
+    layout: Layout,
+    budget: Budget,
+    scenario_set: Path,
+    key_directory: Path,
+    case_id: str,
+    arm: str,
+    index: int,
+) -> InvestigationAssessmentRecord | None:
     run_file = layout.root / "investigations" / case_id / f"{arm}-{index}" / "run.json"
     run = msgspec.json.decode(run_file.read_bytes(), type=InvestigationRunRecord)
     if run.outcome != "completed" or run.accounting is None or not run.accounting.main_usage_complete:

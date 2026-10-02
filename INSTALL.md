@@ -28,20 +28,11 @@ Start a Codex task in the repository where you want to use Pinboard and ask:
 
 The plugin manifest selects `mcp-codex.json` at the plugin root. Codex resolves its `cwd` to that root and starts `sh ./scripts/pinboard --mcp`. The connected Pinboard tools take explicit project and work roots for each request; they do not use the client's current directory as a board selection.
 
-### Trial Investigation Focus on a work computer
+### Use Investigation Focus
 
-After the draft candidate has been independently reviewed and published, use the **full reviewed commit** supplied with that draft. Do not substitute the moving branch name. On a work computer with no existing `pinboard` marketplace installation, select that commit and install the plugin:
+In a Codex task, invoke `$investigation-focus` for a substantial investigation. For a clear bounded request, name the result, sources, audience and output format; the skill begins without requiring an inquiry home or a different outcome. For a diffuse question, it offers a few evidence-grounded results so you can choose the direction.
 
-```sh
-codex plugin marketplace add valsteen/pinboard --ref <reviewed-40-character-commit>
-codex plugin add pinboard@pinboard
-```
-
-The installed CLI supports `--ref` on `marketplace add` and JSON output from `marketplace list` and `plugin list`. Use `codex plugin marketplace list --json` to find the `pinboard` marketplace root, then compare `git -C <that-root> rev-parse HEAD` with the reviewed commit. Use `codex plugin list --json` to confirm that `pinboard@pinboard` is enabled and its version matches `.codex-plugin/plugin.json` at that commit. In a new Codex task, invoke `$investigation-focus`, ask it to identify the absolute path of the loaded `SKILL.md`, and compare `shasum -a 256 <loaded-SKILL.md>` with `git -C <that-root> show <reviewed-commit>:skills/investigation-focus/SKILL.md | shasum -a 256`. If the path or digest does not match, stop before the trial and resolve the installed version. A marketplace already named `pinboard` should be inspected and deliberately updated to the reviewed commit before installation; a second name does not verify what the task loaded.
-
-For an ordinary bounded request, name the result, sources, audience and output format. The skill should begin the investigation and deliver that complete output without asking for an inquiry home or a different outcome. When a question is diffuse, let the skill offer a few evidence-grounded results and choose one. For an inquiry that needs later sessions, choose a local home outside the evidence-source repositories and have a fresh Codex task read its note before revising direction or producing another audience output. Keep source originals and private locators on the work computer.
-
-Five reported real-use sessions on candidate `b61b768f994105c03500bd51d727888ebf3f0dfb` informed the bounded-request correction. All five were fresh inquiries; the formal collector was not used. Their human-reviewed return supports a qualified usefulness and friction assessment, while same-inquiry recovery, cross-computer continuity, exact costs and independent checks of original sources remain unproved. For a later formal trial, [the local collector](skills/investigation-focus/references/trial.md) remains available: it records session and output relations in a local draft for human review and sanitization before sharing. It is optional for ordinary use and does not judge whether the investigation succeeded.
+For an inquiry that needs later sessions, choose a local home outside the evidence-source repositories. The skill maintains a human-readable note there, and a later task reads it before revising direction or producing another audience output. The note is optional for a bounded request. Keep original sources and private locators under your control.
 
 On the first connection for an unprepared installed version, when uv is available, the launcher runs `<launcher-root>/scripts/pinboard --prepare-runtime`, which owns the version-local preparation lock, and starts Pinboard only after the ready marker and entry point are valid. Request write access only to that version's `.pinboard-runtime` when needed. If uv is missing or another preparation is in progress, the launcher writes an unchanged `pinboard-launcher-result/v1` recovery result to stderr; if preparation starts and fails, the result reports the runtime as potentially changed. In both cases MCP stdout stays empty and the result names the same `--prepare-runtime` retry. Reconnect through the client's supported MCP reconnect mechanism after preparation succeeds. Codex does not use plugin data or a SessionStart hook for this boundary; those alternatives remain outside this contract.
 

@@ -1,6 +1,6 @@
 # Inquiry note example
 
-This is a caller-owned, human-readable note in the selected inquiry home. Its IDs connect observations, human decisions, and output revisions; the agent maintains it across bounded passes. Keep original locators and short excerpts here when permitted. The trial collector uses neutral IDs and does not replace this note.
+This is an optional example, not a required incident format. Adapt its headings to the caller's question, sources, and outputs. The caller owns the human-readable note in the selected inquiry home; its IDs connect observations, human decisions, and output revisions across bounded passes. Keep original locators and short excerpts here when permitted.
 
 ```markdown
 # Harbor checkout latency — inquiry harbor

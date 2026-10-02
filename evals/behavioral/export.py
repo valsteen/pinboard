@@ -72,7 +72,6 @@ def export_revision(source: Path, revision: str, destination: Path, window: proc
     # Evaluation fixtures and their tests are never part of an agent's plugin.
     shutil.rmtree(plugin_root / "evals", ignore_errors=True)
     shutil.rmtree(plugin_root / "tests", ignore_errors=True)
-    (plugin_root / "docs" / "investigation-focus-decision.md").unlink(missing_ok=True)
     prepare_runtime(plugin_root, window)
     record = ExportRecord(
         schema="pinboard-behavioral-export/v1",

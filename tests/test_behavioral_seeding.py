@@ -124,7 +124,9 @@ class SeededReviewTest(unittest.IsolatedAsyncioTestCase):
         session.call_tool.side_effect = call_tool
         with TemporaryDirectory() as temporary, patch.object(seeding, "head", return_value="d" * 40):
             root = Path(temporary)
-            fixture = seeding.Seeder(board.BoardClient(session, Window(None)), root / "project", root / "board", "fixture-owner")
+            fixture = seeding.Seeder(
+                board.BoardClient(session, Window(None)), root / "project", root / "board", "fixture-owner"
+            )
             attempt = fixture.work_root / "attempts" / "example-1"
             attempt.mkdir(parents=True)
             (attempt / "result.md").write_text("Verified fixture result\n")

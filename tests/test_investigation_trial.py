@@ -4,7 +4,10 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 TRIAL_PATH = Path(__file__).resolve().parent.parent / "skills/investigation-focus/scripts/trial.py"
 spec = importlib.util.spec_from_file_location("investigation_trial", TRIAL_PATH)
@@ -57,14 +60,20 @@ class TrialCollectorTests(unittest.TestCase):
                 }
                 source = home / "session.json"
                 source.write_text(json.dumps(entry), encoding="utf-8")
-                trial.record(home, source)
+                with (
+                    patch("sys.argv", ["trial.py", "record", "--home", str(home), "--input", str(source)]),
+                    redirect_stdout(StringIO()),
+                ):
+                    trial.main()
 
             add("harbor", "s1", "fresh", "a" * 40, "r1", "technical", "direction")
             add("billing", "s1", "fresh", "a" * 40, "r1", "policy", "direction")
             add("harbor", "s2", "resumed", "b" * 40, "r2", "leadership", "correction")
             add("billing", "s2", "resumed", "b" * 40, "r2", "policy", "dismissal")
 
-            destination = trial.export(home)
+            destination = home / "trial-return-draft-4.json"
+            with patch("sys.argv", ["trial.py", "export", "--home", str(home)]), redirect_stdout(StringIO()):
+                trial.main()
             draft = json.loads(destination.read_text(encoding="utf-8"))
             rows = draft["sessions"]
             self.assertEqual([row["sequence"] for row in rows], [1, 2, 3, 4])

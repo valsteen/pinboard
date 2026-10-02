@@ -4,9 +4,10 @@ import argparse
 import fcntl
 import math
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, assert_never
 
 import msgspec
 
@@ -88,6 +89,17 @@ class ReturnDraft(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     sessions: tuple[ReturnRow, ...]
 
 
+@dataclass(frozen=True)
+class Record:
+    home: Path
+    input_path: Path
+
+
+@dataclass(frozen=True)
+class Export:
+    home: Path
+
+
 def read_rows(data: bytes) -> list[Stored]:
     rows = [msgspec.json.decode(line, type=Stored) for line in data.splitlines()]
     if any(row.sequence != index for index, row in enumerate(rows, 1)):
@@ -130,21 +142,33 @@ def export(home: Path) -> Path:
     return destination
 
 
-def main() -> None:
+def parse_command() -> Record | Export:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("record", "export"):
-        command = commands.add_parser(name)
-        command.add_argument("--home", required=True, type=Path)
-        if name == "record":
-            command.add_argument("--input", required=True, type=Path)
+    record_parser = commands.add_parser("record")
+    record_parser.add_argument("--home", required=True, type=Path)
+    record_parser.add_argument("--input", required=True, type=Path)
+    export_parser = commands.add_parser("export")
+    export_parser.add_argument("--home", required=True, type=Path)
     args = parser.parse_args()
     if not args.home.is_dir():
         parser.error("--home must be an existing caller-selected directory")
-    if args.command == "record":
-        print(f"recorded sequence {record(args.home, args.input).sequence}")
-    else:
-        print(export(args.home))
+    match args.command:
+        case "record":
+            return Record(args.home, args.input)
+        case "export":
+            return Export(args.home)
+    return parser.error("unsupported command")
+
+
+def main() -> None:
+    match parse_command():
+        case Record(home, input_path):
+            print(f"recorded sequence {record(home, input_path).sequence}")
+        case Export(home):
+            print(export(home))
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 if __name__ == "__main__":

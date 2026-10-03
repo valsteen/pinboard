@@ -493,6 +493,47 @@ class ContributorTraceTest(unittest.TestCase):
             )
             self.assertIsNotNone(capture)
 
+    def test_item_integration_call_uses_the_named_items_trace_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            initialize_database(resolve_durable_roots(primary, work_root), SQLITE_NOW)
+            initialize_store(SQLiteWorkStore(work_root / "state.sqlite3"), complete_sqlite_state())
+            self.settings(primary, "off", {"work-a": "on"})
+
+            async def integration_call() -> dict[str, JsonValue]:
+                parameters = StdioServerParameters(
+                    command=str(ROOT / "scripts" / "pinboard"), args=("--mcp",), cwd=ROOT
+                )
+                async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
+                    await session.initialize()
+                    result = await session.call_tool(
+                        server.ITEM_STATUS_TOOL,
+                        {
+                            "request": {
+                                "project_root": str(worktree),
+                                "work_root": str(work_root),
+                                "operation": "integration",
+                                "item_id": "work-a",
+                                "target": "HEAD",
+                            }
+                        },
+                    )
+                    self.assertFalse(result.is_error)
+                    assert isinstance(result.structured_content, dict)
+                    return result.structured_content
+
+            result = asyncio.run(integration_call())
+
+            self.assertEqual("pinboard-mcp-item-status-result/v3", result["schema"])
+            traces = work_root / contributor_traces.TRACE_DIRECTORY
+            [record_path] = tuple(traces.glob("pinboard-auto-mcp-*.json"))
+            record = json.loads(record_path.read_bytes())
+            request = record["request"]["request"]
+            self.assertEqual(
+                ("integration", "work-a", "HEAD"), (request["operation"], request["item_id"], request["target"])
+            )
+
     def test_existing_shared_work_root_needs_no_parent_write_for_mcp_capture(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             primary, worktree = self.project(Path(temporary))

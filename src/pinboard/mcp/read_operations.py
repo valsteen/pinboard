@@ -101,7 +101,7 @@ class _AttemptReviewEvidence:
 def _branch_owner_not_found(branch: str, work_root: Path) -> execution.OperationResult:
     return execution.OperationResult(
         {
-            "schema": "pinboard-mcp-item-status-result/v2",
+            "schema": "pinboard-mcp-item-status-result/v3",
             "status": "rejected",
             "code": "BRANCH_OWNER_NOT_FOUND",
             "message": f"No retained attempt in work root {work_root} records branch '{branch}'.",
@@ -144,19 +144,107 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
             if isinstance(projected, DecisionFailure):
                 return common._item_status_failure(projected.code.value, projected.message, projected.details)
             if isinstance(projected, query_models.DamagedTransitionReceipt):
-                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v2", projected)
-            selected: query_models.ItemStatus | query_models.BranchOwners = projected
+                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", projected)
+            selected: query_models.ItemStatus | query_models.BranchOwners | query_models.ItemIntegration = projected
         case contracts.ItemStatusBranchRequest():
             owners = queries.project_branch_owners(store, request.branch)
             if owners is None:
                 return _branch_owner_not_found(request.branch, durable.work_root)
             selected = owners
+        case contracts.ItemStatusIntegrationRequest():
+            return _read_item_integration_request(request, durable, store)
         case _ as unreachable:
             assert_never(unreachable)
     token.checkpoint()
     content = msgspec.to_builtins(selected)
     assert isinstance(content, dict)
     return execution.OperationResult(content, "ok", selected.revision)
+
+
+def _read_item_integration_request(
+    request: contracts.ItemStatusIntegrationRequest,
+    durable: DurableRoots,
+    store: WorkStore,
+) -> execution.OperationResult:
+    try:
+        integration = candidate_evidence.read_item_integration(
+            resolve_source_checkout_root(Path(request.project_root)),
+            durable.work_root,
+            store,
+            request.item_id,
+            request.target,
+        )
+    except RootError as error:
+        return common._integration_status_failure(
+            error.code.value,
+            str(error),
+            FailureDetails(
+                observed=(
+                    FailureFact("project_root", request.project_root),
+                    FailureFact("git_diagnostic", str(error)),
+                ),
+                mismatches=(),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+            "Correct the local project checkout and Git repository, then read item status again.",
+        )
+    if isinstance(integration, query_models.DamagedTransitionReceipt):
+        return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", integration)
+    if isinstance(integration, DecisionFailure):
+        return _item_integration_rejection(integration)
+    content = msgspec.to_builtins(integration)
+    assert isinstance(content, dict)
+    return execution.OperationResult(content, "ok", integration.revision)
+
+
+def _item_integration_rejection(failure: DecisionFailure) -> execution.OperationResult:
+    match failure.code:
+        case DecisionFailureCode.INTEGRATION_TARGET_UNRESOLVED:
+            recovery = (
+                "Name an existing local branch, remote-tracking ref, tag, or full commit. Fetch outside Pinboard "
+                "first when remote freshness matters."
+            )
+        case DecisionFailureCode.INTEGRATION_CANDIDATE_UNAVAILABLE:
+            recovery = "Read this item with operation item to see its current review and checkpoint facts."
+        case DecisionFailureCode.INTEGRATION_CANDIDATE_EVIDENCE_INVALID:
+            recovery = "Diagnose accepted candidate evidence with pinboard validate; do not retry this read."
+        case (
+            DecisionFailureCode.ACTION_NOT_AVAILABLE
+            | DecisionFailureCode.ACTION_NOT_MUTATING
+            | DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED
+            | DecisionFailureCode.ATTEMPT_LEASE_EXPIRED
+            | DecisionFailureCode.ATTEMPT_LEASE_REQUIRED
+            | DecisionFailureCode.ATTEMPT_NOT_FOUND
+            | DecisionFailureCode.DEPENDENCY_NOT_SATISFIED
+            | DecisionFailureCode.HISTORY_RECORD_EXISTS
+            | DecisionFailureCode.ITEM_ALREADY_EXISTS
+            | DecisionFailureCode.ITEM_DEFINITION_INVALID
+            | DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID
+            | DecisionFailureCode.ITEM_DEFINITION_STALE
+            | DecisionFailureCode.ITEM_DEPENDENCY_CYCLE
+            | DecisionFailureCode.ITEM_NOT_FOUND
+            | DecisionFailureCode.ITEM_STATUS_INCONSISTENT
+            | DecisionFailureCode.LEASE_FENCED
+            | DecisionFailureCode.LIVE_DEPENDENTS
+            | DecisionFailureCode.PROPOSAL_ALREADY_EXISTS
+            | DecisionFailureCode.PROPOSAL_INVALID
+            | DecisionFailureCode.PROPOSAL_NOT_FOUND
+            | DecisionFailureCode.REPLACEMENT_INVALID
+            | DecisionFailureCode.REPLACEMENT_STALE
+            | DecisionFailureCode.TRANSITION_INPUT_INVALID
+            | DecisionFailureCode.WORK_ROOT_MIGRATION_FAILED
+            | DecisionFailureCode.WORK_ROOT_MIGRATION_INVALID
+            | DecisionFailureCode.WORK_ROOT_MIGRATION_REQUIRED
+        ):
+            return common._item_status_failure(failure.code.value, failure.message, failure.details)
+        case _ as unreachable:
+            assert_never(unreachable)
+    if failure.details is None:
+        raise RuntimeError("Integration rejection is missing its declared failure details.")
+    return common._integration_status_failure(failure.code.value, failure.message, failure.details, recovery)
 
 
 def _read_correction_context(

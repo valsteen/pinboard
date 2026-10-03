@@ -78,6 +78,8 @@ The agent compares the repository result with the goal you agreed on, the saved 
 
 An honest reply might be: “The change is in `main`, but no review covered it. I'd have a separate reviewer check the commit as it landed before the work is closed.” If the work was never started, your decision to mark it completed or dropped takes the shorter close route.
 
+For a reviewed candidate that may have been merged by rebase or squash, the agent can read item status with operation `integration`, naming the item and a local target such as `main` or `origin/main`. `content-present` reports that the accepted candidate diff is present at that target's current local tip. `content-not-present` can follow later overlapping edits or a stale remote-tracking ref, so it does not prove the change never reached the target; the check does not fetch or certify a remote PR.
+
 ## Review a pull request owned by a person
 
 > Can you review my pull request? I wrote the code; please tell me what you find as it changes.

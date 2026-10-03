@@ -1,5 +1,7 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -33,6 +35,31 @@ class DifferentHeadCandidate:
 @dataclass(frozen=True, slots=True)
 class DirtyHeadCandidate:
     candidate_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateContentPresent:
+    target_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateContentNotPresent:
+    target_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateContentNoChange:
+    target_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationTargetUnresolved:
+    target: str
+
+
+type CandidateContentObservation = (
+    CandidateContentPresent | CandidateContentNotPresent | CandidateContentNoChange | IntegrationTargetUnresolved
+)
 
 
 type CommittedCandidateObservation = CurrentHeadCandidate | DifferentHeadCandidate | DirtyHeadCandidate
@@ -243,6 +270,77 @@ def read_current_head_candidate(
         unavailable_message=f"Cannot compare candidate '{candidate_revision}' with comparison revision '{comparison_revision}'.",
     )
     return CurrentHeadCandidate(candidate_revision, diff)
+
+
+def observe_candidate_content(cwd: Path, target: str, diff: bytes) -> CandidateContentObservation:
+    """Check whether a recorded candidate diff reverse-applies to a local target tree.
+
+    Git reads the target into a private index under the system temporary directory.
+    Neither the checkout's index nor its Git metadata is used as a write surface.
+    """
+
+    if not target or target.startswith("-") or any(character in target for character in "\r\n\u2028\u2029\x00"):
+        raise ValueError(
+            "Integration target must be a nonempty single-line revision name without NUL and not beginning with '-'."
+        )
+    resolve_source_checkout_root(cwd)
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    target_revision = resolved.stdout.strip()
+    if resolved.returncode != 0 or not target_revision:
+        return IntegrationTargetUnresolved(target)
+    if not diff:
+        return CandidateContentNoChange(target_revision)
+
+    with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as temporary_directory:
+        index_path = Path(temporary_directory) / "index"
+        environment = os.environ.copy()
+        environment["GIT_INDEX_FILE"] = str(index_path)
+        read_tree = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "read-tree", target_revision],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            check=False,
+        )
+        if read_tree.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                read_tree.stderr.decode(errors="replace").strip()
+                or f"Cannot read target tree '{target_revision}' at '{cwd}'.",
+            )
+        applied = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.splitIndex=false",
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "--whitespace=nowarn",
+                "-",
+            ],
+            cwd=cwd,
+            env=environment,
+            input=diff,
+            capture_output=True,
+            check=False,
+        )
+        if applied.returncode == 0:
+            return CandidateContentPresent(target_revision)
+        if applied.returncode == 1:
+            return CandidateContentNotPresent(target_revision)
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            applied.stderr.decode(errors="replace").strip()
+            or f"Cannot compare candidate content with target '{target_revision}'.",
+        )
 
 
 def _working_tree_status(cwd: Path) -> bytes:

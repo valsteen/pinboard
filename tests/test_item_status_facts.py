@@ -1,11 +1,14 @@
-"""Item-status leaves report review verdicts, branch owners, closure facts, and damaged receipts."""
+"""Item-status leaves report review, branch ownership, closure, integration, and receipt facts."""
 
 import contextlib
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
+from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import assert_never
 from unittest.mock import patch
 
@@ -13,9 +16,12 @@ import msgspec
 from mcp.server.mcpserver.exceptions import ToolError
 from msgspec.structs import replace as replace_struct
 
+from pinboard.adapters.files.errors import RootError, RootErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult
+from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import queries, query_models
 from pinboard.application.ports import GeneratedViewReader
@@ -25,7 +31,7 @@ from pinboard.mcp import common as mcp_common
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import call_advertised_tool, call_native_tool
-from tests.support import JsonObject, NoReadyCandidateReviews
+from tests.support import SQLITE_NOW, JsonObject, NoReadyCandidateReviews
 
 CLOSED_AT = datetime(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
 COMPLETED_AT = datetime(2030, 1, 3, 4, 5, 6, tzinfo=UTC)
@@ -47,10 +53,67 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
             {"request": {**self.roots(fixture), "operation": "branch", "branch": branch}},
         )
 
-    def inspection(self, fixture: CheckpointFixture) -> JsonObject:
+    def integration_leaf(self, fixture: CheckpointFixture, target: str, item_id: str = "work-a") -> JsonObject:
         return call_advertised_tool(
-            mcp_server.ATTEMPT_INSPECT_TOOL, {**self.roots(fixture), "attempt_id": "work-a-1", "reconciliation": None}
+            mcp_server.ITEM_STATUS_TOOL,
+            {
+                "request": {
+                    **self.roots(fixture),
+                    "operation": "integration",
+                    "item_id": item_id,
+                    "target": target,
+                }
+            },
         )
+
+    def inspection(self, fixture: CheckpointFixture, reconciliation: JsonObject | None = None) -> JsonObject:
+        return call_advertised_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
+            {**self.roots(fixture), "attempt_id": "work-a-1", "reconciliation": reconciliation},
+        )
+
+    def add_unrelated_integration_rows(self, fixture: CheckpointFixture, count: int) -> None:
+        timestamp = SQLITE_NOW.isoformat()
+        digest = "a" * 64
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            brief_ref = connection.execute(
+                "SELECT artifact_ref_id FROM artifact_refs WHERE kind = 'brief' LIMIT 1"
+            ).fetchone()
+            assert brief_ref is not None
+            for index in range(count):
+                attempt_id = f"unrelated-attempt-{index}"
+                connection.execute(
+                    """INSERT INTO attempts (
+                           attempt_id, item_id, state, branch, base_revision, provenance,
+                           brief_artifact_ref_id, brief_artifact_kind, result_artifact_ref_id, result_artifact_kind,
+                           candidate_revision, candidate_recorded_at, accepted_scope_revision, accepted_scope_digest,
+                           subject_revision, recorded_at, updated_at
+                       ) VALUES (?, 'work-b', 'done', ?, ?, 'integration-scope-fixture', ?, 'brief',
+                                 NULL, NULL, NULL, NULL, 1, ?, 0, ?, ?)""",
+                    (attempt_id, f"codex/unrelated-{index}", "b" * 40, brief_ref[0], digest, timestamp, timestamp),
+                )
+                connection.execute(
+                    """INSERT INTO transition_history (
+                           project_revision, action_id, action_kind, subject_id, artifact_ref_id, artifact_kind,
+                           authorization_kind, actor_task_id, actor_host_id, input_schema, input_json,
+                           outcome_schema, outcome_json, committed_at
+                       ) VALUES (?, ?, 'pause', ?, NULL, NULL, 'project', 'fixture-task', 'fixture-host',
+                                 'transition-receipt/v1', '{}', 'transition-receipt/v1', '{}', ?)""",
+                    (10000 + index, f"pause:{attempt_id}", attempt_id, timestamp),
+                )
+                connection.execute(
+                    """INSERT INTO artifact_refs (
+                           artifact_key, artifact_revision, kind, relative_path, content_sha256, size_bytes,
+                           accepted_revision, created_at
+                       ) VALUES (?, 1, 'evidence', ?, ?, 0, ?, ?)""",
+                    (
+                        f"unrelated-evidence-{index}",
+                        f"artifacts/evidence/unrelated-evidence-{index}/1.json",
+                        digest,
+                        10000 + index,
+                        timestamp,
+                    ),
+                )
 
     def verdict(self, fixture: CheckpointFixture) -> JsonObject:
         """Read the verdict through the advertised item leaf and again from a fresh store."""
@@ -131,6 +194,44 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         submitted = self.transition_result(fixture, submission, {"candidate": candidate})
         self.assertEqual("committed", submitted["status"], submitted)
         return candidate
+
+    def submit_committed_candidate(self, fixture: CheckpointFixture, label: str) -> tuple[str, bytes]:
+        candidate = self.commit_all(fixture.project, label)
+        diff = subprocess.run(
+            ["git", "diff", "--binary", fixture.brief.base_revision, candidate, "--"],
+            cwd=fixture.project,
+            check=True,
+            capture_output=True,
+        ).stdout
+        lease = self.native_attempt_acquire(fixture, f"worker-{label}")
+        submission = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
+        submitted = self.transition_result(fixture, submission, {"candidate": candidate})
+        self.assertEqual("committed", submitted["status"], submitted)
+        return candidate, diff
+
+    def squash_diff_to_main(self, fixture: CheckpointFixture, diff: bytes, message: str) -> str:
+        subprocess.run(
+            ["git", "branch", "main", fixture.brief.base_revision],
+            cwd=fixture.project,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "switch", "main"], cwd=fixture.project, check=True, capture_output=True)
+        existing_diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD", "--"],
+            cwd=fixture.project,
+            check=True,
+            capture_output=True,
+        ).stdout
+        if existing_diff != diff:
+            subprocess.run(
+                ["git", "apply", "--index", "-"],
+                cwd=fixture.project,
+                input=diff,
+                check=True,
+                capture_output=True,
+            )
+        return self.commit_all(fixture.project, message)
 
     def record_ready(self, fixture: CheckpointFixture, candidate: str) -> JsonObject:
         store = SQLiteWorkStore(fixture.work / "state.sqlite3")
@@ -301,6 +402,502 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         review.unlink()
         self.assertEqual({"kind": "none"}, self.verdict(fixture))
 
+    def test_integration_leaf_reports_protected_candidate_content_without_ancestry_claims(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Submit the candidate through the review route.")
+        candidate = self.submit_candidate(fixture, "protected integration")
+        absent = self.integration_leaf(fixture, fixture.brief.base_revision)
+        self.assertEqual("pinboard-item-integration/v1", absent["schema"])
+        self.assertEqual(
+            ("work-a", fixture.brief.base_revision, "content-not-present"),
+            (absent["item_id"], absent["target"], absent["presence"]),
+        )
+        source = self.json_object(absent["source"])
+        snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        assert snapshot is not None
+        self.assertEqual(
+            ("protected-review", "work-a-1", candidate),
+            (source["kind"], source["attempt_id"], source["candidate_revision"]),
+        )
+        self.assertEqual(fixture.brief.base_revision, source["compared_from_revision"])
+
+        subprocess.run(["git", "add", "tracked.txt"], cwd=fixture.project, check=True, capture_output=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Pinboard Tests",
+                "-c",
+                "user.email=pinboard@example.invalid",
+                "commit",
+                "-m",
+                "candidate commit",
+            ],
+            cwd=fixture.project,
+            env=os.environ
+            | {
+                "GIT_AUTHOR_DATE": "2001-02-03T04:05:06+00:00",
+                "GIT_COMMITTER_DATE": "2001-02-03T04:05:06+00:00",
+            },
+            check=True,
+            capture_output=True,
+        )
+        candidate_commit = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=fixture.project,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "branch", "main", candidate_commit], cwd=fixture.project, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/main", candidate_commit],
+            cwd=fixture.project,
+            check=True,
+            capture_output=True,
+        )
+        present = self.integration_leaf(fixture, "origin/main")
+        self.assertEqual("content-present", present["presence"], present)
+        self.assertEqual(candidate_commit, present["target_revision"])
+        self.assertEqual("origin/main", present["target"])
+
+        (fixture.project / "tracked.txt").write_text("overlapping later edit\n", encoding="utf-8")
+        self.commit_all(fixture.project, "overlap the reviewed lines")
+        overlapping_target = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=fixture.project,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "branch", "-f", "main", overlapping_target],
+            cwd=fixture.project,
+            check=True,
+            capture_output=True,
+        )
+        absent_after_overlap = self.integration_leaf(fixture, "main")
+        self.assertEqual("content-not-present", absent_after_overlap["presence"], absent_after_overlap)
+
+    def test_integration_leaf_recognizes_squash_and_nonoverlapping_later_content(self) -> None:
+        fixture = self.checkpoint_fixture_with_nonoverlapping_candidate()
+        self.return_for_review(fixture, "Submit a committed candidate for squash integration.")
+        candidate, diff = self.submit_committed_candidate(fixture, "squash candidate")
+        candidate_commit = candidate
+        target = self.squash_diff_to_main(fixture, diff, "squash integration")
+        ancestry = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", candidate_commit, target],
+            cwd=fixture.project,
+            check=False,
+            capture_output=True,
+        )
+        self.assertEqual(1, ancestry.returncode)
+        result = self.integration_leaf(fixture, "main")
+        source = self.json_object(result["source"])
+        self.assertEqual("content-present", result["presence"], result)
+        self.assertEqual(target, result["target_revision"])
+        self.assertEqual(
+            ("protected-review", candidate, fixture.brief.base_revision),
+            (source["kind"], source["candidate_revision"], source["compared_from_revision"]),
+        )
+
+        tracked = fixture.project / "tracked.txt"
+        tracked.write_text(tracked.read_text(encoding="utf-8") + "later independent line\n", encoding="utf-8")
+        self.commit_all(fixture.project, "later nonoverlapping edit")
+        result_after_later_edit = self.integration_leaf(fixture, "main")
+        self.assertEqual("content-present", result_after_later_edit["presence"], result_after_later_edit)
+
+    def test_integration_leaf_recognizes_fast_forward_for_protected_commit_candidate(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Submit a protected committed candidate for fast-forward integration.")
+        candidate, _diff = self.submit_committed_candidate(fixture, "fast-forward candidate")
+        subprocess.run(
+            ["git", "branch", "main", fixture.brief.base_revision],
+            cwd=fixture.project,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "switch", "main"], cwd=fixture.project, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "merge", "--ff-only", "codex/work-a"],
+            cwd=fixture.project,
+            check=True,
+            capture_output=True,
+        )
+
+        result = self.integration_leaf(fixture, "main")
+        source = self.json_object(result["source"])
+        self.assertEqual("content-present", result["presence"], result)
+        self.assertEqual(candidate, result["target_revision"])
+        self.assertEqual(("protected-review", candidate), (source["kind"], source["candidate_revision"]))
+
+    def test_integration_leaf_reverse_applies_renames_and_binary_content(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Submit a renamed file and binary candidate.")
+        (fixture.project / "tracked.txt").write_text("base\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "mv", "tracked.txt", "renamed.txt"],
+            cwd=fixture.project,
+            check=True,
+            capture_output=True,
+        )
+        (fixture.project / "asset.bin").write_bytes(b"\x00\xffreviewed binary content\n")
+        candidate, diff = self.submit_committed_candidate(fixture, "rename and binary candidate")
+        self.assertIn(b"rename from tracked.txt", diff)
+        self.assertIn(b"GIT binary patch", diff)
+
+        self.squash_diff_to_main(fixture, diff, "squash renamed and binary content")
+        result = self.integration_leaf(fixture, "main")
+
+        self.assertEqual("content-present", result["presence"], result)
+        self.assertEqual(candidate, self.json_object(result["source"])["candidate_revision"])
+
+    def test_integration_leaf_recognizes_merge_commit_and_rebase_merge_content(self) -> None:
+        for integration in ("merge-commit", "rebase-merge"):
+            with self.subTest(integration=integration):
+                fixture = self.checkpoint_fixture()
+                self.return_for_review(fixture, f"Submit the {integration} candidate.")
+                candidate, _diff = self.submit_committed_candidate(fixture, integration)
+                if integration == "merge-commit":
+                    subprocess.run(
+                        ["git", "branch", "main", fixture.brief.base_revision],
+                        cwd=fixture.project,
+                        check=True,
+                        capture_output=True,
+                    )
+                    subprocess.run(["git", "switch", "main"], cwd=fixture.project, check=True, capture_output=True)
+                    subprocess.run(
+                        ["git", "merge", "--no-ff", "codex/work-a", "-m", "merge candidate"],
+                        cwd=fixture.project,
+                        env=os.environ
+                        | {
+                            "GIT_AUTHOR_DATE": "2001-02-03T04:05:06+00:00",
+                            "GIT_COMMITTER_DATE": "2001-02-03T04:05:06+00:00",
+                        },
+                        check=True,
+                        capture_output=True,
+                    )
+                    target = subprocess.run(
+                        ["git", "rev-parse", "--verify", "HEAD"],
+                        cwd=fixture.project,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    ).stdout.strip()
+                else:
+                    subprocess.run(
+                        ["git", "branch", "main", fixture.brief.base_revision],
+                        cwd=fixture.project,
+                        check=True,
+                        capture_output=True,
+                    )
+                    subprocess.run(["git", "switch", "main"], cwd=fixture.project, check=True, capture_output=True)
+                    (fixture.project / "unrelated.txt").write_text("target progress\n", encoding="utf-8")
+                    self.commit_all(fixture.project, "target progress")
+                    subprocess.run(
+                        ["git", "switch", "codex/work-a"],
+                        cwd=fixture.project,
+                        check=True,
+                        capture_output=True,
+                    )
+                    subprocess.run(["git", "rebase", "main"], cwd=fixture.project, check=True, capture_output=True)
+                    target = subprocess.run(
+                        ["git", "rev-parse", "--verify", "HEAD"],
+                        cwd=fixture.project,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    ).stdout.strip()
+                    subprocess.run(
+                        ["git", "branch", "-f", "main", target],
+                        cwd=fixture.project,
+                        check=True,
+                        capture_output=True,
+                    )
+                result = self.integration_leaf(fixture, "main")
+                self.assertEqual("content-present", result["presence"], result)
+                self.assertEqual(target, result["target_revision"])
+                self.assertNotEqual(candidate, target)
+
+    def test_accepted_checkpoint_candidate_survives_resume_and_completion_uses_closing_candidate(self) -> None:
+        fixture = self.accepted_package_fixture(candidate_form="current-head")
+        target = self.squash_diff_to_main(fixture, fixture.candidate_bytes, "accepted checkpoint squash")
+        checkpoint_result = self.integration_leaf(fixture, "main")
+        checkpoint_source = self.json_object(checkpoint_result["source"])
+        self.assertEqual("content-present", checkpoint_result["presence"], checkpoint_result)
+        self.assertEqual("accepted-checkpoint", checkpoint_source["kind"])
+        self.assertEqual(fixture.brief.checkpoint.checkpoint_id, checkpoint_source["checkpoint_id"])
+        self.assertEqual(target, checkpoint_result["target_revision"])
+        self.close_prerequisite(fixture)
+        self.transition(fixture, "resume:work-a", {})
+        resumed = self.integration_leaf(fixture, "main")
+        self.assertEqual("accepted-checkpoint", self.json_object(resumed["source"])["kind"], resumed)
+
+        completed = self.checkpoint_fixture()
+        self.return_for_review(completed, "Submit a closing candidate.")
+        candidate = self.submit_candidate(completed, "completion candidate")
+        self.record_ready(completed, candidate)
+        completed = replace(completed, candidate_revision=candidate)
+        self.complete(completed, "The closing candidate is accepted.")
+        self.commit_all(completed.project, "closing candidate commit")
+        closing_revision = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=completed.project,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "branch", "main", closing_revision],
+            cwd=completed.project,
+            check=True,
+            capture_output=True,
+        )
+        completion_result = self.integration_leaf(completed, "main")
+        completion_source = self.json_object(completion_result["source"])
+        self.assertEqual("content-present", completion_result["presence"], completion_result)
+        self.assertEqual("completion", completion_source["kind"])
+        self.assertEqual("work-a-1", completion_source["attempt_id"])
+
+    def test_integration_leaf_reports_no_change_for_empty_recorded_diff(self) -> None:
+        fixture = self.checkpoint_fixture(candidate_form="current-head", empty_recorded_diff=True)
+        self.return_for_review(fixture, "Submit the exact current head with an empty recorded diff.")
+        lease = self.native_attempt_acquire(fixture, "worker-empty-candidate")
+        selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
+        self.transition_result(fixture, selected, {"candidate": fixture.candidate_revision})
+
+        result = self.integration_leaf(fixture, fixture.candidate_revision)
+
+        source = self.json_object(result["source"])
+        self.assertEqual("no-change", result["presence"], result)
+        self.assertEqual(fixture.candidate_revision, result["target_revision"])
+        self.assertEqual("protected-review", source["kind"])
+        self.assertEqual(fixture.candidate_revision, source["compared_from_revision"])
+
+    def test_integration_leaf_rejections_name_effect_retry_and_recovery(self) -> None:
+        protected = self.checkpoint_fixture()
+        self.return_for_review(protected, "Submit evidence for typed integration rejection tests.")
+        self.submit_candidate(protected, "rejection candidate")
+
+        unresolved = self.integration_leaf(protected, "missing/local-target")
+        self.assertEqual(("rejected", "INTEGRATION_TARGET_UNRESOLVED"), (unresolved["status"], unresolved["code"]))
+        self.assertEqual("pinboard-mcp-item-status-result/v3", unresolved["schema"])
+        self.assertEqual(False, unresolved["state_changed"])
+        self.assertEqual(("unchanged", "correct-input"), (unresolved["effect"], unresolved["retry"]))
+        unresolved_recovery = unresolved["recovery"]
+        assert isinstance(unresolved_recovery, str)
+        self.assertIn("existing local branch", unresolved_recovery)
+        self.assertIn("Fetch outside Pinboard", unresolved_recovery)
+        unresolved_observed = self.json_array(unresolved["observed"])
+        self.assertIn({"field": "target", "value": "missing/local-target"}, unresolved_observed)
+        self.assertTrue(self.json_array(unresolved["mismatches"]))
+
+        malformed_target = self.integration_leaf(protected, "--upload-pack=evil")
+        self.assertEqual(("rejected", "ITEM_STATUS_INVALID"), (malformed_target["status"], malformed_target["code"]))
+        self.assertEqual("pinboard-mcp-item-status-result/v3", malformed_target["schema"])
+        self.assertEqual(
+            (False, "unchanged", "correct-input"),
+            (malformed_target["state_changed"], malformed_target["effect"], malformed_target["retry"]),
+        )
+        nul_target = self.integration_leaf(protected, "main\x00")
+        self.assertEqual(("rejected", "ITEM_STATUS_INVALID"), (nul_target["status"], nul_target["code"]))
+        self.assertEqual("pinboard-mcp-item-status-result/v3", nul_target["schema"])
+        self.assertEqual(
+            (False, "unchanged", "correct-input"),
+            (nul_target["state_changed"], nul_target["effect"], nul_target["retry"]),
+        )
+        unicode_line_target = self.integration_leaf(protected, "main\u2028unexpected")
+        self.assertEqual(
+            ("rejected", "ITEM_STATUS_INVALID"), (unicode_line_target["status"], unicode_line_target["code"])
+        )
+
+        unknown_item = self.integration_leaf(protected, "main", item_id="unknown-item")
+        self.assertEqual(("rejected", "ITEM_NOT_FOUND"), (unknown_item["status"], unknown_item["code"]))
+        self.assertEqual("pinboard-mcp-item-status-result/v3", unknown_item["schema"])
+        self.assertEqual(
+            (False, "unchanged", "correct-input"),
+            (unknown_item["state_changed"], unknown_item["effect"], unknown_item["retry"]),
+        )
+
+        snapshot = protected.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        assert snapshot is not None
+        (protected.work / snapshot.reference.selector).write_bytes(b"damaged accepted bytes")
+        invalid_evidence = self.integration_leaf(protected, "main")
+        self.assertEqual(
+            ("rejected", "INTEGRATION_CANDIDATE_EVIDENCE_INVALID"),
+            (invalid_evidence["status"], invalid_evidence["code"]),
+        )
+        self.assertEqual("pinboard-mcp-item-status-result/v3", invalid_evidence["schema"])
+        self.assertEqual(
+            (False, "unchanged", "do-not-retry"),
+            (invalid_evidence["state_changed"], invalid_evidence["effect"], invalid_evidence["retry"]),
+        )
+        evidence_recovery = invalid_evidence["recovery"]
+        evidence_message = invalid_evidence["message"]
+        assert isinstance(evidence_recovery, str) and isinstance(evidence_message, str)
+        self.assertIn("pinboard validate", evidence_recovery)
+        self.assertIn({"field": "attempt_id", "value": "work-a-1"}, self.json_array(invalid_evidence["observed"]))
+        self.assertIn("Accepted candidate evidence", evidence_message)
+
+    def test_integration_leaf_reports_unavailable_and_damaged_checkpoint_receipt(self) -> None:
+        unavailable = self.checkpoint_fixture()
+        self.return_for_review(unavailable, "Return before another candidate is submitted.")
+        no_candidate = self.integration_leaf(unavailable, "main")
+        self.assertEqual(
+            ("rejected", "INTEGRATION_CANDIDATE_UNAVAILABLE"), (no_candidate["status"], no_candidate["code"])
+        )
+        self.assertEqual("pinboard-mcp-item-status-result/v3", no_candidate["schema"])
+        self.assertEqual(
+            (False, "unchanged", "correct-input"),
+            (no_candidate["state_changed"], no_candidate["effect"], no_candidate["retry"]),
+        )
+        no_candidate_recovery = no_candidate["recovery"]
+        no_candidate_message = no_candidate["message"]
+        assert isinstance(no_candidate_recovery, str) and isinstance(no_candidate_message, str)
+        self.assertIn("operation item", no_candidate_recovery)
+        self.assertIn({"field": "item_id", "value": "work-a"}, self.json_array(no_candidate["observed"]))
+        self.assertIn("no protected candidate", no_candidate_message)
+
+        self.close_prerequisite(unavailable)
+        direct_close = self.integration_leaf(unavailable, "main", item_id="work-c")
+        self.assertEqual(
+            ("rejected", "INTEGRATION_CANDIDATE_UNAVAILABLE"), (direct_close["status"], direct_close["code"])
+        )
+        self.assertEqual(
+            (False, "unchanged", "correct-input"),
+            (direct_close["state_changed"], direct_close["effect"], direct_close["retry"]),
+        )
+        direct_close_message = direct_close["message"]
+        assert isinstance(direct_close_message, str)
+        self.assertIn("direct close", direct_close_message)
+        self.assertIn({"field": "item_id", "value": "work-c"}, self.json_array(direct_close["observed"]))
+
+        accepted = self.accepted_package_fixture(candidate_form="current-head")
+        checkpoint_history_id = self.latest_history_id(accepted)
+        self.update_receipt(accepted, checkpoint_history_id, outcome_json="{damaged")
+        damaged_receipt = self.integration_leaf(accepted, "main")
+        self.assertEqual(
+            ("rejected", "TRANSITION_RECEIPT_DAMAGED"), (damaged_receipt["status"], damaged_receipt["code"])
+        )
+        self.assertEqual("pinboard-mcp-item-status-result/v3", damaged_receipt["schema"])
+        self.assertEqual(
+            (False, "unchanged", "do-not-retry"),
+            (damaged_receipt["state_changed"], damaged_receipt["effect"], damaged_receipt["retry"]),
+        )
+        damaged_recovery = damaged_receipt["recovery"]
+        assert isinstance(damaged_recovery, str)
+        self.assertIn("Report to the human", damaged_recovery)
+        self.assertIn("do not retry", damaged_recovery)
+
+    def test_integration_leaf_returns_typed_git_adapter_failures(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Submit a candidate before observing a Git read failure.")
+        self.submit_candidate(fixture, "git failure candidate")
+        git_error = RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "read-tree could not read the target tree"
+        )
+        with patch("pinboard.adapters.candidate_evidence.root.observe_candidate_content", side_effect=git_error):
+            failure = self.integration_leaf(fixture, "main")
+
+        self.assertEqual(("rejected", "PROJECT_GIT_CHECKOUT_UNAVAILABLE"), (failure["status"], failure["code"]))
+        self.assertEqual("pinboard-mcp-item-status-result/v3", failure["schema"])
+        self.assertEqual(
+            (False, "unchanged", "correct-input"), (failure["state_changed"], failure["effect"], failure["retry"])
+        )
+        failure_observed = self.json_array(failure["observed"])
+        self.assertIn({"field": "project_root", "value": str(fixture.project)}, failure_observed)
+        git_error_fact = self.json_object(failure_observed[1])
+        git_error = git_error_fact["value"]
+        recovery = failure["recovery"]
+        assert isinstance(git_error, str) and isinstance(recovery, str)
+        self.assertIn("read-tree could not read the target tree", git_error)
+        self.assertIn("Correct the local project checkout", recovery)
+
+    def test_integration_read_scope_stays_keyed_with_unrelated_history_and_artifacts(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Submit a candidate for focused status read scope.")
+        self.submit_candidate(fixture, "focused status candidate")
+        self.add_unrelated_integration_rows(fixture, 32)
+        read_tables: set[str] = set()
+        statements: list[str] = []
+        original_open = sqlite_store.open_database
+
+        def traced_open(database_path: Path, mode: OpenMode) -> sqlite3.Connection:
+            connection = original_open(database_path, mode)
+
+            def authorize(
+                action: int,
+                argument: str | None,
+                _secondary_argument: str | None,
+                _database: str | None,
+                _trigger: str | None,
+            ) -> int:
+                if action == sqlite3.SQLITE_READ and argument is not None:
+                    read_tables.add(argument)
+                return sqlite3.SQLITE_OK
+
+            connection.set_authorizer(authorize)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(sqlite_store, "open_database", traced_open):
+            result = self.integration_leaf(fixture, fixture.brief.base_revision)
+
+        self.assertEqual("content-not-present", result["presence"], result)
+        self.assertEqual({"artifact_refs", "attempts", "project_meta", "transition_history", "work_items"}, read_tables)
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
+            self.assertEqual(
+                32,
+                connection.execute(
+                    "SELECT COUNT(*) FROM attempts WHERE attempt_id LIKE 'unrelated-attempt-%'"
+                ).fetchone()[0],
+            )
+        selects = tuple(statement for statement in statements if statement.lstrip().upper().startswith("SELECT"))
+        self.assertTrue(selects)
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
+            plans = tuple(
+                tuple(str(row[3]).upper() for row in connection.execute(f"EXPLAIN QUERY PLAN {statement}").fetchall())
+                for statement in selects
+            )
+        self.assertTrue(all(any(detail.startswith("SEARCH ") for detail in plan) for plan in plans), plans)
+        self.assertFalse(any(detail.startswith("SCAN ") for plan in plans for detail in plan), plans)
+        self.assertTrue(any("checkpoint_history_by_subject" in statement for statement in selects), selects)
+
+    def test_attempt_inspection_relations_and_other_status_reads_stay_outside_git_check(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Submit and review a candidate for caller reconciliation.")
+        candidate = self.submit_candidate(fixture, "caller-owned integration relation")
+        self.record_ready(fixture, candidate)
+        item_before = self.item_leaf(fixture)
+        branch_before = self.branch_leaf(fixture, fixture.brief.branch)
+        overview_before = call_advertised_tool(mcp_server.OVERVIEW_TOOL, self.roots(fixture))
+        reconciliation: JsonObject = {
+            "target_revision": fixture.brief.base_revision,
+            "relation": "candidate-integrated",
+            "phase": "cleanup",
+            "effects": [
+                {"effect": "source-checkout", "status": "allowed"},
+                {"effect": "shared-work-root", "status": "not-required"},
+                {"effect": "git-metadata", "status": "allowed"},
+            ],
+        }
+        with patch("pinboard.adapters.candidate_evidence.root.observe_candidate_content") as content_read:
+            inspection = self.inspection(fixture, reconciliation)
+            self.assertEqual(item_before, self.item_leaf(fixture))
+            self.assertEqual(branch_before, self.branch_leaf(fixture, fixture.brief.branch))
+            self.assertEqual(overview_before, call_advertised_tool(mcp_server.OVERVIEW_TOOL, self.roots(fixture)))
+        content_read.assert_not_called()
+
+        self.assertEqual("pinboard-item-status/v2", item_before["schema"])
+        self.assertEqual("pinboard-branch-owners/v1", branch_before["schema"])
+        self.assertEqual("ok", inspection["status"], inspection)
+        continuation = self.json_object(inspection["continuation"])
+        next_operation = self.json_object(continuation["next_operation"])
+        self.assertEqual("repository-cleanup", next_operation["kind"])
+        self.assertEqual(fixture.brief.base_revision, next_operation["target_revision"])
+
     def test_acceptance_verdicts_carry_their_evidence_and_checkpoint(self) -> None:
         fixture = self.checkpoint_fixture()
         self.transition(
@@ -370,6 +967,12 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                 fixture = self.damaged_receipt_fixture(decision_models.ActionKind.PAUSE)
                 self.rebind(fixture, fixture.brief.branch, 2)
                 return fixture
+            case decision_models.ActionKind.COMPLETE:
+                fixture = self.checkpoint_fixture()
+                candidate = self.submit_candidate(fixture, "completed")
+                self.record_ready(fixture, candidate)
+                self.complete(fixture, "The accepted candidate completes this item.")
+                return fixture
             case _ as unreachable:
                 assert_never(unreachable)
 
@@ -418,7 +1021,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                     self.update_receipt(fixture, damaged_history, **columns)
 
                     status = self.item_leaf(fixture)
-                    self.assertEqual("pinboard-mcp-item-status-result/v2", status["schema"])
+                    self.assertEqual("pinboard-mcp-item-status-result/v3", status["schema"])
                     named = self.named_receipt(status, receipt)
                     self.assertEqual((AttemptId("work-a-1"), damaged_history), (named.attempt_id, named.history_id))
                     self.assertEqual(diagnosis, queries.damaged_receipt_diagnosis(receipt))

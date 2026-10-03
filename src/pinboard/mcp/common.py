@@ -45,12 +45,33 @@ def _item_status_failure(
     rendered = _details_json(details)
     return execution.OperationResult(
         {
-            "schema": "pinboard-mcp-item-status-result/v2",
+            "schema": "pinboard-mcp-item-status-result/v3",
             "status": "rejected",
             "code": code,
             "message": message,
             "state_changed": False,
             **rendered,
+        },
+        "rejected",
+        None,
+    )
+
+
+def _integration_status_failure(
+    code: str,
+    message: str,
+    details: FailureDetails,
+    recovery: str,
+) -> execution.OperationResult:
+    return execution.OperationResult(
+        {
+            "schema": "pinboard-mcp-item-status-result/v3",
+            "status": "rejected",
+            "code": code,
+            "message": message,
+            "state_changed": False,
+            **_details_json(details),
+            "recovery": recovery,
         },
         "rejected",
         None,

@@ -7,15 +7,21 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import chdir
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Barrier
 from unittest.mock import patch
 
-from pinboard.adapters.files.errors import RootError
+from pinboard.adapters.files.errors import RootError, RootErrorCode
 from pinboard.adapters.files.root import (
+    CandidateContentNoChange,
+    CandidateContentNotPresent,
+    CandidateContentPresent,
     CurrentHeadCandidate,
+    IntegrationTargetUnresolved,
     classify_checkout,
     ensure_default_git_exclude,
+    observe_candidate_content,
     observe_checkout_identity,
     read_current_head_candidate,
     resolve_shared_repository_root,
@@ -25,6 +31,73 @@ from pinboard.cli.entrypoint import main
 from pinboard.domain import work_models
 from pinboard.mcp import server
 from tests.native_support import call_native_tool
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationRootFixture:
+    repository: Path
+    private_temporary: Path
+    base_revision: str
+    candidate_revision: str
+    diff: bytes
+    index: Path
+    tracked: Path
+
+
+def _integration_root_fixture(temporary: Path) -> IntegrationRootFixture:
+    repository = temporary / "repository"
+    private_temporary = temporary / "system-temp"
+    repository.mkdir()
+    private_temporary.mkdir()
+
+    def git(*arguments: str) -> bytes:
+        return subprocess.run(["git", *arguments], cwd=repository, check=True, capture_output=True).stdout
+
+    def commit(path: Path, content: str, message: str) -> str:
+        path.write_text(content, encoding="utf-8")
+        git("add", "tracked.txt")
+        environment = os.environ | {
+            "GIT_AUTHOR_DATE": "2001-02-03T04:05:06+00:00",
+            "GIT_COMMITTER_DATE": "2001-02-03T04:05:06+00:00",
+        }
+        subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", message],
+            cwd=repository,
+            env=environment,
+            check=True,
+            capture_output=True,
+        )
+        return git("rev-parse", "--verify", "HEAD").decode().strip()
+
+    git("init", "-b", "main")
+    tracked = repository / "tracked.txt"
+    base_revision = commit(tracked, "base\n", "base")
+    candidate_revision = commit(tracked, "candidate \n", "candidate with trailing whitespace")
+    diff = git("diff", "--binary", base_revision, candidate_revision)
+    git("update-ref", "refs/remotes/origin/main", candidate_revision)
+    git("config", "apply.whitespace", "error")
+    return IntegrationRootFixture(
+        repository,
+        private_temporary,
+        base_revision,
+        candidate_revision,
+        diff,
+        repository / ".git" / "index",
+        tracked,
+    )
+
+
+def _git_file_snapshot(repository: Path) -> dict[Path, bytes]:
+    git_directory = repository / ".git"
+    return {path.relative_to(git_directory): path.read_bytes() for path in git_directory.rglob("*") if path.is_file()}
+
+
+def _set_git_metadata_readonly(repository: Path, readonly: bool) -> None:
+    git_directory = repository / ".git"
+    for path in (git_directory, *(item for item in git_directory.rglob("*") if item.is_dir())):
+        path.chmod(0o555 if readonly else 0o755)
+    for path in (item for item in git_directory.rglob("*") if item.is_file()):
+        path.chmod(0o444 if readonly else 0o644)
 
 
 class RootResolutionTest(unittest.TestCase):
@@ -141,6 +214,68 @@ class RootResolutionTest(unittest.TestCase):
         self.assertEqual(candidate_revision, observed.identity)
         self.assertIn(b"-base\n+candidate", observed.diff)
         self.assertEqual(original_index, index.read_bytes())
+
+    def test_integration_content_read_uses_only_a_private_temporary_index(self) -> None:
+        fixture = _integration_root_fixture(Path(tempfile.mkdtemp()).resolve())
+        repository = fixture.repository
+        index_before = fixture.index.read_bytes()
+        tree_before = fixture.tracked.read_bytes()
+        metadata_before = _git_file_snapshot(repository)
+        work_root = repository / ".pinboard"
+
+        with patch("tempfile.tempdir", str(fixture.private_temporary)):
+            present = observe_candidate_content(repository, "origin/main", fixture.diff)
+            absent = observe_candidate_content(repository, fixture.base_revision, fixture.diff)
+            unresolved = observe_candidate_content(repository, "missing-target", fixture.diff)
+        original_run = subprocess.run
+        commands: list[tuple[str, ...]] = []
+
+        def record_git_command(
+            arguments: list[str], *, cwd: Path, text: bool, capture_output: bool, check: bool
+        ) -> subprocess.CompletedProcess[str]:
+            commands.append(tuple(arguments))
+            return original_run(arguments, cwd=cwd, text=text, capture_output=capture_output, check=check)
+
+        with (
+            patch("tempfile.tempdir", str(fixture.private_temporary)),
+            patch("pinboard.adapters.files.root.subprocess.run", side_effect=record_git_command),
+        ):
+            no_change = observe_candidate_content(repository, "main", b"")
+        self.assertEqual(CandidateContentPresent(fixture.candidate_revision), present)
+        self.assertEqual(CandidateContentNotPresent(fixture.base_revision), absent)
+        self.assertEqual(CandidateContentNoChange(fixture.candidate_revision), no_change)
+        self.assertFalse(any("read-tree" in command or "apply" in command for command in commands), commands)
+        self.assertEqual(IntegrationTargetUnresolved("missing-target"), unresolved)
+        self.assertEqual(index_before, fixture.index.read_bytes())
+        self.assertEqual(tree_before, fixture.tracked.read_bytes())
+        self.assertFalse(work_root.exists())
+        self.assertEqual(metadata_before, _git_file_snapshot(repository))
+        self.assertEqual((), tuple(fixture.private_temporary.iterdir()))
+
+        _set_git_metadata_readonly(repository, True)
+        try:
+            with patch("tempfile.tempdir", str(fixture.private_temporary)):
+                readonly_result = observe_candidate_content(repository, "main", fixture.diff)
+        finally:
+            _set_git_metadata_readonly(repository, False)
+        self.assertEqual(CandidateContentPresent(fixture.candidate_revision), readonly_result)
+        self.assertEqual(metadata_before, _git_file_snapshot(repository))
+        self.assertEqual(index_before, fixture.index.read_bytes())
+        self.assertEqual(tree_before, fixture.tracked.read_bytes())
+        self.assertFalse(work_root.exists())
+        self.assertEqual((), tuple(fixture.private_temporary.iterdir()))
+
+    def test_integration_content_read_reports_a_non_git_project_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaises(RootError) as rejected:
+            observe_candidate_content(Path(temporary), "HEAD", b"candidate patch")
+
+        self.assertEqual(RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE, rejected.exception.code)
+
+    def test_integration_content_read_rejects_invalid_revision_characters(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = _integration_root_fixture(Path(temporary).resolve())
+            with self.assertRaises(ValueError):
+                observe_candidate_content(fixture.repository, "main\x00", fixture.diff)
 
     def test_returning_initialization_reads_an_existing_exclusion_without_write_access(self) -> None:
         repository = Path(tempfile.mkdtemp()).resolve()

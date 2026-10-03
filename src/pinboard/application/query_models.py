@@ -634,6 +634,40 @@ class CandidateSnapshotContextFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class ProtectedReviewCandidateSelection:
+    project_revision: int
+    item_id: WorkItemId
+    attempt_id: AttemptId
+    candidate_revision: str
+    snapshot_context: CandidateSnapshotContextFacts
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedCheckpointCandidateSelection:
+    project_revision: int
+    item_id: WorkItemId
+    attempt_id: AttemptId
+    checkpoint_id: str
+    candidate_revision: str
+    receipt: stored_state.StoredTransitionReceipt
+    package_reference: stored_state.ArtifactReference
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionCandidateSelection:
+    project_revision: int
+    item_id: WorkItemId
+    attempt_id: AttemptId
+    candidate_revision: str
+    snapshot_context: CandidateSnapshotContextFacts
+
+
+type ItemIntegrationCandidateSelection = (
+    ProtectedReviewCandidateSelection | AcceptedCheckpointCandidateSelection | CompletionCandidateSelection
+)
+
+
+@dataclass(frozen=True, slots=True)
 class CompletionCheckpointFacts:
     receipt: stored_state.StoredTransitionReceipt
     package_reference: stored_state.ArtifactReference | None
@@ -675,12 +709,46 @@ type ItemStatusSchema = Literal["pinboard-item-status/v2"]
 type ItemStatusAuthority = Literal["sqlite-v7"]
 
 
+type IntegrationRevision = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\r\n\u2028\u2029]+\z")]
+
+
+class ProtectedReviewIntegrationSource(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: IntegrationRevision
+    candidate_revision: IntegrationRevision
+    compared_from_revision: IntegrationRevision
+
+
+class AcceptedCheckpointIntegrationSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: IntegrationRevision
+    candidate_revision: IntegrationRevision
+    compared_from_revision: IntegrationRevision
+    checkpoint_id: IntegrationRevision
+
+
+class CompletionIntegrationSource(
+    msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: IntegrationRevision
+    candidate_revision: IntegrationRevision
+    compared_from_revision: IntegrationRevision
+
+
+type ItemIntegrationSource = (
+    ProtectedReviewIntegrationSource | AcceptedCheckpointIntegrationSource | CompletionIntegrationSource
+)
+
+
 type DamagedReceiptActionKind = Literal[
     decision_models.ActionKind.PAUSE,
     decision_models.ActionKind.REBIND_ATTEMPT,
     decision_models.ActionKind.RETURN_FOR_CORRECTION,
     decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE,
     decision_models.ActionKind.ACCEPT_CHECKPOINT,
+    decision_models.ActionKind.COMPLETE,
 ]
 
 
@@ -801,6 +869,35 @@ class ItemStatusFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class ItemIntegrationAttemptFacts:
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    branch: str
+    candidate_revision: str | None
+    candidate_recorded_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationCheckpointFacts:
+    receipt: ConsumedTransitionReceipt
+    package_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationFacts:
+    """Focused lifecycle facts consumed by the integration status leaf."""
+
+    project_revision: int
+    work_item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
+    subject_revision: int
+    current_attempt: ItemIntegrationAttemptFacts | None
+    closure: ItemClosureFacts | None
+    closure_receipt: ConsumedTransitionReceipt | None
+    latest_checkpoint: ItemIntegrationCheckpointFacts | None
+
+
+@dataclass(frozen=True, slots=True)
 class ReadyCandidateReview:
     candidate_revision: str
     reference: stored_state.ArtifactReference
@@ -918,6 +1015,17 @@ class ItemStatus(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     review_verdict: ReviewVerdict
     closure: ItemClosure | None
     preparation: PreparationStatusView | None
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-item-integration/v1"]
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: str
+    target: IntegrationRevision
+    target_revision: IntegrationRevision
+    source: ItemIntegrationSource
+    presence: work_models.IntegrationPresence
 
 
 @dataclass(frozen=True, slots=True)

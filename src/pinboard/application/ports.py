@@ -116,6 +116,8 @@ class WorkStore(Protocol):
 
     def read_item_status(self, work_item_id: WorkItemId) -> query_models.ItemStatusFacts | None: ...
 
+    def read_item_integration_facts(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationFacts | None: ...
+
     def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts: ...
 
     def read_parallel_preview(
@@ -163,6 +165,18 @@ class ItemDefinitionReader(Protocol):
 
 class ItemStatusReader(Protocol):
     def read_item_status(self, work_item_id: WorkItemId) -> query_models.ItemStatusFacts | None: ...
+
+
+class ItemIntegrationReader(Protocol):
+    def read_item_integration_facts(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationFacts | None: ...
+
+    def read_candidate_snapshot_context(
+        self, attempt_id: AttemptId
+    ) -> query_models.CandidateSnapshotContextFacts | None: ...
+
+    def read_artifact_reference(
+        self, kind: work_models.ArtifactKind, key: str, revision: int
+    ) -> stored_state.ArtifactReference | None: ...
 
 
 class ReadyCandidateReviewReader(Protocol):

@@ -38,6 +38,12 @@ class AttemptState(Enum):
     DONE = "done"
 
 
+class IntegrationPresence(Enum):
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
 class CloseOutcome(Enum):
     DONE = "done"
     DROPPED = "dropped"

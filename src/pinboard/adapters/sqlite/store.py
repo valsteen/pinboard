@@ -58,6 +58,9 @@ from pinboard.adapters.sqlite.lifecycle import (
 from pinboard.adapters.sqlite.lifecycle import (
     read_item_definition_history as select_item_definition_history,
 )
+from pinboard.adapters.sqlite.lifecycle import (
+    read_item_integration_facts as select_item_integration_facts,
+)
 from pinboard.adapters.sqlite.models import (
     AttemptIdRow,
     CandidateSnapshotAttemptRow,
@@ -717,6 +720,14 @@ class SQLiteWorkStore:
                     lifecycle.closure,
                     preparation,
                 )
+        finally:
+            connection.close()
+
+    def read_item_integration_facts(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return select_item_integration_facts(connection, work_item_id)
         finally:
             connection.close()
 

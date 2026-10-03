@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import sqlite3
 import subprocess
 import tempfile
@@ -104,6 +105,11 @@ class CheckpointPackageSupport(unittest.TestCase):
                 message,
             ],
             cwd=project,
+            env=os.environ
+            | {
+                "GIT_AUTHOR_DATE": "2001-02-03T04:05:06+00:00",
+                "GIT_COMMITTER_DATE": "2001-02-03T04:05:06+00:00",
+            },
             check=True,
             capture_output=True,
         )
@@ -415,17 +421,75 @@ class CheckpointPackageSupport(unittest.TestCase):
                 (candidate, SQLITE_NOW.isoformat()),
             )
 
-    def checkpoint_fixture(  # noqa: PLR0915 - one persisted candidate and review fixture
+    def _checkpoint_candidate_repository(
+        self,
+        project: Path,
+        tracked: Path,
+        committed_context: bool,
+        review_context: Literal["ordinary", "surrounded"],
+    ) -> tuple[str, str]:
+        if review_context == "surrounded":
+            tracked.write_text("".join(f"line-{line}\n" for line in range(1, 11)), encoding="utf-8")
+        else:
+            tracked.write_text("base\n", encoding="utf-8")
+        base_revision = self.commit_all(project, "base")
+        preimage_revision = base_revision
+        if committed_context:
+            (project / "context.txt").write_text("committed surrounding state\n", encoding="utf-8")
+            preimage_revision = self.commit_all(project, "context")
+        if review_context == "surrounded":
+            tracked.write_text(
+                "".join("reviewed-line\n" if line == 5 else f"line-{line}\n" for line in range(1, 11)),
+                encoding="utf-8",
+            )
+        else:
+            tracked.write_text("candidate\n", encoding="utf-8")
+        return base_revision, preimage_revision
+
+    def checkpoint_fixture(
         self,
         *,
         local: bool = False,
         candidate_form: Literal["working-tree", "current-head"] = "working-tree",
         accepted_base: str | None = None,
         committed_context: bool = False,
+        empty_recorded_diff: bool = False,
         review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner"] = "ready",
     ) -> CheckpointFixture:
+        return self._build_checkpoint_fixture(
+            local=local,
+            candidate_form=candidate_form,
+            accepted_base=accepted_base,
+            committed_context=committed_context,
+            empty_recorded_diff=empty_recorded_diff,
+            review_condition=review_condition,
+            review_context="ordinary",
+        )
+
+    def checkpoint_fixture_with_nonoverlapping_candidate(self) -> CheckpointFixture:
+        return self._build_checkpoint_fixture(
+            local=False,
+            candidate_form="working-tree",
+            accepted_base=None,
+            committed_context=False,
+            empty_recorded_diff=False,
+            review_condition="ready",
+            review_context="surrounded",
+        )
+
+    def _build_checkpoint_fixture(  # noqa: PLR0915 - one persisted candidate and review fixture
+        self,
+        *,
+        local: bool,
+        candidate_form: Literal["working-tree", "current-head"],
+        accepted_base: str | None,
+        committed_context: bool,
+        empty_recorded_diff: bool,
+        review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner"],
+        review_context: Literal["ordinary", "surrounded"],
+    ) -> CheckpointFixture:
         state = complete_sqlite_state()
-        now = datetime.now(UTC)
+        now = SQLITE_NOW
         state = replace(
             state,
             lifecycle=replace(
@@ -462,13 +526,9 @@ class CheckpointPackageSupport(unittest.TestCase):
         subprocess.run(["git", "init", "-b", "codex/work-a"], cwd=project, check=True, capture_output=True)
         (project / ".git" / "info" / "exclude").write_text("/.pinboard/\n", encoding="utf-8")
         tracked = project / "tracked.txt"
-        tracked.write_text("base\n", encoding="utf-8")
-        base_revision = self.commit_all(project, "base")
-        preimage_revision = base_revision
-        if committed_context:
-            (project / "context.txt").write_text("committed surrounding state\n", encoding="utf-8")
-            preimage_revision = self.commit_all(project, "context")
-        tracked.write_text("candidate\n", encoding="utf-8")
+        base_revision, preimage_revision = self._checkpoint_candidate_repository(
+            project, tracked, committed_context, review_context
+        )
         if candidate_form == "current-head":
             candidate_revision = self.commit_all(project, "candidate")
             candidate_diff = subprocess.run(
@@ -477,6 +537,8 @@ class CheckpointPackageSupport(unittest.TestCase):
                 check=True,
                 capture_output=True,
             ).stdout
+            if empty_recorded_diff:
+                candidate_diff = b""
         else:
             candidate_diff = subprocess.run(
                 ["git", "diff", "--binary", "HEAD", "--"],
@@ -485,7 +547,12 @@ class CheckpointPackageSupport(unittest.TestCase):
                 capture_output=True,
             ).stdout
             candidate_revision = working_tree_identity(preimage_revision, candidate_diff)
-        brief_base_revision = base_revision if accepted_base is None else accepted_base
+        if empty_recorded_diff:
+            brief_base_revision = candidate_revision
+        elif accepted_base is None:
+            brief_base_revision = base_revision
+        else:
+            brief_base_revision = accepted_base
         state = replace(
             state,
             lifecycle=replace(

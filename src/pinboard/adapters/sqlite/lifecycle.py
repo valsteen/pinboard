@@ -14,6 +14,7 @@ from typing import NoReturn, assert_never
 
 import msgspec
 
+from pinboard.adapters.sqlite.artifacts import read_artifact_reference_by_id
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.application import queries, query_models, released_v6_compatibility, stored_state
@@ -178,6 +179,20 @@ class _ClosureReceiptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     action_kind: str
     subject_id: HistorySubjectId
     committed_at: datetime
+
+
+class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
+class _IntegrationAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    branch: str
+    candidate_revision: str | None
+    candidate_recorded_at: datetime | None
 
 
 class _BranchOwnerRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -643,6 +658,98 @@ def read_item_status(
         None if definition is None else definition.definition.title,
         attempts,
         closure,
+    )
+
+
+def read_item_integration_facts(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> query_models.ItemIntegrationFacts | None:
+    """Read the named item, its current or closing attempt, and indexed receipt relations."""
+
+    project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_revision_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
+    item_row = connection.execute(
+        "SELECT item_id AS work_item_id, state, subject_revision FROM work_items WHERE item_id = ?",
+        (item_id,),
+    ).fetchone()
+    if item_row is None:
+        return None
+    item = decode_row(item_row, _IntegrationItemRow)
+
+    attempt_row = connection.execute(
+        """
+        SELECT attempt_id, state, branch, candidate_revision, candidate_recorded_at
+        FROM attempts INDEXED BY one_live_attempt_per_item
+        WHERE item_id = ? AND state != 'done'
+        """,
+        (item_id,),
+    ).fetchone()
+    current_attempt = None
+    if attempt_row is not None:
+        attempt = decode_row(attempt_row, _IntegrationAttemptRow)
+        current_attempt = query_models.ItemIntegrationAttemptFacts(
+            attempt.attempt_id,
+            attempt.state,
+            attempt.branch,
+            attempt.candidate_revision,
+            attempt.candidate_recorded_at,
+        )
+
+    closure = None
+    closure_receipt = None
+    if stored_state.live_work_state(item.state) is None:
+        receipt_row = connection.execute(
+            f"SELECT {_CONSUMED_RECEIPT_COLUMNS} FROM transition_history WHERE project_revision = ?",
+            (item.subject_revision,),
+        ).fetchone()
+        if receipt_row is not None:
+            closure_receipt = _consumed_receipt(receipt_row)
+            closing_attempt = None
+            if closure_receipt.action_kind == decision_models.ActionKind.COMPLETE:
+                closing_row = connection.execute(
+                    "SELECT attempt_id, branch, candidate_revision FROM attempts WHERE attempt_id = ? AND item_id = ?",
+                    (closure_receipt.subject_id, item_id),
+                ).fetchone()
+                closing_attempt = (
+                    None if closing_row is None else decode_row(closing_row, query_models.ClosingAttemptFacts)
+                )
+            closure = query_models.ItemClosureFacts(
+                closure_receipt.action_kind,
+                closure_receipt.committed_at,
+                closing_attempt,
+            )
+
+    latest_checkpoint = None
+    if current_attempt is not None:
+        checkpoint_row = connection.execute(
+            f"""
+            SELECT {_CONSUMED_RECEIPT_COLUMNS}
+            FROM transition_history INDEXED BY checkpoint_history_by_subject
+            WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+            ORDER BY history_id DESC LIMIT 1
+            """,
+            (current_attempt.attempt_id,),
+        ).fetchone()
+        if checkpoint_row is not None:
+            receipt = _consumed_receipt(checkpoint_row)
+            package_reference = (
+                None
+                if receipt.artifact_ref_id is None
+                else read_artifact_reference_by_id(connection, receipt.artifact_ref_id)
+            )
+            latest_checkpoint = query_models.ItemIntegrationCheckpointFacts(receipt, package_reference)
+
+    return query_models.ItemIntegrationFacts(
+        project_revision,
+        item.work_item_id,
+        item.state,
+        item.subject_revision,
+        current_attempt,
+        closure,
+        closure_receipt,
+        latest_checkpoint,
     )
 
 

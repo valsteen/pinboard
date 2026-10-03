@@ -9,9 +9,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,6 +25,7 @@ from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import ports, queries, query_models, stored_state
+from pinboard.application.artifacts import NewArtifact
 from pinboard.application.service import create_proposal
 from pinboard.cli import work_views
 from pinboard.cli.entrypoint import main
@@ -34,9 +36,18 @@ from pinboard.domain.identifiers import AttemptId, HostId, ProposalId, TaskId, W
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import read_operations as mcp_reads
+from tests.artifact_support import write_revision
 from tests.decision_support import BOARD
+from tests.domain_support import expect_success
 from tests.native_support import call_advertised_tool
-from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, initialize_store, test_definition
+from tests.support import (
+    SQLITE_NOW,
+    JsonObject,
+    complete_sqlite_state,
+    initialize_store,
+    test_definition,
+    with_definition_dependencies,
+)
 
 HOSTILE_TITLE = "</script><img src=x onerror=alert(1)> & <!-- -->"
 HOSTILE_INTAKE = "</SCRIPT>\u2028<b>next</b>\u2029&amp;"
@@ -197,6 +208,39 @@ def _prerequisite_intake() -> ProposalIntake:
     )
 
 
+def _validatable_state() -> stored_state.StoredWorkState:
+    """Live items without attempts, receipts, or artifact references, so full validation can check the ledger."""
+
+    state = complete_sqlite_state()
+    return replace(
+        state,
+        lifecycle=replace(
+            state.lifecycle,
+            work_items=tuple(
+                replace(value, state=stored_state.StoredWorkItemState.READY)
+                if value.item_id == WorkItemId("work-a")
+                else value
+                for value in state.lifecycle.work_items
+            ),
+            attempts=(),
+        ),
+        artifact_references=(),
+        authority=replace(state.authority, attempt_counters=(), attempt_generations=(), attempt_leases=()),
+        transition_receipts=(),
+    )
+
+
+def _with_solved_dependencies() -> stored_state.StoredWorkState:
+    """Give the deferred item solved and live dependencies interleaved, and the review item only a solved one."""
+
+    state = with_definition_dependencies(
+        _every_state(),
+        WorkItemId("deferred-work"),
+        (WorkItemId("work-b"), WorkItemId("work-c"), WorkItemId("needed-first")),
+    )
+    return with_definition_dependencies(state, WorkItemId("review-work"), (WorkItemId("work-b"),))
+
+
 def _page_data(html: str) -> dict[str, object]:
     match = re.search(r'<script id="board-data" type="application/json">(.*?)</script>', html, re.DOTALL)
     assert match is not None
@@ -211,12 +255,42 @@ def _page_items(html: str) -> list[dict[str, object]]:
     return [value for value in items if isinstance(value, dict)]
 
 
+def _page_dependencies(item: dict[str, object]) -> list[tuple[object, object]]:
+    dependencies = item["dependencies"]
+    assert isinstance(dependencies, list)
+    return [(value["item_id"], value["on_board"]) for value in dependencies if isinstance(value, dict)]
+
+
 def _markdown_groups(markdown: str) -> dict[str, list[tuple[str, str]]]:
     groups: dict[str, list[tuple[str, str]]] = {}
     for section in markdown.split("\n## ")[1:]:
         heading, _, body = section.partition("\n")
-        groups[heading] = re.findall(r"^- \[.*\]\(items/.*\.md\) `([^`]+)` \((\w+)\)$", body, re.MULTILINE)
+        groups[heading] = re.findall(
+            r"^- \[.*\]\(items/.*\.md\) `([^`]+)` \((\w+)\), changed \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC$",
+            body,
+            re.MULTILINE,
+        )
     return groups
+
+
+def _with_change_times(state: stored_state.StoredWorkState) -> tuple[stored_state.StoredWorkState, dict[str, datetime]]:
+    """Give every item, including terminal ones, a distinct change time that the project record never matches."""
+
+    times = {
+        str(value.item_id): SQLITE_NOW + timedelta(hours=index, seconds=index)
+        for index, value in enumerate(state.lifecycle.work_items, start=1)
+    }
+    items = tuple(replace(value, updated_at=times[str(value.item_id)]) for value in state.lifecycle.work_items)
+    project = replace(state.lifecycle.project, updated_at=SQLITE_NOW + timedelta(days=30))
+    return replace(state, lifecycle=replace(state.lifecycle, work_items=items, project=project)), times
+
+
+def _utc_label(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _utc_instant(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _file_identity(path: Path) -> tuple[bytes, int, int]:
@@ -334,6 +408,179 @@ class BoardProjectionTest(unittest.TestCase):
             {name: derive_expected_view_bytes(state, {}, now=LATER).views[name] for name in BOARD_FILES},
         )
 
+    def test_both_projections_show_item_times_and_the_latest_live_item_time_as_the_board_time(self) -> None:
+        state, times = _with_change_times(_every_state())
+        times["work-b"] = SQLITE_NOW + timedelta(days=60)
+        state = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=tuple(
+                    replace(value, updated_at=times[str(value.item_id)]) for value in state.lifecycle.work_items
+                ),
+            ),
+        )
+        _project, roots, store = self._ledger(state)
+
+        self._rebuild(roots, store)
+
+        markdown, html = self._board(roots)
+        live = {value for groups in _markdown_groups(markdown).values() for value, _state in groups}
+        self.assertEqual(9, len(live))
+        self.assertNotIn("work-b", live)
+        latest = max(times[value] for value in live)
+        self.assertLess(latest, times["work-b"])
+        self.assertLess(latest, state.lifecycle.project.updated_at)
+        self.assertIn(f"Updated {_utc_label(latest)}", markdown)
+        self.assertNotIn(_utc_label(times["work-b"]), markdown)
+        self.assertNotIn(_utc_label(state.lifecycle.project.updated_at), markdown)
+        lines = {
+            match.group(1): match.group(2)
+            for match in re.finditer(r"^- \[.*\]\(items/.*\.md\) `([^`]+)` .*, changed (.*)$", markdown, re.MULTILINE)
+        }
+        self.assertEqual(live, set(lines))
+        for item_id in live:
+            self.assertEqual(_utc_label(times[item_id]), lines[item_id])
+        self.assertEqual(_utc_instant(latest), _page_data(html)["updated_at"])
+        items = _page_items(html)
+        self.assertEqual(live, {str(value["item_id"]) for value in items})
+        for value in items:
+            self.assertEqual(_utc_instant(times[str(value["item_id"])]), value["updated_at"])
+
+    def test_a_board_without_live_items_shows_no_board_time(self) -> None:
+        state = _validatable_state()
+        state = replace(
+            state,
+            lifecycle=replace(
+                state.lifecycle,
+                work_items=tuple(
+                    replace(
+                        value,
+                        state=stored_state.StoredWorkItemState.SUPERSEDED,
+                        outcome_evidence="superseded for the test",
+                        queue_position=None,
+                    )
+                    for value in state.lifecycle.work_items
+                ),
+            ),
+        )
+        _project, roots, store = self._ledger(state)
+
+        self._rebuild(roots, store)
+
+        markdown, html = self._board(roots)
+        self.assertNotIn("Updated ", markdown)
+        self.assertNotRegex(markdown, r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC")
+        self.assertIsNone(_page_data(html)["updated_at"])
+        self.assertEqual([], _page_items(html))
+
+    def test_artifact_only_commit_leaves_derived_board_bytes_and_validation_unchanged(self) -> None:
+        project, roots, store = self._ledger(_validatable_state())
+        common = ("--project-root", str(project), "--work-root", str(roots.work_root))
+        self._rebuild(roots, store)
+        view_root = roots.work_root / "views"
+        before = {name: (view_root / name).read_bytes() for name in BOARD_FILES}
+        published = write_revision(
+            roots, NewArtifact(work_models.ArtifactKind.EVIDENCE, "later-evidence", 1, ".md", b"later\n")
+        )
+
+        expect_success(store.accept_artifact_reference(roots.work_root, published, LATER))
+
+        reloaded = store.validated_snapshot()
+        self.assertEqual(LATER, reloaded.lifecycle.project.updated_at)
+        expected = derive_expected_view_bytes(reloaded, {}, now=LATER).views
+        self.assertEqual(before, {name: expected[name] for name in BOARD_FILES})
+        self.assertEqual(before, {name: (view_root / name).read_bytes() for name in BOARD_FILES})
+        result, stdout, stderr = self._run_cli(*common, "validate")
+        self.assertEqual(0, result, stderr)
+        self.assertNotIn("VIEW_REFRESH_REQUIRED", stdout)
+
+    def test_markdown_lists_only_dependencies_that_still_apply(self) -> None:
+        _project, roots, store = self._ledger(_with_solved_dependencies())
+
+        self._rebuild(roots, store)
+
+        markdown, _html = self._board(roots)
+        entries = {
+            match.group(1): match.group(0)
+            for match in re.finditer(r"^- \[.*\]\(items/.*\.md\) `([^`]+)`.*\n(?:  - .*\n)*", markdown, re.MULTILINE)
+        }
+        self.assertIn("  - Depends on work-c: Recorded dependency.\n", entries["deferred-work"])
+        self.assertIn("  - Depends on needed-first: ", entries["deferred-work"])
+        self.assertNotIn("work-b", entries["deferred-work"])
+        self.assertNotIn("Depends on", entries["review-work"])
+        self.assertNotIn("`work-b`", markdown)
+        self.assertNotIn("Depends on work-b", markdown)
+
+    def test_page_data_orders_dependencies_that_still_apply_before_solved_ones(self) -> None:
+        _project, roots, store = self._ledger(_with_solved_dependencies())
+
+        self._rebuild(roots, store)
+
+        _markdown, html = self._board(roots)
+        items = {str(value["item_id"]): value for value in _page_items(html)}
+        self.assertEqual(
+            [("work-c", True), ("needed-first", True), ("work-b", False)],
+            _page_dependencies(items["deferred-work"]),
+        )
+        self.assertEqual(
+            [("work-b", False)],
+            _page_dependencies(items["review-work"]),
+        )
+
+    def test_board_bytes_do_not_depend_on_the_writing_process_timezone(self) -> None:
+        state, _times = _with_change_times(_every_state())
+        _project, roots, store = self._ledger(state)
+        view_root = roots.work_root / "views"
+        outputs: list[dict[str, bytes]] = []
+
+        def restore_timezone(previous: str | None) -> None:
+            if previous is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = previous
+            time.tzset()
+
+        self.addCleanup(restore_timezone, os.environ.get("TZ"))
+        for zone in ("Pacific/Kiritimati", "America/Los_Angeles"):
+            os.environ["TZ"] = zone
+            time.tzset()
+            self._rebuild(roots, store)
+            outputs.append({name: (view_root / name).read_bytes() for name in BOARD_FILES})
+            expected = derive_expected_view_bytes(store.validated_snapshot(), {}, now=SQLITE_NOW).views
+            self.assertEqual(outputs[-1], {name: expected[name] for name in BOARD_FILES})
+
+        self.assertEqual(outputs[0], outputs[1])
+
+    def test_committed_reorder_changes_neither_an_items_time_nor_the_board_time(self) -> None:
+        project, roots, store = self._ledger(complete_sqlite_state())
+        self._rebuild(roots, store)
+        before = {str(value["item_id"]): value["updated_at"] for value in _page_items(self._board(roots)[1])}
+        before_board = _page_data(self._board(roots)[1])["updated_at"]
+        current = ["intake-work", "work-a", "work-c", "zz-proposal-a"]
+
+        result = mcp_reads._order(
+            {
+                "request": {
+                    "project_root": str(project),
+                    "work_root": str(roots.work_root),
+                    "actor_task_id": "priority-owner",
+                    "actor_host_id": "local",
+                    "order": {
+                        "schema": "pinboard-live-order/v1",
+                        "expected_order": list(current),
+                        "requested_order": [*current[1:], current[0]],
+                    },
+                }
+            },
+            mcp_execution.CancellationToken(),
+        ).content
+
+        self.assertEqual("committed", result["status"])
+        _markdown, html = self._board(roots)
+        self.assertEqual(before, {str(value["item_id"]): value["updated_at"] for value in _page_items(html)})
+        self.assertEqual(before_board, _page_data(html)["updated_at"])
+
     def test_live_portfolio_read_excludes_history_and_artifact_relations(self) -> None:
         _project, roots, store = self._ledger(_every_state())
         tables: set[str] = set()
@@ -402,7 +649,6 @@ class BoardProjectionTest(unittest.TestCase):
         work_c = next(value for value in _page_items(html) if value["item_id"] == "work-c")
         self.assertEqual(HOSTILE_TITLE, work_c["title"])
         self.assertEqual(HOSTILE_INTAKE, work_c["intake_next_action"])
-        self.assertIn(HOSTILE_TITLE, str(work_c["prompt"]))
         script = html.rpartition("<script>")[2]
         self.assertNotIn("innerHTML", script)
         self.assertNotIn("insertAdjacentHTML", script)
@@ -420,29 +666,23 @@ class BoardProjectionTest(unittest.TestCase):
         self.assertNotRegex(html, r"\bimport\b")
         self.assertNotIn("url(", html)
 
-    def test_page_data_carries_state_chosen_detail_and_prompts(self) -> None:
+    def test_page_data_carries_state_chosen_detail_without_action_prompts(self) -> None:
         _project, roots, store = self._ledger(_every_state())
 
         self._rebuild(roots, store)
 
-        _markdown, html = self._board(roots)
+        markdown, html = self._board(roots)
         data = _page_data(html)
         self.assertEqual(["paused", "review", "active", "ready", "blocked", "deferred"], data["states"])
         items = {str(value["item_id"]): value for value in _page_items(html)}
-        prompts = {str(value["prompt"]) for value in items.values()}
-        self.assertEqual(9, len(prompts))
         for item_id, value in items.items():
-            self.assertIn(f"item {item_id} (", str(value["prompt"]))
-            self.assertTrue(str(value["prompt"]).startswith("Use Pinboard to "))
+            self.assertNotIn("prompt", value)
             self.assertTrue(value["next_step"])
             self.assertEqual(f"items/{item_id}.md", value["item_view"])
             self.assertTrue(value["effect"] and value["unlock"])
-        self.assertIn("start work on item work-c", str(items["work-c"]["prompt"]))
-        self.assertIn("is paused", str(items["paused-work"]["prompt"]))
-        self.assertIn("review of item review-work", str(items["review-work"]["prompt"]))
-        self.assertIn("what blocks item blocked-work", str(items["blocked-work"]["prompt"]))
-        self.assertIn("deferred item deferred-work", str(items["deferred-work"]["prompt"]))
-        self.assertIn("active attempt for item work-a", str(items["work-a"]["prompt"]))
+        self.assertNotIn("prompt", markdown.lower())
+        self.assertNotIn("<textarea", html)
+        self.assertNotIn("clipboard", html.lower())
         self.assertEqual("work-a-1", items["work-a"]["attempt_id"])
         self.assertEqual("continue", items["work-a"]["intake_next_action"])
         self.assertEqual(
@@ -593,24 +833,7 @@ class BoardProjectionTest(unittest.TestCase):
         self.assertIn("required-before-work-c", [value["item_id"] for value in _page_items(html)])
 
     def test_rebuild_writes_both_files_and_validate_reports_board_drift(self) -> None:
-        state = complete_sqlite_state()
-        state = replace(
-            state,
-            lifecycle=replace(
-                state.lifecycle,
-                work_items=tuple(
-                    replace(value, state=stored_state.StoredWorkItemState.READY)
-                    if value.item_id == WorkItemId("work-a")
-                    else value
-                    for value in state.lifecycle.work_items
-                ),
-                attempts=(),
-            ),
-            artifact_references=(),
-            authority=replace(state.authority, attempt_counters=(), attempt_generations=(), attempt_leases=()),
-            transition_receipts=(),
-        )
-        project, roots, _store = self._ledger(state)
+        project, roots, _store = self._ledger(_validatable_state())
         common = ("--project-root", str(project), "--work-root", str(roots.work_root))
         view_root = roots.work_root / "views"
 

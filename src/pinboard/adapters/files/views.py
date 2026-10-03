@@ -11,7 +11,7 @@ import os
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
@@ -27,8 +27,8 @@ from pinboard.application.queries import (
     damaged_receipt_message,
     damaged_receipt_recovery,
     decode_recorded_pause_reason,
+    project_board_portfolio,
     project_live_portfolio,
-    project_portfolio,
 )
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, WorkItemId
@@ -60,20 +60,20 @@ def _deferral_label(policy: work_models.ObligationDeferralPolicy) -> str:
 
 @dataclass(frozen=True, slots=True)
 class _ViewInputs:
-    portfolio: tuple[query_models.OverviewItem, ...]
+    board: query_models.BoardPortfolio
     overview_items: Mapping[str, query_models.OverviewItem]
     dependencies: Mapping[WorkItemId, tuple[WorkItemId, ...]]
     definitions: Mapping[WorkItemId, stored_state.ItemDefinitionRevision]
 
 
 def _project_view_inputs(state: stored_state.StoredWorkState, now: datetime) -> _ViewInputs:
-    portfolio = project_portfolio(state, now)
+    board = project_board_portfolio(state, now)
     dependency_groups: dict[WorkItemId, list[WorkItemId]] = {item.item_id: [] for item in state.lifecycle.work_items}
     for dependency in sorted(state.lifecycle.dependencies, key=_dependency_key):
         dependency_groups[dependency.item_id].append(dependency.dependency_id)
     return _ViewInputs(
-        portfolio,
-        MappingProxyType({item.item_id: item for item in portfolio}),
+        board,
+        MappingProxyType({value.overview.item_id: value.overview for value in board.items}),
         MappingProxyType({item_id: tuple(dependencies) for item_id, dependencies in dependency_groups.items()}),
         MappingProxyType({definition.item_id: definition for definition in state.lifecycle.definition_revisions}),
     )
@@ -258,60 +258,61 @@ def _board_next_step(state: work_models.WorkState) -> str:
             assert_never(unreachable)
 
 
-def _board_prompt(item: query_models.OverviewItem) -> str:
-    subject = f'item {item.item_id} ("{item.label}")'
-    match item.state:
-        case work_models.WorkState.READY:
-            return (
-                f"Use Pinboard to start work on {subject}: check its dependencies and holds, "
-                "prepare the agreed brief, and ask me before starting."
-            )
-        case work_models.WorkState.ACTIVE:
-            return (
-                f"Use Pinboard to check the progress of the active attempt for {subject} "
-                "and tell me whether it needs anything from me."
-            )
-        case work_models.WorkState.PAUSED:
-            return f"Use Pinboard to show me why {subject} is paused and what decision it needs from me to resume."
-        case work_models.WorkState.REVIEW:
-            return (
-                f"Use Pinboard to check the review of {subject}: commission the independent review "
-                "if none is running, and bring me its verdict."
-            )
-        case work_models.WorkState.BLOCKED:
-            return f"Use Pinboard to check what blocks {subject} and whether it can be unblocked."
-        case work_models.WorkState.DEFERRED:
-            return f"Use Pinboard to check whether deferred {subject} should resume now, and tell me what that takes."
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
 def _board_groups(
-    items: tuple[query_models.OverviewItem, ...],
-) -> tuple[tuple[_BoardGroup, tuple[query_models.OverviewItem, ...]], ...]:
+    items: tuple[query_models.BoardItem, ...],
+) -> tuple[tuple[_BoardGroup, tuple[query_models.BoardItem, ...]], ...]:
     """Partition live items into display groups while keeping saved order within each."""
 
-    return tuple((group, tuple(item for item in items if _board_group(item.state) is group)) for group in _BoardGroup)
+    return tuple(
+        (group, tuple(item for item in items if _board_group(item.overview.state) is group)) for group in _BoardGroup
+    )
+
+
+def _utc_instant(value: datetime) -> str:
+    """Name a stored time as a UTC instant that a browser parses and that never depends on the process timezone."""
+
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _utc_label(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def _markdown_link_text(value: str) -> str:
     return value.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
 
 
-def _render_board_markdown(items: tuple[query_models.OverviewItem, ...]) -> bytes:
+def _live_dependencies(
+    item: query_models.BoardItem, live_ids: frozenset[str]
+) -> tuple[query_models.DependencyReason, ...]:
+    """Name the dependencies that still apply: the ones that are live items on the board."""
+
+    return tuple(value for value in item.overview.dependency_reasons if value.item_id in live_ids)
+
+
+def _render_board_markdown(board: query_models.BoardPortfolio) -> bytes:
+    live_ids = frozenset(value.overview.item_id for value in board.items)
     sections: list[str] = []
-    for group, grouped in _board_groups(items):
+    for group, grouped in _board_groups(board.items):
         entries = "".join(
-            f"- [{_markdown_link_text(item.label)}](items/{item.item_id}.md) `{item.item_id}` ({item.state.value})\n"
-            + "".join(f"  - Depends on {value.item_id}: {value.reason}\n" for value in item.dependency_reasons)
+            f"- [{_markdown_link_text(item.overview.label)}](items/{item.overview.item_id}.md) "
+            + f"`{item.overview.item_id}` ({item.overview.state.value}), changed {_utc_label(item.updated_at)}\n"
+            + "".join(
+                f"  - Depends on {value.item_id}: {value.reason}\n" for value in _live_dependencies(item, live_ids)
+            )
             for item in grouped
         )
         sections.append(f"## {group.value}\n\n{entries or '- None.\n'}\n")
+    updated = (
+        "" if board.updated_at is None else f"Updated {_utc_label(board.updated_at)}, when the newest item changed. "
+    )
     return (
         _render_header("work-board-view")
         + "# Board\n\n"
+        + updated
+        + "Each item shows when its record last changed and lists only the dependencies that still apply. "
         + "Live items in saved order, grouped by what they wait on. "
-        + f"[{BOARD_HTML}]({BOARD_HTML}) adds filtering, item detail, and copyable action prompts.\n\n"
+        + f"[{BOARD_HTML}]({BOARD_HTML}) adds filtering and item detail.\n\n"
         + "".join(sections)
     ).encode()
 
@@ -327,12 +328,12 @@ class _BoardPageItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     title: str
     state: str
     group: str
+    updated_at: str
     effect: str
     unlock: str
     attempt_id: str | None
     dependencies: tuple[_BoardPageDependency, ...]
     next_step: str
-    prompt: str
     intake_next_action: str | None
     item_view: str
 
@@ -340,40 +341,54 @@ class _BoardPageItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 class _BoardPage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-board-page/v1"]
     notice: str
+    updated_at: str | None
     groups: tuple[str, ...]
     states: tuple[str, ...]
     items: tuple[_BoardPageItem, ...]
 
 
-def _board_page_data(items: tuple[query_models.OverviewItem, ...]) -> bytes:
+def _live_first(dependencies: tuple[_BoardPageDependency, ...]) -> tuple[_BoardPageDependency, ...]:
+    """List dependencies that still apply before solved ones, keeping stored order within each group."""
+
+    return tuple(value for value in dependencies if value.on_board) + tuple(
+        value for value in dependencies if not value.on_board
+    )
+
+
+def _board_page_item(value: query_models.BoardItem, live_ids: frozenset[str]) -> _BoardPageItem:
+    item = value.overview
+    return _BoardPageItem(
+        item.item_id,
+        item.label,
+        item.state.value,
+        _board_group(item.state).value,
+        _utc_instant(value.updated_at),
+        item.effect,
+        item.unlock,
+        item.attempt_id,
+        _live_first(
+            tuple(
+                _BoardPageDependency(dependency.item_id, dependency.reason, dependency.item_id in live_ids)
+                for dependency in item.dependency_reasons
+            )
+        ),
+        _board_next_step(item.state),
+        item.next_action,
+        f"items/{item.item_id}.md",
+    )
+
+
+def _board_page_data(board: query_models.BoardPortfolio) -> bytes:
     """Encode page data as JSON that cannot close its script element or break a JavaScript string."""
 
-    live_ids = frozenset(item.item_id for item in items)
+    live_ids = frozenset(value.overview.item_id for value in board.items)
     page = _BoardPage(
         "pinboard-board-page/v1",
         NOTICE,
+        None if board.updated_at is None else _utc_instant(board.updated_at),
         tuple(group.value for group in _BoardGroup),
         tuple(state.value for group in _BoardGroup for state in work_models.WorkState if _board_group(state) is group),
-        tuple(
-            _BoardPageItem(
-                item.item_id,
-                item.label,
-                item.state.value,
-                _board_group(item.state).value,
-                item.effect,
-                item.unlock,
-                item.attempt_id,
-                tuple(
-                    _BoardPageDependency(value.item_id, value.reason, value.item_id in live_ids)
-                    for value in item.dependency_reasons
-                ),
-                _board_next_step(item.state),
-                _board_prompt(item),
-                item.next_action,
-                f"items/{item.item_id}.md",
-            )
-            for item in items
-        ),
+        tuple(_board_page_item(value, live_ids) for value in board.items),
     )
     return (
         msgspec.json.encode(page)
@@ -394,7 +409,7 @@ _BOARD_PAGE_HEAD = """<!doctype html>
 <title>Pinboard board</title>
 <style>
 :root { color-scheme: light dark; --bg: #fbfbfa; --fg: #1d1d1b; --muted: #6a6a64; --line: #deded8; --card: #ffffff;
-  --accent: #2f5fb3; }
+  --accent: #2f5fb3; --badge-width: 4.5rem; }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #171716; --fg: #ececea; --muted: #a2a29b; --line: #3a3a37; --card: #20201f; --accent: #8fb0ea; }
 }
@@ -412,26 +427,29 @@ h3 { font-size: 0.95rem; margin: 12px 0 4px; }
   border-radius: 6px; background: var(--card); color: var(--fg); }
 .controls input { flex: 1 1 240px; }
 details.item { background: var(--card); border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; }
-details.item > summary { cursor: pointer; padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 4px 10px;
-  align-items: baseline; }
-.title { font-weight: 600; }
-.state { font-size: 0.8rem; padding: 0 6px; border: 1px solid var(--line); border-radius: 10px; }
-.id, .deps { color: var(--muted); font-size: 0.85rem; }
+details.item > summary { cursor: pointer; padding: 8px 12px; display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--badge-width); grid-template-areas: "title state" "meta meta" "deps deps";
+  gap: 2px 10px; align-items: baseline; }
+.title { grid-area: title; font-weight: 600; overflow-wrap: anywhere; }
+.state { grid-area: state; width: var(--badge-width); text-align: center; font-size: 0.8rem; padding: 0 6px;
+  border: 1px solid var(--line); border-radius: 10px; }
+.meta { grid-area: meta; display: flex; flex-wrap: wrap; gap: 0 10px; align-items: baseline; }
+.id { overflow-wrap: anywhere; }
+.deps { grid-area: deps; overflow-wrap: anywhere; }
+.id, .deps, .when { color: var(--muted); font-size: 0.85rem; }
+.stamp { cursor: pointer; border-bottom: 1px dotted currentColor; }
+.item-time { margin-left: auto; color: var(--muted); font-size: 0.85rem; }
 .body { padding: 0 12px 12px; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
 .body p { margin: 6px 0; }
 .body ul { margin: 4px 0; padding-left: 20px; }
 a { color: var(--accent); }
-textarea { width: 100%; font: inherit; padding: 6px; border: 1px solid var(--line); border-radius: 6px;
-  background: var(--bg); color: var(--fg); resize: vertical; }
-button { font: inherit; padding: 4px 10px; margin-top: 4px; border: 1px solid var(--line); border-radius: 6px;
-  background: var(--card); color: var(--fg); cursor: pointer; }
 </style>
 </head>
 <body>
 <header>
 <h1>Pinboard board</h1>
-<p class="notice">Generated projection; SQLite is authoritative. This page is read-only: copy a prompt and ask an
-agent to act through Pinboard.</p>
+<p class="notice">Generated projection; SQLite is authoritative. This page is read-only.</p>
+<p id="board-updated" class="when"></p>
 </header>
 <div class="controls">
 <input id="filter-text" type="search" placeholder="Filter by text" aria-label="Filter by text">
@@ -452,12 +470,59 @@ _BOARD_PAGE_TAIL = """</script>
   var state = document.getElementById("filter-state");
   var count = document.getElementById("count");
   var sections = [];
+  var stamps = [];
+  var absoluteVisible = false;
 
   function node(tag, className, content) {
     var element = document.createElement(tag);
     if (className) { element.className = className; }
     if (content !== undefined && content !== null) { element.textContent = content; }
     return element;
+  }
+
+  function relativeAge(instant) {
+    var seconds = Math.floor((Date.now() - Date.parse(instant)) / 1000);
+    var units = [["year", 31536000], ["month", 2592000], ["day", 86400], ["hour", 3600], ["minute", 60]];
+    for (var index = 0; index < units.length; index += 1) {
+      if (seconds >= units[index][1]) {
+        var amount = Math.floor(seconds / units[index][1]);
+        return amount + " " + units[index][0] + (amount === 1 ? "" : "s") + " ago";
+      }
+    }
+    return "just now";
+  }
+
+  function localTime(instant) {
+    return new Date(instant).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "long" });
+  }
+
+  function renderStamps() {
+    stamps.forEach(function (entry) {
+      var relative = relativeAge(entry.instant);
+      var absolute = localTime(entry.instant);
+      entry.element.textContent = absoluteVisible ? absolute : relative;
+      entry.element.title = "Last update " + (absoluteVisible ? relative : absolute);
+    });
+  }
+
+  function swapStamps(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    absoluteVisible = !absoluteVisible;
+    renderStamps();
+  }
+
+  function stamp(className, instant) {
+    var time = node("time", className);
+    time.dateTime = instant;
+    time.tabIndex = 0;
+    time.setAttribute("role", "button");
+    time.addEventListener("click", swapStamps);
+    time.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") { swapStamps(event); }
+    });
+    stamps.push({ element: time, instant: instant });
+    return time;
   }
 
   function field(parent, label, value) {
@@ -467,28 +532,19 @@ _BOARD_PAGE_TAIL = """</script>
     parent.appendChild(row);
   }
 
-  function copy(button, area) {
-    function selectText() {
-      area.focus();
-      area.select();
-      button.textContent = "Clipboard unavailable: prompt selected, copy it manually";
-    }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(area.value).then(function () { button.textContent = "Copied"; }, selectText);
-    } else {
-      selectText();
-    }
-  }
-
   function card(item) {
     var details = node("details", "item");
     details.id = "item-" + item.item_id;
     var summary = node("summary");
     summary.appendChild(node("span", "title", item.title));
     summary.appendChild(node("span", "state", item.state));
-    summary.appendChild(node("code", "id", item.item_id));
-    if (item.dependencies.length) {
-      summary.appendChild(node("span", "deps", "Depends on " + item.dependencies.map(function (value) {
+    var meta = node("span", "meta");
+    meta.appendChild(node("code", "id", item.item_id));
+    meta.appendChild(stamp("stamp item-time", item.updated_at));
+    summary.appendChild(meta);
+    var applying = item.dependencies.filter(function (value) { return value.on_board; });
+    if (applying.length) {
+      summary.appendChild(node("span", "deps", "Depends on " + applying.map(function (value) {
         return value.item_id;
       }).join(", ")));
     }
@@ -523,16 +579,6 @@ _BOARD_PAGE_TAIL = """</script>
       body.appendChild(node("p", "context", "Recorded when this work was saved; original context, not the current plan."));
       field(body, "Next action at intake", item.intake_next_action);
     }
-    body.appendChild(node("h3", null, "Action prompt"));
-    var area = node("textarea");
-    area.readOnly = true;
-    area.rows = 3;
-    area.value = item.prompt;
-    body.appendChild(area);
-    var button = node("button", null, "Copy prompt");
-    button.type = "button";
-    button.addEventListener("click", function () { copy(button, area); });
-    body.appendChild(button);
     var view = node("p");
     var viewLink = node("a", null, "Open the item view");
     viewLink.href = item.item_view;
@@ -545,6 +591,13 @@ _BOARD_PAGE_TAIL = """</script>
       .join(" ").toLowerCase();
     return details;
   }
+
+  var updated = document.getElementById("board-updated");
+  if (data.updated_at) {
+    updated.appendChild(document.createTextNode("Board updated "));
+    updated.appendChild(stamp("stamp", data.updated_at));
+  }
+  window.setInterval(renderStamps, 60000);
 
   data.states.forEach(function (value) {
     var option = node("option", null, value);
@@ -583,6 +636,7 @@ _BOARD_PAGE_TAIL = """</script>
   text.addEventListener("input", applyFilter);
   state.addEventListener("change", applyFilter);
   applyFilter();
+  renderStamps();
 }());
 </script>
 </body>
@@ -590,8 +644,8 @@ _BOARD_PAGE_TAIL = """</script>
 """
 
 
-def _render_board_html(items: tuple[query_models.OverviewItem, ...]) -> bytes:
-    return _BOARD_PAGE_HEAD.encode() + _board_page_data(items) + _BOARD_PAGE_TAIL.encode()
+def _render_board_html(board: query_models.BoardPortfolio) -> bytes:
+    return _BOARD_PAGE_HEAD.encode() + _board_page_data(board) + _BOARD_PAGE_TAIL.encode()
 
 
 @contextmanager
@@ -619,9 +673,9 @@ def _write_board(view_root: Path, portfolio: ports.LivePortfolioReader, now: dat
     """Read the live portfolio and replace both board files under one board lock."""
 
     with _board_lock(view_root):
-        items = project_live_portfolio(portfolio.read_live_portfolio(now), now)
-        atomic_replace(view_root / BOARD_MARKDOWN, _render_board_markdown(items))
-        atomic_replace(view_root / BOARD_HTML, _render_board_html(items))
+        board = project_live_portfolio(portfolio.read_live_portfolio(now), now)
+        atomic_replace(view_root / BOARD_MARKDOWN, _render_board_markdown(board))
+        atomic_replace(view_root / BOARD_HTML, _render_board_html(board))
 
 
 def refresh_facts(
@@ -786,6 +840,6 @@ def derive_expected_view_bytes(
     expected_views.update(
         (f"history/{receipt.history_id}.md", _render_history(receipt)) for receipt in state.transition_receipts
     )
-    expected_views[BOARD_MARKDOWN] = _render_board_markdown(view_inputs.portfolio)
-    expected_views[BOARD_HTML] = _render_board_html(view_inputs.portfolio)
+    expected_views[BOARD_MARKDOWN] = _render_board_markdown(view_inputs.board)
+    expected_views[BOARD_HTML] = _render_board_html(view_inputs.board)
     return ExpectedViews(MappingProxyType(expected_views), tuple(damaged))

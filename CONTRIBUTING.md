@@ -35,6 +35,22 @@ The repository uses `unittest`. The metadata validator is the supported check fo
 
 ## Diagnose Pinboard invocations during contributor work
 
+When the local board is confusing, request one structured diagnosis:
+
+```sh
+pinboard --project-root CHECKOUT --work-root WORK_ROOT diagnose --json
+```
+
+The command resolves the selected roots, validates the full project, and reads the project trace configuration without changing it. Its result includes:
+
+- the installed version, SQLite schema, and runtime indicator when supplied;
+- root selection mode, trace configuration path, and project trace mode or why it could not be observed;
+- unfinished work, the ten most recent transition receipts, and any validation errors.
+
+Validation checks accepted artifacts and generated views as well as the ledger, so this explicit read can take longer as retained history grows.
+
+When a result or trace contains an unfamiliar code, `pinboard code-catalog --json --code CODE` explains its installed meaning and generic recovery. Run `pinboard code-catalog --json` to list the codes. The returned result's resource, effect, retry, and exact next step take precedence over catalog guidance.
+
 An initialized selected work root gets a `contributor-traces.config` Git config file on its first normal Pinboard CLI or MCP invocation, including a CLI call that needs runtime preparation. The default shared `.pinboard` work root is Git-ignored; an explicit work root keeps the setting and traces inside that exact root. Pinboard creates an absent file privately at mode `0600`, writes a missing project mode through a key-level Git config operation, then reads the stored mode. Existing item overrides and explicit modes remain. Its explicit default is:
 
 ```gitconfig

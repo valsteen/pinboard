@@ -522,6 +522,15 @@ def _brief_sources(raw: Mapping[str, JsonValue], token: execution.CancellationTo
             content: dict[str, JsonValue] = msgspec.to_builtins(
                 brief_source_codec.project_brief_source_plan(source_plan)
             )
+            presented_bytes = len(msgspec.json.encode(content))
+            if presented_bytes > brief_sources.MAX_PRESENTED_BATCH_BYTES:
+                return _brief_preparation_failure(
+                    schema,
+                    "BRIEF_SOURCE_PLAN_INVALID",
+                    f"Read-only plan requires {presented_bytes} presented bytes; limit is "
+                    f"{brief_sources.MAX_PRESENTED_BATCH_BYTES}. Split the manifest into smaller source selections "
+                    "and plan and read each selection independently without publishing a plan.",
+                )
             return execution.OperationResult(content, "read", None)
         case contracts.BriefSourcesEmitRequest():
             source_plan = brief_source_codec.plan_from_view(request.plan)

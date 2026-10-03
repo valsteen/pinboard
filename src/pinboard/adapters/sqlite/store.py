@@ -357,6 +357,7 @@ def _read_attempt_context_facts(
 def _read_candidate_snapshot_context_facts(
     connection: sqlite3.Connection,
     attempt_id: AttemptId,
+    allow_completed_legacy_candidate: bool,
 ) -> query_models.CandidateSnapshotContextFacts | None:
     attempt_row = connection.execute(
         """
@@ -401,6 +402,10 @@ def _read_candidate_snapshot_context_facts(
             and legacy_candidate == attempt.candidate_revision
         ):
             return None
+        if allow_completed_legacy_candidate and attempt.state == work_models.AttemptState.DONE:
+            legacy_completion_candidate = _read_completed_legacy_candidate_submission(connection, attempt)
+            if legacy_completion_candidate:
+                return None
         raise StorageError(
             StorageErrorCode.INVALID_STATE,
             "The protected candidate has no accepted snapshot artifact.",
@@ -433,6 +438,36 @@ def _read_candidate_snapshot_context_facts(
         attempt.candidate_recorded_at,
         receipt,
         reference,
+    )
+
+
+def _read_completed_legacy_candidate_submission(
+    connection: sqlite3.Connection, attempt: CandidateSnapshotAttemptRow
+) -> bool:
+    if attempt.candidate_revision is None or attempt.candidate_recorded_at is None:
+        return False
+    row = connection.execute(
+        """
+        SELECT history_id FROM transition_history
+        WHERE subject_id = ? AND action_kind = ?
+        ORDER BY history_id DESC LIMIT 1
+        """,
+        (
+            str(attempt.attempt_id),
+            decision_models.ActionKind.SUBMIT_REVIEW.value,
+        ),
+    ).fetchone()
+    if row is None:
+        return False
+    receipt = sqlite_state.read_history_receipt(connection, decode_row(row, HistoryIdRow).history_id)
+    try:
+        candidate = None if receipt is None else candidate_snapshots.legacy_review_candidate(receipt)
+    except ValueError as error:
+        raise StorageError(StorageErrorCode.INVALID_STATE, str(error)) from error
+    return (
+        receipt is not None
+        and receipt.committed_at == attempt.candidate_recorded_at
+        and candidate == attempt.candidate_revision
     )
 
 
@@ -760,10 +795,20 @@ class SQLiteWorkStore:
     def read_candidate_snapshot_context(
         self, attempt_id: AttemptId
     ) -> query_models.CandidateSnapshotContextFacts | None:
+        return self._read_candidate_snapshot_context(attempt_id, False)
+
+    def read_completed_candidate_snapshot_context(
+        self, attempt_id: AttemptId
+    ) -> query_models.CandidateSnapshotContextFacts | None:
+        return self._read_candidate_snapshot_context(attempt_id, True)
+
+    def _read_candidate_snapshot_context(
+        self, attempt_id: AttemptId, allow_completed_legacy_candidate: bool
+    ) -> query_models.CandidateSnapshotContextFacts | None:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
-                return _read_candidate_snapshot_context_facts(connection, attempt_id)
+                return _read_candidate_snapshot_context_facts(connection, attempt_id, allow_completed_legacy_candidate)
         finally:
             connection.close()
 
@@ -781,7 +826,7 @@ class SQLiteWorkStore:
                 attempt = _read_attempt_context_facts(connection, attempt_id)
                 if attempt is None:
                     return None
-                candidate_snapshot = _read_candidate_snapshot_context_facts(connection, attempt_id)
+                candidate_snapshot = _read_candidate_snapshot_context_facts(connection, attempt_id, False)
                 candidate_review_reference = None
                 if (
                     isinstance(attempt, query_models.NonterminalAttemptContextFacts)

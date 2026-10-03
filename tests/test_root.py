@@ -31,10 +31,13 @@ from tests.native_support import call_native_tool
 
 
 class RootResolutionTest(unittest.TestCase):
+    fixed_git_date = "2000-01-01T00:00:00+00:00"
+
     def run_git(self, cwd: Path, *args: str) -> str:
         return subprocess.run(
             ["git", *args],
             cwd=cwd,
+            env={**os.environ, "GIT_AUTHOR_DATE": self.fixed_git_date, "GIT_COMMITTER_DATE": self.fixed_git_date},
             check=True,
             text=True,
             capture_output=True,
@@ -157,10 +160,6 @@ class RootResolutionTest(unittest.TestCase):
             "user.name=Test",
             "-c",
             "user.email=test@example.com",
-            "-c",
-            "author.date=2000-01-01T00:00:00+00:00",
-            "-c",
-            "committer.date=2000-01-01T00:00:00+00:00",
             "commit",
             "-m",
             "base",
@@ -174,10 +173,6 @@ class RootResolutionTest(unittest.TestCase):
             "user.name=Test",
             "-c",
             "user.email=test@example.com",
-            "-c",
-            "author.date=2000-01-02T00:00:00+00:00",
-            "-c",
-            "committer.date=2000-01-02T00:00:00+00:00",
             "commit",
             "-m",
             "candidate",
@@ -227,6 +222,62 @@ class RootResolutionTest(unittest.TestCase):
         self.assertEqual(base, absent.target_revision)
         self.assertFalse(absent.content_present)
         self.assertEqual(IntegrationTargetUnresolved("missing"), read_integration_target(repository, "missing", diff))
+
+    def test_integration_target_pins_context_whitespace_matching(self) -> None:
+        repository = Path(tempfile.mkdtemp()).resolve()
+        self.run_git(repository, "init", "-b", "main")
+        tracked = repository / "tracked.txt"
+        tracked.write_text("context a\nold\ncontext z\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
+        base = self.run_git(repository, "rev-parse", "HEAD").strip()
+        self.run_git(repository, "switch", "-c", "candidate")
+        tracked.write_text("context a\nnew\ncontext z\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(
+            repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "candidate"
+        )
+        candidate = self.run_git(repository, "rev-parse", "HEAD").strip()
+        diff = subprocess.run(
+            ["git", "diff", "--binary", base, candidate], cwd=repository, check=True, capture_output=True
+        ).stdout
+        self.run_git(repository, "switch", "main")
+        tracked.write_text("context   a\nold\ncontext z\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(
+            repository,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "context whitespace",
+        )
+        self.run_git(repository, "config", "apply.ignoreWhitespace", "change")
+
+        observed = read_integration_target(repository, "main", diff)
+
+        self.assertIsInstance(observed, IntegrationTargetObserved)
+        assert isinstance(observed, IntegrationTargetObserved)
+        self.assertFalse(observed.content_present)
+        self.run_git(repository, "config", "apply.ignoreWhitespace", "no")
+        without_ignored_context = read_integration_target(repository, "main", diff)
+        self.assertEqual(observed, without_ignored_context)
+
+    def test_empty_integration_diff_resolves_target_without_comparing_content(self) -> None:
+        repository = Path(tempfile.mkdtemp()).resolve()
+        self.run_git(repository, "init", "-b", "main")
+        (repository / "tracked.txt").write_text("base\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
+        target_revision = self.run_git(repository, "rev-parse", "HEAD").strip()
+        with patch("pinboard.adapters.files.root.subprocess.run", wraps=subprocess.run) as git_run:
+            observed = read_integration_target(repository, "main", b"")
+
+        self.assertEqual(IntegrationTargetObserved(target_revision, True), observed)
+        self.assertEqual(1, git_run.call_count)
+        self.assertEqual("rev-parse", git_run.call_args.args[0][1])
 
     def test_integration_target_reads_with_a_read_only_git_directory(self) -> None:
         repository = Path(tempfile.mkdtemp()).resolve()

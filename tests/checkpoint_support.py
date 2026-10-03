@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import sqlite3
 import subprocess
 import tempfile
@@ -45,6 +46,8 @@ from tests.artifact_support import write_revision
 from tests.native_support import call_native_tool
 from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
 from tests.work_brief_support import ready_review, work_a_brief
+
+FIXED_GIT_DATE = "2000-01-01T00:00:00+00:00"
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,11 +107,22 @@ class CheckpointPackageSupport(unittest.TestCase):
                 message,
             ],
             cwd=project,
+            env={**os.environ, "GIT_AUTHOR_DATE": FIXED_GIT_DATE, "GIT_COMMITTER_DATE": FIXED_GIT_DATE},
             check=True,
             capture_output=True,
         )
         return subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    def git_at_fixed_date(self, project: Path, *arguments: str) -> str:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=project,
+            env={**os.environ, "GIT_AUTHOR_DATE": FIXED_GIT_DATE, "GIT_COMMITTER_DATE": FIXED_GIT_DATE},
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
     def native_actions(

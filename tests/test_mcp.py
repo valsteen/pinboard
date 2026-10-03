@@ -4953,6 +4953,59 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         self.assertEqual("review-subagent", changed_operation["kind"])
         self.assertEqual("absent", self.json_object(changed["candidate_review"])["kind"])
 
+    def test_attempt_inspection_uses_caller_integrated_relation_without_integration_git_read(self) -> None:
+        fixture = self.checkpoint_fixture(candidate_form="current-head")
+        snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        attempt = fixture.store.read_attempt_context(AttemptId("work-a-1"))
+        assert snapshot is not None and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        recorded = call_native_tool(
+            mcp_server.REVIEW_JOB_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "review": {
+                    "kind": "record-ready",
+                    "attempt_id": "work-a-1",
+                    "candidate_revision": fixture.candidate_revision,
+                    "candidate_snapshot_sha256": snapshot.reference.content_sha256,
+                    "accepted_brief_sha256": attempt.brief_reference.content_sha256,
+                    "result_sha256": sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
+                    "review_sha256": sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
+                    "reviewer_task_id": "independent-reviewer",
+                    "verdict": "ready",
+                    "acceptance_evidence": "The exact candidate satisfies the accepted checkpoint.",
+                },
+            },
+        )
+        self.assertEqual("recorded", recorded["status"], recorded)
+        reconciliation: dict[str, contracts.JsonValue] = {
+            "target_revision": self.git_at_fixed_date(fixture.project, "rev-parse", "HEAD"),
+            "relation": "candidate-integrated",
+            "phase": "cleanup",
+            "effects": [
+                {"effect": "source-checkout", "status": "allowed"},
+                {"effect": "shared-work-root", "status": "not-required"},
+                {"effect": "git-metadata", "status": "allowed"},
+            ],
+        }
+
+        with patch("pinboard.adapters.files.root.read_integration_target") as integration_read:
+            inspected = call_native_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "attempt_id": "work-a-1",
+                    "reconciliation": reconciliation,
+                },
+            )
+
+        integration_read.assert_not_called()
+        self.assertEqual("ok", inspected["status"], inspected)
+        operation = self.json_object(self.json_object(inspected["continuation"])["next_operation"])
+        self.assertEqual("repository-cleanup", operation["kind"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -89,6 +89,10 @@ class WorkStore(Protocol):
         self, attempt_id: AttemptId
     ) -> query_models.CandidateSnapshotContextFacts | None: ...
 
+    def read_completed_candidate_snapshot_context(
+        self, attempt_id: AttemptId
+    ) -> query_models.CandidateSnapshotContextFacts | None: ...
+
     def read_review_job_context(
         self,
         attempt_id: AttemptId,

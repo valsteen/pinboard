@@ -251,7 +251,7 @@ class ItemStatusIntegrationRequest(
     item_id: PathComponent
     target: Annotated[
         str,
-        msgspec.Meta(min_length=1, pattern=r"\A(?:[^-\r\n\u0085\u2028\u2029][^\r\n\u0085\u2028\u2029]*)\z"),
+        msgspec.Meta(min_length=1, pattern=r"\A(?:[^-\r\n\u0085\u2028\u2029\x00][^\r\n\u0085\u2028\u2029\x00]*)\z"),
     ]
 
 

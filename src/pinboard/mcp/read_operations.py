@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Literal, assert_never
+from typing import assert_never
 
 import msgspec
 
@@ -138,13 +138,7 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
         durable = common._resolve_durable(request.project_root, request.work_root)
     except RootError as error:
         if isinstance(request, contracts.ItemStatusIntegrationRequest):
-            return _integration_rejected(
-                error.code.value,
-                str(error),
-                (("project_root", request.project_root), ("git_diagnostic", str(error))),
-                "correct-input",
-                "Correct the selected checkout and retry this read.",
-            )
+            return _integration_root_failure(request, error)
         return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
     except (ValueError, OSError) as error:
         return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
@@ -181,7 +175,7 @@ def _integration_rejected(
     observed: tuple[tuple[str, str], ...],
     retry: str,
     next_step: str,
-    mismatches: tuple[tuple[str, str, str], ...] = (),
+    mismatches: tuple[tuple[str, str, str], ...],
 ) -> execution.OperationResult:
     return execution.OperationResult(
         {
@@ -221,25 +215,28 @@ def _read_item_integration(  # noqa: C901, PLR0912, PLR0915 - exhaustive integra
             (("item_id", request.item_id),),
             "correct-input",
             "Check the item id and read its item status.",
+            (),
         )
     source: contracts.ItemIntegrationSource
     evidence: candidate_snapshots.CandidateSnapshotEvidence | candidate_snapshots.CandidateSnapshot
     source_attempt_id: AttemptId
     candidate_revision: str
-    checkpoint_id: str | None = None
     candidate_source = queries.select_item_integration_candidate(facts)
     if isinstance(candidate_source, query_models.CompletionCandidate | query_models.ProtectedReviewCandidate):
         source_attempt_id = candidate_source.attempt_id
         candidate_revision = candidate_source.candidate_revision
-        source_kind: Literal["protected-review", "completion"]
         unavailable_reason: str
         if isinstance(candidate_source, query_models.CompletionCandidate):
-            source_kind = "completion"
-            unavailable_reason = "the closing candidate has no accepted snapshot"
+            unavailable_reason = (
+                "the closing candidate is retained pre-snapshot evidence without accepted snapshot bytes"
+            )
         else:
-            source_kind = "protected-review"
             unavailable_reason = "the protected candidate has no accepted snapshot"
-        context = store.read_candidate_snapshot_context(source_attempt_id)
+        context = (
+            store.read_completed_candidate_snapshot_context(source_attempt_id)
+            if isinstance(candidate_source, query_models.CompletionCandidate)
+            else store.read_candidate_snapshot_context(source_attempt_id)
+        )
         if context is None:
             return _candidate_unavailable(request, facts.item_state.value, unavailable_reason)
         verified = candidate_evidence.read_candidate_evidence_from_context(
@@ -248,7 +245,13 @@ def _read_item_integration(  # noqa: C901, PLR0912, PLR0915 - exhaustive integra
         if isinstance(verified, DecisionFailure):
             return _candidate_evidence_invalid(source_attempt_id, context.reference.selector, verified.message)
         evidence = verified
-        source = _integration_source(evidence.snapshot, source_attempt_id, candidate_revision, source_kind, None)
+        compared_from = _compared_from(evidence.snapshot)
+        if isinstance(candidate_source, query_models.CompletionCandidate):
+            source = contracts.CompletionIntegrationSource(str(source_attempt_id), candidate_revision, compared_from)
+        else:
+            source = contracts.ProtectedReviewIntegrationSource(
+                str(source_attempt_id), candidate_revision, compared_from
+            )
     elif isinstance(candidate_source, query_models.AcceptedCheckpointCandidate):
         checkpoint = candidate_source.checkpoint
         receipt = checkpoint.receipt
@@ -309,7 +312,6 @@ def _read_item_integration(  # noqa: C901, PLR0912, PLR0915 - exhaustive integra
                 raise ValueError("Checkpoint candidate snapshot reference does not resolve to accepted bytes.")
             source_attempt_id = candidate_source.attempt_id
             candidate_revision = package.candidate
-            checkpoint_id = package.checkpoint.id
             snapshot = candidate_evidence.read_integration_snapshot(
                 durable.work_root, reference, source_attempt_id, item_id, candidate_revision
             )
@@ -334,8 +336,8 @@ def _read_item_integration(  # noqa: C901, PLR0912, PLR0915 - exhaustive integra
             if snapshot.accepted_base_revision != brief.base_revision:
                 raise ValueError("Checkpoint candidate snapshot does not match its accepted brief base.")
             evidence = snapshot
-            source = _integration_source(
-                snapshot, source_attempt_id, candidate_revision, "accepted-checkpoint", checkpoint_id
+            source = contracts.AcceptedCheckpointIntegrationSource(
+                str(source_attempt_id), candidate_revision, _compared_from(snapshot), package.checkpoint.id
             )
         except (ArtifactError, OSError, ValueError, msgspec.DecodeError) as error:
             reference_name = checkpoint.package_reference.selector
@@ -372,14 +374,8 @@ def _read_item_integration(  # noqa: C901, PLR0912, PLR0915 - exhaustive integra
     )
 
 
-def _integration_source(
-    snapshot: candidate_snapshots.CandidateSnapshot,
-    attempt_id: AttemptId,
-    candidate_revision: str,
-    kind: Literal["protected-review", "accepted-checkpoint", "completion"],
-    checkpoint_id: str | None,
-) -> contracts.ItemIntegrationSource:
-    compared_from = (
+def _compared_from(snapshot: candidate_snapshots.CandidateSnapshot) -> str:
+    return (
         snapshot.preimage_revision
         if isinstance(
             snapshot,
@@ -387,19 +383,6 @@ def _integration_source(
         )
         else snapshot.accepted_base_revision
     )
-    match kind:
-        case "protected-review":
-            return contracts.ProtectedReviewIntegrationSource(str(attempt_id), candidate_revision, compared_from)
-        case "accepted-checkpoint":
-            if checkpoint_id is None:
-                raise ValueError("Accepted-checkpoint source requires its checkpoint id.")
-            return contracts.AcceptedCheckpointIntegrationSource(
-                str(attempt_id), candidate_revision, compared_from, checkpoint_id
-            )
-        case "completion":
-            return contracts.CompletionIntegrationSource(str(attempt_id), candidate_revision, compared_from)
-        case _ as unreachable:
-            assert_never(unreachable)
 
 
 def _candidate_unavailable(
@@ -411,6 +394,7 @@ def _candidate_unavailable(
         (("item_id", request.item_id), ("item_state", item_state), ("reason", reason)),
         "correct-input",
         "Read the item with pinboard_item_status operation item.",
+        (),
     )
 
 
@@ -434,6 +418,7 @@ def _target_unresolved(
         (("target", request.target), ("project_root", request.project_root)),
         "correct-input",
         "Name an existing local branch, remote-tracking ref, tag, or full commit; fetch outside Pinboard first when remote freshness matters.",
+        (),
     )
 
 
@@ -447,6 +432,7 @@ def _integration_root_failure(
         (("project_root", request.project_root), ("git_diagnostic", str(error))),
         "correct-input",
         "Correct the selected checkout and retry this read.",
+        (),
     )
 
 

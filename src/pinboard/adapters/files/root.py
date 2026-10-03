@@ -300,6 +300,8 @@ def read_integration_target(cwd: Path, target: str, reviewed_diff: bytes) -> Int
                     "-c",
                     "core.splitIndex=false",
                     "-c",
+                    "apply.ignoreWhitespace=no",
+                    "-c",
                     "apply.whitespace=nowarn",
                     "apply",
                     "--cached",

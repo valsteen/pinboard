@@ -50,10 +50,15 @@ class ProjectOverviewFacts:
 
 @dataclass(frozen=True, slots=True)
 class LivePortfolioFacts:
-    """Live items with direct dependency reasons and open attempts; no authority, receipts, or artifacts."""
+    """Live items with direct dependency reasons and open attempts; no authority, receipts, or artifacts.
+
+    Each live item's stored record-change time comes from its item row, so the board shows when things changed without
+    reading transition receipts or the project record.
+    """
 
     snapshot: LedgerSnapshot
     proposals: tuple[stored_state.StoredProposal, ...]
+    item_updated_at: tuple[tuple[WorkItemId, datetime], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1209,6 +1214,27 @@ class OverviewItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     notes: str | None
     planned_replacement: PlannedReplacementWarning | None
     preparation: PreparationStatusView | None
+
+
+@dataclass(frozen=True, slots=True)
+class BoardItem:
+    """One live item with the time its stored record last changed."""
+
+    overview: OverviewItem
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class BoardPortfolio:
+    """Live items in saved order, as the board projections render them."""
+
+    items: tuple[BoardItem, ...]
+
+    @property
+    def updated_at(self) -> datetime | None:
+        """The latest record-change time among the live items shown; none for a board without live items."""
+
+        return max((item.updated_at for item in self.items), default=None)
 
 
 class NextUnstarted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

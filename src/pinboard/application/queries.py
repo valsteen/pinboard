@@ -852,12 +852,25 @@ def project_current_overview(
     )
 
 
-def project_live_portfolio(
-    facts: query_models.LivePortfolioFacts, now: datetime
-) -> tuple[query_models.OverviewItem, ...]:
-    """Project live items for generated presentations, which never render preparation authority."""
+def _board_items(
+    items: tuple[query_models.OverviewItem, ...], updated_at: Mapping[str, datetime]
+) -> tuple[query_models.BoardItem, ...]:
+    return tuple(query_models.BoardItem(item, updated_at[item.item_id]) for item in items)
 
-    return _project_current_items(query_models.ProjectOverviewFacts(facts.snapshot, facts.proposals, ()), now)
+
+def project_board_portfolio(state: stored_state.StoredWorkState, now: datetime) -> query_models.BoardPortfolio:
+    """Project the board from complete state: every live item with its stored change time."""
+
+    updated_at = {str(item.item_id): item.updated_at for item in state.lifecycle.work_items}
+    return query_models.BoardPortfolio(_board_items(project_portfolio(state, now), updated_at))
+
+
+def project_live_portfolio(facts: query_models.LivePortfolioFacts, now: datetime) -> query_models.BoardPortfolio:
+    """Project the board from the live read, which never carries preparation authority."""
+
+    updated_at = {str(item_id): value for item_id, value in facts.item_updated_at}
+    items = _project_current_items(query_models.ProjectOverviewFacts(facts.snapshot, facts.proposals, ()), now)
+    return query_models.BoardPortfolio(_board_items(items, updated_at))
 
 
 def project_item_overview(facts: query_models.ItemOverviewFacts, now: datetime) -> query_models.OverviewItem:

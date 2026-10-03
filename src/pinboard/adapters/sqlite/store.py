@@ -91,6 +91,11 @@ from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, Lea
 from pinboard.domain.ledger import LedgerSnapshot
 
 
+class _ItemUpdatedAtRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
+    updated_at: datetime
+
+
 class _SelectedDependencyViewRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: WorkItemId
     dependency_id: WorkItemId
@@ -305,6 +310,24 @@ def _read_overview_proposals(
     )
     selected = read_proposals_by_ids(connection, proposal_ids)
     return tuple(proposal for proposal_id in proposal_ids if (proposal := selected.get(proposal_id)) is not None)
+
+
+def _read_live_portfolio_facts(
+    connection: sqlite3.Connection, snapshot: LedgerSnapshot
+) -> query_models.LivePortfolioFacts:
+    """Add the live items' stored change times to one live snapshot."""
+
+    item_times = tuple(
+        decode_row(row, _ItemUpdatedAtRow)
+        for row in connection.execute(
+            "SELECT item_id, updated_at FROM work_items WHERE queue_position IS NOT NULL ORDER BY queue_position"
+        ).fetchall()
+    )
+    return query_models.LivePortfolioFacts(
+        snapshot,
+        _read_overview_proposals(connection, snapshot),
+        tuple((row.item_id, row.updated_at) for row in item_times),
+    )
 
 
 def _read_attempt_inspection_facts(
@@ -771,7 +794,7 @@ class SQLiteWorkStore:
                     include_action_authorities=False,
                     include_pause_reasons=False,
                 )
-                return query_models.LivePortfolioFacts(snapshot, _read_overview_proposals(connection, snapshot))
+                return _read_live_portfolio_facts(connection, snapshot)
         finally:
             connection.close()
 

@@ -532,6 +532,94 @@ class CliTest(unittest.TestCase):
         self.assertEqual("12", result["revision"])
         self.assertEqual({"active": 1, "ready": 3, "superseded": 1}, result["counts"])
 
+    def test_diagnose_reports_linked_roots_unfinished_work_recent_receipts_and_read_effects(self) -> None:
+        repository, work, _store = self.initialized_state(complete_sqlite_state())
+        linked = repository.parent / f"{repository.name}-diagnostic-linked"
+        self.run_git(repository, "init", "-b", "main")
+        (repository / "tracked.txt").write_text("initial\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial")
+        self.run_git(repository, "worktree", "add", "-b", "diagnostic", str(linked))
+        before = {str(path.relative_to(work)): path.read_bytes() for path in work.rglob("*") if path.is_file()}
+
+        result, stdout, stderr = self.run_cli(
+            "--project-root", str(linked), "--work-root", str(work), "diagnose", "--json"
+        )
+
+        self.assertEqual("", stderr)
+        self.assertEqual(10, result)  # The fixture deliberately lacks unrelated accepted artifact bytes.
+        diagnosis = self.json_object(json.loads(stdout))
+        self.assertEqual("pinboard-diagnosis/v1", diagnosis["schema"])
+        self.assertEqual(str(linked), diagnosis["source_checkout_root"])
+        self.assertEqual(str(repository), diagnosis["shared_repository_root"])
+        self.assertEqual(str(work), diagnosis["work_root"])
+        self.assertEqual("explicit", diagnosis["work_root_selection"])
+        self.assertEqual("unobserved", diagnosis["trace_project_mode"])
+        self.assertIn("missing", str(diagnosis["trace_configuration_error"]))
+        self.assertEqual(7, diagnosis["schema_version"])
+        self.assertEqual("explicit-project-wide", self.json_object(diagnosis["validation"])["scope"])
+        self.assertEqual("invalid", self.json_object(diagnosis["validation"])["status"])
+        self.assertEqual(
+            [{"attempt_id": "work-a-1", "item_id": "work-a", "state": "active"}],
+            self.json_list(diagnosis["unfinished_attempts"]),
+        )
+        self.assertEqual(["zz-proposal-a"], self.json_list(diagnosis["pending_proposal_ids"]))
+        self.assertEqual(10, diagnosis["recent_receipt_limit"])
+        self.assertEqual("continue", self.json_object(self.json_list(diagnosis["recent_receipts"])[0])["action_kind"])
+        after = {str(path.relative_to(work)): path.read_bytes() for path in work.rglob("*") if path.is_file()}
+        self.assertEqual(before, after)
+
+    def test_diagnose_reads_project_trace_mode_without_changing_configuration(self) -> None:
+        for mode in ("on", "off"):
+            with self.subTest(mode=mode):
+                project, work, _store = self.initialized_state()
+                settings = work / "contributor-traces.config"
+                self.run_git(
+                    work,
+                    "config",
+                    "--file",
+                    str(settings),
+                    "--add",
+                    "pinboard.unsafe_persist_exact_pinboard_traces.mode",
+                    mode,
+                )
+                before = settings.read_bytes()
+                diagnosis = self.run_json_cli("--project-root", str(project), "--work-root", str(work), "diagnose")
+                self.assertEqual(mode, diagnosis["trace_project_mode"])
+                self.assertIsNone(diagnosis["trace_configuration_error"])
+                self.assertEqual(before, settings.read_bytes())
+
+    def test_diagnose_reports_malformed_trace_configuration_without_changing_it(self) -> None:
+        project, work, _store = self.initialized_state()
+        settings = work / "contributor-traces.config"
+        settings.write_text("[broken\n", encoding="utf-8")
+        before = settings.read_bytes()
+        diagnosis = self.run_json_cli("--project-root", str(project), "--work-root", str(work), "diagnose")
+        self.assertEqual("unobserved", diagnosis["trace_project_mode"])
+        self.assertIn("invalid or unreadable", str(diagnosis["trace_configuration_error"]))
+        self.assertEqual(before, settings.read_bytes())
+
+    def test_diagnose_damaged_ledger_never_reports_valid_health(self) -> None:
+        project, work, _store = self.initialized_state()
+        with sqlite3.connect(work / "state.sqlite3") as connection:
+            connection.execute("UPDATE work_item_state_counts SET item_count = 1 WHERE state = 'active'")
+        result, stdout, stderr = self.run_cli(
+            "--project-root", str(project), "--work-root", str(work), "diagnose", "--json"
+        )
+        self.assertEqual("", stderr)
+        self.assertEqual(10, result)
+        diagnosis = self.json_object(json.loads(stdout))
+        self.assertEqual("invalid", self.json_object(diagnosis["validation"])["status"])
+        self.assertIsNone(diagnosis["unfinished_attempts"])
+        self.assertIsNone(diagnosis["recent_receipts"])
+
+    def test_diagnose_empty_valid_board_reports_full_validation(self) -> None:
+        project, work, _store = self.initialized_state()
+        diagnosis = self.run_json_cli("--project-root", str(project), "--work-root", str(work), "diagnose")
+        self.assertEqual("valid", self.json_object(diagnosis["validation"])["status"])
+        self.assertEqual([], self.json_list(diagnosis["unfinished_attempts"]))
+        self.assertEqual([], self.json_list(diagnosis["recent_receipts"]))
+
     def test_status_composes_one_store_and_static_commands_compose_none(self) -> None:
         project, work, _store = self.initialized_state(complete_sqlite_state())
         common = ("--project-root", str(project), "--work-root", str(work))

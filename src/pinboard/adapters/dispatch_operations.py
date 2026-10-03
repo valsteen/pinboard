@@ -8,7 +8,6 @@ import hashlib
 from dataclasses import dataclass
 from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime
-from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import assert_never
@@ -64,6 +63,7 @@ from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
+    DescribedCode,
     EffectDisposition,
     FailureDetails,
     FailureFact,
@@ -73,31 +73,97 @@ from pinboard.domain.errors import (
 from pinboard.domain.identifiers import AttemptId, HistoryId, ReviewId
 
 
-class DispatchErrorCode(Enum):
-    DISPATCH_ACTION_INVALID = "DISPATCH_ACTION_INVALID"
-    DISPATCH_ACTION_UNAVAILABLE = "DISPATCH_ACTION_UNAVAILABLE"
-    DISPATCH_ATTEMPT_NOT_ACTIVE = "DISPATCH_ATTEMPT_NOT_ACTIVE"
-    DISPATCH_AUTHORITY_STALE = "DISPATCH_AUTHORITY_STALE"
-    DISPATCH_AUTHORITY_UNREADABLE = "DISPATCH_AUTHORITY_UNREADABLE"
-    DISPATCH_BASE_REVISION_MISMATCH = "DISPATCH_BASE_REVISION_MISMATCH"
-    DISPATCH_BRANCH_MISMATCH = "DISPATCH_BRANCH_MISMATCH"
-    DISPATCH_BRIEF_INVALID = "DISPATCH_BRIEF_INVALID"
-    DISPATCH_BRIEF_MISSING = "DISPATCH_BRIEF_MISSING"
-    DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID = "DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID"
-    DISPATCH_BRIEF_REVIEW_COLLISION = "DISPATCH_BRIEF_REVIEW_COLLISION"
-    DISPATCH_BRIEF_REVIEW_INVALID = "DISPATCH_BRIEF_REVIEW_INVALID"
-    DISPATCH_BRIEF_REVIEW_MISSING = "DISPATCH_BRIEF_REVIEW_MISSING"
-    DISPATCH_BRIEF_REVIEW_NOT_INDEPENDENT = "DISPATCH_BRIEF_REVIEW_NOT_INDEPENDENT"
-    DISPATCH_BRIEF_REVIEW_NOT_READY = "DISPATCH_BRIEF_REVIEW_NOT_READY"
-    DISPATCH_BRIEF_REVIEW_STALE = "DISPATCH_BRIEF_REVIEW_STALE"
-    DISPATCH_CHECKOUT_MISSING = "DISPATCH_CHECKOUT_MISSING"
-    DISPATCH_CHECKOUT_MISMATCH = "DISPATCH_CHECKOUT_MISMATCH"
-    DISPATCH_CHECKPOINT_MISSING = "DISPATCH_CHECKPOINT_MISSING"
-    DISPATCH_PROMPT_NOT_CANONICAL = "DISPATCH_PROMPT_NOT_CANONICAL"
-    DISPATCH_REVIEW_READ_FAILED = "DISPATCH_REVIEW_READ_FAILED"
-    DISPATCH_PROMPT_PUBLICATION_FAILED = "DISPATCH_PROMPT_PUBLICATION_FAILED"
-    DISPATCH_AUTHORITY_RECHECK_FAILED = "DISPATCH_AUTHORITY_RECHECK_FAILED"
-    STALE_ACTION = "STALE_ACTION"
+class DispatchErrorCode(DescribedCode):
+    DISPATCH_ACTION_INVALID = (
+        "DISPATCH_ACTION_INVALID",
+        "The dispatch action receipt failed validation for this operation.",
+    )
+    DISPATCH_ACTION_UNAVAILABLE = (
+        "DISPATCH_ACTION_UNAVAILABLE",
+        "The selected dispatch action is not legal for the current attempt.",
+    )
+    DISPATCH_ATTEMPT_NOT_ACTIVE = (
+        "DISPATCH_ATTEMPT_NOT_ACTIVE",
+        "The selected attempt is not active for worker dispatch.",
+    )
+    DISPATCH_AUTHORITY_STALE = (
+        "DISPATCH_AUTHORITY_STALE",
+        "The dispatch authority no longer matches the current recorded revision.",
+    )
+    DISPATCH_AUTHORITY_UNREADABLE = (
+        "DISPATCH_AUTHORITY_UNREADABLE",
+        "The dispatch authority could not be read from its selected source.",
+    )
+    DISPATCH_BASE_REVISION_MISMATCH = (
+        "DISPATCH_BASE_REVISION_MISMATCH",
+        "The checkout base revision does not match the recorded attempt or request facts.",
+    )
+    DISPATCH_BRANCH_MISMATCH = (
+        "DISPATCH_BRANCH_MISMATCH",
+        "The checkout branch does not match the recorded attempt or request facts.",
+    )
+    DISPATCH_BRIEF_INVALID = (
+        "DISPATCH_BRIEF_INVALID",
+        "The accepted dispatch brief failed validation for this operation.",
+    )
+    DISPATCH_BRIEF_MISSING = ("DISPATCH_BRIEF_MISSING", "The attempt has no accepted brief for worker dispatch.")
+    DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID = (
+        "DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID",
+        "The selected correction history or brief-review arguments are invalid for this dispatch.",
+    )
+    DISPATCH_BRIEF_REVIEW_COLLISION = (
+        "DISPATCH_BRIEF_REVIEW_COLLISION",
+        "The independent dispatch brief review conflicts with an existing publication.",
+    )
+    DISPATCH_BRIEF_REVIEW_INVALID = (
+        "DISPATCH_BRIEF_REVIEW_INVALID",
+        "The independent dispatch brief review failed validation for this operation.",
+    )
+    DISPATCH_BRIEF_REVIEW_MISSING = (
+        "DISPATCH_BRIEF_REVIEW_MISSING",
+        "The independent dispatch brief review is required but has no selected record.",
+    )
+    DISPATCH_BRIEF_REVIEW_NOT_INDEPENDENT = (
+        "DISPATCH_BRIEF_REVIEW_NOT_INDEPENDENT",
+        "The independent dispatch brief review was not supplied by a separate reviewer.",
+    )
+    DISPATCH_BRIEF_REVIEW_NOT_READY = (
+        "DISPATCH_BRIEF_REVIEW_NOT_READY",
+        "The independent dispatch brief review has not satisfied the recorded review prerequisites.",
+    )
+    DISPATCH_BRIEF_REVIEW_STALE = (
+        "DISPATCH_BRIEF_REVIEW_STALE",
+        "The independent dispatch brief review no longer matches the current recorded revision.",
+    )
+    DISPATCH_CHECKOUT_MISSING = (
+        "DISPATCH_CHECKOUT_MISSING",
+        "The declared worker checkout does not exist at its selected path.",
+    )
+    DISPATCH_CHECKOUT_MISMATCH = (
+        "DISPATCH_CHECKOUT_MISMATCH",
+        "The worker checkout does not match the recorded attempt or request facts.",
+    )
+    DISPATCH_CHECKPOINT_MISSING = (
+        "DISPATCH_CHECKPOINT_MISSING",
+        "The accepted brief does not contain the requested checkpoint.",
+    )
+    DISPATCH_PROMPT_NOT_CANONICAL = (
+        "DISPATCH_PROMPT_NOT_CANONICAL",
+        "The worker prompt does not match the canonical representation.",
+    )
+    DISPATCH_REVIEW_READ_FAILED = (
+        "DISPATCH_REVIEW_READ_FAILED",
+        "The selected dispatch brief review could not be read or verified.",
+    )
+    DISPATCH_PROMPT_PUBLICATION_FAILED = (
+        "DISPATCH_PROMPT_PUBLICATION_FAILED",
+        "The worker prompt could not be published; inspect changed surfaces before retrying.",
+    )
+    DISPATCH_AUTHORITY_RECHECK_FAILED = (
+        "DISPATCH_AUTHORITY_RECHECK_FAILED",
+        "Dispatch authority could not be verified again before prompt publication.",
+    )
+    STALE_ACTION = ("STALE_ACTION", "The selected action receipt no longer matches the current subject revision.")
 
 
 type DispatchFailureCode = DispatchErrorCode | DecisionFailureCode

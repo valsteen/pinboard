@@ -3636,7 +3636,7 @@ class McpTransportTest(unittest.TestCase):
 
         def observed_emit(
             *,
-            event: str,
+            event: mcp_execution.TraceEvent,
             request_id: int | None,
             operation: str | None,
             project_id: str | None,

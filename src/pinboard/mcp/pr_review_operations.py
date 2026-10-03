@@ -81,7 +81,9 @@ def execute(raw: dict[str, JsonValue], token: execution.CancellationToken) -> ex
         request = envelope.request
         durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
-        return _rejected("PR_REVIEW_INVALID", f"Cannot decode PR review request: {error}")
+        return _rejected(
+            contracts.ProducerOnlyCode.PR_REVIEW_INVALID.value, f"Cannot decode PR review request: {error}"
+        )
     item_id = WorkItemId(request.item_id)
     token.checkpoint()
     match request:
@@ -108,7 +110,9 @@ def execute(raw: dict[str, JsonValue], token: execution.CancellationToken) -> ex
         case _ as unreachable:
             assert_never(unreachable)
     if claimed_task_id != request.actor_task_id:
-        return _rejected("PR_REVIEW_INVALID", "Review task identity must match the caller.")
+        return _rejected(
+            contracts.ProducerOnlyCode.PR_REVIEW_INVALID.value, "Review task identity must match the caller."
+        )
     result = pr_review.write(
         durable.database_path,
         item_id,

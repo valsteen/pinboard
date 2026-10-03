@@ -18,9 +18,22 @@ from pinboard.application import (
     work_brief_models,
 )
 from pinboard.domain import authority_models, decision_models, ordering
-from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
+from pinboard.domain.errors import CodeMeanings, DecisionFailureCode, DescribedCode, RetryDisposition
 
 type JsonScalar = bool | int | float | str | None
+
+
+class ProducerOnlyCode(DescribedCode):
+    CORRECTION_CONTEXT_INVALID = (
+        "CORRECTION_CONTEXT_INVALID",
+        "The correction context failed validation for this operation.",
+    )
+    PR_REVIEW_INVALID = (
+        "PR_REVIEW_INVALID",
+        "The PR-review request could not be decoded or its caller identity did not match.",
+    )
+
+
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
 type JsonSchemaValue = JsonScalar | list[JsonSchemaValue] | dict[str, JsonSchemaValue]
 type NonEmptyText = Annotated[str, msgspec.Meta(min_length=1)]
@@ -385,7 +398,10 @@ class BriefSourcePlanOutputEnvelope(msgspec.Struct, frozen=True, forbid_unknown_
 class BriefContractRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-contract-result/v1"]
     status: Literal["rejected"]
-    code: Literal["BRIEF_CONTRACT_REQUEST_INVALID"]
+    code: Annotated[
+        Literal["BRIEF_CONTRACT_REQUEST_INVALID"],
+        CodeMeanings(((0, "The brief-contract request could not be decoded or validated."),)),
+    ]
     message: NonEmptyText
     state_changed: bool
     effect: Literal["unchanged"]
@@ -396,27 +412,30 @@ class BriefContractRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbi
 class BriefSourcesRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-sources-result/v1"]
     status: Literal["rejected"]
-    code: Literal[
-        "BRIEF_SOURCES_REQUEST_INVALID",
-        "BRIEF_SOURCE_BATCH_NOT_FOUND",
-        "BRIEF_SOURCE_LINE_TOO_LARGE",
-        "BRIEF_SOURCE_MANIFEST_INVALID",
-        "BRIEF_SOURCE_PLAN_INVALID",
-        "BRIEF_SOURCE_SELECTOR_INVALID",
-        "BRIEF_SOURCE_SELECTOR_OVERLAP",
-        "BRIEF_SOURCE_NOT_UTF8",
-        "BRIEF_SOURCE_CHANGED",
-        "BRIEF_SOURCE_UNREADABLE",
-        "DIRECTORY_CREATE_FAILED",
-        "DIRECTORY_INVALID",
-        "DIRECTORY_SYNC_FAILED",
-        "DIRECTORY_VERIFY_FAILED",
-        "FILE_ALREADY_EXISTS",
-        "FILE_PUBLISH_FAILED",
-        "PROJECT_GIT_CHECKOUT_UNAVAILABLE",
-        "PROJECT_GIT_EXCLUDE_UNAVAILABLE",
-        "PROJECT_GIT_LAYOUT_UNSUPPORTED",
-        "PROJECT_GIT_ROOT_UNAVAILABLE",
+    code: Annotated[
+        Literal[
+            "BRIEF_SOURCES_REQUEST_INVALID",
+            "BRIEF_SOURCE_BATCH_NOT_FOUND",
+            "BRIEF_SOURCE_LINE_TOO_LARGE",
+            "BRIEF_SOURCE_MANIFEST_INVALID",
+            "BRIEF_SOURCE_PLAN_INVALID",
+            "BRIEF_SOURCE_SELECTOR_INVALID",
+            "BRIEF_SOURCE_SELECTOR_OVERLAP",
+            "BRIEF_SOURCE_NOT_UTF8",
+            "BRIEF_SOURCE_CHANGED",
+            "BRIEF_SOURCE_UNREADABLE",
+            "DIRECTORY_CREATE_FAILED",
+            "DIRECTORY_INVALID",
+            "DIRECTORY_SYNC_FAILED",
+            "DIRECTORY_VERIFY_FAILED",
+            "FILE_ALREADY_EXISTS",
+            "FILE_PUBLISH_FAILED",
+            "PROJECT_GIT_CHECKOUT_UNAVAILABLE",
+            "PROJECT_GIT_EXCLUDE_UNAVAILABLE",
+            "PROJECT_GIT_LAYOUT_UNSUPPORTED",
+            "PROJECT_GIT_ROOT_UNAVAILABLE",
+        ],
+        CodeMeanings(((0, "The brief-source preparation request could not be decoded or validated."),)),
     ]
     message: NonEmptyText
     state_changed: bool
@@ -1064,7 +1083,10 @@ class FailureMismatch(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 class ItemStatusInvalid(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-item-status-result/v3"]
     status: Literal["rejected"]
-    code: Literal["ITEM_STATUS_INVALID"]
+    code: Annotated[
+        Literal["ITEM_STATUS_INVALID"],
+        CodeMeanings(((0, "The item status read failed validation for this operation."),)),
+    ]
     message: NonEmptyText
     state_changed: bool
     effect: Literal["unchanged"]
@@ -1103,7 +1125,10 @@ class ItemStatusInconsistent(_UnchangedResult, msgspec.Struct, frozen=True, forb
 class BranchOwnerNotFound(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-item-status-result/v3"]
     status: Literal["rejected"]
-    code: Literal["BRANCH_OWNER_NOT_FOUND"]
+    code: Annotated[
+        Literal["BRANCH_OWNER_NOT_FOUND"],
+        CodeMeanings(((0, "The branch ownership lookup has no record at the requested identity."),)),
+    ]
     message: NonEmptyText
     state_changed: bool
     effect: Literal["unchanged"]
@@ -1140,7 +1165,10 @@ class ItemStatusReceiptDamaged(DamagedReceiptResult, frozen=True):
 class IntegrationTargetUnresolved(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-item-status-result/v3"]
     status: Literal["rejected"]
-    code: Literal["INTEGRATION_TARGET_UNRESOLVED"]
+    code: Annotated[
+        Literal["INTEGRATION_TARGET_UNRESOLVED"],
+        CodeMeanings(((0, "The requested integration target could not be resolved to a repository revision."),)),
+    ]
     message: NonEmptyText
     state_changed: bool
     effect: Literal["unchanged"]
@@ -1154,7 +1182,12 @@ class IntegrationTargetUnresolved(_UnchangedResult, msgspec.Struct, frozen=True,
 class IntegrationCandidateUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-item-status-result/v3"]
     status: Literal["rejected"]
-    code: Literal["INTEGRATION_CANDIDATE_UNAVAILABLE"]
+    code: Annotated[
+        Literal["INTEGRATION_CANDIDATE_UNAVAILABLE"],
+        CodeMeanings(
+            ((0, "The candidate evidence for the integration read could not be obtained from the selected source."),)
+        ),
+    ]
     message: NonEmptyText
     state_changed: bool
     effect: Literal["unchanged"]
@@ -1166,7 +1199,10 @@ class IntegrationCandidateUnavailable(_UnchangedResult, msgspec.Struct, frozen=T
 
 
 class IntegrationCandidateEvidenceInvalid(_DamagedEvidenceResult, frozen=True):
-    code: Literal["INTEGRATION_CANDIDATE_EVIDENCE_INVALID"]
+    code: Annotated[
+        Literal["INTEGRATION_CANDIDATE_EVIDENCE_INVALID"],
+        CodeMeanings(((0, "The candidate evidence for the integration read failed validation for this operation."),)),
+    ]
     schema: Literal["pinboard-mcp-item-status-result/v3"]
 
 
@@ -1195,7 +1231,10 @@ class ItemStatusGitUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, fo
 class OverviewRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-overview-result/v1"]
     status: Literal["rejected"]
-    code: Literal["OVERVIEW_INVALID"]
+    code: Annotated[
+        Literal["OVERVIEW_INVALID"],
+        CodeMeanings(((0, "The board overview request failed validation for this operation."),)),
+    ]
     message: NonEmptyText
     state_changed: bool
     effect: Literal["unchanged"]
@@ -1215,7 +1254,10 @@ class RejectedReadResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_u
 
 class ActionsInvalid(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-actions-result/v1"]
-    code: Literal["ACTIONS_INVALID"]
+    code: Annotated[
+        Literal["ACTIONS_INVALID"],
+        CodeMeanings(((0, "The action-discovery request failed validation for this operation."),)),
+    ]
     retry: Literal["correct-input"]
     observed: Empty
     mismatches: Empty
@@ -1223,7 +1265,10 @@ class ActionsInvalid(RejectedReadResult, frozen=True):
 
 class ItemDefinitionRejected(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-item-definition-result/v1"]
-    code: Literal["ITEM_DEFINITION_REQUEST_INVALID", "ITEM_NOT_FOUND", "ITEM_DEFINITION_INVALID"]
+    code: Annotated[
+        Literal["ITEM_DEFINITION_REQUEST_INVALID", "ITEM_NOT_FOUND", "ITEM_DEFINITION_INVALID"],
+        CodeMeanings(((0, "The item-definition read request could not be decoded or validated."),)),
+    ]
     retry: Literal["correct-input"]
     observed: Empty
     mismatches: Empty
@@ -1247,7 +1292,10 @@ class AttemptLeaseRequired(RejectedReadResult, frozen=True):
 
 class AttemptInspectInvalid(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
-    code: Literal["ATTEMPT_INSPECT_INVALID"]
+    code: Annotated[
+        Literal["ATTEMPT_INSPECT_INVALID"],
+        CodeMeanings(((0, "The attempt inspection request failed validation for this operation."),)),
+    ]
     retry: Literal["correct-input"]
     observed: Empty
     mismatches: Empty
@@ -1263,7 +1311,12 @@ class AttemptNotFound(RejectedReadResult, frozen=True):
 
 class AttemptBriefInvalid(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
-    code: Literal["ATTEMPT_BRIEF_INVALID"]
+    code: Annotated[
+        Literal["ATTEMPT_BRIEF_INVALID"],
+        CodeMeanings(
+            ((0, "The accepted brief, candidate snapshot, or related attempt evidence could not be verified."),)
+        ),
+    ]
     retry: Literal["do-not-retry"]
     observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
     mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
@@ -1283,7 +1336,10 @@ class AttemptActionUnavailable(RejectedReadResult, frozen=True):
 
 class ArtifactVerificationInvalid(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-artifact-verification-result/v1"]
-    code: Literal["ARTIFACT_VERIFY_INVALID"]
+    code: Annotated[
+        Literal["ARTIFACT_VERIFY_INVALID"],
+        CodeMeanings(((0, "The artifact-verification request could not be decoded or validated."),)),
+    ]
     retry: Literal["correct-input"]
     observed: Empty
     mismatches: Empty
@@ -1291,7 +1347,10 @@ class ArtifactVerificationInvalid(RejectedReadResult, frozen=True):
 
 class ArtifactReferenceMismatch(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-artifact-verification-result/v1"]
-    code: Literal["ARTIFACT_REFERENCE_MISMATCH"]
+    code: Annotated[
+        Literal["ARTIFACT_REFERENCE_MISMATCH"],
+        CodeMeanings(((0, "The requested artifact identity differs from its accepted reference."),)),
+    ]
     retry: Literal["correct-input"]
     observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
     mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
@@ -1299,7 +1358,10 @@ class ArtifactReferenceMismatch(RejectedReadResult, frozen=True):
 
 class ArtifactBytesInvalid(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-artifact-verification-result/v1"]
-    code: Literal["ARTIFACT_BYTES_INVALID"]
+    code: Annotated[
+        Literal["ARTIFACT_BYTES_INVALID"],
+        CodeMeanings(((0, "Published artifact bytes differ from the accepted digest or size."),)),
+    ]
     retry: Literal["do-not-retry"]
     observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
     mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
@@ -1856,7 +1918,10 @@ class ArtifactVerified(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unk
 class TracePreflightResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-execution-result/v1"]
     status: Literal["rejected"]
-    code: Literal["TRACE_PREFLIGHT_FAILED"]
+    code: Annotated[
+        Literal["TRACE_PREFLIGHT_FAILED"],
+        CodeMeanings(((0, "Trace capture preparation failed before the requested MCP operation ran."),)),
+    ]
     message: NonEmptyText
     resource: NonEmptyText
     repair: NonEmptyText
@@ -1900,7 +1965,10 @@ class TracePreflightResult(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
 class ExecutorBusyResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-execution-result/v1"]
     status: Literal["busy"]
-    code: Literal["EXECUTOR_BUSY"]
+    code: Annotated[
+        Literal["EXECUTOR_BUSY"],
+        CodeMeanings(((0, "Another Pinboard operation currently owns the executor; this request did not run."),)),
+    ]
     message: NonEmptyText
     state_changed: bool
     effect: Literal["unchanged"]
@@ -1926,7 +1994,10 @@ class OrderRecovery(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class OrderRejected(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-order-result/v1"]
-    code: Literal["ORDER_INVALID", "ACTION_NOT_AVAILABLE", "TRANSITION_INPUT_INVALID"]
+    code: Annotated[
+        Literal["ORDER_INVALID", "ACTION_NOT_AVAILABLE", "TRANSITION_INPUT_INVALID"],
+        CodeMeanings(((0, "The live priority order failed validation for this operation."),)),
+    ]
     retry: Literal["correct-input"]
     observed: tuple[FailureObservation, ...]
     mismatches: tuple[FailureMismatch, ...]
@@ -1954,7 +2025,15 @@ class OrderCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown
 
 class ParallelPreviewRejected(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-parallel-preview-result/v1"]
-    code: Literal["PARALLEL_PREVIEW_INVALID", "PARALLEL_SELECTION_INVALID"]
+    code: Annotated[
+        Literal["PARALLEL_PREVIEW_INVALID", "PARALLEL_SELECTION_INVALID"],
+        CodeMeanings(
+            (
+                (0, "The parallel-work preview failed validation for this operation."),
+                (1, "The selected parallel preview contains an item that is not current."),
+            )
+        ),
+    ]
     retry: Literal["correct-input"]
     observed: Empty
     mismatches: Empty
@@ -2451,7 +2530,18 @@ class BriefPublishedRejection(PublishedFailureResult, frozen=True):
 
 class PublicationInfrastructureFailureResult(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     status: Literal["failed-after-publication"]
-    code: Literal["ARTIFACT_ACCEPTANCE_FAILED", "ARTIFACT_PUBLICATION_FAILED"]
+    code: Annotated[
+        Literal["ARTIFACT_ACCEPTANCE_FAILED", "ARTIFACT_PUBLICATION_FAILED"],
+        CodeMeanings(
+            (
+                (0, "The published artifact could not be accepted as a ledger reference."),
+                (
+                    1,
+                    "Immutable artifact publication failed; inspect changed surfaces before deciding whether any bytes were committed.",
+                ),
+            )
+        ),
+    ]
     message: NonEmptyText
     state_changed: bool
     effect: Literal["committed"]
@@ -2585,15 +2675,18 @@ class BriefReviewUnchanged(_UnchangedResult, msgspec.Struct, frozen=True, forbid
 
 class BriefReviewRejected(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
-    code: Literal[
-        "BRIEF_REVIEW_REQUEST_INVALID",
-        "WORK_BRIEF_INVALID",
-        "WORK_BRIEF_NOT_CANONICAL",
-        "WORK_BRIEF_REVIEW_INVALID",
-        "WORK_BRIEF_REVIEW_NOT_CANONICAL",
-        "WORK_BRIEF_REVIEW_NOT_INDEPENDENT",
-        "WORK_BRIEF_REVIEW_STALE",
-        "ACTION_NOT_AVAILABLE",
+    code: Annotated[
+        Literal[
+            "BRIEF_REVIEW_REQUEST_INVALID",
+            "WORK_BRIEF_INVALID",
+            "WORK_BRIEF_NOT_CANONICAL",
+            "WORK_BRIEF_REVIEW_INVALID",
+            "WORK_BRIEF_REVIEW_NOT_CANONICAL",
+            "WORK_BRIEF_REVIEW_NOT_INDEPENDENT",
+            "WORK_BRIEF_REVIEW_STALE",
+            "ACTION_NOT_AVAILABLE",
+        ],
+        CodeMeanings(((0, "The brief-review request could not be decoded or validated."),)),
     ]
     retry: Literal["correct-input"]
     observed: tuple[FailureObservation, ...]
@@ -2703,7 +2796,9 @@ class CandidateReviewRecorded(_VariableStateChangedResult, msgspec.Struct, froze
 
 class DispatchInvalid(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-dispatch-result/v1"]
-    code: Literal["DISPATCH_INVALID"]
+    code: Annotated[
+        Literal["DISPATCH_INVALID"], CodeMeanings(((0, "The dispatch request could not be decoded or validated."),))
+    ]
     retry: Literal["correct-input"]
     observed: Empty
     mismatches: Empty
@@ -2711,7 +2806,10 @@ class DispatchInvalid(RejectedReadResult, frozen=True):
 
 class ReviewJobInvalid(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-review-job-result/v1"]
-    code: Literal["REVIEW_JOB_INVALID"]
+    code: Annotated[
+        Literal["REVIEW_JOB_INVALID"],
+        CodeMeanings(((0, "The independent review job failed validation for this operation."),)),
+    ]
     retry: Literal["correct-input"]
     observed: Empty
     mismatches: Empty
@@ -2895,7 +2993,10 @@ class CandidateRestoreReady(_VariableStateChangedResult, msgspec.Struct, frozen=
 
 class CandidateRestoreInvalid(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-candidate-restore-result/v1"]
-    code: Literal["CANDIDATE_RESTORE_INVALID"]
+    code: Annotated[
+        Literal["CANDIDATE_RESTORE_INVALID"],
+        CodeMeanings(((0, "The candidate restoration request could not be decoded or validated."),)),
+    ]
     retry: Literal["correct-input"]
     observed: Empty
     mismatches: Empty
@@ -2956,11 +3057,21 @@ class CandidateObserved(_UnchangedResult, msgspec.Struct, frozen=True, forbid_un
 
 class CandidateObservationRejected(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-candidate-observation-result/v1"]
-    code: Literal[
-        "CANDIDATE_OBSERVATION_INVALID",
-        "CANDIDATE_CONTEXT_UNAVAILABLE",
-        "CANDIDATE_BRANCH_MISMATCH",
-        "CANDIDATE_GIT_UNAVAILABLE",
+    code: Annotated[
+        Literal[
+            "CANDIDATE_OBSERVATION_INVALID",
+            "CANDIDATE_CONTEXT_UNAVAILABLE",
+            "CANDIDATE_BRANCH_MISMATCH",
+            "CANDIDATE_GIT_UNAVAILABLE",
+        ],
+        CodeMeanings(
+            (
+                (0, "The candidate observation request could not be decoded or validated."),
+                (1, "The candidate's required accepted-brief or checkout context is unavailable."),
+                (2, "The review candidate does not match the recorded attempt or request facts."),
+                (3, "Git evidence needed to identify the candidate could not be read."),
+            )
+        ),
     ]
     retry: Literal["correct-input"]
     observed: tuple[FailureObservation, ...]

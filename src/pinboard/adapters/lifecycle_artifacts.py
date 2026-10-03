@@ -499,7 +499,7 @@ def _publish_checkpoint(
     publications = (
         NewArtifact(
             work_models.ArtifactKind.EVIDENCE,
-            f"{attempt_id}-{checkpoint_id}-candidate",
+            checkpoint_packages.checkpoint_candidate_key(attempt_id, checkpoint_id),
             1,
             ".json",
             candidate_snapshots.canonical_candidate_snapshot_bytes(selected.snapshot),

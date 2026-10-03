@@ -622,7 +622,7 @@ class McpCaptureTest(unittest.TestCase):
             diagnostics = execution.Diagnostics(diagnostics_stream, event_limit=2, line_limit=512)
             for request_id in (1, 2):
                 diagnostics.emit(
-                    event="result",
+                    event=execution.TraceEvent.RESULT,
                     request_id=request_id,
                     operation=server.ITEM_STATUS_TOOL,
                     project_id="project",

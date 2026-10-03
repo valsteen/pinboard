@@ -6,7 +6,7 @@ from typing import Literal
 import msgspec
 
 from pinboard.application import work_brief_models
-from pinboard.cli.errors import CommandFailure
+from pinboard.cli.errors import CliErrorCode, CommandFailure
 from pinboard.domain.errors import EffectDisposition, FailureDetails, FailureFactValue, RetryDisposition
 
 
@@ -161,7 +161,7 @@ def write_argument_rejection(arguments: tuple[str, ...], message: str) -> None:
             "pinboard-rejected-operation/v1",
             "rejected",
             "cli-arguments",
-            "CLI_ARGUMENT_INVALID",
+            CliErrorCode.ARGUMENT_INVALID.value,
             message,
             False,
             (),

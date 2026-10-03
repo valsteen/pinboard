@@ -1,6 +1,5 @@
 import re
 from dataclasses import dataclass
-from enum import Enum
 from typing import Annotated, Literal, Protocol, assert_never
 
 import msgspec
@@ -8,19 +7,47 @@ import msgspec
 from pinboard.application import action_models, stored_state
 from pinboard.application.brief_source_models import BriefSourceFailure, parse_authority_selector
 from pinboard.domain import work_models
+from pinboard.domain.errors import DescribedCode
 
 
-class WorkBriefErrorCode(Enum):
-    BRIEF_INVALID = "WORK_BRIEF_INVALID"
-    BRIEF_NOT_CANONICAL = "WORK_BRIEF_NOT_CANONICAL"
-    REVIEW_INVALID = "WORK_BRIEF_REVIEW_INVALID"
-    REVIEW_NOT_CANONICAL = "WORK_BRIEF_REVIEW_NOT_CANONICAL"
-    REVIEW_NOT_INDEPENDENT = "WORK_BRIEF_REVIEW_NOT_INDEPENDENT"
-    REVIEW_NOT_READY = "WORK_BRIEF_REVIEW_NOT_READY"
-    REVIEW_STALE = "WORK_BRIEF_REVIEW_STALE"
-    PACKAGE_INVALID = "CHECKPOINT_REVIEW_PACKAGE_INVALID"
-    PACKAGE_NOT_CANONICAL = "CHECKPOINT_REVIEW_PACKAGE_NOT_CANONICAL"
-    PACKAGE_PROVENANCE_INVALID = "CHECKPOINT_REVIEW_PACKAGE_PROVENANCE_INVALID"
+class WorkBriefErrorCode(DescribedCode):
+    BRIEF_INVALID = ("WORK_BRIEF_INVALID", "The canonical work brief failed validation for this operation.")
+    BRIEF_NOT_CANONICAL = (
+        "WORK_BRIEF_NOT_CANONICAL",
+        "The canonical work brief does not match the canonical representation.",
+    )
+    REVIEW_INVALID = (
+        "WORK_BRIEF_REVIEW_INVALID",
+        "The independent work-brief review failed validation for this operation.",
+    )
+    REVIEW_NOT_CANONICAL = (
+        "WORK_BRIEF_REVIEW_NOT_CANONICAL",
+        "The independent work-brief review does not match the canonical representation.",
+    )
+    REVIEW_NOT_INDEPENDENT = (
+        "WORK_BRIEF_REVIEW_NOT_INDEPENDENT",
+        "The independent work-brief review was not supplied by a separate reviewer.",
+    )
+    REVIEW_NOT_READY = (
+        "WORK_BRIEF_REVIEW_NOT_READY",
+        "The independent work-brief review has not satisfied the recorded review prerequisites.",
+    )
+    REVIEW_STALE = (
+        "WORK_BRIEF_REVIEW_STALE",
+        "The independent work-brief review no longer matches the current recorded revision.",
+    )
+    PACKAGE_INVALID = (
+        "CHECKPOINT_REVIEW_PACKAGE_INVALID",
+        "The checkpoint review package failed validation for this operation.",
+    )
+    PACKAGE_NOT_CANONICAL = (
+        "CHECKPOINT_REVIEW_PACKAGE_NOT_CANONICAL",
+        "The checkpoint review package does not match the canonical representation.",
+    )
+    PACKAGE_PROVENANCE_INVALID = (
+        "CHECKPOINT_REVIEW_PACKAGE_PROVENANCE_INVALID",
+        "The checkpoint package does not match its referenced candidate, review, or accepted evidence.",
+    )
 
 
 @dataclass(frozen=True, slots=True)

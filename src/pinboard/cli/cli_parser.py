@@ -51,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
     status = commands.add_parser("status", help="Show bounded current work facts.")
     status.add_argument("--json", action="store_true")
     _select_command(status, cli_commands.StatusCommand)
+    diagnose = commands.add_parser(
+        "diagnose", help="Read selected roots, unfinished work, recent receipts, and full validation health."
+    )
+    diagnose.add_argument("--json", action="store_true", required=True)
+    _select_command(diagnose, cli_commands.DiagnoseCommand)
     close = commands.add_parser("close", help="Record a terminal decision for live work without an accepted attempt.")
     close.add_argument("item_id")
     close.add_argument("--outcome", choices=tuple(outcome.value for outcome in work_models.CloseOutcome), required=True)
@@ -63,6 +68,12 @@ def build_parser() -> argparse.ArgumentParser:
     tool_contract.add_argument("--operation", help="One operation selector returned by the installed index.")
     tool_contract.add_argument("--json", action="store_true")
     _select_command(tool_contract, cli_commands.ToolContractCommand)
+    code_catalog = commands.add_parser(
+        "code-catalog", help="Look up installed failure and event codes without project state."
+    )
+    code_catalog.add_argument("--code", help="One exact code returned by the installed catalog.")
+    code_catalog.add_argument("--json", action="store_true", required=True)
+    _select_command(code_catalog, cli_commands.CodeCatalogCommand)
     export = commands.add_parser("export", help="Export one complete tool-neutral project package.")
     export.add_argument("--json", action="store_true", required=True)
     _select_command(export, cli_commands.ExportCommand)

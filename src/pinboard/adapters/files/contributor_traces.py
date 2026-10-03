@@ -155,6 +155,16 @@ def read_project_trace_settings(
     return None if data_root is None else (data_root, _settings(data_root))
 
 
+def read_configured_project_trace_mode(work_root: Path) -> Literal["off", "on"]:
+    path = work_root / SETTINGS_NAME
+    if not path.exists(follow_symlinks=False):
+        raise ValueError("Contributor trace settings file is missing.")
+    settings = _decode_settings(path)
+    if settings is None:
+        raise ValueError("Contributor trace settings must declare the project mode.")
+    return settings.unsafe_persist_exact_pinboard_traces
+
+
 def automatic_trace_directory(data_root: Path, settings: ContributorTraceSettings, item_id: str | None) -> Path | None:
     mode = settings.item_overrides.get(item_id, "inherit") if item_id is not None else "inherit"
     effective = settings.unsafe_persist_exact_pinboard_traces if mode == "inherit" else mode

@@ -481,6 +481,11 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
             "closed-without-completion", self.rejection(direct, "INTEGRATION_CANDIDATE_UNAVAILABLE")["reason"]
         )
 
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            connection.execute("DELETE FROM transition_history WHERE action_id = 'close:work-c'")
+        unknown = self.integration(fixture, "main", "work-c")
+        self.assertEqual("closure-unknown", self.rejection(unknown, "INTEGRATION_CANDIDATE_UNAVAILABLE")["reason"])
+
         self.transition(
             fixture,
             "accept-review-and-continue:work-a-1",
@@ -551,6 +556,19 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         self.assertEqual(str(outside), observed["project_root"])
         self.assertIn("not a git repository", str(observed["diagnostic"]).lower())
         self.assertEqual(("unchanged", "correct-input"), (not_git["effect"], not_git["retry"]))
+
+    def test_integration_resolves_source_checkout_once(self) -> None:
+        fixture = self.checkpoint_fixture()
+        git(fixture.project, "branch", "main", fixture.brief.base_revision)
+        with (
+            patch.object(
+                mcp_common, "resolve_source_checkout_root", wraps=root.resolve_source_checkout_root
+            ) as resolve,
+            patch("pinboard.mcp.read_operations.resolve_source_checkout_root", create=True) as second_resolve,
+        ):
+            self.presence(fixture, "main", "content-not-present")
+        self.assertEqual(1, resolve.call_count)
+        second_resolve.assert_not_called()
 
     def test_unwritable_temporary_directory_is_a_typed_git_checkout_rejection(self) -> None:
         fixture = self.checkpoint_fixture()

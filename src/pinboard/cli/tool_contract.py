@@ -108,6 +108,16 @@ def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContra
             precondition = "none"
             postcondition = "Return the current CLI-only index or one exact selected detail."
             retry = "safe-to-repeat"
+        case "code-catalog":
+            purpose = "Look up installed failure and event codes with generic recovery guidance."
+            mutation = "read-only"
+            scope = "static"
+            roles = ("observer",)
+            authority = "none"
+            subject = "installed-codes"
+            precondition = "none"
+            postcondition = "Return the installed code index or one exact code, without opening project state."
+            retry = "safe-to-repeat"
         case "status":
             purpose = "Read bounded current work facts."
             mutation = "read-only"
@@ -117,6 +127,16 @@ def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContra
             subject = "ledger"
             precondition = "valid-ledger"
             postcondition = "Return current active identities and maintained state counts without changing state."
+            retry = "safe-to-repeat"
+        case "diagnose":
+            purpose = "Read selected configuration, unfinished work, recent receipts, and full validation health."
+            mutation = "read-only"
+            scope = "explicit-project-wide"
+            roles = ("observer",)
+            authority = "none"
+            subject = "ledger"
+            precondition = "source-checkout-resolvable"
+            postcondition = "Return one project-wide diagnosis without changing authoritative state or generated views."
             retry = "safe-to-repeat"
         case "validate":
             purpose = "Validate authoritative work state and its replaceable projections."

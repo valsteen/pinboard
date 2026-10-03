@@ -9,6 +9,7 @@ import msgspec
 
 from pinboard.application import artifacts, released_v6_compatibility, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain.errors import DescribedCode
 from pinboard.domain.identifiers import (
     ActionId,
     ArtifactRefId,
@@ -29,6 +30,15 @@ class ProjectStatusFacts:
     project_revision: int
     active_attempts: tuple[AttemptId, ...]
     counts: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RecentReceiptFacts:
+    history_id: HistoryId
+    project_revision: int
+    action_kind: str
+    subject_id: HistorySubjectId
+    committed_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -1026,11 +1036,27 @@ class CompletionSelection:
 type IntegrationSourceSelection = ProtectedReviewSelection | CheckpointSelection | CompletionSelection
 
 
-class IntegrationUnavailableReason(Enum):
-    NO_REVIEWED_CANDIDATE = "no-reviewed-candidate"
-    CLOSED_WITHOUT_COMPLETION = "closed-without-completion"
-    CHECKPOINT_WITHOUT_CANDIDATE_SNAPSHOT = "checkpoint-without-candidate-snapshot"
-    PRE_SNAPSHOT_CANDIDATE = "pre-snapshot-candidate"
+class IntegrationUnavailableReason(DescribedCode):
+    NO_REVIEWED_CANDIDATE = (
+        "no-reviewed-candidate",
+        "There is no reviewed candidate whose content can be compared with the target.",
+    )
+    CLOSURE_UNKNOWN = (
+        "closure-unknown",
+        "The terminal item's closing receipt is missing, so its closure outcome is unknown.",
+    )
+    CLOSED_WITHOUT_COMPLETION = (
+        "closed-without-completion",
+        "The item closed without a completion candidate to compare with the target.",
+    )
+    CHECKPOINT_WITHOUT_CANDIDATE_SNAPSHOT = (
+        "checkpoint-without-candidate-snapshot",
+        "The selected checkpoint lacks a complete candidate snapshot for content comparison.",
+    )
+    PRE_SNAPSHOT_CANDIDATE = (
+        "pre-snapshot-candidate",
+        "The retained candidate predates complete snapshot evidence required for comparison.",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1101,11 +1127,11 @@ class ParallelSelection(Enum):
     SELECTED = "selected"
 
 
-class ParallelReasonCode(Enum):
-    ATTEMPT_OWNED = "attempt-owned"
-    DEPENDENCY_LIVE = "dependency-live"
-    STATE_NOT_LAUNCHABLE = "state-not-launchable"
-    PREPARATION_OWNED = "preparation-owned"
+class ParallelReasonCode(DescribedCode):
+    ATTEMPT_OWNED = ("attempt-owned", "Another worker currently owns the item's attempt.")
+    DEPENDENCY_LIVE = ("dependency-live", "A required dependency item is still live.")
+    STATE_NOT_LAUNCHABLE = ("state-not-launchable", "The item's current lifecycle state does not permit a new launch.")
+    PREPARATION_OWNED = ("preparation-owned", "Another preparer currently owns this item's preparation.")
 
 
 @dataclass(frozen=True, slots=True)

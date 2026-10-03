@@ -151,11 +151,18 @@ def damaged_receipt_recovery(damaged: query_models.DamagedTransitionReceipt) -> 
             return (
                 f"Report to the human that transition receipt {damaged.history_id} "
                 f"({damaged.action_kind.value}, committed {damaged.committed_at.isoformat()}) for attempt "
-                f"'{damaged.attempt_id}' is damaged: {damaged.defect} Pinboard does not repair receipts; do not "
+                f"'{damaged.attempt_id}' is damaged: {damaged.defect.rstrip('.')}. Pinboard does not repair receipts; do not "
                 "retry this read or edit the ledger."
             )
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def damaged_receipt_validation_recovery(damaged: query_models.DamagedTransitionReceipt) -> str:
+    return (
+        f"Report damaged transition receipt {damaged.history_id} to the human for diagnosis. "
+        "Pinboard does not repair receipts; do not edit the ledger or rerun validation."
+    )
 
 
 def validate_attempt_brief_identity(
@@ -1255,6 +1262,10 @@ def select_integration_source(
     unavailable = query_models.IntegrationUnavailableReason
     if stored_state.live_work_state(facts.state) is None:
         closing = facts.closing_attempt
+        if facts.closure_action is None:
+            return query_models.IntegrationCandidateUnavailable(
+                facts.work_item_id, state, None, unavailable.CLOSURE_UNKNOWN
+            )
         if facts.closure_action != decision_models.ActionKind.COMPLETE:
             return query_models.IntegrationCandidateUnavailable(
                 facts.work_item_id, state, None, unavailable.CLOSED_WITHOUT_COMPLETION

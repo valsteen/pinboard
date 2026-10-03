@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pinboard.adapters import review_operations
 from pinboard.adapters.files.artifacts import read_reference
@@ -26,6 +26,7 @@ from pinboard.application import (
 )
 from pinboard.application.artifacts import NewArtifact
 from pinboard.domain import errors, work_models
+from pinboard.domain.errors import CodeMeanings
 from pinboard.domain.identifiers import AttemptId, HistoryId
 
 
@@ -33,7 +34,15 @@ from pinboard.domain.identifiers import AttemptId, HistoryId
 class RecoveredReviewPreparationFailure:
     cause: ArtifactError | ports.WorkStoreError
     details: errors.FailureDetails
-    code: Literal["REVIEW_JOB_PREPARATION_FAILED", "REVIEW_PROMPT_PUBLICATION_FAILED"]
+    code: Annotated[
+        Literal["REVIEW_JOB_PREPARATION_FAILED", "REVIEW_PROMPT_PUBLICATION_FAILED"],
+        CodeMeanings(
+            (
+                (0, "Review-job preparation failed after recovered candidate evidence may have been published."),
+                (1, "Reviewer prompt publication failed after recovered candidate evidence may have been published."),
+            )
+        ),
+    ]
 
 
 def prepare_recovered_review_job(  # noqa: C901, PLR0912 - one selected remedy and invocation-total aftermath
@@ -107,7 +116,7 @@ def prepare_recovered_review_job(  # noqa: C901, PLR0912 - one selected remedy a
         artifacts,
         NewArtifact(
             work_models.ArtifactKind.EVIDENCE,
-            f"{package.attempt_id}-{package.checkpoint.id}-candidate",
+            checkpoint_packages.checkpoint_candidate_key(package.attempt_id, package.checkpoint.id),
             1,
             ".patch",
             patch,

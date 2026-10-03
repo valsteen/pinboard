@@ -402,6 +402,10 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                     self.assertEqual((AttemptId("work-a-1"), damaged_history), (named.attempt_id, named.history_id))
                     self.assertEqual(diagnosis, queries.damaged_receipt_diagnosis(receipt))
                     self.assertEqual(queries.damaged_receipt_recovery(named), status["recovery"])
+                    if diagnosis == query_models.DamagedReceiptDiagnosis.HUMAN:
+                        self.assertIn(
+                            f"{named.defect.rstrip('.')}. Pinboard does not repair receipts", str(status["recovery"])
+                        )
                     inspected = self.inspection(fixture)
                     validated, stdout, _stderr = self.run_cli(*fixture.common, "validate", "--json")
                     codes = {
@@ -457,6 +461,8 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                     if self.json_object(value)["code"] == "TRANSITION_RECEIPT_DAMAGED"
                 )
                 self.assertIn(f"Transition receipt {history_id} ", str(named["message"]))
+                self.assertNotIn("pinboard validate", str(named["hint"]))
+                self.assertIn("Report", str(named["hint"]))
                 rebuilt, stdout, stderr = self.run_cli(*fixture.common, "views", "rebuild")
                 self.assertNotEqual(0, rebuilt)
                 self.assertIn(f"Transition receipt {history_id} ", f"{stdout}{stderr}")

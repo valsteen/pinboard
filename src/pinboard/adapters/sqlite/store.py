@@ -74,7 +74,14 @@ from pinboard.adapters.sqlite.persistence import accept_artifact_reference as pe
 from pinboard.adapters.sqlite.proposals import (
     read_proposals_by_ids,
 )
-from pinboard.application import candidate_snapshots, queries, query_models, stored_state, work_briefs
+from pinboard.application import (
+    candidate_snapshots,
+    checkpoint_packages,
+    queries,
+    query_models,
+    stored_state,
+    work_briefs,
+)
 from pinboard.application.artifacts import ArtifactRef, BriefArtifactRef
 from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.application.project_export import ProjectExportState
@@ -94,10 +101,6 @@ class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     item_id: WorkItemId
     state: stored_state.StoredWorkItemState
     subject_revision: int
-
-
-class _CandidateRecordedAtRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    candidate_recorded_at: datetime | None
 
 
 class _IntegrationAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -371,6 +374,7 @@ def _read_attempt_context_facts(
 def _read_candidate_snapshot_context_facts(
     connection: sqlite3.Connection,
     attempt_id: AttemptId,
+    closing_candidate_revision: str | None,
 ) -> query_models.CandidateSnapshotContextFacts | None:
     attempt_row = connection.execute(
         """
@@ -387,7 +391,7 @@ def _read_candidate_snapshot_context_facts(
         return None
     artifact_key = candidate_snapshots.candidate_snapshot_artifact_key(
         str(attempt.attempt_id),
-        attempt.candidate_revision,
+        attempt.candidate_revision if closing_candidate_revision is None else closing_candidate_revision,
         attempt.candidate_recorded_at.isoformat(),
     )
     reference = read_latest_artifact_reference(
@@ -396,6 +400,8 @@ def _read_candidate_snapshot_context_facts(
         artifact_key,
     )
     if reference is None:
+        if closing_candidate_revision is not None:
+            return None
         history_row = connection.execute(
             "SELECT history_id FROM transition_history WHERE project_revision = ?",
             (attempt.subject_revision,),
@@ -450,32 +456,6 @@ def _read_candidate_snapshot_context_facts(
     )
 
 
-def _read_closing_snapshot_context(
-    connection: sqlite3.Connection,
-    attempt_id: AttemptId,
-    candidate_revision: str,
-) -> query_models.CandidateSnapshotContextFacts | None:
-    """Read a completion's retained candidate snapshot; a candidate that predates snapshots has none."""
-
-    row = connection.execute(
-        "SELECT candidate_recorded_at FROM attempts WHERE attempt_id = ?",
-        (attempt_id,),
-    ).fetchone()
-    recorded_at = None if row is None else decode_row(row, _CandidateRecordedAtRow).candidate_recorded_at
-    if recorded_at is None or (
-        read_latest_artifact_reference(
-            connection,
-            work_models.ArtifactKind.EVIDENCE,
-            candidate_snapshots.candidate_snapshot_artifact_key(
-                str(attempt_id), candidate_revision, recorded_at.isoformat()
-            ),
-        )
-        is None
-    ):
-        return None
-    return _read_candidate_snapshot_context_facts(connection, attempt_id)
-
-
 def _read_integration_facts(
     connection: sqlite3.Connection,
     item_id: WorkItemId,
@@ -513,7 +493,9 @@ def _read_integration_facts(
                     closing.candidate_revision,
                     None
                     if closing.candidate_revision is None
-                    else _read_closing_snapshot_context(connection, closing.attempt_id, closing.candidate_revision),
+                    else _read_candidate_snapshot_context_facts(
+                        connection, closing.attempt_id, closing.candidate_revision
+                    ),
                 )
             )
     else:
@@ -533,7 +515,7 @@ def _read_integration_facts(
                 attempt.candidate_revision,
                 None
                 if attempt.candidate_revision is None
-                else _read_candidate_snapshot_context_facts(connection, attempt.attempt_id),
+                else _read_candidate_snapshot_context_facts(connection, attempt.attempt_id, None),
                 None
                 if checkpoint is None
                 else query_models.IntegrationCheckpointFacts(
@@ -619,6 +601,22 @@ class SQLiteWorkStore:
                 counts = tuple(sorted(visible_counts.items()))
                 revision = decode_row(project_row, ProjectRevisionRow).revision
                 return query_models.ProjectStatusFacts(revision, active_attempts, counts)
+        finally:
+            connection.close()
+
+    def read_recent_receipts(self, *, through_revision: int) -> tuple[query_models.RecentReceiptFacts, ...]:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return tuple(
+                    decode_row(row, query_models.RecentReceiptFacts)
+                    for row in connection.execute(
+                        """SELECT history_id, project_revision, action_kind, subject_id, committed_at
+                           FROM transition_history WHERE project_revision <= ?
+                           ORDER BY history_id DESC LIMIT 10""",
+                        (through_revision,),
+                    ).fetchall()
+                )
         finally:
             connection.close()
 
@@ -902,7 +900,7 @@ class SQLiteWorkStore:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
-                return _read_candidate_snapshot_context_facts(connection, attempt_id)
+                return _read_candidate_snapshot_context_facts(connection, attempt_id, None)
         finally:
             connection.close()
 
@@ -920,7 +918,7 @@ class SQLiteWorkStore:
                 attempt = _read_attempt_context_facts(connection, attempt_id)
                 if attempt is None:
                     return None
-                candidate_snapshot = _read_candidate_snapshot_context_facts(connection, attempt_id)
+                candidate_snapshot = _read_candidate_snapshot_context_facts(connection, attempt_id, None)
                 candidate_review_reference = None
                 if (
                     isinstance(attempt, query_models.NonterminalAttemptContextFacts)
@@ -966,7 +964,9 @@ class SQLiteWorkStore:
                         checkpoint_candidate_reference = read_artifact_reference(
                             connection,
                             work_models.ArtifactKind.EVIDENCE,
-                            f"{attempt_id}-{checkpoint_outcome.checkpoint}-candidate",
+                            checkpoint_packages.checkpoint_candidate_key(
+                                str(attempt_id), checkpoint_outcome.checkpoint
+                            ),
                             1,
                         )
                 correction_receipt = (

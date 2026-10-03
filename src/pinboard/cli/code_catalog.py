@@ -5,7 +5,7 @@ from typing import Annotated, Literal, TypeAliasType, get_args, get_origin, get_
 
 import msgspec
 
-from pinboard import __version__
+from pinboard import __version__, diagnostic_codes
 from pinboard.adapters.checkpoint_compatibility import RecoveredReviewPreparationFailure
 from pinboard.adapters.dispatch_operations import DispatchErrorCode
 from pinboard.adapters.files.errors import ArtifactErrorCode, FileIOErrorCode, RootErrorCode
@@ -28,7 +28,6 @@ from pinboard.domain.errors import (
     FailureMismatch,
     RetryDisposition,
 )
-from pinboard.mcp import contracts, execution
 
 _FAILURE_ENUMS: tuple[type[DescribedCode], ...] = (
     DecisionFailureCode,
@@ -44,7 +43,7 @@ _FAILURE_ENUMS: tuple[type[DescribedCode], ...] = (
     DispatchErrorCode,
     ValidationDiagnosticCode,
     CliErrorCode,
-    contracts.ProducerOnlyCode,
+    diagnostic_codes.ProducerOnlyCode,
 )
 
 _FAILURE_RECOVERY = (
@@ -101,13 +100,8 @@ def _annotated_meanings(annotation: type | TypeAliasType | UnionType) -> dict[st
 def _mcp_code_facts() -> tuple[set[str], dict[str, str]]:
     codes: set[str] = set()
     meanings: dict[str, str] = {}
-    for value in vars(contracts).values():
-        if (
-            isinstance(value, type)
-            and value.__module__ == contracts.__name__
-            and "code" in getattr(value, "__struct_fields__", ())
-        ):
-            annotation = get_type_hints(value, include_extras=True)["code"]
+    for annotation in vars(diagnostic_codes).values():
+        if isinstance(annotation, TypeAliasType):
             codes.update(_literal_values(annotation))
             meanings.update(_annotated_meanings(annotation))
     recovered_code = get_type_hints(RecoveredReviewPreparationFailure, include_extras=True)["code"]
@@ -155,7 +149,7 @@ def installed_code_catalog() -> CodeCatalogIndex:
     mcp_codes, mcp_meanings = _mcp_code_facts()
     for code in mcp_codes:
         add(code, "MCP result contract", "failure", mcp_meanings.get(code))
-    for event in execution.TraceEvent:
+    for event in diagnostic_codes.TraceEvent:
         add(event.value, "MCP trace emitter", "trace-event", event.meaning)
     for action in decision_models.ActionKind:
         if action not in (

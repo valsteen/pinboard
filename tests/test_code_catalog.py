@@ -22,11 +22,20 @@ def _installed_sources() -> tuple[Path, ...]:
     return tuple(Path(pinboard.__file__).parent.rglob("*.py"))
 
 
-def _declared_and_emitted_codes() -> set[str]:
+def _declared_and_emitted_codes() -> set[str]:  # noqa: C901 - independent source completeness scan
     codes: set[str] = set()
     for path in _installed_sources():
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
+            if isinstance(node, ast.TypeAlias) and isinstance(node.name, ast.Name) and node.name.id.endswith("Code"):
+                codes.update(
+                    value.value
+                    for value in ast.walk(node.value)
+                    if isinstance(value, ast.Constant)
+                    and isinstance(value.value, str)
+                    and value.value.isupper()
+                    and "_" in value.value
+                )
             if isinstance(node, ast.ClassDef) and node.name.endswith(("Code", "Reason")):
                 for member in node.body:
                     if isinstance(member, ast.Assign):

@@ -40,6 +40,7 @@ from pinboard.application import (
 )
 from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.ports import WorkStore
+from pinboard.diagnostic_codes import ProducerOnlyCode
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
     DecisionFailure,
@@ -346,7 +347,7 @@ def _read_correction_context(
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return common._read_failure(
             "pinboard-correction-context/v1",
-            contracts.ProducerOnlyCode.CORRECTION_CONTEXT_INVALID.value,
+            ProducerOnlyCode.CORRECTION_CONTEXT_INVALID.value,
             str(error),
             None,
         )

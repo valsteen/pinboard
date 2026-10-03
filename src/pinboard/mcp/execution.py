@@ -26,8 +26,8 @@ from pinboard.adapters.files.file_io import create_immutable
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.files.setting_resolution import SettingEffects, SettingResolutionError
 from pinboard.adapters.sqlite.errors import StorageError
+from pinboard.diagnostic_codes import TraceEvent
 from pinboard.domain.errors import (
-    DescribedCode,
     EffectDisposition,
     RetryDisposition,
 )
@@ -35,20 +35,6 @@ from pinboard.mcp import contract_schemas
 from pinboard.mcp.contracts import JsonValue
 
 THREAD_NAME_PREFIX = "pinboard-mcp-worker"
-
-
-class TraceEvent(DescribedCode):
-    STARTUP = ("startup", "The MCP server recorded its startup before handling requests.")
-    RESULT = ("result", "An MCP request produced a correlated result record.")
-    RESULT_VALIDATION_ERROR = (
-        "result-validation-error",
-        "The result failed its declared MCP output schema after execution.",
-    )
-    CAPTURE_UNAVAILABLE = ("capture-unavailable", "Exact invocation capture was unavailable for the request.")
-    CAPTURE_COMMITTED_WITH_WARNING = (
-        "capture-committed-with-warning",
-        "Exact invocation capture published bytes but reported a later warning.",
-    )
 
 
 @dataclass(frozen=True, slots=True)

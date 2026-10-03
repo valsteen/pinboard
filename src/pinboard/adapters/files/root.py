@@ -479,7 +479,15 @@ def read_integration_content(cwd: Path, target: str, diff: bytes) -> Integration
             return IntegrationTarget(revision, ContentPresence.NO_CHANGE)
         with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as directory:
             environment = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
-            command = ["git", "-c", "core.splitIndex=false", "-c", "apply.whitespace=nowarn"]
+            command = [
+                "git",
+                "-c",
+                "core.splitIndex=false",
+                "-c",
+                "apply.whitespace=nowarn",
+                "-c",
+                "apply.ignoreWhitespace=no",
+            ]
             tree = subprocess.run(
                 [*command, "read-tree", revision], cwd=cwd, env=environment, capture_output=True, check=False
             )

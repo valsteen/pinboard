@@ -15,13 +15,16 @@ from typing import override
 from unittest.mock import patch
 
 from mcp import Client
+from mcp.server.mcpserver.exceptions import UnexpectedToolError
 
 from pinboard.adapters.files import root
 from pinboard.adapters.files.errors import RootError, RootErrorCode
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.database import OpenMode
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, work_brief_models
+from pinboard.domain import history
 from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import common, execution, server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
@@ -383,19 +386,126 @@ class ItemIntegrationTest(CheckpointPackageSupport):
             ).fetchall()
         self.assertIn("checkpoint_history_by_subject", str(plan))
 
-    def test_retained_candidates_without_snapshot_bytes_are_unavailable(self) -> None:
-        fixture = self.prepared()
+    def remove_candidate_snapshot(self, fixture: CheckpointFixture, legacy: bool) -> None:
         context = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
         assert context is not None
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            if legacy:
+                # Represent retained history; no supported producer creates retired submissions.
+                connection.execute(
+                    """UPDATE transition_history SET input_schema = 'decision/v1', input_json = '{}',
+                       outcome_schema = 'transition-receipt/v1', outcome_json = ?, artifact_ref_id = NULL,
+                       artifact_kind = NULL WHERE project_revision = ?""",
+                    (
+                        history.encode_transition_receipt_outcome(
+                            evidence=None, outcome="submit-review", candidate=fixture.candidate_revision
+                        ).decode(),
+                        context.reference.accepted_revision,
+                    ),
+                )
             connection.execute(
                 "DELETE FROM artifact_refs WHERE artifact_ref_id = ?", (context.reference.artifact_ref_id,)
             )
-        result = self.integration(fixture, "HEAD")
-        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", result["code"], result)
-        self.assertEqual("unchanged", result["effect"])
-        self.assertEqual("correct-input", result["retry"])
-        self.assertIn("item", str(result["recovery"]))
+
+    def assert_missing_current_snapshot(self, fixture: CheckpointFixture) -> None:
+        before = (fixture.work / "state.sqlite3").read_bytes()
+        with self.assertRaises(UnexpectedToolError) as raised:
+            call_native_tool(
+                server.ITEM_STATUS_TOOL,
+                {"request": {**self.roots(fixture), "operation": "integration", "item_id": "work-a", "target": "HEAD"}},
+            )
+        cause = raised.exception.__cause__
+        self.assertIsInstance(cause, StorageError)
+        assert isinstance(cause, StorageError)
+        self.assertEqual(StorageErrorCode.INVALID_STATE, cause.code)
+        self.assertEqual(before, (fixture.work / "state.sqlite3").read_bytes())
+
+    def test_current_missing_snapshot_is_an_invariant_failure_in_review_and_completion(self) -> None:
+        for completed in (False, True):
+            with self.subTest(completed=completed):
+                fixture = self.prepared(commit=True)
+                if completed:
+                    fixture = self.terminalize_brief(fixture)
+                    self.record_ready(fixture)
+                    self.complete_candidate(fixture)
+                self.remove_candidate_snapshot(fixture, legacy=False)
+                self.assert_missing_current_snapshot(fixture)
+                with self.assertRaises(StorageError):
+                    fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+
+    def test_canonical_legacy_absence_in_review_and_completion(self) -> None:
+        for completed in (False, True):
+            with self.subTest(completed=completed):
+                fixture = self.prepared(commit=True)
+                if completed:
+                    fixture = self.terminalize_brief(fixture)
+                    self.record_ready(fixture)
+                    self.complete_candidate(fixture)
+                self.remove_candidate_snapshot(fixture, legacy=True)
+                result = self.integration(fixture, "HEAD")
+                self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", result["code"], result)
+                self.assertEqual("unchanged", result["effect"])
+                self.assertEqual("correct-input", result["retry"])
+                self.assertIn("canonical pre-snapshot", str(result["message"]))
+                self.assertIn("operation item", str(result["recovery"]))
+                # The approved completion fallback does not broaden attempt inspection.
+                if completed:
+                    with self.assertRaises(StorageError):
+                        fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+                else:
+                    self.assertIsNone(fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1")))
+                with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+                    connection.execute(
+                        "UPDATE transition_history SET input_json = '{ }' WHERE subject_id = 'work-a-1' AND action_kind = 'submit-review' AND input_schema = 'decision/v1'"
+                    )
+                self.assert_missing_current_snapshot(fixture)
+                for candidate, committed_at in (
+                    ("0" * 40, "2030-01-02T00:00:00+00:00"),
+                    (fixture.candidate_revision, "2020-01-01T00:00:00+00:00"),
+                ):
+                    with self.subTest(candidate=candidate, committed_at=committed_at):
+                        with (
+                            contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection,
+                            connection,
+                        ):
+                            connection.execute(
+                                "UPDATE transition_history SET input_json = '{}', outcome_json = ?, committed_at = ? WHERE subject_id = 'work-a-1' AND action_kind = 'submit-review' AND input_schema = 'decision/v1'",
+                                (
+                                    history.encode_transition_receipt_outcome(
+                                        evidence=None, outcome="submit-review", candidate=candidate
+                                    ).decode(),
+                                    committed_at,
+                                ),
+                            )
+                        self.assert_missing_current_snapshot(fixture)
+
+    def test_present_snapshot_keeps_protected_and_completion_reads_keyed(self) -> None:
+        fixture = self.prepared(commit=True)
+        original_open = sqlite_store.open_database
+        statements: list[str] = []
+
+        def traced_open(path: Path, mode: OpenMode) -> sqlite3.Connection:
+            connection = original_open(path, mode)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        for completed in (False, True):
+            with self.subTest(completed=completed):
+                if completed:
+                    fixture = self.terminalize_brief(fixture)
+                    self.record_ready(fixture)
+                    self.complete_candidate(fixture)
+                statements.clear()
+                with patch.object(sqlite_store, "open_database", traced_open):
+                    result = self.integration(fixture, "HEAD")
+                self.assertEqual("content-present", result["presence"])
+                with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
+                    for statement in statements:
+                        if statement.lstrip().upper().startswith("SELECT"):
+                            plan = str(connection.execute(f"EXPLAIN QUERY PLAN {statement}").fetchall())
+                            self.assertNotIn("SCAN", plan.upper(), statement)
+
+    def test_retained_checkpoint_without_snapshot_reference_is_unavailable(self) -> None:
         checkpoint = self.accepted_package_fixture(local=True, candidate_form="current-head")
         self.retain_v2_checkpoint(checkpoint)
         result = self.integration(checkpoint, "HEAD")
@@ -506,6 +616,23 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         )
         self.assertEqual("recorded", recorded["status"], recorded)
 
+    def complete_candidate(self, fixture: CheckpointFixture) -> None:
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        self.transition(
+            fixture,
+            "complete",
+            "work-a-1",
+            {
+                "schema": "pinboard-reviewed-completion/v2",
+                "candidate": fixture.candidate_revision,
+                "evidence": "Reviewed completion.",
+                "reviewer_task_id": "independent-reviewer",
+                "result_sha256": hashlib.sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
+                "review_sha256": hashlib.sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
+                "packages": [],
+            },
+        )
+
     def test_completion_source_and_inspection_reconciliation_use_separate_observations(self) -> None:
         fixture = self.terminalize_brief(self.prepared(commit=True))
         self.record_ready(fixture)
@@ -530,21 +657,7 @@ class ItemIntegrationTest(CheckpointPackageSupport):
             "repository-cleanup",
             self.json_object(self.json_object(inspection["continuation"])["next_operation"])["kind"],
         )
-        attempt_root = fixture.work / "attempts" / "work-a-1"
-        self.transition(
-            fixture,
-            "complete",
-            "work-a-1",
-            {
-                "schema": "pinboard-reviewed-completion/v2",
-                "candidate": fixture.candidate_revision,
-                "evidence": "Reviewed completion.",
-                "reviewer_task_id": "independent-reviewer",
-                "result_sha256": hashlib.sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
-                "review_sha256": hashlib.sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
-                "packages": [],
-            },
-        )
+        self.complete_candidate(fixture)
         self.assert_source(self.integration(fixture, "HEAD"), fixture, "completion", "HEAD", "content-present")
 
     def test_damaged_checkpoint_receipt_is_diagnosed_without_repair(self) -> None:

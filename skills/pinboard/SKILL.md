@@ -110,7 +110,7 @@ Do not infer work from arbitrary Markdown, historical plans, unchecked boxes, br
 
 ## Match detail to the question
 
-The item-status `integration` leaf takes exact roots, `item_id`, and `target` inside `request` and returns `pinboard-item-integration/v1` or `pinboard-mcp-item-status-result/v3`. It reads only the named item's selected attempt, closing or latest checkpoint receipt where needed, its linked package, and one accepted snapshot, then runs one Git content read against the local target; it never runs the review-verdict walk or fetches.
+The item-status `integration` leaf takes exact roots, `item_id`, and `target` inside `request` and returns `pinboard-item-integration/v1` or `pinboard-mcp-item-status-result/v3`. It reads only the named item's selected attempt, closing or latest checkpoint receipt where needed, its linked package, and one accepted snapshot, then runs one Git content read against the local target; it never runs the review-verdict walk or fetches. Only a completion missing its keyed snapshot reference scans retained submission metadata to distinguish canonical legacy absence from damaged current metadata.
 
 User-facing progress and receipts describe the user's tasks, decisions, confidence, blockers, and next actions under [the human's picture](#keep-the-humans-picture-current). The implementation route is the one advance choice to disclose after a human change request.
 

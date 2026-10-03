@@ -71,6 +71,7 @@ class AttemptFacts:
     base_revision: str
     candidate_revision: str | None
     candidate_recorded_at: datetime | None
+    subject_revision: int
 
 
 @dataclass(frozen=True, slots=True)

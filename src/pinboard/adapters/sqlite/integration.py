@@ -1,13 +1,16 @@
-"""Keyed item and candidate provenance reads; no review-verdict or retained-attempt walk."""
+"""Focused integration reads, with a missing-snapshot completion provenance fallback."""
 
 import sqlite3
+from typing import assert_never
 
 import msgspec
 
-from pinboard.adapters.sqlite import lifecycle
+from pinboard.adapters.sqlite import lifecycle, state
+from pinboard.adapters.sqlite.artifacts import read_latest_artifact_reference
 from pinboard.adapters.sqlite.database import decode_row
-from pinboard.adapters.sqlite.models import CandidateSnapshotAttemptRow
-from pinboard.application import integration, stored_state
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.adapters.sqlite.models import CandidateSnapshotAttemptRow, HistoryIdRow
+from pinboard.application import candidate_snapshots, integration, stored_state
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.identifiers import WorkItemId
 
@@ -72,5 +75,57 @@ def read_item_integration(connection: sqlite3.Connection, item_id: WorkItemId) -
             attempt.base_revision,
             attempt.candidate_revision,
             attempt.candidate_recorded_at,
+            attempt.subject_revision,
         )
     return integration.ItemFacts(item_id, item.state, selected_attempt, closing, checkpoint)
+
+
+def read_candidate_reference(
+    connection: sqlite3.Connection,
+    selection: integration.ProtectedSelection | integration.CompletionSelection,
+) -> stored_state.ArtifactReference | None:
+    """Return a keyed reference; absence requires canonical pre-snapshot submission provenance.
+
+    StorageError preserves the existing missing-current-reference invariant. Only a
+    completion without its reference scans retained submission metadata; ordinary
+    inspection does not use this fallback. Decode only the selected submission.
+    """
+    attempt = selection.attempt
+    reference = read_latest_artifact_reference(
+        connection,
+        work_models.ArtifactKind.EVIDENCE,
+        candidate_snapshots.candidate_snapshot_artifact_key(
+            str(attempt.attempt_id), selection.candidate, selection.recorded_at.isoformat()
+        ),
+    )
+    if reference is not None:
+        return reference
+    match selection:
+        case integration.ProtectedSelection():
+            row = connection.execute(
+                "SELECT history_id FROM transition_history WHERE project_revision = ?",
+                (attempt.subject_revision,),
+            ).fetchone()
+        case integration.CompletionSelection():
+            row = connection.execute(
+                """SELECT history_id FROM transition_history
+                   WHERE subject_id = ? AND action_kind = 'submit-review' AND project_revision < ?
+                   ORDER BY project_revision DESC LIMIT 1""",
+                (attempt.attempt_id, attempt.subject_revision),
+            ).fetchone()
+        case _ as unreachable:
+            assert_never(unreachable)
+    receipt = None if row is None else state.read_history_receipt(connection, decode_row(row, HistoryIdRow).history_id)
+    try:
+        legacy_candidate = None if receipt is None else candidate_snapshots.legacy_review_candidate(receipt)
+    except ValueError as error:
+        raise StorageError(StorageErrorCode.INVALID_STATE, str(error)) from error
+    if (
+        receipt is not None
+        and receipt.subject_id == attempt.attempt_id
+        and receipt.artifact_ref_id is None
+        and receipt.committed_at == selection.recorded_at
+        and legacy_candidate == selection.candidate
+    ):
+        return None
+    raise StorageError(StorageErrorCode.INVALID_STATE, "The protected candidate has no accepted snapshot artifact.")

@@ -63,6 +63,15 @@ class IntegrationContentTest(unittest.TestCase):
         self.git("commit", "-am", "overlap")
         self.assert_presence("main", ContentPresence.NOT_PRESENT, self.diff)
 
+    def test_internal_context_spacing_is_not_ignored_by_user_configuration(self) -> None:
+        self.file.write_text(self.file.read_text().replace("line 1\n", "line    1\n"))
+        self.git("commit", "-am", "change context spacing")
+        target = self.git("rev-parse", "HEAD").decode().strip()
+        for setting in ("no", "change"):
+            with self.subTest(setting=setting):
+                self.git("config", "apply.ignoreWhitespace", setting)
+                self.assert_presence(target, ContentPresence.NOT_PRESENT, self.diff)
+
     def test_empty_diff_resolves_target_without_comparison_or_temporary_index(self) -> None:
         with patch.object(root.tempfile, "TemporaryDirectory", side_effect=AssertionError("empty diff needs no index")):
             self.assert_presence("main", ContentPresence.NO_CHANGE, b"")

@@ -118,6 +118,10 @@ class WorkStore(Protocol):
 
     def read_item_integration(self, work_item_id: WorkItemId) -> integration.ItemFacts | None: ...
 
+    def read_integration_candidate_reference(
+        self, selection: integration.ProtectedSelection | integration.CompletionSelection
+    ) -> stored_state.ArtifactReference | None: ...
+
     def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts: ...
 
     def read_parallel_preview(
@@ -174,6 +178,10 @@ class ReadyCandidateReviewReader(Protocol):
 
 
 class BranchOwnerReader(Protocol):
+    def read_integration_candidate_reference(
+        self, selection: integration.ProtectedSelection | integration.CompletionSelection
+    ) -> stored_state.ArtifactReference | None: ...
+
     def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts: ...
 
 

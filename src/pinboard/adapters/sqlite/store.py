@@ -729,6 +729,16 @@ class SQLiteWorkStore:
         finally:
             connection.close()
 
+    def read_integration_candidate_reference(
+        self, selection: integration.ProtectedSelection | integration.CompletionSelection
+    ) -> stored_state.ArtifactReference | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return integration_reads.read_candidate_reference(connection, selection)
+        finally:
+            connection.close()
+
     def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:

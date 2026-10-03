@@ -205,19 +205,12 @@ def read_integration_snapshot(
     reference = None
     try:
         match selection:
-            case (
-                integration.ProtectedSelection(candidate=candidate, recorded_at=recorded_at)
-                | integration.CompletionSelection(candidate=candidate, recorded_at=recorded_at)
-            ):
-                reference = store.read_latest_artifact_reference(
-                    work_models.ArtifactKind.EVIDENCE,
-                    candidate_snapshots.candidate_snapshot_artifact_key(
-                        str(attempt.attempt_id), candidate, recorded_at.isoformat()
-                    ),
-                )
+            case integration.ProtectedSelection() | integration.CompletionSelection():
+                candidate = selection.candidate
+                reference = store.read_integration_candidate_reference(selection)
                 if reference is None:
                     return integration.CandidateUnavailable(
-                        "The selected review candidate has no accepted snapshot bytes, as with a retained pre-snapshot review."
+                        "The selected candidate has a canonical pre-snapshot submission and no accepted snapshot bytes."
                     )
             case integration.CheckpointSelection(outcome=outcome):
                 selected_reference = _checkpoint_candidate_reference(work_root, store, selection)

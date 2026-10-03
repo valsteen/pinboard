@@ -108,3 +108,25 @@ class IntegrationContentTest(unittest.TestCase):
             self.assertEqual(
                 root.ContentObservation(self.tip, True), root.read_integration_content(self.project, "main", b"")
             )
+
+    def test_context_spacing_changes_remain_absent_under_user_ignore_whitespace_setting(self) -> None:
+        (self.project / "context.txt").write_text("context line\nold\ncontext line\n", encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-m", "context base")
+        base = self.git("rev-parse", "HEAD")
+        (self.project / "context.txt").write_text("context line\nnew\ncontext line\n", encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-m", "reviewed context change")
+        diff = subprocess.run(
+            ["git", "diff", "--binary", base, "HEAD"], cwd=self.project, capture_output=True, check=True
+        ).stdout
+        (self.project / "context.txt").write_text("  context line\nnew\ncontext line\n", encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-m", "later context spacing")
+        tip = self.git("rev-parse", "HEAD")
+        for setting in ("no", "change"):
+            with self.subTest(setting=setting):
+                self.git("config", "apply.ignoreWhitespace", setting)
+                self.assertEqual(
+                    root.ContentObservation(tip, False), root.read_integration_content(self.project, "main", diff)
+                )

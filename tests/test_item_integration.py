@@ -14,9 +14,11 @@ from unittest.mock import patch
 
 import msgspec
 from mcp import Client
+from mcp.server.mcpserver.exceptions import UnexpectedToolError
 from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files import contributor_traces, root
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models
 from pinboard.domain.identifiers import AttemptId
@@ -447,6 +449,13 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         self.transition(fixture, "return-for-correction:work-a-1", {"reason": "Needs correction."})
         self.rejection(fixture, "INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input")
 
+    def test_nul_target_rejects_before_git_observation(self) -> None:
+        fixture = self.candidate()
+        with patch.object(
+            root, "read_integration_content", side_effect=AssertionError("invalid target must not reach Git")
+        ):
+            self.rejection(fixture, "ITEM_STATUS_INVALID", "correct-input", target="main\x00x")
+
     def test_non_git_project_has_typed_unchanged_diagnosis(self) -> None:
         fixture = self.candidate()
         # A sibling directory is outside this repository, with the same private ledger.
@@ -545,7 +554,7 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         self.assertEqual("recorded", ready["status"], ready)
         return result_digest, review_digest
 
-    def test_completion_and_direct_close_sources(self) -> None:
+    def completed_candidate(self) -> CheckpointFixture:
         fixture = self.terminalize_brief(self.candidate(committed=True))
         result_digest, review_digest = self.record_ready(fixture)
         self.transition(
@@ -561,6 +570,10 @@ class ItemIntegrationTest(CheckpointPackageSupport):
                 "packages": [],
             },
         )
+        return fixture
+
+    def test_completion_and_direct_close_sources(self) -> None:
+        fixture = self.completed_candidate()
         self.git(fixture.project, "switch", "main")
         self.git(fixture.project, "merge", "--ff-only", fixture.brief.branch)
         self.assert_presence(fixture, "content-present", kind="completion")
@@ -592,6 +605,45 @@ class ItemIntegrationTest(CheckpointPackageSupport):
                 "DELETE FROM artifact_refs WHERE artifact_ref_id = ?", (int(context.reference.artifact_ref_id),)
             )
         self.rejection(fixture, "INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input")
+
+    def test_completed_pre_snapshot_candidate_is_unavailable(self) -> None:
+        fixture = self.completed_candidate()
+        context = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        assert context is not None
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            connection.execute(
+                "UPDATE transition_history SET input_schema = 'decision/v1', input_json = '{}', artifact_ref_id = NULL, artifact_kind = NULL WHERE history_id = ?",
+                (context.receipt.history_id,),
+            )
+            connection.execute(
+                "DELETE FROM artifact_refs WHERE artifact_ref_id = ?", (int(context.reference.artifact_ref_id),)
+            )
+        self.rejection(fixture, "INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input")
+        with self.assertRaises(StorageError) as ordinary_read:
+            fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        self.assertEqual(StorageErrorCode.INVALID_STATE, ordinary_read.exception.code)
+
+    def test_completed_current_candidate_missing_reference_remains_invariant_failure(self) -> None:
+        fixture = self.completed_candidate()
+        context = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        assert context is not None
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            connection.execute(
+                "UPDATE transition_history SET artifact_ref_id = NULL, artifact_kind = NULL WHERE history_id = ?",
+                (context.receipt.history_id,),
+            )
+            connection.execute(
+                "DELETE FROM artifact_refs WHERE artifact_ref_id = ?", (int(context.reference.artifact_ref_id),)
+            )
+        with self.assertRaises(UnexpectedToolError) as rejected:
+            call_native_tool(
+                server.ITEM_STATUS_TOOL,
+                {"request": {**self.roots(fixture), "operation": "integration", "item_id": "work-a", "target": "main"}},
+            )
+        cause = rejected.exception.__cause__
+        self.assertIsInstance(cause, StorageError)
+        assert isinstance(cause, StorageError)
+        self.assertEqual(StorageErrorCode.INVALID_STATE, cause.code)
 
     def test_accepted_and_continued_candidate_is_unavailable(self) -> None:
         fixture = self.checkpoint_fixture(local=True)

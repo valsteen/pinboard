@@ -14,7 +14,7 @@ from pinboard.application import action_models, query_models, stored_state
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.identifiers import AttemptId, WorkItemId
 
-type Target = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^-\r\n][^\r\n]*\z")]
+type Target = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^-\r\n\x00][^\r\n\x00]*\z")]
 type FullRevision = Annotated[str, msgspec.Meta(pattern=r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z")]
 
 

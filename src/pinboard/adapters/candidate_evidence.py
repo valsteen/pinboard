@@ -182,7 +182,13 @@ def _read_integration_source(
         case item_integration.CheckpointSelection():
             return _read_checkpoint_integration_source(work_root, store, facts, selection)
         case item_integration.ProtectedSelection() | item_integration.CompletionSelection():
-            context = store.read_candidate_snapshot_context(selection.attempt_id)
+            match selection:
+                case item_integration.ProtectedSelection():
+                    context = store.read_candidate_snapshot_context(selection.attempt_id)
+                case item_integration.CompletionSelection():
+                    context = store.read_completion_candidate_snapshot_context(selection.attempt_id)
+                case _ as unreachable:
+                    assert_never(unreachable)
             if context is None:
                 return _candidate_unavailable(facts, "The retained review candidate has no accepted snapshot bytes.")
             try:

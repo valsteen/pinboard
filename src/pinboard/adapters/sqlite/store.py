@@ -354,6 +354,7 @@ def _read_attempt_context_facts(
 def _read_candidate_snapshot_context_facts(
     connection: sqlite3.Connection,
     attempt_id: AttemptId,
+    allow_compatibility_completion_lookup: bool,
 ) -> query_models.CandidateSnapshotContextFacts | None:
     attempt_row = connection.execute(
         """
@@ -379,10 +380,23 @@ def _read_candidate_snapshot_context_facts(
         artifact_key,
     )
     if reference is None:
-        history_row = connection.execute(
-            "SELECT history_id FROM transition_history WHERE project_revision = ?",
-            (attempt.subject_revision,),
-        ).fetchone()
+        if allow_compatibility_completion_lookup and attempt.state == work_models.AttemptState.DONE:
+            # Retained pre-snapshot completions no longer point at their submission.
+            # Keep this compatibility scan exclusive to integration, at this mixed read boundary.
+            history_rows = connection.execute(
+                """
+                SELECT history_id FROM transition_history
+                WHERE subject_id = ? AND committed_at = ? AND action_kind = 'submit-review'
+                LIMIT 2
+                """,
+                (attempt_id, attempt.candidate_recorded_at.isoformat()),
+            ).fetchall()
+            history_row = history_rows[0] if len(history_rows) == 1 else None
+        else:
+            history_row = connection.execute(
+                "SELECT history_id FROM transition_history WHERE project_revision = ?",
+                (attempt.subject_revision,),
+            ).fetchone()
         receipt = (
             None
             if history_row is None
@@ -763,7 +777,17 @@ class SQLiteWorkStore:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
-                return _read_candidate_snapshot_context_facts(connection, attempt_id)
+                return _read_candidate_snapshot_context_facts(connection, attempt_id, False)
+        finally:
+            connection.close()
+
+    def read_completion_candidate_snapshot_context(
+        self, attempt_id: AttemptId
+    ) -> query_models.CandidateSnapshotContextFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return _read_candidate_snapshot_context_facts(connection, attempt_id, True)
         finally:
             connection.close()
 
@@ -840,7 +864,7 @@ class SQLiteWorkStore:
                 attempt = _read_attempt_context_facts(connection, attempt_id)
                 if attempt is None:
                     return None
-                candidate_snapshot = _read_candidate_snapshot_context_facts(connection, attempt_id)
+                candidate_snapshot = _read_candidate_snapshot_context_facts(connection, attempt_id, False)
                 candidate_review_reference = None
                 if (
                     isinstance(attempt, query_models.NonterminalAttemptContextFacts)

@@ -420,7 +420,14 @@ class McpJobsTest(CheckpointPackageSupport):
                         str(fixture.project), str(fixture.work), "work-a-1", fixture.candidate_revision, token
                     )
                 )
-                waiter = asyncio.create_task(execution.result())
+                waiting = asyncio.Event()
+
+                async def result_after_entry() -> mcp_execution.OperationResult:
+                    waiting.set()
+                    return await execution.result()
+
+                waiter = asyncio.create_task(result_after_entry())
+                await waiting.wait()
                 self.assertTrue(await asyncio.to_thread(entered.wait, 2))
                 waiter.cancel()
                 await asyncio.sleep(0)
@@ -932,7 +939,14 @@ class McpJobsTest(CheckpointPackageSupport):
                 execution = executor.submit(
                     lambda token: mcp_jobs._dispatch_job(str(project), str(work), choice, token)
                 )
-                waiter = asyncio.create_task(execution.result())
+                waiting = asyncio.Event()
+
+                async def result_after_entry() -> mcp_execution.OperationResult:
+                    waiting.set()
+                    return await execution.result()
+
+                waiter = asyncio.create_task(result_after_entry())
+                await waiting.wait()
                 self.assertTrue(await asyncio.to_thread(entered.wait, 2))
                 waiter.cancel()
                 await asyncio.sleep(0)

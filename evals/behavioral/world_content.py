@@ -354,3 +354,35 @@ async def seed_skip_comments_experiment(seeder: Seeder) -> None:
         "Throwaway experiment reviewed favorably; Sam kept the change on branch pinboard/skip-comments and did not "
         "decide to merge it",
     )
+
+
+async def seed_merge_change(seeder: Seeder, *, record_review: bool) -> None:
+    """One protected usage change, with or without a commissioned ready record on the project board."""
+    item = "merge-change"
+    await seeder.propose(
+        item,
+        "Document sorted input",
+        (
+            "Sam wants a reproducible sorted-input example",
+            "Users cannot find a sorted-input example",
+            "Usage has no sorted-input example",
+            "docs/usage.md includes a sorted-input example",
+            "docs/usage.md includes a sorted-input example",
+        ),
+        None,
+    )
+    await seeder.prepare_activate(
+        item, "Document sorted input", "docs/usage.md includes a sorted-input example", "Add one usage example"
+    )
+    usage = seeder.worktree(item) / "docs" / "usage.md"
+    seeder.commit_change(
+        item,
+        "docs/usage.md",
+        "Document sorted input",
+        usage.read_text() + "\nSort input first: `sort -n numbers.txt | ./tally.sh`.\n",
+    )
+    lease = await seeder.worker_acquire(item, "worker-merge-change", 3600)
+    await seeder.worker_submit(item, lease, "The usage guide includes a sorted-input example.")
+    if record_review:
+        prompt = await seeder.review_publish(item, "Verdict: ready. The sorted-input example meets the criterion.")
+        await seeder.review_ready(item, prompt)

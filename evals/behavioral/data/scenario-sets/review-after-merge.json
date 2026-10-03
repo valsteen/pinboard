@@ -1,0 +1,25 @@
+{
+  "name": "review-after-merge",
+  "scenarios": [
+    {
+      "id": "s24-reviewed-rebased-close",
+      "sha256": "416e7f8c9ebf3ec837f52adf0c4cf629245bd801babb75099e425c15a2a3db53"
+    },
+    {
+      "id": "s25-reviewed-squashed-close",
+      "sha256": "acfb0ba5da157ad0c54c36644360e42751221d50883e32c3baa0c8de7abbdf9a"
+    },
+    {
+      "id": "s26-merged-missing-review",
+      "sha256": "952eecf66f688a1bff21de7fe88978a841da4724c2c4826a0633dcefa1df4280"
+    },
+    {
+      "id": "s27-reviewed-merged-status",
+      "sha256": "01520378e815206f2f1470eb1210463597d784b7fd3e2b83982a3a19238c30ae"
+    }
+  ],
+  "targeted_rules": [
+    "P5",
+    "P11"
+  ]
+}

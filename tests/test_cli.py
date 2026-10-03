@@ -601,7 +601,7 @@ class CliTest(unittest.TestCase):
 
     def test_diagnose_damaged_ledger_never_reports_valid_health(self) -> None:
         project, work, _store = self.initialized_state()
-        with sqlite3.connect(work / "state.sqlite3") as connection:
+        with contextlib.closing(sqlite3.connect(work / "state.sqlite3")) as connection, connection:
             connection.execute("UPDATE work_item_state_counts SET item_count = 1 WHERE state = 'active'")
         result, stdout, stderr = self.run_cli(
             "--project-root", str(project), "--work-root", str(work), "diagnose", "--json"

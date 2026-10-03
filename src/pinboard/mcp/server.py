@@ -194,7 +194,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
     @server.tool(
         name=ITEM_STATUS_TOOL,
         description=(
-            "Read one current Pinboard item status, or map an exact branch to the items and attempts that own it."
+            "Read item status, map an exact branch to its owners, or compare a reviewed candidate with a named local Git target by content."
         ),
     )
     async def item_status(request: dict[str, JsonValue]) -> dict[str, JsonValue]:

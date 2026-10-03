@@ -864,34 +864,6 @@ def project_item_overview(facts: query_models.ItemOverviewFacts, now: datetime) 
     )
 
 
-def _stored_receipt(
-    attempt_id: AttemptId,
-    receipt: query_models.ConsumedTransitionReceipt,
-    action_kind: query_models.DamagedReceiptActionKind,
-) -> stored_state.StoredTransitionReceipt | query_models.DamagedTransitionReceipt:
-    for column, text in (("input_json", receipt.input_json), ("outcome_json", receipt.outcome_json)):
-        try:
-            msgspec.json.decode(text.encode("utf-8"), type=msgspec.Raw)
-        except msgspec.DecodeError as error:
-            return _damaged(attempt_id, receipt, action_kind, f"Column {column!r} is not valid JSON: {error}")
-    return stored_state.StoredTransitionReceipt(
-        receipt.history_id,
-        receipt.project_revision,
-        receipt.action_id,
-        receipt.action_kind,
-        receipt.subject_id,
-        receipt.artifact_ref_id,
-        receipt.authorization,
-        receipt.actor_task_id,
-        receipt.actor_host_id,
-        receipt.input_schema,
-        work_models.CanonicalJson(receipt.input_json.encode("utf-8")),
-        receipt.outcome_schema,
-        work_models.CanonicalJson(receipt.outcome_json.encode("utf-8")),
-        receipt.committed_at,
-    )
-
-
 def _damaged(
     attempt_id: AttemptId,
     receipt: query_models.ConsumedTransitionReceipt,
@@ -925,7 +897,7 @@ def _returned_verdict(
     returned = decision_models.ActionKind.RETURN_FOR_CORRECTION
     match receipt.input_schema:
         case "return-for-correction/v1":
-            stored = _stored_receipt(attempt_id, receipt, returned)
+            stored = query_models.stored_consumed_receipt(attempt_id, receipt, returned)
             if isinstance(stored, query_models.DamagedTransitionReceipt):
                 return stored
             outcome = checkpoint_packages.decode_correction_outcome(stored, str(attempt_id))

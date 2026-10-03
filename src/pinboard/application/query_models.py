@@ -1172,3 +1172,37 @@ class ItemDefinitionHistoryFacts:
     project_revision: int
     item_exists: bool
     revisions: tuple[stored_state.ItemDefinitionRevision, ...]
+
+
+def stored_consumed_receipt(
+    attempt_id: AttemptId,
+    receipt: ConsumedTransitionReceipt,
+    action_kind: DamagedReceiptActionKind,
+) -> stored_state.StoredTransitionReceipt | DamagedTransitionReceipt:
+    for column, text in (("input_json", receipt.input_json), ("outcome_json", receipt.outcome_json)):
+        try:
+            msgspec.json.decode(text.encode("utf-8"), type=msgspec.Raw)
+        except msgspec.DecodeError as error:
+            return DamagedTransitionReceipt(
+                attempt_id,
+                receipt.history_id,
+                receipt.committed_at,
+                action_kind,
+                f"Column {column!r} is not valid JSON: {error}",
+            )
+    return stored_state.StoredTransitionReceipt(
+        receipt.history_id,
+        receipt.project_revision,
+        receipt.action_id,
+        receipt.action_kind,
+        receipt.subject_id,
+        receipt.artifact_ref_id,
+        receipt.authorization,
+        receipt.actor_task_id,
+        receipt.actor_host_id,
+        receipt.input_schema,
+        work_models.CanonicalJson(receipt.input_json.encode("utf-8")),
+        receipt.outcome_schema,
+        work_models.CanonicalJson(receipt.outcome_json.encode("utf-8")),
+        receipt.committed_at,
+    )

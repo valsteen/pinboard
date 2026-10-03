@@ -1,11 +1,14 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
 from pinboard.adapters.files.errors import RootError, RootErrorCode
 from pinboard.application.candidate_identity import working_tree_identity
+from pinboard.application.integration import ContentPresence
 from pinboard.domain import work_models
 
 _READ_CHUNK_BYTES = 64 * 1024
@@ -126,14 +129,13 @@ def classify_checkout(cwd: Path) -> work_models.CheckoutSelection:
     )
 
 
+def _git_text_result(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    """Keep textual Git process observations inside this effect adapter."""
+    return subprocess.run(["git", *arguments], cwd=cwd, text=True, capture_output=True, check=False)
+
+
 def _git_text(cwd: Path, *arguments: str) -> str:
-    result = subprocess.run(
-        ["git", *arguments],
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    result = _git_text_result(cwd, *arguments)
     value = result.stdout.strip()
     if result.returncode != 0 or not value:
         raise RootError(
@@ -442,3 +444,63 @@ def ensure_git_exclude(shared_repository_root: Path, entry: bytes) -> Path | Non
 
 def ensure_default_git_exclude(shared_repository_root: Path) -> Path | None:
     return ensure_git_exclude(shared_repository_root, b"/.pinboard/")
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationTarget:
+    revision: str
+    presence: ContentPresence
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedIntegrationTarget:
+    target: str
+
+
+def read_integration_content(cwd: Path, target: str, diff: bytes) -> IntegrationTarget | UnresolvedIntegrationTarget:
+    """Resolve a local target and reverse-check bytes using only a private index.
+
+    RootError reports checkout or Git execution failures. A patch that cannot
+    reverse-apply is an ordinary negative observation, not an integration history claim.
+    No repository metadata or working-tree file is written and no ref is fetched.
+    """
+    try:
+        _git_text(cwd, "rev-parse", "--git-dir")
+        resolved = _git_text_result(cwd, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{target}^{{commit}}")
+        if resolved.returncode == 1:
+            return UnresolvedIntegrationTarget(target)
+        if resolved.returncode != 0 or not resolved.stdout.strip():
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                resolved.stderr.strip() or "Cannot resolve the target commit.",
+            )
+        revision = resolved.stdout.strip()
+        if not diff:
+            return IntegrationTarget(revision, ContentPresence.NO_CHANGE)
+        with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as directory:
+            environment = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
+            command = ["git", "-c", "core.splitIndex=false", "-c", "apply.whitespace=nowarn"]
+            tree = subprocess.run(
+                [*command, "read-tree", revision], cwd=cwd, env=environment, capture_output=True, check=False
+            )
+            if tree.returncode != 0:
+                raise RootError(
+                    RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, tree.stderr.decode(errors="replace").strip()
+                )
+            applied = subprocess.run(
+                [*command, "apply", "--cached", "--check", "--reverse", "--whitespace=nowarn", "-"],
+                cwd=cwd,
+                env=environment,
+                input=diff,
+                capture_output=True,
+                check=False,
+            )
+            if applied.returncode not in (0, 1):
+                raise RootError(
+                    RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, applied.stderr.decode(errors="replace").strip()
+                )
+            return IntegrationTarget(
+                revision, ContentPresence.PRESENT if applied.returncode == 0 else ContentPresence.NOT_PRESENT
+            )
+    except OSError as error:
+        raise RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, str(error)) from error

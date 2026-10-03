@@ -10,7 +10,17 @@ from typing import assert_never
 from pinboard.adapters.files import candidate_compatibility, root
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.files.errors import ArtifactError, RootError
-from pinboard.application import candidate_snapshot_compatibility_models, candidate_snapshots, ports, query_models
+from pinboard.application import (
+    candidate_snapshot_compatibility_models,
+    candidate_snapshots,
+    checkpoint_packages,
+    integration,
+    ports,
+    query_models,
+    stored_state,
+    work_brief_models,
+)
+from pinboard.domain import work_models
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
@@ -179,3 +189,121 @@ def restore_candidate(
             ),
         )
     return restored
+
+
+def read_integration_snapshot(
+    work_root: Path,
+    store: ports.WorkStore,
+    selection: integration.Selection,
+) -> (
+    tuple[candidate_snapshots.CandidateSnapshot, integration.Source]
+    | integration.CandidateUnavailable
+    | integration.EvidenceInvalid
+):
+    """Verify just the selected package and candidate bytes, without reading other review evidence."""
+    attempt = selection.attempt
+    reference = None
+    try:
+        match selection:
+            case (
+                integration.ProtectedSelection(candidate=candidate, recorded_at=recorded_at)
+                | integration.CompletionSelection(candidate=candidate, recorded_at=recorded_at)
+            ):
+                reference = store.read_latest_artifact_reference(
+                    work_models.ArtifactKind.EVIDENCE,
+                    candidate_snapshots.candidate_snapshot_artifact_key(
+                        str(attempt.attempt_id), candidate, recorded_at.isoformat()
+                    ),
+                )
+                if reference is None:
+                    return integration.CandidateUnavailable(
+                        "The selected review candidate has no accepted snapshot bytes, as with a retained pre-snapshot review."
+                    )
+            case integration.CheckpointSelection(outcome=outcome):
+                selected_reference = _checkpoint_candidate_reference(work_root, store, selection)
+                if isinstance(selected_reference, integration.CandidateUnavailable | integration.EvidenceInvalid):
+                    return selected_reference
+                reference = selected_reference
+                candidate = outcome.candidate
+            case _ as unreachable:
+                assert_never(unreachable)
+        snapshot = candidate_snapshots.decode_candidate_snapshot(read_reference(work_root, reference))
+        if (
+            snapshot.attempt_id != str(attempt.attempt_id)
+            or snapshot.item_id != str(attempt.item_id)
+            or snapshot.candidate != candidate
+        ):
+            return integration.EvidenceInvalid(
+                attempt.attempt_id, reference.selector, "The accepted snapshot does not match the selected candidate."
+            )
+        source = integration.project_source(selection, snapshot, reference)
+        if isinstance(source, integration.CandidateUnavailable | integration.EvidenceInvalid):
+            return source
+        return snapshot, source
+    except (ArtifactError, ValueError) as error:
+        return integration.EvidenceInvalid(
+            attempt.attempt_id, str(attempt.attempt_id) if reference is None else reference.selector, str(error)
+        )
+
+
+def observe_integration(
+    source_checkout: Path,
+    target: str,
+    snapshot: candidate_snapshots.CandidateSnapshot,
+) -> root.IntegrationTarget | root.UnresolvedIntegrationTarget:
+    """Compose verified snapshot bytes with the Git read; RootError remains an effect failure."""
+    return root.read_integration_content(source_checkout, target, snapshot.diff)
+
+
+def _checkpoint_candidate_reference(
+    work_root: Path, store: ports.WorkStore, selection: integration.CheckpointSelection
+) -> stored_state.ArtifactReference | integration.CandidateUnavailable | integration.EvidenceInvalid:
+    attempt = selection.attempt
+    receipt = selection.receipt
+    reference = None
+    try:
+        if receipt.artifact_ref_id is None:
+            return integration.EvidenceInvalid(
+                attempt.attempt_id,
+                f"history:{int(receipt.history_id)}",
+                "Checkpoint acceptance has no package reference.",
+            )
+        reference = store.read_artifact_reference_by_id(receipt.artifact_ref_id)
+        if reference is None:
+            return integration.EvidenceInvalid(
+                attempt.attempt_id,
+                f"artifact_ref_id:{int(receipt.artifact_ref_id)}",
+                "The accepted checkpoint package reference is missing.",
+            )
+        package = checkpoint_packages.validate_selected_checkpoint_review_package(
+            receipt,
+            reference,
+            read_reference(work_root, reference),
+            attempt_id=str(attempt.attempt_id),
+            item_id=str(attempt.item_id),
+        )
+        if isinstance(package, work_brief_models.WorkBriefFailure):
+            return integration.EvidenceInvalid(attempt.attempt_id, reference.selector, package.message)
+        if not isinstance(package, work_brief_models.CheckpointReviewPackageV3):
+            return integration.CandidateUnavailable(
+                "The checkpoint package has no current candidate snapshot reference."
+            )
+        identity = package.candidate_snapshot
+        reference = store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, identity.key, identity.revision)
+        if reference is None or (reference.selector, reference.content_sha256, reference.size_bytes) != (
+            identity.selector,
+            identity.content_sha256,
+            identity.size_bytes,
+        ):
+            return integration.EvidenceInvalid(
+                attempt.attempt_id,
+                identity.selector,
+                "The package candidate reference does not match accepted evidence.",
+            )
+        return reference
+    except (ArtifactError, ValueError) as error:
+        return integration.EvidenceInvalid(
+            attempt.attempt_id,
+            f"history:{int(receipt.history_id)}" if reference is None else reference.selector,
+            str(error),
+        )

@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from pinboard.application import query_models, stored_state
+from pinboard.application import integration, query_models, stored_state
 from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
 from pinboard.application.mutation_models import (
     CheckpointMutationAllocation,
@@ -115,6 +115,8 @@ class WorkStore(Protocol):
     ) -> query_models.ItemDefinitionHistoryFacts: ...
 
     def read_item_status(self, work_item_id: WorkItemId) -> query_models.ItemStatusFacts | None: ...
+
+    def read_item_integration(self, work_item_id: WorkItemId) -> integration.ItemFacts | None: ...
 
     def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts: ...
 

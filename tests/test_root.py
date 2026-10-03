@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -14,13 +15,17 @@ from unittest.mock import patch
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
+    TargetContent,
+    TargetUnresolved,
     classify_checkout,
     ensure_default_git_exclude,
     observe_checkout_identity,
     read_current_head_candidate,
+    read_target_content,
     resolve_shared_repository_root,
     resolve_source_checkout_root,
 )
+from pinboard.application import query_models
 from pinboard.cli.entrypoint import main
 from pinboard.domain import work_models
 from pinboard.mcp import server
@@ -224,6 +229,141 @@ class RootResolutionTest(unittest.TestCase):
         )
         self.assertEqual("pinboard-brief-source-plan/v1", source_result["schema"])
         self.assertFalse(unused_work_root.exists())
+
+
+FIXED_DATE = "2030-01-02T03:04:05+00:00"
+
+
+class TargetContentReadTest(unittest.TestCase):
+    """The integration read compares a recorded diff with a target commit's content without writing to Git."""
+
+    def git(self, cwd: Path, *args: str) -> str:
+        environment = {**os.environ, "GIT_AUTHOR_DATE": FIXED_DATE, "GIT_COMMITTER_DATE": FIXED_DATE}
+        return subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", *args],
+            cwd=cwd,
+            check=True,
+            text=True,
+            capture_output=True,
+            env=environment,
+        ).stdout.strip()
+
+    def temporary_directory(self) -> Path:
+        directory = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        return directory
+
+    def repository(self) -> Path:
+        repository = self.temporary_directory()
+        self.git(repository, "init", "-b", "main")
+        (repository / "tracked.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+        (repository / "old.txt").write_text("renamed content\n" * 4, encoding="utf-8")
+        (repository / "data.bin").write_bytes(bytes(range(64)))
+        self.git(repository, "add", "--all")
+        self.git(repository, "commit", "-m", "base")
+        return repository
+
+    def candidate_diff(self, repository: Path) -> bytes:
+        (repository / "tracked.txt").write_text("one\ntwo changed  \nthree\n", encoding="utf-8")
+        (repository / "old.txt").rename(repository / "new.txt")
+        (repository / "data.bin").write_bytes(bytes(reversed(range(64))))
+        self.git(repository, "add", "--all")
+        return subprocess.run(
+            ["git", "diff", "--cached", "--binary", "-M", "HEAD", "--"], cwd=repository, check=True, capture_output=True
+        ).stdout
+
+    def squash(self, repository: Path, branch: str) -> str:
+        self.git(repository, "commit", "-m", "candidate")
+        revision = self.git(repository, "rev-parse", "HEAD")
+        self.git(repository, "branch", branch, revision)
+        self.git(repository, "reset", "--hard", "HEAD~1")
+        return revision
+
+    def test_present_not_present_unresolved_and_empty_diff(self) -> None:
+        repository = self.repository()
+        base = self.git(repository, "rev-parse", "HEAD")
+        diff = self.candidate_diff(repository)
+        merged = self.squash(repository, "integrated")
+        self.assertEqual(
+            TargetContent(merged, query_models.IntegrationPresence.CONTENT_PRESENT),
+            read_target_content(repository, "integrated", diff),
+        )
+        self.assertEqual(
+            TargetContent(base, query_models.IntegrationPresence.CONTENT_NOT_PRESENT),
+            read_target_content(repository, "main", diff),
+        )
+        self.assertEqual(
+            TargetContent(base, query_models.IntegrationPresence.NO_CHANGE),
+            read_target_content(repository, "main", b""),
+        )
+        self.assertEqual(TargetUnresolved("missing"), read_target_content(repository, "missing", diff))
+        self.assertEqual(
+            TargetContent(merged, query_models.IntegrationPresence.CONTENT_PRESENT),
+            read_target_content(repository, merged, diff),
+        )
+
+    def test_non_git_directory_is_a_root_error(self) -> None:
+        with self.assertRaises(RootError):
+            read_target_content(self.temporary_directory(), "main", b"diff")
+
+    def test_user_whitespace_configuration_does_not_change_the_verdict(self) -> None:
+        repository = self.repository()
+        diff = self.candidate_diff(repository)
+        self.squash(repository, "integrated")
+        self.git(repository, "config", "apply.whitespace", "error")
+        self.git(repository, "config", "core.splitIndex", "true")
+        observed = read_target_content(repository, "integrated", diff)
+        assert isinstance(observed, TargetContent)
+        self.assertEqual(query_models.IntegrationPresence.CONTENT_PRESENT, observed.presence)
+
+    def test_whitespace_only_difference_is_not_present_under_any_user_whitespace_setting(self) -> None:
+        repository = self.repository()
+        diff = self.candidate_diff(repository)
+        self.squash(repository, "integrated")
+        target = (repository / "tracked.txt").read_text(encoding="utf-8")
+        self.git(repository, "checkout", "integrated")
+        (repository / "tracked.txt").write_text(target.replace("two changed  ", "two   changed"), encoding="utf-8")
+        self.git(repository, "commit", "-am", "whitespace-only difference")
+        for setting in ("no", "change", "true"):
+            with self.subTest(ignore_whitespace=setting):
+                self.git(repository, "config", "apply.ignoreWhitespace", setting)
+                observed = read_target_content(repository, "integrated", diff)
+                assert isinstance(observed, TargetContent)
+                self.assertEqual(query_models.IntegrationPresence.CONTENT_NOT_PRESENT, observed.presence)
+
+    def snapshot(self, repository: Path) -> dict[str, bytes]:
+        return {
+            str(path.relative_to(repository)): path.read_bytes()
+            for path in sorted(repository.rglob("*"))
+            if path.is_file()
+        }
+
+    def test_read_only_git_directory_stays_unchanged_and_leaves_no_temporary_directory(self) -> None:
+        repository = self.repository()
+        diff = self.candidate_diff(repository)
+        self.squash(repository, "integrated")
+        before = self.snapshot(repository)
+        objects_before = self.git(repository, "count-objects", "-v")
+        scratch = self.temporary_directory()
+        git_directory = repository / ".git"
+        directories = [git_directory, *(path for path in git_directory.rglob("*") if path.is_dir())]
+        for path in git_directory.rglob("*"):
+            path.chmod(path.stat().st_mode & ~0o222)
+        for path in directories:
+            path.chmod(path.stat().st_mode & ~0o222)
+        try:
+            with patch("tempfile.tempdir", str(scratch)):
+                observed = read_target_content(repository, "integrated", diff)
+        finally:
+            for path in directories:
+                path.chmod(path.stat().st_mode | 0o700)
+            for path in git_directory.rglob("*"):
+                path.chmod(path.stat().st_mode | 0o600)
+        assert isinstance(observed, TargetContent)
+        self.assertEqual(query_models.IntegrationPresence.CONTENT_PRESENT, observed.presence)
+        self.assertEqual(before, self.snapshot(repository))
+        self.assertEqual(objects_before, self.git(repository, "count-objects", "-v"))
+        self.assertEqual([], list(scratch.iterdir()))
 
 
 if __name__ == "__main__":

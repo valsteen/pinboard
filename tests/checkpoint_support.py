@@ -423,6 +423,8 @@ class CheckpointPackageSupport(unittest.TestCase):
         accepted_base: str | None = None,
         committed_context: bool = False,
         review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner"] = "ready",
+        base_text: str = "base\n",
+        candidate_text: str = "candidate\n",
     ) -> CheckpointFixture:
         state = complete_sqlite_state()
         now = datetime.now(UTC)
@@ -462,13 +464,13 @@ class CheckpointPackageSupport(unittest.TestCase):
         subprocess.run(["git", "init", "-b", "codex/work-a"], cwd=project, check=True, capture_output=True)
         (project / ".git" / "info" / "exclude").write_text("/.pinboard/\n", encoding="utf-8")
         tracked = project / "tracked.txt"
-        tracked.write_text("base\n", encoding="utf-8")
+        tracked.write_text(base_text, encoding="utf-8")
         base_revision = self.commit_all(project, "base")
         preimage_revision = base_revision
         if committed_context:
             (project / "context.txt").write_text("committed surrounding state\n", encoding="utf-8")
             preimage_revision = self.commit_all(project, "context")
-        tracked.write_text("candidate\n", encoding="utf-8")
+        tracked.write_text(candidate_text, encoding="utf-8")
         if candidate_form == "current-head":
             candidate_revision = self.commit_all(project, "candidate")
             candidate_diff = subprocess.run(

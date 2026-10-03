@@ -53,6 +53,71 @@ def read_candidate_evidence_from_context(
         return DecisionFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, str(error), None)
 
 
+def read_integration_snapshot(
+    work_root: Path,
+    candidate: query_models.IntegrationCandidate,
+) -> DecisionResult[candidate_snapshots.CandidateSnapshot]:
+    """Verify the accepted snapshot bytes behind one selected reviewed candidate.
+
+    A failure names the attempt and the accepted reference that failed verification.
+    """
+
+    match candidate:
+        case query_models.ProtectedReviewCandidate(context=context) | query_models.CompletionCandidate(context=context):
+            attempt_id, reference = context.attempt_id, context.reference
+            evidence = read_candidate_evidence_from_context(work_root, context, context.candidate_revision)
+            if isinstance(evidence, DecisionFailure):
+                return _integration_evidence_failure(attempt_id, reference.selector, evidence.message)
+            return evidence.snapshot
+        case query_models.AcceptedCheckpointCandidate():
+            attempt_id, reference = candidate.attempt_id, candidate.reference
+            try:
+                snapshot = _verify_checkpoint_snapshot(work_root, candidate)
+            except (ArtifactError, ValueError) as error:
+                return _integration_evidence_failure(attempt_id, reference.selector, str(error))
+            return snapshot
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _verify_checkpoint_snapshot(
+    work_root: Path, candidate: query_models.AcceptedCheckpointCandidate
+) -> candidate_snapshots.CandidateSnapshot:
+    snapshot = candidate_snapshots.decode_candidate_snapshot(read_reference(work_root, candidate.reference))
+    if (snapshot.attempt_id, snapshot.item_id, snapshot.candidate) != (
+        str(candidate.attempt_id),
+        str(candidate.work_item_id),
+        candidate.candidate,
+    ):
+        raise ValueError("The checkpoint candidate snapshot does not match its acceptance.")
+    return snapshot
+
+
+def _integration_evidence_failure(attempt_id: AttemptId, selector: str, message: str) -> DecisionFailure:
+    return DecisionFailure(
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+        message,
+        FailureDetails(
+            observed=(FailureFact("attempt_id", str(attempt_id)), FailureFact("reference", selector)),
+            mismatches=(),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def observe_integration(
+    source_checkout: Path,
+    target: str,
+    snapshot: candidate_snapshots.CandidateSnapshot,
+) -> root.TargetContentObservation:
+    """Compare one verified snapshot's recorded diff with a named target's content."""
+
+    return root.read_target_content(source_checkout, target, snapshot.diff)
+
+
 def observe_candidate_lineage(
     source_checkout: Path,
     evidence: candidate_snapshots.CandidateSnapshotEvidence,

@@ -47,7 +47,9 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_attempt_context,
     read_branch_owners,
     read_current_definitions,
+    read_item_closure,
     read_item_status,
+    read_latest_checkpoint_receipt,
     read_parallel_preview_lifecycle,
     read_recorded_pause_reasons,
     reject_damaged_pause_receipt,
@@ -433,6 +435,90 @@ def _read_candidate_snapshot_context_facts(
     )
 
 
+def _read_integration_candidate_facts(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> query_models.IntegrationCandidateFacts | None:
+    """Read one item's reviewed-candidate sources by key: attempt, closing receipt, checkpoint index, snapshot."""
+
+    project_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    project_revision = decode_row(project_row, ProjectRevisionRow).revision
+    item_row = connection.execute(
+        "SELECT item_id AS work_item_id, state, subject_revision FROM work_items WHERE item_id = ?", (item_id,)
+    ).fetchone()
+    if item_row is None:
+        return None
+    item = decode_row(item_row, _IntegrationItemRow)
+    if stored_state.live_work_state(item.state) is None:
+        closure = read_item_closure(connection, item_id, item.subject_revision)
+        closing = None if closure is None else closure.closing_attempt
+        return query_models.IntegrationCandidateFacts(
+            project_revision,
+            item_id,
+            item.state,
+            None,
+            None,
+            None,
+            None
+            if closure is None
+            else query_models.IntegrationClosureFacts(
+                closure,
+                None
+                if closing is None or closing.candidate_revision is None
+                else _read_candidate_snapshot_context_facts(connection, closing.attempt_id),
+            ),
+        )
+    attempt_row = connection.execute(
+        """
+        SELECT attempt_id, state, candidate_revision
+        FROM attempts INDEXED BY one_live_attempt_per_item
+        WHERE item_id = ? AND state != 'done'
+        """,
+        (item_id,),
+    ).fetchone()
+    if attempt_row is None:
+        return query_models.IntegrationCandidateFacts(project_revision, item_id, item.state, None, None, None, None)
+    attempt = decode_row(attempt_row, query_models.IntegrationAttemptFacts)
+    protected = (
+        None
+        if attempt.candidate_revision is None
+        else _read_candidate_snapshot_context_facts(connection, attempt.attempt_id)
+    )
+    checkpoint = None
+    if attempt.candidate_revision is None:
+        receipt = read_latest_checkpoint_receipt(connection, attempt.attempt_id)
+        if receipt is not None:
+            checkpoint = query_models.IntegrationCheckpointFacts(
+                receipt, _checkpoint_candidate_reference(connection, attempt.attempt_id, receipt)
+            )
+    return query_models.IntegrationCandidateFacts(
+        project_revision, item_id, item.state, attempt, protected, checkpoint, None
+    )
+
+
+def _checkpoint_candidate_reference(
+    connection: sqlite3.Connection, attempt_id: AttemptId, receipt: query_models.ConsumedTransitionReceipt
+) -> stored_state.ArtifactReference | None:
+    """Resolve the accepted candidate snapshot a checkpoint acceptance retained; a damaged outcome has none."""
+
+    try:
+        outcome = msgspec.json.decode(
+            receipt.outcome_json.encode("utf-8"), type=history.CheckpointAcceptanceOutcome, strict=True
+        )
+    except msgspec.DecodeError:
+        return None
+    return read_artifact_reference(
+        connection, work_models.ArtifactKind.EVIDENCE, f"{attempt_id}-{outcome.checkpoint}-candidate", 1
+    )
+
+
+class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
 class SQLiteWorkStore:
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -725,6 +811,16 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return read_branch_owners(connection, branch)
+        finally:
+            connection.close()
+
+    def read_integration_candidate_facts(
+        self, work_item_id: WorkItemId
+    ) -> query_models.IntegrationCandidateFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return _read_integration_candidate_facts(connection, work_item_id)
         finally:
             connection.close()
 

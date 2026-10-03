@@ -291,7 +291,7 @@ def _read_review_event(
     return None
 
 
-def _read_item_closure(
+def read_item_closure(
     connection: sqlite3.Connection,
     item_id: WorkItemId,
     subject_revision: int,
@@ -314,6 +314,23 @@ def _read_item_closure(
         ).fetchone()
         closing_attempt = None if attempt_row is None else decode_row(attempt_row, query_models.ClosingAttemptFacts)
     return query_models.ItemClosureFacts(action_kind, receipt.committed_at, closing_attempt)
+
+
+def read_latest_checkpoint_receipt(
+    connection: sqlite3.Connection, attempt_id: AttemptId
+) -> query_models.ConsumedTransitionReceipt | None:
+    """Read an attempt's latest checkpoint-acceptance receipt through its partial index, outcome undecoded."""
+
+    row = connection.execute(
+        f"""
+        SELECT {_CONSUMED_RECEIPT_COLUMNS}
+        FROM transition_history INDEXED BY checkpoint_history_by_subject
+        WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+        ORDER BY history_id DESC LIMIT 1
+        """,
+        (attempt_id,),
+    ).fetchone()
+    return None if row is None else _consumed_receipt(row)
 
 
 def read_branch_owners(connection: sqlite3.Connection, branch: str) -> query_models.BranchOwnersFacts:
@@ -633,7 +650,7 @@ def read_item_status(
             ),
         )
     closure = (
-        _read_item_closure(connection, item.work_item_id, item.subject_revision)
+        read_item_closure(connection, item.work_item_id, item.subject_revision)
         if stored_state.live_work_state(item.state) is None
         else None
     )

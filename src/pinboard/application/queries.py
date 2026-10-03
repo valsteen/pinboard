@@ -1182,6 +1182,60 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
     )
 
 
+def select_integration_candidate(
+    facts: query_models.IntegrationCandidateFacts,
+) -> (
+    query_models.IntegrationCandidate
+    | query_models.IntegrationCandidateUnavailable
+    | query_models.DamagedTransitionReceipt
+):
+    """Select the one reviewed candidate with accepted snapshot bytes that this item's state names."""
+
+    def unavailable(reason: query_models.IntegrationUnavailableReason) -> query_models.IntegrationCandidateUnavailable:
+        return query_models.IntegrationCandidateUnavailable(facts.item_state, reason)
+
+    reasons = query_models.IntegrationUnavailableReason
+    if stored_state.live_work_state(facts.item_state) is None:
+        closure = facts.closure
+        if (
+            closure is None
+            or closure.closure.action_kind != decision_models.ActionKind.COMPLETE
+            or closure.closure.closing_attempt is None
+        ):
+            return unavailable(reasons.NOT_COMPLETED)
+        if closure.completion_snapshot is None:
+            return unavailable(reasons.PRE_SNAPSHOT_CANDIDATE)
+        return query_models.CompletionCandidate(closure.completion_snapshot)
+    attempt = facts.attempt
+    if attempt is None:
+        return unavailable(reasons.NO_PROTECTED_CANDIDATE_OR_CHECKPOINT)
+    if attempt.candidate_revision is not None:
+        if facts.protected_snapshot is None:
+            return unavailable(reasons.PRE_SNAPSHOT_CANDIDATE)
+        return query_models.ProtectedReviewCandidate(facts.protected_snapshot)
+    checkpoint = facts.checkpoint
+    if checkpoint is None:
+        return unavailable(reasons.NO_PROTECTED_CANDIDATE_OR_CHECKPOINT)
+    receipt = checkpoint.receipt
+    try:
+        outcome = msgspec.json.decode(
+            receipt.outcome_json.encode("utf-8"), type=history.CheckpointAcceptanceOutcome, strict=True
+        )
+    except msgspec.DecodeError as error:
+        return query_models.DamagedTransitionReceipt(
+            attempt.attempt_id,
+            receipt.history_id,
+            receipt.committed_at,
+            decision_models.ActionKind.ACCEPT_CHECKPOINT,
+            f"The outcome does not decode as checkpoint-acceptance/v2: {error}",
+        )
+    if checkpoint.candidate_reference is None:
+        return unavailable(reasons.CHECKPOINT_WITHOUT_CANDIDATE_SNAPSHOT)
+    return query_models.AcceptedCheckpointCandidate(
+        attempt.attempt_id, facts.work_item_id, outcome.checkpoint, outcome.candidate, checkpoint.candidate_reference
+    )
+
+
 def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
     return query_models.WorkItemDefinitionView(
         "pinboard-work-item-definition/v2",

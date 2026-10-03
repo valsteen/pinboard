@@ -949,6 +949,122 @@ class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     owners: Annotated[tuple[BranchOwner, ...], msgspec.Meta(min_length=1)]
 
 
+@dataclass(frozen=True, slots=True)
+class IntegrationAttemptFacts:
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    candidate_revision: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCheckpointFacts:
+    """The current attempt's latest checkpoint acceptance and its keyed candidate snapshot reference."""
+
+    receipt: ConsumedTransitionReceipt
+    candidate_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationClosureFacts:
+    """A terminal item's closure and, for a completion, its closing attempt's candidate snapshot context."""
+
+    closure: ItemClosureFacts
+    completion_snapshot: CandidateSnapshotContextFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateFacts:
+    """Keyed facts from which the integration leaf selects one reviewed candidate."""
+
+    project_revision: int
+    work_item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
+    attempt: IntegrationAttemptFacts | None
+    protected_snapshot: CandidateSnapshotContextFacts | None
+    checkpoint: IntegrationCheckpointFacts | None
+    closure: IntegrationClosureFacts | None
+
+
+class IntegrationUnavailableReason(Enum):
+    NO_PROTECTED_CANDIDATE_OR_CHECKPOINT = "no-protected-candidate-or-checkpoint"
+    NOT_COMPLETED = "not-completed"
+    CHECKPOINT_WITHOUT_CANDIDATE_SNAPSHOT = "checkpoint-without-candidate-snapshot"
+    PRE_SNAPSHOT_CANDIDATE = "pre-snapshot-candidate"
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateUnavailable:
+    state: stored_state.StoredWorkItemState
+    reason: IntegrationUnavailableReason
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedReviewCandidate:
+    context: CandidateSnapshotContextFacts
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedCheckpointCandidate:
+    attempt_id: AttemptId
+    work_item_id: WorkItemId
+    checkpoint_id: str
+    candidate: str
+    reference: stored_state.ArtifactReference
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionCandidate:
+    context: CandidateSnapshotContextFacts
+
+
+type IntegrationCandidate = ProtectedReviewCandidate | AcceptedCheckpointCandidate | CompletionCandidate
+
+
+class IntegrationPresence(Enum):
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+class ProtectedReviewSource(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class AcceptedCheckpointSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+    checkpoint_id: str
+
+
+class CompletionSource(msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+type IntegrationSource = ProtectedReviewSource | AcceptedCheckpointSource | CompletionSource
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Whether one reviewed candidate's recorded diff is present in a named target commit's content."""
+
+    schema: Literal["pinboard-item-integration/v1"]
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: str
+    target: str
+    resolved_revision: str
+    source: IntegrationSource
+    presence: IntegrationPresence
+
+
 class ParallelSelection(Enum):
     ALL_SAFE = "all-safe"
     SELECTED = "selected"

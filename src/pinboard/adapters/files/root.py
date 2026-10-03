@@ -1,10 +1,13 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
 from pinboard.adapters.files.errors import RootError, RootErrorCode
+from pinboard.application import query_models
 from pinboard.application.candidate_identity import working_tree_identity
 from pinboard.domain import work_models
 
@@ -56,6 +59,22 @@ type CandidateRestoreResult = CandidateRestoreSuccess | CandidateRestoreRejectio
 
 class CandidateRestoreAfterMutationError(RootError):
     """The checkout changed before exact restoration verification failed."""
+
+
+@dataclass(frozen=True, slots=True)
+class TargetContent:
+    """A caller-named target's full commit and whether the reviewed diff is present in its content."""
+
+    revision: str
+    presence: query_models.IntegrationPresence
+
+
+@dataclass(frozen=True, slots=True)
+class TargetUnresolved:
+    target: str
+
+
+type TargetContentObservation = TargetContent | TargetUnresolved
 
 
 def _resolve_git_path(cwd: Path, selector: str, unavailable_message: str) -> Path:
@@ -203,6 +222,87 @@ def read_working_tree_candidate(cwd: Path) -> WorkingTreeCandidate:
     )
     head = _git_text(cwd, "rev-parse", "--verify", "HEAD")
     return WorkingTreeCandidate(working_tree_identity(head, diff), head, diff)
+
+
+def read_target_content(cwd: Path, target: str, diff: bytes) -> TargetContentObservation:
+    """Check whether one recorded diff's content is present in a named target commit, without any Git write.
+
+    Git resolves the target to a full commit, reads that commit's tree into an index file inside a private
+    temporary directory, and reverse-applies the diff to that temporary index only. The repository's real
+    index, working tree, refs, objects, and other metadata stay untouched, so a read-only `.git` suffices;
+    nothing is fetched. An empty diff names no change to look for and is decided without applying anything.
+    """
+
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if resolved.returncode == 1 and not resolved.stderr.strip():
+        return TargetUnresolved(target)
+    revision = resolved.stdout.strip()
+    if resolved.returncode != 0 or not revision:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            resolved.stderr.strip() or f"Cannot resolve target '{target}' at '{cwd}'.",
+        )
+    if not diff:
+        return TargetContent(revision, query_models.IntegrationPresence.NO_CHANGE)
+    with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as directory:
+        environment = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index"), "GIT_OPTIONAL_LOCKS": "0"}
+        _git_read_tree(
+            cwd,
+            environment,
+            "-c",
+            "core.splitIndex=false",
+            "read-tree",
+            revision,
+            unavailable_message=f"Cannot read the tree of '{revision}' at '{cwd}'.",
+        )
+        applied = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.splitIndex=false",
+                "-c",
+                "apply.whitespace=nowarn",
+                "-c",
+                "apply.ignoreWhitespace=no",
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "--whitespace=nowarn",
+                "-",
+            ],
+            cwd=cwd,
+            env=environment,
+            input=diff,
+            capture_output=True,
+            check=False,
+        )
+    if applied.returncode not in {0, 1}:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            applied.stderr.decode(errors="replace").strip() or f"Cannot check the diff against '{revision}'.",
+        )
+    presence = (
+        query_models.IntegrationPresence.CONTENT_PRESENT
+        if applied.returncode == 0
+        else query_models.IntegrationPresence.CONTENT_NOT_PRESENT
+    )
+    return TargetContent(revision, presence)
+
+
+def _git_read_tree(cwd: Path, environment: dict[str, str], *arguments: str, unavailable_message: str) -> None:
+    result = subprocess.run(["git", *arguments], cwd=cwd, env=environment, capture_output=True, check=False)
+    if result.returncode != 0:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            result.stderr.decode(errors="replace").strip() or unavailable_message,
+        )
 
 
 def read_untracked_paths(cwd: Path) -> tuple[str, ...]:

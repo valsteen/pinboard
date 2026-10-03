@@ -120,6 +120,22 @@ def excluded_untracked_paths(snapshot: CandidateSnapshot) -> tuple[str, ...]:
             assert_never(unreachable)
 
 
+def compared_from_revision(snapshot: CandidateSnapshot) -> str:
+    """Name the revision the snapshot's recorded diff starts from: its actual preimage or its accepted base."""
+
+    match snapshot:
+        case (
+            WorkingTreeCandidateSnapshot()
+            | DeclaredWorkingTreeCandidateSnapshot()
+            | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot()
+        ):
+            return snapshot.preimage_revision
+        case CommitCandidateSnapshot() | DeclaredCommitCandidateSnapshot():
+            return snapshot.accepted_base_revision
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 class CandidateSnapshotReceiptInput(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     candidate: NonEmptyLine
     snapshot_artifact_ref_id: int

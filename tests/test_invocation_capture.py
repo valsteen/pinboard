@@ -757,7 +757,7 @@ class McpCaptureTest(unittest.TestCase):
                 arguments: dict[str, execution.JsonValue],
                 capture: execution.SemanticCapture | None,
             ) -> dict[str, execution.JsonValue]:
-                self.assertIs(capture, globals_capture)
+                self.assertIs(capture, None if operation == server.BRIEF_SOURCES_TOOL else globals_capture)
                 observed[operation] = arguments
                 return {}
 
@@ -778,7 +778,7 @@ class McpCaptureTest(unittest.TestCase):
                     asyncio.run(registered.fn(**kwargs))
                     expected = {"request": kwargs["request"]} if tuple(kwargs) == ("request",) else kwargs
                     self.assertEqual(expected, observed[tool.name])
-            self.assertEqual(23, len(observed))
+            self.assertEqual(24, len(observed))
             for tool in asyncio.run(transport.list_tools()):
                 self.assertNotIn("capture_evidence", tool.input_schema["properties"])
 

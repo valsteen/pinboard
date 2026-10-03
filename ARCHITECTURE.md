@@ -147,7 +147,7 @@ The launcher's optional exact process capture remains outside this command gramm
 
 | Owner group | Responsibility |
 | --- | --- |
-| `cli_commands.py`, `cli_parser.py` | Twelve exact frozen leaf records, strict field constraints, one required resolved-root configuration and parser selection before dispatch; only CLI convenience options have defaults |
+| `cli_commands.py`, `cli_parser.py` | Exact frozen leaf records, strict field constraints, one required resolved-root configuration and parser selection before dispatch; only CLI convenience options have defaults |
 | `entrypoint.py`, `cli_output.py` | One exhaustive leaf route, process exit policy, canonical success output and exact structured failures; invalid or retired grammar rejects before root or storage work |
 | `tool_contract.py` | State-independent CLI-only operation index and selected details derived from the installed leaves: actual syntax, data scope, effect and retry; unknown selectors reject without resolving roots |
 | `code_catalog.py` | State-independent failure and event lookup assembled from typed code vocabularies, neutral MCP diagnostic declarations, and receipt emitters; code meanings live with their definitions, and generic recovery defers to each result's exact facts |

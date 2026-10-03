@@ -106,6 +106,8 @@ Run the migration only while no other Pinboard command is accessing that project
 
 ## Claude Code
 
+**Context setting:** `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` disables MCP tool search, loading all connected MCP tool schemas up front and potentially using a large part of the context window. Leave it unset if your gateway supports tool search; if your gateway requires this setting, connect fewer MCP servers. See [Claude Code environment variables](https://code.claude.com/docs/en/env-vars).
+
 Choose a persistent installation or a one-session load. Both need one runtime preparation per installed version before Pinboard's MCP server can start; with uv available, the plugin's SessionStart hook performs it during the first session.
 
 ### Persistent installation

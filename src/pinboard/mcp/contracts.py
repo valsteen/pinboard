@@ -375,9 +375,11 @@ class BriefSourcesEmitFileRequest(
 
 
 class BriefSourcesEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    request: (
-        BriefSourcesPlanRequest | BriefSourcesPlanToFileRequest | BriefSourcesEmitRequest | BriefSourcesEmitFileRequest
-    )
+    request: BriefSourcesPlanRequest | BriefSourcesEmitRequest | BriefSourcesEmitFileRequest
+
+
+class BriefSourcePlanOutputEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: BriefSourcesPlanToFileRequest
 
 
 class BriefContractRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -428,11 +430,14 @@ class BriefSourceBatchResult(msgspec.Struct, frozen=True, forbid_unknown_fields=
     batch_index: NonNegativeInt
     content_byte_count: NonNegativeInt
     rendered_byte_count: PositiveInt
+    presented_byte_count: PositiveInt
     text: NonEmptyText
 
     def __post_init__(self) -> None:
         if len(self.text.encode("utf-8")) != self.rendered_byte_count:
             raise ValueError("rendered_byte_count must equal the UTF-8 batch text size")
+        if len(msgspec.json.encode(msgspec.to_builtins(self))) != self.presented_byte_count:
+            raise ValueError("presented_byte_count must equal the JSON result size")
 
 
 class BriefSourcePlanOutputResult(

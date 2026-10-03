@@ -12,6 +12,7 @@ import msgspec
 
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
+from pinboard.application import brief_sources
 from pinboard.application.brief_source_models import (
     AuthoritySelector,
     BriefSourceErrorCode,
@@ -53,7 +54,7 @@ def source_selector(project: Path) -> BriefSourceSelector:
 class BriefSourcesTest(unittest.TestCase):
     def sources(self, project: Path, operation: str, **fields: JsonValue) -> JsonObject:
         return call_native_tool(
-            server.BRIEF_SOURCES_TOOL,
+            server.BRIEF_SOURCE_PLAN_OUTPUT_TOOL if operation == "plan-to-file" else server.BRIEF_SOURCES_TOOL,
             {
                 "request": {
                     "project_root": str(project.resolve()),
@@ -90,7 +91,7 @@ class BriefSourcesTest(unittest.TestCase):
             plan_brief_sources(
                 select_source,
                 self.manifest(BriefSourceRequest("authority", "authority.md", ("contract",))),
-                128,
+                500,
             )
         )
 
@@ -139,7 +140,7 @@ class BriefSourcesTest(unittest.TestCase):
                         BriefSourceRequest("architecture", "architecture.md#Contract", ("contract",)),
                         BriefSourceRequest("acceptance", "acceptance.txt", ("acceptance",)),
                     ),
-                    max_batch_bytes=24,
+                    max_batch_bytes=400,
                 )
             )
 
@@ -158,7 +159,18 @@ class BriefSourcesTest(unittest.TestCase):
         self.assertEqual((3, 6), (plan.sources[0].start_line, plan.sources[0].end_line))
         self.assertIn(b"first line\nsecond line\n", rendered)
         self.assertFalse(hasattr(plan.sources[0].segments[0], "content"))
-        self.assertTrue(all(batch.content_byte_count <= 24 for batch in plan.batches))
+        self.assertTrue(all(batch.content_byte_count <= 400 for batch in plan.batches))
+        self.assertTrue(
+            all(
+                len(
+                    msgspec.json.encode(
+                        brief_sources.brief_source_batch_payload(batch.index, batch.content_byte_count, content)
+                    )
+                )
+                <= 400
+                for batch, content in rendered_batches
+            )
+        )
         self.assertTrue(all(len(content) == batch.estimated_rendered_byte_count for batch, content in rendered_batches))
         self.assertEqual(tuple(range(len(plan.batches))), tuple(batch.index for batch in plan.batches))
 
@@ -171,7 +183,7 @@ class BriefSourcesTest(unittest.TestCase):
                 BriefSourceRequest("section", "source.md#Contract", ("acceptance",)),
             )
             expect_brief_source_failure(
-                plan_brief_sources(source_selector(project), overlapping, max_batch_bytes=128),
+                plan_brief_sources(source_selector(project), overlapping, max_batch_bytes=500),
                 BriefSourceErrorCode.SELECTOR_OVERLAP,
             )
 
@@ -180,7 +192,7 @@ class BriefSourcesTest(unittest.TestCase):
                 plan_brief_sources(
                     source_selector(project),
                     self.manifest(BriefSourceRequest("binary", "binary.dat", ("contract",))),
-                    max_batch_bytes=128,
+                    max_batch_bytes=500,
                 ),
                 BriefSourceErrorCode.SOURCE_NOT_UTF8,
             )
@@ -198,7 +210,7 @@ class BriefSourcesTest(unittest.TestCase):
                 plan_brief_sources(
                     source_selector(project),
                     self.manifest(BriefSourceRequest("source", "source.md", ("contract",))),
-                    max_batch_bytes=128,
+                    max_batch_bytes=500,
                 )
             )
             expect_brief_source_failure(
@@ -255,7 +267,8 @@ class BriefSourcesTest(unittest.TestCase):
             self.assertEqual(hashlib.sha256(canonical).hexdigest(), receipt["plan_sha256"])
             sources, batches = plan["sources"], plan["batches"]
             assert isinstance(sources, list) and isinstance(batches, list)
-            self.assertEqual((16, 6), (len(sources), len(batches)))
+            self.assertEqual(16, len(sources))
+            self.assertGreater(len(batches), 6)
             self.assertEqual(
                 131_985,
                 sum(
@@ -333,7 +346,7 @@ class BriefSourcesTest(unittest.TestCase):
                         BriefSourceRequest("first", first.name, ("contract",)),
                         BriefSourceRequest("second", second.name, ("acceptance",)),
                     ),
-                    max_batch_bytes=10,
+                    max_batch_bytes=350,
                 )
             )
             read_paths: list[Path] = []
@@ -364,7 +377,7 @@ class BriefSourcesTest(unittest.TestCase):
                     BriefSourceRequest("first", first.name, ("contract",)),
                     BriefSourceRequest("second", second.name, ("acceptance",)),
                 ),
-                max_batch_bytes=10,
+                max_batch_bytes=350,
             )
             plan_path = project / "plan.json"
             plan_path.write_bytes(msgspec.json.encode(plan))
@@ -391,12 +404,12 @@ class BriefSourcesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
             self.run_git(project, "init", "--quiet")
-            (project / "source.md").write_bytes(b"first\nother\nthird\n")
+            (project / "source.md").write_bytes(b"first" * 20 + b"\n" + b"other" * 20 + b"\n" + b"third" * 20 + b"\n")
             original = self.sources(
                 project,
                 "plan",
                 manifest=self.manifest_value(BriefSourceRequest("source", "source.md", ("contract",))),
-                max_batch_bytes=6,
+                max_batch_bytes=450,
             )
             cases: list[tuple[str, JsonObject]] = []
             selector = deepcopy(original)

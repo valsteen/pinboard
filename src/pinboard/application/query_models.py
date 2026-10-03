@@ -782,6 +782,58 @@ class ItemClosureFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class IntegrationAttemptFacts:
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    candidate_revision: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationFacts:
+    """Focused keyed facts from which one item's reviewed candidate is selected."""
+
+    project_revision: int
+    work_item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
+    attempt: IntegrationAttemptFacts | None
+    protected_snapshot: CandidateSnapshotContextFacts | None
+    checkpoint: CompletionCheckpointFacts | None
+    closure: ItemClosureFacts | None
+    completion_snapshot: CandidateSnapshotContextFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedReviewCandidate:
+    project_revision: int
+    snapshot: CandidateSnapshotContextFacts
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedCheckpointCandidate:
+    project_revision: int
+    work_item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
+    attempt_id: AttemptId
+    checkpoint: CompletionCheckpointFacts
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionCandidate:
+    project_revision: int
+    snapshot: CandidateSnapshotContextFacts
+
+
+type IntegrationCandidate = ProtectedReviewCandidate | AcceptedCheckpointCandidate | CompletionCandidate
+
+
+class IntegrationUnavailableReason(Enum):
+    NO_REVIEWED_CANDIDATE = "no-reviewed-candidate"
+    CLOSED_WITHOUT_COMPLETION = "closed-without-completion"
+    CHECKPOINT_WITHOUT_SNAPSHOT = "checkpoint-without-snapshot"
+    PRE_SNAPSHOT_CANDIDATE = "pre-snapshot-candidate"
+
+
+@dataclass(frozen=True, slots=True)
 class ItemStatusLifecycleFacts:
     project_revision: int
     work_item: ItemStatusItemFacts
@@ -947,6 +999,51 @@ class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     revision: str
     branch: str
     owners: Annotated[tuple[BranchOwner, ...], msgspec.Meta(min_length=1)]
+
+
+class IntegrationPresence(Enum):
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+class ProtectedReviewSource(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class AcceptedCheckpointSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+    checkpoint_id: str
+
+
+class CompletionSource(msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+type IntegrationSource = ProtectedReviewSource | AcceptedCheckpointSource | CompletionSource
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Whether a reviewed candidate's recorded diff is present in a named target's current content."""
+
+    schema: Literal["pinboard-item-integration/v1"]
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: str
+    target: str
+    target_revision: str
+    source: IntegrationSource
+    presence: IntegrationPresence
 
 
 class ParallelSelection(Enum):

@@ -54,7 +54,9 @@ class RootErrorCode(Enum):
 
 class RootError(RuntimeError):
     code: RootErrorCode
+    detail: str
 
     def __init__(self, code: RootErrorCode, message: str) -> None:
         self.code = code
+        self.detail = message
         super().__init__(f"{code.value}: {message}")

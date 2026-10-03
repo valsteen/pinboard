@@ -493,6 +493,28 @@ class ContributorTraceTest(unittest.TestCase):
             )
             self.assertIsNotNone(capture)
 
+    def test_integration_leaf_uses_its_items_saved_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            self.settings(primary, "off", {"one": "on"})
+            capture = execution.AutomaticCapture(common.select_capture_item)
+            for item_id, captured in (("one", True), ("two", False)):
+                with self.subTest(item=item_id):
+                    selected = capture.resolve(
+                        str(worktree),
+                        {
+                            "request": {
+                                "project_root": str(worktree),
+                                "work_root": str(work_root),
+                                "operation": "integration",
+                                "item_id": item_id,
+                                "target": "main",
+                            }
+                        },
+                    )
+                    self.assertEqual(captured, selected is not None)
+
     def test_existing_shared_work_root_needs_no_parent_write_for_mcp_capture(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             primary, worktree = self.project(Path(temporary))

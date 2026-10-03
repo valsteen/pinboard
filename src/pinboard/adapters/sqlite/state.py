@@ -176,6 +176,23 @@ def read_checkpoint_receipts(
     )
 
 
+def read_latest_checkpoint_receipt(
+    connection: sqlite3.Connection, attempt_id: AttemptId
+) -> stored_state.StoredTransitionReceipt | None:
+    """Read an attempt's latest checkpoint acceptance through the checkpoint_history_by_subject partial index."""
+
+    row = connection.execute(
+        """SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
+                  authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
+                  input_json, outcome_schema, outcome_json, committed_at
+           FROM transition_history
+           WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+           ORDER BY history_id DESC LIMIT 1""",
+        (attempt_id,),
+    ).fetchone()
+    return None if row is None else _stored_receipt(decode_row(row, TransitionHistoryRow))
+
+
 def read_review_history_for_items(
     connection: sqlite3.Connection, item_ids: tuple[WorkItemId, ...]
 ) -> dict[WorkItemId, tuple[stored_state.StoredTransitionReceipt, ...]]:

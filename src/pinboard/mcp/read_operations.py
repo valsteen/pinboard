@@ -101,7 +101,7 @@ class _AttemptReviewEvidence:
 def _branch_owner_not_found(branch: str, work_root: Path) -> execution.OperationResult:
     return execution.OperationResult(
         {
-            "schema": "pinboard-mcp-item-status-result/v2",
+            "schema": common.ITEM_STATUS_REJECTION_SCHEMA,
             "status": "rejected",
             "code": "BRANCH_OWNER_NOT_FOUND",
             "message": f"No retained attempt in work root {work_root} records branch '{branch}'.",
@@ -127,13 +127,48 @@ def _branch_owner_not_found(branch: str, work_root: Path) -> execution.Operation
     )
 
 
+def _resolve_item_status_roots(
+    request: contracts.ItemStatusItemRequest
+    | contracts.ItemStatusBranchRequest
+    | contracts.ItemStatusIntegrationRequest,
+) -> DurableRoots | execution.OperationResult:
+    """Resolve the work root; only the integration leaf renders an unreadable Git checkout as a typed rejection."""
+
+    try:
+        return common._resolve_durable(request.project_root, request.work_root)
+    except (ValueError, OSError) as error:
+        return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
+    except RootError as error:
+        if not isinstance(request, contracts.ItemStatusIntegrationRequest):
+            raise
+        return common._integration_git_failure(error.code, request.project_root, error.detail)
+
+
+def _read_item_integration(
+    request: contracts.ItemStatusIntegrationRequest, durable: DurableRoots, store: WorkStore
+) -> query_models.ItemIntegration | execution.OperationResult:
+    candidate = queries.select_integration_candidate(store, WorkItemId(request.item_id))
+    if isinstance(candidate, DecisionFailure):
+        return common._integration_failure(candidate)
+    integration = candidate_evidence.observe_integration(
+        Path(request.project_root), durable.work_root, store, candidate, request.target
+    )
+    if isinstance(integration, DecisionFailure):
+        return common._integration_failure(integration)
+    if isinstance(integration, candidate_evidence.IntegrationGitFailure):
+        return common._integration_git_failure(integration.code, request.project_root, integration.diagnostic)
+    return integration
+
+
 def _read_item_status(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
     token.checkpoint()
     try:
         request = msgspec.convert(raw, type=contracts.ItemStatusEnvelope, strict=True).request
-        durable = common._resolve_durable(request.project_root, request.work_root)
-    except (msgspec.ValidationError, ValueError, OSError) as error:
+    except msgspec.ValidationError as error:
         return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
+    durable = _resolve_item_status_roots(request)
+    if isinstance(durable, execution.OperationResult):
+        return durable
     token.checkpoint()
     store = common.compose_store(durable)
     match request:
@@ -144,13 +179,18 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
             if isinstance(projected, DecisionFailure):
                 return common._item_status_failure(projected.code.value, projected.message, projected.details)
             if isinstance(projected, query_models.DamagedTransitionReceipt):
-                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v2", projected)
-            selected: query_models.ItemStatus | query_models.BranchOwners = projected
+                return common._damaged_receipt_failure(common.ITEM_STATUS_REJECTION_SCHEMA, projected)
+            selected: query_models.ItemStatus | query_models.BranchOwners | query_models.ItemIntegration = projected
         case contracts.ItemStatusBranchRequest():
             owners = queries.project_branch_owners(store, request.branch)
             if owners is None:
                 return _branch_owner_not_found(request.branch, durable.work_root)
             selected = owners
+        case contracts.ItemStatusIntegrationRequest():
+            integration = _read_item_integration(request, durable, store)
+            if isinstance(integration, execution.OperationResult):
+                return integration
+            selected = integration
         case _ as unreachable:
             assert_never(unreachable)
     token.checkpoint()

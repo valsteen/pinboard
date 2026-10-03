@@ -118,6 +118,8 @@ class WorkStore(Protocol):
 
     def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts: ...
 
+    def read_integration_facts(self, work_item_id: WorkItemId) -> query_models.IntegrationFacts | None: ...
+
     def read_parallel_preview(
         self, work_item_ids: tuple[WorkItemId, ...]
     ) -> query_models.ParallelPreviewFacts | None: ...
@@ -173,6 +175,10 @@ class ReadyCandidateReviewReader(Protocol):
 
 class BranchOwnerReader(Protocol):
     def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts: ...
+
+
+class IntegrationFactsReader(Protocol):
+    def read_integration_facts(self, work_item_id: WorkItemId) -> query_models.IntegrationFacts | None: ...
 
 
 class AttemptContextReader(Protocol):

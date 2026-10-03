@@ -47,6 +47,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_attempt_context,
     read_branch_owners,
     read_current_definitions,
+    read_item_closure,
     read_item_status,
     read_parallel_preview_lifecycle,
     read_recorded_pause_reasons,
@@ -92,6 +93,11 @@ class _SelectedAttemptLinkRow(msgspec.Struct, frozen=True, forbid_unknown_fields
     item_id: WorkItemId
     attempt_id: AttemptId
     state: work_models.AttemptState
+    subject_revision: int
+
+
+class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    state: stored_state.StoredWorkItemState
     subject_revision: int
 
 
@@ -433,6 +439,63 @@ def _read_candidate_snapshot_context_facts(
     )
 
 
+def _read_integration_facts(
+    connection: sqlite3.Connection,
+    item_id: WorkItemId,
+) -> query_models.IntegrationFacts | None:
+    """Read keyed facts for one item's reviewed candidate; never walks history or scans attempts or artifacts."""
+
+    project_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    item_row = connection.execute(
+        "SELECT state, subject_revision FROM work_items WHERE item_id = ?", (item_id,)
+    ).fetchone()
+    if item_row is None:
+        return None
+    item = decode_row(item_row, _IntegrationItemRow)
+    attempt: query_models.IntegrationAttemptFacts | None = None
+    protected_snapshot: query_models.CandidateSnapshotContextFacts | None = None
+    checkpoint: query_models.CompletionCheckpointFacts | None = None
+    closure: query_models.ItemClosureFacts | None = None
+    completion_snapshot: query_models.CandidateSnapshotContextFacts | None = None
+    if stored_state.live_work_state(item.state) is None:
+        closure = read_item_closure(connection, item_id, item.subject_revision)
+        closing = None if closure is None else closure.closing_attempt
+        if closing is not None and closing.candidate_revision is not None:
+            completion_snapshot = _read_candidate_snapshot_context_facts(connection, closing.attempt_id)
+    else:
+        attempt_row = connection.execute(
+            """
+            SELECT attempt_id, state, candidate_revision
+            FROM attempts INDEXED BY one_live_attempt_per_item
+            WHERE item_id = ? AND state != 'done'
+            """,
+            (item_id,),
+        ).fetchone()
+        if attempt_row is not None:
+            attempt = decode_row(attempt_row, query_models.IntegrationAttemptFacts)
+            if attempt.candidate_revision is not None:
+                protected_snapshot = _read_candidate_snapshot_context_facts(connection, attempt.attempt_id)
+            elif (receipt := sqlite_state.read_latest_checkpoint_receipt(connection, attempt.attempt_id)) is not None:
+                checkpoint = query_models.CompletionCheckpointFacts(
+                    receipt,
+                    None
+                    if receipt.artifact_ref_id is None
+                    else read_artifact_reference_by_id(connection, receipt.artifact_ref_id),
+                )
+    return query_models.IntegrationFacts(
+        decode_row(project_row, ProjectRevisionRow).revision,
+        item_id,
+        item.state,
+        attempt,
+        protected_snapshot,
+        checkpoint,
+        closure,
+        completion_snapshot,
+    )
+
+
 class SQLiteWorkStore:
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -725,6 +788,14 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return read_branch_owners(connection, branch)
+        finally:
+            connection.close()
+
+    def read_integration_facts(self, work_item_id: WorkItemId) -> query_models.IntegrationFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return _read_integration_facts(connection, work_item_id)
         finally:
             connection.close()
 

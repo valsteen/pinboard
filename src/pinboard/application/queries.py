@@ -1182,6 +1182,82 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
     )
 
 
+def _integration_unavailable_message(
+    work_item_id: WorkItemId,
+    item_state: stored_state.StoredWorkItemState,
+    reason: query_models.IntegrationUnavailableReason,
+) -> str:
+    subject = f"Item '{work_item_id}' in state '{item_state.value}'"
+    match reason:
+        case query_models.IntegrationUnavailableReason.NO_REVIEWED_CANDIDATE:
+            return f"{subject} has no protected candidate and no checkpoint acceptance on its current attempt."
+        case query_models.IntegrationUnavailableReason.CLOSED_WITHOUT_COMPLETION:
+            return f"{subject} did not close by completion, so no closing candidate was retained."
+        case query_models.IntegrationUnavailableReason.CHECKPOINT_WITHOUT_SNAPSHOT:
+            return f"{subject} has a latest checkpoint acceptance whose package carries no candidate snapshot."
+        case query_models.IntegrationUnavailableReason.PRE_SNAPSHOT_CANDIDATE:
+            return f"{subject} has a reviewed candidate retained from before accepted candidate snapshots."
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def integration_candidate_unavailable(
+    work_item_id: WorkItemId,
+    item_state: stored_state.StoredWorkItemState,
+    reason: query_models.IntegrationUnavailableReason,
+) -> DecisionFailure:
+    """Name why an item has no reviewed candidate with accepted snapshot bytes to compare."""
+
+    return DecisionFailure(
+        DecisionFailureCode.INTEGRATION_CANDIDATE_UNAVAILABLE,
+        _integration_unavailable_message(work_item_id, item_state, reason),
+        FailureDetails(
+            observed=(
+                FailureFact("item_id", str(work_item_id)),
+                FailureFact("item_state", item_state.value),
+                FailureFact("reason", reason.value),
+            ),
+            mismatches=(),
+            retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def select_integration_candidate(
+    reader: ports.IntegrationFactsReader, work_item_id: WorkItemId
+) -> DecisionResult[query_models.IntegrationCandidate]:
+    """Select the item's reviewed candidate: protected, latest checkpoint-accepted, or a completion's own."""
+
+    facts = reader.read_integration_facts(work_item_id)
+    if facts is None:
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' was not found.", None)
+    reasons = query_models.IntegrationUnavailableReason
+    if stored_state.live_work_state(facts.item_state) is None:
+        closing = None if facts.closure is None else facts.closure.closing_attempt
+        if facts.closure is None or facts.closure.action_kind != decision_models.ActionKind.COMPLETE:
+            return integration_candidate_unavailable(work_item_id, facts.item_state, reasons.CLOSED_WITHOUT_COMPLETION)
+        if closing is None or facts.completion_snapshot is None:
+            return integration_candidate_unavailable(work_item_id, facts.item_state, reasons.PRE_SNAPSHOT_CANDIDATE)
+        return query_models.CompletionCandidate(facts.project_revision, facts.completion_snapshot)
+    attempt = facts.attempt
+    if attempt is None:
+        return integration_candidate_unavailable(work_item_id, facts.item_state, reasons.NO_REVIEWED_CANDIDATE)
+    if attempt.candidate_revision is not None:
+        if facts.protected_snapshot is None:
+            return integration_candidate_unavailable(work_item_id, facts.item_state, reasons.PRE_SNAPSHOT_CANDIDATE)
+        return query_models.ProtectedReviewCandidate(facts.project_revision, facts.protected_snapshot)
+    if facts.checkpoint is None:
+        return integration_candidate_unavailable(work_item_id, facts.item_state, reasons.NO_REVIEWED_CANDIDATE)
+    if facts.checkpoint.package_reference is None:
+        return integration_candidate_unavailable(work_item_id, facts.item_state, reasons.CHECKPOINT_WITHOUT_SNAPSHOT)
+    return query_models.AcceptedCheckpointCandidate(
+        facts.project_revision, work_item_id, facts.item_state, attempt.attempt_id, facts.checkpoint
+    )
+
+
 def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
     return query_models.WorkItemDefinitionView(
         "pinboard-work-item-definition/v2",

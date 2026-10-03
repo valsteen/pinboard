@@ -1,5 +1,7 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -36,6 +38,24 @@ class DirtyHeadCandidate:
 
 
 type CommittedCandidateObservation = CurrentHeadCandidate | DifferentHeadCandidate | DirtyHeadCandidate
+
+
+@dataclass(frozen=True, slots=True)
+class TargetContentPresent:
+    target_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class TargetContentNotPresent:
+    target_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class TargetUnresolved:
+    target: str
+
+
+type TargetContentObservation = TargetContentPresent | TargetContentNotPresent | TargetUnresolved
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +263,75 @@ def read_current_head_candidate(
         unavailable_message=f"Cannot compare candidate '{candidate_revision}' with comparison revision '{comparison_revision}'.",
     )
     return CurrentHeadCandidate(candidate_revision, diff)
+
+
+def observe_target_content(cwd: Path, target: str, diff: bytes) -> TargetContentObservation:
+    """Report whether a reviewed diff's content is present in a named target's current commit.
+
+    The target resolves to a full commit as stored in this repository; nothing is fetched. Git reverse-applies
+    the diff against a temporary index loaded from that commit's tree, so the check writes nothing to the
+    working tree, real index, refs, object database or other Git metadata and works under a read-only `.git`.
+    The temporary index lives in a private directory removed before returning. An empty diff has nothing to
+    apply, so its target is resolved and reported present without reading the tree.
+    """
+
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if resolved.returncode == 1:
+        return TargetUnresolved(target)
+    revision = resolved.stdout.strip()
+    if resolved.returncode != 0 or not revision:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            resolved.stderr.strip() or f"Cannot resolve integration target '{target}' at '{cwd}'.",
+        )
+    if not diff:
+        return TargetContentPresent(revision)
+    with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as directory:
+        environment = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
+        loaded = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "read-tree", revision],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            check=False,
+        )
+        if loaded.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                loaded.stderr.decode(errors="replace").strip() or f"Cannot read the tree of '{revision}' at '{cwd}'.",
+            )
+        applied = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.splitIndex=false",
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "--whitespace=nowarn",
+                "-",
+            ],
+            cwd=cwd,
+            env=environment,
+            input=diff,
+            capture_output=True,
+            check=False,
+        )
+    if applied.returncode == 0:
+        return TargetContentPresent(revision)
+    if applied.returncode == 1:
+        return TargetContentNotPresent(revision)
+    raise RootError(
+        RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+        applied.stderr.decode(errors="replace").strip() or f"Cannot check the reviewed diff against '{revision}'.",
+    )
 
 
 def _working_tree_status(cwd: Path) -> bytes:

@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
+from pinboard.adapters.files.errors import RootErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.legacy_storage import StorageLocation, observe_storage_location
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
@@ -26,6 +27,8 @@ from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.ports import GeneratedViewReader
 from pinboard.domain.errors import (
     ChangedSurface,
+    DecisionFailure,
+    DecisionFailureCode,
     EffectDisposition,
     FailureDetails,
     FailureFact,
@@ -36,6 +39,8 @@ from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import contracts, execution, tool_names
 from pinboard.mcp.contracts import JsonValue
 
+ITEM_STATUS_REJECTION_SCHEMA = "pinboard-mcp-item-status-result/v3"
+
 
 def _item_status_failure(
     code: str,
@@ -45,12 +50,73 @@ def _item_status_failure(
     rendered = _details_json(details)
     return execution.OperationResult(
         {
-            "schema": "pinboard-mcp-item-status-result/v2",
+            "schema": ITEM_STATUS_REJECTION_SCHEMA,
             "status": "rejected",
             "code": code,
             "message": message,
             "state_changed": False,
             **rendered,
+        },
+        "rejected",
+        None,
+    )
+
+
+def _integration_recovery(code: DecisionFailureCode) -> str | None:
+    """Give each integration rejection its next step; other failures, such as an unknown item, carry none."""
+
+    match code:
+        case DecisionFailureCode.INTEGRATION_TARGET_UNRESOLVED:
+            return (
+                "Name an existing local branch, remote-tracking ref, tag, or full commit id. Fetch it outside "
+                "Pinboard first when remote freshness matters; this read never fetches."
+            )
+        case DecisionFailureCode.INTEGRATION_CANDIDATE_UNAVAILABLE:
+            return "Read the item with operation item to see its state, current attempt, review verdict, and closure."
+        case DecisionFailureCode.INTEGRATION_CANDIDATE_EVIDENCE_INVALID:
+            return (
+                "Do not retry. Run 'pinboard validate' to diagnose the damaged accepted candidate evidence; "
+                "this read repairs nothing."
+            )
+        case _:
+            return None
+
+
+def _integration_failure(failure: DecisionFailure) -> execution.OperationResult:
+    """Render a candidate-selection, evidence, or target rejection with its next step when one applies."""
+
+    result = _item_status_failure(failure.code.value, failure.message, failure.details)
+    recovery = _integration_recovery(failure.code)
+    if recovery is None:
+        return result
+    return execution.OperationResult(
+        {**result.content, "recovery": recovery}, result.classification, result.commit_reference
+    )
+
+
+def _integration_git_failure(code: RootErrorCode, project_root: str, diagnostic: str) -> execution.OperationResult:
+    """Name a Git read failure by the Git adapter's own root error code, with its diagnostic."""
+
+    return execution.OperationResult(
+        {
+            "schema": ITEM_STATUS_REJECTION_SCHEMA,
+            "status": "rejected",
+            "code": code.value,
+            "message": f"Git could not complete the integration read at {project_root}: {diagnostic}",
+            "state_changed": False,
+            **_details_json(
+                FailureDetails(
+                    observed=(FailureFact("project_root", project_root), FailureFact("diagnostic", diagnostic)),
+                    mismatches=(),
+                    retry=RetryDisposition.CORRECT_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                )
+            ),
+            "recovery": (
+                "Correct the checkout at the project root so it is a readable Git repository, then repeat the read."
+            ),
         },
         "rejected",
         None,

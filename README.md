@@ -34,6 +34,10 @@ Pinboard keeps those decisions attached to the work. It:
 
 The coding agent operates that workflow and brings material choices back to you in ordinary language.
 
+When the local board is confusing, `pinboard --project-root CHECKOUT --work-root WORK_ROOT diagnose --json` resolves the selected roots, validates the full project, reads unfinished work and the ten most recent transition receipts, and returns one structured diagnosis. It reads the project trace configuration without changing it. The result names the installed version, SQLite schema, root selection mode, runtime indicator when supplied, trace configuration path, project trace mode or why it could not be observed, and any validation errors. Validation checks accepted artifacts and generated views as well as the ledger, so this explicit read can take longer as retained history grows.
+
+When a result or trace contains an unfamiliar code, `pinboard code-catalog --json --code CODE` explains its installed meaning and generic recovery. Run `pinboard code-catalog --json` to list the codes. The returned result's resource, effect, retry, and exact next step take precedence over catalog guidance.
+
 You can save an idea as a work item without starting it. When you ask the agent to begin, it checks whether the work can start. [How Pinboard works](HOW_IT_WORKS.md) follows that request through a reviewed change, your repository decision, and recorded completion.
 
 ## Explore your backlog in conversation

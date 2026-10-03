@@ -63,6 +63,12 @@ from pinboard.domain.proposal_models import (
     CreateProposalOperation,
 )
 
+PROPOSAL_INTAKE_RECEIPT_MEANING = (
+    "A proposal intake committed an inspect-kind receipt; ordinary inspect discovery remains advisory."
+)
+LIVE_ORDER_RECEIPT_ACTION_ID: ActionId = ActionId("inspect:live-order")
+LIVE_ORDER_RECEIPT_MEANING = "A live-order change committed a receipt under the inspect action family."
+
 
 def _project_retained_attempt_authority(
     snapshot: LedgerSnapshot,
@@ -869,7 +875,7 @@ def reorder(
             return change
         allocation = transaction.read_mutation_allocation()
         receipt = MutationReceipt(
-            decision_models.TransitionReceipt(ActionId("inspect:live-order"), None, "reorder", None, now),
+            decision_models.TransitionReceipt(LIVE_ORDER_RECEIPT_ACTION_ID, None, "reorder", None, now),
             allocation.next_history_id,
             allocation.project_revision + 1,
             decision_models.ActionKind.INSPECT,

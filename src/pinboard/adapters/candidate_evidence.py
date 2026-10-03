@@ -259,20 +259,9 @@ def _checkpoint_snapshot(
     candidate_reference = store.read_artifact_reference(
         work_models.ArtifactKind.EVIDENCE, identity.key, identity.revision
     )
-    if candidate_reference is None or (
-        identity.kind,
-        identity.key,
-        identity.revision,
-        identity.selector,
-        identity.content_sha256,
-        identity.size_bytes,
-    ) != (
-        work_models.ArtifactKind.EVIDENCE.value,
-        f"{selected.attempt_id}-{selected.checkpoint}-candidate",
-        1,
-        candidate_reference.selector,
-        candidate_reference.content_sha256,
-        candidate_reference.size_bytes,
+    if candidate_reference is None or not (
+        checkpoint_packages.canonical_checkpoint_candidate_reference(package, candidate_reference)
+        and checkpoint_packages.portable_candidate_identity_matches(identity, candidate_reference)
     ):
         return IntegrationEvidenceInvalid(
             selected.attempt_id,

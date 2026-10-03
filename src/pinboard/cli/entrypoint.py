@@ -22,6 +22,7 @@ from pinboard.cli import (
     cli_commands,
     cli_output,
     cli_parser,
+    code_catalog,
     project_export,
     schema_migration,
     tool_contract,
@@ -31,6 +32,7 @@ from pinboard.cli import (
     work_state_commands,
 )
 from pinboard.cli.errors import (
+    CliErrorCode,
     CliResult,
     CommandFailure,
     InitializationAfterCommittedEffects,
@@ -56,6 +58,8 @@ def _dispatch(  # noqa: C901, PLR0912 - keep the installed command routes visibl
 ) -> CliResult[int]:
     if isinstance(invocation.command, cli_commands.ToolContractCommand):
         return tool_contract.show_tool_contract(invocation.command)
+    if isinstance(invocation.command, cli_commands.CodeCatalogCommand):
+        return code_catalog.show_code_catalog(invocation.command)
     if roots is None:
         raise AssertionError("A rooted command requires resolved project roots.")
     if isinstance(invocation.command, cli_commands.RootCommand):
@@ -87,6 +91,8 @@ def _dispatch(  # noqa: C901, PLR0912 - keep the installed command routes visibl
             return work_state_commands.validate_state(roots, durable, store, command)
         case cli_commands.StatusCommand() as command:
             return work_inspection.show_status(roots, store, command)
+        case cli_commands.DiagnoseCommand() as command:
+            return work_inspection.show_diagnosis(roots, durable, store, command)
         case cli_commands.CloseCommand() as command:
             return transitions.close(durable, store, command)
         case cli_commands.ExportCommand() as command:
@@ -172,7 +178,7 @@ def _run_invocation(  # noqa: PLR0912 - preserve persisted-state invariant trace
 ) -> int:
     roots: cli_commands.ResolvedRoots | None = None
     try:
-        if not isinstance(invocation.command, cli_commands.ToolContractCommand):
+        if not isinstance(invocation.command, (cli_commands.ToolContractCommand, cli_commands.CodeCatalogCommand)):
             roots = work_state_commands.resolve_roots(invocation.roots)
         return _present_expected_result(
             _dispatch(invocation, roots),
@@ -196,7 +202,7 @@ def _run_invocation(  # noqa: PLR0912 - preserve persisted-state invariant trace
         return 12
     except (RootError, OSError) as error:
         if json_requested:
-            code = error.code.value if isinstance(error, RootError) else "CLI_IO_ERROR"
+            code = error.code.value if isinstance(error, RootError) else CliErrorCode.IO_ERROR.value
             cli_output.write_operation_rejection(
                 operation,
                 code,

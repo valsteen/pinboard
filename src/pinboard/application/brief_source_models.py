@@ -1,22 +1,35 @@
 from dataclasses import dataclass
-from enum import Enum
 from itertools import pairwise
 from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
 import msgspec
 
+from pinboard.domain.errors import DescribedCode
 
-class BriefSourceErrorCode(Enum):
-    BATCH_NOT_FOUND = "BRIEF_SOURCE_BATCH_NOT_FOUND"
-    LINE_TOO_LARGE = "BRIEF_SOURCE_LINE_TOO_LARGE"
-    MANIFEST_INVALID = "BRIEF_SOURCE_MANIFEST_INVALID"
-    PLAN_INVALID = "BRIEF_SOURCE_PLAN_INVALID"
-    SELECTOR_INVALID = "BRIEF_SOURCE_SELECTOR_INVALID"
-    SELECTOR_OVERLAP = "BRIEF_SOURCE_SELECTOR_OVERLAP"
-    SOURCE_NOT_UTF8 = "BRIEF_SOURCE_NOT_UTF8"
-    SOURCE_CHANGED = "BRIEF_SOURCE_CHANGED"
-    SOURCE_UNREADABLE = "BRIEF_SOURCE_UNREADABLE"
+
+class BriefSourceErrorCode(DescribedCode):
+    BATCH_NOT_FOUND = (
+        "BRIEF_SOURCE_BATCH_NOT_FOUND",
+        "The selected brief-source batch has no record at the requested identity.",
+    )
+    LINE_TOO_LARGE = ("BRIEF_SOURCE_LINE_TOO_LARGE", "A selected source line exceeds the brief-source batch limit.")
+    MANIFEST_INVALID = (
+        "BRIEF_SOURCE_MANIFEST_INVALID",
+        "The brief-source manifest failed validation for this operation.",
+    )
+    PLAN_INVALID = ("BRIEF_SOURCE_PLAN_INVALID", "The brief-source plan failed validation for this operation.")
+    SELECTOR_INVALID = (
+        "BRIEF_SOURCE_SELECTOR_INVALID",
+        "The brief-source selector failed validation for this operation.",
+    )
+    SELECTOR_OVERLAP = ("BRIEF_SOURCE_SELECTOR_OVERLAP", "Two brief-source selectors claim overlapping source content.")
+    SOURCE_NOT_UTF8 = ("BRIEF_SOURCE_NOT_UTF8", "Selected brief source bytes cannot be decoded as UTF-8.")
+    SOURCE_CHANGED = ("BRIEF_SOURCE_CHANGED", "The selected brief source changed after it was selected.")
+    SOURCE_UNREADABLE = (
+        "BRIEF_SOURCE_UNREADABLE",
+        "The selected brief source could not be read from its selected source.",
+    )
 
 
 @dataclass(frozen=True, slots=True)

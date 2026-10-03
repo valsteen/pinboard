@@ -9,11 +9,17 @@ from pinboard.cli import cli_commands
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailureCode,
+    DescribedCode,
     EffectDisposition,
     FailureDetails,
     FailureFact,
     RetryDisposition,
 )
+
+
+class CliErrorCode(DescribedCode):
+    ARGUMENT_INVALID = ("CLI_ARGUMENT_INVALID", "The CLI request failed validation for this operation.")
+    IO_ERROR = ("CLI_IO_ERROR", "The CLI could not write its result to the selected output stream.")
 
 
 def storage_failure_details(

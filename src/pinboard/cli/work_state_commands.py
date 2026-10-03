@@ -13,7 +13,7 @@ from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import ports, work_brief_models
+from pinboard.application import ports, stored_state, work_brief_models
 from pinboard.cli import cli_commands, work_views
 from pinboard.cli.cli_output import write_json
 from pinboard.cli.errors import CliResult, InitializationAfterCommittedEffects
@@ -109,44 +109,53 @@ def show_roots(roots: cli_commands.ResolvedRoots, _command: cli_commands.RootCom
     return 0
 
 
+def read_validation_report(
+    work_root: Path,
+    durable: DurableRoots,
+    store: ports.ValidatedStateReader,
+    *,
+    now: datetime,
+) -> tuple[ValidationReport, stored_state.StoredWorkState | None]:
+    loaded_state = read_state_for_validation(durable.database_path, store)
+    if isinstance(loaded_state, ValidationReport):
+        return loaded_state, None
+    current_state = loaded_state
+    brief_diagnostic: Diagnostic | None = None
+    attempt_briefs: Mapping[AttemptId, bytes]
+    try:
+        brief_result = work_views.read_attempt_brief_views(durable, current_state)
+    except ArtifactError as error:
+        attempt_briefs = {}
+        brief_diagnostic = Diagnostic(error.code.value, Severity.ERROR, work_root, str(error))
+    else:
+        if isinstance(brief_result, work_brief_models.WorkBriefFailure):
+            attempt_briefs = {}
+            brief_diagnostic = Diagnostic(
+                brief_result.code.value,
+                Severity.ERROR,
+                work_root,
+                brief_result.message,
+            )
+        else:
+            attempt_briefs = brief_result
+    validation_report = validate_loaded_work_state(work_root, current_state, attempt_briefs, now=now)
+    if brief_diagnostic is not None:
+        validation_report = ValidationReport(
+            (
+                *validation_report.diagnostics,
+                brief_diagnostic,
+            )
+        )
+    return validation_report, current_state
+
+
 def validate_state(
     roots: cli_commands.ResolvedRoots,
     durable: DurableRoots,
     store: ports.ValidatedStateReader,
     command: cli_commands.ValidateCommand,
 ) -> int:
-    operation_time = datetime.now(UTC)
-    loaded_state = read_state_for_validation(durable.database_path, store)
-    if isinstance(loaded_state, ValidationReport):
-        validation_report = loaded_state
-    else:
-        current_state = loaded_state
-        brief_diagnostic: Diagnostic | None = None
-        attempt_briefs: Mapping[AttemptId, bytes]
-        try:
-            brief_result = work_views.read_attempt_brief_views(durable, current_state)
-        except ArtifactError as error:
-            attempt_briefs = {}
-            brief_diagnostic = Diagnostic(error.code.value, Severity.ERROR, roots.work, str(error))
-        else:
-            if isinstance(brief_result, work_brief_models.WorkBriefFailure):
-                attempt_briefs = {}
-                brief_diagnostic = Diagnostic(
-                    brief_result.code.value,
-                    Severity.ERROR,
-                    roots.work,
-                    brief_result.message,
-                )
-            else:
-                attempt_briefs = brief_result
-        validation_report = validate_loaded_work_state(roots.work, current_state, attempt_briefs, now=operation_time)
-        if brief_diagnostic is not None:
-            validation_report = ValidationReport(
-                (
-                    *validation_report.diagnostics,
-                    brief_diagnostic,
-                )
-            )
+    validation_report, _ = read_validation_report(roots.work, durable, store, now=datetime.now(UTC))
     if command.json:
         write_json(_project_validation(validation_report))
     else:

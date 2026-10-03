@@ -27,6 +27,7 @@ from pinboard.adapters.files.root import resolve_shared_repository_root, resolve
 from pinboard.adapters.files.setting_resolution import SettingEffects, SettingResolutionError
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.domain.errors import (
+    DescribedCode,
     EffectDisposition,
     RetryDisposition,
 )
@@ -34,6 +35,20 @@ from pinboard.mcp import contract_schemas
 from pinboard.mcp.contracts import JsonValue
 
 THREAD_NAME_PREFIX = "pinboard-mcp-worker"
+
+
+class TraceEvent(DescribedCode):
+    STARTUP = ("startup", "The MCP server recorded its startup before handling requests.")
+    RESULT = ("result", "An MCP request produced a correlated result record.")
+    RESULT_VALIDATION_ERROR = (
+        "result-validation-error",
+        "The result failed its declared MCP output schema after execution.",
+    )
+    CAPTURE_UNAVAILABLE = ("capture-unavailable", "Exact invocation capture was unavailable for the request.")
+    CAPTURE_COMMITTED_WITH_WARNING = (
+        "capture-committed-with-warning",
+        "Exact invocation capture published bytes but reported a later warning.",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,7 +410,7 @@ class Diagnostics:
     def emit(
         self,
         *,
-        event: str,
+        event: TraceEvent,
         request_id: int | None,
         operation: str | None,
         project_id: str | None,
@@ -404,7 +419,7 @@ class Diagnostics:
         commit_reference: str | None,
         capture_selector: str | None,
     ) -> None:
-        fields = ["pinboard_mcp", f"version={__version__}", f"event={event}"]
+        fields = ["pinboard_mcp", f"version={__version__}", f"event={event.value}"]
         if capture_selector is not None:
             fields.append(f"capture_selector={capture_selector}")
         if request_id is not None:
@@ -421,7 +436,7 @@ class Diagnostics:
             fields.append(f"commit={commit_reference}")
         line = " ".join(fields)
         with self._lock:
-            capture_failure = event in {"capture-unavailable", "capture-committed-with-warning"}
+            capture_failure = event in {TraceEvent.CAPTURE_UNAVAILABLE, TraceEvent.CAPTURE_COMMITTED_WITH_WARNING}
             event_count = self._capture_failure_events if capture_failure else self._events
             if event_count >= self._event_limit:
                 return
@@ -453,7 +468,7 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
     project_id = hashlib.sha256(project_root.encode()).hexdigest()[:12]
     started = time.monotonic_ns()
 
-    def emit_request_event(event: str, classification: str, commit_reference: str | None) -> None:
+    def emit_request_event(event: TraceEvent, classification: str, commit_reference: str | None) -> None:
         diagnostics.emit(
             event=event,
             request_id=request_id,
@@ -476,7 +491,7 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
             effect(capture)
         except ImmutableFilePublishedError as error:
             diagnostics.emit(
-                event="capture-committed-with-warning",
+                event=TraceEvent.CAPTURE_COMMITTED_WITH_WARNING,
                 request_id=None,
                 operation=None,
                 project_id=None,
@@ -486,12 +501,12 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
                 capture_selector=error.path.name,
             )
         except FileIOError:
-            emit_request_event("capture-unavailable", classification, commit_reference)
+            emit_request_event(TraceEvent.CAPTURE_UNAVAILABLE, classification, commit_reference)
 
     try:
         execution = executor.submit(callback)
     except ExecutorBusy:
-        emit_request_event("result", "busy", None)
+        emit_request_event(TraceEvent.RESULT, "busy", None)
         busy: dict[str, JsonValue] = {
             "schema": "pinboard-mcp-execution-result/v1",
             "status": "busy",
@@ -519,7 +534,7 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
             "cancelled",
             None,
         )
-        emit_request_event("result", "cancelled", None)
+        emit_request_event(TraceEvent.RESULT, "cancelled", None)
         raise
     except OperationCancelled as error:
         capture_effect(
@@ -527,7 +542,7 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
             "cancelled",
             None,
         )
-        emit_request_event("result", "cancelled", None)
+        emit_request_event(TraceEvent.RESULT, "cancelled", None)
         raise ToolError(
             "The request was cancelled at a cooperative checkpoint. Its effect is unknown; inspect current "
             "item or attempt state before deciding whether another call is safe."
@@ -538,7 +553,7 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
             "rejected",
             None,
         )
-        emit_request_event("result", "rejected", None)
+        emit_request_event(TraceEvent.RESULT, "rejected", None)
         raise
     except Exception:
         capture_effect(
@@ -546,7 +561,7 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
             "error",
             None,
         )
-        emit_request_event("result", "error", None)
+        emit_request_event(TraceEvent.RESULT, "error", None)
         raise
     try:
         validated = contract_schemas.validate_result(operation, result.content)
@@ -562,12 +577,12 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
             result.classification,
             result.commit_reference,
         )
-        emit_request_event("result-validation-error", result.classification, result.commit_reference)
+        emit_request_event(TraceEvent.RESULT_VALIDATION_ERROR, result.classification, result.commit_reference)
         raise
     capture_effect(
         lambda selected: selected.available(operation, captured_arguments, validated),
         result.classification,
         result.commit_reference,
     )
-    emit_request_event("result", result.classification, result.commit_reference)
+    emit_request_event(TraceEvent.RESULT, result.classification, result.commit_reference)
     return validated

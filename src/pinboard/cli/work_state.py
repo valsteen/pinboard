@@ -41,7 +41,7 @@ from pinboard.application.work_briefs import (
 from pinboard.cli.errors import (
     InitializationAfterCommittedEffects,
 )
-from pinboard.cli.work_state_models import Diagnostic, Severity, ValidationReport
+from pinboard.cli.work_state_models import Diagnostic, Severity, ValidationDiagnosticCode, ValidationReport
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId
 
@@ -533,7 +533,9 @@ def validate_loaded_work_state(
     try:
         candidate_snapshots.validate_candidate_snapshot_history(state, verified_artifacts)
     except ValueError as error:
-        diagnostics.append(_error_diagnostic("CANDIDATE_SNAPSHOT_INVALID", work_root, str(error)))
+        diagnostics.append(
+            _error_diagnostic(ValidationDiagnosticCode.CANDIDATE_SNAPSHOT_INVALID.value, work_root, str(error))
+        )
     packages = validate_checkpoint_review_packages(
         state.lifecycle,
         state.artifact_references,
@@ -555,7 +557,7 @@ def validate_loaded_work_state(
                 _error_diagnostic(completion_packages.code.value, work_root, completion_packages.message)
             )
     diagnostics.extend(
-        _error_diagnostic("CLOSE_DECISION_INVALID", work_root, message)
+        _error_diagnostic(ValidationDiagnosticCode.CLOSE_DECISION_INVALID.value, work_root, message)
         for receipt in state.transition_receipts
         if receipt.action_kind == decision_models.ActionKind.CLOSE
         and (message := _close_decision_failure(receipt)) is not None
@@ -564,10 +566,10 @@ def validate_loaded_work_state(
     expected_views = derive_expected_view_bytes(state, attempt_briefs, now=now)
     diagnostics.extend(
         _error_diagnostic(
-            "TRANSITION_RECEIPT_DAMAGED",
+            ValidationDiagnosticCode.TRANSITION_RECEIPT_DAMAGED.value,
             view_root / "history" / f"{damaged.history_id}.md",
             queries.damaged_receipt_message(damaged),
-            queries.damaged_receipt_recovery(damaged),
+            queries.damaged_receipt_validation_recovery(damaged),
         )
         for damaged in expected_views.damaged
     )
@@ -580,7 +582,7 @@ def validate_loaded_work_state(
         if actual_view_bytes != expected:
             diagnostics.append(
                 Diagnostic(
-                    "VIEW_REFRESH_REQUIRED",
+                    ValidationDiagnosticCode.VIEW_REFRESH_REQUIRED.value,
                     Severity.WARNING,
                     path,
                     "Generated view is absent or stale; SQLite remains authoritative.",

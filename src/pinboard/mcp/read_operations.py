@@ -175,6 +175,8 @@ def _integration_unavailable_message(unavailable: query_models.IntegrationCandid
                 f"{item} has no reviewed candidate with accepted snapshot bytes: its current attempt has no "
                 "protected review candidate and no checkpoint acceptance, and it has no completion candidate."
             )
+        case query_models.IntegrationUnavailableReason.CLOSURE_UNKNOWN:
+            return f"{item} has no closing receipt at its subject revision, so its closure outcome is unknown."
         case query_models.IntegrationUnavailableReason.CLOSED_WITHOUT_COMPLETION:
             return f"{item} closed without a completion, so no reviewed candidate was accepted."
         case query_models.IntegrationUnavailableReason.CHECKPOINT_WITHOUT_CANDIDATE_SNAPSHOT:
@@ -278,7 +280,7 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
     try:
-        durable = common._resolve_durable(request.project_root, request.work_root)
+        source_checkout, durable = common._resolve_source_and_durable(request.project_root, request.work_root)
     except (ValueError, OSError) as error:
         return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
     except RootError as error:
@@ -307,10 +309,6 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
                 return _branch_owner_not_found(request.branch, durable.work_root)
             selected = owners
         case contracts.ItemStatusIntegrationRequest():
-            try:
-                source_checkout = resolve_source_checkout_root(Path(request.project_root))
-            except RootError as error:
-                return _integration_git_failure(request.project_root, error.code.value, str(error))
             observation = candidate_evidence.observe_item_integration(
                 source_checkout, durable.work_root, store, WorkItemId(request.item_id), request.target
             )
@@ -346,7 +344,12 @@ def _read_correction_context(
         )
         durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
-        return common._read_failure("pinboard-correction-context/v1", "CORRECTION_CONTEXT_INVALID", str(error), None)
+        return common._read_failure(
+            "pinboard-correction-context/v1",
+            contracts.ProducerOnlyCode.CORRECTION_CONTEXT_INVALID.value,
+            str(error),
+            None,
+        )
     token.checkpoint()
     context = dispatch_operations.read_correction_context(
         common.compose_store(durable),

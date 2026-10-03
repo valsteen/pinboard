@@ -32,6 +32,40 @@ def _invalid(message: str) -> work_brief_models.WorkBriefFailure:
     return work_brief_models.WorkBriefFailure(work_brief_models.WorkBriefErrorCode.PACKAGE_PROVENANCE_INVALID, message)
 
 
+def checkpoint_candidate_key(attempt_id: str, checkpoint_id: str) -> str:
+    return f"{attempt_id}-{checkpoint_id}-candidate"
+
+
+def canonical_checkpoint_candidate_reference(
+    package: work_briefs.CheckpointPackage, reference: stored_state.ArtifactReference
+) -> bool:
+    return (reference.kind, reference.key, reference.revision) == (
+        work_models.ArtifactKind.EVIDENCE,
+        checkpoint_candidate_key(package.attempt_id, package.checkpoint.id),
+        1,
+    )
+
+
+def portable_candidate_identity_matches(
+    identity: work_brief_models.PortableArtifactIdentity, reference: stored_state.ArtifactReference
+) -> bool:
+    return (
+        identity.kind,
+        identity.key,
+        identity.revision,
+        identity.selector,
+        identity.content_sha256,
+        identity.size_bytes,
+    ) == (
+        reference.kind.value,
+        reference.key,
+        reference.revision,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+    )
+
+
 def _portable_reference(
     identity: work_brief_models.PortableArtifactIdentity,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
@@ -74,7 +108,7 @@ def _artifact_identities(
             return candidate
         if (package.candidate_snapshot.kind, package.candidate_snapshot.key, package.candidate_snapshot.revision) != (
             work_models.ArtifactKind.EVIDENCE.value,
-            f"{package.attempt_id}-{checkpoint_id}-candidate",
+            checkpoint_candidate_key(package.attempt_id, checkpoint_id),
             1,
         ):
             return _invalid("Checkpoint package candidate snapshot identity is not canonical.")

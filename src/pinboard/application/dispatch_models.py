@@ -17,7 +17,14 @@ from pinboard.application.artifact_publication import (
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.ports import WorkStore
 from pinboard.domain import work_models
-from pinboard.domain.errors import ChangedSurface, DecisionFailure, DecisionFailureCode, DecisionResult, FailureDetails
+from pinboard.domain.errors import (
+    ChangedSurface,
+    DecisionFailure,
+    DecisionFailureCode,
+    DecisionResult,
+    DescribedCode,
+    FailureDetails,
+)
 from pinboard.domain.identifiers import HostId
 
 type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\n]+\z")]
@@ -31,14 +38,14 @@ type StableHostId = Annotated[
 type PositiveInt = Annotated[int, msgspec.Meta(ge=1)]
 
 
-class DispatchRejectionCode(Enum):
-    ACTION_INVALID = "action-invalid"
-    ACTION_UNAVAILABLE = "action-unavailable"
-    ATTEMPT_NOT_ACTIVE = "attempt-not-active"
-    BRIEF_MISSING = "brief-missing"
-    REVIEW_COLLISION = "review-collision"
-    REVIEW_MISSING = "review-missing"
-    STALE_ACTION = "stale-action"
+class DispatchRejectionCode(DescribedCode):
+    ACTION_INVALID = ("action-invalid", "The selected dispatch action receipt has an invalid shape or subject.")
+    ACTION_UNAVAILABLE = ("action-unavailable", "The selected dispatch action is not legal for the current attempt.")
+    ATTEMPT_NOT_ACTIVE = ("attempt-not-active", "The attempt is no longer active for worker dispatch.")
+    BRIEF_MISSING = ("brief-missing", "The active attempt has no accepted brief for worker dispatch.")
+    REVIEW_COLLISION = ("review-collision", "A different dispatch brief review is already bound to this attempt.")
+    REVIEW_MISSING = ("review-missing", "The dispatch brief has no independent review record.")
+    STALE_ACTION = ("stale-action", "The selected dispatch action receipt no longer matches current attempt facts.")
 
 
 @dataclass(frozen=True, slots=True)

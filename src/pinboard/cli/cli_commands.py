@@ -42,6 +42,14 @@ class StatusCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     json: bool = False
 
 
+class DiagnoseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    json: bool
+
+    def __post_init__(self) -> None:
+        if not self.json:
+            raise ValueError("diagnose output must be JSON")
+
+
 class CloseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: StableWorkItemId
     outcome: work_models.CloseOutcome
@@ -54,6 +62,15 @@ class CloseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 class ToolContractCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     operation: str | None = None
     json: bool = False
+
+
+class CodeCatalogCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    json: bool
+    code: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.json:
+            raise ValueError("code-catalog output must be JSON")
 
 
 class ExportCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -104,8 +121,10 @@ type CliCommand = (
     RootCommand
     | ValidateCommand
     | StatusCommand
+    | DiagnoseCommand
     | CloseCommand
     | ToolContractCommand
+    | CodeCatalogCommand
     | ExportCommand
     | InitializeCommand
     | MigrateWorkRootPreviewCommand

@@ -110,9 +110,13 @@ def _read_failure(
 
 
 def _resolve_durable(project_root: str, work_root: str) -> DurableRoots:
+    return _resolve_source_and_durable(project_root, work_root)[1]
+
+
+def _resolve_source_and_durable(project_root: str, work_root: str) -> tuple[Path, DurableRoots]:
     source_checkout = resolve_source_checkout_root(Path(project_root))
     shared_repository = resolve_shared_repository_root(source_checkout)
-    return _require_initialized_durable(shared_repository, Path(work_root))
+    return source_checkout, _require_initialized_durable(shared_repository, Path(work_root))
 
 
 def compose_store(durable: DurableRoots) -> SQLiteWorkStore:

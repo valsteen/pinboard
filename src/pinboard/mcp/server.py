@@ -876,7 +876,7 @@ def main() -> None:
     executor = execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
     diagnostics = execution.Diagnostics(sys.stderr, event_limit=32, line_limit=512)
     diagnostics.emit(
-        event="startup",
+        event=execution.TraceEvent.STARTUP,
         request_id=None,
         operation=None,
         project_id=None,

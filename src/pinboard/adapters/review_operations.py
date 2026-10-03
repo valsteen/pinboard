@@ -581,14 +581,9 @@ def _select_prior_checkpoint_package(
         candidate_bytes = read_reference(work_root, candidate_reference)
     except ArtifactError as error:
         return _review_job_failure(str(error))
-    if (
-        candidate_reference.kind != work_models.ArtifactKind.EVIDENCE
-        or candidate_reference.key != f"{package.attempt_id}-{package.checkpoint.id}-candidate"
-        or candidate_reference.revision != 1
-        or (
-            isinstance(package, checkpoint_compatibility_models.CheckpointReviewPackage)
-            and candidate_reference.content_sha256 != package.candidate.removeprefix("working-tree-sha256:")
-        )
+    if not checkpoint_packages.canonical_checkpoint_candidate_reference(package, candidate_reference) or (
+        isinstance(package, checkpoint_compatibility_models.CheckpointReviewPackage)
+        and candidate_reference.content_sha256 != package.candidate.removeprefix("working-tree-sha256:")
     ):
         return _review_job_failure("Selected checkpoint candidate evidence does not match its accepted package.")
     if isinstance(
@@ -596,21 +591,7 @@ def _select_prior_checkpoint_package(
         (work_brief_models.CheckpointReviewPackageV3, checkpoint_compatibility_models.CheckpointReviewPackageV2),
     ):
         identity = package.candidate_snapshot
-        if (
-            identity.kind,
-            identity.key,
-            identity.revision,
-            identity.selector,
-            identity.content_sha256,
-            identity.size_bytes,
-        ) != (
-            candidate_reference.kind.value,
-            candidate_reference.key,
-            candidate_reference.revision,
-            candidate_reference.selector,
-            candidate_reference.content_sha256,
-            candidate_reference.size_bytes,
-        ):
+        if not checkpoint_packages.portable_candidate_identity_matches(identity, candidate_reference):
             return _review_job_failure("Selected checkpoint candidate evidence does not match its portable identity.")
     package_path = work_root / package_reference.selector
     candidate_path = work_root / candidate_reference.selector

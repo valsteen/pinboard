@@ -7,11 +7,28 @@ import msgspec
 
 from pinboard.adapters.files.legacy_storage import RootPlan
 from pinboard.adapters.sqlite.schema_procedure import SchemaPlan
+from pinboard.domain.errors import DescribedCode
 
 
 class Severity(Enum):
     ERROR = "error"
     WARNING = "warning"
+
+
+class ValidationDiagnosticCode(DescribedCode):
+    CANDIDATE_SNAPSHOT_INVALID = ("CANDIDATE_SNAPSHOT_INVALID", "Stored candidate snapshot history fails validation.")
+    CLOSE_DECISION_INVALID = (
+        "CLOSE_DECISION_INVALID",
+        "The human closure decision failed validation for this operation.",
+    )
+    TRANSITION_RECEIPT_DAMAGED = (
+        "TRANSITION_RECEIPT_DAMAGED",
+        "A recorded transition receipt fails integrity or canonical validation.",
+    )
+    VIEW_REFRESH_REQUIRED = (
+        "VIEW_REFRESH_REQUIRED",
+        "A generated view is stale or absent while the ledger remains authoritative.",
+    )
 
 
 @dataclass(frozen=True, slots=True)

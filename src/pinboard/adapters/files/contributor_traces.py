@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -64,65 +64,104 @@ def _ignored_or_external(data_root: Path, name: str) -> bool:
     raise ValueError(f"Contributor trace Git status could not be verified for {data_root / name}.")
 
 
-def _decode_settings(path: Path) -> ContributorTraceSettings | None:
+def _decode_settings(path: Path) -> ContributorTraceSettings | git_config.ReadFailed | None:
+    if not stat.S_ISREG(path.stat(follow_symlinks=False).st_mode):
+        raise ValueError("Contributor trace settings must be a regular file.")
+    listed = git_config.list_entries(path)
+    if isinstance(listed, git_config.ReadFailed):
+        return listed
+    project_mode: Literal["off", "on"] | None = None
+    overrides: dict[str, Literal["inherit", "off", "on"]] = {}
+    seen: set[str] = set()
+    for entry in listed.entries:
+        key, value = entry.key, entry.value
+        if key in seen:
+            raise ValueError("Contributor trace settings contain duplicate keys.")
+        seen.add(key)
+        if key == "pinboard.unsafe_persist_exact_pinboard_traces.mode" and value in ("off", "on"):
+            project_mode = value
+        elif key.startswith("item.") and key.endswith(".mode") and value in ("inherit", "off", "on"):
+            item = key.removeprefix("item.").removesuffix(".mode")
+            if not item:
+                raise ValueError("Contributor trace item override needs an item ID.")
+            overrides[item] = value
+        else:
+            raise ValueError("Contributor trace settings contain an unknown key or mode.")
+    return ContributorTraceSettings(project_mode, MappingProxyType(overrides)) if project_mode is not None else None
+
+
+def _observe_or_create_settings_file(path: Path) -> SettingEffects:
+    """Observe file presence without masking access errors; preserve this invocation's creation effect."""
+    effects = SettingEffects("none", "none", "none")
     try:
-        if not path.is_file(follow_symlinks=False):
-            raise ValueError("Contributor trace settings must be a regular file.")
-        listed = git_config.list_entries(path)
-        if isinstance(listed, git_config.ReadFailed):
-            raise ValueError(f"Contributor trace settings are invalid or unreadable: {listed.diagnostic}")
-        project_mode: Literal["off", "on"] | None = None
-        overrides: dict[str, Literal["inherit", "off", "on"]] = {}
-        seen: set[str] = set()
-        for entry in listed.entries:
-            key, value = entry.key, entry.value
-            if key in seen:
-                raise ValueError("Contributor trace settings contain duplicate keys.")
-            seen.add(key)
-            if key == "pinboard.unsafe_persist_exact_pinboard_traces.mode" and value in ("off", "on"):
-                project_mode = value
-            elif key.startswith("item.") and key.endswith(".mode") and value in ("inherit", "off", "on"):
-                item = key.removeprefix("item.").removesuffix(".mode")
-                if not item:
-                    raise ValueError("Contributor trace item override needs an item ID.")
-                overrides[item] = value
-            else:
-                raise ValueError("Contributor trace settings contain an unknown key or mode.")
-        return ContributorTraceSettings(project_mode, MappingProxyType(overrides)) if project_mode is not None else None
-    except (OSError, UnicodeError) as error:
-        raise ValueError("Contributor trace settings are invalid or unreadable.") from error
+        path.stat(follow_symlinks=False)
+        missing = False
+    except FileNotFoundError:
+        missing = True
+    except OSError as error:
+        raise SettingResolutionError(str(error), path, effects, error) from error
+    if missing:
+        try:
+            effects = SettingEffects("none", "confirmed" if create_immutable(path, b"") else "none", "none")
+        except ImmutableFilePublishedError as error:
+            raise SettingResolutionError(
+                str(error), path, SettingEffects("none", "confirmed", "none"), error
+            ) from error
+        except FileIOError as error:
+            if error.code != FileIOErrorCode.FILE_ALREADY_EXISTS:
+                raise SettingResolutionError(str(error), path, effects, error) from error
+    return effects
 
 
 def _settings(data_root: Path) -> SettingResolution[ContributorTraceSettings]:
     path = data_root / SETTINGS_NAME
-    effects = SettingEffects("none", "none", "none")
-    if not path.exists(follow_symlinks=False):
-        try:
-            effects = SettingEffects("none", "confirmed" if create_immutable(path, b"") else "none", "none")
-        except ImmutableFilePublishedError as error:
-            raise SettingResolutionError(str(error), path, SettingEffects("none", "confirmed", "none")) from error
-        except FileIOError as error:
-            if error.code != FileIOErrorCode.FILE_ALREADY_EXISTS:
-                raise SettingResolutionError(str(error), path, effects) from error
+    effects = _observe_or_create_settings_file(path)
     try:
         settings = _decode_settings(path)
+        if isinstance(settings, git_config.ReadFailed):
+            raise SettingResolutionError(
+                f"Cannot read Contributor trace settings at {path}: {settings.cause.diagnostic}",
+                path,
+                effects,
+                settings,
+            )
         if settings is not None:
             return SettingResolution(path, settings, effects)
         written = git_config.add(path, "pinboard.unsafe_persist_exact_pinboard_traces.mode", "off")
         if isinstance(written, git_config.WriteUnconfirmed):
-            effects = SettingEffects(effects.parent_creation, effects.file_creation, "unconfirmed")
+            cause = written.cause
+            if isinstance(cause, git_config.WorkingDirectoryUnavailable):
+                cause = cause.process_failure
+            match cause:
+                case git_config.ProcessFailed():
+                    key_write = "unconfirmed"
+                case git_config.LaunchFailed():
+                    key_write = "none"
+                case _ as unreachable:
+                    assert_never(unreachable)
+            effects = SettingEffects(effects.parent_creation, effects.file_creation, key_write)
             raise SettingResolutionError(
-                f"Cannot write Contributor trace project mode in {path}: {written.diagnostic}", path, effects
+                f"Cannot write Contributor trace project mode in {path}: {written.cause.diagnostic}",
+                path,
+                effects,
+                written,
             )
         effects = SettingEffects(effects.parent_creation, effects.file_creation, "acknowledged")
         settings = _decode_settings(path)
+        if isinstance(settings, git_config.ReadFailed):
+            raise SettingResolutionError(
+                f"Cannot read back Contributor trace settings at {path}: {settings.cause.diagnostic}",
+                path,
+                effects,
+                settings,
+            )
         if settings is None:
             raise ValueError("Contributor trace settings must declare the project mode.")
         return SettingResolution(path, settings, effects)
-    except ValueError as error:
+    except (ValueError, OSError) as error:
         if isinstance(error, SettingResolutionError):
             raise
-        raise SettingResolutionError(str(error), path, effects) from error
+        raise SettingResolutionError(str(error), path, effects, error) from error
 
 
 def _trace_directory(data_root: Path) -> Path:
@@ -157,9 +196,14 @@ def read_project_trace_settings(
 
 def read_configured_project_trace_mode(work_root: Path) -> Literal["off", "on"]:
     path = work_root / SETTINGS_NAME
-    if not path.exists(follow_symlinks=False):
-        raise ValueError("Contributor trace settings file is missing.")
-    settings = _decode_settings(path)
+    try:
+        settings = _decode_settings(path)
+    except FileNotFoundError as error:
+        raise ValueError("Contributor trace settings file is missing.") from error
+    except OSError as error:
+        raise ValueError(f"Cannot read Contributor trace settings at {path}: {error}") from error
+    if isinstance(settings, git_config.ReadFailed):
+        raise ValueError(f"Cannot read Contributor trace settings at {path}: {settings.cause.diagnostic}")
     if settings is None:
         raise ValueError("Contributor trace settings must declare the project mode.")
     return settings.unsafe_persist_exact_pinboard_traces

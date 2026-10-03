@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import io
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -12,6 +13,7 @@ import tempfile
 import unittest
 from collections.abc import MutableMapping
 from contextlib import redirect_stderr, redirect_stdout
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -162,8 +164,9 @@ class ContributorTraceTest(unittest.TestCase):
             self.choose(primary, None)
             settings = primary / ".pinboard" / contributor_traces.SETTINGS_NAME
             settings.write_text("{}")
-            with self.assertRaisesRegex(ValueError, "invalid or unreadable"):
+            with self.assertRaises(SettingResolutionError) as failed:
                 contributor_traces.read_project_trace_settings(primary, None)
+            self.assertIsInstance(failed.exception.cause, git_config.ReadFailed)
             error = io.StringIO()
             with redirect_stderr(error):
                 self.assertEqual(
@@ -331,7 +334,9 @@ class ContributorTraceTest(unittest.TestCase):
                     git_config,
                     "add",
                     return_value=git_config.WriteUnconfirmed(
-                        path.resolve(), "pinboard.unsafe_persist_exact_pinboard_traces.mode", "write failed"
+                        path.resolve(),
+                        "pinboard.unsafe_persist_exact_pinboard_traces.mode",
+                        git_config.ProcessFailed(128, "write failed"),
                     ),
                 ),
                 self.assertRaises(SettingResolutionError) as failed,
@@ -352,7 +357,9 @@ class ContributorTraceTest(unittest.TestCase):
                     "list_entries",
                     side_effect=[
                         git_config.Entries(path.resolve(), ()),
-                        git_config.ReadFailed(path.resolve(), "list-entries", None, "reread failed"),
+                        git_config.ReadFailed(
+                            path.resolve(), "list-entries", None, git_config.ProcessFailed(128, "reread failed")
+                        ),
                     ],
                 ),
                 self.assertRaises(SettingResolutionError) as failed_reread,
@@ -594,6 +601,206 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertEqual("acknowledged", result["settings_mode_write"])
             self.assertEqual(False, result["target_ran"])
 
+    def test_unavailable_service_cwd_preserves_origin_and_requires_service_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            self.settings(primary, "off", {})
+            work_root = primary / ".pinboard"
+            original_cwd = Path.cwd()
+            vanished = Path(temporary) / "vanished"
+            vanished.mkdir()
+            try:
+                os.chdir(vanished)
+                vanished.rmdir()
+                result = self.preflight_result(worktree, work_root)
+            finally:
+                os.chdir(original_cwd)
+            self.assertEqual("MCP service working directory", result["resource"])
+            self.assertIn("Unable to read current working directory", str(result["message"]))
+            self.assertIn("Restart or reconnect", str(result["repair"]))
+            self.assertNotIn("Correct", str(result["repair"]))
+            self.assertEqual("retry-same-input", result["retry"])
+            self.assertEqual("unchanged", result["effect"])
+            self.assertEqual([], result["changed_surfaces"])
+            self.assertEqual("none", result["settings_mode_write"])
+
+    def test_preflight_preserves_git_failure_types_without_guessing_from_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            self.settings(primary, "off", {})
+            work_root = primary / ".pinboard"
+            setting = (work_root / contributor_traces.SETTINGS_NAME).resolve()
+            for cause, resource, repair_fragment in (
+                (git_config.LaunchFailed("Git unavailable"), "Git executable", "Restore access"),
+                (
+                    git_config.ProcessFailed(128, "write denied; working directory unavailable"),
+                    str(setting),
+                    "exit status 128",
+                ),
+                (
+                    git_config.InvalidOutput("Invalid Git configuration entry framing."),
+                    f"Git configuration output for {setting}",
+                    "invalid output",
+                ),
+            ):
+                with (
+                    self.subTest(cause=cause),
+                    patch.object(
+                        git_config,
+                        "list_entries",
+                        return_value=git_config.ReadFailed(setting, "list-entries", None, cause),
+                    ),
+                ):
+                    result = self.preflight_result(worktree, work_root)
+                self.assertEqual(resource, result["resource"])
+                self.assertIn(cause.diagnostic, str(result["message"]))
+                self.assertIn(repair_fragment, str(result["repair"]))
+                self.assertNotIn("Correct", str(result["repair"]))
+                self.assertEqual("retry-same-input", result["retry"])
+                self.assertEqual("unchanged", result["effect"])
+            self.assertEqual("off", contributor_traces.read_configured_project_trace_mode(work_root))
+
+    def test_preflight_distinguishes_settings_read_permission_from_invalid_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            self.settings(primary, "off", {})
+            real_stat = Path.stat
+
+            def deny_settings_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+                if path.name == contributor_traces.SETTINGS_NAME:
+                    raise PermissionError("settings read denied")
+                return real_stat(path, follow_symlinks=follow_symlinks)
+
+            with patch.object(Path, "stat", deny_settings_stat):
+                unreadable = self.preflight_result(worktree, work_root)
+                with self.assertRaisesRegex(ValueError, "settings read denied"):
+                    contributor_traces.read_configured_project_trace_mode(work_root)
+            self.assertIn("settings read denied", str(unreadable["message"]))
+            self.assertIn("Grant read access", str(unreadable["repair"]))
+            self.assertNotIn("write", str(unreadable["repair"]))
+            self.assertEqual("retry-same-input", unreadable["retry"])
+            self.assertEqual("none", unreadable["settings_file_creation"])
+            self.settings(primary, "invalid", {})
+            invalid = self.preflight_result(worktree, work_root)
+            self.assertIn("unknown key or mode", str(invalid["message"]))
+            self.assertIn("Correct", str(invalid["repair"]))
+            self.assertEqual("correct-input", invalid["retry"])
+
+    def test_preflight_preserves_syntax_diagnostics_without_claiming_a_precise_git_cause(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            settings = work_root / contributor_traces.SETTINGS_NAME
+            settings.write_text("[broken\n")
+            result = self.preflight_result(worktree, work_root)
+            self.assertIn("bad config line", str(result["message"]))
+            self.assertIn("git config --file", str(result["repair"]))
+            self.assertEqual("unchanged", result["effect"])
+            self.assertEqual("[broken\n", settings.read_text())
+
+    def test_unavailable_git_before_settings_names_executable_and_suppresses_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            self.settings(primary, "off", {})
+            with patch.object(subprocess, "run", side_effect=FileNotFoundError(2, "Git unavailable", "git")):
+                result = self.preflight_result(worktree, primary / ".pinboard")
+            self.assertEqual("Git executable", result["resource"])
+            self.assertIn("Git unavailable", str(result["message"]))
+            self.assertEqual("retry-same-input", result["retry"])
+            self.assertEqual("unchanged", result["effect"])
+
+    def test_preflight_does_not_claim_a_mode_write_when_git_never_launched(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            setting = work_root / contributor_traces.SETTINGS_NAME
+            with patch.object(
+                git_config,
+                "add",
+                return_value=git_config.WriteUnconfirmed(
+                    setting,
+                    "pinboard.unsafe_persist_exact_pinboard_traces.mode",
+                    git_config.LaunchFailed("Git unavailable"),
+                ),
+            ):
+                result = self.preflight_result(worktree, work_root)
+            self.assertEqual("confirmed", result["settings_file_creation"])
+            self.assertEqual("none", result["settings_mode_write"])
+            self.assertEqual("committed", result["effect"])
+            self.assertEqual("Git executable", result["resource"])
+
+    def test_preflight_preserves_write_effect_when_cwd_observation_wraps_process_failure(self) -> None:
+        real_add = git_config.add
+
+        def failed_write(launched: bool, path: Path, key: str, value: str) -> git_config.WriteUnconfirmed:
+            if launched:
+                self.assertIsInstance(real_add(path, key, value), git_config.WriteAcknowledged)
+            with (
+                patch.object(
+                    subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 128, b"", b"write failed"),
+                    side_effect=None if launched else FileNotFoundError("Git unavailable"),
+                ),
+                patch.object(Path, "cwd", side_effect=FileNotFoundError("direct cwd observation")),
+            ):
+                written = real_add(path, key, value)
+            assert isinstance(written, git_config.WriteUnconfirmed)
+            assert isinstance(written.cause, git_config.WorkingDirectoryUnavailable)
+            self.assertIsInstance(
+                written.cause.process_failure, git_config.ProcessFailed if launched else git_config.LaunchFailed
+            )
+            return written
+
+        for launched in (True, False):
+            with self.subTest(launched=launched), tempfile.TemporaryDirectory() as temporary:
+                primary, worktree = self.project(Path(temporary))
+                work_root = primary / ".pinboard"
+                setting = work_root / contributor_traces.SETTINGS_NAME
+                setting.touch()
+
+                with patch.object(git_config, "add", partial(failed_write, launched)):
+                    result = self.preflight_result(worktree, work_root)
+                self.assertEqual("MCP service working directory", result["resource"])
+                self.assertIn("direct cwd observation", str(result["message"]))
+                self.assertIn("Restart or reconnect", str(result["repair"]))
+                self.assertEqual("retry-same-input", result["retry"])
+                self.assertEqual("none", result["settings_file_creation"])
+                self.assertEqual("unconfirmed" if launched else "none", result["settings_mode_write"])
+                self.assertEqual("unconfirmed" if launched else "unchanged", result["effect"])
+                self.assertEqual(None if launched else False, result["state_changed"])
+                self.assertEqual([], result["changed_surfaces"])
+                if launched:
+                    self.assertIn("Inspect the stored settings", str(result["repair"]))
+                    self.assertEqual("off", contributor_traces.read_configured_project_trace_mode(work_root))
+                else:
+                    self.assertNotIn("Inspect the stored settings", str(result["repair"]))
+                    self.assertEqual("", setting.read_text())
+
+    def test_preflight_keeps_acknowledged_write_when_readback_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            setting = (work_root / contributor_traces.SETTINGS_NAME).resolve()
+            with patch.object(
+                git_config,
+                "list_entries",
+                side_effect=[
+                    git_config.Entries(setting, ()),
+                    git_config.ReadFailed(
+                        setting, "list-entries", None, git_config.ProcessFailed(128, "reread failed")
+                    ),
+                ],
+            ):
+                result = self.preflight_result(worktree, work_root)
+            self.assertEqual("confirmed", result["settings_file_creation"])
+            self.assertEqual("acknowledged", result["settings_mode_write"])
+            self.assertEqual("committed", result["effect"])
+            self.assertIn("reread failed", str(result["message"]))
+            self.assertIn("Inspect the stored settings", str(result["repair"]))
+            self.assertEqual("off", contributor_traces.read_configured_project_trace_mode(work_root))
+
     def test_preflight_reports_directory_created_before_capture_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             primary, worktree = self.project(Path(temporary))
@@ -617,7 +824,9 @@ class ContributorTraceTest(unittest.TestCase):
                 git_config,
                 "add",
                 return_value=git_config.WriteUnconfirmed(
-                    setting, "pinboard.unsafe_persist_exact_pinboard_traces.mode", "write unconfirmed"
+                    setting,
+                    "pinboard.unsafe_persist_exact_pinboard_traces.mode",
+                    git_config.ProcessFailed(128, "write unconfirmed"),
                 ),
             ):
                 result = self.preflight_result(worktree, work_root)

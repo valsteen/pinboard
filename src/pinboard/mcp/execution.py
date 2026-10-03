@@ -14,13 +14,13 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TextIO
+from typing import Literal, TextIO, assert_never
 
 import msgspec
 from mcp.server.mcpserver.exceptions import ToolError
 
 from pinboard import __version__
-from pinboard.adapters.files import contributor_traces
+from pinboard.adapters.files import contributor_traces, git_config
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
 from pinboard.adapters.files.file_io import create_immutable
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
@@ -164,6 +164,49 @@ class SemanticCapture:
         )
 
 
+def _settings_recovery(error: SettingResolutionError) -> tuple[str, str, Literal["correct-input", "retry-same-input"]]:
+    """Assign recovery from the original settings observation, independently of its effect account."""
+    resource = str(error.path)
+    retry: Literal["correct-input", "retry-same-input"] = "correct-input"
+    cause = error.cause
+    if isinstance(cause, git_config.ReadFailed | git_config.WriteUnconfirmed):
+        command = f"git config --file {shlex.quote(str(error.path))} --null --list"
+        match cause.cause:
+            case git_config.WorkingDirectoryUnavailable():
+                resource = "MCP service working directory"
+                repair = "Restart or reconnect the Pinboard MCP service from an existing plugin directory, then retry the same request."
+                retry = "retry-same-input"
+            case git_config.LaunchFailed():
+                resource = "Git executable"
+                repair = (
+                    "Restore access to the Git executable for the Pinboard MCP service, then retry the same request."
+                )
+                retry = "retry-same-input"
+            case git_config.ProcessFailed(returncode=returncode):
+                repair = f"Run `{command}` to diagnose Git's exit status {returncode}; resolve the reported cause before retrying."
+                retry = "retry-same-input"
+            case git_config.InvalidOutput():
+                resource = f"Git configuration output for {error.path}"
+                repair = f"Run `{command}` and resolve Git's invalid output before retrying the same request."
+                retry = "retry-same-input"
+            case _ as unreachable:
+                assert_never(unreachable)
+    else:
+        match cause:
+            case PermissionError():
+                repair = f"Grant read access to {error.path} for the Pinboard MCP service, then retry."
+                retry = "retry-same-input"
+            case OSError() | FileIOError():
+                repair = f"Inspect access and resolve the reported filesystem failure at {error.path} before retrying."
+            case ValueError():
+                repair = f"Correct {error.path} and retry."
+            case _ as unreachable:
+                assert_never(unreachable)
+    if error.effects.key_write != "none" or error.effects.file_creation != "none":
+        repair += f" Inspect the stored settings at {error.path} first; prior settings effects are reported separately."
+    return resource, repair, retry
+
+
 class AutomaticCapture:
     """Resolve the current project and item mode before every MCP callback."""
 
@@ -231,7 +274,17 @@ class AutomaticCapture:
                 or probe_effect == "unconfirmed"
             )
             effect = "unconfirmed" if unconfirmed else "committed" if confirmed else "unchanged"
-            if isinstance(error, StorageError):
+            resource_text = str(resource)
+            retry = "correct-input"
+            if isinstance(error, SettingResolutionError):
+                resource_text, repair, retry = _settings_recovery(error)
+            elif isinstance(error, OSError) and error.filename == "git":
+                resource_text = "Git executable"
+                repair = (
+                    "Restore access to the Git executable for the Pinboard MCP service, then retry the same request."
+                )
+                retry = "retry-same-input"
+            elif isinstance(error, StorageError):
                 repair = f"Inspect Pinboard state under {resource} and resolve this read error before retrying."
             elif "work root must be a real directory" in str(error):
                 try:
@@ -275,12 +328,12 @@ class AutomaticCapture:
                 "status": "rejected",
                 "code": "TRACE_PREFLIGHT_FAILED",
                 "message": f"Automatic Pinboard trace preflight failed: {error}. The target callback did not run.",
-                "resource": str(resource),
+                "resource": resource_text,
                 "repair": repair,
                 "target_ran": False,
                 "state_changed": None if unconfirmed else confirmed,
                 "effect": effect,
-                "retry": "correct-input",
+                "retry": retry,
                 "changed_surfaces": ["work-root"] if confirmed else [],
                 "settings_parent_creation": settings_effects.parent_creation,
                 "settings_file_creation": settings_effects.file_creation,

@@ -13,9 +13,10 @@ lifecycle in ``store.py``. This module never obtains time or invokes callbacks.
 import os
 import sqlite3
 from collections.abc import Generator, Iterable
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime
 from functools import cache
+from hashlib import sha256
 from itertools import batched
 from pathlib import Path
 from urllib.parse import quote
@@ -189,7 +190,7 @@ def _verify_current_schema(connection: sqlite3.Connection) -> None:
                 raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v6 schema.")
             raise StorageError(
                 StorageErrorCode.SCHEMA_UNSUPPORTED,
-                "Schema sqlite-v6 requires 'pinboard migrate-schema' with the same project and work roots before ordinary commands can open it.",
+                "Schema sqlite-v6 requires a 'pinboard migrate-schema' preview and 'migrate-schema --apply <plan-id>' with the same project and work roots before ordinary commands can open it.",
             )
         raise StorageError(
             StorageErrorCode.SCHEMA_UNSUPPORTED,
@@ -435,21 +436,9 @@ def open_database(path: Path, mode: OpenMode) -> sqlite3.Connection:
     return _open_verified_database(path, mode, configure_writes=mode == OpenMode.READ_WRITE)
 
 
-def migrate_v6_database(path: Path) -> bool:
-    """Upgrade one exact v6 ledger under an exclusive transaction; leave v7 unchanged."""
-
-    connection: sqlite3.Connection | None = None
+def _upgrade_v6_connection(connection: sqlite3.Connection) -> bool:
+    connection.execute("BEGIN EXCLUSIVE")
     try:
-        connection = sqlite3.connect(
-            _build_database_uri(path, OpenMode.READ_WRITE),
-            uri=True,
-            timeout=BUSY_TIMEOUT_MS / 1_000,
-            isolation_level=None,
-        )
-        connection.row_factory = sqlite3.Row
-        _configure_connection(connection)
-        connection.execute("PRAGMA synchronous = FULL")
-        connection.execute("BEGIN EXCLUSIVE")
         application, version = _read_required_metadata(connection)
         if application != APPLICATION:
             raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not belong to Pinboard.")
@@ -491,12 +480,82 @@ WHERE outcome_schema = 'checkpoint-acceptance/v2'"""
         connection.commit()
         return True
     except StorageError:
-        if connection is not None and connection.in_transaction:
+        if connection.in_transaction:
             connection.rollback()
         raise
-    except sqlite3.Error as error:
-        if connection is not None and connection.in_transaction:
+    except sqlite3.Error:
+        if connection.in_transaction:
             connection.rollback()
+        raise
+
+
+def schema_logical_digest(connection: sqlite3.Connection) -> str:
+    """Hash the authoritative schema and rows, independent of SQLite page layout."""
+
+    return sha256("\n".join(connection.iterdump()).encode()).hexdigest()
+
+
+def inspect_schema_migration(path: Path) -> tuple[int, str, str | None]:
+    """Observe exact source bytes and the predicted v7 postimage without writing files."""
+
+    try:
+        source_digest = sha256(path.read_bytes()).hexdigest()
+        with closing(
+            sqlite3.connect(_build_database_uri(path, OpenMode.READ_ONLY), uri=True, isolation_level=None)
+        ) as connection:
+            _configure_connection(connection)
+            application, version = _read_required_metadata(connection)
+            if application != APPLICATION:
+                raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not belong to Pinboard.")
+            if version == SCHEMA_VERSION:
+                _verify_current_schema(connection)
+                verify_database_integrity(connection)
+                return version, source_digest, None
+            if version != 6:
+                raise StorageError(
+                    StorageErrorCode.SCHEMA_UNSUPPORTED, f"Schema sqlite-v{version} cannot migrate to v7."
+                )
+            if _read_schema_signature(connection) != _build_v6_schema_signature():
+                raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v6 schema.")
+            verify_database_integrity(connection)
+            with closing(sqlite3.connect(":memory:", isolation_level=None)) as simulation:
+                connection.backup(simulation)
+                _configure_connection(simulation)
+                _upgrade_v6_connection(simulation)
+                return version, source_digest, schema_logical_digest(simulation)
+    except OSError as error:
+        raise StorageError(StorageErrorCode.IO_ERROR, "The schema migration could not read the database.") from error
+    except sqlite3.Error as error:
+        raise translate_database_error(error, opening=True).with_database_path(path) from error
+
+
+def current_schema_logical_digest(path: Path) -> str:
+    connection = open_database(path, OpenMode.READ_ONLY)
+    try:
+        verify_database_integrity(connection)
+        return schema_logical_digest(connection)
+    finally:
+        connection.close()
+
+
+def migrate_v6_database(path: Path) -> bool:
+    """Upgrade one exact v6 ledger under an exclusive transaction; leave v7 unchanged."""
+
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(
+            _build_database_uri(path, OpenMode.READ_WRITE),
+            uri=True,
+            timeout=BUSY_TIMEOUT_MS / 1_000,
+            isolation_level=None,
+        )
+        connection.row_factory = sqlite3.Row
+        _configure_connection(connection)
+        connection.execute("PRAGMA synchronous = FULL")
+        return _upgrade_v6_connection(connection)
+    except StorageError:
+        raise
+    except sqlite3.Error as error:
         raise translate_database_error(error).with_database_path(path) from error
     finally:
         if connection is not None:

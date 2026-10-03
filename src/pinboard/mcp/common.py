@@ -296,7 +296,7 @@ def _require_initialized_durable(shared_repository: Path, work_root: Path) -> Du
         location = observe_storage_location(shared_repository)
         if location == StorageLocation.LEGACY:
             raise ValueError(
-                "Legacy Pinboard work state is unchanged; run 'pinboard migrate-work-root', then retry this tool "
+                "Legacy Pinboard work state is unchanged; preview 'pinboard migrate-work-root', apply its plan ID, then retry this tool "
                 f"with work_root {default_work_root}."
             )
         if location == StorageLocation.CONFLICT:

@@ -71,10 +71,16 @@ def build_parser() -> argparse.ArgumentParser:
     _select_command(initialize, cli_commands.InitializeCommand)
     migrate = commands.add_parser("migrate-work-root", help="Move legacy project state to .pinboard explicitly.")
     migrate.add_argument("--json", action="store_true")
-    _select_command(migrate, cli_commands.MigrateWorkRootCommand)
+    migrate_action = migrate.add_mutually_exclusive_group()
+    migrate_action.add_argument("--apply", metavar="PLAN_ID")
+    migrate_action.add_argument("--reverse", metavar="FORWARD_PLAN_ID")
+    _select_command(migrate, cli_commands.MigrateWorkRootPreviewCommand)
     migrate_schema = commands.add_parser("migrate-schema", help="Upgrade a verified v6 ledger to v7 explicitly.")
     migrate_schema.add_argument("--json", action="store_true")
-    _select_command(migrate_schema, cli_commands.MigrateSchemaCommand)
+    schema_action = migrate_schema.add_mutually_exclusive_group()
+    schema_action.add_argument("--apply", metavar="PLAN_ID")
+    schema_action.add_argument("--reverse", metavar="FORWARD_PLAN_ID")
+    _select_command(migrate_schema, cli_commands.MigrateSchemaPreviewCommand)
     views = commands.add_parser("views", help="Repair generated human-readable views.")
     rebuild = views.add_subparsers(required=True).add_parser("rebuild")
     _select_command(rebuild, cli_commands.RebuildViewsCommand)
@@ -91,6 +97,29 @@ def parse_invocation(argv: Sequence[str] | None = None) -> cli_commands.CliInvoc
     untyped_values = vars(raw).copy()
     untyped_values.pop("command_selection")
     untyped_values.pop("selected_parser")
+    if command_type in (cli_commands.MigrateSchemaPreviewCommand, cli_commands.MigrateWorkRootPreviewCommand):
+        apply = untyped_values.pop("apply")
+        reverse = untyped_values.pop("reverse")
+        if command_type is cli_commands.MigrateSchemaPreviewCommand:
+            command_type = (
+                cli_commands.MigrateSchemaApplyCommand
+                if apply is not None
+                else cli_commands.MigrateSchemaReverseCommand
+                if reverse is not None
+                else cli_commands.MigrateSchemaPreviewCommand
+            )
+        else:
+            command_type = (
+                cli_commands.MigrateWorkRootApplyCommand
+                if apply is not None
+                else cli_commands.MigrateWorkRootReverseCommand
+                if reverse is not None
+                else cli_commands.MigrateWorkRootPreviewCommand
+            )
+        if apply is not None:
+            untyped_values["apply"] = apply
+        if reverse is not None:
+            untyped_values["reverse"] = reverse
     try:
         roots = msgspec.convert(
             {
@@ -117,8 +146,41 @@ def installed_commands() -> tuple[InstalledCommand, ...]:
         if command_type is not None:
             operation_id = parser.prog.removeprefix("pinboard ").replace(" ", "/")
             leaf_usage = " ".join(parser.format_usage().removeprefix("usage: ").split())
-            discovered.append(
-                InstalledCommand(operation_id, command_type, root_usage + leaf_usage.removeprefix("pinboard"))
+            usage = root_usage + leaf_usage.removeprefix("pinboard")
+            if command_type is cli_commands.MigrateSchemaPreviewCommand:
+                preview_usage = usage.removesuffix(" [--apply PLAN_ID | --reverse FORWARD_PLAN_ID]")
+                variants = (
+                    (operation_id, cli_commands.MigrateSchemaPreviewCommand, preview_usage),
+                    (
+                        f"{operation_id}/apply",
+                        cli_commands.MigrateSchemaApplyCommand,
+                        preview_usage + " --apply PLAN_ID",
+                    ),
+                    (
+                        f"{operation_id}/reverse",
+                        cli_commands.MigrateSchemaReverseCommand,
+                        preview_usage + " --reverse FORWARD_PLAN_ID",
+                    ),
+                )
+            elif command_type is cli_commands.MigrateWorkRootPreviewCommand:
+                preview_usage = usage.removesuffix(" [--apply PLAN_ID | --reverse FORWARD_PLAN_ID]")
+                variants = (
+                    (operation_id, cli_commands.MigrateWorkRootPreviewCommand, preview_usage),
+                    (
+                        f"{operation_id}/apply",
+                        cli_commands.MigrateWorkRootApplyCommand,
+                        preview_usage + " --apply PLAN_ID",
+                    ),
+                    (
+                        f"{operation_id}/reverse",
+                        cli_commands.MigrateWorkRootReverseCommand,
+                        preview_usage + " --reverse FORWARD_PLAN_ID",
+                    ),
+                )
+            else:
+                variants = ((operation_id, command_type, usage),)
+            discovered.extend(
+                InstalledCommand(identifier, variant, variant_usage) for identifier, variant, variant_usage in variants
             )
         for action in parser._actions:
             if isinstance(action, argparse._SubParsersAction):

@@ -86,7 +86,7 @@ def _encoded_schema(command_type: type[cli_commands.CliCommand]) -> msgspec.Raw:
     return msgspec.Raw(msgspec.json.encode(msgspec.json.schema(command_type, schema_hook=schema_hook), order="sorted"))
 
 
-def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContract:  # noqa: PLR0915 - exact installed semantic owner
+def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContract:  # noqa: C901, PLR0912, PLR0915 - exact installed semantic owner
     match command.operation_id:
         case "root":
             purpose = "Resolve the source checkout, shared repository, and Pinboard work root."
@@ -151,25 +151,67 @@ def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContra
             postcondition = "Return work_root, resumed state, and optional next guidance; default initialization also owns its exact local Git exclusion."
             retry = "inspect-current-state-before-retry"
         case "migrate-work-root":
-            purpose = "Move verified legacy project state to .pinboard and install its compatibility alias."
+            purpose = "Preview a bound legacy move, current alias repair, or already-aliased no-op."
+            mutation = "read-only"
+            scope = "explicit-project-wide"
+            roles = ("local-caller",)
+            authority = "read-access-to-roots-and-repository-git-exclude"
+            subject = "work-root"
+            precondition = "default-root-state-is-legacy-current-or-exact-compatibility-alias"
+            postcondition = "Return one canonical plan and digest without changing files or Git metadata."
+            retry = "safe-to-repeat"
+        case "migrate-work-root/apply":
+            purpose = "Apply or resume only the named bound work-root plan, retaining predecessor evidence."
             mutation = "migrates-work-root"
             scope = "explicit-project-wide"
             roles = ("local-caller",)
             authority = "filesystem-and-repository-git-exclude-access"
             subject = "work-root"
-            precondition = "default-root-state-is-legacy-current-or-exact-compatibility-alias"
-            postcondition = "Preserve ledger and artifact bytes while establishing .pinboard and the exact relative compatibility alias."
-            retry = "inspect-current-state-before-retry"
+            precondition = "matching-preview-or-persisted-plan-with-unchanged-authoritative-tree"
+            postcondition = (
+                "Record progress, verify backup before a legacy move, and install or reverse the exact alias."
+            )
+            retry = "resume-only-the-same-plan-after-inspecting-effects"
+        case "migrate-work-root/reverse":
+            purpose = "Preview reversal of an effectful root plan while its migrated tree is unchanged."
+            mutation = "read-only"
+            scope = "explicit-project-wide"
+            roles = ("local-caller",)
+            authority = "read-access-to-roots-sidecar-and-repository-git-exclude"
+            subject = "work-root"
+            precondition = "completed-forward-plan-with-unchanged-postimage"
+            postcondition = "Return one bound reverse plan without changing files or Git metadata."
+            retry = "safe-to-repeat"
         case "migrate-schema":
-            purpose = "Upgrade one exact v6 SQLite ledger to v7 with an indexed checkpoint-history path."
+            purpose = "Preview an exact v6-to-v7 upgrade or current-v7 no-op."
+            mutation = "read-only"
+            scope = "explicit-project-wide"
+            roles = ("local-caller",)
+            authority = "read-access-and-quiescent-ledger"
+            subject = "ledger"
+            precondition = "exact-v6-or-v7-schema-with-no-concurrent-users"
+            postcondition = "Return one canonical plan and digest without changing files or Git metadata."
+            retry = "safe-to-repeat"
+        case "migrate-schema/apply":
+            purpose = "Apply or resume only the named schema plan with an exact v6 backup."
             mutation = "mutates-ledger"
             scope = "explicit-project-wide"
             roles = ("local-caller",)
             authority = "filesystem-access-and-quiescent-ledger"
             subject = "ledger"
-            precondition = "exact-v6-or-v7-schema-with-no-concurrent-users"
-            postcondition = "Preserve existing facts and install the checkpoint-history index atomically."
-            retry = "inspect-current-state-before-retry"
+            precondition = "matching-preview-or-persisted-plan-with-unchanged-authoritative-database"
+            postcondition = "Retain verified v6 bytes and atomically upgrade or restore the selected database."
+            retry = "resume-only-the-same-plan-after-inspecting-effects"
+        case "migrate-schema/reverse":
+            purpose = "Preview exact v6 restoration while the migrated v7 ledger is unchanged."
+            mutation = "read-only"
+            scope = "explicit-project-wide"
+            roles = ("local-caller",)
+            authority = "read-access-to-ledger-plan-and-backup"
+            subject = "ledger"
+            precondition = "completed-forward-plan-with-unchanged-postimage"
+            postcondition = "Return one bound reverse plan without changing files or Git metadata."
+            retry = "safe-to-repeat"
         case "close":
             purpose = "Record a terminal decision for eligible live work without an accepted attempt."
             mutation = "mutates-ledger"

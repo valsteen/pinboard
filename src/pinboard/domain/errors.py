@@ -24,6 +24,7 @@ class ChangedSurface(Enum):
     REPOSITORY_GIT_EXCLUDE = "repository-git-exclude"
     WORK_ROOT = "work-root"
     COMPATIBILITY_ALIAS = "compatibility-alias"
+    MIGRATION_EVIDENCE = "migration-evidence"
     SELECTED_OUTPUT = "selected-output"
     SOURCE_CHECKOUT = "source-checkout"
 
@@ -90,6 +91,8 @@ class DecisionFailureCode(Enum):
     WORK_ROOT_MIGRATION_REQUIRED = "WORK_ROOT_MIGRATION_REQUIRED"
     WORK_ROOT_MIGRATION_INVALID = "WORK_ROOT_MIGRATION_INVALID"
     WORK_ROOT_MIGRATION_FAILED = "WORK_ROOT_MIGRATION_FAILED"
+    SCHEMA_MIGRATION_INVALID = "SCHEMA_MIGRATION_INVALID"
+    SCHEMA_MIGRATION_FAILED = "SCHEMA_MIGRATION_FAILED"
 
 
 @dataclass(frozen=True, slots=True)

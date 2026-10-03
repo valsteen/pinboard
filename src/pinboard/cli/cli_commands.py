@@ -68,11 +68,31 @@ class InitializeCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     json: bool = False
 
 
-class MigrateWorkRootCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class MigrateWorkRootPreviewCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     json: bool = False
 
 
-class MigrateSchemaCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class MigrateWorkRootApplyCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    apply: str
+    json: bool = False
+
+
+class MigrateWorkRootReverseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    reverse: str
+    json: bool = False
+
+
+class MigrateSchemaPreviewCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    json: bool = False
+
+
+class MigrateSchemaApplyCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    apply: str
+    json: bool = False
+
+
+class MigrateSchemaReverseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    reverse: str
     json: bool = False
 
 
@@ -88,8 +108,12 @@ type CliCommand = (
     | ToolContractCommand
     | ExportCommand
     | InitializeCommand
-    | MigrateWorkRootCommand
-    | MigrateSchemaCommand
+    | MigrateWorkRootPreviewCommand
+    | MigrateWorkRootApplyCommand
+    | MigrateWorkRootReverseCommand
+    | MigrateSchemaPreviewCommand
+    | MigrateSchemaApplyCommand
+    | MigrateSchemaReverseCommand
     | RebuildViewsCommand
 )
 

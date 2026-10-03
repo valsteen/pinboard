@@ -1,7 +1,17 @@
-"""Select, verify, and present the explicit legacy work-root migration."""
+"""Select, verify, and present the bound legacy work-root procedure."""
+
+from typing import assert_never
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
-from pinboard.adapters.files.legacy_storage import StorageLocation, migrate_legacy_storage, observe_storage_location
+from pinboard.adapters.files.legacy_storage import (
+    AppliedRoot,
+    PlannedRoot,
+    RootProcedureFailure,
+    StorageLocation,
+    apply_root,
+    observe_storage_location,
+    preview_root,
+)
 from pinboard.adapters.sqlite.database import open_database
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.cli import cli_commands
@@ -21,20 +31,28 @@ from pinboard.domain.errors import (
 def _failure(
     code: DecisionFailureCode,
     message: str,
-    *,
-    effect: EffectDisposition = EffectDisposition.UNCHANGED,
-    changed_surfaces: tuple[ChangedSurface, ...] = (),
+    roots: cli_commands.ResolvedRoots,
+    plan_id: str,
+    changed_surfaces: tuple[ChangedSurface, ...],
+    retry: RetryDisposition,
 ) -> CommandFailure:
     return CommandFailure(
         code,
         message,
         FailureDetails(
-            observed=(FailureFact("recovery_command", "pinboard migrate-work-root"),),
+            observed=(
+                FailureFact("plan_id", plan_id),
+                FailureFact("recovery_command", "pinboard migrate-work-root, then --apply <plan-id>"),
+                FailureFact(
+                    "permission_request",
+                    f"Grant this CLI access to {roots.shared_repository / '.git' / 'info' / 'exclude'}, "
+                    f"{roots.shared_repository / '.codex' / 'pinboard-migration'}, "
+                    f"{roots.shared_repository / '.codex' / 'pinboard'}, and {roots.work}.",
+                ),
+            ),
             mismatches=(),
-            retry=RetryDisposition.DO_NOT_RETRY
-            if effect == EffectDisposition.COMMITTED
-            else RetryDisposition.CORRECT_INPUT,
-            effect=effect,
+            retry=retry,
+            effect=EffectDisposition.COMMITTED if changed_surfaces else EffectDisposition.UNCHANGED,
             changed_surfaces=changed_surfaces,
             alternatives=(),
         ),
@@ -48,25 +66,30 @@ def require_current_work_root(roots: cli_commands.ResolvedRoots) -> CommandFailu
     if location == StorageLocation.LEGACY:
         return _failure(
             DecisionFailureCode.WORK_ROOT_MIGRATION_REQUIRED,
-            "Legacy Pinboard state is unchanged; run 'pinboard migrate-work-root', then retry this command.",
+            "Legacy Pinboard state is unchanged; preview 'pinboard migrate-work-root', apply its plan, then retry.",
+            roots,
+            "",
+            (),
+            RetryDisposition.CORRECT_INPUT,
         )
     if location == StorageLocation.CONFLICT:
         return _failure(
             DecisionFailureCode.WORK_ROOT_MIGRATION_INVALID,
             "The legacy and canonical work-root entries conflict; inspect both paths before retrying.",
+            roots,
+            "",
+            (),
+            RetryDisposition.CORRECT_INPUT,
         )
     return None
 
 
-def _changed_surfaces(git_exclude_changed: bool, root_moved: bool, alias_created: bool) -> tuple[ChangedSurface, ...]:
-    return (
-        *((ChangedSurface.REPOSITORY_GIT_EXCLUDE,) if git_exclude_changed else ()),
-        *((ChangedSurface.WORK_ROOT,) if root_moved else ()),
-        *((ChangedSurface.COMPATIBILITY_ALIAS,) if alias_created else ()),
-    )
-
-
-def migrate_work_root(roots: cli_commands.ResolvedRoots) -> CommandResult[int]:
+def migrate_work_root(
+    roots: cli_commands.ResolvedRoots,
+    command: cli_commands.MigrateWorkRootPreviewCommand
+    | cli_commands.MigrateWorkRootApplyCommand
+    | cli_commands.MigrateWorkRootReverseCommand,
+) -> CommandResult[int]:
     location = observe_storage_location(roots.shared_repository)
     legacy = roots.shared_repository / ".codex" / "pinboard"
     if (
@@ -77,30 +100,59 @@ def migrate_work_root(roots: cli_commands.ResolvedRoots) -> CommandResult[int]:
         return _failure(
             DecisionFailureCode.WORK_ROOT_MIGRATION_INVALID,
             "Migration requires the default root and one verified current-schema ledger without conflicting paths.",
+            roots,
+            "",
+            (),
+            RetryDisposition.CORRECT_INPUT,
         )
     source = legacy if location == StorageLocation.LEGACY else roots.work
     connection = open_database(resolve_durable_roots(roots.shared_repository, source).database_path, OpenMode.READ_ONLY)
     connection.close()
-    effects = migrate_legacy_storage(roots.shared_repository, location)
-    changed_surfaces = _changed_surfaces(effects.git_exclude_changed, effects.root_moved, effects.alias_created)
-    if effects.failure is not None:
+    match command:
+        case cli_commands.MigrateWorkRootPreviewCommand():
+            selected = preview_root(roots.shared_repository)
+            requested_id = ""
+        case cli_commands.MigrateWorkRootReverseCommand(reverse=forward_id):
+            selected = preview_root(roots.shared_repository, forward_id)
+            requested_id = forward_id
+        case cli_commands.MigrateWorkRootApplyCommand(apply=plan_id):
+            selected = apply_root(roots.shared_repository, plan_id)
+            requested_id = plan_id
+        case _ as unreachable:
+            assert_never(unreachable)
+    if isinstance(selected, RootProcedureFailure):
+        changed_surfaces = tuple(ChangedSurface(value) for value in selected.changed_surfaces)
         return _failure(
-            DecisionFailureCode.WORK_ROOT_MIGRATION_FAILED,
-            effects.failure,
-            effect=EffectDisposition.COMMITTED if changed_surfaces else EffectDisposition.UNCHANGED,
-            changed_surfaces=changed_surfaces,
+            DecisionFailureCode.WORK_ROOT_MIGRATION_FAILED
+            if changed_surfaces
+            else DecisionFailureCode.WORK_ROOT_MIGRATION_INVALID,
+            selected.message,
+            roots,
+            requested_id,
+            changed_surfaces,
+            RetryDisposition.RETRY_SAME_INPUT
+            if selected.retry == "retry-same-input"
+            else RetryDisposition.CORRECT_INPUT,
         )
-    changed = bool(changed_surfaces)
+    changed = isinstance(selected, AppliedRoot) and bool(selected.changed_surfaces)
     write_json(
         WorkRootMigrationView(
-            "pinboard-work-root-migration/v1",
-            "migrated" if changed else "unchanged",
+            "pinboard-work-root-migration/v2",
+            "planned"
+            if isinstance(selected, PlannedRoot)
+            else "migrated"
+            if changed and selected.direction == "forward"
+            else "reversed"
+            if changed
+            else "unchanged",
+            selected.plan_id,
+            selected.plan if isinstance(selected, PlannedRoot) else None,
             str(roots.work),
             str(legacy),
             changed,
             "committed" if changed else "unchanged",
             "do-not-retry" if changed else "safe-to-repeat",
-            tuple(surface.value for surface in changed_surfaces),
+            selected.changed_surfaces if isinstance(selected, AppliedRoot) else (),
         )
     )
     return 0

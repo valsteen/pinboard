@@ -1,4 +1,4 @@
-"""The cheap Codex isolation probe that must pass before any paid Codex run.
+"""The cheap Codex isolation probe required for paid delivery runs and bounded coverage.
 
 In a fresh isolated home it renders the model-visible context without a model call, checks that only the exported
 skills, the exported Pinboard MCP server and the probe project's ``AGENTS.md`` load, then spends two tiny turns

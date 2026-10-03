@@ -38,7 +38,7 @@ def _add_root_selection(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--work-root", type=Path)
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one explicit installed CLI grammar
     parser = argparse.ArgumentParser(prog="pinboard", description="Inspect and maintain one pinboard.")
     parser.add_argument("--version", action="version", version=__version__)
     _add_root_selection(parser)

@@ -184,6 +184,17 @@ def _git_bytes(cwd: Path, *arguments: str, unavailable_message: str) -> bytes:
     return result.stdout
 
 
+def read_commit_file(cwd: Path, revision: str, relative_path: str) -> bytes:
+    """Read exact authority bytes from the accepted Git commit tree."""
+    return _git_bytes(
+        cwd,
+        "show",
+        "--no-ext-diff",
+        f"{revision}:{relative_path}",
+        unavailable_message=f"Cannot read '{relative_path}' at accepted base '{revision}'.",
+    )
+
+
 def observe_checkout_identity(cwd: Path) -> tuple[str, str]:
     """Return the exact current branch and HEAD revision for one selected checkout."""
 

@@ -16,7 +16,7 @@ from typing import assert_never
 import msgspec
 
 from pinboard.adapters.files import root
-from pinboard.adapters.files.brief_sources import select_checkout_brief_source
+from pinboard.adapters.files.brief_sources import select_base_brief_source, select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.application import (
     candidate_snapshot_compatibility_models,
@@ -533,7 +533,7 @@ def _read_dispatch_brief(
         return failure
     if validate_original_authorities and isinstance(brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint):
         failure = validate_reviewed_authority_digests(
-            partial(select_checkout_brief_source, source_checkout_root),
+            partial(select_base_brief_source, source_checkout_root, attempt_base_revision),
             brief.checkpoint.reviewed_authorities,
         )
         match failure:

@@ -5,7 +5,14 @@ from typing import get_args
 import msgspec
 
 from pinboard.adapters import dispatch_operations
-from pinboard.application import action_models, brief_source_models, dispatch_models, query_models, work_brief_contract
+from pinboard.application import (
+    action_models,
+    brief_source_models,
+    dispatch_models,
+    item_integration,
+    query_models,
+    work_brief_contract,
+)
 from pinboard.domain import decision_models
 from pinboard.domain.errors import DecisionFailureCode
 from pinboard.mcp.contracts import (
@@ -76,6 +83,7 @@ from pinboard.mcp.contracts import (
     DispatchRejected,
     ExecutorBusyResult,
     ItemDefinitionRejected,
+    ItemIntegrationRejected,
     ItemStatusInconsistent,
     ItemStatusInvalid,
     ItemStatusReceiptDamaged,
@@ -144,7 +152,7 @@ def _portable_pattern(pattern: str) -> tuple[str, str | None]:
         return projected, None
     if pattern == r"\A[^\n]+\z":
         return projected, r"\n$"
-    if pattern == r"\A(?!\.{1,2}\z)[^/\r\n\x00]+\z":
+    if pattern in {r"\A(?!\.{1,2}\z)[^/\r\n\x00]+\z", r"\A[^-\r\n][^\r\n]*\z"}:
         return projected, r"[\r\n]$"
     return projected, r"[\r\n\u2028\u2029]$"
 
@@ -881,6 +889,18 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         msgspec.convert(content, type=ArtifactBytesInvalid, strict=True)
     elif schema == "pinboard-item-status/v2" and tool_name == "pinboard_item_status":
         msgspec.convert(content, type=query_models.ItemStatus, strict=True)
+    elif schema == "pinboard-item-integration/v1" and tool_name == "pinboard_item_status":
+        msgspec.convert(content, type=item_integration.ItemIntegration, strict=True)
+    elif tool_name == "pinboard_item_status" and code in {
+        "INTEGRATION_TARGET_UNRESOLVED",
+        "INTEGRATION_CANDIDATE_UNAVAILABLE",
+        "INTEGRATION_CANDIDATE_EVIDENCE_INVALID",
+        "PROJECT_GIT_CHECKOUT_UNAVAILABLE",
+        "PROJECT_GIT_ROOT_UNAVAILABLE",
+        "PROJECT_GIT_LAYOUT_UNSUPPORTED",
+        "PROJECT_GIT_EXCLUDE_UNAVAILABLE",
+    }:
+        msgspec.convert(content, type=ItemIntegrationRejected, strict=True)
     elif schema == "pinboard-branch-owners/v1" and tool_name == "pinboard_item_status":
         msgspec.convert(content, type=query_models.BranchOwners, strict=True)
     elif tool_name == "pinboard_item_status" and code == "ITEM_STATUS_INVALID":

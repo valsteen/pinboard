@@ -72,7 +72,7 @@ from pinboard.adapters.sqlite.persistence import accept_artifact_reference as pe
 from pinboard.adapters.sqlite.proposals import (
     read_proposals_by_ids,
 )
-from pinboard.application import candidate_snapshots, queries, query_models, stored_state, work_briefs
+from pinboard.application import candidate_snapshots, item_integration, queries, query_models, stored_state, work_briefs
 from pinboard.application.artifacts import ArtifactRef, BriefArtifactRef
 from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.application.project_export import ProjectExportState
@@ -433,6 +433,17 @@ def _read_candidate_snapshot_context_facts(
     )
 
 
+class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
+class _IntegrationAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    candidate_revision: str | None
+
+
 class SQLiteWorkStore:
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -753,6 +764,65 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return _read_candidate_snapshot_context_facts(connection, attempt_id)
+        finally:
+            connection.close()
+
+    def read_item_integration_facts(self, item_id: WorkItemId) -> item_integration.Facts | None:
+        """Read only the named item, its live attempt, or its exact closing receipt."""
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                row = connection.execute(
+                    "SELECT state, subject_revision FROM work_items WHERE item_id = ?", (item_id,)
+                ).fetchone()
+                if row is None:
+                    return None
+                item = decode_row(row, _IntegrationItemRow)
+                revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+                assert revision_row is not None
+                revision = decode_row(revision_row, ProjectRevisionRow).revision
+                closing = None
+                attempt = None
+                if item.state == stored_state.StoredWorkItemState.DONE:
+                    receipt_row = connection.execute(
+                        "SELECT history_id FROM transition_history WHERE project_revision = ?", (item.subject_revision,)
+                    ).fetchone()
+                    if receipt_row is not None:
+                        closing = sqlite_state.read_history_receipt(
+                            connection, decode_row(receipt_row, HistoryIdRow).history_id
+                        )
+                else:
+                    attempt_row = connection.execute(
+                        "SELECT attempt_id, state, candidate_revision FROM attempts INDEXED BY one_live_attempt_per_item WHERE item_id = ? AND state != 'done'",
+                        (item_id,),
+                    ).fetchone()
+                    if attempt_row is not None:
+                        attempt = decode_row(attempt_row, _IntegrationAttemptRow)
+                return item_integration.Facts(
+                    revision,
+                    item_id,
+                    item.state,
+                    None if attempt is None else attempt.attempt_id,
+                    None if attempt is None else attempt.state,
+                    None if attempt is None else attempt.candidate_revision,
+                    closing,
+                )
+        finally:
+            connection.close()
+
+    def read_latest_checkpoint_receipt(self, attempt_id: AttemptId) -> stored_state.StoredTransitionReceipt | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                row = connection.execute(
+                    "SELECT history_id FROM transition_history WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2' ORDER BY history_id DESC LIMIT 1",
+                    (attempt_id,),
+                ).fetchone()
+                return (
+                    None
+                    if row is None
+                    else sqlite_state.read_history_receipt(connection, decode_row(row, HistoryIdRow).history_id)
+                )
         finally:
             connection.close()
 

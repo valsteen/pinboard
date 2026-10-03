@@ -698,7 +698,7 @@ class DamagedTransitionReceipt:
     attempt_id: AttemptId
     history_id: HistoryId
     committed_at: datetime
-    action_kind: DamagedReceiptActionKind
+    action_kind: DamagedReceiptActionKind | Literal[decision_models.ActionKind.COMPLETE]
     defect: str
 
 

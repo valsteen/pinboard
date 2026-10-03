@@ -8,7 +8,7 @@ snapshot. These functions never read files, mutate state, or present output.
 from collections.abc import Mapping
 from datetime import datetime
 from types import MappingProxyType
-from typing import assert_never
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -116,7 +116,7 @@ def damaged_receipt_message(damaged: query_models.DamagedTransitionReceipt) -> s
 
 
 def damaged_receipt_diagnosis(
-    action_kind: query_models.DamagedReceiptActionKind,
+    action_kind: query_models.DamagedReceiptActionKind | Literal[decision_models.ActionKind.COMPLETE],
 ) -> query_models.DamagedReceiptDiagnosis:
     """Name the read that can diagnose a damaged consumed receipt without repairing it.
 
@@ -133,6 +133,7 @@ def damaged_receipt_diagnosis(
             decision_models.ActionKind.RETURN_FOR_CORRECTION
             | decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
             | decision_models.ActionKind.ACCEPT_CHECKPOINT
+            | decision_models.ActionKind.COMPLETE
         ):
             return query_models.DamagedReceiptDiagnosis.HUMAN
         case _ as unreachable:

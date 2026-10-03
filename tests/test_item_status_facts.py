@@ -418,7 +418,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                     self.update_receipt(fixture, damaged_history, **columns)
 
                     status = self.item_leaf(fixture)
-                    self.assertEqual("pinboard-mcp-item-status-result/v2", status["schema"])
+                    self.assertEqual("pinboard-mcp-item-status-result/v3", status["schema"])
                     named = self.named_receipt(status, receipt)
                     self.assertEqual((AttemptId("work-a-1"), damaged_history), (named.attempt_id, named.history_id))
                     self.assertEqual(diagnosis, queries.damaged_receipt_diagnosis(receipt))

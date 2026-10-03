@@ -1,7 +1,9 @@
 import fcntl
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import BinaryIO
 
 from pinboard.adapters.files.errors import RootError, RootErrorCode
@@ -9,6 +11,75 @@ from pinboard.application.candidate_identity import working_tree_identity
 from pinboard.domain import work_models
 
 _READ_CHUNK_BYTES = 64 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class ContentObservation:
+    target_revision: str
+    present: bool
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedTarget:
+    target: str
+
+
+def read_integration_content(cwd: Path, target: str, diff: bytes) -> ContentObservation | UnresolvedTarget:
+    """Reverse-check reviewed bytes in a private index; leave all repository state untouched.
+
+    Empty bytes need no apply check. Target resolution still supplies the full
+    commit named by every successful observation. No ref is fetched.
+    """
+
+    # Establish a readable checkout so an unknown ref is distinct from a broken repository.
+    _git_text(cwd, "rev-parse", "--show-toplevel")
+    try:
+        revision = _git_text(cwd, "rev-parse", "--verify", f"{target}^{{commit}}")
+    except RootError:
+        return UnresolvedTarget(target)
+    if not diff:
+        return ContentObservation(revision, True)
+    try:
+        with TemporaryDirectory(prefix="pinboard-integration-") as temporary:
+            environment = {**os.environ, "GIT_INDEX_FILE": str(Path(temporary) / "index")}
+            tree = subprocess.run(
+                ["git", "-c", "core.splitIndex=false", "read-tree", revision],
+                cwd=cwd,
+                env=environment,
+                capture_output=True,
+                check=False,
+            )
+            if tree.returncode != 0:
+                raise RootError(
+                    RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, tree.stderr.decode(errors="replace").strip()
+                )
+            applied = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "core.splitIndex=false",
+                    "-c",
+                    "apply.ignoreWhitespace=false",
+                    "apply",
+                    "--cached",
+                    "--check",
+                    "--reverse",
+                    "--whitespace=nowarn",
+                    "-",
+                ],
+                cwd=cwd,
+                env=environment,
+                input=diff,
+                capture_output=True,
+                check=False,
+            )
+            if applied.returncode not in (0, 1):
+                raise RootError(
+                    RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, applied.stderr.decode(errors="replace").strip()
+                )
+            return ContentObservation(revision, applied.returncode == 0)
+    except OSError as error:
+        raise RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, str(error)) from error
 
 
 @dataclass(frozen=True, slots=True)

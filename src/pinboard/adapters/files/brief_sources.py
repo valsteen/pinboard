@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from pinboard.adapters.files import root
+from pinboard.adapters.files.errors import RootError
 from pinboard.application.brief_source_models import (
     AuthoritySelector,
     BriefSourceErrorCode,
@@ -25,5 +27,22 @@ def select_checkout_brief_source(
         return BriefSourceFailure(
             BriefSourceErrorCode.SOURCE_UNREADABLE,
             f"Cannot read authority at '{path}': {error}",
+        )
+    return select_brief_source_bytes(selector, raw, require_utf8)
+
+
+def select_base_brief_source(
+    source_checkout_root: Path,
+    base_revision: str,
+    selector: AuthoritySelector,
+    require_utf8: bool,
+) -> BriefSourceResult[SelectedBriefSource]:
+    """Select reviewed authority bytes from the accepted base revision."""
+    try:
+        raw = root.read_commit_file(source_checkout_root, base_revision, selector.relative_path.as_posix())
+    except (RootError, OSError) as error:
+        return BriefSourceFailure(
+            BriefSourceErrorCode.SOURCE_UNREADABLE,
+            f"Cannot read authority '{selector.relative_path}' at accepted base '{base_revision}': {error}",
         )
     return select_brief_source_bytes(selector, raw, require_utf8)

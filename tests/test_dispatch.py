@@ -4,6 +4,7 @@ import unittest
 from collections.abc import Callable
 from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
@@ -184,7 +185,9 @@ class DispatchTest(unittest.TestCase):
             False,
             str(project),
             "codex/work-a",
-            "base-revision",
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True, text=True
+            ).stdout.strip(),
             HostId("local"),
             FRESH_CONTEXT_REQUIRED,
             3600,
@@ -193,6 +196,28 @@ class DispatchTest(unittest.TestCase):
 
     def run_git(self, cwd: Path, *arguments: str) -> None:
         subprocess.run(["git", *arguments], cwd=cwd, check=True, capture_output=True)
+
+    def committed_brief(self, project: Path) -> work_brief_models.WorkBrief:
+        if not (project / ".git").exists():
+            self.run_git(project, "init", "-q")
+        brief = work_a_brief(project)
+        self.run_git(project, "add", "architecture.md")
+        staged = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=project, check=False)
+        if staged.returncode:
+            self.run_git(
+                project,
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-qm",
+                "base",
+            )
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        return replace(brief, base_revision=revision)
 
     def initialized(
         self,
@@ -213,7 +238,7 @@ class DispatchTest(unittest.TestCase):
             self.run_git(project, "init", "-q")
         roots = resolve_durable_roots(project) if roots is None else roots
         initialize_database(roots, SQLITE_NOW)
-        brief = replace(work_a_brief(project), checkout_selection=classify_checkout(project))
+        brief = replace(self.committed_brief(project), checkout_selection=classify_checkout(project))
         published = write_revision(
             roots,
             NewArtifact(
@@ -237,10 +262,15 @@ class DispatchTest(unittest.TestCase):
             content_sha256=published.content_sha256,
             size_bytes=published.size_bytes,
         )
+        lifecycle = dataclass_replace(
+            state.lifecycle,
+            attempts=(dataclass_replace(state.lifecycle.attempts[0], base_revision=brief.base_revision),),
+        )
         state = dataclass_replace(
             state,
             artifact_references=(reference, *state.artifact_references[1:]),
             authority=dataclass_replace(state.authority, attempt_leases=leases),
+            lifecycle=lifecycle,
         )
         store = SQLiteWorkStore(roots.database_path)
         initialize_store(store, state)
@@ -306,7 +336,7 @@ class DispatchTest(unittest.TestCase):
 
     def test_direct_typed_dispatch_validates_identity_sources_review_and_prompt(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
-        value = work_a_brief(project)
+        value = self.committed_brief(project)
         path = project / "brief.json"
         path.write_bytes(canonical_work_brief_bytes(value))
         environment = self.environment(project)
@@ -358,7 +388,7 @@ class DispatchTest(unittest.TestCase):
         self.assertIn("launch adds or changes instructions", altered_prompt.message)
 
         project.joinpath("architecture.md").write_text("# Architecture\n\n## Contract\n\nChanged.\n", encoding="utf-8")
-        stale_source = expect_dispatch_failure(
+        expect_dispatch_success(
             prepare_dispatch_from_artifact(
                 path,
                 value.attempt_id,
@@ -371,10 +401,57 @@ class DispatchTest(unittest.TestCase):
                 accepted_scope_revision=value.accepted_scope.revision,
                 accepted_scope_digest=value.accepted_scope.digest,
                 accepted_review=candidate,
+            )
+        )
+        self.run_git(project, "add", "architecture.md")
+        self.run_git(project, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "changed")
+        changed_base = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        stale_brief = replace(value, base_revision=changed_base)
+        path.write_bytes(canonical_work_brief_bytes(stale_brief))
+        stale_source = expect_dispatch_failure(
+            prepare_dispatch_from_artifact(
+                path,
+                stale_brief.attempt_id,
+                stale_brief.branch,
+                stale_brief.base_revision,
+                project,
+                CHECKPOINT_ID,
+                replace(environment, starting_revision=changed_base),
+                accepted_item_id=stale_brief.item_id,
+                accepted_scope_revision=stale_brief.accepted_scope.revision,
+                accepted_scope_digest=stale_brief.accepted_scope.digest,
+                accepted_review=ready_review(stale_brief),
             ),
             DispatchErrorCode.DISPATCH_AUTHORITY_STALE,
         )
         self.assertIn("changed after review", stale_source.message)
+
+        self.run_git(project, "rm", "architecture.md")
+        self.run_git(project, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "removed")
+        missing_base = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        missing_brief = replace(value, base_revision=missing_base)
+        path.write_bytes(canonical_work_brief_bytes(missing_brief))
+        missing = expect_dispatch_failure(
+            prepare_dispatch_from_artifact(
+                path,
+                missing_brief.attempt_id,
+                missing_brief.branch,
+                missing_brief.base_revision,
+                project,
+                CHECKPOINT_ID,
+                replace(environment, starting_revision=missing_base),
+                accepted_item_id=missing_brief.item_id,
+                accepted_scope_revision=missing_brief.accepted_scope.revision,
+                accepted_scope_digest=missing_brief.accepted_scope.digest,
+                accepted_review=ready_review(missing_brief),
+            ),
+            DispatchErrorCode.DISPATCH_AUTHORITY_UNREADABLE,
+        )
+        self.assertIn("architecture", missing.message)
 
     def test_dispatch_samples_selection_publication_and_confirmation_times_separately(self) -> None:
         project, roots, store, brief, action, environment = self.initialized()
@@ -402,7 +479,7 @@ class DispatchTest(unittest.TestCase):
 
     def test_identity_review_and_environment_failure_matrix_is_stable(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
-        value = work_a_brief(project)
+        value = self.committed_brief(project)
         path = project / "brief.json"
         path.write_bytes(canonical_work_brief_bytes(value))
         environment = self.environment(project)
@@ -506,7 +583,7 @@ class DispatchTest(unittest.TestCase):
 
     def test_base_mismatch_reports_each_stale_source(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
-        value = work_a_brief(project)
+        value = self.committed_brief(project)
         path = project / "brief.json"
         path.write_bytes(canonical_work_brief_bytes(value))
         failure = expect_dispatch_failure(
@@ -539,7 +616,7 @@ class DispatchTest(unittest.TestCase):
 
     def test_needs_correction_review_remains_invalid_as_ready_dispatch_evidence(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
-        value = work_a_brief(project)
+        value = self.committed_brief(project)
         path = project / "brief.json"
         path.write_bytes(canonical_work_brief_bytes(value))
 
@@ -560,7 +637,7 @@ class DispatchTest(unittest.TestCase):
 
     def test_local_checkpoint_rejects_review_arguments(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
-        value = work_a_brief(project)
+        value = self.committed_brief(project)
         cross = value.checkpoint
         assert isinstance(cross, work_brief_models.CrossBoundaryCheckpoint)
         local = work_brief_models.LocalCheckpoint(
@@ -1436,6 +1513,116 @@ class DispatchTest(unittest.TestCase):
         self.assertIn(f"Checkout: {linked_checkout}", prompt)
         self.assertTrue(shared_database_exists)
         self.assertFalse(duplicate_ledger_exists)
+
+    def test_rebound_native_dispatch_uses_base_authority_despite_dirty_current_source(self) -> None:
+        project, roots, _store, brief, action, environment = self.initialized()
+        replacement = replace(brief, artifact_revision=2)
+        published = call_native_tool(
+            mcp_server.BRIEF_PUBLISH_TOOL,
+            {
+                "project_root": str(project),
+                "work_root": str(roots.work_root),
+                "brief": msgspec.to_builtins(replacement),
+            },
+        )
+        self.assertEqual("committed", published["status"], published)
+        reference = published["reference"]
+        assert isinstance(reference, dict)
+        actions = call_native_tool(
+            mcp_server.ACTIONS_TOOL,
+            {
+                "request": {
+                    "project_root": str(project),
+                    "work_root": str(roots.work_root),
+                    "role": "project",
+                    "action_id": {"kind": "rebind-attempt", "subject": brief.attempt_id},
+                }
+            },
+        )
+        self.assertEqual("ok", actions["status"], actions)
+        selected_actions = actions["actions"]
+        assert isinstance(selected_actions, list) and len(selected_actions) == 1
+        selected = selected_actions[0]
+        assert isinstance(selected, dict)
+        rebound = call_native_tool(
+            mcp_server.TRANSITION_TOOL,
+            {
+                "request": {
+                    "project_root": str(project),
+                    "work_root": str(roots.work_root),
+                    "role": "project",
+                    "receipt": {
+                        "action_id": selected["action_id"],
+                        "subject_revision": selected["subject_revision"],
+                    },
+                    "payload": {
+                        "branch": replacement.branch,
+                        "base_revision": replacement.base_revision,
+                        "brief_artifact_ref_id": reference["artifact_ref_id"],
+                    },
+                    "actor_task_id": "source-task",
+                    "actor_host_id": "local",
+                }
+            },
+        )
+        self.assertEqual("committed", rebound["status"], rebound)
+        (project / "architecture.md").write_text("# Architecture\n\n## Contract\n\nIn-progress edit.\n")
+
+        ready = self.native_dispatch(
+            project,
+            roots,
+            self.dispatch_choice(action(), environment, ready_review(replacement), "rebound-review", None),
+        )
+        self.assertEqual("ready", ready["status"], ready)
+        prompt_reference = ready["prompt_reference"]
+        assert isinstance(prompt_reference, dict)
+        verified = call_native_tool(
+            mcp_server.ARTIFACT_VERIFY_TOOL,
+            {
+                "project_root": str(project),
+                "work_root": str(roots.work_root),
+                "artifact_ref_id": prompt_reference["accepted_artifact_reference_id"],
+                "selector": prompt_reference["selector"],
+                "sha256": prompt_reference["sha256"],
+                "size_bytes": prompt_reference["size_bytes"],
+            },
+        )
+        self.assertTrue(verified["verified"], verified)
+        reused = self.native_dispatch(project, roots, self.dispatch_choice(action(), environment, None, "unused", None))
+        self.assertEqual("ready", reused["status"], reused)
+        reused_reference = reused["prompt_reference"]
+        assert isinstance(reused_reference, dict)
+        self.assertEqual(prompt_reference["selector"], reused_reference["selector"])
+
+    def test_native_dispatch_rejects_stale_or_missing_base_authority_without_publication(self) -> None:
+        def invalid_brief_bytes(invalidity: str, brief: work_brief_models.WorkBrief) -> bytes:
+            checkpoint = brief.checkpoint
+            assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+            authority = checkpoint.reviewed_authorities[0]
+            if invalidity == "changed-heading":
+                authority = replace(authority, reviewed_sha256="0" * 64)
+            else:
+                authority = replace(authority, selector="missing.md#Contract")
+            return canonical_work_brief_bytes(
+                replace(brief, checkpoint=replace(checkpoint, reviewed_authorities=(authority,)))
+            )
+
+        for invalidity, expected in (
+            ("changed-heading", DispatchErrorCode.DISPATCH_AUTHORITY_STALE),
+            ("missing-path", DispatchErrorCode.DISPATCH_AUTHORITY_UNREADABLE),
+        ):
+            with self.subTest(invalidity=invalidity):
+                project, roots, store, brief, action, environment = self.initialized(
+                    brief_content=partial(invalid_brief_bytes, invalidity)
+                )
+                before = store.validated_snapshot()
+                rejected = self.native_dispatch(
+                    project,
+                    roots,
+                    self.dispatch_choice(action(), environment, ready_review(brief), "invalid-review", None),
+                )
+                self.assertEqual(expected.value, rejected["code"], rejected)
+                self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
 
     def test_native_dispatch_environment_rejects_invalid_shapes_before_effects(self) -> None:
         project, roots, store, value, action, environment = self.initialized()

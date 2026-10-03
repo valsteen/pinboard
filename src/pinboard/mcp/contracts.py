@@ -244,7 +244,7 @@ class ItemStatusBranchRequest(
 
 
 type IntegrationTarget = Annotated[
-    str, msgspec.Meta(min_length=1, pattern=r"\A[^\r\n\u2028\u2029-][^\r\n\u2028\u2029]*\z")
+    str, msgspec.Meta(min_length=1, pattern=r"\A[^\x00\r\n\u2028\u2029-][^\x00\r\n\u2028\u2029]*\z")
 ]
 
 

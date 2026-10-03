@@ -369,24 +369,20 @@ def _read_integration_candidate(
                 return query_models.IntegrationUnavailableReason.PRE_SNAPSHOT_CANDIDATE
             return query_models.CompletionCandidateFacts(snapshot)
         case query_models.AcceptedCheckpointSelection(attempt_id=attempt_id):
-            receipt = sqlite_state.read_latest_checkpoint_receipt(connection, attempt_id)
-            if receipt is None:
+            latest = sqlite_state.read_latest_checkpoint_receipt(connection, attempt_id)
+            if latest is None:
                 return query_models.IntegrationUnavailableReason.NO_REVIEWED_CANDIDATE
+            if isinstance(latest, query_models.DamagedTransitionReceipt):
+                return latest
+            receipt, outcome = latest
             package_reference = (
                 None
                 if receipt.artifact_ref_id is None
                 else read_artifact_reference_by_id(connection, receipt.artifact_ref_id)
             )
-            try:
-                outcome = msgspec.json.decode(
-                    bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome, strict=True
-                )
-            except msgspec.DecodeError:
-                candidate_reference = None
-            else:
-                candidate_reference = read_artifact_reference(
-                    connection, work_models.ArtifactKind.EVIDENCE, f"{attempt_id}-{outcome.checkpoint}-candidate", 1
-                )
+            candidate_reference = read_artifact_reference(
+                connection, work_models.ArtifactKind.EVIDENCE, f"{attempt_id}-{outcome.checkpoint}-candidate", 1
+            )
             return query_models.AcceptedCheckpointCandidateFacts(
                 attempt_id, receipt, package_reference, candidate_reference
             )

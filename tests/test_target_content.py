@@ -52,12 +52,14 @@ class TargetContentTest(unittest.TestCase):
         run_git(repository, "init", "-b", "main")
         (repository / "reviewed.txt").write_text("one\ntwo\nthree  \nfour\nfive\nsix\nseven\n", encoding="utf-8")
         (repository / "other.txt").write_text("unrelated\n", encoding="utf-8")
+        (repository / "renamed.txt").write_text("".join(f"kept line {n}\n" for n in range(20)), encoding="utf-8")
         run_git(repository, "add", "--all")
         run_git(repository, "commit", "-m", "base")
         base = run_git(repository, "rev-parse", "HEAD")
         run_git(repository, "switch", "-c", "feature")
         (repository / "reviewed.txt").write_text("one\ntwo\nTHREE\nfour\nfive\nsix\nseven\n", encoding="utf-8")
         (repository / "image.bin").write_bytes(bytes(range(256)))
+        run_git(repository, "mv", "renamed.txt", "moved.txt")
         run_git(repository, "add", "--all")
         run_git(repository, "commit", "-m", "candidate")
         diff = subprocess.run(
@@ -73,6 +75,8 @@ class TargetContentTest(unittest.TestCase):
 
     def test_squash_merged_change_is_present_and_the_base_is_not(self) -> None:
         repository, base, diff = self.repository()
+        self.assertIn(b"rename from renamed.txt\nrename to moved.txt\n", diff)
+        self.assertIn(b"GIT binary patch", diff)
         self.assertEqual(TargetContent(base, False), observe_target_content(repository, "main", diff))
         squashed = self.squash(repository)
         self.assertEqual(TargetContent(squashed, True), observe_target_content(repository, "main", diff))

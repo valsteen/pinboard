@@ -53,6 +53,7 @@ class IntegrationGitUnavailable:
 type ItemIntegrationObservation = (
     query_models.ItemIntegration
     | query_models.IntegrationUnavailableReason
+    | query_models.DamagedTransitionReceipt
     | IntegrationEvidenceInvalid
     | root.UnresolvedTarget
     | IntegrationGitUnavailable
@@ -293,6 +294,7 @@ def _verified_integration_source(
 ) -> (
     tuple[query_models.IntegrationSource, bytes]
     | query_models.IntegrationUnavailableReason
+    | query_models.DamagedTransitionReceipt
     | IntegrationEvidenceInvalid
 ):
     match facts.candidate:
@@ -326,8 +328,8 @@ def _verified_integration_source(
                 ),
                 snapshot.diff,
             )
-        case query_models.IntegrationUnavailableReason() as reason:
-            return reason
+        case query_models.IntegrationUnavailableReason() | query_models.DamagedTransitionReceipt() as unavailable:
+            return unavailable
         case _ as unreachable:
             assert_never(unreachable)
 

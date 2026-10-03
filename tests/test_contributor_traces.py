@@ -1069,6 +1069,29 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertIn("private directory", str(response["message"]))
             self.assertEqual((), tuple(directory.glob("pinboard-auto-*.json")))
 
+    def test_integration_leaf_capture_follows_its_item_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            initialize_database(resolve_durable_roots(primary, work_root), SQLITE_NOW)
+            initialize_store(SQLiteWorkStore(work_root / "state.sqlite3"), complete_sqlite_state())
+            self.choose(primary, None)
+            capture = execution.AutomaticCapture(common.select_capture_item)
+            integration_leaf: dict[str, JsonValue] = {
+                "request": {
+                    "work_root": str(work_root),
+                    "operation": "integration",
+                    "item_id": "work-a",
+                    "target": "main",
+                }
+            }
+            self.settings(primary, "off", {"work-a": "on"})
+            self.assertIsNotNone(capture.resolve(str(worktree), integration_leaf))
+            self.settings(primary, "on", {"work-a": "off"})
+            self.assertIsNone(capture.resolve(str(worktree), integration_leaf))
+            self.settings(primary, "on", {"another": "off"})
+            self.assertIsNotNone(capture.resolve(str(worktree), integration_leaf))
+
     def test_long_lived_mcp_process_reloads_item_mode_before_each_call(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             primary, worktree = self.project(Path(temporary))

@@ -26,8 +26,8 @@ from pinboard.adapters.sqlite.lifecycle import (
 )
 from pinboard.adapters.sqlite.pr_review import validate_review_history
 from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
-from pinboard.application import project_export, stored_state
-from pinboard.domain import authority_models, work_models
+from pinboard.application import project_export, query_models, stored_state
+from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import (
     AttemptId,
@@ -178,8 +178,15 @@ def read_checkpoint_receipts(
 
 def read_latest_checkpoint_receipt(
     connection: sqlite3.Connection, attempt_id: AttemptId
-) -> stored_state.StoredTransitionReceipt | None:
-    """Read one attempt's latest checkpoint acceptance through the checkpoint_history_by_subject index."""
+) -> (
+    tuple[stored_state.StoredTransitionReceipt, history.CheckpointAcceptanceOutcome]
+    | query_models.DamagedTransitionReceipt
+    | None
+):
+    """Read one attempt's latest checkpoint acceptance through the checkpoint_history_by_subject index.
+
+    A receipt whose columns decode but whose outcome does not is returned as a damaged receipt to name.
+    """
 
     row = connection.execute(
         """SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
@@ -190,7 +197,22 @@ def read_latest_checkpoint_receipt(
            ORDER BY history_id DESC LIMIT 1""",
         (attempt_id,),
     ).fetchone()
-    return None if row is None else _stored_receipt(decode_row(row, TransitionHistoryRow))
+    if row is None:
+        return None
+    value = decode_row(row, TransitionHistoryRow)
+    try:
+        outcome = msgspec.json.decode(
+            value.outcome_json.encode("utf-8"), type=history.CheckpointAcceptanceOutcome, strict=True
+        )
+    except msgspec.DecodeError as error:
+        return query_models.DamagedTransitionReceipt(
+            attempt_id,
+            value.history_id,
+            value.committed_at,
+            decision_models.ActionKind.ACCEPT_CHECKPOINT,
+            f"The outcome does not decode as checkpoint-acceptance/v2: {error}",
+        )
+    return _stored_receipt(value), outcome
 
 
 def read_review_history_for_items(

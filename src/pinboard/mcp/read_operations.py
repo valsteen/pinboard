@@ -211,6 +211,8 @@ def _integration_result(
             return observed
         case query_models.IntegrationUnavailableReason():
             return _integration_unavailable(request.item_id, facts.state.value, observed)
+        case query_models.DamagedTransitionReceipt():
+            return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", observed)
         case candidate_evidence.IntegrationEvidenceInvalid():
             return _item_status_rejection(
                 "INTEGRATION_CANDIDATE_EVIDENCE_INVALID",

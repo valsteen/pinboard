@@ -561,3 +561,158 @@ class ItemIntegrationTest(CheckpointPackageSupport):
                 self.integration(fixture, "codex/work-a"), "INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input"
             ),
         )
+
+    def update_database(self, fixture: CheckpointFixture, *statements: tuple[str, tuple[object, ...]]) -> None:
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            for statement, parameters in statements:
+                connection.execute(statement, parameters)
+
+    def latest_history(self, fixture: CheckpointFixture, where: str) -> tuple[int, int]:
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
+            row = connection.execute(
+                f"SELECT history_id, project_revision FROM transition_history WHERE {where} "
+                "ORDER BY history_id DESC LIMIT 1"
+            ).fetchone()
+        assert row is not None
+        return int(row[0]), int(row[1])
+
+    def test_damaged_checkpoint_receipt_is_named_rather_than_blamed_on_its_package(self) -> None:
+        for label, outcome in (("missing-fields", "{}"), ("not-json", "not json")):
+            with self.subTest(damage=label):
+                fixture = self.accepted_package_fixture()
+                history_id, _revision = self.latest_history(
+                    fixture, "outcome_schema = 'checkpoint-acceptance/v2' AND subject_id = 'work-a-1'"
+                )
+                self.update_database(
+                    fixture,
+                    ("UPDATE transition_history SET outcome_json = ? WHERE history_id = ?", (outcome, history_id)),
+                )
+                damaged = self.integration(fixture, "codex/work-a")
+                observed = self.assert_rejection(damaged, "TRANSITION_RECEIPT_DAMAGED", "do-not-retry")
+                self.assertEqual(
+                    ("work-a-1", history_id, "accept-checkpoint"),
+                    (observed["attempt_id"], observed["history_id"], observed["action_kind"]),
+                )
+                self.assertTrue(damaged["recovery"])
+
+    def test_target_with_an_embedded_nul_is_rejected_at_decoding(self) -> None:
+        fixture = self.checkpoint_fixture()
+        rejected = call_native_tool(
+            mcp_server.ITEM_STATUS_TOOL,
+            {
+                "request": {
+                    **self.roots(fixture),
+                    "operation": "integration",
+                    "item_id": "work-a",
+                    "target": "main\u0000tail",
+                }
+            },
+        )
+        self.assert_rejection(rejected, "ITEM_STATUS_INVALID", "correct-input")
+
+    def test_retained_pre_snapshot_review_candidate_is_unavailable(self) -> None:
+        fixture = self.checkpoint_fixture()
+        snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        assert snapshot is not None
+        history_id, revision = self.latest_history(fixture, "action_kind = 'submit-review'")
+        self.update_database(
+            fixture,
+            (
+                "UPDATE transition_history SET input_schema = 'decision/v1', input_json = '{}', "
+                "artifact_ref_id = NULL, artifact_kind = NULL WHERE history_id = ?",
+                (history_id,),
+            ),
+            ("UPDATE attempts SET subject_revision = ? WHERE attempt_id = 'work-a-1'", (revision,)),
+            ("DELETE FROM artifact_refs WHERE artifact_ref_id = ?", (int(snapshot.reference.artifact_ref_id),)),
+        )
+        self.assertEqual(
+            {"item_id": "work-a", "item_state": "review", "reason": "pre-snapshot-candidate"},
+            self.assert_rejection(
+                self.integration(fixture, "codex/work-a"), "INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input"
+            ),
+        )
+
+    def test_git_failure_after_root_resolution_returns_the_git_root_error(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.git(fixture, "stash")
+        self.git(fixture, "switch", "-c", "broken")
+        (fixture.project / "unique.txt").write_text("a tree only this commit has\n", encoding="utf-8")
+        self.git(fixture, "add", "unique.txt")
+        self.git(fixture, "commit", "-m", "broken tree")
+        tree = self.git(fixture, "rev-parse", "HEAD^{tree}")
+        self.git(fixture, "switch", "codex/work-a")
+        self.git(fixture, "stash", "pop")
+        (fixture.project / ".git" / "objects" / tree[:2] / tree[2:]).unlink()
+        failed = self.integration(fixture, "broken")
+        observed = self.assert_rejection(failed, "PROJECT_GIT_CHECKOUT_UNAVAILABLE", "correct-input")
+        self.assertEqual(str(fixture.project), observed["project_root"])
+        self.assertIn("failed to unpack tree object", str(observed["diagnostic"]))
+
+    def test_integration_reads_stay_keyed_as_unrelated_retained_history_grows(self) -> None:
+        for source in ("protected-review", "accepted-checkpoint"):
+            with self.subTest(source=source):
+                fixture = self.checkpoint_fixture() if source == "protected-review" else self.accepted_package_fixture()
+                history_id, _revision = self.latest_history(fixture, "artifact_ref_id IS NOT NULL")
+                with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+                    columns = [row[1] for row in connection.execute("PRAGMA table_info(attempts)")]
+                    receipt_columns = [row[1] for row in connection.execute("PRAGMA table_info(transition_history)")]
+                    artifact_columns = [row[1] for row in connection.execute("PRAGMA table_info(artifact_refs)")]
+                    for index in range(64):
+                        connection.execute(
+                            f"INSERT INTO attempts ({', '.join(columns)}) SELECT "
+                            + ", ".join(
+                                {
+                                    "attempt_id": f"'unrelated-{index}'",
+                                    "item_id": "'work-b'",
+                                    "state": "'done'",
+                                    "branch": f"'codex/unrelated-{index}'",
+                                }.get(column, column)
+                                for column in columns
+                            )
+                            + " FROM attempts WHERE attempt_id = 'work-a-1'"
+                        )
+                        artifact_id = 10_000 + index
+                        connection.execute(
+                            f"INSERT INTO artifact_refs ({', '.join(artifact_columns)}) SELECT "
+                            + ", ".join(
+                                {
+                                    "artifact_ref_id": str(artifact_id),
+                                    "artifact_key": f"'unrelated-{index}-package'",
+                                    "relative_path": f"'artifacts/evidence/unrelated-{index}/1.json'",
+                                }.get(column, column)
+                                for column in artifact_columns
+                            )
+                            + " FROM artifact_refs WHERE artifact_ref_id = "
+                            "(SELECT artifact_ref_id FROM transition_history WHERE history_id = ?)",
+                            (history_id,),
+                        )
+                        connection.execute(
+                            f"INSERT INTO transition_history ({', '.join(receipt_columns)}) SELECT "
+                            + ", ".join(
+                                {
+                                    "history_id": str(10_000 + index),
+                                    "project_revision": str(10_000 + index),
+                                    "subject_id": f"'unrelated-{index}'",
+                                    "artifact_ref_id": str(artifact_id),
+                                    "outcome_schema": "'checkpoint-acceptance/v2'",
+                                }.get(column, column)
+                                for column in receipt_columns
+                            )
+                            + " FROM transition_history WHERE history_id = ?",
+                            (history_id,),
+                        )
+                with self.recorded_reads() as statements:
+                    result = self.integration(fixture, "codex/work-a")
+                self.assertEqual("pinboard-item-integration/v1", result["schema"], result)
+                self.assertEqual(source, self.json_object(result["source"])["kind"])
+                self.assertEqual(1, sum(statement == "BEGIN" for statement in statements), statements)
+                self.assertFalse(any("unrelated-" in statement for statement in statements))
+                with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
+                    for statement in statements:
+                        if statement.lstrip().upper().startswith("SELECT"):
+                            plan = [
+                                str(row[3]).upper() for row in connection.execute(f"EXPLAIN QUERY PLAN {statement}")
+                            ]
+                            self.assertFalse(any("SCAN " in detail for detail in plan), (statement, plan))
+                            if "outcome_schema = 'checkpoint-acceptance/v2'" in statement:
+                                self.assertTrue(any("CHECKPOINT_HISTORY_BY_SUBJECT" in detail for detail in plan), plan)

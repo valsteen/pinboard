@@ -989,6 +989,7 @@ type IntegrationCandidateFacts = (
     | AcceptedCheckpointCandidateFacts
     | CompletionCandidateFacts
     | IntegrationUnavailableReason
+    | DamagedTransitionReceipt
 )
 
 

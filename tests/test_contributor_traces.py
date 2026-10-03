@@ -756,8 +756,17 @@ class ContributorTraceTest(unittest.TestCase):
             branch_leaf: dict[str, JsonValue] = {
                 "request": {"work_root": str(work_root), "operation": "branch", "branch": "codex/work-a"}
             }
+            integration_leaf: dict[str, JsonValue] = {
+                "request": {
+                    "work_root": str(work_root),
+                    "operation": "integration",
+                    "item_id": "work-a",
+                    "target": "main",
+                }
+            }
             self.assertIsNone(common.select_capture_item(primary, str(work_root), branch_leaf))
             self.assertIsNotNone(capture.resolve(str(worktree), item_leaf))
+            self.assertIsNotNone(capture.resolve(str(worktree), integration_leaf))
             self.assertIsNone(capture.resolve(str(worktree), branch_leaf))
             self.settings(primary, "off", {"work-a": "invalid"})
             rejected = capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "work-a"})

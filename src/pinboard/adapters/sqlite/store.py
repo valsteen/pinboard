@@ -47,6 +47,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_attempt_context,
     read_branch_owners,
     read_current_definitions,
+    read_integration_selection_facts,
     read_item_status,
     read_parallel_preview_lifecycle,
     read_recorded_pause_reasons,
@@ -349,6 +350,70 @@ def _read_attempt_context_facts(
     if isinstance(selected, query_models.DamagedTransitionReceipt):
         reject_damaged_pause_receipt(selected)
     return selected
+
+
+def _read_integration_candidate(
+    connection: sqlite3.Connection,
+    selected: query_models.SelectedIntegrationAttempt | query_models.IntegrationUnavailableReason,
+) -> query_models.IntegrationCandidateFacts:
+    """Read only the selected candidate's keyed snapshot or indexed latest checkpoint acceptance."""
+
+    if isinstance(selected, query_models.IntegrationUnavailableReason):
+        return query_models.UnavailableCandidateFacts(selected)
+    match selected.selection:
+        case (
+            query_models.IntegrationSourceSelection.PROTECTED_REVIEW
+            | query_models.IntegrationSourceSelection.COMPLETION
+        ) as retained:
+            try:
+                snapshot = _read_candidate_snapshot_context_facts(connection, selected.attempt_id)
+            except StorageError as error:
+                if error.invariant_violation:
+                    raise
+                return query_models.DamagedCandidateFacts(selected.attempt_id, str(error))
+            return query_models.RetainedCandidateFacts(retained, selected.attempt_id, snapshot)
+        case query_models.IntegrationSourceSelection.ACCEPTED_CHECKPOINT:
+            row = connection.execute(
+                """
+                SELECT history_id FROM transition_history INDEXED BY checkpoint_history_by_subject
+                WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+                ORDER BY history_id DESC LIMIT 1
+                """,
+                (selected.attempt_id,),
+            ).fetchone()
+            receipt = (
+                None
+                if row is None
+                else sqlite_state.read_history_receipt(connection, decode_row(row, HistoryIdRow).history_id)
+            )
+            if receipt is None:
+                return query_models.UnavailableCandidateFacts(
+                    query_models.IntegrationUnavailableReason.NO_REVIEWED_CANDIDATE
+                )
+            package_reference = (
+                None
+                if receipt.artifact_ref_id is None
+                else read_artifact_reference_by_id(connection, receipt.artifact_ref_id)
+            )
+            candidate_reference = None
+            try:
+                outcome = msgspec.json.decode(
+                    bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome, strict=True
+                )
+            except msgspec.DecodeError:
+                pass
+            else:
+                candidate_reference = read_artifact_reference(
+                    connection,
+                    work_models.ArtifactKind.EVIDENCE,
+                    f"{selected.attempt_id}-{outcome.checkpoint}-candidate",
+                    1,
+                )
+            return query_models.CheckpointCandidateFacts(
+                selected.attempt_id, receipt, package_reference, candidate_reference
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _read_candidate_snapshot_context_facts(
@@ -725,6 +790,23 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return read_branch_owners(connection, branch)
+        finally:
+            connection.close()
+
+    def read_item_integration(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                selected = read_integration_selection_facts(connection, work_item_id)
+                if selected is None:
+                    return None
+                project_revision, facts = selected
+                return query_models.ItemIntegrationFacts(
+                    project_revision,
+                    work_item_id,
+                    facts.item_state,
+                    _read_integration_candidate(connection, queries.select_integration_attempt(facts)),
+                )
         finally:
             connection.close()
 

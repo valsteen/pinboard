@@ -316,6 +316,59 @@ def _read_item_closure(
     return query_models.ItemClosureFacts(action_kind, receipt.committed_at, closing_attempt)
 
 
+class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
+def read_integration_selection_facts(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> tuple[int, query_models.IntegrationSelectionFacts] | None:
+    """Read the item row, its live attempt, and a terminal item's closing receipt, each by key."""
+
+    project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_revision_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    item_row = connection.execute(
+        "SELECT state, subject_revision FROM work_items WHERE item_id = ?", (item_id,)
+    ).fetchone()
+    if item_row is None:
+        return None
+    item = decode_row(item_row, _IntegrationItemRow)
+    attempt_row = connection.execute(
+        """
+        SELECT attempt_id, state, branch, candidate_revision, subject_revision
+        FROM attempts INDEXED BY one_live_attempt_per_item
+        WHERE item_id = ? AND state != 'done'
+        """,
+        (item_id,),
+    ).fetchone()
+    attempt = None if attempt_row is None else decode_row(attempt_row, _ItemStatusAttemptRow)
+    closure_action = None
+    closing_attempt_id = None
+    if attempt is None and stored_state.live_work_state(item.state) is None:
+        closure_row = connection.execute(
+            "SELECT action_kind, subject_id, committed_at FROM transition_history WHERE project_revision = ?",
+            (item.subject_revision,),
+        ).fetchone()
+        if closure_row is not None:
+            closure = decode_row(closure_row, _ClosureReceiptRow)
+            closure_action = decode_history_action_kind(closure.action_kind)
+            if closure_action == decision_models.ActionKind.COMPLETE:
+                closing_attempt_id = AttemptId(str(closure.subject_id))
+    return (
+        decode_row(project_revision_row, _ProjectRevisionRow).revision,
+        query_models.IntegrationSelectionFacts(
+            item.state,
+            None if attempt is None else attempt.attempt_id,
+            None if attempt is None else attempt.state,
+            None if attempt is None else attempt.candidate_revision,
+            closure_action,
+            closing_attempt_id,
+        ),
+    )
+
+
 def read_branch_owners(connection: sqlite3.Connection, branch: str) -> query_models.BranchOwnersFacts:
     """Scan retained attempts for an exact branch; read owning items by key and no history or artifacts."""
 

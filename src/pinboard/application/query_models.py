@@ -949,6 +949,153 @@ class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     owners: Annotated[tuple[BranchOwner, ...], msgspec.Meta(min_length=1)]
 
 
+class IntegrationSourceSelection(Enum):
+    """Which reviewed candidate an integration read compares, chosen from focused item facts."""
+
+    PROTECTED_REVIEW = "protected-review"
+    ACCEPTED_CHECKPOINT = "accepted-checkpoint"
+    COMPLETION = "completion"
+
+
+class IntegrationUnavailableReason(Enum):
+    NO_CURRENT_ATTEMPT = "no-current-attempt"
+    NO_REVIEWED_CANDIDATE = "no-protected-candidate-or-checkpoint-acceptance"
+    CLOSED_WITHOUT_COMPLETION = "closed-without-completion"
+    PACKAGE_WITHOUT_CANDIDATE_SNAPSHOT = "checkpoint-package-without-candidate-snapshot"
+    PRE_SNAPSHOT_CANDIDATE = "pre-snapshot-review-candidate"
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationSelectionFacts:
+    """Keyed item, live-attempt, and closing-receipt facts that select one integration source."""
+
+    item_state: stored_state.StoredWorkItemState
+    live_attempt_id: AttemptId | None
+    live_attempt_state: work_models.AttemptState | None
+    live_candidate_revision: str | None
+    closure_action: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind | None
+    closing_attempt_id: AttemptId | None
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedIntegrationAttempt:
+    selection: IntegrationSourceSelection
+    attempt_id: AttemptId
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedCandidateFacts:
+    """A protected or closing candidate; snapshot is None for a retained pre-snapshot review candidate."""
+
+    selection: Literal[IntegrationSourceSelection.PROTECTED_REVIEW, IntegrationSourceSelection.COMPLETION]
+    attempt_id: AttemptId
+    snapshot: CandidateSnapshotContextFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointCandidateFacts:
+    """The live attempt's latest checkpoint acceptance and the references its package names."""
+
+    attempt_id: AttemptId
+    receipt: stored_state.StoredTransitionReceipt
+    package_reference: stored_state.ArtifactReference | None
+    candidate_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class UnavailableCandidateFacts:
+    reason: IntegrationUnavailableReason
+
+
+@dataclass(frozen=True, slots=True)
+class DamagedCandidateFacts:
+    attempt_id: AttemptId
+    defect: str
+
+
+type IntegrationCandidateFacts = (
+    RetainedCandidateFacts | CheckpointCandidateFacts | UnavailableCandidateFacts | DamagedCandidateFacts
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationFacts:
+    project_revision: int
+    work_item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
+    candidate: IntegrationCandidateFacts
+
+
+class IntegrationPresence(Enum):
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+class ProtectedReviewSource(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class AcceptedCheckpointSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+    checkpoint_id: str
+
+
+class CompletionSource(msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+type IntegrationSource = ProtectedReviewSource | AcceptedCheckpointSource | CompletionSource
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Whether a reviewed candidate's recorded diff is present in a named target's current content."""
+
+    schema: Literal["pinboard-item-integration/v1"]
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: str
+    target: str
+    target_revision: str
+    source: IntegrationSource
+    presence: IntegrationPresence
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateUnavailable:
+    work_item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
+    reason: IntegrationUnavailableReason
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationEvidenceInvalid:
+    attempt_id: AttemptId
+    reference: str
+    defect: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationTargetUnresolved:
+    target: str
+    diagnostic: str
+
+
+type ItemIntegrationResult = (
+    ItemIntegration | IntegrationCandidateUnavailable | IntegrationEvidenceInvalid | IntegrationTargetUnresolved
+)
+
+
 class ParallelSelection(Enum):
     ALL_SAFE = "all-safe"
     SELECTED = "selected"

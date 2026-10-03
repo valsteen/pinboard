@@ -1182,6 +1182,32 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
     )
 
 
+def select_integration_attempt(
+    facts: query_models.IntegrationSelectionFacts,
+) -> query_models.SelectedIntegrationAttempt | query_models.IntegrationUnavailableReason:
+    """Select the reviewed candidate an integration read compares.
+
+    A live review attempt's protected candidate comes first; otherwise the live attempt's latest
+    checkpoint acceptance applies. A done item compares only its completion's closing candidate.
+    """
+
+    if facts.live_attempt_id is not None:
+        if facts.live_attempt_state == work_models.AttemptState.REVIEW and facts.live_candidate_revision is not None:
+            return query_models.SelectedIntegrationAttempt(
+                query_models.IntegrationSourceSelection.PROTECTED_REVIEW, facts.live_attempt_id
+            )
+        return query_models.SelectedIntegrationAttempt(
+            query_models.IntegrationSourceSelection.ACCEPTED_CHECKPOINT, facts.live_attempt_id
+        )
+    if stored_state.live_work_state(facts.item_state) is not None:
+        return query_models.IntegrationUnavailableReason.NO_CURRENT_ATTEMPT
+    if facts.closure_action == decision_models.ActionKind.COMPLETE and facts.closing_attempt_id is not None:
+        return query_models.SelectedIntegrationAttempt(
+            query_models.IntegrationSourceSelection.COMPLETION, facts.closing_attempt_id
+        )
+    return query_models.IntegrationUnavailableReason.CLOSED_WITHOUT_COMPLETION
+
+
 def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
     return query_models.WorkItemDefinitionView(
         "pinboard-work-item-definition/v2",

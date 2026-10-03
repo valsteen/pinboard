@@ -1,5 +1,7 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -243,6 +245,114 @@ def read_current_head_candidate(
         unavailable_message=f"Cannot compare candidate '{candidate_revision}' with comparison revision '{comparison_revision}'.",
     )
     return CurrentHeadCandidate(candidate_revision, diff)
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedTarget:
+    revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedTarget:
+    target: str
+    diagnostic: str
+
+
+type TargetResolution = ResolvedTarget | UnresolvedTarget
+
+
+@dataclass(frozen=True, slots=True)
+class TargetContainsDiff:
+    target_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class TargetLacksDiff:
+    target_revision: str
+
+
+type TargetContentObservation = TargetContainsDiff | TargetLacksDiff | UnresolvedTarget
+
+# Keep the reverse-apply verdict independent of user index and whitespace configuration.
+_TEMPORARY_INDEX_CONFIGURATION = (
+    "-c",
+    "core.splitIndex=false",
+    "-c",
+    "index.skipHash=false",
+    "-c",
+    "apply.whitespace=nowarn",
+    "-c",
+    "apply.ignoreWhitespace=no",
+)
+
+
+def resolve_target_revision(cwd: Path, target: str) -> TargetResolution:
+    """Resolve a caller-named local revision to its full commit without fetching or writing Git state."""
+
+    _git_text(cwd, "rev-parse", "--git-dir")
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    revision = result.stdout.strip()
+    if result.returncode != 0 or not revision:
+        return UnresolvedTarget(target, result.stderr.strip() or f"'{target}' does not name a local commit.")
+    return ResolvedTarget(revision)
+
+
+def observe_target_content(cwd: Path, target: str, diff: bytes) -> TargetContentObservation:
+    """Check whether reviewed diff bytes reverse-apply to a target commit's tree.
+
+    The target tree is read into an index inside a private temporary directory, so the
+    repository's working tree, real index, refs, objects, and other metadata stay untouched.
+    """
+
+    resolved = resolve_target_revision(cwd, target)
+    if isinstance(resolved, UnresolvedTarget):
+        return resolved
+    with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as directory:
+        environment = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
+        read = subprocess.run(
+            ["git", *_TEMPORARY_INDEX_CONFIGURATION, "read-tree", resolved.revision],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            check=False,
+        )
+        if read.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                read.stderr.decode(errors="replace").strip() or f"Cannot read the tree of '{resolved.revision}'.",
+            )
+        applied = subprocess.run(
+            [
+                "git",
+                *_TEMPORARY_INDEX_CONFIGURATION,
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "--binary",
+                "--whitespace=nowarn",
+                "-",
+            ],
+            cwd=cwd,
+            env=environment,
+            input=diff,
+            capture_output=True,
+            check=False,
+        )
+    if applied.returncode == 0:
+        return TargetContainsDiff(resolved.revision)
+    if applied.returncode == 1:
+        return TargetLacksDiff(resolved.revision)
+    raise RootError(
+        RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+        applied.stderr.decode(errors="replace").strip() or "Cannot check the reviewed diff against the target.",
+    )
 
 
 def _working_tree_status(cwd: Path) -> bytes:

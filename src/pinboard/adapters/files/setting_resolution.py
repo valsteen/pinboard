@@ -35,4 +35,4 @@ class SettingResolutionError(ValueError):
         super().__init__(message)
         self.path: Path = path
         self.effects: SettingEffects = effects
-        self.cause = cause
+        self.cause: git_config.ReadFailed | git_config.WriteUnconfirmed | ValueError | OSError | FileIOError = cause

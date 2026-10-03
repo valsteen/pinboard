@@ -328,6 +328,150 @@ class McpBriefPreparationTest(unittest.TestCase):
         self.assertLessEqual(result.structured_content["presented_byte_count"], 16_000)
         self.assertLess(len(msgspec.json.encode(result.model_dump(mode="json", by_alias=True))), 50_000)
 
+    def test_many_source_inline_plan_rejects_with_complete_size_and_read_only_route(self) -> None:
+        sources: list[contracts.JsonValue] = []
+        for index in range(100):
+            name = f"source-{index}.md"
+            (self.project / name).write_text(f"# Source {index}\nbody\n", encoding="utf-8")
+            sources.append({"authority_id": f"source-{index}", "selector": name, "families": ["contract"]})
+        manifest: dict[str, contracts.JsonValue] = {"schema": "pinboard-brief-sources/v1", "sources": sources}
+        complete = brief_sources.plan_brief_sources(
+            lambda selector, require_utf8: mcp_reads.select_checkout_brief_source(self.project, selector, require_utf8),
+            msgspec.convert(manifest, type=brief_source_models.BriefSourceManifest),
+            16_000,
+        )
+        assert not isinstance(complete, brief_source_models.BriefSourceFailure)
+        expected_size = len(
+            msgspec.json.encode(msgspec.to_builtins(brief_source_codec.project_brief_source_plan(complete)))
+        )
+        self.assertGreater(expected_size, 16_000)
+        rejected = self.sources("plan", manifest=manifest, max_batch_bytes=16_000)
+        self.assertEqual("BRIEF_SOURCE_PLAN_INVALID", rejected["code"])
+        self.assertIn(f"{expected_size} presented bytes; limit is 16000", str(rejected["message"]))
+        self.assertIn("smaller source selections", str(rejected["message"]))
+        for start in range(0, len(sources), 20):
+            subset = sources[start : start + 20]
+            smaller = self.sources("plan", manifest={**manifest, "sources": subset}, max_batch_bytes=16_000)
+            smaller_sources = smaller["sources"]
+            assert isinstance(smaller_sources, (list, tuple))
+            self.assertEqual(len(subset), len(smaller_sources))
+            self.assertLessEqual(len(msgspec.json.encode(smaller)), 16_000)
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        transport = server.create_server(
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+        )
+
+        async def plan_subset() -> CallToolResult:
+            result = await transport.call_tool(
+                server.BRIEF_SOURCES_TOOL,
+                {
+                    "request": {
+                        **self.roots,
+                        "operation": "plan",
+                        "manifest": {**manifest, "sources": sources[:20]},
+                        "max_batch_bytes": 16_000,
+                    }
+                },
+            )
+            assert isinstance(result, CallToolResult)
+            return result
+
+        native_plan = asyncio.run(plan_subset())
+        assert isinstance(native_plan.structured_content, dict)
+        self.assertLessEqual(len(msgspec.json.encode(native_plan.structured_content)), 16_000)
+        self.assertLess(len(msgspec.json.encode(native_plan.model_dump(mode="json", by_alias=True))), 50_000)
+
+    def test_native_read_only_plan_and_all_batches_complete_the_source(self) -> None:
+        content = (b'"\\\n' * 1_500) + b"last\n"
+        (self.project / "a.md").write_bytes(content)
+        manifest: dict[str, contracts.JsonValue] = {
+            "schema": "pinboard-brief-sources/v1",
+            "sources": [{"authority_id": "a", "selector": "a.md", "families": ["contract"]}],
+        }
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        capture = mcp_execution.AutomaticCapture(mcp_common.select_capture_item)
+        transport = server.create_server(
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256), capture
+        )
+
+        async def read() -> tuple[CallToolResult, list[CallToolResult]]:
+            planned = await transport.call_tool(
+                server.BRIEF_SOURCES_TOOL,
+                {"request": {**self.roots, "operation": "plan", "manifest": manifest, "max_batch_bytes": 4_000}},
+            )
+            assert isinstance(planned, CallToolResult) and isinstance(planned.structured_content, dict)
+            batches: list[CallToolResult] = []
+            for index in range(len(planned.structured_content["batches"])):
+                batch = await transport.call_tool(
+                    server.BRIEF_SOURCES_TOOL,
+                    {
+                        "request": {
+                            **self.roots,
+                            "operation": "emit",
+                            "plan": planned.structured_content,
+                            "batch_index": index,
+                        }
+                    },
+                )
+                assert isinstance(batch, CallToolResult)
+                batches.append(batch)
+            return planned, batches
+
+        with patch.object(capture, "resolve", side_effect=AssertionError("read-only review started capture preflight")):
+            planned, batches = asyncio.run(read())
+        assert isinstance(planned.structured_content, dict)
+        self.assertGreater(len(batches), 1)
+        self.assertLessEqual(len(msgspec.json.encode(planned.structured_content)), 16_000)
+        self.assertLess(len(msgspec.json.encode(planned.model_dump(mode="json", by_alias=True))), 50_000)
+        selected = b"".join(
+            match.group(1).encode()
+            for batch in batches
+            for match in re.finditer(
+                r"===== BEGIN[^\n]*=====\n(.*?)===== END", str(batch.structured_content["text"]), re.DOTALL
+            )
+        )
+        self.assertEqual(content, selected)
+        self.assertEqual(
+            hashlib.sha256(content).hexdigest(), planned.structured_content["sources"][0]["selected_sha256"]
+        )
+        self.assertFalse(Path(self.roots["work_root"]).exists())
+
+    def test_plan_publication_with_capture_enabled_writes_only_selected_output(self) -> None:
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        capture = mcp_execution.AutomaticCapture(mcp_common.select_capture_item)
+        transport = server.create_server(
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256), capture
+        )
+        destination = self.project / "published-plan.json"
+
+        async def publish() -> CallToolResult:
+            result = await transport.call_tool(
+                server.BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
+                {
+                    "request": {
+                        **self.roots,
+                        "operation": "plan-to-file",
+                        "manifest": self.manifest,
+                        "max_batch_bytes": 500,
+                        "destination": str(destination),
+                    }
+                },
+            )
+            assert isinstance(result, CallToolResult)
+            return result
+
+        with patch.object(capture, "resolve", side_effect=AssertionError("plan publication started capture preflight")):
+            result = asyncio.run(publish())
+        assert isinstance(result.structured_content, dict)
+        self.assertEqual("committed", result.structured_content["effect"])
+        self.assertEqual(
+            {"a.md", "empty", "published-plan.json"}, {path.name for path in self.project.iterdir() if path.is_file()}
+        )
+        self.assertFalse(Path(self.roots["work_root"]).exists())
+
     def test_selected_output_create_reuse_collision_and_sync_failure(self) -> None:
         destination = self.project / "output.json"
         fields = {"manifest": self.manifest, "max_batch_bytes": 500, "destination": str(destination)}

@@ -1,0 +1,10 @@
+{
+  "name": "source-review",
+  "scenarios": [
+    {
+      "id": "s23-read-only-source-review",
+      "sha256": "3dd31f296a0e066e78e939e2e1006182de406f5bd2e878e18200b3831fe58797"
+    }
+  ],
+  "targeted_rules": ["P8"]
+}

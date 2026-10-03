@@ -198,7 +198,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
-        description="Publish one immutable source plan to an explicit destination; this operation writes selected output.",
+        description="Publish one immutable source plan to an explicit destination; writes only that destination.",
         annotations=LOCAL_AUTHORITY_ANNOTATIONS,
     )
     async def source_plan_output(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -210,7 +210,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             str(request.get("project_root", "")),
             partial(read_operations._brief_source_plan_output, {"request": request}),
             arguments={"request": request},
-            capture=capture,
+            capture=None,
         )
 
     @server.tool(

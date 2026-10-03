@@ -757,7 +757,12 @@ class McpCaptureTest(unittest.TestCase):
                 arguments: dict[str, execution.JsonValue],
                 capture: execution.SemanticCapture | None,
             ) -> dict[str, execution.JsonValue]:
-                self.assertIs(capture, None if operation == server.BRIEF_SOURCES_TOOL else globals_capture)
+                self.assertIs(
+                    capture,
+                    None
+                    if operation in {server.BRIEF_SOURCES_TOOL, server.BRIEF_SOURCE_PLAN_OUTPUT_TOOL}
+                    else globals_capture,
+                )
                 observed[operation] = arguments
                 return {}
 

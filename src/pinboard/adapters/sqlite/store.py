@@ -47,6 +47,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_attempt_context,
     read_branch_owners,
     read_current_definitions,
+    read_integration_subject,
     read_item_status,
     read_parallel_preview_lifecycle,
     read_recorded_pause_reasons,
@@ -349,6 +350,50 @@ def _read_attempt_context_facts(
     if isinstance(selected, query_models.DamagedTransitionReceipt):
         reject_damaged_pause_receipt(selected)
     return selected
+
+
+def _read_integration_candidate(
+    connection: sqlite3.Connection, selection: query_models.IntegrationSelection
+) -> query_models.IntegrationCandidateFacts:
+    """Read only the selected source's snapshot context or latest checkpoint acceptance and its references."""
+
+    match selection:
+        case query_models.ProtectedReviewSelection(attempt_id=attempt_id):
+            snapshot = _read_candidate_snapshot_context_facts(connection, attempt_id)
+            if snapshot is None:
+                return query_models.IntegrationUnavailableReason.PRE_SNAPSHOT_CANDIDATE
+            return query_models.ProtectedReviewCandidateFacts(snapshot)
+        case query_models.CompletionSelection(attempt_id=attempt_id):
+            snapshot = _read_candidate_snapshot_context_facts(connection, attempt_id)
+            if snapshot is None:
+                return query_models.IntegrationUnavailableReason.PRE_SNAPSHOT_CANDIDATE
+            return query_models.CompletionCandidateFacts(snapshot)
+        case query_models.AcceptedCheckpointSelection(attempt_id=attempt_id):
+            receipt = sqlite_state.read_latest_checkpoint_receipt(connection, attempt_id)
+            if receipt is None:
+                return query_models.IntegrationUnavailableReason.NO_REVIEWED_CANDIDATE
+            package_reference = (
+                None
+                if receipt.artifact_ref_id is None
+                else read_artifact_reference_by_id(connection, receipt.artifact_ref_id)
+            )
+            try:
+                outcome = msgspec.json.decode(
+                    bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome, strict=True
+                )
+            except msgspec.DecodeError:
+                candidate_reference = None
+            else:
+                candidate_reference = read_artifact_reference(
+                    connection, work_models.ArtifactKind.EVIDENCE, f"{attempt_id}-{outcome.checkpoint}-candidate", 1
+                )
+            return query_models.AcceptedCheckpointCandidateFacts(
+                attempt_id, receipt, package_reference, candidate_reference
+            )
+        case query_models.IntegrationUnavailableReason():
+            return selection
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _read_candidate_snapshot_context_facts(
@@ -725,6 +770,23 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return read_branch_owners(connection, branch)
+        finally:
+            connection.close()
+
+    def read_item_integration(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                selected = read_integration_subject(connection, work_item_id)
+                if selected is None:
+                    return None
+                project_revision, subject = selected
+                return query_models.ItemIntegrationFacts(
+                    project_revision,
+                    work_item_id,
+                    subject.state,
+                    _read_integration_candidate(connection, queries.select_integration_source(subject)),
+                )
         finally:
             connection.close()
 

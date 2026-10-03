@@ -1,5 +1,7 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -52,6 +54,22 @@ class CandidateRestoreRejection:
 
 
 type CandidateRestoreResult = CandidateRestoreSuccess | CandidateRestoreRejection
+
+
+@dataclass(frozen=True, slots=True)
+class TargetContent:
+    """Whether reviewed diff bytes reverse-apply cleanly to one resolved target commit's tree."""
+
+    target_revision: str
+    present: bool
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedTarget:
+    target: str
+
+
+type TargetContentObservation = TargetContent | UnresolvedTarget
 
 
 class CandidateRestoreAfterMutationError(RootError):
@@ -203,6 +221,83 @@ def read_working_tree_candidate(cwd: Path) -> WorkingTreeCandidate:
     )
     head = _git_text(cwd, "rev-parse", "--verify", "HEAD")
     return WorkingTreeCandidate(working_tree_identity(head, diff), head, diff)
+
+
+def resolve_target_revision(cwd: Path, target: str) -> str | None:
+    """Resolve a caller-named revision to its full commit as stored locally; None when it names no commit."""
+
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 1 and not result.stdout.strip():
+        return None
+    revision = result.stdout.strip()
+    if result.returncode != 0 or not revision:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            result.stderr.strip() or f"Cannot resolve revision '{target}' at '{cwd}'.",
+        )
+    return revision
+
+
+def observe_target_content(cwd: Path, target: str, diff: bytes) -> TargetContentObservation:
+    """Reverse-apply-check reviewed diff bytes against a private index of the target commit's tree.
+
+    Only the temporary index is written, inside a private directory removed before
+    returning, so the repository's working tree, index, refs, objects, and other Git
+    metadata stay unchanged and a read-only .git suffices. Nothing is fetched.
+    """
+
+    target_revision = resolve_target_revision(cwd, target)
+    if target_revision is None:
+        return UnresolvedTarget(target)
+    with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as directory:
+        environment = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
+        read = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "read-tree", target_revision],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            check=False,
+        )
+        if read.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                read.stderr.decode(errors="replace").strip()
+                or f"Cannot read the tree of '{target_revision}' into a temporary index.",
+            )
+        checked = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.splitIndex=false",
+                "-c",
+                "apply.ignoreWhitespace=no",
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "--whitespace=nowarn",
+                "-",
+            ],
+            cwd=cwd,
+            input=diff,
+            env=environment,
+            capture_output=True,
+            check=False,
+        )
+    # Git apply exits 1 when the patch does not apply and 128 when it cannot run or read the patch.
+    if checked.returncode not in (0, 1):
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            checked.stderr.decode(errors="replace").strip()
+            or f"Cannot check reviewed changes against '{target_revision}'.",
+        )
+    return TargetContent(target_revision, checked.returncode == 0)
 
 
 def read_untracked_paths(cwd: Path) -> tuple[str, ...]:

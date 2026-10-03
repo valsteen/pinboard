@@ -1,16 +1,26 @@
-"""Verify accepted candidate bytes and restore only an exact selected checkout.
+"""Verify accepted candidate bytes, observe their presence in a target, and restore only an exact selected checkout.
 
 Restoration can change the source checkout, never the ledger or authority.
 Post-mutation verification failures retain that actual effect and forbid replay.
+Integration observation reads verified bytes and Git without any effect.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
 
 from pinboard.adapters.files import candidate_compatibility, root
 from pinboard.adapters.files.artifacts import read_reference
-from pinboard.adapters.files.errors import ArtifactError, RootError
-from pinboard.application import candidate_snapshot_compatibility_models, candidate_snapshots, ports, query_models
+from pinboard.adapters.files.errors import ArtifactError, RootError, RootErrorCode
+from pinboard.application import (
+    candidate_snapshot_compatibility_models,
+    candidate_snapshots,
+    checkpoint_compatibility_models,
+    checkpoint_packages,
+    ports,
+    query_models,
+    work_brief_models,
+)
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
@@ -23,6 +33,30 @@ from pinboard.domain.errors import (
     RetryDisposition,
 )
 from pinboard.domain.identifiers import AttemptId
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationEvidenceInvalid:
+    """An accepted reference behind the selected reviewed candidate failed verification."""
+
+    attempt_id: AttemptId
+    selector: str
+    defect: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationGitUnavailable:
+    code: RootErrorCode
+    diagnostic: str
+
+
+type ItemIntegrationObservation = (
+    query_models.ItemIntegration
+    | query_models.IntegrationUnavailableReason
+    | IntegrationEvidenceInvalid
+    | root.UnresolvedTarget
+    | IntegrationGitUnavailable
+)
 
 
 def read_candidate_evidence(
@@ -179,3 +213,164 @@ def restore_candidate(
             ),
         )
     return restored
+
+
+def _verified_checkpoint_snapshot(
+    work_root: Path,
+    work_item_id: str,
+    candidate: query_models.AcceptedCheckpointCandidateFacts,
+) -> (
+    tuple[str, candidate_snapshots.CandidateSnapshot]
+    | query_models.IntegrationUnavailableReason
+    | IntegrationEvidenceInvalid
+):
+    """Verify the latest checkpoint package and the candidate snapshot it names; return its checkpoint id and snapshot."""
+
+    receipt = candidate.receipt
+    receipt_selector = f"transition history {int(receipt.history_id)}"
+    package_reference = candidate.package_reference
+    if package_reference is None:
+        return IntegrationEvidenceInvalid(
+            candidate.attempt_id, receipt_selector, "The checkpoint acceptance has no accepted package reference."
+        )
+    try:
+        package_bytes = read_reference(work_root, package_reference)
+    except ArtifactError as error:
+        return IntegrationEvidenceInvalid(candidate.attempt_id, package_reference.selector, str(error))
+    package = checkpoint_packages.validate_selected_checkpoint_review_package(
+        receipt, package_reference, package_bytes, attempt_id=str(candidate.attempt_id), item_id=work_item_id
+    )
+    match package:
+        case work_brief_models.WorkBriefFailure():
+            return IntegrationEvidenceInvalid(candidate.attempt_id, package_reference.selector, package.message)
+        case checkpoint_compatibility_models.CheckpointReviewPackage():
+            return query_models.IntegrationUnavailableReason.CHECKPOINT_WITHOUT_SNAPSHOT
+        case (
+            checkpoint_compatibility_models.CheckpointReviewPackageV2() | work_brief_models.CheckpointReviewPackageV3()
+        ):
+            identity = package.candidate_snapshot
+        case _ as unreachable:
+            assert_never(unreachable)
+    reference = candidate.candidate_reference
+    if reference is None or (
+        reference.kind.value,
+        reference.key,
+        reference.revision,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+    ) != (
+        identity.kind,
+        identity.key,
+        identity.revision,
+        identity.selector,
+        identity.content_sha256,
+        identity.size_bytes,
+    ):
+        return IntegrationEvidenceInvalid(
+            candidate.attempt_id,
+            identity.selector,
+            "The checkpoint package candidate snapshot does not resolve to its accepted artifact reference.",
+        )
+    try:
+        snapshot = candidate_snapshots.decode_candidate_snapshot(read_reference(work_root, reference))
+    except (ArtifactError, ValueError) as error:
+        return IntegrationEvidenceInvalid(candidate.attempt_id, reference.selector, str(error))
+    if (snapshot.attempt_id, snapshot.item_id, snapshot.candidate) != (
+        package.attempt_id,
+        package.item_id,
+        package.candidate,
+    ):
+        return IntegrationEvidenceInvalid(
+            candidate.attempt_id, reference.selector, "The candidate snapshot does not match its checkpoint package."
+        )
+    return package.checkpoint.id, snapshot
+
+
+def _verified_integration_source(
+    work_root: Path,
+    facts: query_models.ItemIntegrationFacts,
+) -> (
+    tuple[query_models.IntegrationSource, bytes]
+    | query_models.IntegrationUnavailableReason
+    | IntegrationEvidenceInvalid
+):
+    match facts.candidate:
+        case (
+            query_models.ProtectedReviewCandidateFacts(snapshot=context)
+            | query_models.CompletionCandidateFacts(snapshot=context)
+        ):
+            evidence = read_candidate_evidence_from_context(work_root, context, context.candidate_revision)
+            if isinstance(evidence, DecisionFailure):
+                return IntegrationEvidenceInvalid(context.attempt_id, context.reference.selector, evidence.message)
+            snapshot = evidence.snapshot
+            compared_from = candidate_snapshots.compared_from_revision(snapshot)
+            if isinstance(facts.candidate, query_models.ProtectedReviewCandidateFacts):
+                source: query_models.IntegrationSource = query_models.ProtectedReviewSource(
+                    snapshot.attempt_id, snapshot.candidate, compared_from
+                )
+            else:
+                source = query_models.CompletionSource(snapshot.attempt_id, snapshot.candidate, compared_from)
+            return source, snapshot.diff
+        case query_models.AcceptedCheckpointCandidateFacts() as candidate:
+            verified = _verified_checkpoint_snapshot(work_root, str(facts.work_item_id), candidate)
+            if not isinstance(verified, tuple):
+                return verified
+            checkpoint_id, snapshot = verified
+            return (
+                query_models.AcceptedCheckpointSource(
+                    snapshot.attempt_id,
+                    checkpoint_id,
+                    snapshot.candidate,
+                    candidate_snapshots.compared_from_revision(snapshot),
+                ),
+                snapshot.diff,
+            )
+        case query_models.IntegrationUnavailableReason() as reason:
+            return reason
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def observe_item_integration(
+    source_checkout: Path,
+    work_root: Path,
+    facts: query_models.ItemIntegrationFacts,
+    target: str,
+) -> ItemIntegrationObservation:
+    """Compare one selected reviewed candidate's verified accepted diff with a target's current local content."""
+
+    selected = _verified_integration_source(work_root, facts)
+    if not isinstance(selected, tuple):
+        return selected
+    source, diff = selected
+    try:
+        if not diff:
+            target_revision = root.resolve_target_revision(source_checkout, target)
+            if target_revision is None:
+                return root.UnresolvedTarget(target)
+            presence = query_models.ContentPresence.NO_CHANGE
+        else:
+            match root.observe_target_content(source_checkout, target, diff):
+                case root.UnresolvedTarget() as unresolved:
+                    return unresolved
+                case root.TargetContent(target_revision=target_revision, present=present):
+                    presence = (
+                        query_models.ContentPresence.CONTENT_PRESENT
+                        if present
+                        else query_models.ContentPresence.CONTENT_NOT_PRESENT
+                    )
+                case _ as unreachable:
+                    assert_never(unreachable)
+    except RootError as error:
+        return IntegrationGitUnavailable(error.code, str(error))
+    return query_models.ItemIntegration(
+        "pinboard-item-integration/v1",
+        "sqlite-v7",
+        str(facts.project_revision),
+        str(facts.work_item_id),
+        target,
+        target_revision,
+        source,
+        presence,
+    )

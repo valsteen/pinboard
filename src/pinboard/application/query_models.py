@@ -921,6 +921,134 @@ class ItemStatus(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 @dataclass(frozen=True, slots=True)
+class IntegrationLiveAttemptFacts:
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    candidate_revision: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationSubjectFacts:
+    """Keyed item facts that select which reviewed candidate an integration read compares."""
+
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    live_attempt: IntegrationLiveAttemptFacts | None
+    closure: ItemClosureFacts | None
+
+
+class IntegrationUnavailableReason(Enum):
+    NO_REVIEWED_CANDIDATE = "no-reviewed-candidate"
+    DIRECT_CLOSE = "direct-close"
+    CHECKPOINT_WITHOUT_SNAPSHOT = "checkpoint-without-snapshot"
+    PRE_SNAPSHOT_CANDIDATE = "pre-snapshot-candidate"
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedReviewSelection:
+    attempt_id: AttemptId
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedCheckpointSelection:
+    attempt_id: AttemptId
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionSelection:
+    attempt_id: AttemptId
+
+
+type IntegrationSelection = (
+    ProtectedReviewSelection | AcceptedCheckpointSelection | CompletionSelection | IntegrationUnavailableReason
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedReviewCandidateFacts:
+    snapshot: CandidateSnapshotContextFacts
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedCheckpointCandidateFacts:
+    """The current attempt's latest checkpoint acceptance with its package and canonical candidate references."""
+
+    attempt_id: AttemptId
+    receipt: stored_state.StoredTransitionReceipt
+    package_reference: stored_state.ArtifactReference | None
+    candidate_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionCandidateFacts:
+    snapshot: CandidateSnapshotContextFacts
+
+
+type IntegrationCandidateFacts = (
+    ProtectedReviewCandidateFacts
+    | AcceptedCheckpointCandidateFacts
+    | CompletionCandidateFacts
+    | IntegrationUnavailableReason
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationFacts:
+    project_revision: int
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    candidate: IntegrationCandidateFacts
+
+
+class ContentPresence(Enum):
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+class ProtectedReviewSource(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class AcceptedCheckpointSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    checkpoint_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class CompletionSource(msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+type IntegrationSource = ProtectedReviewSource | AcceptedCheckpointSource | CompletionSource
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Whether a reviewed candidate's accepted diff is present in a named target's current local content.
+
+    Content-not-present never proves that the change was not integrated.
+    """
+
+    schema: Literal["pinboard-item-integration/v1"]
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: str
+    target: str
+    target_revision: str
+    source: IntegrationSource
+    presence: ContentPresence
+
+
+@dataclass(frozen=True, slots=True)
 class BranchOwnerFacts:
     work_item_id: WorkItemId
     item_state: stored_state.StoredWorkItemState

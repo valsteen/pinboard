@@ -1162,6 +1162,30 @@ def project_item_status(
     )
 
 
+def select_integration_source(subject: query_models.IntegrationSubjectFacts) -> query_models.IntegrationSelection:
+    """Select the one reviewed candidate whose accepted bytes an integration read compares.
+
+    A live review attempt compares its protected candidate; another live attempt compares its
+    latest checkpoint acceptance; a completed item compares its closing attempt's candidate.
+    """
+
+    if stored_state.live_work_state(subject.state) is not None:
+        attempt = subject.live_attempt
+        if attempt is None:
+            return query_models.IntegrationUnavailableReason.NO_REVIEWED_CANDIDATE
+        if attempt.state == work_models.AttemptState.REVIEW and attempt.candidate_revision is not None:
+            return query_models.ProtectedReviewSelection(attempt.attempt_id)
+        return query_models.AcceptedCheckpointSelection(attempt.attempt_id)
+    closure = subject.closure
+    if closure is None:
+        return query_models.IntegrationUnavailableReason.NO_REVIEWED_CANDIDATE
+    if closure.action_kind != decision_models.ActionKind.COMPLETE:
+        return query_models.IntegrationUnavailableReason.DIRECT_CLOSE
+    if closure.closing_attempt is None or closure.closing_attempt.candidate_revision is None:
+        return query_models.IntegrationUnavailableReason.NO_REVIEWED_CANDIDATE
+    return query_models.CompletionSelection(closure.closing_attempt.attempt_id)
+
+
 def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query_models.BranchOwners | None:
     """Return every retained item and attempt that recorded this exact branch, or None when none did."""
 

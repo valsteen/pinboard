@@ -316,6 +316,46 @@ def _read_item_closure(
     return query_models.ItemClosureFacts(action_kind, receipt.committed_at, closing_attempt)
 
 
+class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
+def read_integration_subject(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> tuple[int, query_models.IntegrationSubjectFacts] | None:
+    """Read the item row, its live attempt, and a terminal item's closing receipt by key and nothing else."""
+
+    project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_revision_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    item_row = connection.execute(
+        "SELECT state, subject_revision FROM work_items WHERE item_id = ?", (item_id,)
+    ).fetchone()
+    if item_row is None:
+        return None
+    item = decode_row(item_row, _IntegrationItemRow)
+    live_attempt = None
+    closure = None
+    if stored_state.live_work_state(item.state) is not None:
+        attempt_row = connection.execute(
+            """
+            SELECT attempt_id, state, candidate_revision
+            FROM attempts INDEXED BY one_live_attempt_per_item
+            WHERE item_id = ? AND state != 'done'
+            """,
+            (item_id,),
+        ).fetchone()
+        live_attempt = (
+            None if attempt_row is None else decode_row(attempt_row, query_models.IntegrationLiveAttemptFacts)
+        )
+    else:
+        closure = _read_item_closure(connection, item_id, item.subject_revision)
+    return decode_row(project_revision_row, _ProjectRevisionRow).revision, query_models.IntegrationSubjectFacts(
+        item_id, item.state, live_attempt, closure
+    )
+
+
 def read_branch_owners(connection: sqlite3.Connection, branch: str) -> query_models.BranchOwnersFacts:
     """Scan retained attempts for an exact branch; read owning items by key and no history or artifacts."""
 

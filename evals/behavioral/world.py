@@ -22,6 +22,7 @@ from evals.behavioral.world_content import (
     EXPERIMENT_STATES,
     FULL_WORLD_STATES,
     seed_full_world,
+    seed_merge_change,
     seed_skip_comments_experiment,
 )
 
@@ -104,6 +105,11 @@ def build_world(
             if world.scratch_board is None:
                 raise SeedFailure("the scratch-board experiment needs a minimal world with a scratch board")
             seeded += verify_seed(world, "scratch", world.scratch_board, EXPERIMENT_STATES)
+        case WorldExtra.REVIEWED_CHANGE | WorldExtra.UNREVIEWED_CHANGE:
+            asyncio.run(
+                _seed_merge_change(world, owner, record_review=scenario.world_extra is WorldExtra.REVIEWED_CHANGE)
+            )
+            seeded += verify_seed(world, "project", world.work_root, {"merge-change": "review"})
         case _ as unreachable:
             raise AssertionError(unreachable)
     return world, seeded
@@ -131,6 +137,14 @@ async def _seed(world: World, owner: str, *, full: bool) -> None:
             await seed_full_world(seeder)
         else:
             await seed_skip_comments_experiment(seeder)
+
+
+async def _seed_merge_change(world: World, owner: str, *, record_review: bool) -> None:
+    async with board.connect(world.launcher, world.mcp_log, world.window) as client:
+        await seed_merge_change(
+            seeding.Seeder(board=client, project=world.project, work_root=world.work_root, owner=owner),
+            record_review=record_review,
+        )
 
 
 def create_project(world: World, runtime: Runtime) -> None:
@@ -181,6 +195,8 @@ def run_hook(hook: Hook, world: World) -> str:
             return merge_experiment(world)
         case Hook.PUSH_SAM_FIX:
             return push_sam_fix(world)
+        case Hook.REBASE_SAVED_CHANGE | Hook.SQUASH_MERGE_SAVED_CHANGE:
+            return integrate_saved_change(world, hook)
         case _ as unreachable:
             raise AssertionError(unreachable)
 
@@ -236,6 +252,36 @@ def merge_experiment(world: World) -> str:
         merged = processes.git_checked(["rev-parse", "HEAD"], cwd=clone, window=world.window).strip()
     log.append(f"merge-experiment: merged {best} ({best_count} commits, head {branch_head}) into origin/main {merged}")
     return "\n".join(log) + "\n"
+
+
+def integrate_saved_change(world: World, hook: Hook) -> str:
+    """Model the human integrating the saved content with a different commit identity."""
+    project = world.project
+    checkout = project.parent / "wt-merge-change"
+    original = seeding.head(checkout, world.window)
+    readme = project / "README.md"
+    readme.write_text(readme.read_text() + "\nMaintainer note: input examples are maintained in the usage guide.\n")
+    processes.git_checked(["commit", "-q", "-am", "Clarify where examples live"], cwd=project, window=world.window)
+    match hook:
+        case Hook.REBASE_SAVED_CHANGE:
+            processes.git_checked(["rebase", "main"], cwd=checkout, window=world.window)
+            processes.git_checked(
+                ["merge", "-q", "--ff-only", "pinboard/merge-change"], cwd=project, window=world.window
+            )
+        case Hook.SQUASH_MERGE_SAVED_CHANGE:
+            processes.git_checked(["merge", "--squash", "pinboard/merge-change"], cwd=project, window=world.window)
+            processes.git_checked(
+                ["commit", "-q", "-m", "Document sorted input (squashed)"], cwd=project, window=world.window
+            )
+        case Hook.MERGE_EXPERIMENT | Hook.PUSH_SAM_FIX:
+            raise ValueError("saved-change integration requires its declared hook")
+        case _ as unreachable:
+            raise AssertionError(unreachable)
+    integrated = seeding.head(project, world.window)
+    if integrated == original:
+        raise SeedFailure("the human integration hook did not change commit identity")
+    processes.git_checked(["push", "-q", "origin", "main"], cwd=project, window=world.window)
+    return f"{hook.value}: protected candidate {original}; main and origin/main now {integrated}\n"
 
 
 def push_sam_fix(world: World) -> str:

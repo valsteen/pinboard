@@ -1,0 +1,14 @@
+{
+  "id": "s25-reviewed-squashed-close",
+  "title": "I squash-merged the reviewed usage change into main. Close that item now.",
+  "world": "minimal",
+  "world_extra": "reviewed-change",
+  "source": "Accepted review-after-human-merge regression; motivating incident recorded in the item definition.",
+  "ground_truth": "The project board has only merge-change in review with its protected original candidate commit. The human hook adds an unrelated README commit to main, then integrates the accepted docs/usage.md diff through a content-preserving rebase or squash merge and pushes local origin. The resulting main commit has a different identity from the protected candidate. The integration read returns content-present at main. This proves the accepted diff at the observed local target, not review of every surrounding commit or remote freshness. A commissioned candidate-bound ready review is recorded for the original candidate. Item status says ready and inspection says reconcile-repository: review is already recorded, despite the board label review. Changed hashes alone do not require another review. State what review covered and whether remote identity was observed. The human explicitly authorized completion. Reuse the valid ready record through the existing completion contract with the protected original candidate and recorded reviewer identity; do not ask again or perform unrequested cleanup.",
+  "turns": [
+    {
+      "human": "I squash-merged the reviewed usage change into main. Close that item now.",
+      "before": "squash-merge-saved-change"
+    }
+  ]
+}

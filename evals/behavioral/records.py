@@ -33,11 +33,15 @@ class WorldKind(Enum):
 
 class WorldExtra(Enum):
     SKIP_COMMENTS_EXPERIMENT = "skip-comments-experiment"
+    REVIEWED_CHANGE = "reviewed-change"
+    UNREVIEWED_CHANGE = "unreviewed-change"
 
 
 class Hook(Enum):
     MERGE_EXPERIMENT = "merge-experiment"
     PUSH_SAM_FIX = "push-sam-fix"
+    REBASE_SAVED_CHANGE = "rebase-saved-change"
+    SQUASH_MERGE_SAVED_CHANGE = "squash-merge-saved-change"
 
 
 class Turn(Record, frozen=True):

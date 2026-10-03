@@ -1228,8 +1228,12 @@ def integration_candidate_unavailable(
 
 def select_integration_candidate(
     reader: ports.IntegrationFactsReader, work_item_id: WorkItemId
-) -> DecisionResult[query_models.IntegrationCandidate]:
-    """Select the item's reviewed candidate: protected, latest checkpoint-accepted, or a completion's own."""
+) -> DecisionResult[query_models.IntegrationCandidate] | query_models.DamagedTransitionReceipt:
+    """Select the item's reviewed candidate: protected, latest checkpoint-accepted, or a completion's own.
+
+    A latest checkpoint-acceptance receipt whose outcome does not decode is returned as a damaged receipt,
+    separately from damaged candidate evidence.
+    """
 
     facts = reader.read_integration_facts(work_item_id)
     if facts is None:
@@ -1253,6 +1257,17 @@ def select_integration_candidate(
         return integration_candidate_unavailable(work_item_id, facts.item_state, reasons.NO_REVIEWED_CANDIDATE)
     if facts.checkpoint.package_reference is None:
         return integration_candidate_unavailable(work_item_id, facts.item_state, reasons.CHECKPOINT_WITHOUT_SNAPSHOT)
+    receipt = facts.checkpoint.receipt
+    try:
+        msgspec.json.decode(bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome, strict=True)
+    except msgspec.DecodeError as error:
+        return query_models.DamagedTransitionReceipt(
+            attempt.attempt_id,
+            receipt.history_id,
+            receipt.committed_at,
+            decision_models.ActionKind.ACCEPT_CHECKPOINT,
+            f"The outcome does not decode as checkpoint-acceptance/v2: {error}",
+        )
     return query_models.AcceptedCheckpointCandidate(
         facts.project_revision, work_item_id, facts.item_state, attempt.attempt_id, facts.checkpoint
     )

@@ -150,6 +150,8 @@ def _read_item_integration(
     candidate = queries.select_integration_candidate(store, WorkItemId(request.item_id))
     if isinstance(candidate, DecisionFailure):
         return common._integration_failure(candidate)
+    if isinstance(candidate, query_models.DamagedTransitionReceipt):
+        return common._damaged_receipt_failure(common.ITEM_STATUS_REJECTION_SCHEMA, candidate)
     integration = candidate_evidence.observe_integration(
         Path(request.project_root), durable.work_root, store, candidate, request.target
     )

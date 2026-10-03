@@ -111,6 +111,10 @@ class ItemIntegrationTest(ItemStatusSupport):
             (result["effect"], result["retry"], result["changed_surfaces"], result["mismatches"]),
         )
 
+    def assert_next_step(self, result: JsonObject) -> None:
+        self.assertIsInstance(result["recovery"], str)
+        self.assertNotEqual("", result["recovery"])
+
     def observed(self, result: JsonObject) -> dict[str, object]:
         return {
             str(self.json_object(value)["field"]): self.json_object(value)["value"]
@@ -373,7 +377,7 @@ class ItemIntegrationTest(ItemStatusSupport):
         self.assertEqual(
             {"item_id": "work-a", "item_state": "active", "reason": "no-reviewed-candidate"}, self.observed(returned)
         )
-        self.assertIsInstance(returned["recovery"], str)
+        self.assert_next_step(returned)
         continued = self.checkpoint_fixture(base_text=BASE_TEXT, candidate_text=REVIEWED_TEXT)
         self.git(continued.project, "branch", "main")
         self.transition(
@@ -396,12 +400,14 @@ class ItemIntegrationTest(ItemStatusSupport):
                     {"item_id": item_id, "item_state": self.item_leaf(fixture, item_id)["state"], "reason": reason},
                     self.observed(rejected),
                 )
+                self.assert_next_step(rejected)
         self.close_prerequisite(fixture)
         closed = self.integration(fixture, "main", "work-c")
         self.assert_rejected(closed, "INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input")
         self.assertEqual(
             {"item_id": "work-c", "item_state": "done", "reason": "closed-without-completion"}, self.observed(closed)
         )
+        self.assert_next_step(closed)
 
     def test_rejections_name_their_facts_effect_retry_and_next_step(self) -> None:
         fixture = self.checkpoint_fixture(base_text=BASE_TEXT, candidate_text=REVIEWED_TEXT)
@@ -433,6 +439,7 @@ class ItemIntegrationTest(ItemStatusSupport):
         observed = self.observed(outside_checkout)
         self.assertEqual(str(outside), observed["project_root"])
         self.assertIn("not a git repository", str(observed["diagnostic"]).lower())
+        self.assert_next_step(outside_checkout)
 
     def test_altered_snapshot_bytes_are_invalid_evidence(self) -> None:
         fixture = self.checkpoint_fixture(base_text=BASE_TEXT, candidate_text=REVIEWED_TEXT)
@@ -453,6 +460,7 @@ class ItemIntegrationTest(ItemStatusSupport):
             self.observed(rejected),
         )
         self.assertIn("pinboard validate", str(rejected["recovery"]))
+        self.assertEqual("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", rejected["code"])
         snapshot.write_bytes(original)
         self.assertEqual("protected-review", self.json_object(self.integration(fixture, "main")["source"])["kind"])
 
@@ -474,6 +482,98 @@ class ItemIntegrationTest(ItemStatusSupport):
         self.assert_rejected(invalid, "INTEGRATION_CANDIDATE_EVIDENCE_INVALID", "do-not-retry")
         self.assertEqual("work-a-1", self.observed(invalid)["attempt_id"])
 
+    def test_a_target_containing_nul_is_rejected_as_invalid_input(self) -> None:
+        fixture = self.checkpoint_fixture(base_text=BASE_TEXT, candidate_text=REVIEWED_TEXT)
+        self.git(fixture.project, "branch", "main")
+        rejected = self.integration(fixture, "main\x00")
+        self.assert_rejected(rejected, "ITEM_STATUS_INVALID", "correct-input")
+        self.assertEqual(NOT_PRESENT, self.integration(fixture, "main")["presence"])
+
+    def checkpoint_history_id(self, fixture: CheckpointFixture) -> int:
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
+            value = connection.execute(
+                "SELECT max(history_id) FROM transition_history WHERE outcome_schema = 'checkpoint-acceptance/v2'"
+            ).fetchone()[0]
+        assert isinstance(value, int)
+        return value
+
+    def test_a_damaged_checkpoint_receipt_is_named_instead_of_reported_as_damaged_evidence(self) -> None:
+        fixture = self.accepted_package_fixture(base_text=BASE_TEXT, candidate_text=REVIEWED_TEXT)
+        self.git(fixture.project, "branch", "main")
+        history_id = self.checkpoint_history_id(fixture)
+        self.update_receipt(fixture, history_id, outcome_json="{}")
+        damaged = self.integration(fixture, "main")
+        self.assertEqual("pinboard-mcp-item-status-result/v3", damaged["schema"], damaged)
+        self.assertEqual(
+            ("rejected", "TRANSITION_RECEIPT_DAMAGED", False),
+            (damaged["status"], damaged["code"], damaged["state_changed"]),
+        )
+        self.assertEqual(
+            ("unchanged", "do-not-retry", []), (damaged["effect"], damaged["retry"], damaged["changed_surfaces"])
+        )
+        observed = self.observed(damaged)
+        self.assertEqual(
+            ("work-a-1", history_id, "accept-checkpoint"),
+            (observed["attempt_id"], observed["history_id"], observed["action_kind"]),
+        )
+        self.assert_next_step(damaged)
+        self.assertEqual(
+            damaged["code"], self.item_leaf(fixture).get("code"), "the item leaf names the same damaged receipt"
+        )
+
+    def test_a_decoded_historical_package_without_a_candidate_snapshot_is_unavailable(self) -> None:
+        fixture = self.accepted_package_fixture(
+            candidate_form="current-head", local=True, base_text=BASE_TEXT, candidate_text=REVIEWED_TEXT
+        )
+        self.git(fixture.project, "branch", "main")
+        self.retain_v2_checkpoint(fixture)
+        unavailable = self.integration(fixture, "main")
+        self.assert_rejected(unavailable, "INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input")
+        self.assertEqual(
+            {"item_id": "work-a", "item_state": "paused", "reason": "checkpoint-without-snapshot"},
+            self.observed(unavailable),
+        )
+        self.assert_next_step(unavailable)
+
+    def make_pre_snapshot(self, fixture: CheckpointFixture) -> None:
+        """Rewrite the candidate's submission as a retained pre-snapshot review receipt with no snapshot reference."""
+
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            reference = connection.execute(
+                "SELECT artifact_ref_id FROM artifact_refs WHERE artifact_key LIKE '%-candidate-snapshot-%'"
+            ).fetchone()[0]
+            connection.execute(
+                "UPDATE transition_history SET artifact_ref_id = NULL, artifact_kind = NULL, "
+                "input_schema = 'decision/v1', input_json = '{}' WHERE artifact_ref_id = ?",
+                (reference,),
+            )
+            connection.execute(
+                "UPDATE attempts SET subject_revision = (SELECT project_revision FROM transition_history "
+                "WHERE action_kind = 'submit-review' AND input_schema = 'decision/v1') "
+                "WHERE attempt_id = 'work-a-1' AND state = 'review'"
+            )
+            connection.execute("DELETE FROM artifact_refs WHERE artifact_ref_id = ?", (reference,))
+
+    def test_retained_pre_snapshot_candidates_are_unavailable(self) -> None:
+        protected = self.checkpoint_fixture(base_text=BASE_TEXT, candidate_text=REVIEWED_TEXT)
+        self.git(protected.project, "branch", "main")
+        self.make_pre_snapshot(protected)
+        review = self.integration(protected, "main")
+        self.assert_rejected(review, "INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input")
+        self.assertEqual(
+            {"item_id": "work-a", "item_state": "review", "reason": "pre-snapshot-candidate"}, self.observed(review)
+        )
+        self.assert_next_step(review)
+        completed = self.checkpoint_fixture(base_text=BASE_TEXT, candidate_text=REVIEWED_TEXT)
+        self.git(completed.project, "branch", "main")
+        self.complete(completed, "Accepted and integrated by the maintainer.")
+        self.make_pre_snapshot(completed)
+        closed = self.integration(completed, "main")
+        self.assert_rejected(closed, "INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input")
+        self.assertEqual(
+            {"item_id": "work-a", "item_state": "done", "reason": "pre-snapshot-candidate"}, self.observed(closed)
+        )
+
     def test_other_git_failures_carry_the_root_error_code_and_git_diagnostic(self) -> None:
         fixture = self.checkpoint_fixture(base_text=BASE_TEXT, candidate_text=REVIEWED_TEXT)
         base = self.git(fixture.project, "rev-parse", "HEAD")
@@ -487,6 +587,7 @@ class ItemIntegrationTest(ItemStatusSupport):
         self.assertEqual(str(fixture.project), observed["project_root"])
         self.assertIn("failed to unpack tree object", str(observed["diagnostic"]))
         self.assertIn(str(observed["diagnostic"]), str(rejected["message"]))
+        self.assert_next_step(rejected)
 
     def test_the_read_changes_nothing_in_the_ledger_work_root_or_checkout(self) -> None:
         fixture = self.checkpoint_fixture(base_text=BASE_TEXT, candidate_text=REVIEWED_TEXT)
@@ -509,6 +610,31 @@ class ItemIntegrationTest(ItemStatusSupport):
         before = snapshot()
         self.assertEqual(NOT_PRESENT, self.integration(fixture, "main")["presence"])
         self.assertEqual(before, snapshot())
+
+    def grow_unrelated_receipts_and_artifacts(self, connection: sqlite3.Connection) -> None:
+        """Retain unrelated checkpoint receipts, packages, and artifacts that the integration read must not touch."""
+
+        history_columns = [row[1] for row in connection.execute("PRAGMA table_info(transition_history)")]
+        for index in range(1, 21):
+            replacements = {
+                "history_id": f"(SELECT max(history_id) + {index} FROM transition_history)",
+                "project_revision": f"(SELECT max(project_revision) + {index} FROM transition_history)",
+                "action_id": f"'accept-checkpoint:unrelated-{index}'",
+                "subject_id": f"'unrelated-{index}'",
+            }
+            copied = ", ".join(replacements.get(column, column) for column in history_columns)
+            connection.execute(
+                f"INSERT INTO transition_history ({', '.join(history_columns)}) "
+                f"SELECT {copied} FROM transition_history WHERE outcome_schema = 'checkpoint-acceptance/v2' "
+                "ORDER BY history_id LIMIT 1"
+            )
+            connection.execute(
+                "INSERT INTO artifact_refs (artifact_key, artifact_revision, kind, relative_path, content_sha256, "
+                "size_bytes, accepted_revision, created_at) "
+                f"SELECT artifact_key || '-unrelated-{index}', artifact_revision, kind, "
+                f"relative_path || '.unrelated-{index}', content_sha256, size_bytes, accepted_revision, created_at "
+                "FROM artifact_refs WHERE artifact_key LIKE '%-review-package'"
+            )
 
     def test_reads_stay_keyed_and_independent_of_unrelated_retained_data(self) -> None:
         fixture = self.accepted_package_fixture(base_text=BASE_TEXT, candidate_text=REVIEWED_TEXT)
@@ -539,9 +665,10 @@ class ItemIntegrationTest(ItemStatusSupport):
                     f"INSERT INTO attempts ({', '.join(columns)}) "
                     f"SELECT {copied} FROM attempts WHERE attempt_id = 'work-a-1'"
                 )
+            self.grow_unrelated_receipts_and_artifacts(connection)
         second, second_statements = traced_integration()
         self.assertEqual(first, second)
-        self.assertEqual(len(first_statements), len(second_statements))
+        self.assertEqual(first_statements, second_statements)
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
             plans = [
                 str(row[3])

@@ -311,6 +311,8 @@ def observe_target_content(cwd: Path, target: str, diff: bytes) -> TargetContent
                 "git",
                 "-c",
                 "core.splitIndex=false",
+                "-c",
+                "apply.ignoreWhitespace=no",
                 "apply",
                 "--cached",
                 "--check",

@@ -142,6 +142,30 @@ class TargetContentReadTest(unittest.TestCase):
         self.assertNotEqual(0, control.returncode)
         self.assertIsInstance(observe_target_content(project, "main", diff), TargetContentPresent)
 
+    def test_the_verdict_does_not_follow_apply_ignore_whitespace_for_context_lines(self) -> None:
+        project = self.repository()
+        (project / "tracked.txt").write_text("alpha one\nbeta\ngamma\n", encoding="utf-8")
+        self.git(project, "commit", "--all", "-m", "spaced context")
+        (project / "tracked.txt").write_text("alpha one\nBETA\ngamma\n", encoding="utf-8")
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD", "--"], cwd=project, check=True, capture_output=True
+        ).stdout
+        (project / "tracked.txt").write_text("alpha    one\nBETA\ngamma\n", encoding="utf-8")
+        self.git(project, "commit", "--all", "-m", "integrate with changed context spacing")
+        verdicts = []
+        for setting in ("no", "change"):
+            self.git(project, "config", "apply.ignoreWhitespace", setting)
+            control = subprocess.run(
+                ["git", "apply", "--check", "--reverse", "--cached", "-"],
+                cwd=project,
+                input=diff,
+                capture_output=True,
+                check=False,
+            )
+            verdicts.append((setting, control.returncode == 0))
+            self.assertIsInstance(observe_target_content(project, "main", diff), TargetContentNotPresent, setting)
+        self.assertEqual([("no", False), ("change", True)], verdicts)
+
     def test_read_only_git_metadata_stays_unchanged_and_no_temporary_directory_remains(self) -> None:
         project = self.repository(("core.splitIndex", "true"))
         diff = self.reviewed_diff(project)

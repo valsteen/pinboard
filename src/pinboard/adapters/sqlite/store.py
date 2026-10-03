@@ -357,10 +357,12 @@ def _read_attempt_context_facts(
     return selected
 
 
-def _read_candidate_snapshot_context_facts(
+def _read_snapshot_attempt(
     connection: sqlite3.Connection,
     attempt_id: AttemptId,
-) -> query_models.CandidateSnapshotContextFacts | None:
+) -> CandidateSnapshotAttemptRow | None:
+    """Read one attempt that retains a candidate, or None when it has none."""
+
     attempt_row = connection.execute(
         """
         SELECT attempt_id, item_id, state, branch, base_revision,
@@ -374,16 +376,43 @@ def _read_candidate_snapshot_context_facts(
     attempt = decode_row(attempt_row, CandidateSnapshotAttemptRow)
     if attempt.candidate_revision is None or attempt.candidate_recorded_at is None:
         return None
+    return attempt
+
+
+def _read_snapshot_reference(
+    connection: sqlite3.Connection,
+    attempt: CandidateSnapshotAttemptRow,
+) -> stored_state.ArtifactReference | None:
+    assert attempt.candidate_revision is not None and attempt.candidate_recorded_at is not None
     artifact_key = candidate_snapshots.candidate_snapshot_artifact_key(
         str(attempt.attempt_id),
         attempt.candidate_revision,
         attempt.candidate_recorded_at.isoformat(),
     )
-    reference = read_latest_artifact_reference(
-        connection,
-        work_models.ArtifactKind.EVIDENCE,
-        artifact_key,
-    )
+    return read_latest_artifact_reference(connection, work_models.ArtifactKind.EVIDENCE, artifact_key)
+
+
+def _read_closing_snapshot_context_facts(
+    connection: sqlite3.Connection,
+    attempt_id: AttemptId,
+) -> query_models.CandidateSnapshotContextFacts | None:
+    """Read a completed attempt's snapshot context; a retained candidate without a snapshot reference has none."""
+
+    attempt = _read_snapshot_attempt(connection, attempt_id)
+    if attempt is None:
+        return None
+    reference = _read_snapshot_reference(connection, attempt)
+    return None if reference is None else _snapshot_context_from_reference(connection, attempt, reference)
+
+
+def _read_candidate_snapshot_context_facts(
+    connection: sqlite3.Connection,
+    attempt_id: AttemptId,
+) -> query_models.CandidateSnapshotContextFacts | None:
+    attempt = _read_snapshot_attempt(connection, attempt_id)
+    if attempt is None:
+        return None
+    reference = _read_snapshot_reference(connection, attempt)
     if reference is None:
         history_row = connection.execute(
             "SELECT history_id FROM transition_history WHERE project_revision = ?",
@@ -408,6 +437,14 @@ def _read_candidate_snapshot_context_facts(
             StorageErrorCode.INVALID_STATE,
             "The protected candidate has no accepted snapshot artifact.",
         )
+    return _snapshot_context_from_reference(connection, attempt, reference)
+
+
+def _snapshot_context_from_reference(
+    connection: sqlite3.Connection,
+    attempt: CandidateSnapshotAttemptRow,
+    reference: stored_state.ArtifactReference,
+) -> query_models.CandidateSnapshotContextFacts:
     history_row = connection.execute(
         """
         SELECT history_id FROM transition_history
@@ -463,7 +500,7 @@ def _read_integration_facts(
         closure = read_item_closure(connection, item_id, item.subject_revision)
         closing = None if closure is None else closure.closing_attempt
         if closing is not None and closing.candidate_revision is not None:
-            completion_snapshot = _read_candidate_snapshot_context_facts(connection, closing.attempt_id)
+            completion_snapshot = _read_closing_snapshot_context_facts(connection, closing.attempt_id)
     else:
         attempt_row = connection.execute(
             """

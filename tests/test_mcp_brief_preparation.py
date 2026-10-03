@@ -1,11 +1,14 @@
 """Preparation contracts, selected-source wiring and truthful immutable-output aftermath."""
 
 import asyncio
+import hashlib
 import io
 import json
+import re
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import override
 from unittest.mock import patch
@@ -50,10 +53,10 @@ class McpBriefPreparationTest(unittest.TestCase):
         }
 
     def sources(self, operation: str, **fields: contracts.JsonValue) -> dict[str, contracts.JsonValue]:
-        result = mcp_reads._brief_sources(
-            {"request": {**self.roots, "operation": operation, **fields}}, mcp_execution.CancellationToken()
-        )
-        return contract_schemas.validate_result(server.BRIEF_SOURCES_TOOL, result.content)
+        owner = mcp_reads._brief_source_plan_output if operation == "plan-to-file" else mcp_reads._brief_sources
+        tool = server.BRIEF_SOURCE_PLAN_OUTPUT_TOOL if operation == "plan-to-file" else server.BRIEF_SOURCES_TOOL
+        result = owner({"request": {**self.roots, "operation": operation, **fields}}, mcp_execution.CancellationToken())
+        return contract_schemas.validate_result(tool, result.content)
 
     def test_negotiated_construction_outputs_complete_canonical_starters_and_publish(self) -> None:
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
@@ -118,13 +121,13 @@ class McpBriefPreparationTest(unittest.TestCase):
         asyncio.run(scenario())
 
     def test_strict_leaf_matrix_rejects_before_root_source_or_output_effects(self) -> None:
-        plan = self.sources("plan", manifest=self.manifest, max_batch_bytes=18)
+        plan = self.sources("plan", manifest=self.manifest, max_batch_bytes=500)
         valid = (
-            {"operation": "plan", "manifest": self.manifest, "max_batch_bytes": 18},
+            {"operation": "plan", "manifest": self.manifest, "max_batch_bytes": 500},
             {
                 "operation": "plan-to-file",
                 "manifest": self.manifest,
-                "max_batch_bytes": 18,
+                "max_batch_bytes": 500,
                 "destination": str(self.project / "plan"),
             },
             {"operation": "emit", "plan": plan, "batch_index": 0},
@@ -132,6 +135,7 @@ class McpBriefPreparationTest(unittest.TestCase):
         )
         invalid = [{**leaf, "unexpected": True} for leaf in valid] + [
             {**valid[0], "max_batch_bytes": 0},
+            valid[1],
             {**valid[2], "batch_index": -1},
             {**valid[2], "plan_path": "mixed"},
             {**valid[3], "plan": plan},
@@ -151,7 +155,7 @@ class McpBriefPreparationTest(unittest.TestCase):
             for root in ("", "bad\x00root"):
                 self.assertEqual(
                     "BRIEF_SOURCES_REQUEST_INVALID",
-                    self.sources("plan", manifest=self.manifest, max_batch_bytes=18, project_root=root)["code"],
+                    self.sources("plan", manifest=self.manifest, max_batch_bytes=500, project_root=root)["code"],
                 )
         for fields in (
             {"operation": "full", "boundary": "local"},
@@ -164,11 +168,40 @@ class McpBriefPreparationTest(unittest.TestCase):
             self.assertEqual("BRIEF_CONTRACT_REQUEST_INVALID", result["code"])
             contract_schemas.validate_result(server.BRIEF_CONTRACT_TOOL, result)
 
+    def test_read_tool_rejects_plan_publication_at_the_negotiated_boundary(self) -> None:
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        transport = server.create_server(
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+        )
+        destination = self.project / "forbidden.json"
+
+        async def call() -> CallToolResult:
+            result = await transport.call_tool(
+                server.BRIEF_SOURCES_TOOL,
+                {
+                    "request": {
+                        **self.roots,
+                        "operation": "plan-to-file",
+                        "manifest": self.manifest,
+                        "max_batch_bytes": 500,
+                        "destination": str(destination),
+                    }
+                },
+            )
+            assert isinstance(result, CallToolResult)
+            return result
+
+        result = asyncio.run(call())
+        assert isinstance(result.structured_content, dict)
+        self.assertEqual("BRIEF_SOURCES_REQUEST_INVALID", result.structured_content["code"])
+        self.assertFalse(destination.exists())
+
     def test_inline_saved_and_selected_checkout_batches_preserve_facts(self) -> None:
         with patch.object(
             mcp_common, "_resolve_durable", side_effect=AssertionError("source preparation touched state")
         ):
-            plan = self.sources("plan", manifest=self.manifest, max_batch_bytes=18)
+            plan = self.sources("plan", manifest=self.manifest, max_batch_bytes=500)
             first = self.sources("emit", plan=plan, batch_index=0)
             saved = self.project / "saved.json"
             saved.write_text(json.dumps(plan, indent=1), encoding="utf-8")
@@ -179,7 +212,8 @@ class McpBriefPreparationTest(unittest.TestCase):
             ) as reads:
                 self.sources("emit", plan=plan, batch_index=0)
                 self.assertEqual(
-                    [Path("a.md")], [Path(*call.args[1].relative_path.parts) for call in reads.call_args_list]
+                    [Path("a.md"), Path("empty")],
+                    [Path(*call.args[1].relative_path.parts) for call in reads.call_args_list],
                 )
             text = str(first["text"])
             self.assertIn("# A\nfirst\n## B\n", text)
@@ -192,9 +226,111 @@ class McpBriefPreparationTest(unittest.TestCase):
             )
         self.assertFalse(Path(self.roots["work_root"]).exists())
 
+    def test_escaped_batches_are_complete_bounded_and_resumable_from_a_saved_plan(self) -> None:
+        content = (b'"\\\n' * 1_500) + b"last\n"
+        (self.project / "a.md").write_bytes(content)
+        manifest: dict[str, contracts.JsonValue] = {
+            "schema": "pinboard-brief-sources/v1",
+            "sources": [{"authority_id": "a", "selector": "a.md", "families": ["contract"]}],
+        }
+        destination = self.project / "source-plan.json"
+        receipt = self.sources("plan-to-file", manifest=manifest, max_batch_bytes=4_000, destination=str(destination))
+        self.assertTrue(receipt["created"])
+        plan = brief_source_codec.decode_brief_source_plan(destination.read_bytes())
+        assert not isinstance(plan, brief_source_models.BriefSourceFailure)
+        self.assertGreater(len(plan.batches), 1)
+        batches = [
+            self.sources("emit-file", plan_path=str(destination), batch_index=i) for i in range(len(plan.batches))
+        ]
+        self.assertEqual(batches[1], self.sources("emit-file", plan_path=str(destination), batch_index=1))
+        for batch in batches:
+            size = batch["presented_byte_count"]
+            assert isinstance(size, int)
+            self.assertEqual(len(msgspec.json.encode(batch)), size)
+            self.assertLessEqual(size, 4_000)
+        selected = b"".join(
+            match.group(1).encode()
+            for batch in batches
+            for match in re.finditer(r"===== BEGIN[^\n]*=====\n(.*?)===== END", str(batch["text"]), re.DOTALL)
+        )
+        self.assertEqual(content, selected)
+        self.assertEqual(hashlib.sha256(content).hexdigest(), plan.sources[0].selected_sha256)
+        self.assertFalse(Path(self.roots["work_root"]).exists())
+
+    def test_oversized_line_and_older_plan_reject_before_emission(self) -> None:
+        (self.project / "a.md").write_bytes(b"x" * 8_000 + b"\n")
+        manifest: dict[str, contracts.JsonValue] = {
+            "schema": "pinboard-brief-sources/v1",
+            "sources": [{"authority_id": "a", "selector": "a.md", "families": ["contract"]}],
+        }
+        line = self.sources("plan", manifest=manifest, max_batch_bytes=8_000)
+        self.assertEqual("BRIEF_SOURCE_LINE_TOO_LARGE", line["code"])
+        self.assertRegex(str(line["message"]), r"requires 8\d{3} presented bytes; limit is 8000")
+        (self.project / "second.md").write_bytes(b"y" * 8_000 + b"\n")
+        manifest["sources"] = [
+            {"authority_id": "a", "selector": "a.md", "families": ["contract"]},
+            {"authority_id": "second", "selector": "second.md", "families": ["contract"]},
+        ]
+        planned = brief_sources.plan_brief_sources(
+            lambda selector, require_utf8: mcp_reads.select_checkout_brief_source(self.project, selector, require_utf8),
+            msgspec.convert(manifest, type=brief_source_models.BriefSourceManifest),
+            24_000,
+        )
+        assert not isinstance(planned, brief_source_models.BriefSourceFailure)
+        segments = tuple(segment for source in planned.sources for segment in source.segments)
+        older = replace(
+            planned,
+            max_batch_bytes=50_000,
+            batches=(
+                brief_source_models.BriefSourceBatch(
+                    0,
+                    sum(segment.content_byte_count for segment in segments),
+                    sum(batch.estimated_rendered_byte_count for batch in planned.batches),
+                    segments,
+                ),
+            ),
+        )
+        saved = self.project / "older.json"
+        saved.write_bytes(brief_source_codec.encode_brief_source_plan(older))
+        with patch.object(
+            mcp_reads, "select_checkout_brief_source", side_effect=AssertionError("oversized plan read source")
+        ):
+            failure = self.sources("emit-file", plan_path=str(saved), batch_index=0)
+        self.assertEqual("BRIEF_SOURCE_PLAN_INVALID", failure["code"])
+        self.assertIn("Create a smaller plan", str(failure["message"]))
+
+    def test_native_transport_envelope_stays_below_the_observed_truncation_size(self) -> None:
+        (self.project / "a.md").write_bytes((b"\\" * 20 + b"\n") * 400)
+        manifest: dict[str, contracts.JsonValue] = {
+            "schema": "pinboard-brief-sources/v1",
+            "sources": [{"authority_id": "a", "selector": "a.md", "families": ["contract"]}],
+        }
+        plan = self.sources("plan", manifest=manifest, max_batch_bytes=50_000)
+        self.assertEqual(brief_sources.MAX_PRESENTED_BATCH_BYTES, plan["max_batch_bytes"])
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        capture = mcp_execution.AutomaticCapture(mcp_common.select_capture_item)
+        transport = server.create_server(
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256), capture
+        )
+
+        async def emit() -> CallToolResult:
+            result = await transport.call_tool(
+                server.BRIEF_SOURCES_TOOL,
+                {"request": {**self.roots, "operation": "emit", "plan": plan, "batch_index": 0}},
+            )
+            assert isinstance(result, CallToolResult)
+            return result
+
+        with patch.object(capture, "resolve", side_effect=AssertionError("read tool started write preflight")):
+            result = asyncio.run(emit())
+        assert isinstance(result.structured_content, dict)
+        self.assertLessEqual(result.structured_content["presented_byte_count"], 16_000)
+        self.assertLess(len(msgspec.json.encode(result.model_dump(mode="json", by_alias=True))), 50_000)
+
     def test_selected_output_create_reuse_collision_and_sync_failure(self) -> None:
         destination = self.project / "output.json"
-        fields = {"manifest": self.manifest, "max_batch_bytes": 100, "destination": str(destination)}
+        fields = {"manifest": self.manifest, "max_batch_bytes": 500, "destination": str(destination)}
         created = self.sources("plan-to-file", **fields)
         self.assertEqual(
             (True, "committed", ["selected-output"]),
@@ -204,7 +340,7 @@ class McpBriefPreparationTest(unittest.TestCase):
         assert not isinstance(plan, brief_source_models.BriefSourceFailure)
         self.assertEqual(destination.read_bytes(), brief_source_codec.encode_brief_source_plan(plan))
         self.assertEqual("unchanged", self.sources("plan-to-file", **fields)["effect"])
-        collision = self.sources("plan-to-file", **{**fields, "max_batch_bytes": 18})
+        collision = self.sources("plan-to-file", **{**fields, "max_batch_bytes": 400})
         self.assertEqual("FILE_ALREADY_EXISTS", collision["code"])
         failing = self.project / "visible.json"
         with patch.object(
@@ -238,7 +374,7 @@ class McpBriefPreparationTest(unittest.TestCase):
                 **self.roots,
                 "operation": "plan-to-file",
                 "manifest": self.manifest,
-                "max_batch_bytes": 100,
+                "max_batch_bytes": 500,
                 "destination": str(destination),
             }
         }
@@ -246,7 +382,7 @@ class McpBriefPreparationTest(unittest.TestCase):
             patch.object(mcp_reads.brief_sources, "plan_brief_sources", side_effect=cancel_after_plan),
             self.assertRaises(mcp_execution.OperationCancelled),
         ):
-            mcp_reads._brief_sources(request, token)
+            mcp_reads._brief_source_plan_output(request, token)
         self.assertFalse(destination.exists())
         token = mcp_execution.CancellationToken()
         publish = mcp_reads.create_immutable
@@ -257,6 +393,6 @@ class McpBriefPreparationTest(unittest.TestCase):
             return created
 
         with patch.object(mcp_reads, "create_immutable", side_effect=cancel_after_visibility):
-            result = mcp_reads._brief_sources(request, token).content
+            result = mcp_reads._brief_source_plan_output(request, token).content
         self.assertEqual("committed", result["effect"])
         self.assertTrue(destination.exists())

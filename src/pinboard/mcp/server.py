@@ -36,6 +36,7 @@ from pinboard.mcp.tool_names import (
     BRIEF_CONTRACT_TOOL,
     BRIEF_PUBLISH_TOOL,
     BRIEF_REVIEW_TOOL,
+    BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
     BRIEF_SOURCES_TOOL,
     CANDIDATE_OBSERVE_TOOL,
     CANDIDATE_RESTORE_TOOL,
@@ -61,6 +62,9 @@ LOCAL_AUTHORITY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
     destructiveHint=False,
     idempotentHint=False,
     openWorldHint=False,
+)
+READ_ONLY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
+    readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False
 )
 
 
@@ -177,7 +181,8 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=BRIEF_SOURCES_TOOL,
-        description="Plan selected-checkout sources, optionally publish an immutable explicit plan, or emit one verified inline/saved-plan batch; never opens ledger or acquires authority.",
+        description="Read a selected-checkout source plan or one complete bounded verified inline/saved-plan batch; never writes output or work state.",
+        annotations=READ_ONLY_ANNOTATIONS,
     )
     async def source_preparation(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         return await execution._run_request(
@@ -187,6 +192,23 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             BRIEF_SOURCES_TOOL,
             str(request.get("project_root", "")),
             partial(read_operations._brief_sources, {"request": request}),
+            arguments={"request": request},
+            capture=None,
+        )
+
+    @server.tool(
+        name=BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
+        description="Publish one immutable source plan to an explicit destination; this operation writes selected output.",
+        annotations=LOCAL_AUTHORITY_ANNOTATIONS,
+    )
+    async def source_plan_output(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return await execution._run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
+            str(request.get("project_root", "")),
+            partial(read_operations._brief_source_plan_output, {"request": request}),
             arguments={"request": request},
             capture=capture,
         )
@@ -719,6 +741,11 @@ def _install_boundary_contracts(server: MCPServer) -> None:
             BRIEF_SOURCES_TOOL,
             contract_schemas.schema_for(contracts.BriefSourcesEnvelope),
             contract_schemas.union_schema_for(contract_schemas.BRIEF_SOURCES_RESULT_TYPES),
+        ),
+        (
+            BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
+            contract_schemas.schema_for(contracts.BriefSourcePlanOutputEnvelope),
+            contract_schemas.union_schema_for(contract_schemas.BRIEF_SOURCE_PLAN_OUTPUT_RESULT_TYPES),
         ),
         (
             ITEM_DEFINITION_TOOL,

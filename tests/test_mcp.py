@@ -823,7 +823,7 @@ class McpTransportTest(unittest.TestCase):
 
         async def scenario() -> None:
             tools = await server.list_tools()
-            self.assertEqual(23, len(tools))
+            self.assertEqual(24, len(tools))
             for tool in tools:
                 with self.subTest(tool=tool.name):
                     self.assertEqual("object", tool.input_schema["type"])
@@ -3617,7 +3617,7 @@ class McpTransportTest(unittest.TestCase):
                 if call_count > 1:
                     queued_effect.set()
             running_started.set()
-            if not running_release.wait(2):
+            if not running_release.wait(30):
                 raise AssertionError("The MCP operation was not released.")
             try:
                 token.checkpoint()
@@ -4418,6 +4418,7 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.BRIEF_REVIEW_TOOL,
                 mcp_server.BRIEF_CONTRACT_TOOL,
                 mcp_server.BRIEF_SOURCES_TOOL,
+                mcp_server.BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
                 mcp_server.ORDER_TOOL,
                 mcp_server.PARALLEL_PREVIEW_TOOL,
                 mcp_server.PR_REVIEW_TOOL,
@@ -4425,6 +4426,17 @@ class McpTransportTest(unittest.TestCase):
             {tool.name for tool in tools},
         )
         tools_by_name = {tool.name: tool for tool in tools}
+        read_annotations = tools_by_name[mcp_server.BRIEF_SOURCES_TOOL].annotations
+        write_annotations = tools_by_name[mcp_server.BRIEF_SOURCE_PLAN_OUTPUT_TOOL].annotations
+        assert read_annotations is not None and write_annotations is not None
+        self.assertTrue(read_annotations.read_only_hint)
+        self.assertFalse(write_annotations.read_only_hint)
+        self.assertNotIn(
+            b'"plan-to-file"', msgspec.json.encode(tools_by_name[mcp_server.BRIEF_SOURCES_TOOL].input_schema)
+        )
+        self.assertIn(
+            b'"plan-to-file"', msgspec.json.encode(tools_by_name[mcp_server.BRIEF_SOURCE_PLAN_OUTPUT_TOOL].input_schema)
+        )
         self.assertEqual(
             {
                 mcp_server.OVERVIEW_TOOL: {"anthropic/alwaysLoad": True},

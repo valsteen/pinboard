@@ -658,8 +658,12 @@ BRIEF_CONTRACT_RESULT_TYPES = (
 )
 BRIEF_SOURCES_RESULT_TYPES = (
     brief_source_models.BriefSourcePlanView,
-    BriefSourcePlanOutputResult,
     BriefSourceBatchResult,
+    BriefSourcesRejected,
+    ExecutorBusyResult,
+)
+BRIEF_SOURCE_PLAN_OUTPUT_RESULT_TYPES = (
+    BriefSourcePlanOutputResult,
     BriefSourcesRejected,
     BriefSourcesPublishedFailure,
     ExecutorBusyResult,
@@ -699,7 +703,7 @@ def validate_brief_preparation_result(content: dict[str, JsonValue]) -> dict[str
 
 def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, JsonValue]:  # noqa: C901, PLR0912, PLR0915
     """Validate one emitted result against the exact alternative it claims."""
-    if tool_name in {"pinboard_brief_contract", "pinboard_brief_sources"}:
+    if tool_name in {"pinboard_brief_contract", "pinboard_brief_sources", "pinboard_brief_source_plan_output"}:
         return validate_brief_preparation_result(content)
     schema = content.get("schema")
     status = content.get("status")

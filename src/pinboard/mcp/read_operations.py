@@ -501,7 +501,7 @@ def _publish_source_plan(
 
 
 def _brief_sources(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
-    """Acquire selected-checkout sources and optional explicit output, never durable work state."""
+    """Read selected-checkout sources without an output write."""
     schema = "pinboard-mcp-brief-sources-result/v1"
     token.checkpoint()
     try:
@@ -515,16 +515,14 @@ def _brief_sources(raw: Mapping[str, JsonValue], token: execution.CancellationTo
     select_source = partial(select_checkout_brief_source, source_checkout)
     token.checkpoint()
     match request:
-        case contracts.BriefSourcesPlanRequest() | contracts.BriefSourcesPlanToFileRequest():
+        case contracts.BriefSourcesPlanRequest():
             source_plan = brief_sources.plan_brief_sources(select_source, request.manifest, request.max_batch_bytes)
             if isinstance(source_plan, brief_source_models.BriefSourceFailure):
                 return _brief_preparation_failure(schema, source_plan.code.value, source_plan.message)
-            if isinstance(request, contracts.BriefSourcesPlanRequest):
-                content: dict[str, JsonValue] = msgspec.to_builtins(
-                    brief_source_codec.project_brief_source_plan(source_plan)
-                )
-                return execution.OperationResult(content, "read", None)
-            return _publish_source_plan(Path(request.destination).absolute(), source_plan, token)
+            content: dict[str, JsonValue] = msgspec.to_builtins(
+                brief_source_codec.project_brief_source_plan(source_plan)
+            )
+            return execution.OperationResult(content, "read", None)
         case contracts.BriefSourcesEmitRequest():
             source_plan = brief_source_codec.plan_from_view(request.plan)
         case contracts.BriefSourcesEmitFileRequest():
@@ -543,17 +541,34 @@ def _brief_sources(raw: Mapping[str, JsonValue], token: execution.CancellationTo
     batch = brief_sources.render_brief_source_batch(select_source, source_plan, request.batch_index)
     if isinstance(batch, brief_source_models.BriefSourceFailure):
         return _brief_preparation_failure(schema, batch.code.value, batch.message)
-    return execution.OperationResult(
-        {
-            "schema": "pinboard-brief-source-batch/v1",
-            "batch_index": request.batch_index,
-            "content_byte_count": source_plan.batches[request.batch_index].content_byte_count,
-            "rendered_byte_count": len(batch),
-            "text": batch.decode("utf-8"),
-        },
-        "read",
-        None,
+    content: dict[str, JsonValue] = msgspec.to_builtins(
+        brief_sources.brief_source_batch_payload(
+            request.batch_index, source_plan.batches[request.batch_index].content_byte_count, batch
+        )
     )
+    return execution.OperationResult(content, "read", None)
+
+
+def _brief_source_plan_output(
+    raw: Mapping[str, JsonValue], token: execution.CancellationToken
+) -> execution.OperationResult:
+    schema = "pinboard-mcp-brief-sources-result/v1"
+    token.checkpoint()
+    try:
+        request = msgspec.convert(raw, type=contracts.BriefSourcePlanOutputEnvelope, strict=True).request
+        source_checkout = resolve_source_checkout_root(Path(request.project_root))
+    except (msgspec.ValidationError, ValueError) as error:
+        return _brief_preparation_failure(schema, "BRIEF_SOURCES_REQUEST_INVALID", str(error))
+    except RootError as error:
+        return _brief_preparation_failure(schema, error.code.value, str(error))
+    token.checkpoint()
+    source_plan = brief_sources.plan_brief_sources(
+        partial(select_checkout_brief_source, source_checkout), request.manifest, request.max_batch_bytes
+    )
+    if isinstance(source_plan, brief_source_models.BriefSourceFailure):
+        return _brief_preparation_failure(schema, source_plan.code.value, source_plan.message)
+    token.checkpoint()
+    return _publish_source_plan(Path(request.destination).absolute(), source_plan, token)
 
 
 def _read_item_definition(

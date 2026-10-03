@@ -25,6 +25,7 @@ from pinboard.application.brief_source_models import (
 )
 
 MARKDOWN_HEADING: Final = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+MAX_PRESENTED_BATCH_BYTES: Final = 16_000
 
 
 class BriefSourceSelector(Protocol):
@@ -147,24 +148,34 @@ def _split_source_into_segments(
     max_batch_bytes: int,
 ) -> BriefSourceResult[tuple[BriefSourceSegment, ...]]:
     if not selected.lines:
-        return (_compose_segment(request, 0, ()),)
-    segments: list[BriefSourceSegment] = []
-    current_segment_lines: list[BriefSourceLine] = []
-    current_segment_bytes = 0
-    for line in selected.lines:
-        line_bytes = len(line.content)
-        if line_bytes > max_batch_bytes:
+        empty = _compose_segment(request, 0, ())
+        size = _presented_size(0, ((empty, b""),))
+        if size > max_batch_bytes:
             return BriefSourceFailure(
                 BriefSourceErrorCode.LINE_TOO_LARGE,
-                f"Line {line.number} selected by '{request.authority_id}' is {line_bytes} bytes; "
-                f"the limit is {max_batch_bytes}.",
+                f"Empty selection '{request.authority_id}' requires {size} presented bytes; limit is "
+                f"{max_batch_bytes}. Use a shorter selector or raise the limit (maximum {MAX_PRESENTED_BATCH_BYTES}).",
             )
-        if current_segment_lines and current_segment_bytes + line_bytes > max_batch_bytes:
+        return (empty,)
+    segments: list[BriefSourceSegment] = []
+    current_segment_lines: list[BriefSourceLine] = []
+    # ponytail: Reprice each bounded segment; use incremental escaping counts if very long line sets become slow.
+    for line in selected.lines:
+        candidate = _compose_segment(request, len(segments), (*current_segment_lines, line))
+        content = b"".join(member.content for member in (*current_segment_lines, line))
+        if current_segment_lines and _presented_size(0, ((candidate, content),)) > max_batch_bytes:
             segments.append(_compose_segment(request, len(segments), tuple(current_segment_lines)))
             current_segment_lines = []
-            current_segment_bytes = 0
+            candidate = _compose_segment(request, len(segments), (line,))
+            content = line.content
+        size = _presented_size(0, ((candidate, content),))
+        if size > max_batch_bytes:
+            return BriefSourceFailure(
+                BriefSourceErrorCode.LINE_TOO_LARGE,
+                f"Line {line.number} selected by '{request.authority_id}' requires {size} presented bytes; "
+                f"limit is {max_batch_bytes}. Split this line or raise the limit (maximum {MAX_PRESENTED_BATCH_BYTES}).",
+            )
         current_segment_lines.append(line)
-        current_segment_bytes += line_bytes
     if current_segment_lines:
         segments.append(_compose_segment(request, len(segments), tuple(current_segment_lines)))
     return tuple(segments)
@@ -192,6 +203,29 @@ def _render_segments(segments: tuple[tuple[BriefSourceSegment, bytes], ...]) -> 
     return b"".join(rendered)
 
 
+def brief_source_batch_payload(index: int, content_byte_count: int, rendered: bytes) -> dict[str, str | int]:
+    payload: dict[str, str | int] = {
+        "schema": "pinboard-brief-source-batch/v1",
+        "batch_index": index,
+        "content_byte_count": content_byte_count,
+        "rendered_byte_count": len(rendered),
+        "presented_byte_count": 0,
+        "text": rendered.decode("utf-8"),
+    }
+    while (size := len(msgspec.json.encode(payload))) != payload["presented_byte_count"]:
+        payload["presented_byte_count"] = size
+    return payload
+
+
+def _presented_size(index: int, segments: tuple[tuple[BriefSourceSegment, bytes], ...]) -> int:
+    rendered = _render_segments(segments)
+    return int(
+        brief_source_batch_payload(index, sum(len(content) for _, content in segments), rendered)[
+            "presented_byte_count"
+        ]
+    )
+
+
 def _compose_batch(index: int, segments: tuple[BriefSourceSegment, ...]) -> BriefSourceBatch:
     return BriefSourceBatch(
         index,
@@ -208,20 +242,25 @@ def _compose_batch(index: int, segments: tuple[BriefSourceSegment, ...]) -> Brie
 
 
 def _group_segments_into_batches(
-    segments: tuple[BriefSourceSegment, ...], max_batch_bytes: int
-) -> tuple[BriefSourceBatch, ...]:
+    segments: tuple[tuple[BriefSourceSegment, bytes], ...], max_batch_bytes: int
+) -> BriefSourceResult[tuple[BriefSourceBatch, ...]]:
     batches: list[BriefSourceBatch] = []
-    current_batch_segments: list[BriefSourceSegment] = []
-    current_batch_bytes = 0
+    current: list[tuple[BriefSourceSegment, bytes]] = []
     for segment in segments:
-        if current_batch_segments and current_batch_bytes + segment.content_byte_count > max_batch_bytes:
-            batches.append(_compose_batch(len(batches), tuple(current_batch_segments)))
-            current_batch_segments = []
-            current_batch_bytes = 0
-        current_batch_segments.append(segment)
-        current_batch_bytes += segment.content_byte_count
-    if current_batch_segments:
-        batches.append(_compose_batch(len(batches), tuple(current_batch_segments)))
+        if current and _presented_size(len(batches), (*current, segment)) > max_batch_bytes:
+            batches.append(_compose_batch(len(batches), tuple(item for item, _ in current)))
+            current = []
+        size = _presented_size(len(batches), (*current, segment))
+        if size > max_batch_bytes:
+            return BriefSourceFailure(
+                BriefSourceErrorCode.LINE_TOO_LARGE,
+                f"Segment {segment[0].index} selected by '{segment[0].authority_id}' requires {size} presented "
+                f"bytes; limit is {max_batch_bytes}. Split its longest line or raise the limit "
+                f"(maximum {MAX_PRESENTED_BATCH_BYTES}).",
+            )
+        current.append(segment)
+    if current:
+        batches.append(_compose_batch(len(batches), tuple(item for item, _ in current)))
     return tuple(batches)
 
 
@@ -230,9 +269,10 @@ def plan_brief_sources(
     manifest: BriefSourceManifest,
     max_batch_bytes: int,
 ) -> BriefSourceResult[BriefSourcePlan]:
+    max_batch_bytes = min(max_batch_bytes, MAX_PRESENTED_BATCH_BYTES)
     selected_ranges: list[tuple[str, PurePosixPath, int, int]] = []
     planned_sources: list[PlannedBriefSource] = []
-    all_segments: list[BriefSourceSegment] = []
+    all_segments: list[tuple[BriefSourceSegment, bytes]] = []
     for request in manifest.sources:
         selected = select_source(authority_selector(request.selector), True)
         if isinstance(selected, BriefSourceFailure):
@@ -245,7 +285,15 @@ def plan_brief_sources(
         segments = _split_source_into_segments(request, selected, max_batch_bytes)
         if isinstance(segments, BriefSourceFailure):
             return segments
-        all_segments.extend(segments)
+        all_segments.extend(
+            (
+                segment,
+                b"".join(
+                    line.content for line in selected.lines if segment.start_line <= line.number <= segment.end_line
+                ),
+            )
+            for segment in segments
+        )
         planned_sources.append(
             PlannedBriefSource(
                 request.authority_id,
@@ -260,12 +308,15 @@ def plan_brief_sources(
             )
         )
     canonical_manifest = msgspec.json.encode(manifest, order="sorted")
+    batches = _group_segments_into_batches(tuple(all_segments), max_batch_bytes)
+    if isinstance(batches, BriefSourceFailure):
+        return batches
     return BriefSourcePlan(
         "pinboard-brief-source-plan/v1",
         hashlib.sha256(canonical_manifest).hexdigest(),
         max_batch_bytes,
         tuple(planned_sources),
-        _group_segments_into_batches(tuple(all_segments), max_batch_bytes),
+        batches,
     )
 
 
@@ -276,6 +327,13 @@ def render_brief_source_batch(
         return BriefSourceFailure(
             BriefSourceErrorCode.BATCH_NOT_FOUND,
             f"Batch {batch_index} is outside the available range 0..{len(plan.batches) - 1}.",
+        )
+    if plan.batches[batch_index].estimated_rendered_byte_count > min(plan.max_batch_bytes, MAX_PRESENTED_BATCH_BYTES):
+        return BriefSourceFailure(
+            BriefSourceErrorCode.PLAN_INVALID,
+            f"Batch {batch_index} plans {plan.batches[batch_index].estimated_rendered_byte_count} rendered bytes; "
+            f"the presented result limit is {min(plan.max_batch_bytes, MAX_PRESENTED_BATCH_BYTES)}. "
+            "Create a smaller plan before emitting this batch.",
         )
     sources = {source.authority_id: source for source in plan.sources}
     rendered_segments: list[tuple[BriefSourceSegment, bytes]] = []
@@ -318,5 +376,13 @@ def render_brief_source_batch(
         return BriefSourceFailure(
             BriefSourceErrorCode.PLAN_INVALID,
             f"Batch {batch_index} rendered size does not match its source plan.",
+        )
+    size = _presented_size(batch_index, tuple(rendered_segments))
+    if size > min(plan.max_batch_bytes, MAX_PRESENTED_BATCH_BYTES):
+        return BriefSourceFailure(
+            BriefSourceErrorCode.PLAN_INVALID,
+            f"Batch {batch_index} requires {size} presented bytes; "
+            f"the limit is {min(plan.max_batch_bytes, MAX_PRESENTED_BATCH_BYTES)}. "
+            "Create a smaller plan before emitting this batch.",
         )
     return rendered

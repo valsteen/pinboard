@@ -1081,6 +1081,42 @@ def _project_closure(facts: query_models.ItemClosureFacts | None) -> query_model
     )
 
 
+def select_item_integration_candidate(
+    facts: query_models.ItemIntegrationFacts,
+) -> query_models.IntegrationCandidateSource:
+    """Select current protection, the latest accepted checkpoint, or the closing candidate."""
+
+    if facts.item_state == stored_state.StoredWorkItemState.DONE:
+        closure = facts.closure
+        if (
+            closure is not None
+            and closure.action_kind == decision_models.ActionKind.COMPLETE
+            and closure.closing_attempt is not None
+            and closure.closing_attempt.candidate_revision is not None
+        ):
+            return query_models.CompletionCandidate(
+                closure.closing_attempt.attempt_id, closure.closing_attempt.candidate_revision
+            )
+        return query_models.IntegrationCandidateUnavailable(
+            facts.item_state.value, "the item was directly closed without a completion candidate"
+        )
+    attempt = facts.attempt
+    if (
+        attempt is not None
+        and attempt.state == work_models.AttemptState.REVIEW
+        and attempt.candidate_revision is not None
+    ):
+        return query_models.ProtectedReviewCandidate(attempt.attempt_id, attempt.candidate_revision)
+    if attempt is not None and facts.latest_checkpoint is not None:
+        return query_models.AcceptedCheckpointCandidate(
+            attempt.attempt_id, facts.item_state.value, facts.latest_checkpoint
+        )
+    return query_models.IntegrationCandidateUnavailable(
+        facts.item_state.value,
+        "there is no protected candidate or accepted checkpoint candidate on the current attempt",
+    )
+
+
 def project_item_status(
     reader: ports.ItemStatusReader,
     reviews: ports.ReadyCandidateReviewReader,

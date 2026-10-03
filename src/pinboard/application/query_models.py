@@ -634,6 +634,60 @@ class CandidateSnapshotContextFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class IntegrationAttemptFacts:
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    branch: str
+    base_revision: str
+    candidate_revision: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCheckpointFacts:
+    receipt: stored_state.StoredTransitionReceipt
+    package_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationFacts:
+    work_item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
+    attempt: IntegrationAttemptFacts | None
+    closure: ItemClosureFacts | None
+    latest_checkpoint: IntegrationCheckpointFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedReviewCandidate:
+    attempt_id: AttemptId
+    candidate_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedCheckpointCandidate:
+    attempt_id: AttemptId
+    item_state: str
+    checkpoint: IntegrationCheckpointFacts
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionCandidate:
+    attempt_id: AttemptId
+    candidate_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateUnavailable:
+    item_state: str
+    reason: str
+
+
+type IntegrationCandidateSource = (
+    ProtectedReviewCandidate | AcceptedCheckpointCandidate | CompletionCandidate | IntegrationCandidateUnavailable
+)
+
+
+@dataclass(frozen=True, slots=True)
 class CompletionCheckpointFacts:
     receipt: stored_state.StoredTransitionReceipt
     package_reference: stored_state.ArtifactReference | None

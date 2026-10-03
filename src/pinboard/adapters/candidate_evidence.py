@@ -4,13 +4,23 @@ Restoration can change the source checkout, never the ledger or authority.
 Post-mutation verification failures retain that actual effect and forbid replay.
 """
 
+import hashlib
+from dataclasses import dataclass
 from pathlib import Path
-from typing import assert_never
+from typing import Literal, assert_never
+
+import msgspec
 
 from pinboard.adapters.files import candidate_compatibility, root
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.files.errors import ArtifactError, RootError
-from pinboard.application import candidate_snapshot_compatibility_models, candidate_snapshots, ports, query_models
+from pinboard.application import (
+    candidate_snapshot_compatibility_models,
+    candidate_snapshots,
+    ports,
+    query_models,
+    stored_state,
+)
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
@@ -22,7 +32,56 @@ from pinboard.domain.errors import (
     FailureMismatch,
     RetryDisposition,
 )
-from pinboard.domain.identifiers import AttemptId
+from pinboard.domain.identifiers import AttemptId, WorkItemId
+
+
+def read_integration_snapshot(
+    work_root: Path,
+    reference: stored_state.ArtifactReference,
+    attempt_id: AttemptId,
+    item_id: WorkItemId,
+    candidate: str,
+) -> DecisionResult[candidate_snapshots.CandidateSnapshot]:
+    """Read one accepted snapshot reference and verify its canonical bytes and identity."""
+
+    try:
+        encoded = read_reference(work_root, reference)
+        if len(encoded) != reference.size_bytes or hashlib.sha256(encoded).hexdigest() != reference.content_sha256:
+            raise ValueError("Accepted candidate snapshot bytes do not match their artifact reference.")
+        snapshot = candidate_snapshots.decode_candidate_snapshot(encoded)
+        if (snapshot.attempt_id, snapshot.item_id, snapshot.candidate) != (str(attempt_id), str(item_id), candidate):
+            raise ValueError("Accepted candidate snapshot does not match its selected attempt and candidate.")
+        return snapshot
+    except (ArtifactError, OSError, ValueError, msgspec.DecodeError) as error:
+        return DecisionFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, str(error), None)
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationSnapshotCompared:
+    target_revision: str
+    presence: Literal["content-present", "content-not-present", "no-change"]
+
+
+type IntegrationSnapshotComparison = root.IntegrationTargetUnresolved | IntegrationSnapshotCompared
+
+
+def compare_integration_snapshot(
+    source_checkout: Path,
+    target: str,
+    snapshot: candidate_snapshots.CandidateSnapshot,
+) -> IntegrationSnapshotComparison:
+    """Compare verified accepted snapshot content with one named local target."""
+    observed = root.read_integration_target(source_checkout, target, snapshot.diff)
+    if isinstance(observed, root.IntegrationTargetUnresolved):
+        return observed
+    presence: Literal["content-present", "content-not-present", "no-change"]
+    if not snapshot.diff:
+        presence = "no-change"
+    elif observed.content_present:
+        presence = "content-present"
+    else:
+        presence = "content-not-present"
+    return IntegrationSnapshotCompared(observed.target_revision, presence)
 
 
 def read_candidate_evidence(
@@ -49,7 +108,7 @@ def read_candidate_evidence_from_context(
     try:
         encoded = read_reference(work_root, context.reference)
         return candidate_snapshots.verify_candidate_snapshot_context(context, candidate, encoded)
-    except (ArtifactError, ValueError) as error:
+    except (ArtifactError, OSError, ValueError, msgspec.DecodeError) as error:
         return DecisionFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, str(error), None)
 
 

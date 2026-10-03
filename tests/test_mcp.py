@@ -4780,15 +4780,17 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
                 {"effect": "git-metadata", "status": "denied"},
             ],
         }
-        inspected = call_native_tool(
-            mcp_server.ATTEMPT_INSPECT_TOOL,
-            {
-                "project_root": str(fixture.project),
-                "work_root": str(fixture.work),
-                "attempt_id": "work-a-1",
-                "reconciliation": reconciliation,
-            },
-        )
+        with patch("pinboard.adapters.files.root.read_integration_target") as integration_read:
+            inspected = call_native_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "attempt_id": "work-a-1",
+                    "reconciliation": reconciliation,
+                },
+            )
+        integration_read.assert_not_called()
         continuation = self.json_object(inspected["continuation"])
         operation = self.json_object(continuation["next_operation"])
         self.assertEqual(

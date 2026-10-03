@@ -14,10 +14,13 @@ from unittest.mock import patch
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
+    IntegrationTargetObserved,
+    IntegrationTargetUnresolved,
     classify_checkout,
     ensure_default_git_exclude,
     observe_checkout_identity,
     read_current_head_candidate,
+    read_integration_target,
     resolve_shared_repository_root,
     resolve_source_checkout_root,
 )
@@ -141,6 +144,137 @@ class RootResolutionTest(unittest.TestCase):
         self.assertEqual(candidate_revision, observed.identity)
         self.assertIn(b"-base\n+candidate", observed.diff)
         self.assertEqual(original_index, index.read_bytes())
+
+    def test_integration_target_reverse_applies_without_writing_git_metadata(self) -> None:
+        repository = Path(tempfile.mkdtemp()).resolve()
+        self.run_git(repository, "init", "-b", "main")
+        tracked = repository / "tracked.txt"
+        tracked.write_text("base\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(
+            repository,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "author.date=2000-01-01T00:00:00+00:00",
+            "-c",
+            "committer.date=2000-01-01T00:00:00+00:00",
+            "commit",
+            "-m",
+            "base",
+        )
+        base = self.run_git(repository, "rev-parse", "HEAD").strip()
+        tracked.write_text("candidate \n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(
+            repository,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "author.date=2000-01-02T00:00:00+00:00",
+            "-c",
+            "committer.date=2000-01-02T00:00:00+00:00",
+            "commit",
+            "-m",
+            "candidate",
+        )
+        candidate = self.run_git(repository, "rev-parse", "HEAD").strip()
+        diff = subprocess.run(
+            ["git", "diff", "--binary", base, candidate], cwd=repository, check=True, capture_output=True
+        ).stdout
+        self.run_git(repository, "-c", "apply.whitespace=error", "config", "apply.whitespace", "error")
+        git_directory = repository / ".git"
+        before = {
+            path.relative_to(git_directory): (path.read_bytes() if path.is_file() else None, path.stat().st_mode)
+            for path in git_directory.rglob("*")
+        }
+        index = (git_directory / "index").read_bytes()
+        head = (git_directory / "HEAD").read_bytes()
+        worktree = tracked.read_bytes()
+        temporary_directories: list[Path] = []
+        create_temporary_directory = tempfile.TemporaryDirectory
+
+        def record_temporary_directory(*, prefix: str) -> tempfile.TemporaryDirectory[str]:
+            temporary_directory = create_temporary_directory(prefix=prefix)
+            temporary_directories.append(Path(temporary_directory.name))
+            return temporary_directory
+
+        with patch("pinboard.adapters.files.root.tempfile.TemporaryDirectory", side_effect=record_temporary_directory):
+            observed = read_integration_target(repository, "main", diff)
+
+        self.assertIsInstance(observed, IntegrationTargetObserved)
+        assert isinstance(observed, IntegrationTargetObserved)
+        self.assertEqual(candidate, observed.target_revision)
+        self.assertTrue(observed.content_present)
+        self.assertEqual(index, (git_directory / "index").read_bytes())
+        self.assertEqual(head, (git_directory / "HEAD").read_bytes())
+        self.assertEqual(worktree, tracked.read_bytes())
+        after = {
+            path.relative_to(git_directory): (path.read_bytes() if path.is_file() else None, path.stat().st_mode)
+            for path in git_directory.rglob("*")
+        }
+        self.assertEqual(before, after)
+        self.assertEqual(1, len(temporary_directories))
+        self.assertFalse(temporary_directories[0].exists())
+        self.run_git(repository, "update-ref", "refs/heads/base-target", base)
+        absent = read_integration_target(repository, "base-target", diff)
+        self.assertIsInstance(absent, IntegrationTargetObserved)
+        assert isinstance(absent, IntegrationTargetObserved)
+        self.assertEqual(base, absent.target_revision)
+        self.assertFalse(absent.content_present)
+        self.assertEqual(IntegrationTargetUnresolved("missing"), read_integration_target(repository, "missing", diff))
+
+    def test_integration_target_reads_with_a_read_only_git_directory(self) -> None:
+        repository = Path(tempfile.mkdtemp()).resolve()
+        self.run_git(repository, "init", "-b", "main")
+        tracked = repository / "tracked.txt"
+        tracked.write_text("value\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
+        git_directory = repository / ".git"
+        original_modes = {path: path.stat().st_mode for path in (git_directory, *git_directory.rglob("*"))}
+        files_before = {path: path.read_bytes() for path in git_directory.rglob("*") if path.is_file()}
+        head_before = (git_directory / "HEAD").read_bytes()
+        index_before = (git_directory / "index").read_bytes()
+        worktree_before = tracked.read_bytes()
+        object_count_before = self.run_git(repository, "count-objects", "-v")
+        temporary_directories: list[Path] = []
+        create_temporary_directory = tempfile.TemporaryDirectory
+
+        def record_temporary_directory(*, prefix: str) -> tempfile.TemporaryDirectory[str]:
+            temporary_directory = create_temporary_directory(prefix=prefix)
+            temporary_directories.append(Path(temporary_directory.name))
+            return temporary_directory
+
+        try:
+            for path in original_modes:
+                path.chmod(0o555 if path.is_dir() else 0o444)
+            patch_bytes = (
+                b"diff --git a/tracked.txt b/tracked.txt\n--- a/tracked.txt\n+++ b/tracked.txt\n"
+                b"@@ -1 +1 @@\n-old\n+candidate\n"
+            )
+            with patch(
+                "pinboard.adapters.files.root.tempfile.TemporaryDirectory", side_effect=record_temporary_directory
+            ):
+                observed = read_integration_target(repository, "main", patch_bytes)
+            self.assertIsInstance(observed, IntegrationTargetObserved)
+            self.assertFalse(observed.content_present)
+            self.assertEqual(
+                files_before, {path: path.read_bytes() for path in git_directory.rglob("*") if path.is_file()}
+            )
+            self.assertEqual(head_before, (git_directory / "HEAD").read_bytes())
+            self.assertEqual(index_before, (git_directory / "index").read_bytes())
+            self.assertEqual(worktree_before, tracked.read_bytes())
+            self.assertEqual(object_count_before, self.run_git(repository, "count-objects", "-v"))
+            self.assertEqual(1, len(temporary_directories))
+            self.assertFalse(temporary_directories[0].exists())
+        finally:
+            for path, mode in original_modes.items():
+                path.chmod(mode)
 
     def test_returning_initialization_reads_an_existing_exclusion_without_write_access(self) -> None:
         repository = Path(tempfile.mkdtemp()).resolve()

@@ -493,6 +493,31 @@ class ContributorTraceTest(unittest.TestCase):
             )
             self.assertIsNotNone(capture)
 
+    def test_integration_selector_uses_its_saved_item_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = Path(temporary) / "selected-work-root"
+            work_root.mkdir()
+            initialize_database(resolve_durable_roots(primary, work_root), SQLITE_NOW)
+            initialize_store(SQLiteWorkStore(work_root / "state.sqlite3"), complete_sqlite_state())
+            (work_root / contributor_traces.SETTINGS_NAME).write_text(
+                '[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = off\n[item "work-a"]\n\tmode = on\n',
+                encoding="utf-8",
+            )
+            capture = execution.AutomaticCapture(common.select_capture_item).resolve(
+                str(worktree),
+                {
+                    "request": {
+                        "project_root": str(worktree),
+                        "work_root": str(work_root),
+                        "operation": "integration",
+                        "item_id": "work-a",
+                        "target": "main",
+                    }
+                },
+            )
+            self.assertIsNotNone(capture)
+
     def test_existing_shared_work_root_needs_no_parent_write_for_mcp_capture(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             primary, worktree = self.project(Path(temporary))

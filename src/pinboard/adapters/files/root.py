@@ -1,5 +1,7 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -33,6 +35,20 @@ class DifferentHeadCandidate:
 @dataclass(frozen=True, slots=True)
 class DirtyHeadCandidate:
     candidate_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationTargetUnresolved:
+    target: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationTargetObserved:
+    target_revision: str
+    content_present: bool
+
+
+type IntegrationTargetObservation = IntegrationTargetUnresolved | IntegrationTargetObserved
 
 
 type CommittedCandidateObservation = CurrentHeadCandidate | DifferentHeadCandidate | DirtyHeadCandidate
@@ -243,6 +259,69 @@ def read_current_head_candidate(
         unavailable_message=f"Cannot compare candidate '{candidate_revision}' with comparison revision '{comparison_revision}'.",
     )
     return CurrentHeadCandidate(candidate_revision, diff)
+
+
+def read_integration_target(cwd: Path, target: str, reviewed_diff: bytes) -> IntegrationTargetObservation:
+    """Check whether a recorded diff reverse-applies to a named local target commit."""
+
+    revision = subprocess.run(
+        ["git", "rev-parse", "--verify", "--end-of-options", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if revision.returncode != 0 or not revision.stdout.strip():
+        return IntegrationTargetUnresolved(target)
+    target_revision = revision.stdout.strip()
+    if not reviewed_diff:
+        return IntegrationTargetObserved(target_revision, True)
+    try:
+        with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as temporary_directory:
+            index = Path(temporary_directory) / "index"
+            environment = os.environ.copy()
+            environment["GIT_INDEX_FILE"] = str(index)
+            read_tree = subprocess.run(
+                ["git", "-c", "core.splitIndex=false", "read-tree", target_revision],
+                cwd=cwd,
+                env=environment,
+                capture_output=True,
+                check=False,
+            )
+            if read_tree.returncode != 0:
+                raise RootError(
+                    RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                    read_tree.stderr.decode(errors="replace").strip()
+                    or f"Cannot read target tree '{target_revision}'.",
+                )
+            applied = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "core.splitIndex=false",
+                    "-c",
+                    "apply.whitespace=nowarn",
+                    "apply",
+                    "--cached",
+                    "--check",
+                    "--reverse",
+                    "--whitespace=nowarn",
+                ],
+                cwd=cwd,
+                env=environment,
+                input=reviewed_diff,
+                capture_output=True,
+                check=False,
+            )
+            if applied.returncode not in (0, 1):
+                raise RootError(
+                    RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                    applied.stderr.decode(errors="replace").strip()
+                    or f"Cannot compare reviewed content with target '{target_revision}'.",
+                )
+            return IntegrationTargetObserved(target_revision, applied.returncode == 0)
+    except OSError as error:
+        raise RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, str(error)) from error
 
 
 def _working_tree_status(cwd: Path) -> bytes:

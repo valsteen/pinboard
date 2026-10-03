@@ -10,11 +10,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import assert_never
+from typing import Literal, assert_never
 
 import msgspec
 
 from pinboard.adapters import candidate_evidence, dispatch_operations, review_operations
+from pinboard.adapters.files import root
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, ImmutableFilePublishedError, RootError
@@ -39,7 +40,7 @@ from pinboard.application import (
 )
 from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.ports import WorkStore
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
@@ -101,7 +102,7 @@ class _AttemptReviewEvidence:
 def _branch_owner_not_found(branch: str, work_root: Path) -> execution.OperationResult:
     return execution.OperationResult(
         {
-            "schema": "pinboard-mcp-item-status-result/v2",
+            "schema": "pinboard-mcp-item-status-result/v3",
             "status": "rejected",
             "code": "BRANCH_OWNER_NOT_FOUND",
             "message": f"No retained attempt in work root {work_root} records branch '{branch}'.",
@@ -131,8 +132,21 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
     token.checkpoint()
     try:
         request = msgspec.convert(raw, type=contracts.ItemStatusEnvelope, strict=True).request
-        durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
+        return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
+    try:
+        durable = common._resolve_durable(request.project_root, request.work_root)
+    except RootError as error:
+        if isinstance(request, contracts.ItemStatusIntegrationRequest):
+            return _integration_rejected(
+                error.code.value,
+                str(error),
+                (("project_root", request.project_root), ("git_diagnostic", str(error))),
+                "correct-input",
+                "Correct the selected checkout and retry this read.",
+            )
+        return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
+    except (ValueError, OSError) as error:
         return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
     token.checkpoint()
     store = common.compose_store(durable)
@@ -144,19 +158,296 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
             if isinstance(projected, DecisionFailure):
                 return common._item_status_failure(projected.code.value, projected.message, projected.details)
             if isinstance(projected, query_models.DamagedTransitionReceipt):
-                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v2", projected)
+                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", projected)
             selected: query_models.ItemStatus | query_models.BranchOwners = projected
         case contracts.ItemStatusBranchRequest():
             owners = queries.project_branch_owners(store, request.branch)
             if owners is None:
                 return _branch_owner_not_found(request.branch, durable.work_root)
             selected = owners
+        case contracts.ItemStatusIntegrationRequest():
+            return _read_item_integration(request, durable, store, token)
         case _ as unreachable:
             assert_never(unreachable)
     token.checkpoint()
     content = msgspec.to_builtins(selected)
     assert isinstance(content, dict)
     return execution.OperationResult(content, "ok", selected.revision)
+
+
+def _integration_rejected(
+    code: str,
+    message: str,
+    observed: tuple[tuple[str, str], ...],
+    retry: str,
+    next_step: str,
+    mismatches: tuple[tuple[str, str, str], ...] = (),
+) -> execution.OperationResult:
+    return execution.OperationResult(
+        {
+            "schema": "pinboard-mcp-item-status-result/v3",
+            "status": "rejected",
+            "code": code,
+            "message": message,
+            "state_changed": False,
+            "effect": "unchanged",
+            "retry": retry,
+            "changed_surfaces": [],
+            "observed": [{"field": field, "value": value} for field, value in observed],
+            "mismatches": [
+                {"field": field, "expected": expected, "observed": actual} for field, expected, actual in mismatches
+            ],
+            "next_step": next_step,
+        },
+        "rejected",
+        None,
+    )
+
+
+def _read_item_integration(  # noqa: C901, PLR0912, PLR0915 - exhaustive integration-source composition stays at the item-status owner
+    request: contracts.ItemStatusIntegrationRequest,
+    durable: DurableRoots,
+    store: WorkStore,
+    token: execution.CancellationToken,
+) -> execution.OperationResult:
+    """Select one accepted candidate snapshot, then compare its recorded diff with one local target."""
+
+    item_id = WorkItemId(request.item_id)
+    facts = store.read_item_integration(item_id)
+    if facts is None:
+        return _integration_rejected(
+            "ITEM_NOT_FOUND",
+            f"Item '{request.item_id}' was not found.",
+            (("item_id", request.item_id),),
+            "correct-input",
+            "Check the item id and read its item status.",
+        )
+    source: contracts.ItemIntegrationSource
+    evidence: candidate_snapshots.CandidateSnapshotEvidence | candidate_snapshots.CandidateSnapshot
+    source_attempt_id: AttemptId
+    candidate_revision: str
+    checkpoint_id: str | None = None
+    candidate_source = queries.select_item_integration_candidate(facts)
+    if isinstance(candidate_source, query_models.CompletionCandidate | query_models.ProtectedReviewCandidate):
+        source_attempt_id = candidate_source.attempt_id
+        candidate_revision = candidate_source.candidate_revision
+        source_kind: Literal["protected-review", "completion"]
+        unavailable_reason: str
+        if isinstance(candidate_source, query_models.CompletionCandidate):
+            source_kind = "completion"
+            unavailable_reason = "the closing candidate has no accepted snapshot"
+        else:
+            source_kind = "protected-review"
+            unavailable_reason = "the protected candidate has no accepted snapshot"
+        context = store.read_candidate_snapshot_context(source_attempt_id)
+        if context is None:
+            return _candidate_unavailable(request, facts.item_state.value, unavailable_reason)
+        verified = candidate_evidence.read_candidate_evidence_from_context(
+            durable.work_root, context, candidate_revision
+        )
+        if isinstance(verified, DecisionFailure):
+            return _candidate_evidence_invalid(source_attempt_id, context.reference.selector, verified.message)
+        evidence = verified
+        source = _integration_source(evidence.snapshot, source_attempt_id, candidate_revision, source_kind, None)
+    elif isinstance(candidate_source, query_models.AcceptedCheckpointCandidate):
+        checkpoint = candidate_source.checkpoint
+        receipt = checkpoint.receipt
+        if checkpoint.package_reference is None or receipt.artifact_ref_id is None:
+            return _candidate_unavailable(
+                request, facts.item_state.value, "the checkpoint acceptance has no linked package"
+            )
+        try:
+            if (
+                receipt.outcome_schema != "checkpoint-acceptance/v2"
+                or receipt.action_kind != decision_models.ActionKind.ACCEPT_CHECKPOINT
+                or receipt.authorization != decision_models.AuthorizationKind.PROJECT
+                or str(receipt.action_id) != f"accept-checkpoint:{candidate_source.attempt_id}"
+                or str(receipt.subject_id) != str(candidate_source.attempt_id)
+            ):
+                raise ValueError("Checkpoint acceptance receipt has an unsupported identity or schema.")
+            outcome = msgspec.json.decode(
+                bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome, strict=True
+            )
+            if msgspec.json.encode(outcome, order="sorted") != bytes(receipt.outcome_payload):
+                raise ValueError("Checkpoint acceptance outcome is not canonical.")
+        except (ValueError, msgspec.DecodeError) as error:
+            damaged = query_models.DamagedTransitionReceipt(
+                candidate_source.attempt_id,
+                receipt.history_id,
+                receipt.committed_at,
+                decision_models.ActionKind.ACCEPT_CHECKPOINT,
+                str(error),
+            )
+            return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", damaged)
+        try:
+            package_bytes = read_reference(durable.work_root, checkpoint.package_reference)
+            package = work_briefs.decode_canonical_checkpoint_review_package(package_bytes)
+            if isinstance(package, work_brief_models.WorkBriefFailure):
+                raise ValueError(package.message)
+            if not isinstance(package, work_brief_models.CheckpointReviewPackageV3):
+                return _candidate_unavailable(
+                    request, facts.item_state.value, "the linked checkpoint package has no candidate snapshot reference"
+                )
+            if (
+                package.attempt_id != str(candidate_source.attempt_id)
+                or package.item_id != request.item_id
+                or package.candidate != outcome.candidate
+                or package.checkpoint.id != outcome.checkpoint
+                or package.acceptance_evidence != outcome.evidence
+                or outcome.outcome != decision_models.ActionKind.ACCEPT_CHECKPOINT.value
+            ):
+                raise ValueError("Checkpoint receipt and package identities do not agree.")
+            identity = package.candidate_snapshot
+            reference = store.read_artifact_reference(
+                work_models.ArtifactKind.EVIDENCE, identity.key, identity.revision
+            )
+            if reference is None or (reference.selector, reference.content_sha256, reference.size_bytes) != (
+                identity.selector,
+                identity.content_sha256,
+                identity.size_bytes,
+            ):
+                raise ValueError("Checkpoint candidate snapshot reference does not resolve to accepted bytes.")
+            source_attempt_id = candidate_source.attempt_id
+            candidate_revision = package.candidate
+            checkpoint_id = package.checkpoint.id
+            snapshot = candidate_evidence.read_integration_snapshot(
+                durable.work_root, reference, source_attempt_id, item_id, candidate_revision
+            )
+            if isinstance(snapshot, DecisionFailure):
+                return _candidate_evidence_invalid(source_attempt_id, reference.selector, snapshot.message)
+            brief_reference = store.read_artifact_reference(
+                work_models.ArtifactKind.BRIEF, package.accepted_brief.key, package.accepted_brief.revision
+            )
+            if brief_reference is None or (
+                brief_reference.selector,
+                brief_reference.content_sha256,
+                brief_reference.size_bytes,
+            ) != (
+                package.accepted_brief.selector,
+                package.accepted_brief.content_sha256,
+                package.accepted_brief.size_bytes,
+            ):
+                raise ValueError("Checkpoint accepted brief identity does not resolve to accepted bytes.")
+            brief = work_briefs.decode_canonical_work_brief(read_reference(durable.work_root, brief_reference))
+            if isinstance(brief, work_brief_models.WorkBriefFailure):
+                raise ValueError(brief.message)
+            if snapshot.accepted_base_revision != brief.base_revision:
+                raise ValueError("Checkpoint candidate snapshot does not match its accepted brief base.")
+            evidence = snapshot
+            source = _integration_source(
+                snapshot, source_attempt_id, candidate_revision, "accepted-checkpoint", checkpoint_id
+            )
+        except (ArtifactError, OSError, ValueError, msgspec.DecodeError) as error:
+            reference_name = checkpoint.package_reference.selector
+            return _candidate_evidence_invalid(candidate_source.attempt_id, reference_name, str(error))
+    else:
+        assert isinstance(candidate_source, query_models.IntegrationCandidateUnavailable)
+        return _candidate_unavailable(request, candidate_source.item_state, candidate_source.reason)
+    token.checkpoint()
+    snapshot = evidence.snapshot if isinstance(evidence, candidate_snapshots.CandidateSnapshotEvidence) else evidence
+    try:
+        observed = candidate_evidence.compare_integration_snapshot(Path(request.project_root), request.target, snapshot)
+    except RootError as error:
+        return _integration_root_failure(request, error)
+    if isinstance(observed, root.IntegrationTargetUnresolved):
+        return _target_unresolved(request)
+    return execution.OperationResult(
+        msgspec.to_builtins(
+            contracts.ItemIntegrationResult(
+                "pinboard-item-integration/v1",
+                "ok",
+                request.item_id,
+                request.target,
+                observed.target_revision,
+                source,
+                observed.presence,
+                False,
+                "unchanged",
+                "safe-to-repeat",
+                (),
+            )
+        ),
+        "ok",
+        None,
+    )
+
+
+def _integration_source(
+    snapshot: candidate_snapshots.CandidateSnapshot,
+    attempt_id: AttemptId,
+    candidate_revision: str,
+    kind: Literal["protected-review", "accepted-checkpoint", "completion"],
+    checkpoint_id: str | None,
+) -> contracts.ItemIntegrationSource:
+    compared_from = (
+        snapshot.preimage_revision
+        if isinstance(
+            snapshot,
+            candidate_snapshots.WorkingTreeCandidateSnapshot | candidate_snapshots.DeclaredWorkingTreeCandidateSnapshot,
+        )
+        else snapshot.accepted_base_revision
+    )
+    match kind:
+        case "protected-review":
+            return contracts.ProtectedReviewIntegrationSource(str(attempt_id), candidate_revision, compared_from)
+        case "accepted-checkpoint":
+            if checkpoint_id is None:
+                raise ValueError("Accepted-checkpoint source requires its checkpoint id.")
+            return contracts.AcceptedCheckpointIntegrationSource(
+                str(attempt_id), candidate_revision, compared_from, checkpoint_id
+            )
+        case "completion":
+            return contracts.CompletionIntegrationSource(str(attempt_id), candidate_revision, compared_from)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _candidate_unavailable(
+    request: contracts.ItemStatusIntegrationRequest, item_state: str, reason: str
+) -> execution.OperationResult:
+    return _integration_rejected(
+        "INTEGRATION_CANDIDATE_UNAVAILABLE",
+        f"Item '{request.item_id}' in state '{item_state}' has no available reviewed candidate: {reason}.",
+        (("item_id", request.item_id), ("item_state", item_state), ("reason", reason)),
+        "correct-input",
+        "Read the item with pinboard_item_status operation item.",
+    )
+
+
+def _candidate_evidence_invalid(attempt_id: AttemptId, reference: str, message: str) -> execution.OperationResult:
+    return _integration_rejected(
+        "INTEGRATION_CANDIDATE_EVIDENCE_INVALID",
+        f"Accepted candidate evidence for attempt '{attempt_id}' is invalid: {message}",
+        (("attempt_id", str(attempt_id)), ("accepted_reference", reference)),
+        "do-not-retry",
+        "Run pinboard validate to diagnose the accepted evidence.",
+        (("accepted_candidate_evidence", "verified canonical bytes", message),),
+    )
+
+
+def _target_unresolved(
+    request: contracts.ItemStatusIntegrationRequest,
+) -> execution.OperationResult:
+    return _integration_rejected(
+        "INTEGRATION_TARGET_UNRESOLVED",
+        f"Target '{request.target}' does not resolve to a local commit in project root {request.project_root}.",
+        (("target", request.target), ("project_root", request.project_root)),
+        "correct-input",
+        "Name an existing local branch, remote-tracking ref, tag, or full commit; fetch outside Pinboard first when remote freshness matters.",
+    )
+
+
+def _integration_root_failure(
+    request: contracts.ItemStatusIntegrationRequest,
+    error: RootError,
+) -> execution.OperationResult:
+    return _integration_rejected(
+        error.code.value,
+        str(error),
+        (("project_root", request.project_root), ("git_diagnostic", str(error))),
+        "correct-input",
+        "Correct the selected checkout and retry this read.",
+    )
 
 
 def _read_correction_context(

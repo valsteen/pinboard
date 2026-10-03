@@ -596,7 +596,8 @@ class CliTest(unittest.TestCase):
         before = settings.read_bytes()
         diagnosis = self.run_json_cli("--project-root", str(project), "--work-root", str(work), "diagnose")
         self.assertEqual("unobserved", diagnosis["trace_project_mode"])
-        self.assertIn("invalid or unreadable", str(diagnosis["trace_configuration_error"]))
+        self.assertIn(str(settings), str(diagnosis["trace_configuration_error"]))
+        self.assertIn("bad config line", str(diagnosis["trace_configuration_error"]))
         self.assertEqual(before, settings.read_bytes())
 
     def test_diagnose_damaged_ledger_never_reports_valid_health(self) -> None:

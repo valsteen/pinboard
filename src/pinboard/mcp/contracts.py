@@ -1837,7 +1837,7 @@ class TracePreflightResult(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     target_ran: bool
     state_changed: bool | None
     effect: Literal["unchanged", "committed", "unconfirmed"]
-    retry: Literal["correct-input"]
+    retry: Literal["correct-input", "retry-same-input"]
     changed_surfaces: tuple[Literal["work-root"], ...]
     settings_parent_creation: Literal["none", "unconfirmed"]
     settings_file_creation: Literal["none", "confirmed", "unconfirmed"]

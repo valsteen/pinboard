@@ -1,0 +1,337 @@
+--- /dev/null
++++ b/private/benchmark_limits.py
+@@ -0,0 +1,19 @@
++"""Time and spending settings for the private benchmark launchers."""
++
++MAXIMUM_ACTIVE_SECONDS = 12 * 60 * 60
++CODEX_SETUP_SECONDS = 300
++BUDGET_POLL_SECONDS = 10
++EXPERIMENT_CAP_USD = 100
++CLAUDE_MAXIMUM_ACTIVE_MINUTES = 180
++
++CODEX_RESERVED_CAP_USD = {'astra': 30, 'sol': 15, 'luna': 2.5, 'luna-xhigh': 2.5}
++CODEX_PRICES_PER_MILLION = {
++    'astra': (10, 1, 50), 'sol': (2, .1, 10),
++    'luna': (.1, .01, .5), 'luna-xhigh': (.1, .01, .5),
++}
++LONG_CONTEXT_INPUT_TOKENS = 272000
++LONG_CONTEXT_INPUT_PRICE_MULTIPLIER = 2
++LONG_CONTEXT_OUTPUT_PRICE_MULTIPLIER = 1.5
++TOKENS_PER_PRICE_UNIT = 1e6
++BUDGET_RESERVATION_MAX_USD = .5
++BUDGET_RESERVATION_FRACTION = .05
+--- a/private/prepare_launch.py
++++ b/private/prepare_launch.py
+@@ -1,6 +1,7 @@
+ from pathlib import Path
+ import hashlib
+ import json
++import benchmark_limits as limits
+ 
+ root = Path(__file__).resolve().parents[1]
+ old = root.with_name('model-benchmark')
+@@ -18,13 +19,14 @@
+     if not brief_path.exists():
+         continue
+     brief = brief_path.read_bytes()
++    timing_instruction = f' The run has at most {limits.CLAUDE_MAXIMUM_ACTIVE_MINUTES} active minutes, excluding human waiting.' if arm in ('sonnet', 'opus') else ''
+     prompt = f'''Deliver the accepted integration-by-content checkpoint using Pinboard in this isolated historical replay. You own the entire workflow: implementation, verification, commissioning a fresh independent reviewer, evaluating that review, corrections, final disposition, and the finished pull-request report. Every participating agent must use {model} at {effort} effort, including reviewers. The user explicitly authorizes native subagents for this workflow. Do not select another model or effort.
+ 
+ The historical brief and definition have already been restored, and the attempt is active. Read the installed Pinboard skills relevant to your role. You may implement directly as the attempt worker, then act as the owning coordinator for review, or delegate implementation to a fresh same-model worker. The user explicitly authorizes direct CLI implementation of this replay's preserved accepted brief without repeating initial brief preparation or requiring a new initial brief-ready review. This only replaces the initial worker-launch envelope if you implement directly; subsequent native review and correction workflows remain yours to perform. Review must use a fresh same-model context through the available native agent tool, commissioned through Pinboard. Do not self-review in place of that reviewer.
+ 
+ Use only this checkout and its scratch board. Do not access other projects, other benchmark runs, GitHub history, or later solutions. The original repository and all other candidates are outside your scope. Runtime host is VincentacStudio; use your real current runtime identity, never a historical identity. The main checkout of this standalone repository is the assigned isolated environment; no additional checkout is needed. Base setup has completed successfully. The stable installed plugin supplies coordination; verification of your changes must run from your candidate checkout.
+ 
+-The observing session will not review code, supply findings, choose fixes, or decide whether your work is ready. It will relay genuine human questions and answers; previously approved answers may be reused only when your question has the same scope. Do not invent an answer or treat silence as approval. If you need the human, stop and ask in your final reply; your session will resume with the answer. Otherwise own the complete workflow to its conclusion. The overall experiment has a fresh $100 API-equivalent cap, including all agents and reviews. The run has at most 180 active minutes, excluding human waiting. Report incomplete work honestly if a limit prevents finishing.
++The observing session will not review code, supply findings, choose fixes, or decide whether your work is ready. It will relay genuine human questions and answers; previously approved answers may be reused only when your question has the same scope. Do not invent an answer or treat silence as approval. If you need the human, stop and ask in your final reply; your session will resume with the answer. Otherwise own the complete workflow to its conclusion. The overall experiment has a fresh ${limits.EXPERIMENT_CAP_USD} API-equivalent cap, including all agents and reviews.{timing_instruction} Report incomplete work honestly if a limit prevents finishing.
+ 
+ The outcome is an assessment-only draft PR, labeled model-benchmark and integration-replay-v2-20261003 and do not merge, then closed without merging. Write the finished PR title to .pinboard/benchmark-pr-title.txt and description to .pinboard/benchmark-pr-description.md. Describe the delivered behavior, verification, review and correction outcomes, remaining issues and human decisions truthfully. These are your words and judgments. The observer will transport your unchanged candidate and exact text to GitHub mechanically after you finish; no external write or remote read is needed in this checkout. Local commits are authorized. Never merge into main. Do not claim publication before it occurs. End with RUN_COMPLETE when your workflow and report are finished, or a concrete human question when blocked.
+ 
+--- a/private/prompt-luna-xhigh.txt
++++ b/private/prompt-luna-xhigh.txt
+@@ -4,7 +4,7 @@
+ 
+ Use only this checkout and its scratch board. Do not access other projects, other benchmark runs, GitHub history, or later solutions. The original repository and all other candidates are outside your scope. Runtime host is VincentacStudio; use your real current runtime identity, never a historical identity. The main checkout of this standalone repository is the assigned isolated environment; no additional checkout is needed. Base setup has completed successfully. The stable installed plugin supplies coordination; verification of your changes must run from your candidate checkout.
+ 
+-The observing session will not review code, supply findings, choose fixes, or decide whether your work is ready. It will relay genuine human questions and answers; previously approved answers may be reused only when your question has the same scope. Do not invent an answer or treat silence as approval. If you need the human, stop and ask in your final reply; your session will resume with the answer. Otherwise own the complete workflow to its conclusion. The overall experiment has a fresh $100 API-equivalent cap, including all agents and reviews. The run has at most 180 active minutes, excluding human waiting. Report incomplete work honestly if a limit prevents finishing.
++The observing session will not review code, supply findings, choose fixes, or decide whether your work is ready. It will relay genuine human questions and answers; previously approved answers may be reused only when your question has the same scope. Do not invent an answer or treat silence as approval. If you need the human, stop and ask in your final reply; your session will resume with the answer. Otherwise own the complete workflow to its conclusion. The overall experiment has a fresh $100 API-equivalent cap, including all agents and reviews. Report incomplete work honestly if a limit prevents finishing.
+ 
+ The outcome is an assessment-only draft PR, labeled model-benchmark and integration-replay-v2-20261003 and do not merge, then closed without merging. Write the finished PR title to .pinboard/benchmark-pr-title.txt and description to .pinboard/benchmark-pr-description.md. Describe the delivered behavior, verification, review and correction outcomes, remaining issues and human decisions truthfully. These are your words and judgments. The observer will transport your unchanged candidate and exact text to GitHub mechanically after you finish; no external write or remote read is needed in this checkout. Local commits are authorized. Never merge into main. Do not claim publication before it occurs. End with RUN_COMPLETE when your workflow and report are finished, or a concrete human question when blocked.
+ 
+--- a/private/prompt-luna.txt
++++ b/private/prompt-luna.txt
+@@ -4,7 +4,7 @@
+ 
+ Use only this checkout and its scratch board. Do not access other projects, other benchmark runs, GitHub history, or later solutions. The original repository and all other candidates are outside your scope. Runtime host is VincentacStudio; use your real current runtime identity, never a historical identity. The main checkout of this standalone repository is the assigned isolated environment; no additional checkout is needed. Base setup has completed successfully. The stable installed plugin supplies coordination; verification of your changes must run from your candidate checkout.
+ 
+-The observing session will not review code, supply findings, choose fixes, or decide whether your work is ready. It will relay genuine human questions and answers; previously approved answers may be reused only when your question has the same scope. Do not invent an answer or treat silence as approval. If you need the human, stop and ask in your final reply; your session will resume with the answer. Otherwise own the complete workflow to its conclusion. The overall experiment has a fresh $100 API-equivalent cap, including all agents and reviews. The run has at most 180 active minutes, excluding human waiting. Report incomplete work honestly if a limit prevents finishing.
++The observing session will not review code, supply findings, choose fixes, or decide whether your work is ready. It will relay genuine human questions and answers; previously approved answers may be reused only when your question has the same scope. Do not invent an answer or treat silence as approval. If you need the human, stop and ask in your final reply; your session will resume with the answer. Otherwise own the complete workflow to its conclusion. The overall experiment has a fresh $100 API-equivalent cap, including all agents and reviews. Report incomplete work honestly if a limit prevents finishing.
+ 
+ The outcome is an assessment-only draft PR, labeled model-benchmark and integration-replay-v2-20261003 and do not merge, then closed without merging. Write the finished PR title to .pinboard/benchmark-pr-title.txt and description to .pinboard/benchmark-pr-description.md. Describe the delivered behavior, verification, review and correction outcomes, remaining issues and human decisions truthfully. These are your words and judgments. The observer will transport your unchanged candidate and exact text to GitHub mechanically after you finish; no external write or remote read is needed in this checkout. Local commits are authorized. Never merge into main. Do not claim publication before it occurs. End with RUN_COMPLETE when your workflow and report are finished, or a concrete human question when blocked.
+ 
+--- a/private/run_codex.py
++++ b/private/run_codex.py
+@@ -1,6 +1,6 @@
+ from pathlib import Path
++import argparse
+ import dataclasses
+-import hashlib
+ import json
+ import os
+ import sys
+@@ -8,22 +8,31 @@
+ import signal
+ import threading
+ from evals.behavioral import credentials, codex_driver, processes
++import benchmark_limits as limits
+ 
+-root = Path('/Users/vincentalsteen/.codex/visualizations/2026/10/03/01a1014b-6d58-7d20-a911-744b51b17e81/model-benchmark-v2')
++parser = argparse.ArgumentParser(description='Run one benchmark arm with an explicit cumulative active-time budget.')
++parser.add_argument('arm', choices=('luna', 'luna-xhigh', 'sol', 'astra'))
++parser.add_argument('mode', choices=('probe', 'implement'))
++parser.add_argument('--maximum-active-seconds', type=int, required=True, help=f'Positive active-time budget in seconds, at most {limits.MAXIMUM_ACTIVE_SECONDS} seconds; human waiting is excluded.')
++selection = parser.parse_args()
++if not 0 < selection.maximum_active_seconds <= limits.MAXIMUM_ACTIVE_SECONDS:
++    parser.error(f'--maximum-active-seconds must be positive and at most {limits.MAXIMUM_ACTIVE_SECONDS} seconds')
++maximum_active_seconds = selection.maximum_active_seconds
++root = Path(__file__).resolve().parents[1]
+ base = root.with_name('model-benchmark') / 'base'
+ os.environ.pop('VIRTUAL_ENV', None)
+-arm = sys.argv[1]
+-implementation = len(sys.argv) > 2 and sys.argv[2] == 'implement'
++arm = selection.arm
++implementation = selection.mode == 'implement'
+ model, effort = {'luna': ('gpt-6-luna', 'high'), 'sol': ('gpt-6.1-sol', 'high'), 'astra': ('gpt-6-astra', 'low'), 'luna-xhigh': ('gpt-6-luna', 'xhigh')}[arm]
+ project = root / arm
+ out = root / 'private' / arm
+ out.mkdir(exist_ok=True)
+ 
+ def watch_budget(home):
+-    limit = {'astra': 30, 'sol': 15, 'luna': 2.5, 'luna-xhigh': 2.5}[arm]
+-    prices = {'astra': (10, 1, 50), 'sol': (2, .1, 10), 'luna': (.1, .01, .5), 'luna-xhigh': (.1, .01, .5)}[arm]
++    limit = limits.CODEX_RESERVED_CAP_USD[arm]
++    prices = limits.CODEX_PRICES_PER_MILLION[arm]
+     while True:
+-        time.sleep(10)
++        time.sleep(limits.BUDGET_POLL_SECONDS)
+         seen = {}
+         for path in (home / 'sessions').rglob('*.jsonl'):
+             for line in path.read_text().splitlines():
+@@ -37,17 +46,17 @@
+         cost = 0
+         for u in seen.values():
+             a, b, c = prices
+-            if u['input_tokens'] > 272000:
+-                a, b, c = a*2, b*2, c*1.5
+-            cost += ((u['input_tokens']-u.get('cached_input_tokens',0))*a+u.get('cached_input_tokens',0)*b+u['output_tokens']*c)/1e6
++            if u['input_tokens'] > limits.LONG_CONTEXT_INPUT_TOKENS:
++                a, b, c = a*limits.LONG_CONTEXT_INPUT_PRICE_MULTIPLIER, b*limits.LONG_CONTEXT_INPUT_PRICE_MULTIPLIER, c*limits.LONG_CONTEXT_OUTPUT_PRICE_MULTIPLIER
++            cost += ((u['input_tokens']-u.get('cached_input_tokens',0))*a+u.get('cached_input_tokens',0)*b+u['output_tokens']*c)/limits.TOKENS_PER_PRICE_UNIT
+         (out / 'budget-observation.json').write_text(json.dumps({'cost_estimate':cost,'reserved_cap':limit,'includes_all_sessions':True}))
+-        if cost >= limit - min(.5, limit*.05):
++        if cost >= limit - min(limits.BUDGET_RESERVATION_MAX_USD, limit*limits.BUDGET_RESERVATION_FRACTION):
+             print(json.dumps({'arm':arm,'stop':'budget-reservation','cost_estimate':cost,'reserved_cap':limit}),flush=True)
+             os.kill(os.getpid(), signal.SIGINT)
+             return
+ (project / '.codex/audits').mkdir(parents=True, exist_ok=True)
+ with credentials.exclusive_codex_session(root / 'private', processes.Window(None)):
+-    window = processes.Window(time.monotonic() + 300)
++    window = processes.Window(time.monotonic() + limits.CODEX_SETUP_SECONDS)
+     with credentials.isolated_home(credentials.default_source(), None, processes.Window(None)) as home:
+         codex_driver.write_config(home.path, base, model, effort, 'user', window)
+         config = home.path / 'config.toml'
+@@ -81,12 +90,16 @@
+         active_seconds = 0.0
+         turn = 0
+         while True:
++            remaining_seconds = maximum_active_seconds - active_seconds
++            if remaining_seconds <= 0:
++                break
+             turn += 1
+             label = 'implementation-' + str(turn) if implementation else 'probe'
+             started = time.monotonic()
+-            arguments = ['exec', '--strict-config', '--json', '-C', str(project), prompt] if thread is None else ['exec', 'resume', '--strict-config', '--json', thread, prompt]
++            timed_prompt = f'The run has at most {maximum_active_seconds} active seconds across all turns, excluding human waiting; {remaining_seconds:g} active seconds remain.\n\n' + prompt
++            arguments = ['exec', '--strict-config', '--json', '-C', str(project), timed_prompt] if thread is None else ['exec', 'resume', '--strict-config', '--json', thread, timed_prompt]
+             try:
+-                completed = codex_driver.codex(arguments, home=home.path, cwd=project, timeout_seconds=10800, window=processes.Window(time.monotonic() + (10800-active_seconds if implementation else 240)))
++                completed = codex_driver.codex(arguments, home=home.path, cwd=project, timeout_seconds=remaining_seconds, window=processes.Window(started + remaining_seconds))
+             except (processes.ProcessIncomplete, processes.CleanupUnconfirmed) as error:
+                 (out / (label + '.jsonl')).write_text(error.stdout)
+                 (out / (label + '-rollout.jsonl')).write_text(credentials.without_login(codex_driver.rollout_text(home.path), home.copied))
+@@ -97,14 +110,14 @@
+             elapsed = time.monotonic()-started
+             active_seconds += elapsed
+             thread = reading.thread_id or thread
+-            summary = {'arm':arm,'phase':label,'seconds':elapsed,'active_seconds':active_seconds,'exit':completed.returncode,'reading':dataclasses.asdict(reading)}
++            summary = {'arm':arm,'phase':label,'seconds':elapsed,'active_seconds':active_seconds,'maximum_active_seconds':maximum_active_seconds,'exit':completed.returncode,'reading':dataclasses.asdict(reading)}
+             (out / (label + '-summary.json')).write_text(json.dumps(summary,default=str,indent=2))
+             print(json.dumps(summary,default=str),flush=True)
+             rollout = credentials.without_login(codex_driver.rollout_text(home.path), home.copied)
+             (out / (label + '-rollout.jsonl')).write_text(rollout)
+             if reading.messages and 'RUN_COMPLETE' in reading.messages[-1]:
+                 break
+-            if not implementation or active_seconds >= 10800:
++            if not implementation or active_seconds >= maximum_active_seconds:
+                 break
+             print('WAITING_FOR_HUMAN_OR_PUBLICATION: send a JSON string to resume, or JSON null to close this session.',flush=True)
+             line = sys.stdin.readline()
+--- /dev/null
++++ b/private/test_run_codex.py
+@@ -0,0 +1,157 @@
++"""Offline checks for the private benchmark launcher; no credentials or model calls."""
++
++import contextlib
++import io
++import json
++from pathlib import Path
++import runpy
++import shutil
++import sys
++import tempfile
++import unittest
++from unittest.mock import patch
++
++from evals.behavioral import codex_driver, credentials, processes
++import benchmark_limits as limits
++
++
++class LauncherTests(unittest.TestCase):
++    def test_invalid_or_missing_selection_cannot_start_setup(self):
++        for arguments in (
++            [],
++            ['luna', 'implement'],
++            ['luna', 'invalid-mode', '--maximum-active-seconds', '117'],
++            ['luna', '--maximum-active-seconds', '117'],
++            ['luna', 'implement', '--maximum-active-seconds', '0'],
++            ['luna', 'implement', '--maximum-active-seconds', '-1'],
++            ['luna', 'implement', '--maximum-active-seconds', 'not-a-duration'],
++            ['luna', 'implement', '--maximum-active-seconds', str(sys.maxsize)],
++        ):
++            with self.subTest(arguments=arguments):
++                with patch.object(sys, 'argv', ['run_codex.py', *arguments]), \
++                     patch.object(credentials, 'exclusive_codex_session') as setup, \
++                     patch.object(credentials, 'isolated_home') as isolation, \
++                     patch.object(credentials, 'default_source') as source, \
++                     patch.object(codex_driver, 'codex') as paid, \
++                     contextlib.redirect_stderr(io.StringIO()):
++                    with self.assertRaises(SystemExit) as rejected:
++                        runpy.run_path(str(Path(__file__).with_name('run_codex.py')))
++                    self.assertNotEqual(rejected.exception.code, 0)
++                    setup.assert_not_called()
++                    isolation.assert_not_called()
++                    source.assert_not_called()
++                    paid.assert_not_called()
++
++    def run_launcher(self, arm, mode, budget, durations, failure):
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            private = root / 'private'
++            private.mkdir()
++            launcher = private / 'run_codex.py'
++            shutil.copyfile(Path(__file__).with_name('run_codex.py'), launcher)
++            shutil.copyfile(Path(__file__).with_name('benchmark_limits.py'), private / 'benchmark_limits.py')
++            (private / f'prompt-{arm}.txt').write_text('Complete the implementation.')
++            isolated = root / 'isolated-home'
++            isolated.mkdir()
++            home = credentials.IsolatedHome(
++                path=isolated, source=root / 'unused-auth.json', copied=b'{}',
++                settlement=credentials.CredentialSettlement.UNCHANGED,
++            )
++            context = codex_driver.LoadedContext(
++                entries=[], sandbox_mode='workspace-write', approval_policy='on-request',
++                writable_roots=[], prompt_text='',
++            )
++            now = [1000.0]
++            calls = []
++
++            def configure(home, base, model, effort, approval, window):
++                (home / 'config.toml').write_text('')
++                manifest = home / 'plugins/cache/pinboard/pinboard/test/mcp-codex.json'
++                manifest.parent.mkdir(parents=True)
++                manifest.write_text(json.dumps({'mcpServers': {'pinboard': {}}}))
++
++            def execute(arguments, *, home, cwd, timeout_seconds, window):
++                calls.append((arguments, timeout_seconds, window.deadline, now[0]))
++                if failure is not None:
++                    raise failure
++                now[0] += durations[len(calls) - 1]
++                events = [
++                    {'type': 'thread.started', 'thread_id': 'fake-thread'},
++                    {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'Human question'}},
++                ]
++                return processes.Completed(
++                    returncode=0, stdout='\n'.join(json.dumps(event) for event in events),
++                    stderr='', timed_out=False,
++                )
++
++            class HumanInput:
++                def readline(self):
++                    now[0] += 100000.0
++                    return json.dumps('Continue with the approved answer.') + '\n'
++
++            with patch.object(sys, 'argv', [str(launcher), arm, mode, '--maximum-active-seconds', str(budget)]), \
++                 patch.object(sys, 'stdin', HumanInput()), \
++                 patch('time.monotonic', side_effect=lambda: now[0]), \
++                 patch('threading.Thread'), \
++                 patch.object(credentials, 'default_source', return_value=home.source), \
++                 patch.object(credentials, 'exclusive_codex_session', return_value=contextlib.nullcontext()), \
++                 patch.object(credentials, 'isolated_home', return_value=contextlib.nullcontext(home)) as isolation, \
++                 patch.object(codex_driver, 'write_config', side_effect=configure), \
++                 patch.object(codex_driver, 'loaded_context', return_value=context), \
++                 patch.object(codex_driver, 'rollout_text', return_value=''), \
++                 patch.object(codex_driver, 'codex', side_effect=execute), \
++                 contextlib.redirect_stdout(io.StringIO()):
++                if failure is None:
++                    runpy.run_path(str(launcher))
++                else:
++                    with self.assertRaises(type(failure)):
++                        runpy.run_path(str(launcher))
++                isolation.assert_called_once()
++            outputs = {path.name: path.read_text() for path in (private / arm).iterdir()}
++            return calls, outputs
++
++    def test_selected_budget_survives_resume_and_excludes_human_wait(self):
++        budget = 117
++        spent = 27
++        for arm in ('luna', 'luna-xhigh'):
++            with self.subTest(arm=arm):
++                calls, outputs = self.run_launcher(arm, 'implement', budget, [spent, budget - spent], None)
++                self.assertEqual(len(calls), 2)
++                for call, expected in zip(calls, (budget, budget - spent), strict=True):
++                    arguments, timeout, deadline, started = call
++                    self.assertEqual(timeout, expected)
++                    self.assertEqual(deadline - started, expected)
++                    self.assertIn(f'{budget} active seconds across all turns', arguments[-1])
++                    self.assertIn(f'{expected:g} active seconds remain', arguments[-1])
++                self.assertEqual(calls[1][0][1], 'resume')
++                summary = json.loads(outputs['implementation-2-summary.json'])
++                self.assertEqual(summary['maximum_active_seconds'], budget)
++                self.assertEqual(summary['active_seconds'], budget)
++
++    def test_probe_also_requires_and_uses_the_selected_budget(self):
++        budget = 83
++        calls, outputs = self.run_launcher('luna', 'probe', budget, [11], None)
++        self.assertEqual(len(calls), 1)
++        self.assertEqual(calls[0][1], budget)
++        self.assertEqual(calls[0][2] - calls[0][3], budget)
++        self.assertEqual(json.loads(outputs['probe-summary.json'])['maximum_active_seconds'], budget)
++
++    def test_twelve_hour_endpoint_reaches_driver_offline(self):
++        accepted_endpoint = limits.MAXIMUM_ACTIVE_SECONDS
++        calls, outputs = self.run_launcher('luna', 'implement', accepted_endpoint, [accepted_endpoint], None)
++        self.assertEqual(len(calls), 1)
++        self.assertEqual(calls[0][1], accepted_endpoint)
++        self.assertEqual(calls[0][2] - calls[0][3], accepted_endpoint)
++        self.assertIn(f'{accepted_endpoint} active seconds across all turns', calls[0][0][-1])
++        self.assertEqual(json.loads(outputs['implementation-1-summary.json'])['active_seconds'], accepted_endpoint)
++
++    def test_interrupted_process_preserves_partial_evidence(self):
++        failure = processes.ProcessIncomplete(b'partial output', b'partial error', TimeoutError('expired'))
++        calls, outputs = self.run_launcher('luna', 'implement', 61, [], failure)
++        self.assertEqual(len(calls), 1)
++        self.assertEqual(outputs['implementation-1.jsonl'], failure.stdout)
++        self.assertIn('implementation-1-rollout.jsonl', outputs)
++
++
++if __name__ == '__main__':
++    unittest.main()

@@ -9,9 +9,10 @@ import tempfile
 import unittest
 from collections.abc import Generator
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import override
+from types import TracebackType
+from typing import Literal, override
 from unittest.mock import patch
 
 from mcp.server.mcpserver.exceptions import UnexpectedToolError
@@ -23,11 +24,15 @@ from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.database import initialize_database, open_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
+from pinboard.adapters.sqlite.persistence import SQLiteWorkTransaction
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state
+from pinboard.application import authority_operations, query_models, service, stored_state
+from pinboard.application.mutation_models import ProposalCreationResult
+from pinboard.application.ports import WorkStore
 from pinboard.application.work_briefs import canonical_work_brief_bytes
 from pinboard.cli.entrypoint import main
 from pinboard.domain import authority_models, decision_models, history, work_models
+from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import (
     ActionId,
@@ -39,13 +44,223 @@ from pinboard.domain.identifiers import (
     TaskId,
     WorkItemId,
 )
+from pinboard.domain.proposal_models import CreateProposalOperation
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server as mcp_server
+from tests.decision_support import discover_actions
+from tests.domain_support import expect_success
 from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
+from tests.test_proposals import proposal as proposal_input
 from tests.work_brief_support import work_a_brief
 
 
 class AuthorityStatusReadTest(unittest.TestCase):
+    def test_created_proposal_reply_survives_a_legal_close_before_presentation(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        original_create = service.create_proposal
+        revisions: list[int] = []
+        positions: list[int] = []
+
+        def create_then_close(
+            store: WorkStore,
+            operation: CreateProposalOperation,
+            now: datetime,
+            *,
+            actor_task_id: TaskId,
+            actor_host_id: HostId,
+        ) -> DecisionResult[ProposalCreationResult]:
+            result = original_create(store, operation, now, actor_task_id=actor_task_id, actor_host_id=actor_host_id)
+            assert not isinstance(result, DecisionFailure)
+            fresh = SQLiteWorkStore(work / "state.sqlite3")
+            snapshot = fresh.validated_snapshot()
+            revisions.append(snapshot.lifecycle.project.revision)
+            created = fresh.read_item_status(WorkItemId("proposal-1"))
+            assert created is not None and created.work_item.queue_position is not None
+            positions.append(created.work_item.queue_position)
+            action = next(
+                value
+                for value in expect_success(discover_actions(snapshot, decision_models.Role.PROJECT, now=SQLITE_NOW))
+                if isinstance(value, decision_models.CloseAction)
+                and value.capability.subject == WorkItemId("proposal-1")
+            )
+            closed = service.decide_and_commit_transition(
+                fresh,
+                decision_models.CloseCommand(
+                    action,
+                    work_models.CloseInput(
+                        work_models.CloseOutcome.DROPPED, "The human cancelled it.", "The human requested this close."
+                    ),
+                ),
+                SQLITE_NOW,
+                read_authorization_time=lambda: SQLITE_NOW,
+                actor_task_id=TaskId("later-writer"),
+                actor_host_id=HostId("local"),
+                transition_brief_identity=None,
+            )
+            self.assertNotIsInstance(closed, DecisionFailure)
+            return result
+
+        with patch.object(service, "create_proposal", create_then_close):
+            reply = self.native(
+                mcp_server.PROPOSAL_CREATE_TOOL,
+                str(project),
+                str(work),
+                {
+                    "proposal": proposal_input(),
+                    "actor_task_id": "original-writer",
+                    "actor_host_id": "local",
+                },
+            )
+        self.assertEqual("committed", reply["effect"])
+        self.assertEqual("do-not-retry", reply["retry"])
+        self.assertEqual("ready", reply["item_state"])
+        self.assertEqual(positions[0], reply["position"])
+        self.assertEqual(revisions[0], reply["committed_revision"])
+        later = SQLiteWorkStore(work / "state.sqlite3").read_item_status(WorkItemId("proposal-1"))
+        assert later is not None
+        self.assertEqual(stored_state.StoredWorkItemState.DROPPED, later.work_item.state)
+        self.assertIsNone(later.work_item.queue_position)
+
+    def test_committed_authority_replies_keep_locked_facts_after_another_writer(self) -> None:
+        for family in ("preparation", "attempt"):
+            for operation in ("initial", "transfer", "renew", "release", "revoke"):
+                with self.subTest(family=family, operation=operation):
+                    self._assert_committed_authority_reply(family, operation)
+
+    def _assert_committed_authority_reply(self, family: str, operation: str) -> None:  # noqa: C901, PLR0915 - one real postcommit writer journey
+        state = complete_sqlite_state()
+        if family == "preparation" and operation != "initial":
+            state = self.state_with_preparation(
+                status=authority_models.PreparationLeaseStatus.RELEASED
+                if operation == "transfer"
+                else authority_models.PreparationLeaseStatus.ACTIVE
+            )
+        if family == "attempt":
+            state = replace(
+                state,
+                authority=replace(
+                    state.authority,
+                    attempt_leases=()
+                    if operation == "initial"
+                    else tuple(
+                        replace(lease, state=authority_models.AttemptLeaseStatus.RELEASED)
+                        if operation == "transfer"
+                        else lease
+                        for lease in state.authority.attempt_leases
+                    ),
+                    attempt_generations=() if operation == "initial" else state.authority.attempt_generations,
+                    attempt_counters=() if operation == "initial" else state.authority.attempt_counters,
+                ),
+            )
+        project, work, store = self.initialized_state(state)
+        request: JsonObject = {"operation": "start" if family == "preparation" else "acquire"}
+        if family == "preparation":
+            request["item_id"] = "work-c"
+            prior = store.read_preparation_authority_status(WorkItemId("work-c"))
+        else:
+            request["attempt_id"] = "work-a-1"
+            prior = store.read_attempt_authority_status(AttemptId("work-a-1"))
+        if operation in {"initial", "transfer"}:
+            request.update(task_id="original-writer", host_id="local", ttl_seconds=300)
+        else:
+            assert prior is not None
+            request.update(operation=operation, lease_id=prior.lease_id, generation=prior.generation)
+            if operation == "renew":
+                request["ttl_seconds"] = 600
+            if operation == "revoke":
+                request.update(actor_task_id="original-writer", actor_host_id="local")
+        observed: list[query_models.PreparationAuthorityStatus | query_models.AttemptAuthorityStatus] = []
+        revisions: list[int] = []
+        original_exit = SQLiteWorkTransaction.__exit__
+
+        def exit_then_transfer(
+            transaction: SQLiteWorkTransaction,
+            error_type: type[BaseException] | None,
+            error: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> Literal[False]:
+            selected = not observed and error is None
+            if selected:
+                retained = (
+                    transaction.read_preparation_authority_status(WorkItemId("work-c"))
+                    if family == "preparation"
+                    else transaction.read_attempt_authority_status(AttemptId("work-a-1"))
+                )
+                assert retained is not None
+                observed.append(retained)
+                revisions.append(transaction.read_mutation_allocation().project_revision)
+            result = original_exit(transaction, error_type, error, traceback)
+            if selected:
+                retained = observed[0]
+                other = SQLiteWorkStore(work / "state.sqlite3")
+                if isinstance(retained, query_models.PreparationAuthorityStatus):
+                    if retained.status == authority_models.PreparationLeaseStatus.ACTIVE:
+                        rejected = authority_operations.revoke_preparation_authority(
+                            other,
+                            work_item_id=retained.work_item_id,
+                            lease_id=retained.lease_id,
+                            generation=retained.generation,
+                            actor_task_id=TaskId("later-writer"),
+                            actor_host_id=HostId("local"),
+                            revoked_at=SQLITE_NOW,
+                        )
+                        self.assertNotIsInstance(rejected, DecisionFailure)
+                    transferred = service.start_preparation(
+                        other,
+                        work_item_id=retained.work_item_id,
+                        task_id=TaskId("later-writer"),
+                        host_id=HostId("local"),
+                        lease_id=LeaseId("later-lease"),
+                        acquired_at=SQLITE_NOW,
+                        expires_at=SQLITE_NOW + timedelta(minutes=5),
+                    )
+                else:
+                    if retained.status == authority_models.AttemptLeaseStatus.ACTIVE:
+                        rejected = authority_operations.revoke_attempt_authority(
+                            other,
+                            attempt_id=retained.attempt_id,
+                            lease_id=retained.lease_id,
+                            generation=retained.generation,
+                            actor_task_id=TaskId("later-writer"),
+                            actor_host_id=HostId("local"),
+                            revoked_at=SQLITE_NOW,
+                        )
+                        self.assertNotIsInstance(rejected, DecisionFailure)
+                    transferred = service.acquire_attempt_authority(
+                        other,
+                        attempt_id=retained.attempt_id,
+                        task_id=TaskId("later-writer"),
+                        host_id=HostId("local"),
+                        lease_id=LeaseId("later-lease"),
+                        acquired_at=SQLITE_NOW,
+                        expires_at=SQLITE_NOW + timedelta(minutes=5),
+                    )
+                self.assertNotIsInstance(transferred, DecisionFailure)
+            return result
+
+        with patch.object(SQLiteWorkTransaction, "__exit__", exit_then_transfer):
+            reply = self.native(
+                mcp_server.PREPARATION_AUTHORITY_TOOL if family == "preparation" else mcp_server.ATTEMPT_AUTHORITY_TOOL,
+                str(project),
+                str(work),
+                request,
+            )
+        self.assertEqual("committed", reply["effect"])
+        self.assertEqual(revisions[0], reply["committed_revision"])
+        self.assertEqual(observed[0].generation, reply["generation"])
+        self.assertEqual(observed[0].task_id, reply["task_id"])
+        self.assertEqual(observed[0].lease_id, reply["lease_id"])
+        self.assertEqual(observed[0].status.value, reply["authority_status"])
+        fresh = SQLiteWorkStore(work / "state.sqlite3")
+        later = (
+            fresh.read_preparation_authority_status(WorkItemId("work-c"))
+            if family == "preparation"
+            else fresh.read_attempt_authority_status(AttemptId("work-a-1"))
+        )
+        assert later is not None
+        self.assertEqual("later-writer", later.task_id)
+        self.assertGreater(later.generation, observed[0].generation)
+
     @override
     def setUp(self) -> None:
         clock_patch = patch("pinboard.mcp.read_operations.datetime")

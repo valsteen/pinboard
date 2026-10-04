@@ -136,6 +136,12 @@ class AttemptAuthorityStatus:
     status: authority_models.AttemptLeaseStatus
 
 
+class CreatedProposalItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    queue_position: Annotated[int, msgspec.Meta(ge=1)]
+
+
 @dataclass(frozen=True, slots=True)
 class PreparationAuthorityStatus:
     work_item_id: WorkItemId

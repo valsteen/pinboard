@@ -4,7 +4,7 @@ from typing import assert_never, overload
 
 import msgspec
 
-from pinboard.application import query_models
+from pinboard.application import query_models, stored_state
 from pinboard.application.actions import action_subject_ids
 from pinboard.application.artifact_publication import validate_transition_work_brief
 from pinboard.application.artifacts import (
@@ -16,12 +16,15 @@ from pinboard.application.artifacts import (
 )
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
+    AttemptAuthorityMutationResult,
     CommittedEffect,
     MutationReceipt,
     OrderMutation,
     PreparationAuthorityMutation,
+    PreparationAuthorityMutationResult,
     PreparationStart,
     ProposalCreationMutation,
+    ProposalCreationResult,
 )
 from pinboard.application.mutations import (
     project_checkpoint_acceptance_mutation,
@@ -95,7 +98,7 @@ def _project_retained_attempt_authority(
 def decide_and_commit_attempt_authority_change(
     store: WorkStore,
     requested_change: authority_models.AttemptAuthorityOperation,
-) -> DecisionResult[CommittedEffect]:
+) -> DecisionResult[AttemptAuthorityMutationResult]:
     """Reread locked state, decide, and commit one attempt-authority change."""
 
     with store.write() as transaction:
@@ -111,7 +114,7 @@ def acquire_attempt_authority(
     lease_id: LeaseId,
     acquired_at: datetime,
     expires_at: datetime,
-) -> DecisionResult[CommittedEffect]:
+) -> DecisionResult[AttemptAuthorityMutationResult]:
     """Select initial acquisition or inactive transfer under one write lock."""
 
     with store.write() as transaction:
@@ -187,7 +190,7 @@ def acquire_attempt_authority(
 def _commit_attempt_authority_change(
     transaction: WorkTransaction,
     requested_change: authority_models.AttemptAuthorityOperation,
-) -> DecisionResult[CommittedEffect]:
+) -> DecisionResult[AttemptAuthorityMutationResult]:
     """Decide and persist inside the caller's existing transaction."""
 
     match requested_change:
@@ -266,7 +269,16 @@ def _commit_attempt_authority_change(
         receipt=mutation_receipt,
         decision=accepted_decision,
     )
-    return transaction.commit(mutation)
+    committed = transaction.commit(mutation)
+    if isinstance(committed, DecisionFailure):
+        return committed
+    retained = transaction.read_attempt_authority_status(attempt_id)
+    if (
+        retained is None
+        or _project_retained_attempt_authority(decision_context, retained, attempt_id) != proposed_replacement
+    ):
+        raise RuntimeError("Committed attempt authority did not reload exactly inside its transaction.")
+    return AttemptAuthorityMutationResult(committed, retained)
 
 
 def _project_retained_preparation_authority(
@@ -294,15 +306,11 @@ def _project_retained_preparation_authority(
 def decide_and_commit_preparation_authority_change(
     store: WorkStore,
     requested_change: authority_models.PreparationAuthorityOperation,
-) -> DecisionResult[CommittedEffect]:
+) -> DecisionResult[PreparationAuthorityMutationResult]:
     """Reread locked state, decide, and commit one exact preparation change."""
 
     with store.write() as transaction:
-        committed = _commit_preparation_authority_change(transaction, requested_change)
-        if isinstance(committed, DecisionFailure):
-            return committed
-        effect, _lease = committed
-        return effect
+        return _commit_preparation_authority_change(transaction, requested_change)
 
 
 def start_preparation(
@@ -370,14 +378,15 @@ def start_preparation(
         committed = _commit_preparation_authority_change(transaction, requested_change)
         if isinstance(committed, DecisionFailure):
             return committed
-        effect, lease = committed
-        return PreparationStart(effect, lease)
+        lease = _project_retained_preparation_authority(snapshot, committed.authority, work_item_id)
+        assert lease is not None
+        return PreparationStart(committed.effect, lease)
 
 
 def _commit_preparation_authority_change(
     transaction: WorkTransaction,
     requested_change: authority_models.PreparationAuthorityOperation,
-) -> DecisionResult[tuple[CommittedEffect, authority_models.PreparationLeaseAuthority]]:
+) -> DecisionResult[PreparationAuthorityMutationResult]:
     """Decide and persist inside the caller's existing transaction."""
 
     match requested_change:
@@ -445,7 +454,13 @@ def _commit_preparation_authority_change(
     committed = transaction.commit(mutation)
     if isinstance(committed, DecisionFailure):
         return committed
-    return committed, proposed_replacement
+    retained = transaction.read_preparation_authority_status(item_id)
+    if (
+        retained is None
+        or _project_retained_preparation_authority(decision_context, retained, item_id) != proposed_replacement
+    ):
+        raise RuntimeError("Committed preparation authority did not reload exactly inside its transaction.")
+    return PreparationAuthorityMutationResult(committed, retained)
 
 
 def create_proposal(
@@ -455,7 +470,7 @@ def create_proposal(
     *,
     actor_task_id: TaskId,
     actor_host_id: HostId,
-) -> DecisionResult[CommittedEffect]:
+) -> DecisionResult[ProposalCreationResult]:
     """Reread locked state, decide, and commit proposal facts plus their ready item."""
 
     with store.write() as transaction:
@@ -523,7 +538,17 @@ def create_proposal(
             work_models.CanonicalJson(b"{}"),
         )
         mutation = ProposalCreationMutation(mutation_receipt, accepted_decision)
-        return transaction.commit(mutation)
+        committed = transaction.commit(mutation)
+        if isinstance(committed, DecisionFailure):
+            return committed
+        retained = transaction.read_created_proposal_item(accepted_decision.ready_item.work_item_id)
+        if (
+            retained is None
+            or retained.queue_position != accepted_decision.ready_item.position
+            or retained.state != stored_state.StoredWorkItemState.READY
+        ):
+            raise RuntimeError("Committed proposal item did not reload exactly inside its transaction.")
+        return ProposalCreationResult(committed, retained)
 
 
 def _resolve_actor_authority(

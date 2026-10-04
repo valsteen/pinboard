@@ -19,7 +19,7 @@ import anyio
 import msgspec
 from mcp.client.session import ClientSession, IncomingMessage
 from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.server.mcpserver.exceptions import UnexpectedToolError
+from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 from mcp.shared.message import SessionMessage
 from mcp_types import CallToolResult, TextContent, Tool
 from msgspec.structs import replace as replace_struct
@@ -3759,6 +3759,203 @@ class McpTransportTest(unittest.TestCase):
         self.assertFalse(busy_content["state_changed"])
         self.assertEqual("retry-same-input", busy_content["retry"])
         self.assertIn("classification=busy", diagnostics_stream.getvalue())
+
+    def test_trace_preflight_shares_admission_and_allows_unrelated_responses(self) -> None:  # noqa: PLR0915 - one controlled admission/cancellation journey
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=3)
+        diagnostics = mcp_execution.Diagnostics(io.StringIO(), event_limit=20, line_limit=256)
+        automatic = mcp_execution.AutomaticCapture(mcp_common.select_capture_item)
+        preflight_started = threading.Event()
+        preflight_release = threading.Event()
+        second_started = threading.Event()
+        second_release = threading.Event()
+        queued_admitted = threading.Event()
+        cancelled = threading.Event()
+        target_ran = threading.Event()
+        loop_thread = threading.get_ident()
+        resolutions: list[int] = []
+        arguments: dict[str, contracts.JsonValue] = {
+            "request": {
+                "project_root": str(project),
+                "work_root": str(roots.work_root),
+                "operation": "item",
+                "item_id": "work-a",
+            }
+        }
+
+        def resolve(
+            _capture: mcp_execution.AutomaticCapture, _project: str, _arguments: dict[str, contracts.JsonValue]
+        ) -> None:
+            resolutions.append(threading.get_ident())
+            preflight_started.set()
+            self.assertNotEqual(loop_thread, threading.get_ident())
+            if not preflight_release.wait(10):
+                raise AssertionError("Trace preflight was not released.")
+
+        def target(token: mcp_execution.CancellationToken) -> mcp_execution.OperationResult:
+            target_ran.set()
+            return mcp_reads._read_item_status(arguments, token)
+
+        async def request(
+            number: int, capture: mcp_execution.AutomaticCapture | None
+        ) -> dict[str, contracts.JsonValue]:
+            return await mcp_execution._run_request(
+                executor,
+                diagnostics,
+                number,
+                mcp_server.ITEM_STATUS_TOOL,
+                str(project),
+                target,
+                arguments=arguments,
+                capture=capture,
+            )
+
+        def hold_second(_token: mcp_execution.CancellationToken) -> None:
+            second_started.set()
+            if not second_release.wait(10):
+                raise AssertionError("Second worker was not released.")
+
+        original_submit = executor.submit
+        original_cancel = mcp_execution.CancellationToken.cancel
+
+        def admit(
+            callback: Callable[[mcp_execution.CancellationToken], dict[str, contracts.JsonValue]],
+        ) -> mcp_execution.Execution[dict[str, contracts.JsonValue]]:
+            submitted = original_submit(callback)
+            queued_admitted.set()
+            return submitted
+
+        def cancel(token: mcp_execution.CancellationToken) -> None:
+            original_cancel(token)
+            cancelled.set()
+
+        async def scenario() -> None:
+            active = asyncio.create_task(request(1, automatic))
+            await _wait_for(preflight_started)
+            self.assertFalse(active.done())
+            self.assertFalse(target_ran.is_set())
+            unrelated = await request(2, None)
+            self.assertEqual("work-a", unrelated["item_id"])
+            target_ran.clear()
+            second = executor.submit(hold_second)
+            await _wait_for(second_started)
+            with patch.object(executor, "submit", side_effect=admit):
+                queued = asyncio.create_task(request(3, automatic))
+                await _wait_for(queued_admitted)
+            saturated = await request(4, automatic)
+            self.assertEqual("EXECUTOR_BUSY", saturated["code"])
+            self.assertEqual("unchanged", saturated["effect"])
+            self.assertEqual(1, len(resolutions))
+            queued.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await queued
+            with patch.object(mcp_execution.CancellationToken, "cancel", side_effect=cancel, autospec=True):
+                active.cancel()
+                await _wait_for(cancelled)
+                self.assertFalse(active.done())
+                preflight_release.set()
+                with self.assertRaises(ToolError):
+                    await active
+            self.assertFalse(target_ran.is_set())
+            self.assertEqual(1, len(resolutions))
+            second_release.set()
+            await second.result()
+            replacement = await request(5, automatic)
+            self.assertEqual("work-a", replacement["item_id"])
+            self.assertTrue(target_ran.is_set())
+
+        try:
+            with patch.object(mcp_execution.AutomaticCapture, "resolve", autospec=True, side_effect=resolve):
+                _run_async(scenario())
+        finally:
+            preflight_release.set()
+            second_release.set()
+            executor.shutdown()
+
+    def test_trace_publication_holds_admission_and_cancelled_mutation_returns_its_commit(self) -> None:  # noqa: PLR0915 - one real commit/publication/cancellation journey
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        trace_directory = Path(temporary.name) / "private-traces"
+        trace_directory.mkdir()
+        capture = mcp_execution.SemanticCapture(trace_directory)
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        transport = mcp_server.create_server(
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=10, line_limit=256),
+            capture,
+        )
+        publishing = threading.Event()
+        release = threading.Event()
+        cancelled = threading.Event()
+        loop_thread = threading.get_ident()
+        original_publish = mcp_execution.create_immutable
+        original_cancel = mcp_execution.CancellationToken.cancel
+
+        def publish(path: Path, content: bytes) -> bool:
+            publishing.set()
+            self.assertNotEqual(loop_thread, threading.get_ident())
+            if not release.wait(10):
+                raise AssertionError("Trace publication was not released.")
+            return original_publish(path, content)
+
+        def cancel(token: mcp_execution.CancellationToken) -> None:
+            original_cancel(token)
+            cancelled.set()
+
+        async def scenario() -> CallToolResult:
+            pending = asyncio.create_task(
+                transport.call_tool(
+                    mcp_server.PROPOSAL_CREATE_TOOL,
+                    {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "proposal": proposal_input(),
+                        "actor_task_id": "mcp-test-task",
+                        "actor_host_id": "local",
+                    },
+                )
+            )
+            await _wait_for(publishing)
+            self.assertFalse(pending.done())
+            self.assertIsNotNone(SQLiteWorkStore(roots.database_path).read_item_status(WorkItemId("proposal-1")))
+            with patch.object(mcp_execution.CancellationToken, "cancel", side_effect=cancel, autospec=True):
+                pending.cancel()
+                await _wait_for(cancelled)
+                self.assertFalse(pending.done())
+                busy = await transport.call_tool(
+                    mcp_server.ITEM_STATUS_TOOL,
+                    {
+                        "request": {
+                            "project_root": str(project),
+                            "work_root": str(roots.work_root),
+                            "operation": "item",
+                            "item_id": "proposal-1",
+                        }
+                    },
+                )
+                assert isinstance(busy, CallToolResult) and busy.structured_content is not None
+                self.assertEqual("EXECUTOR_BUSY", busy.structured_content["code"])
+                self.assertEqual("unchanged", busy.structured_content["effect"])
+                release.set()
+                result = await pending
+            assert isinstance(result, CallToolResult)
+            return result
+
+        try:
+            with patch.object(mcp_execution, "create_immutable", side_effect=publish):
+                result = _run_async(scenario())
+        finally:
+            release.set()
+            executor.shutdown()
+        assert result.structured_content is not None
+        self.assertEqual("committed", result.structured_content["status"])
+        self.assertEqual("do-not-retry", result.structured_content["retry"])
+        (trace,) = trace_directory.glob("pinboard-mcp-*.json")
+        record = msgspec.json.decode(trace.read_bytes())
+        self.assertEqual("available", record["result"]["availability"])
+        self.assertEqual(result.structured_content, record["result"]["value"])
+        self.assertIsNotNone(SQLiteWorkStore(roots.database_path).read_item_status(WorkItemId("proposal-1")))
 
     def test_running_mutation_cancellation_waits_for_committed_result(self) -> None:
         temporary, project, roots = self._project()

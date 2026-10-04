@@ -1,11 +1,14 @@
 import fcntl
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import BinaryIO
 
 from pinboard.adapters.files.errors import RootError, RootErrorCode
 from pinboard.application.candidate_identity import working_tree_identity
+from pinboard.application.item_integration import IntegrationPresence
 from pinboard.domain import work_models
 
 _READ_CHUNK_BYTES = 64 * 1024
@@ -52,6 +55,84 @@ class CandidateRestoreRejection:
 
 
 type CandidateRestoreResult = CandidateRestoreSuccess | CandidateRestoreRejection
+
+
+@dataclass(frozen=True, slots=True)
+class TargetContentObservation:
+    revision: str
+    presence: IntegrationPresence
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedIntegrationTarget:
+    target: str
+
+
+def read_target_content(cwd: Path, target: str, diff: bytes) -> TargetContentObservation | UnresolvedIntegrationTarget:
+    """Reverse-check accepted bytes in a private index; the repository stays read-only.
+
+    Resolve even an empty diff's target, but skip its content comparison. Git
+    failures outside revision resolution remain RootError at this effect boundary.
+    """
+
+    resolve_source_checkout_root(cwd)
+    try:
+        revision = _git_text(cwd, "rev-parse", "--verify", f"{target}^{{commit}}")
+    except RootError:
+        return UnresolvedIntegrationTarget(target)
+    if not diff:
+        return TargetContentObservation(revision, IntegrationPresence.NO_CHANGE)
+    try:
+        with TemporaryDirectory(prefix="pinboard-integration-") as temporary:
+            environment = {**os.environ, "GIT_INDEX_FILE": str(Path(temporary) / "index")}
+            tree = subprocess.run(
+                ["git", "-c", "core.splitIndex=false", "read-tree", revision],
+                cwd=cwd,
+                env=environment,
+                capture_output=True,
+                check=False,
+            )
+            if tree.returncode != 0:
+                raise RootError(
+                    RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                    tree.stderr.decode(errors="replace").strip() or "Cannot read the target tree.",
+                )
+            applied = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "core.splitIndex=false",
+                    "-c",
+                    "apply.whitespace=nowarn",
+                    "-c",
+                    "apply.ignoreWhitespace=no",
+                    "apply",
+                    "--cached",
+                    "--check",
+                    "--reverse",
+                    "--binary",
+                    "--whitespace=nowarn",
+                    "-",
+                ],
+                cwd=cwd,
+                env=environment,
+                input=diff,
+                capture_output=True,
+                check=False,
+            )
+            if applied.returncode not in (0, 1):
+                raise RootError(
+                    RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                    applied.stderr.decode(errors="replace").strip() or "Cannot compare the target content.",
+                )
+            presence = (
+                IntegrationPresence.CONTENT_PRESENT
+                if applied.returncode == 0
+                else IntegrationPresence.CONTENT_NOT_PRESENT
+            )
+            return TargetContentObservation(revision, presence)
+    except OSError as error:
+        raise RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, str(error)) from error
 
 
 class CandidateRestoreAfterMutationError(RootError):

@@ -15,6 +15,7 @@ from pinboard.adapters.files.views import refresh_facts
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     candidate_snapshots,
+    item_integration,
     queries,
     query_models,
     stored_state,
@@ -45,7 +46,7 @@ def _item_status_failure(
     rendered = _details_json(details)
     return execution.OperationResult(
         {
-            "schema": "pinboard-mcp-item-status-result/v2",
+            "schema": "pinboard-mcp-item-status-result/v3",
             "status": "rejected",
             "code": code,
             "message": message,
@@ -57,7 +58,9 @@ def _item_status_failure(
     )
 
 
-def _damaged_receipt_failure(schema: str, damaged: query_models.DamagedTransitionReceipt) -> execution.OperationResult:
+def _damaged_receipt_failure(
+    schema: str, damaged: query_models.DamagedTransitionReceipt | item_integration.DamagedCompletionReceipt
+) -> execution.OperationResult:
     """Name a consumed receipt whose outcome does not decode, with a diagnosis-only next step."""
 
     return execution.OperationResult(

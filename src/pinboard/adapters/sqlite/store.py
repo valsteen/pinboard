@@ -47,6 +47,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_attempt_context,
     read_branch_owners,
     read_current_definitions,
+    read_item_integration,
     read_item_status,
     read_parallel_preview_lifecycle,
     read_recorded_pause_reasons,
@@ -72,7 +73,7 @@ from pinboard.adapters.sqlite.persistence import accept_artifact_reference as pe
 from pinboard.adapters.sqlite.proposals import (
     read_proposals_by_ids,
 )
-from pinboard.application import candidate_snapshots, queries, query_models, stored_state, work_briefs
+from pinboard.application import candidate_snapshots, item_integration, queries, query_models, stored_state, work_briefs
 from pinboard.application.artifacts import ArtifactRef, BriefArtifactRef
 from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.application.project_export import ProjectExportState
@@ -717,6 +718,14 @@ class SQLiteWorkStore:
                     lifecycle.closure,
                     preparation,
                 )
+        finally:
+            connection.close()
+
+    def read_item_integration(self, work_item_id: WorkItemId) -> item_integration.IntegrationFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_item_integration(connection, work_item_id)
         finally:
             connection.close()
 

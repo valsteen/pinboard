@@ -8,12 +8,13 @@ snapshot. These functions never read files, mutate state, or present output.
 from collections.abc import Mapping
 from datetime import datetime
 from types import MappingProxyType
-from typing import assert_never
+from typing import Literal, assert_never
 
 import msgspec
 
 from pinboard.application import (
     checkpoint_packages,
+    item_integration,
     ports,
     query_models,
     released_v6_compatibility,
@@ -108,7 +109,9 @@ def decode_recorded_pause_reason(
             return None
 
 
-def damaged_receipt_message(damaged: query_models.DamagedTransitionReceipt) -> str:
+def damaged_receipt_message(
+    damaged: query_models.DamagedTransitionReceipt | item_integration.DamagedCompletionReceipt,
+) -> str:
     return (
         f"Transition receipt {damaged.history_id} ({damaged.action_kind.value}, committed "
         f"{damaged.committed_at.isoformat()}) for attempt '{damaged.attempt_id}' is damaged: {damaged.defect}"
@@ -116,7 +119,7 @@ def damaged_receipt_message(damaged: query_models.DamagedTransitionReceipt) -> s
 
 
 def damaged_receipt_diagnosis(
-    action_kind: query_models.DamagedReceiptActionKind,
+    action_kind: query_models.DamagedReceiptActionKind | Literal[decision_models.ActionKind.COMPLETE],
 ) -> query_models.DamagedReceiptDiagnosis:
     """Name the read that can diagnose a damaged consumed receipt without repairing it.
 
@@ -130,7 +133,8 @@ def damaged_receipt_diagnosis(
         case decision_models.ActionKind.PAUSE | decision_models.ActionKind.REBIND_ATTEMPT:
             return query_models.DamagedReceiptDiagnosis.VALIDATION
         case (
-            decision_models.ActionKind.RETURN_FOR_CORRECTION
+            decision_models.ActionKind.COMPLETE
+            | decision_models.ActionKind.RETURN_FOR_CORRECTION
             | decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
             | decision_models.ActionKind.ACCEPT_CHECKPOINT
         ):
@@ -139,7 +143,9 @@ def damaged_receipt_diagnosis(
             assert_never(unreachable)
 
 
-def damaged_receipt_recovery(damaged: query_models.DamagedTransitionReceipt) -> str:
+def damaged_receipt_recovery(
+    damaged: query_models.DamagedTransitionReceipt | item_integration.DamagedCompletionReceipt,
+) -> str:
     match damaged_receipt_diagnosis(damaged.action_kind):
         case query_models.DamagedReceiptDiagnosis.VALIDATION:
             return (

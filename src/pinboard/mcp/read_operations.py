@@ -15,6 +15,7 @@ from typing import assert_never
 import msgspec
 
 from pinboard.adapters import candidate_evidence, dispatch_operations, review_operations
+from pinboard.adapters.files import root
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, ImmutableFilePublishedError, RootError
@@ -29,6 +30,7 @@ from pinboard.application import (
     brief_sources,
     candidate_snapshot_compatibility_models,
     candidate_snapshots,
+    item_integration,
     ports,
     queries,
     query_models,
@@ -101,7 +103,7 @@ class _AttemptReviewEvidence:
 def _branch_owner_not_found(branch: str, work_root: Path) -> execution.OperationResult:
     return execution.OperationResult(
         {
-            "schema": "pinboard-mcp-item-status-result/v2",
+            "schema": "pinboard-mcp-item-status-result/v3",
             "status": "rejected",
             "code": "BRANCH_OWNER_NOT_FOUND",
             "message": f"No retained attempt in work root {work_root} records branch '{branch}'.",
@@ -127,12 +129,110 @@ def _branch_owner_not_found(branch: str, work_root: Path) -> execution.Operation
     )
 
 
+def _integration_rejection(
+    code: str, message: str, observed: tuple[FailureFact, ...], retry: RetryDisposition, recovery: str
+) -> execution.OperationResult:
+    content = common._item_status_failure(
+        code,
+        message,
+        FailureDetails(
+            observed=observed,
+            mismatches=(),
+            retry=retry,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    ).content
+    content["recovery"] = recovery
+    return execution.OperationResult(content, "rejected", None)
+
+
+def _integration_git_failure(project_root: str, error: RootError) -> execution.OperationResult:
+    return _integration_rejection(
+        error.code.value,
+        str(error),
+        (FailureFact("project_root", project_root), FailureFact("diagnostic", str(error))),
+        RetryDisposition.CORRECT_INPUT,
+        "Correct the named Git checkout, then read the integration leaf again.",
+    )
+
+
+def _read_item_integration(
+    request: contracts.ItemStatusIntegrationRequest, durable: DurableRoots, store: WorkStore
+) -> execution.OperationResult:
+    facts = store.read_item_integration(WorkItemId(request.item_id))
+    if facts is None:
+        return common._item_status_failure("ITEM_NOT_FOUND", f"Item '{request.item_id}' was not found.", None)
+    choice = item_integration.select_integration_candidate(facts)
+    if isinstance(choice, (query_models.DamagedTransitionReceipt, item_integration.DamagedCompletionReceipt)):
+        return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", choice)
+    if not isinstance(choice, item_integration.CandidateUnavailable):
+        try:
+            observed = candidate_evidence.read_candidate_integration(
+                Path(request.project_root), durable.work_root, store, choice, request.target
+            )
+        except RootError as error:
+            return _integration_git_failure(request.project_root, error)
+        if isinstance(observed, candidate_evidence.IntegrationEvidenceInvalid):
+            return _integration_rejection(
+                "INTEGRATION_CANDIDATE_EVIDENCE_INVALID",
+                observed.defect,
+                (
+                    FailureFact("attempt_id", str(observed.attempt_id)),
+                    FailureFact("artifact_ref_id", int(observed.reference.artifact_ref_id)),
+                    FailureFact("selector", observed.reference.selector),
+                ),
+                RetryDisposition.DO_NOT_RETRY,
+                "Run pinboard validate to diagnose the named accepted candidate evidence; do not retry or repair this read.",
+            )
+        if isinstance(observed, candidate_evidence.CandidateContentObservation):
+            if isinstance(observed.target, root.UnresolvedIntegrationTarget):
+                return _integration_rejection(
+                    "INTEGRATION_TARGET_UNRESOLVED",
+                    f"Target '{request.target}' cannot be resolved in '{request.project_root}'.",
+                    (FailureFact("target", request.target), FailureFact("project_root", request.project_root)),
+                    RetryDisposition.CORRECT_INPUT,
+                    "Name an existing local branch, remote-tracking ref, tag, or full commit. Fetch it outside Pinboard first when remote freshness matters.",
+                )
+            result = item_integration.ItemIntegration(
+                "pinboard-item-integration/v1",
+                request.item_id,
+                request.target,
+                observed.target.revision,
+                observed.source,
+                observed.target.presence,
+            )
+            content = msgspec.to_builtins(result)
+            assert isinstance(content, dict)
+            return execution.OperationResult(content, "ok", None)
+        choice = observed
+    return _integration_rejection(
+        "INTEGRATION_CANDIDATE_UNAVAILABLE",
+        choice.reason,
+        (
+            FailureFact("item_id", request.item_id),
+            FailureFact("state", facts.item.state.value),
+            FailureFact("reason", choice.reason),
+        ),
+        RetryDisposition.CORRECT_INPUT,
+        "Read pinboard_item_status with operation item for the named item and its current lifecycle facts.",
+    )
+
+
 def _read_item_status(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
     token.checkpoint()
     try:
         request = msgspec.convert(raw, type=contracts.ItemStatusEnvelope, strict=True).request
-        durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
+        return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
+    try:
+        durable = common._resolve_durable(request.project_root, request.work_root)
+    except RootError as error:
+        if isinstance(request, contracts.ItemStatusIntegrationRequest):
+            return _integration_git_failure(request.project_root, error)
+        raise
+    except (ValueError, OSError) as error:
         return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
     token.checkpoint()
     store = common.compose_store(durable)
@@ -144,13 +244,15 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
             if isinstance(projected, DecisionFailure):
                 return common._item_status_failure(projected.code.value, projected.message, projected.details)
             if isinstance(projected, query_models.DamagedTransitionReceipt):
-                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v2", projected)
+                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", projected)
             selected: query_models.ItemStatus | query_models.BranchOwners = projected
         case contracts.ItemStatusBranchRequest():
             owners = queries.project_branch_owners(store, request.branch)
             if owners is None:
                 return _branch_owner_not_found(request.branch, durable.work_root)
             selected = owners
+        case contracts.ItemStatusIntegrationRequest():
+            return _read_item_integration(request, durable, store)
         case _ as unreachable:
             assert_never(unreachable)
     token.checkpoint()

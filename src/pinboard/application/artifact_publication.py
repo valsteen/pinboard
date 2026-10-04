@@ -59,9 +59,6 @@ class ArtifactWriteFailure:
     details: FailureDetails
 
 
-type ArtifactPublicationFailure = ArtifactAcceptanceFailure | ArtifactWriteFailure
-
-
 def _committed_artifact_details(
     reference: ArtifactRef,
     prior: FailureDetails | None,

@@ -457,9 +457,7 @@ class ContributorTraceTest(unittest.TestCase):
                     side_effect=[
                         git_config.Entries(path.resolve(), ()),
                         git_config.Entries(path.resolve(), ()),
-                        git_config.ReadFailed(
-                            path.resolve(), "list-entries", None, git_config.ProcessFailed(128, "reread failed")
-                        ),
+                        git_config.ReadFailed(path.resolve(), git_config.ProcessFailed(128, "reread failed")),
                     ],
                 ),
                 self.assertRaises(SettingResolutionError) as failed_reread,
@@ -748,7 +746,7 @@ class ContributorTraceTest(unittest.TestCase):
                     patch.object(
                         git_config,
                         "list_entries",
-                        return_value=git_config.ReadFailed(setting, "list-entries", None, cause),
+                        return_value=git_config.ReadFailed(setting, cause),
                     ),
                 ):
                     result = self.preflight_result(worktree, work_root)
@@ -886,9 +884,7 @@ class ContributorTraceTest(unittest.TestCase):
                 side_effect=[
                     git_config.Entries(setting, ()),
                     git_config.Entries(setting, ()),
-                    git_config.ReadFailed(
-                        setting, "list-entries", None, git_config.ProcessFailed(128, "reread failed")
-                    ),
+                    git_config.ReadFailed(setting, git_config.ProcessFailed(128, "reread failed")),
                 ],
             ):
                 result = self.preflight_result(worktree, work_root)

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import chdir
+from functools import partial
 from pathlib import Path
 from threading import Barrier
 from unittest.mock import patch
@@ -15,7 +16,7 @@ from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
     classify_checkout,
-    ensure_default_git_exclude,
+    ensure_git_exclude,
     observe_checkout_identity,
     read_current_head_candidate,
     resolve_shared_repository_root,
@@ -149,7 +150,7 @@ class RootResolutionTest(unittest.TestCase):
         exclude.write_bytes(b"/.pinboard/\n")
         exclude.chmod(0o400)
         try:
-            self.assertIsNone(ensure_default_git_exclude(repository))
+            self.assertIsNone(ensure_git_exclude(repository, b"/.pinboard/", require_repository=False))
         finally:
             exclude.chmod(0o600)
 
@@ -188,7 +189,11 @@ class RootResolutionTest(unittest.TestCase):
             patch.object(Path, "open", synchronized_open),
             ThreadPoolExecutor(max_workers=2) as executor,
         ):
-            results = tuple(executor.map(ensure_default_git_exclude, (repository, linked)))
+            results = tuple(
+                executor.map(
+                    partial(ensure_git_exclude, entry=b"/.pinboard/", require_repository=False), (repository, linked)
+                )
+            )
 
         self.assertEqual(1, results.count(exclude))
         self.assertEqual(1, results.count(None))

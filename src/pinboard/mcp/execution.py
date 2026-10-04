@@ -164,11 +164,11 @@ class SemanticCapture:
         )
 
 
-def _settings_recovery(  # noqa: PLR0912 - distinguish exact settings failures and their safe recovery
+def _settings_recovery(  # noqa: C901, PLR0912 - one boundary distinguishes exact settings failures and recovery
     error: SettingResolutionError,
 ) -> tuple[str, str, Literal["correct-input", "retry-same-input"]]:
     """Assign recovery from the original settings observation, independently of its effect account."""
-    resource = str(error.path)
+    resource = str(error.resource)
     retry: Literal["correct-input", "retry-same-input"] = "correct-input"
     cause = error.cause
     if isinstance(cause, git_config.ReadFailed | git_config.WriteUnconfirmed):
@@ -196,14 +196,22 @@ def _settings_recovery(  # noqa: PLR0912 - distinguish exact settings failures a
     else:
         match cause:
             case FileExistsError():
-                resource = f"Contributor trace settings edit at {error.path}.lock"
-                repair = f"Retry the same request after the settings edit at {error.path}.lock finishes."
+                resource = f"Contributor trace settings edit at {error.resource}"
+                repair = f"Retry the same request after the settings edit at {error.resource} finishes."
                 retry = "retry-same-input"
             case PermissionError():
-                repair = f"Grant read access to {error.path} for the Pinboard MCP service, then retry."
+                match error.operation:
+                    case "read":
+                        repair = f"Grant read access to {error.resource} for the Pinboard MCP service, then retry."
+                    case "create" | "stage" | "publish":
+                        repair = f"Grant write access to {error.resource.parent} for Contributor trace settings initialization at {error.resource}, then retry."
+                    case _ as unreachable:
+                        assert_never(unreachable)
                 retry = "retry-same-input"
             case OSError() | FileIOError():
-                repair = f"Inspect access and resolve the reported filesystem failure at {error.path} before retrying."
+                repair = (
+                    f"Inspect access and resolve the reported filesystem failure at {error.resource} before retrying."
+                )
             case ValueError():
                 repair = f"Correct {error.path} and retry."
             case _ as unreachable:

@@ -366,6 +366,178 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertEqual(state[1].value, reread[1].value)
             self.assertEqual("none", reread[1].effects.key_write)
 
+    def test_published_settings_leave_the_next_writers_lock_owned_in_both_paths(self) -> None:
+        for writer in ("python", "launcher"):
+            with self.subTest(writer=writer):
+                self._assert_next_settings_lock_survives(writer)
+
+    def _assert_next_settings_lock_survives(self, writer: str) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            settings = work_root / contributor_traces.SETTINGS_NAME
+            settings.write_text('[item "one"]\n\tmode = off\n')
+            lock = settings.with_name(f"{settings.name}.lock")
+            real_replace = Path.replace
+
+            def publish_then_stage_next(path: Path, target: str | Path) -> Path:
+                published = real_replace(path, target)
+                if path == lock.resolve():
+                    with lock.open("xb") as staged:
+                        staged.write(settings.read_bytes())
+                    self.assertIsInstance(git_config.add(lock, "item.two.mode", "on"), git_config.WriteAcknowledged)
+                return published
+
+            if writer == "python":
+                with patch.object(Path, "replace", publish_then_stage_next):
+                    resolution = contributor_traces.read_project_trace_settings(worktree, work_root)
+                assert resolution is not None
+                self.assertEqual("acknowledged", resolution[1].effects.key_write)
+            else:
+                launcher_root = Path(temporary) / "unprepared-plugin"
+                (launcher_root / "scripts").mkdir(parents=True)
+                launcher = launcher_root / "scripts" / "pinboard"
+                shutil.copyfile(ROOT / "scripts" / "pinboard", launcher)
+                launcher.chmod(0o755)
+                commands = Path(temporary) / "commands"
+                commands.mkdir()
+                mover = commands / "mv"
+                mover.write_text(
+                    '#!/bin/sh\n/bin/mv "$@" || exit $?\n'
+                    '(set -C; : > "$1") || exit $?\n'
+                    '/bin/cp "$2" "$1" || exit $?\n'
+                    '/usr/bin/git config --file "$1" --add item.two.mode on\n'
+                )
+                mover.chmod(0o755)
+                launched = subprocess.run(
+                    [str(launcher), "--project-root", str(worktree), "root"],
+                    env={**os.environ, "PATH": f"{commands}:/usr/bin:/bin"},
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(78, launched.returncode, launched.stderr.decode())
+            self.assertTrue(lock.exists(), "Publication cleanup removed the next writer's lock")
+            self.assertIsInstance(git_config.add(settings, "item.third.mode", "on"), git_config.WriteUnconfirmed)
+            real_replace(lock, settings)
+            fresh = contributor_traces.read_project_trace_settings(worktree, work_root)
+            assert fresh is not None
+            self.assertEqual("off", fresh[1].value.unsafe_persist_exact_pinboard_traces)
+            self.assertEqual({"one": "off", "two": "on"}, fresh[1].value.item_overrides)
+
+    def test_unprepared_existing_off_needs_only_read_access_and_missing_mode_names_write_denial(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            settings = work_root / contributor_traces.SETTINGS_NAME
+            launcher_root = Path(temporary) / "unprepared-plugin"
+            (launcher_root / "scripts").mkdir(parents=True)
+            launcher = launcher_root / "scripts" / "pinboard"
+            shutil.copyfile(ROOT / "scripts" / "pinboard", launcher)
+            launcher.chmod(0o755)
+            for mode in ("off", None, "duplicate"):
+                with self.subTest(mode=mode):
+                    settings.write_text(
+                        '[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = off\n'
+                        + ("\tmode = on\n" if mode == "duplicate" else "")
+                        if mode
+                        else ""
+                    )
+                    original = settings.read_bytes()
+                    work_root.chmod(0o500)
+                    try:
+                        launched = subprocess.run(
+                            [str(launcher), "--project-root", str(worktree), "root"],
+                            capture_output=True,
+                            check=False,
+                        )
+                        if mode == "off":
+                            self.assertEqual(78, launched.returncode, launched.stderr.decode())
+                            self.assertEqual("runtime-preparation-required", json.loads(launched.stdout)["status"])
+                            resolution = contributor_traces.read_project_trace_settings(worktree, work_root)
+                            assert resolution is not None
+                            self.assertEqual("none", resolution[1].effects.key_write)
+                        elif mode is None:
+                            self.assertEqual(64, launched.returncode)
+                            self.assertIn(b"write access", launched.stderr)
+                            self.assertNotIn(b"being edited", launched.stderr)
+                        else:
+                            self.assertEqual(64, launched.returncode)
+                            self.assertEqual(b"", launched.stdout)
+                            self.assertNotIn(b"write access", launched.stderr)
+                        self.assertEqual(original, settings.read_bytes())
+                        self.assertFalse(settings.with_name(f"{settings.name}.lock").exists())
+                        self.assertFalse((work_root / contributor_traces.TRACE_DIRECTORY).exists())
+                    finally:
+                        work_root.chmod(0o700)
+
+    def test_preflight_names_initialization_lock_write_denial(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            settings = work_root / contributor_traces.SETTINGS_NAME
+            settings.touch()
+            work_root.chmod(0o500)
+            try:
+                rejected = self.preflight_result(worktree, work_root)
+                self.assertEqual(str(settings.resolve().with_name(f"{settings.name}.lock")), rejected["resource"])
+                self.assertIn(f"Grant write access to {work_root.resolve()}", str(rejected["repair"]))
+                self.assertNotIn("read access", str(rejected["repair"]))
+                self.assertEqual("retry-same-input", rejected["retry"])
+                self.assertEqual("unchanged", rejected["effect"])
+                self.assertFalse(rejected["target_ran"])
+                self.assertFalse(rejected["state_changed"])
+                self.assertEqual([], rejected["changed_surfaces"])
+                self.assertEqual("none", rejected["settings_file_creation"])
+                self.assertEqual("none", rejected["settings_mode_write"])
+                self.assertEqual(b"", settings.read_bytes())
+            finally:
+                work_root.chmod(0o700)
+
+    def test_unprepared_initializer_rechecks_a_mode_selected_after_its_first_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            settings = work_root / contributor_traces.SETTINGS_NAME
+            settings.write_text('[item "one"]\n\tmode = off\n')
+            launcher_root = Path(temporary) / "unprepared-plugin"
+            (launcher_root / "scripts").mkdir(parents=True)
+            launcher = launcher_root / "scripts" / "pinboard"
+            shutil.copyfile(ROOT / "scripts" / "pinboard", launcher)
+            launcher.chmod(0o755)
+            commands = Path(temporary) / "commands"
+            commands.mkdir()
+            git = commands / "git"
+            git.write_text(
+                '#!/bin/sh\nif [ "$1" = config ] && [ "$2" = --file ] && '
+                '[ "$3" = "$PINBOARD_TEST_SETTINGS" ] && [ "$4" = --list ] && '
+                '[ ! -f "$PINBOARD_TEST_OBSERVED" ]; then\n'
+                '    touch "$PINBOARD_TEST_OBSERVED" || exit $?\n'
+                '    /usr/bin/git "$@" || exit $?\n'
+                '    /usr/bin/git config --file "$3" --add pinboard.unsafe_persist_exact_pinboard_traces.mode on\n'
+                'else\n    exec /usr/bin/git "$@"\nfi\n'
+            )
+            git.chmod(0o755)
+            launched = subprocess.run(
+                [str(launcher), "--project-root", str(worktree), "close", "one"],
+                env={
+                    **os.environ,
+                    "PATH": f"{commands}:/usr/bin:/bin",
+                    "PINBOARD_TEST_SETTINGS": str(settings.resolve()),
+                    "PINBOARD_TEST_OBSERVED": str(Path(temporary) / "observed"),
+                },
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(78, launched.returncode, launched.stderr.decode())
+            self.assertTrue((Path(temporary) / "observed").exists())
+            fresh = contributor_traces.read_project_trace_settings(worktree, work_root)
+            assert fresh is not None
+            self.assertEqual("on", fresh[1].value.unsafe_persist_exact_pinboard_traces)
+            self.assertEqual({"one": "off"}, fresh[1].value.item_overrides)
+            self.assertEqual("none", fresh[1].effects.key_write)
+            self.assertFalse(settings.with_name(f"{settings.name}.lock").exists())
+            self.assertFalse((work_root / contributor_traces.TRACE_DIRECTORY).exists())
+
     def test_explicit_off_and_item_overrides_follow_two_worktrees_and_next_call(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             primary, worktree = self.project(Path(temporary))

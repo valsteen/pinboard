@@ -164,7 +164,9 @@ class SemanticCapture:
         )
 
 
-def _settings_recovery(error: SettingResolutionError) -> tuple[str, str, Literal["correct-input", "retry-same-input"]]:
+def _settings_recovery(  # noqa: PLR0912 - distinguish exact settings failures and their safe recovery
+    error: SettingResolutionError,
+) -> tuple[str, str, Literal["correct-input", "retry-same-input"]]:
     """Assign recovery from the original settings observation, independently of its effect account."""
     resource = str(error.path)
     retry: Literal["correct-input", "retry-same-input"] = "correct-input"
@@ -193,6 +195,10 @@ def _settings_recovery(error: SettingResolutionError) -> tuple[str, str, Literal
                 assert_never(unreachable)
     else:
         match cause:
+            case FileExistsError():
+                resource = f"Contributor trace settings edit at {error.path}.lock"
+                repair = f"Retry the same request after the settings edit at {error.path}.lock finishes."
+                retry = "retry-same-input"
             case PermissionError():
                 repair = f"Grant read access to {error.path} for the Pinboard MCP service, then retry."
                 retry = "retry-same-input"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 import stat
 import subprocess
@@ -9,7 +10,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, assert_never
+from typing import Literal
 
 import msgspec
 
@@ -117,44 +118,33 @@ def _settings(data_root: Path) -> SettingResolution[ContributorTraceSettings]:
     path = data_root / SETTINGS_NAME
     effects = _observe_or_create_settings_file(path)
     try:
-        settings = _decode_settings(path)
-        if isinstance(settings, git_config.ReadFailed):
-            raise SettingResolutionError(
-                f"Cannot read Contributor trace settings at {path}: {settings.cause.diagnostic}",
-                path,
-                effects,
-                settings,
-            )
+        settings = _read_settings(path, effects)
         if settings is not None:
             return SettingResolution(path, settings, effects)
-        written = git_config.add(path, "pinboard.unsafe_persist_exact_pinboard_traces.mode", "off")
-        if isinstance(written, git_config.WriteUnconfirmed):
-            cause = written.cause
-            if isinstance(cause, git_config.WorkingDirectoryUnavailable):
-                cause = cause.process_failure
-            match cause:
-                case git_config.ProcessFailed():
-                    key_write = "unconfirmed"
-                case git_config.LaunchFailed():
-                    key_write = "none"
-                case _ as unreachable:
-                    assert_never(unreachable)
-            effects = SettingEffects(effects.parent_creation, effects.file_creation, key_write)
-            raise SettingResolutionError(
-                f"Cannot write Contributor trace project mode in {path}: {written.cause.diagnostic}",
-                path,
-                effects,
-                written,
-            )
-        effects = SettingEffects(effects.parent_creation, effects.file_creation, "acknowledged")
-        settings = _decode_settings(path)
-        if isinstance(settings, git_config.ReadFailed):
-            raise SettingResolutionError(
-                f"Cannot read back Contributor trace settings at {path}: {settings.cause.diagnostic}",
-                path,
-                effects,
-                settings,
-            )
+        # Git writers and the pre-runtime launcher honor this same exclusive lock.
+        # Recheck while holding it; a stale absence cannot replace an explicit choice.
+        lock = path.with_name(f"{path.name}.lock")
+        with lock.open("xb") as staged:
+            try:
+                os.fchmod(staged.fileno(), stat.S_IMODE(path.stat().st_mode))
+                settings = _read_settings(path, effects)
+                if settings is not None:
+                    return SettingResolution(path, settings, effects)
+                staged.write(path.read_bytes())
+                staged.flush()
+                written = git_config.add(lock, "pinboard.unsafe_persist_exact_pinboard_traces.mode", "off")
+                if isinstance(written, git_config.WriteUnconfirmed):
+                    raise SettingResolutionError(
+                        f"Cannot write Contributor trace project mode in {path}: {written.cause.diagnostic}",
+                        path,
+                        effects,
+                        written,
+                    )
+                lock.replace(path)
+                effects = SettingEffects(effects.parent_creation, effects.file_creation, "acknowledged")
+            finally:
+                lock.unlink(missing_ok=True)
+        settings = _read_settings(path, effects)
         if settings is None:
             raise ValueError("Contributor trace settings must declare the project mode.")
         return SettingResolution(path, settings, effects)
@@ -162,6 +152,18 @@ def _settings(data_root: Path) -> SettingResolution[ContributorTraceSettings]:
         if isinstance(error, SettingResolutionError):
             raise
         raise SettingResolutionError(str(error), path, effects, error) from error
+
+
+def _read_settings(path: Path, effects: SettingEffects) -> ContributorTraceSettings | None:
+    settings = _decode_settings(path)
+    if isinstance(settings, git_config.ReadFailed):
+        raise SettingResolutionError(
+            f"Cannot read Contributor trace settings at {path}: {settings.cause.diagnostic}",
+            path,
+            effects,
+            settings,
+        )
+    return settings
 
 
 def _trace_directory(data_root: Path) -> Path:

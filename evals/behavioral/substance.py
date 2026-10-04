@@ -12,13 +12,14 @@ from pathlib import Path
 import msgspec
 
 from evals.behavioral import oneshot, processes
-from evals.behavioral.layout import Layout, RecordedRun
+from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
     Assessed,
     AssessmentFailure,
     AssessmentOutcome,
     AssessmentRecord,
     Failed,
+    RunRecord,
     Runtime,
     SubstanceAnswer,
     SubstanceVerdict,
@@ -44,7 +45,7 @@ def words(text: str) -> int:
     return len(text.split())
 
 
-def prompt(record: RecordedRun, label: str) -> str:
+def prompt(record: RunRecord, label: str) -> str:
     parts = [INSTRUCTIONS, f"Label: {label}\n"]
     for turn in record.turns:
         commentary = "\n\n".join(f"[commentary {n}] {text}" for n, text in enumerate(turn.commentary, start=1))
@@ -94,7 +95,7 @@ def assess(layout: Layout, budget: Budget) -> list[str]:
     return skipped
 
 
-def assess_run(record: RecordedRun, directory: Path, window: processes.Window) -> None:
+def assess_run(record: RunRecord, directory: Path, window: processes.Window) -> None:
     label = f"S{secrets.token_hex(4)}"
     directory.mkdir(parents=True)
     text = prompt(record, label)
@@ -187,7 +188,7 @@ def outcome_of(answer: SubstanceAnswer | AssessmentFailure) -> AssessmentOutcome
             raise AssertionError(unreachable)
 
 
-def turn_words(record: RecordedRun) -> list[TurnWords]:
+def turn_words(record: RunRecord) -> list[TurnWords]:
     return [
         TurnWords(
             turn=turn.index,

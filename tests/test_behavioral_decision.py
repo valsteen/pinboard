@@ -10,8 +10,7 @@ from unittest.mock import Mock, patch
 
 import msgspec
 
-from evals.behavioral import claude_driver, decision, processes, runner, scoring, spend
-from evals.behavioral.compatibility_records import CompatibilityRunRecord
+from evals.behavioral import claude_driver, decision, oneshot, processes, runner, scoring, spend, substance
 from evals.behavioral.decision import Classification, Criteria, Estimate, RunFailures
 from evals.behavioral.export import SeedFailure
 from evals.behavioral.layout import SCORER_INPUT, Layout
@@ -29,7 +28,6 @@ from evals.behavioral.records import (
     RegisteredScenario,
     ReplyScore,
     RunKey,
-    RunRecord,
     Runtime,
     Scenario,
     ScenarioSet,
@@ -47,6 +45,7 @@ from evals.behavioral.records import (
 )
 from evals.behavioral.scenarios import CHECKLIST_SHA256, DataIntegrityError, RegisteredSet
 from tests.test_behavioral_claude_stream import result_event
+from tests.test_behavioral_scoring import answer
 from tests.test_behavioral_spend import turn
 
 CRITERIA = Criteria(
@@ -376,9 +375,7 @@ class QualificationTest(unittest.TestCase):
             registration = self.prepare(layout)
             fresh = Layout(layout.root)
             reloaded = list(fresh.run_records())
-            self.assertTrue(all(isinstance(run, RunRecord) for run in reloaded))
             first = reloaded[0]
-            assert isinstance(first, RunRecord)
             self.assertEqual(registration, first.registration)
             self.assertIn("decision: no worse", decision.compare(fresh, registration, "base", "cand"))
 
@@ -407,7 +404,7 @@ class QualificationTest(unittest.TestCase):
                 layout = Layout(Path(directory))
                 registration = self.prepare(layout)
                 first = layout.run_record(RunKey("s1", "base", 1))
-                assert isinstance(first, RunRecord)
+                assert first is not None
                 selected = fixture_set(
                     [member.id for member in registration.scenarios], 1, tuple(registration.targeted_rules)
                 )
@@ -442,7 +439,7 @@ class QualificationTest(unittest.TestCase):
                 ):
                     failed = runner.claude_run(plan, selected.scenarios[0], RunKey("s1", "base", 99))
                 reloaded = Layout(layout.root).run_record(failed.run)
-                assert isinstance(reloaded, RunRecord)
+                assert reloaded is not None
                 self.assertEqual(failed, reloaded)
                 assert isinstance(reloaded.outcome, Failed)
                 self.assertEqual(1 if output is not None else 0, paid.call_count)
@@ -482,7 +479,6 @@ class QualificationTest(unittest.TestCase):
             ("failed-unknown-session", "incomplete main/scorer/assessor"),
             ("orphan", "incomplete session evidence"),
             ("repeated-score", "single-score selection is ambiguous"),
-            ("legacy", "lacks recorded scenario registration"),
             ("malformed-run", "spending evidence is unavailable"),
             ("conflicting-labels", "conflicting linked labels"),
         )
@@ -493,7 +489,7 @@ class QualificationTest(unittest.TestCase):
                 key = RunKey("s1", "base", 1)
                 run_file = layout.run_directory(key) / "run.json"
                 record = layout.run_record(key)
-                assert isinstance(record, RunRecord)
+                assert record is not None
                 session_file = layout.score_directory("base-s1-1") / "session.json"
                 session = msgspec.json.decode(session_file.read_bytes(), type=ScorerSession)
                 match defect:
@@ -560,14 +556,6 @@ class QualificationTest(unittest.TestCase):
                     case "repeated-score":
                         record_score(layout, "second", key, [set()], True)
                         self.assertEqual(2, scoring.valid_score_counts(layout)[key.display()])
-                    case "legacy":
-                        fields = json.loads(run_file.read_text())
-                        fields.pop("registration")
-                        fields.pop("scenario_sha256")
-                        fields["schema"] = "pinboard-behavioral-run/v2"
-                        run_file.write_text(json.dumps(fields))
-                        self.assertIsInstance(Layout(layout.root).run_record(key), CompatibilityRunRecord)
-                        self.assertEqual(1, scoring.valid_score_counts(layout)[key.display()])
                     case _:
                         raise AssertionError(defect)
                 output = decision.compare(Layout(layout.root), registration, "base", "cand")
@@ -581,13 +569,107 @@ class QualificationTest(unittest.TestCase):
             source = next(layout.scorer_inputs())
             scenario = scoring.scoring_scenario(layout, source)
             self.assertEqual("controlled answer", scenario.ground_truth)
-            with patch.object(scoring, "load_scenario", side_effect=AssertionError("current file read")):
-                self.assertEqual(scenario, scoring.scoring_scenario(Layout(layout.root), source))
+            self.assertEqual(scenario, scoring.scoring_scenario(Layout(layout.root), source))
+            scored_answer = answer("Tfixture", [1])
+            with (
+                patch.object(scoring.secrets, "token_hex", return_value="fixture"),
+                patch.object(scoring.oneshot, "ask", return_value=oneshot.Answer(0.03, scored_answer, "{}", None)),
+            ):
+                outcome = scoring.ScoringRun(
+                    Layout(layout.root), spend.Budget(layout, 120, processes.Window(None), False)
+                ).score(source)
+            self.assertIsInstance(outcome, Scored)
+            self.assertIn("controlled answer", (layout.score_directory("Tfixture") / "prompt.txt").read_text())
+            self.assertEqual(2, scoring.valid_score_counts(Layout(layout.root))[source.run.display()])
             path = layout.run_directory(source.run) / "scenario.json"
             path.write_bytes(path.read_bytes() + b"\n")
             with patch.object(scoring.oneshot, "ask") as paid, self.assertRaises(DataIntegrityError):
                 scoring.ScoringRun(layout, spend.Budget(layout, 120, processes.Window(None), False)).score(source)
             paid.assert_not_called()
+
+    def test_current_records_decode_strictly_through_selected_and_enumerated_reads(self) -> None:
+        for defect in ("missing-registration", "missing-digest", "unknown-field", "unsupported-schema"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as directory:
+                layout = Layout(Path(directory))
+                key = RunKey("s1", "base", 1)
+                record_score(layout, "T1", key, [set()], True)
+                path = layout.run_directory(key) / "run.json"
+                fields = json.loads(path.read_text())
+                match defect:
+                    case "missing-registration":
+                        fields.pop("registration")
+                    case "missing-digest":
+                        fields.pop("scenario_sha256")
+                    case "unknown-field":
+                        fields["unowned"] = "value"
+                    case "unsupported-schema":
+                        fields["schema"] = "unsupported"
+                    case _:
+                        raise AssertionError(defect)
+                path.write_text(json.dumps(fields))
+                fresh = Layout(layout.root)
+                with self.assertRaises(msgspec.ValidationError):
+                    fresh.run_record(key)
+                with self.assertRaises(msgspec.ValidationError):
+                    list(fresh.run_records())
+
+    def test_missing_saved_run_or_scenario_rejects_scoring_before_a_paid_call(self) -> None:
+        for missing in ("run.json", "scenario.json"):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                layout = Layout(Path(directory))
+                key = RunKey("s1", "base", 1)
+                record_score(layout, "T1", key, [set()], True)
+                source = next(Layout(layout.root).scorer_inputs())
+                (layout.run_directory(key) / missing).unlink()
+                with (
+                    patch.object(scoring.oneshot, "ask") as paid,
+                    self.assertRaises(DataIntegrityError if missing == "run.json" else FileNotFoundError),
+                ):
+                    scoring.ScoringRun(
+                        Layout(layout.root), spend.Budget(layout, 120, processes.Window(None), False)
+                    ).score(source)
+                paid.assert_not_called()
+
+    def test_current_codex_completed_and_stopped_runs_reach_blind_assessment_and_spending(self) -> None:
+        for outcome in (Completed(), Stopped("human decision"), Failed("turn", "controlled failure")):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                layout = Layout(Path(directory))
+                key = RunKey("s1", "base", 1)
+                record_score(layout, "T1", key, [set()], True)
+                record = Layout(layout.root).run_record(key)
+                assert record is not None
+                recorded_turn = msgspec.structs.replace(
+                    record.turns[0], commentary=["found at /Users/private/evidence"]
+                )
+                changed = msgspec.structs.replace(
+                    record,
+                    runtime=Runtime.CODEX,
+                    details=CodexRunDetails("effort", "profile", "workspace-write", "on-request", [], "price", False),
+                    turns=[recorded_turn],
+                    outcome=outcome,
+                )
+                (layout.run_directory(key) / "run.json").write_bytes(encode(changed))
+                text = '```json\n{"label":"Sfixture","turns":[{"turn":1,"verdict":"substance-only-in-commentary","evidence":"found only in commentary"}]}\n```'
+                with (
+                    patch.object(substance.secrets, "token_hex", return_value="fixture"),
+                    patch.object(substance.oneshot, "ask", return_value=oneshot.Answer(0.25, text, text, None)) as paid,
+                ):
+                    fresh = Layout(layout.root)
+                    self.assertEqual(
+                        [], substance.assess(fresh, spend.Budget(fresh, 120, processes.Window(None), False))
+                    )
+                assessments = list(Layout(layout.root).assessments())
+                if isinstance(outcome, Failed):
+                    paid.assert_not_called()
+                    self.assertEqual([], assessments)
+                else:
+                    self.assertEqual(1, len(assessments))
+                    self.assertEqual(0.25, assessments[0].cost_usd)
+                    prompt = (layout.assessment_directory(key) / "prompt.txt").read_text()
+                    self.assertIn("found at <path>", prompt)
+                    self.assertNotIn(changed.model, prompt)
+                    self.assertNotIn(changed.evaluated.commit, prompt)
+                    self.assertAlmostEqual(0.26, spend.total(spend.items(Layout(layout.root))))
 
     def test_codex_conditions_require_common_effort_and_complete_reviewer_accounting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -612,7 +694,7 @@ class QualificationTest(unittest.TestCase):
             self.assertIn("decision: no worse", decision.compare(Layout(layout.root), registration, "base", "cand"))
             key = RunKey("s1", "base", 1)
             record = layout.run_record(key)
-            assert isinstance(record, RunRecord) and isinstance(record.details, CodexRunDetails)
+            assert record is not None and isinstance(record.details, CodexRunDetails)
             changed = msgspec.structs.replace(
                 record, details=msgspec.structs.replace(record.details, reasoning_effort="other")
             )

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import msgspec
 
-from evals.behavioral.records import Scenario, ScenarioId, ScenarioSet, WorldKind
+from evals.behavioral.records import Scenario, ScenarioSet, WorldKind
 
 DATA = Path(__file__).parent / "data"
 CHECKLIST = DATA / "checklist.md"
@@ -49,17 +49,6 @@ def checklist_text() -> str:
     return data.decode()
 
 
-def scenario_path(scenario_id: ScenarioId) -> Path:
-    return DATA / "scenarios" / f"{scenario_id}.json"
-
-
-def load_scenario(scenario_id: ScenarioId) -> Scenario:
-    scenario = msgspec.json.decode(scenario_path(scenario_id).read_bytes(), type=Scenario)
-    if scenario.id != scenario_id:
-        raise DataIntegrityError(f"{scenario_path(scenario_id)} declares id {scenario.id}")
-    return scenario
-
-
 def world_facts(scenario: Scenario) -> str | None:
     match scenario.world:
         case WorldKind.FULL:
@@ -76,7 +65,7 @@ def load_set(path: Path) -> RegisteredSet:
     scenarios = []
     sources = []
     for member in scenario_set.scenarios:
-        file = scenario_path(ScenarioId(member.id))
+        file = DATA / "scenarios" / f"{member.id}.json"
         content = file.read_bytes()
         actual = hashlib.sha256(content).hexdigest()
         if actual != member.sha256:

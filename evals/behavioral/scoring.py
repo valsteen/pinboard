@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import msgspec
 
 from evals.behavioral import oneshot, processes
-from evals.behavioral.layout import SCENARIO_RECORD, Layout, RecordedRun
+from evals.behavioral.layout import SCENARIO_RECORD, Layout
 from evals.behavioral.records import (
     Completed,
     LabelMapping,
@@ -24,7 +24,6 @@ from evals.behavioral.records import (
     RunKey,
     RunRecord,
     Scenario,
-    ScenarioId,
     Scored,
     ScoreRecord,
     ScorerInput,
@@ -33,7 +32,7 @@ from evals.behavioral.records import (
     ScoringOutcome,
     write_new,
 )
-from evals.behavioral.scenarios import CHECKLIST_SHA256, DataIntegrityError, checklist_text, load_scenario, world_facts
+from evals.behavioral.scenarios import CHECKLIST_SHA256, DataIntegrityError, checklist_text, world_facts
 from evals.behavioral.spend import Budget, Category
 
 SCORER_MODEL = "claude-opus-5-5"
@@ -183,9 +182,7 @@ class IneligibleScore:
     reason: str
 
 
-def eligibility(
-    session: ScorerSession, mapping: LabelMapping, score: ScoreRecord, run: RecordedRun | None
-) -> str | None:
+def eligibility(session: ScorerSession, mapping: LabelMapping, score: ScoreRecord, run: RunRecord | None) -> str | None:
     """Score-level eligibility does not depend on aggregate identity or spending completeness."""
     if session.scorer_model != SCORER_MODEL:
         return "scorer model differs from the pinned scorer"
@@ -227,26 +224,26 @@ def score_evidence(layout: Layout) -> Iterator[EligibleScore | IneligibleScore]:
 
 
 def scoring_scenario(layout: Layout, source: ScorerInput) -> Scenario:
-    """Current runs judge their saved raw scenario bytes; old evidence keeps its descriptive scoring route."""
+    """Judge the saved raw scenario bytes bound to the recorded run and scorer input."""
     run = layout.run_record(source.run)
-    if isinstance(run, RunRecord):
-        content = (layout.run_directory(source.run) / SCENARIO_RECORD).read_bytes()
-        if hashlib.sha256(content).hexdigest() != run.scenario_sha256:
-            raise DataIntegrityError(f"saved scenario bytes differ from run {source.run.display()}")
-        members = [member for member in run.registration.scenarios if member.id == source.run.scenario_id]
-        if len(members) != 1 or members[0].sha256 != run.scenario_sha256:
-            raise DataIntegrityError(f"run registration differs from saved scenario {source.run.display()}")
-        scenario = msgspec.json.decode(content, type=Scenario)
-        if scenario.id != source.run.scenario_id or source.run != run.run:
-            raise DataIntegrityError("scorer input and saved scenario name different runs")
-        if source.replies != [turn.final_reply for turn in run.turns]:
-            raise DataIntegrityError("scorer input differs from recorded replies")
-        return scenario
-    return load_scenario(ScenarioId(source.run.scenario_id))
+    if run is None:
+        raise DataIntegrityError(f"linked source run is absent: {source.run.display()}")
+    content = (layout.run_directory(source.run) / SCENARIO_RECORD).read_bytes()
+    if hashlib.sha256(content).hexdigest() != run.scenario_sha256:
+        raise DataIntegrityError(f"saved scenario bytes differ from run {source.run.display()}")
+    members = [member for member in run.registration.scenarios if member.id == source.run.scenario_id]
+    if len(members) != 1 or members[0].sha256 != run.scenario_sha256:
+        raise DataIntegrityError(f"run registration differs from saved scenario {source.run.display()}")
+    scenario = msgspec.json.decode(content, type=Scenario)
+    if scenario.id != source.run.scenario_id or source.run != run.run:
+        raise DataIntegrityError("scorer input and saved scenario name different runs")
+    if source.replies != [turn.final_reply for turn in run.turns]:
+        raise DataIntegrityError("scorer input differs from recorded replies")
+    return scenario
 
 
 def valid_score_counts(layout: Layout) -> dict[str, int]:
-    """Eligible score count, including readable legacy runs with unknown aggregate comparison facts."""
+    """Eligible score counts shared by pending-work selection and descriptive reports."""
     counts: dict[str, int] = {}
     for evidence in score_evidence(layout):
         if isinstance(evidence, EligibleScore):

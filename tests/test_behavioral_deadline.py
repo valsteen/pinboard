@@ -29,7 +29,6 @@ from evals.behavioral import (
     spend,
     substance,
 )
-from evals.behavioral.compatibility_records import CompatibilityRunRecord
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
     Assessed,
@@ -60,6 +59,7 @@ from evals.behavioral.records import (
 )
 from evals.behavioral.scenarios import RegisteredSet, load_set
 from tests.test_behavioral_scoring import answer
+from tests.test_behavioral_spend import record_run
 
 
 class EffectDeadlineTest(unittest.TestCase):
@@ -877,14 +877,8 @@ class PaidInterruptionTest(unittest.TestCase):
                 layout = Layout(Path(directory))
                 budget = spend.Budget(layout, 120, processes.Window(None), True)
                 key = RunKey(scenario_id="s14-motivating-replay", variant="candidate", index=1)
-                source = ScorerInput(
-                    schema="pinboard-behavioral-scorer-input/v1",
-                    run=key,
-                    replies=["reply"] * 6,
-                    states=[],
-                    hooks_log=None,
-                    redactions=[],
-                )
+                record_run(layout, key, [0.0])
+                source = next(Layout(layout.root).scorer_inputs())
                 child = MagicMock()
                 child.pid, child.returncode = 777, 0
                 child.communicate.side_effect = [KeyboardInterrupt(), (b"paid partial bytes", b"diagnostic")]
@@ -921,14 +915,8 @@ class PaidInterruptionTest(unittest.TestCase):
                     layout = Layout(Path(directory))
                     budget = spend.Budget(layout, 120, processes.Window(None), True)
                     key = RunKey(scenario_id="s14-motivating-replay", variant="candidate", index=1)
-                    source = ScorerInput(
-                        schema="pinboard-behavioral-scorer-input/v1",
-                        run=key,
-                        replies=[],
-                        states=[],
-                        hooks_log=None,
-                        redactions=[],
-                    )
+                    record_run(layout, key, [0.0])
+                    source = next(Layout(layout.root).scorer_inputs())
                     cause = KeyboardInterrupt("second interrupt") if interrupted else OSError("cleanup I/O failed")
                     child = MagicMock()
                     child.pid, child.returncode = 777, None
@@ -967,14 +955,8 @@ class PaidInterruptionTest(unittest.TestCase):
                     layout = Layout(Path(directory))
                     budget = spend.Budget(layout, 120, processes.Window(None), True)
                     key = RunKey(scenario_id="s14-motivating-replay", variant="candidate", index=1)
-                    source = ScorerInput(
-                        schema="pinboard-behavioral-scorer-input/v1",
-                        run=key,
-                        replies=[],
-                        states=[],
-                        hooks_log=None,
-                        redactions=[],
-                    )
+                    record_run(layout, key, [0.0])
+                    source = next(Layout(layout.root).scorer_inputs())
                     cause = OSError("started I/O failed")
                     child = MagicMock()
                     child.pid, child.returncode = 777, 0
@@ -1026,14 +1008,8 @@ class PaidInterruptionTest(unittest.TestCase):
                 layout = Layout(Path(directory))
                 budget = spend.Budget(layout, 120, processes.Window(None), True)
                 key = RunKey(scenario_id="s14-motivating-replay", variant="candidate", index=1)
-                source = ScorerInput(
-                    schema="pinboard-behavioral-scorer-input/v1",
-                    run=key,
-                    replies=[],
-                    states=[],
-                    hooks_log=None,
-                    redactions=[],
-                )
+                record_run(layout, key, [0.0])
+                source = next(Layout(layout.root).scorer_inputs())
                 primary_cause = OSError("started communication failed")
                 primary = processes.ProcessIncomplete(b"paid partial", b"diagnostic", primary_cause)
                 primary.__cause__ = primary_cause
@@ -1069,14 +1045,8 @@ class PaidInterruptionTest(unittest.TestCase):
                 layout = Layout(Path(directory))
                 budget = spend.Budget(layout, 120, processes.Window(None), True)
                 key = RunKey(scenario_id="s14-motivating-replay", variant="candidate", index=1)
-                source = ScorerInput(
-                    schema="pinboard-behavioral-scorer-input/v1",
-                    run=key,
-                    replies=[],
-                    states=[],
-                    hooks_log=None,
-                    redactions=[],
-                )
+                record_run(layout, key, [0.0])
+                source = next(Layout(layout.root).scorer_inputs())
                 cause = msgspec.ValidationError("strict result rejected")
                 answer = oneshot.Answer(0.3, "invalid", "retained paid result", None)
                 with (
@@ -1108,14 +1078,8 @@ class PaidInterruptionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             layout = Layout(Path(directory))
             budget = spend.Budget(layout, 120, processes.Window(None), True)
-            source = ScorerInput(
-                schema="pinboard-behavioral-scorer-input/v1",
-                run=RunKey(scenario_id="s14-motivating-replay", variant="candidate", index=1),
-                replies=[],
-                states=[],
-                hooks_log=None,
-                redactions=[],
-            )
+            record_run(layout, RunKey("s14-motivating-replay", "candidate", 1), [0.0])
+            source = next(Layout(layout.root).scorer_inputs())
             with (
                 patch.object(scoring, "prompt", return_value="prompt"),
                 patch.object(oneshot, "ask", side_effect=TimeoutError("expired before process start")),
@@ -1286,8 +1250,8 @@ class CoverageDeadlineTest(unittest.TestCase):
             stages.append("run")
             windows.append(plan.run.window)
             self.assertIs(budget.window, plan.run.window)
-            _scenario, key = plan.run.planned()[0]
-            directory = plan.run.layout.run_directory(key)
+            scenario, key = plan.run.planned()[0]
+            state = runner.start(plan.run, scenario, key)
             turn = TurnEvidence(
                 index=1,
                 human="action",
@@ -1305,45 +1269,22 @@ class CoverageDeadlineTest(unittest.TestCase):
                 reasoning_output_tokens=0,
                 permission_denials=[],
             )
-            write_new(
-                directory / "run.json",
-                CompatibilityRunRecord(
-                    schema="pinboard-behavioral-run/v2",
-                    run=key,
-                    runtime=Runtime.CODEX,
-                    cli_version="test",
-                    model="gpt-6-sol",
-                    details=CodexRunDetails(
-                        reasoning_effort="high",
-                        permission_profile="pinboard",
-                        sandbox_mode="workspace-write",
-                        approval_policy="on-request",
-                        writable_roots=[],
-                        price_source="test",
-                        credential_write_back=False,
-                    ),
-                    evaluated=plan.run.export,
-                    fixture_difference=None,
-                    seeded_host_id="host",
-                    seeded_items=[],
-                    observed_host_ids=[],
-                    inventory=[],
-                    turns=[turn],
-                    started_at="start",
-                    finished_at="finish",
-                    outcome=Completed(),
+            state.turns.append(turn)
+            state.finish(
+                Runtime.CODEX,
+                "test",
+                CodexRunDetails(
+                    reasoning_effort=plan.reasoning_effort,
+                    permission_profile="pinboard",
+                    sandbox_mode="workspace-write",
+                    approval_policy="on-request",
+                    writable_roots=[],
+                    price_source="test",
+                    credential_write_back=False,
                 ),
-            )
-            write_new(
-                directory / "scorer-input.json",
-                ScorerInput(
-                    schema="pinboard-behavioral-scorer-input/v1",
-                    run=key,
-                    replies=["done"],
-                    states=[],
-                    hooks_log=None,
-                    redactions=[],
-                ),
+                [],
+                [],
+                Completed(),
             )
             return []
 

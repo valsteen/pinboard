@@ -1,12 +1,12 @@
 """Spend is recomputed from recorded runs, scorer sessions, assessments and probes, and the cap guard holds."""
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
 from typing import override
 
-from evals.behavioral import processes, spend
-from evals.behavioral.compatibility_records import CompatibilityRunRecord
+from evals.behavioral import processes, runner, spend
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
     ClaudeRunDetails,
@@ -14,14 +14,21 @@ from evals.behavioral.records import (
     Completed,
     ExportRecord,
     ProbeRecord,
+    RegisteredScenario,
     ReviewerUsage,
     RunKey,
     Runtime,
+    Scenario,
+    ScenarioSet,
     Scored,
     ScorerSession,
+    Turn,
     TurnEvidence,
+    WorldKind,
+    encode,
     write_new,
 )
+from evals.behavioral.scenarios import RegisteredSet
 from evals.behavioral.spend import Budget, Category
 
 
@@ -45,30 +52,42 @@ def turn(index: int, cost: float) -> TurnEvidence:
     )
 
 
-def record_run(layout: Layout, variant: str, index: int, costs: list[float]) -> None:
-    run = RunKey(scenario_id="s1", variant=variant, index=index)
-    write_new(
-        layout.run_directory(run) / "run.json",
-        CompatibilityRunRecord(
-            schema="pinboard-behavioral-run/v2",
-            run=run,
-            runtime=Runtime.CLAUDE_CODE,
-            cli_version="test",
-            model="model",
-            details=ClaudeRunDetails(permission_mode="bypassPermissions", cost_basis="claude total_cost_usd"),
-            evaluated=ExportRecord(
-                schema="pinboard-behavioral-export/v1", commit="0" * 40, skills_sha256="0" * 64, plugin_root="/plugin"
-            ),
-            fixture_difference=None,
-            seeded_host_id="host",
-            seeded_items=[],
-            observed_host_ids=[],
-            inventory=[],
-            turns=[turn(number, cost) for number, cost in enumerate(costs, start=1)],
-            started_at="t0",
-            finished_at="t1",
-            outcome=Completed(),
-        ),
+def record_run(layout: Layout, key: RunKey, costs: list[float]) -> None:
+    scenario = Scenario(
+        id=key.scenario_id,
+        title="controlled spending",
+        world=WorldKind.MINIMAL,
+        world_extra=None,
+        source="independent fixture",
+        ground_truth="answer",
+        turns=[Turn("question", None) for _ in costs],
+    )
+    content = encode(scenario)
+    selected = RegisteredSet(
+        (scenario,),
+        ScenarioSet("controlled", [RegisteredScenario(scenario.id, hashlib.sha256(content).hexdigest())], []),
+        (content,),
+    )
+    plan = runner.RunPlan(
+        layout,
+        layout.root / "worlds",
+        ExportRecord("pinboard-behavioral-export/v1", "0" * 40, "0" * 64, "/plugin"),
+        key.variant,
+        selected,
+        key.index,
+        1,
+        "model",
+        processes.Window(None),
+    )
+    state = runner.start(plan, scenario, key)
+    state.turns.extend(turn(number, cost) for number, cost in enumerate(costs, start=1))
+    state.finish(
+        Runtime.CLAUDE_CODE,
+        "test",
+        ClaudeRunDetails(permission_mode="bypassPermissions", cost_basis="claude total_cost_usd"),
+        [],
+        [],
+        Completed(),
     )
 
 
@@ -110,8 +129,8 @@ class SpendTest(unittest.TestCase):
         self.layout = Layout(Path(self.directory.name))
 
     def test_total_is_the_sum_of_every_recorded_amount_itemized_by_category(self) -> None:
-        record_run(self.layout, "repeat", 1, [0.5, 0.25])
-        record_run(self.layout, "repeat", 2, [1.0])
+        record_run(self.layout, RunKey("s1", "repeat", 1), [0.5, 0.25])
+        record_run(self.layout, RunKey("s1", "repeat", 2), [1.0])
         record_scorer(self.layout, "T1", 0.125)
         record_probe(self.layout, "isolation", 0.0625)
         recorded = spend.items(self.layout)
@@ -124,20 +143,20 @@ class SpendTest(unittest.TestCase):
         self.assertEqual("total\t4\t1.9375", lines[-1])
 
     def test_a_session_whose_projection_exceeds_the_remaining_cap_does_not_start(self) -> None:
-        record_run(self.layout, "repeat", 1, [3.0])
+        record_run(self.layout, RunKey("s1", "repeat", 1), [3.0])
         budget = Budget(self.layout, cap_usd=6.5, window=processes.Window(None), allow_unknown_reviewer_price=False)
         self.assertEqual(3.0, budget.reserve(Category.CLAUDE_AGENT_RUN))
         self.assertIsNone(budget.reserve(Category.CLAUDE_AGENT_RUN))
 
     def test_a_released_reservation_frees_room_and_recorded_spend_uses_it(self) -> None:
-        record_run(self.layout, "repeat", 1, [3.0])
+        record_run(self.layout, RunKey("s1", "repeat", 1), [3.0])
         budget = Budget(self.layout, cap_usd=7.0, window=processes.Window(None), allow_unknown_reviewer_price=False)
         projected = budget.reserve(Category.CLAUDE_AGENT_RUN)
         assert projected is not None
         budget.release(projected)
         self.assertEqual(projected, budget.reserve(Category.CLAUDE_AGENT_RUN))
         budget.release(projected)
-        record_run(self.layout, "repeat", 2, [3.0])
+        record_run(self.layout, RunKey("s1", "repeat", 2), [3.0])
         self.assertIsNone(budget.reserve(Category.CLAUDE_AGENT_RUN))
 
     def test_interrupted_probe_keeps_known_spend_and_blocks_further_paid_work(self) -> None:

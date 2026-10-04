@@ -424,6 +424,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         committed_context: bool = False,
         contextual_candidate: bool = False,
         empty_candidate: bool = False,
+        rename_binary_candidate: bool = False,
         review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner"] = "ready",
     ) -> CheckpointFixture:
         state = complete_sqlite_state()
@@ -464,11 +465,16 @@ class CheckpointPackageSupport(unittest.TestCase):
         subprocess.run(["git", "init", "-b", "codex/work-a"], cwd=project, check=True, capture_output=True)
         (project / ".git" / "info" / "exclude").write_text("/.pinboard/\n", encoding="utf-8")
         tracked = project / "tracked.txt"
+        rename_before = project / "rename-before.txt"
+        binary_file = project / "binary.dat"
         base_contents = "one\ntwo\nthree\nbase\nfive\nsix\nseven\neight\nnine\n" if contextual_candidate else "base\n"
         candidate_contents = (
             "one\ntwo\nthree\ncandidate\nfive\nsix\nseven\neight\nnine\n" if contextual_candidate else "candidate\n"
         )
         tracked.write_text(base_contents, encoding="utf-8")
+        if rename_binary_candidate:
+            rename_before.write_text("rename this accepted content\n", encoding="utf-8")
+            binary_file.write_bytes(b"binary base\x00content\n")
         base_revision = self.commit_all(project, "base")
         preimage_revision = base_revision
         if committed_context:
@@ -476,6 +482,9 @@ class CheckpointPackageSupport(unittest.TestCase):
             preimage_revision = self.commit_all(project, "context")
         if not empty_candidate:
             tracked.write_text(candidate_contents, encoding="utf-8")
+        if rename_binary_candidate:
+            (project / "rename-before.txt").rename(project / "rename-after.txt")
+            binary_file.write_bytes(b"binary reviewed\x00content\n")
         if candidate_form == "current-head":
             candidate_revision = self.commit_all(project, "candidate")
             candidate_diff = subprocess.run(

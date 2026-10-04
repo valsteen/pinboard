@@ -84,7 +84,7 @@ class CandidateRestoreAfterMutationError(RootError):
 def observe_content_integration(cwd: Path, target: str, diff: bytes) -> ContentIntegrationObservation:
     """Check whether a reviewed binary diff reverse-applies to a local target tree."""
 
-    if not target or target.startswith("-") or any(character in target for character in "\r\n\u0085\u2028\u2029"):
+    if not target or target.startswith("-") or any(character in target for character in "\0\r\n\u0085\u2028\u2029"):
         raise ValueError("An integration target must be a nonempty Git revision name that does not begin with '-'.")
     resolve_source_checkout_root(cwd)
     resolved = subprocess.run(

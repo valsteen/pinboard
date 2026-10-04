@@ -239,8 +239,10 @@ class IntegrationStatusTest(CheckpointPackageSupport):
         missing = self.integration(fixture, "work-a", "missing-local-target")
         self.assert_rejected(missing, "INTEGRATION_TARGET_UNRESOLVED", "correct-input", {"target", "project_root"})
 
-        invalid = self.integration(fixture, "work-a", "-invalid")
-        self.assert_rejected(invalid, "ITEM_STATUS_INVALID", "correct-input", {"item_id", "target"})
+        for invalid_target in ("-invalid", "bad\0target"):
+            with self.subTest(invalid_target=invalid_target):
+                invalid = self.integration(fixture, "work-a", invalid_target)
+                self.assert_rejected(invalid, "ITEM_STATUS_INVALID", "correct-input", {"item_id", "target"})
 
         ready = self.integration(fixture, "work-c", fixture.brief.base_revision)
         self.assert_rejected(
@@ -267,6 +269,66 @@ class IntegrationStatusTest(CheckpointPackageSupport):
             self.assert_rejected(
                 non_git, "PROJECT_GIT_ROOT_UNAVAILABLE", "correct-input", {"project_root", "git_diagnostic"}
             )
+
+    def test_active_without_checkpoint_and_direct_close_have_no_candidate(self) -> None:
+        active = self.checkpoint_fixture()
+        returned = self.project_action(active, "return-for-correction:work-a-1")
+        self.assertEqual(
+            "committed",
+            self.transition_result(active, returned, {"reason": "Return for the source-selection fixture."})["status"],
+        )
+        active_result = self.integration(active, "work-a", active.brief.base_revision)
+        self.assert_rejected(
+            active_result,
+            "INTEGRATION_CANDIDATE_UNAVAILABLE",
+            "correct-input",
+            {"item_id", "item_state", "reason"},
+        )
+        active_facts = self.json_array(active_result["observed"])
+        active_reason = next(
+            self.json_object(fact)["value"] for fact in active_facts if self.json_object(fact)["field"] == "reason"
+        )
+        self.assertIn("no protected candidate or checkpoint acceptance", str(active_reason))
+
+        closed = self.checkpoint_fixture()
+        close = self.project_action(closed, "close:work-c")
+        close_transition = self.transition_result(
+            closed, close, {"outcome": "done", "reason": "Direct close source fixture."}
+        )
+        self.assertEqual("committed", close_transition["status"], close_transition)
+        close_result = self.integration(closed, "work-c", closed.brief.base_revision)
+        self.assert_rejected(
+            close_result,
+            "INTEGRATION_CANDIDATE_UNAVAILABLE",
+            "correct-input",
+            {"item_id", "item_state", "reason"},
+        )
+        close_facts = self.json_array(close_result["observed"])
+        close_reason = next(
+            self.json_object(fact)["value"] for fact in close_facts if self.json_object(fact)["field"] == "reason"
+        )
+        self.assertIn("closed directly", str(close_reason))
+
+    def test_rename_and_binary_candidate_diff_is_present_after_squash(self) -> None:
+        fixture = self.checkpoint_fixture(
+            candidate_form="current-head", contextual_candidate=True, rename_binary_candidate=True
+        )
+        base = fixture.brief.base_revision
+        candidate_diff = fixture.candidate_bytes
+        self.assertIn(b"rename from rename-before.txt", candidate_diff)
+        self.assertIn(b"rename to rename-after.txt", candidate_diff)
+        self.assertIn(b"GIT binary patch", candidate_diff)
+        self.git(fixture.project, "branch", "main", base)
+        self.git(fixture.project, "switch", "main")
+        self.git(fixture.project, "merge", "--squash", "codex/work-a")
+        self.commit_all(fixture.project, "squash renamed binary candidate")
+
+        result = self.integration(fixture, "work-a", "main")
+
+        self.assertEqual("content-present", result["presence"], result)
+        source = self.json_object(result["source"])
+        self.assertEqual("protected-review", source["kind"])
+        self.assertEqual(fixture.candidate_revision, source["candidate_revision"])
 
     def test_empty_candidate_returns_no_change_and_remote_tracking_ref_is_local(self) -> None:
         unchanged = self.checkpoint_fixture(empty_candidate=True)

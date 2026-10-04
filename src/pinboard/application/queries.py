@@ -1182,6 +1182,73 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
     )
 
 
+def select_item_integration_source(
+    reader: ports.ItemIntegrationReader, work_item_id: WorkItemId
+) -> query_models.IntegrationCandidateSelection | None:
+    """Select the one candidate source authorized by current item lifecycle facts."""
+
+    facts = reader.read_item_integration(work_item_id)
+    if facts is None:
+        return None
+    attempt = facts.current_attempt
+    if (
+        attempt is not None
+        and attempt.state == work_models.AttemptState.REVIEW
+        and attempt.candidate_revision is not None
+    ):
+        return query_models.ProtectedReviewIntegrationSelection(
+            attempt.attempt_id, attempt.candidate_revision, facts.state
+        )
+    if facts.closure_action == decision_models.ActionKind.COMPLETE:
+        if facts.closing_attempt_id is not None and facts.closing_candidate_revision is not None:
+            return query_models.CompletionIntegrationSelection(
+                facts.closing_attempt_id, facts.closing_candidate_revision, facts.state
+            )
+        return query_models.IntegrationCandidateUnavailable(
+            facts.work_item_id, facts.state, "the completion has no retained closing candidate"
+        )
+    if attempt is not None and attempt.candidate_revision is None and facts.checkpoint_receipt is not None:
+        receipt = facts.checkpoint_receipt
+        try:
+            outcome = msgspec.json.decode(
+                bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome, strict=True
+            )
+        except msgspec.DecodeError as error:
+            return query_models.IntegrationReceiptDamaged(
+                attempt.attempt_id, receipt.history_id, receipt.committed_at, str(error)
+            )
+        if (
+            receipt.outcome_schema != "checkpoint-acceptance/v2"
+            or receipt.action_kind != decision_models.ActionKind.ACCEPT_CHECKPOINT
+            or msgspec.json.encode(outcome, order="sorted") != bytes(receipt.outcome_payload)
+        ):
+            return query_models.IntegrationReceiptDamaged(
+                attempt.attempt_id,
+                receipt.history_id,
+                receipt.committed_at,
+                "checkpoint acceptance does not match its canonical stored outcome",
+            )
+        if facts.checkpoint_package_reference is None:
+            return query_models.IntegrationCandidateUnavailable(
+                facts.work_item_id,
+                facts.state,
+                "the latest checkpoint acceptance has no retained package reference",
+            )
+        return query_models.AcceptedCheckpointIntegrationSelection(
+            attempt.attempt_id,
+            outcome.checkpoint,
+            outcome.candidate,
+            facts.checkpoint_package_reference,
+            facts.state,
+        )
+    reason = (
+        "the item was closed directly"
+        if facts.closure_action == decision_models.ActionKind.CLOSE
+        else "there is no protected candidate or checkpoint acceptance on the current attempt"
+    )
+    return query_models.IntegrationCandidateUnavailable(facts.work_item_id, facts.state, reason)
+
+
 def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
     return query_models.WorkItemDefinitionView(
         "pinboard-work-item-definition/v2",

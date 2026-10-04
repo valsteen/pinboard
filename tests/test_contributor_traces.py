@@ -731,6 +731,7 @@ class ContributorTraceTest(unittest.TestCase):
             examples: tuple[dict[str, JsonValue], ...] = (
                 {"item_id": "work-a"},
                 {"request": {"operation": "item", "item_id": "work-a"}},
+                {"request": {"operation": "integration", "item_id": "work-a", "target": "HEAD"}},
                 {"brief": {"item_id": "work-a"}},
                 {"proposal": {"relation": {"item": "work-a"}}},
                 {"request": {"attempt_id": "work-a-1"}},
@@ -753,11 +754,20 @@ class ContributorTraceTest(unittest.TestCase):
             item_leaf: dict[str, JsonValue] = {
                 "request": {"work_root": str(work_root), "operation": "item", "item_id": "work-a"}
             }
+            integration_leaf: dict[str, JsonValue] = {
+                "request": {
+                    "work_root": str(work_root),
+                    "operation": "integration",
+                    "item_id": "work-a",
+                    "target": "HEAD",
+                }
+            }
             branch_leaf: dict[str, JsonValue] = {
                 "request": {"work_root": str(work_root), "operation": "branch", "branch": "codex/work-a"}
             }
             self.assertIsNone(common.select_capture_item(primary, str(work_root), branch_leaf))
             self.assertIsNotNone(capture.resolve(str(worktree), item_leaf))
+            self.assertIsNotNone(capture.resolve(str(worktree), integration_leaf))
             self.assertIsNone(capture.resolve(str(worktree), branch_leaf))
             self.settings(primary, "off", {"work-a": "invalid"})
             rejected = capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "work-a"})

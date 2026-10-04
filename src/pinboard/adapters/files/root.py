@@ -1,6 +1,9 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import BinaryIO
 
@@ -35,6 +38,26 @@ class DirtyHeadCandidate:
     candidate_revision: str
 
 
+class ContentIntegrationPresence(Enum):
+    PRESENT = "content-present"
+    NOT_PRESENT = "content-not-present"
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedIntegrationTarget:
+    target: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedIntegrationTarget:
+    target: str
+    revision: str
+    presence: ContentIntegrationPresence
+
+
+type ContentIntegrationObservation = UnresolvedIntegrationTarget | ResolvedIntegrationTarget
+
+
 type CommittedCandidateObservation = CurrentHeadCandidate | DifferentHeadCandidate | DirtyHeadCandidate
 
 
@@ -56,6 +79,58 @@ type CandidateRestoreResult = CandidateRestoreSuccess | CandidateRestoreRejectio
 
 class CandidateRestoreAfterMutationError(RootError):
     """The checkout changed before exact restoration verification failed."""
+
+
+def observe_content_integration(cwd: Path, target: str, diff: bytes) -> ContentIntegrationObservation:
+    """Check whether a reviewed binary diff reverse-applies to a local target tree."""
+
+    if not target or target.startswith("-") or any(character in target for character in "\r\n\u0085\u2028\u2029"):
+        raise ValueError("An integration target must be a nonempty Git revision name that does not begin with '-'.")
+    resolve_source_checkout_root(cwd)
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--end-of-options", f"{target}^{{commit}}"],
+        cwd=cwd,
+        capture_output=True,
+        check=False,
+    )
+    if resolved.returncode != 0:
+        return UnresolvedIntegrationTarget(target)
+    revision = resolved.stdout.decode(errors="replace").strip()
+    if not revision:
+        raise RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "Git resolved an empty integration target.")
+    if not diff:
+        return ResolvedIntegrationTarget(target, revision, ContentIntegrationPresence.PRESENT)
+    with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as temporary_directory:
+        index_path = Path(temporary_directory) / "index"
+        environment = os.environ.copy()
+        environment["GIT_INDEX_FILE"] = str(index_path)
+        tree = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "read-tree", revision],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            check=False,
+        )
+        if tree.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                tree.stderr.decode(errors="replace").strip() or "Cannot read the integration target tree.",
+            )
+        applied = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "apply", "--cached", "--check", "--reverse", "--whitespace=nowarn"],
+            cwd=cwd,
+            env=environment,
+            input=diff,
+            capture_output=True,
+            check=False,
+        )
+    if applied.returncode not in {0, 1}:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            applied.stderr.decode(errors="replace").strip() or "Git could not check the integration diff.",
+        )
+    presence = ContentIntegrationPresence.PRESENT if applied.returncode == 0 else ContentIntegrationPresence.NOT_PRESENT
+    return ResolvedIntegrationTarget(target, revision, presence)
 
 
 def _resolve_git_path(cwd: Path, selector: str, unavailable_message: str) -> Path:

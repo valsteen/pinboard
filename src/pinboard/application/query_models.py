@@ -675,6 +675,121 @@ type ItemStatusSchema = Literal["pinboard-item-status/v2"]
 type ItemStatusAuthority = Literal["sqlite-v7"]
 
 
+class IntegrationPresence(Enum):
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+class ProtectedReviewCandidate(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class AcceptedCheckpointCandidate(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    checkpoint_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class CompletionCandidate(msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+type IntegrationCandidateSource = ProtectedReviewCandidate | AcceptedCheckpointCandidate | CompletionCandidate
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-item-integration/v1"]
+    item_id: str
+    target: str
+    resolved_target_revision: str
+    source: IntegrationCandidateSource
+    presence: IntegrationPresence
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationAttemptFacts:
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    candidate_revision: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationSelectionFacts:
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    current_attempt: IntegrationAttemptFacts | None
+    closure_action: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind | None
+    closing_attempt_id: AttemptId | None
+    closing_candidate_revision: str | None
+    checkpoint_receipt: stored_state.StoredTransitionReceipt | None
+    checkpoint_package_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedReviewIntegrationSelection:
+    attempt_id: AttemptId
+    candidate_revision: str
+    item_state: stored_state.StoredWorkItemState
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedCheckpointIntegrationSelection:
+    attempt_id: AttemptId
+    checkpoint_id: str
+    candidate_revision: str
+    package_reference: stored_state.ArtifactReference
+    item_state: stored_state.StoredWorkItemState
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionIntegrationSelection:
+    attempt_id: AttemptId
+    candidate_revision: str
+    item_state: stored_state.StoredWorkItemState
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateUnavailable:
+    item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationReceiptDamaged:
+    attempt_id: AttemptId
+    history_id: HistoryId
+    committed_at: datetime
+    defect: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateEvidenceInvalid:
+    attempt_id: AttemptId
+    artifact_ref_id: ArtifactRefId | None
+    reference: str
+    defect: str
+
+
+type IntegrationCandidateSelection = (
+    ProtectedReviewIntegrationSelection
+    | AcceptedCheckpointIntegrationSelection
+    | CompletionIntegrationSelection
+    | IntegrationCandidateUnavailable
+    | IntegrationReceiptDamaged
+)
+
+
 type DamagedReceiptActionKind = Literal[
     decision_models.ActionKind.PAUSE,
     decision_models.ActionKind.REBIND_ATTEMPT,

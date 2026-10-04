@@ -44,6 +44,7 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     NonterminalAttemptContextSelection,
     TerminalAttemptContextSelection,
+    _read_item_closure,
     read_attempt_context,
     read_branch_owners,
     read_current_definitions,
@@ -93,6 +94,18 @@ class _SelectedAttemptLinkRow(msgspec.Struct, frozen=True, forbid_unknown_fields
     attempt_id: AttemptId
     state: work_models.AttemptState
     subject_revision: int
+
+
+class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
+class _IntegrationAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    candidate_revision: str | None
 
 
 def _read_generated_view_facts(
@@ -716,6 +729,67 @@ class SQLiteWorkStore:
                     lifecycle.attempts,
                     lifecycle.closure,
                     preparation,
+                )
+        finally:
+            connection.close()
+
+    def read_item_integration(self, work_item_id: WorkItemId) -> query_models.IntegrationSelectionFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                item_row = connection.execute(
+                    "SELECT item_id, state, subject_revision FROM work_items WHERE item_id = ?",
+                    (work_item_id,),
+                ).fetchone()
+                if item_row is None:
+                    return None
+                item = decode_row(item_row, _IntegrationItemRow)
+                current_attempt = None
+                checkpoint_receipt = None
+                checkpoint_package_reference = None
+                if stored_state.live_work_state(item.state) is not None:
+                    attempt_row = connection.execute(
+                        """SELECT attempt_id, state, candidate_revision FROM attempts
+                           WHERE item_id = ? AND state != 'done'""",
+                        (work_item_id,),
+                    ).fetchone()
+                    if attempt_row is not None:
+                        attempt = decode_row(attempt_row, _IntegrationAttemptRow)
+                        current_attempt = query_models.IntegrationAttemptFacts(
+                            attempt.attempt_id, attempt.state, attempt.candidate_revision
+                        )
+                        if attempt.state != work_models.AttemptState.REVIEW or attempt.candidate_revision is None:
+                            checkpoint_row = connection.execute(
+                                """SELECT history_id FROM transition_history INDEXED BY checkpoint_history_by_subject
+                                   WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+                                   ORDER BY history_id DESC LIMIT 1""",
+                                (attempt.attempt_id,),
+                            ).fetchone()
+                            if checkpoint_row is not None:
+                                checkpoint_receipt = sqlite_state.read_history_receipt(
+                                    connection, decode_row(checkpoint_row, HistoryIdRow).history_id
+                                )
+                                if checkpoint_receipt is not None and checkpoint_receipt.artifact_ref_id is not None:
+                                    checkpoint_package_reference = read_artifact_reference_by_id(
+                                        connection, checkpoint_receipt.artifact_ref_id
+                                    )
+                closure = None
+                closing_attempt_id = None
+                closing_candidate_revision = None
+                if stored_state.live_work_state(item.state) is None:
+                    closure = _read_item_closure(connection, work_item_id, item.subject_revision)
+                    if closure is not None and closure.closing_attempt is not None:
+                        closing_attempt_id = closure.closing_attempt.attempt_id
+                        closing_candidate_revision = closure.closing_attempt.candidate_revision
+                return query_models.IntegrationSelectionFacts(
+                    item.item_id,
+                    item.state,
+                    current_attempt,
+                    None if closure is None else closure.action_kind,
+                    closing_attempt_id,
+                    closing_candidate_revision,
+                    checkpoint_receipt,
+                    checkpoint_package_reference,
                 )
         finally:
             connection.close()

@@ -113,9 +113,9 @@ def session_start_main() -> int:
     )
     if os.environ.get("PINBOARD_RUNTIME_PREPARED_NOW") == "1":
         context += (
-            " Pinboard prepared this plugin version's private runtime during this session start, after the pinboard "
-            "MCP server had already failed to connect; tell the user to reconnect it with /mcp or restart Claude Code "
-            "before using Pinboard tools."
+            " Pinboard prepared this plugin version's private runtime during this session start. MCP startup can "
+            "also prepare and start the server automatically. Check whether Pinboard tools are available; if the "
+            "connection is unavailable, tell the user to reconnect it with /mcp or restart Claude Code."
         )
     output = HookOutput(StartupContext("SessionStart", context))
     print(msgspec.json.encode(output).decode())

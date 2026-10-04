@@ -306,7 +306,7 @@ After brief publication, activation accepts only the accepted brief reference. T
 
 ### Reads and validation
 
-Every installed CLI parser leaf belongs to one visible data-scope class. Its static tool contract publishes that class in both the exhaustive operation index and selected detail, so a new CLI leaf cannot remain silently unclassified. The CLI router passes one resolved durable layout and, for database-backed commands, one composed store. Native request owners independently compose the application capabilities required by their own scopes. Both interfaces follow these data boundaries:
+Every installed CLI parser leaf belongs to one visible data-scope class. Its static tool contract publishes that class in both the exhaustive operation index and selected detail, so a new CLI leaf cannot remain silently unclassified. The CLI router passes one resolved durable layout and, for database-backed commands, one composed store. Native request owners independently compose the application capabilities required by their own scopes. These classes describe use-case data access. An invocation that reads the ledger or lifecycle can also initialize `<work-root>/contributor-traces.config` and publish a private trace under `<work-root>/invocation-traces/`; those auxiliary effects grant no ledger mutation authority. Both source tools bypass capture, so their advertised full-invocation read/write hints retain the exact source and explicit-output effects. Both interfaces follow these data boundaries:
 
 | Scope class | Installed operations | Data boundary |
 | --- | --- | --- |

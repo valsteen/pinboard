@@ -278,6 +278,48 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         )
         self.assertIn("Correct the named Git checkout", str(result["recovery"]))
 
+    def test_missing_target_blob_returns_native_checkout_diagnosis_without_writes(self) -> None:
+        fixture = self.fixture("current-head")
+        self.assert_presence(fixture, "HEAD", "content-present")
+        blob = self.git(fixture, "rev-parse", "HEAD:tracked.txt")
+        (fixture.project / ".git" / "objects" / blob[:2] / blob[2:]).unlink()
+        before = {
+            str(path.relative_to(fixture.project)): path.read_bytes()
+            for path in fixture.project.rglob("*")
+            if path.is_file()
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch("tempfile.tempdir", temporary):
+                result = self.integration(fixture, "HEAD")
+            self.assertEqual([], list(Path(temporary).iterdir()))
+        self.assert_rejection(result, "PROJECT_GIT_CHECKOUT_UNAVAILABLE", "correct-input")
+        self.assertIn({"field": "project_root", "value": str(fixture.project)}, self.json_array(result["observed"]))
+        diagnostic = str(result["message"])
+        self.assertIn("failed to read tracked.txt", diagnostic)
+        self.assertIn("tracked.txt: patch does not apply", diagnostic)
+        self.assertIn({"field": "diagnostic", "value": diagnostic}, self.json_array(result["observed"]))
+        self.assertIn("Correct the named Git checkout", str(result["recovery"]))
+        after = {
+            str(path.relative_to(fixture.project)): path.read_bytes()
+            for path in fixture.project.rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(before, after)
+
+    def test_later_binary_edit_remains_an_ordinary_content_mismatch(self) -> None:
+        fixture = self.fixture("current-head", complex_diff=True)
+        (fixture.project / "binary.bin").write_bytes(bytes(reversed(range(256))))
+        self.commit_all(fixture.project, "later overlapping binary edit")
+        self.assert_presence(fixture, "HEAD", "content-not-present")
+
+    def test_later_content_and_mode_edit_remains_an_ordinary_content_mismatch(self) -> None:
+        fixture = self.fixture("current-head")
+        tracked = fixture.project / "tracked.txt"
+        tracked.chmod(0o755)
+        tracked.write_text("later overlapping content\n", encoding="utf-8")
+        self.commit_all(fixture.project, "later content and mode edit")
+        self.assert_presence(fixture, "HEAD", "content-not-present")
+
     def test_checkpoint_remains_source_after_resume_rebind_and_return_until_submission(self) -> None:
         fixture = self.fixture()
         accepted = self.transition(

@@ -1,5 +1,6 @@
 import fcntl
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,7 +85,7 @@ def read_target_content(cwd: Path, target: str, diff: bytes) -> TargetContentObs
         return TargetContentObservation(revision, IntegrationPresence.NO_CHANGE)
     try:
         with TemporaryDirectory(prefix="pinboard-integration-") as temporary:
-            environment = {**os.environ, "GIT_INDEX_FILE": str(Path(temporary) / "index")}
+            environment = {**os.environ, "GIT_INDEX_FILE": str(Path(temporary) / "index"), "LC_ALL": "C"}
             tree = subprocess.run(
                 ["git", "-c", "core.splitIndex=false", "read-tree", revision],
                 cwd=cwd,
@@ -120,10 +121,11 @@ def read_target_content(cwd: Path, target: str, diff: bytes) -> TargetContentObs
                 capture_output=True,
                 check=False,
             )
-            if applied.returncode not in (0, 1):
+            diagnostic = applied.stderr.decode(errors="replace").strip()
+            if applied.returncode != 0 and not (applied.returncode == 1 and _ordinary_content_mismatch(diagnostic)):
                 raise RootError(
                     RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
-                    applied.stderr.decode(errors="replace").strip() or "Cannot compare the target content.",
+                    diagnostic or "Cannot compare the target content.",
                 )
             presence = (
                 IntegrationPresence.CONTENT_PRESENT
@@ -133,6 +135,23 @@ def read_target_content(cwd: Path, target: str, diff: bytes) -> TargetContentObs
             return TargetContentObservation(revision, presence)
     except OSError as error:
         raise RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, str(error)) from error
+
+
+def _ordinary_content_mismatch(diagnostic: str) -> bool:
+    """Recognize only mismatch diagnostics; mixed or unknown failures retain Git's error."""
+
+    lines = diagnostic.splitlines()
+    return any(line.startswith("error:") for line in lines) and all(
+        re.fullmatch(
+            r"error: (?:patch failed: .+:[0-9]+|.+: (?:patch does not apply|does not exist in index|"
+            r"already exists in index|binary patch does not apply)|the patch applies to '.+' "
+            r"\([0-9a-f]+\), which does not match the current contents\.)|"
+            r"warning: .+ has type [0-7]{6}, expected [0-7]{6}",
+            line,
+        )
+        is not None
+        for line in lines
+    )
 
 
 class CandidateRestoreAfterMutationError(RootError):

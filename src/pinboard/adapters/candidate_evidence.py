@@ -4,13 +4,25 @@ Restoration can change the source checkout, never the ledger or authority.
 Post-mutation verification failures retain that actual effect and forbid replay.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
+
+import msgspec
 
 from pinboard.adapters.files import candidate_compatibility, root
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.files.errors import ArtifactError, RootError
-from pinboard.application import candidate_snapshot_compatibility_models, candidate_snapshots, ports, query_models
+from pinboard.application import (
+    candidate_snapshot_compatibility_models,
+    candidate_snapshots,
+    checkpoint_compatibility_models,
+    checkpoint_packages,
+    ports,
+    query_models,
+    work_brief_models,
+)
+from pinboard.domain import work_models
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
@@ -23,6 +35,173 @@ from pinboard.domain.errors import (
     RetryDisposition,
 )
 from pinboard.domain.identifiers import AttemptId
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateIntegrationRead:
+    candidate_revision: str
+    compared_from_revision: str
+    target_observation: root.IntegrationTargetObservation
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateIntegrationUnavailable:
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateIntegrationInvalid:
+    accepted_reference: str
+    defect: str
+
+
+type CandidateIntegrationResult = (
+    CandidateIntegrationRead | CandidateIntegrationUnavailable | CandidateIntegrationInvalid
+)
+
+
+def read_item_candidate_integration(
+    source_checkout: Path,
+    work_root: Path,
+    store: ports.WorkStore,
+    selected: query_models.IntegrationCandidate,
+    target: str,
+) -> CandidateIntegrationResult:
+    """Verify the selected immutable snapshot, then compare its diff with one local target tree."""
+
+    match selected:
+        case query_models.ProtectedReviewIntegrationCandidate(snapshot=context):
+            candidate = context.candidate_revision
+            context_result = context
+            checkpoint_snapshot = None
+        case query_models.CompletionIntegrationCandidate(candidate_revision=candidate, snapshot=context):
+            context_result = context
+            checkpoint_snapshot = None
+        case query_models.AcceptedCheckpointIntegrationCandidate() as checkpoint:
+            checkpoint_evidence = _read_checkpoint_candidate_snapshot(work_root, store, checkpoint)
+            if isinstance(checkpoint_evidence, CandidateIntegrationUnavailable | CandidateIntegrationInvalid):
+                return checkpoint_evidence
+            checkpoint_snapshot, candidate = checkpoint_evidence
+            context_result = None
+        case _ as unreachable:
+            assert_never(unreachable)
+
+    if candidate is None:
+        assert context_result is not None
+        return CandidateIntegrationInvalid(
+            context_result.reference.selector,
+            "The selected lifecycle source has no candidate revision.",
+        )
+    if checkpoint_snapshot is not None:
+        snapshot = checkpoint_snapshot
+    else:
+        assert context_result is not None
+        try:
+            encoded = read_reference(work_root, context_result.reference)
+            evidence = candidate_snapshots.verify_candidate_snapshot_context(context_result, candidate, encoded)
+        except (ArtifactError, ValueError, msgspec.DecodeError) as error:
+            return CandidateIntegrationInvalid(context_result.reference.selector, str(error))
+        snapshot = evidence.snapshot
+    compared_from_revision = _candidate_compared_from(snapshot)
+    observation = root.read_candidate_integration(source_checkout, target, snapshot.diff)
+    return CandidateIntegrationRead(snapshot.candidate, compared_from_revision, observation)
+
+
+def _read_checkpoint_candidate_snapshot(
+    work_root: Path,
+    store: ports.WorkStore,
+    checkpoint: query_models.AcceptedCheckpointIntegrationCandidate,
+) -> tuple[candidate_snapshots.CandidateSnapshot, str] | CandidateIntegrationUnavailable | CandidateIntegrationInvalid:
+    try:
+        package_bytes = read_reference(work_root, checkpoint.package_reference)
+    except (ArtifactError, ValueError) as error:
+        return CandidateIntegrationInvalid(
+            checkpoint.package_reference.selector,
+            f"The accepted checkpoint package bytes cannot be verified: {error}",
+        )
+    package = checkpoint_packages.validate_selected_checkpoint_review_package(
+        checkpoint.receipt,
+        checkpoint.package_reference,
+        package_bytes,
+        attempt_id=str(checkpoint.attempt_id),
+        item_id=str(checkpoint.work_item_id),
+    )
+    if isinstance(package, work_brief_models.WorkBriefFailure):
+        return CandidateIntegrationInvalid(checkpoint.package_reference.selector, package.message)
+    match package:
+        case (
+            work_brief_models.CheckpointReviewPackageV3() | checkpoint_compatibility_models.CheckpointReviewPackageV2()
+        ):
+            snapshot_identity = package.candidate_snapshot
+            candidate = package.candidate
+        case checkpoint_compatibility_models.CheckpointReviewPackage():
+            return CandidateIntegrationUnavailable(
+                "the accepted checkpoint package predates candidate snapshot references"
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    reference = store.read_artifact_reference(
+        work_models.ArtifactKind.EVIDENCE,
+        snapshot_identity.key,
+        snapshot_identity.revision,
+    )
+    if reference is None:
+        return CandidateIntegrationInvalid(
+            snapshot_identity.selector,
+            "The package candidate snapshot reference is missing from the artifact ledger.",
+        )
+    package_identity = (
+        snapshot_identity.role,
+        snapshot_identity.kind,
+        snapshot_identity.key,
+        snapshot_identity.revision,
+        snapshot_identity.selector,
+        snapshot_identity.content_sha256,
+        snapshot_identity.size_bytes,
+    )
+    stored_identity = (
+        "candidate",
+        reference.kind.value,
+        reference.key,
+        reference.revision,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+    )
+    if package_identity != stored_identity:
+        return CandidateIntegrationInvalid(
+            snapshot_identity.selector,
+            "The package candidate snapshot identity differs from its accepted artifact reference.",
+        )
+    try:
+        encoded_snapshot = read_reference(work_root, reference)
+        snapshot = candidate_snapshots.decode_candidate_snapshot(encoded_snapshot)
+    except (ArtifactError, ValueError, msgspec.DecodeError) as error:
+        return CandidateIntegrationInvalid(snapshot_identity.selector, str(error))
+    if (
+        snapshot.attempt_id != str(checkpoint.attempt_id)
+        or snapshot.item_id != str(checkpoint.work_item_id)
+        or snapshot.candidate != candidate
+    ):
+        return CandidateIntegrationInvalid(
+            snapshot_identity.selector,
+            "The accepted checkpoint snapshot does not match its attempt, item, and candidate.",
+        )
+    return snapshot, candidate
+
+
+def _candidate_compared_from(snapshot: candidate_snapshots.CandidateSnapshot) -> str:
+    match snapshot:
+        case (
+            candidate_snapshots.WorkingTreeCandidateSnapshot()
+            | candidate_snapshots.DeclaredWorkingTreeCandidateSnapshot()
+            | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot()
+        ):
+            return snapshot.preimage_revision
+        case candidate_snapshots.CommitCandidateSnapshot() | candidate_snapshots.DeclaredCommitCandidateSnapshot():
+            return snapshot.accepted_base_revision
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def read_candidate_evidence(

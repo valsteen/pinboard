@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import sqlite3
 import subprocess
 import tempfile
@@ -92,6 +93,9 @@ class CheckpointPackageSupport(unittest.TestCase):
 
     def commit_all(self, project: Path, message: str) -> str:
         subprocess.run(["git", "add", "--all"], cwd=project, check=True, capture_output=True)
+        environment = os.environ.copy()
+        environment["GIT_AUTHOR_DATE"] = "2001-02-03T04:05:06+00:00"
+        environment["GIT_COMMITTER_DATE"] = "2001-02-03T04:05:06+00:00"
         subprocess.run(
             [
                 "git",
@@ -104,6 +108,7 @@ class CheckpointPackageSupport(unittest.TestCase):
                 message,
             ],
             cwd=project,
+            env=environment,
             check=True,
             capture_output=True,
         )
@@ -423,18 +428,20 @@ class CheckpointPackageSupport(unittest.TestCase):
         accepted_base: str | None = None,
         committed_context: bool = False,
         review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner"] = "ready",
+        native_submission: bool = False,
+        candidate_context: bool = False,
     ) -> CheckpointFixture:
         state = complete_sqlite_state()
-        now = datetime.now(UTC)
-        state = replace(
-            state,
-            lifecycle=replace(
-                state.lifecycle,
+        now = SQLITE_NOW if native_submission else datetime.now(UTC)
+        lifecycle = state.lifecycle
+        if not native_submission:
+            lifecycle = replace(
+                lifecycle,
                 work_items=tuple(
                     replace(value, state=stored_state.StoredWorkItemState.REVIEW)
                     if value.item_id == WorkItemId("work-a")
                     else value
-                    for value in state.lifecycle.work_items
+                    for value in lifecycle.work_items
                 ),
                 attempts=tuple(
                     replace(
@@ -445,7 +452,18 @@ class CheckpointPackageSupport(unittest.TestCase):
                     )
                     if value.attempt_id == AttemptId("work-a-1")
                     else value
-                    for value in state.lifecycle.attempts
+                    for value in lifecycle.attempts
+                ),
+            )
+        state = replace(
+            state,
+            lifecycle=replace(
+                lifecycle,
+                attempts=tuple(
+                    replace(value, base_revision="base-revision")
+                    if value.attempt_id == AttemptId("work-a-1")
+                    else value
+                    for value in lifecycle.attempts
                 ),
             ),
             artifact_references=(state.artifact_references[0],),
@@ -462,13 +480,19 @@ class CheckpointPackageSupport(unittest.TestCase):
         subprocess.run(["git", "init", "-b", "codex/work-a"], cwd=project, check=True, capture_output=True)
         (project / ".git" / "info" / "exclude").write_text("/.pinboard/\n", encoding="utf-8")
         tracked = project / "tracked.txt"
-        tracked.write_text("base\n", encoding="utf-8")
+        base_lines = [f"line {index}" for index in range(21)] if candidate_context else ["base"]
+        if candidate_context:
+            base_lines[10] = "reviewed base"
+        tracked.write_text("\n".join(base_lines) + "\n", encoding="utf-8")
         base_revision = self.commit_all(project, "base")
+        subprocess.run(["git", "branch", "main", base_revision], cwd=project, check=True, capture_output=True)
         preimage_revision = base_revision
         if committed_context:
             (project / "context.txt").write_text("committed surrounding state\n", encoding="utf-8")
             preimage_revision = self.commit_all(project, "context")
-        tracked.write_text("candidate\n", encoding="utf-8")
+        candidate_lines = list(base_lines)
+        candidate_lines[10 if candidate_context else 0] = "reviewed candidate" if candidate_context else "candidate"
+        tracked.write_text("\n".join(candidate_lines) + "\n", encoding="utf-8")
         if candidate_form == "current-head":
             candidate_revision = self.commit_all(project, "candidate")
             candidate_diff = subprocess.run(
@@ -491,7 +515,12 @@ class CheckpointPackageSupport(unittest.TestCase):
             lifecycle=replace(
                 state.lifecycle,
                 attempts=tuple(
-                    replace(value, candidate_revision=candidate_revision, base_revision=brief_base_revision)
+                    replace(
+                        value,
+                        candidate_revision=None if native_submission else candidate_revision,
+                        candidate_recorded_at=None if native_submission else now,
+                        base_revision=brief_base_revision,
+                    )
                     if value.attempt_id == AttemptId("work-a-1")
                     else value
                     for value in state.lifecycle.attempts
@@ -522,17 +551,18 @@ class CheckpointPackageSupport(unittest.TestCase):
         store = SQLiteWorkStore(roots.database_path)
         initialize_store(store, replace(state, artifact_references=(brief_reference,)))
         attempt = next(value for value in state.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
-        self.accept_candidate_snapshot(
-            roots,
-            store,
-            attempt,
-            candidate_form,
-            candidate_revision,
-            candidate_diff,
-            preimage_revision if candidate_form == "working-tree" else brief_base_revision,
-            brief_base_revision,
-            now,
-        )
+        if not native_submission:
+            self.accept_candidate_snapshot(
+                roots,
+                store,
+                attempt,
+                candidate_form,
+                candidate_revision,
+                candidate_diff,
+                preimage_revision if candidate_form == "working-tree" else brief_base_revision,
+                brief_base_revision,
+                now,
+            )
         if not local and review_condition != "missing":
             checkpoint = brief.checkpoint
             assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)

@@ -13,10 +13,14 @@ from unittest.mock import patch
 
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
+    CandidateContentObservation,
+    CandidateContentPresence,
     CurrentHeadCandidate,
+    UnresolvedIntegrationTarget,
     classify_checkout,
     ensure_default_git_exclude,
     observe_checkout_identity,
+    read_candidate_integration,
     read_current_head_candidate,
     resolve_shared_repository_root,
     resolve_source_checkout_root,
@@ -43,6 +47,113 @@ class RootResolutionTest(unittest.TestCase):
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             result = main(arguments)
         return result, stdout.getvalue(), stderr.getvalue()
+
+    def commit_fixed_date(self, cwd: Path, message: str) -> str:
+        environment = os.environ.copy()
+        environment["GIT_AUTHOR_DATE"] = "2001-02-03T04:05:06+00:00"
+        environment["GIT_COMMITTER_DATE"] = "2001-02-03T04:05:06+00:00"
+        subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message],
+            cwd=cwd,
+            env=environment,
+            check=True,
+            capture_output=True,
+        )
+        return self.run_git(cwd, "rev-parse", "HEAD").strip()
+
+    def test_candidate_integration_uses_only_a_private_index_and_leaves_git_read_only(self) -> None:  # noqa: PLR0915 - verify every protected Git surface and cleanup
+        project = Path(tempfile.mkdtemp()).resolve()
+        self.run_git(project, "init", "-b", "main")
+        self.run_git(project, "config", "apply.whitespace", "error")
+        tracked = project / "tracked.txt"
+        tracked.write_text("base\n", encoding="utf-8")
+        self.run_git(project, "add", "tracked.txt")
+        base = self.commit_fixed_date(project, "base")
+        tracked.write_text("candidate  \n", encoding="utf-8")
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD", "--"], cwd=project, check=True, capture_output=True
+        ).stdout
+        self.run_git(project, "add", "tracked.txt")
+        candidate = self.commit_fixed_date(project, "candidate")
+        self.run_git(project, "branch", "base", base)
+        self.run_git(project, "update-ref", "refs/remotes/origin/main", candidate)
+        work_root = project / ".pinboard"
+        work_root.mkdir()
+        sentinel = work_root / "sentinel.txt"
+        sentinel.write_text("work root stays unchanged\n", encoding="utf-8")
+        git_directory = project / ".git"
+
+        def contents(directory: Path) -> dict[str, bytes]:
+            return {
+                path.relative_to(directory).as_posix(): path.read_bytes()
+                for path in directory.rglob("*")
+                if path.is_file()
+            }
+
+        before_git = contents(git_directory)
+        before_worktree = contents(project)
+        before_status = self.run_git(project, "status", "--porcelain=v1", "--untracked-files=all")
+        before_objects = self.run_git(project, "count-objects", "-v")
+        index = git_directory / "index"
+        real_index = index.read_bytes()
+        temporary_directories: list[Path] = []
+        original_temporary_directory = tempfile.TemporaryDirectory
+
+        def track_temporary_directory(prefix: str | None = None) -> tempfile.TemporaryDirectory[str]:
+            directory = original_temporary_directory(prefix=prefix)
+            temporary_directories.append(Path(directory.name))
+            return directory
+
+        def path_depth(path: Path) -> int:
+            return len(path.parts)
+
+        readonly_paths: tuple[Path, ...] = tuple(git_directory.rglob("*"))
+        readonly_paths = tuple(sorted(readonly_paths, key=path_depth, reverse=True))
+        for path in readonly_paths:
+            path.chmod(0o555 if path.is_dir() else 0o444)
+        git_directory.chmod(0o555)
+        try:
+            with patch("pinboard.adapters.files.root.tempfile.TemporaryDirectory", track_temporary_directory):
+                present = read_candidate_integration(project, "main", diff)
+                self.assertIsInstance(present, CandidateContentObservation)
+                assert isinstance(present, CandidateContentObservation)
+                self.assertEqual(
+                    (candidate, CandidateContentPresence.PRESENT), (present.target_revision, present.presence)
+                )
+                absent = read_candidate_integration(project, "base", diff)
+                self.assertIsInstance(absent, CandidateContentObservation)
+                assert isinstance(absent, CandidateContentObservation)
+                self.assertEqual(
+                    (base, CandidateContentPresence.NOT_PRESENT), (absent.target_revision, absent.presence)
+                )
+                remote_tracking = read_candidate_integration(project, "origin/main", diff)
+                self.assertIsInstance(remote_tracking, CandidateContentObservation)
+                assert isinstance(remote_tracking, CandidateContentObservation)
+                self.assertEqual(
+                    (candidate, CandidateContentPresence.PRESENT),
+                    (remote_tracking.target_revision, remote_tracking.presence),
+                )
+                no_change = read_candidate_integration(project, "main", b"")
+                self.assertIsInstance(no_change, CandidateContentObservation)
+                assert isinstance(no_change, CandidateContentObservation)
+                self.assertEqual(
+                    (candidate, CandidateContentPresence.NO_CHANGE), (no_change.target_revision, no_change.presence)
+                )
+                unresolved = read_candidate_integration(project, "missing-target", diff)
+                self.assertEqual(UnresolvedIntegrationTarget("missing-target"), unresolved)
+        finally:
+            git_directory.chmod(0o755)
+            for path in readonly_paths:
+                path.chmod(0o755 if path.is_dir() else 0o644)
+
+        self.assertTrue(temporary_directories)
+        self.assertTrue(all(not path.exists() for path in temporary_directories))
+        self.assertEqual(before_git, contents(git_directory))
+        self.assertEqual(before_worktree, contents(project))
+        self.assertEqual(real_index, index.read_bytes())
+        self.assertEqual(before_status, self.run_git(project, "status", "--porcelain=v1", "--untracked-files=all"))
+        self.assertEqual(before_objects, self.run_git(project, "count-objects", "-v"))
+        self.assertEqual("work root stays unchanged\n", sentinel.read_text(encoding="utf-8"))
 
     def test_linked_worktree_owns_sources_while_the_repository_owns_the_default_ledger(self) -> None:
         temporary = Path(tempfile.mkdtemp())

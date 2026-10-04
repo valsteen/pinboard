@@ -487,11 +487,25 @@ class ContributorTraceTest(unittest.TestCase):
                 '[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = off\n[item "work-a"]\n\tmode = on\n',
                 encoding="utf-8",
             )
-            capture = execution.AutomaticCapture(common.select_capture_item).resolve(
+            automatic_capture = execution.AutomaticCapture(common.select_capture_item)
+            capture = automatic_capture.resolve(
                 str(worktree),
                 {"request": {"project_root": str(worktree), "work_root": str(work_root), "attempt_id": "work-a-1"}},
             )
             self.assertIsNotNone(capture)
+            integration_capture = automatic_capture.resolve(
+                str(worktree),
+                {
+                    "request": {
+                        "project_root": str(worktree),
+                        "work_root": str(work_root),
+                        "operation": "integration",
+                        "item_id": "work-a",
+                        "target": "main",
+                    }
+                },
+            )
+            self.assertIsNotNone(integration_capture)
 
     def test_existing_shared_work_root_needs_no_parent_write_for_mcp_capture(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

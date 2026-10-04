@@ -75,6 +75,10 @@ from pinboard.mcp.contracts import (
     DispatchReady,
     DispatchRejected,
     ExecutorBusyResult,
+    IntegrationCandidateEvidenceInvalid,
+    IntegrationCandidateUnavailable,
+    IntegrationGitReadFailed,
+    IntegrationTargetUnresolved,
     ItemDefinitionRejected,
     ItemStatusInconsistent,
     ItemStatusInvalid,
@@ -883,6 +887,8 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         msgspec.convert(content, type=query_models.ItemStatus, strict=True)
     elif schema == "pinboard-branch-owners/v1" and tool_name == "pinboard_item_status":
         msgspec.convert(content, type=query_models.BranchOwners, strict=True)
+    elif schema == "pinboard-item-integration/v1" and tool_name == "pinboard_item_status":
+        msgspec.convert(content, type=query_models.ItemIntegration, strict=True)
     elif tool_name == "pinboard_item_status" and code == "ITEM_STATUS_INVALID":
         msgspec.convert(content, type=ItemStatusInvalid, strict=True)
     elif tool_name == "pinboard_item_status" and code in {"ITEM_NOT_FOUND", "ITEM_DEFINITION_INVALID"}:
@@ -891,6 +897,19 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         msgspec.convert(content, type=BranchOwnerNotFound, strict=True)
     elif tool_name == "pinboard_item_status" and code == "TRANSITION_RECEIPT_DAMAGED":
         msgspec.convert(content, type=ItemStatusReceiptDamaged, strict=True)
+    elif tool_name == "pinboard_item_status" and code == "INTEGRATION_TARGET_UNRESOLVED":
+        msgspec.convert(content, type=IntegrationTargetUnresolved, strict=True)
+    elif tool_name == "pinboard_item_status" and code == "INTEGRATION_CANDIDATE_UNAVAILABLE":
+        msgspec.convert(content, type=IntegrationCandidateUnavailable, strict=True)
+    elif tool_name == "pinboard_item_status" and code == "INTEGRATION_CANDIDATE_EVIDENCE_INVALID":
+        msgspec.convert(content, type=IntegrationCandidateEvidenceInvalid, strict=True)
+    elif tool_name == "pinboard_item_status" and code in {
+        "PROJECT_GIT_CHECKOUT_UNAVAILABLE",
+        "PROJECT_GIT_EXCLUDE_UNAVAILABLE",
+        "PROJECT_GIT_LAYOUT_UNSUPPORTED",
+        "PROJECT_GIT_ROOT_UNAVAILABLE",
+    }:
+        msgspec.convert(content, type=IntegrationGitReadFailed, strict=True)
     elif tool_name == "pinboard_item_status":
         msgspec.convert(content, type=ItemStatusInconsistent, strict=True)
     elif tool_name == "pinboard_proposal_create" and status == "committed":

@@ -1,6 +1,9 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import BinaryIO
 
@@ -36,6 +39,26 @@ class DirtyHeadCandidate:
 
 
 type CommittedCandidateObservation = CurrentHeadCandidate | DifferentHeadCandidate | DirtyHeadCandidate
+
+
+class CandidateContentPresence(Enum):
+    PRESENT = "content-present"
+    NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateContentObservation:
+    target_revision: str
+    presence: CandidateContentPresence
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedIntegrationTarget:
+    target: str
+
+
+type IntegrationTargetObservation = CandidateContentObservation | UnresolvedIntegrationTarget
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,11 +159,90 @@ def _git_text(cwd: Path, *arguments: str) -> str:
     )
     value = result.stdout.strip()
     if result.returncode != 0 or not value:
+        if result.returncode == 1 and arguments[:3] == ("rev-parse", "--verify", "--quiet"):
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_TARGET_UNRESOLVED,
+                "The requested Git revision does not resolve to a commit.",
+            )
         raise RootError(
             RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
             result.stderr.strip() or f"Cannot observe Git checkout at '{cwd}'.",
         )
     return value
+
+
+def read_candidate_integration(cwd: Path, target: str, diff: bytes) -> IntegrationTargetObservation:
+    """Compare one accepted binary diff with a caller-named local commit without repository writes."""
+
+    try:
+        target_revision = _git_text(
+            cwd,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            f"{target}^{{commit}}",
+        )
+    except RootError as error:
+        if error.code == RootErrorCode.PROJECT_GIT_TARGET_UNRESOLVED:
+            return UnresolvedIntegrationTarget(target)
+        raise
+
+    if not diff:
+        return CandidateContentObservation(target_revision, CandidateContentPresence.NO_CHANGE)
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as directory:
+            environment = os.environ.copy()
+            environment["GIT_INDEX_FILE"] = str(Path(directory) / "index")
+            environment["GIT_OPTIONAL_LOCKS"] = "0"
+            read_tree = subprocess.run(
+                ["git", "-c", "core.splitIndex=false", "read-tree", target_revision],
+                cwd=cwd,
+                env=environment,
+                capture_output=True,
+                check=False,
+            )
+            if read_tree.returncode != 0:
+                raise RootError(
+                    RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                    read_tree.stderr.decode(errors="replace").strip()
+                    or f"Cannot read target tree '{target_revision}' at '{cwd}'.",
+                )
+            reverse_apply = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "core.splitIndex=false",
+                    "apply",
+                    "--cached",
+                    "--check",
+                    "--reverse",
+                    "--ignore-whitespace",
+                    "--whitespace=nowarn",
+                    "-",
+                ],
+                cwd=cwd,
+                env=environment,
+                input=diff,
+                capture_output=True,
+                check=False,
+            )
+    except OSError as error:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            f"Cannot create or use a temporary Git index for '{cwd}': {error}",
+        ) from error
+
+    if reverse_apply.returncode == 0:
+        return CandidateContentObservation(target_revision, CandidateContentPresence.PRESENT)
+    if reverse_apply.returncode == 1:
+        return CandidateContentObservation(target_revision, CandidateContentPresence.NOT_PRESENT)
+    raise RootError(
+        RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+        reverse_apply.stderr.decode(errors="replace").strip()
+        or f"Cannot compare candidate content with target '{target_revision}'.",
+    )
 
 
 def _git_bytes(cwd: Path, *arguments: str, unavailable_message: str) -> bytes:

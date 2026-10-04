@@ -166,6 +166,19 @@ def _consumed_receipt(row: sqlite3.Row) -> query_models.ConsumedTransitionReceip
     )
 
 
+def read_consumed_transition_receipt(
+    connection: sqlite3.Connection,
+    history_id: HistoryId,
+) -> query_models.ConsumedTransitionReceipt | None:
+    """Read one selected receipt with its stored JSON text still available for diagnosis."""
+
+    row = connection.execute(
+        f"SELECT {_CONSUMED_RECEIPT_COLUMNS} FROM transition_history WHERE history_id = ?",
+        (history_id,),
+    ).fetchone()
+    return None if row is None else _consumed_receipt(row)
+
+
 class _ItemStatusAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: AttemptId
     state: work_models.AttemptState

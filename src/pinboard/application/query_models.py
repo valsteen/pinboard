@@ -681,6 +681,7 @@ type DamagedReceiptActionKind = Literal[
     decision_models.ActionKind.RETURN_FOR_CORRECTION,
     decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE,
     decision_models.ActionKind.ACCEPT_CHECKPOINT,
+    decision_models.ActionKind.COMPLETE,
 ]
 
 
@@ -798,6 +799,120 @@ class ItemStatusFacts:
     attempts: tuple[ItemStatusAttemptFacts, ...]
     closure: ItemClosureFacts | None
     preparation: PreparationAuthorityStatus | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationAttemptFacts:
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    branch: str
+    base_revision: str
+    candidate_revision: str | None
+    candidate_recorded_at: datetime | None
+    subject_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCheckpointFacts:
+    receipt: ConsumedTransitionReceipt
+    package_reference: stored_state.ArtifactReference | None
+    item_state: stored_state.StoredWorkItemState
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationFacts:
+    project_revision: int
+    work_item: ItemStatusItemFacts
+    current_attempt: IntegrationAttemptFacts | None
+    protected_candidate: CandidateSnapshotContextFacts | None
+    latest_checkpoint: IntegrationCheckpointFacts | None
+    closure_receipt: ConsumedTransitionReceipt | None
+    closing_attempt: IntegrationAttemptFacts | None
+    completion_candidate: CandidateSnapshotContextFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedReviewIntegrationCandidate:
+    snapshot: CandidateSnapshotContextFacts
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedCheckpointIntegrationCandidate:
+    attempt_id: AttemptId
+    work_item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
+    checkpoint_id: str
+    candidate_revision: str
+    receipt: ConsumedTransitionReceipt
+    package_reference: stored_state.ArtifactReference
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionIntegrationCandidate:
+    attempt_id: AttemptId
+    work_item_id: WorkItemId
+    candidate_revision: str
+    receipt: ConsumedTransitionReceipt
+    snapshot: CandidateSnapshotContextFacts
+
+
+type IntegrationCandidate = (
+    ProtectedReviewIntegrationCandidate | AcceptedCheckpointIntegrationCandidate | CompletionIntegrationCandidate
+)
+
+
+class IntegrationPresence(Enum):
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+type GitRevision = Annotated[str, msgspec.Meta(pattern=r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z")]
+type CandidateRevision = Annotated[
+    str,
+    msgspec.Meta(
+        pattern=r"\A(?:(?:[0-9a-f]{40}|[0-9a-f]{64})|working-tree-state-sha256:[0-9a-f]{64}|working-tree-sha256:[0-9a-f]{64})\z"
+    ),
+]
+
+
+class ProtectedReviewIntegrationSource(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: CandidateRevision
+    compared_from_revision: GitRevision
+
+
+class AcceptedCheckpointIntegrationSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: CandidateRevision
+    compared_from_revision: GitRevision
+    checkpoint_id: str
+
+
+class CompletionIntegrationSource(
+    msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: CandidateRevision
+    compared_from_revision: GitRevision
+
+
+type ItemIntegrationSource = (
+    ProtectedReviewIntegrationSource | AcceptedCheckpointIntegrationSource | CompletionIntegrationSource
+)
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-item-integration/v1"]
+    item_id: str
+    target: str
+    target_revision: GitRevision
+    source: ItemIntegrationSource
+    presence: IntegrationPresence
 
 
 @dataclass(frozen=True, slots=True)

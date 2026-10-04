@@ -133,6 +133,7 @@ def damaged_receipt_diagnosis(
             decision_models.ActionKind.RETURN_FOR_CORRECTION
             | decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
             | decision_models.ActionKind.ACCEPT_CHECKPOINT
+            | decision_models.ActionKind.COMPLETE
         ):
             return query_models.DamagedReceiptDiagnosis.HUMAN
         case _ as unreachable:
@@ -1179,6 +1180,259 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
             )
             for owner in facts.owners
         ),
+    )
+
+
+def integration_candidate_unavailable(
+    item_id: WorkItemId,
+    item_state: stored_state.StoredWorkItemState,
+    reason: str,
+) -> DecisionFailure:
+    return DecisionFailure(
+        DecisionFailureCode.INTEGRATION_CANDIDATE_UNAVAILABLE,
+        f"Item '{item_id}' in state '{item_state.value}' has no reviewed candidate with accepted snapshot bytes: {reason}.",
+        FailureDetails(
+            observed=(
+                FailureFact("item_id", str(item_id)),
+                FailureFact("item_state", item_state.value),
+                FailureFact("reason", reason),
+            ),
+            mismatches=(),
+            retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def integration_candidate_evidence_invalid(
+    attempt_id: AttemptId,
+    accepted_reference: str,
+    defect: str,
+) -> DecisionFailure:
+    return DecisionFailure(
+        DecisionFailureCode.INTEGRATION_CANDIDATE_EVIDENCE_INVALID,
+        f"Accepted candidate evidence for attempt '{attempt_id}' at '{accepted_reference}' is invalid: {defect}",
+        FailureDetails(
+            observed=(
+                FailureFact("attempt_id", str(attempt_id)),
+                FailureFact("accepted_reference", accepted_reference),
+            ),
+            mismatches=(FailureMismatch("candidate_evidence", "verified accepted snapshot bytes", defect),),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def _damaged_integration_receipt(
+    attempt_id: AttemptId,
+    receipt: query_models.ConsumedTransitionReceipt,
+    action_kind: query_models.DamagedReceiptActionKind,
+    defect: str,
+) -> query_models.DamagedTransitionReceipt:
+    return query_models.DamagedTransitionReceipt(
+        attempt_id,
+        receipt.history_id,
+        receipt.committed_at,
+        action_kind,
+        defect,
+    )
+
+
+def _accepted_checkpoint_integration_candidate(
+    item_id: WorkItemId,
+    facts: query_models.IntegrationCheckpointFacts,
+    attempt_id: AttemptId,
+) -> DecisionResult[query_models.AcceptedCheckpointIntegrationCandidate] | query_models.DamagedTransitionReceipt:
+    receipt = facts.receipt
+    try:
+        outcome = msgspec.json.decode(
+            receipt.outcome_json.encode("utf-8"), type=history.CheckpointAcceptanceOutcome, strict=True
+        )
+    except msgspec.DecodeError as error:
+        return _damaged_integration_receipt(
+            attempt_id,
+            receipt,
+            decision_models.ActionKind.ACCEPT_CHECKPOINT,
+            f"The outcome does not decode as checkpoint-acceptance/v2: {error}",
+        )
+    if (
+        msgspec.json.encode(outcome, order="sorted") != receipt.outcome_json.encode("utf-8")
+        or receipt.outcome_schema != "checkpoint-acceptance/v2"
+        or receipt.action_kind != decision_models.ActionKind.ACCEPT_CHECKPOINT
+        or receipt.authorization != decision_models.AuthorizationKind.PROJECT
+        or str(receipt.action_id) != f"accept-checkpoint:{attempt_id}"
+        or str(receipt.subject_id) != str(attempt_id)
+        or outcome.outcome != decision_models.ActionKind.ACCEPT_CHECKPOINT.value
+    ):
+        return _damaged_integration_receipt(
+            attempt_id,
+            receipt,
+            decision_models.ActionKind.ACCEPT_CHECKPOINT,
+            "The receipt is not a canonical checkpoint acceptance for this attempt.",
+        )
+    package_reference = facts.package_reference
+    if package_reference is None or receipt.artifact_ref_id != package_reference.artifact_ref_id:
+        return integration_candidate_evidence_invalid(
+            attempt_id,
+            f"checkpoint receipt {int(receipt.history_id)} package reference",
+            "The accepted checkpoint package reference is missing or does not match its receipt.",
+        )
+    return query_models.AcceptedCheckpointIntegrationCandidate(
+        attempt_id,
+        item_id,
+        facts.item_state,
+        outcome.checkpoint,
+        outcome.candidate,
+        receipt,
+        package_reference,
+    )
+
+
+def _completion_candidate_revision(
+    item_id: WorkItemId,
+    receipt: query_models.ConsumedTransitionReceipt,
+    attempt_id: AttemptId,
+) -> str | query_models.DamagedTransitionReceipt:
+    if receipt.outcome_schema == "completion-acceptance/v2":
+        try:
+            outcome = msgspec.json.decode(
+                receipt.outcome_json.encode("utf-8"), type=history.CompletionAcceptanceOutcome, strict=True
+            )
+        except msgspec.DecodeError as error:
+            return _damaged_integration_receipt(
+                attempt_id,
+                receipt,
+                decision_models.ActionKind.COMPLETE,
+                f"The outcome does not decode as completion-acceptance/v2: {error}",
+            )
+        if msgspec.json.encode(outcome, order="sorted") != receipt.outcome_json.encode("utf-8"):
+            return _damaged_integration_receipt(
+                attempt_id,
+                receipt,
+                decision_models.ActionKind.COMPLETE,
+                "The completion outcome is not canonical.",
+            )
+        candidate_revision = outcome.candidate
+        completed = outcome.outcome == "complete"
+    elif receipt.outcome_schema == "transition-receipt/v1":
+        try:
+            outcome = msgspec.json.decode(
+                receipt.outcome_json.encode("utf-8"), type=history.TransitionReceiptOutcome, strict=True
+            )
+        except msgspec.DecodeError as error:
+            return _damaged_integration_receipt(
+                attempt_id,
+                receipt,
+                decision_models.ActionKind.COMPLETE,
+                f"The outcome does not decode as transition-receipt/v1: {error}",
+            )
+        if msgspec.json.encode(outcome, order="sorted") != receipt.outcome_json.encode("utf-8"):
+            return _damaged_integration_receipt(
+                attempt_id,
+                receipt,
+                decision_models.ActionKind.COMPLETE,
+                "The completion outcome is not canonical.",
+            )
+        candidate_revision = outcome.candidate
+        completed = outcome.outcome == decision_models.ActionKind.COMPLETE.value
+    else:
+        return _damaged_integration_receipt(
+            attempt_id,
+            receipt,
+            decision_models.ActionKind.COMPLETE,
+            f"Unsupported completion outcome schema {receipt.outcome_schema!r}.",
+        )
+    if (
+        receipt.action_kind != decision_models.ActionKind.COMPLETE
+        or receipt.authorization != decision_models.AuthorizationKind.PROJECT
+        or str(receipt.action_id) != f"complete:{attempt_id}"
+        or str(receipt.subject_id) != str(attempt_id)
+        or not completed
+        or candidate_revision is None
+    ):
+        return _damaged_integration_receipt(
+            attempt_id,
+            receipt,
+            decision_models.ActionKind.COMPLETE,
+            f"The completion receipt does not name a candidate for item '{item_id}'.",
+        )
+    return candidate_revision
+
+
+def select_item_integration_candidate(
+    reader: ports.WorkStore,
+    work_item_id: WorkItemId,
+) -> DecisionResult[query_models.IntegrationCandidate] | query_models.DamagedTransitionReceipt:
+    """Select only the reviewed snapshot source supported by one item's current lifecycle facts."""
+
+    facts = reader.read_item_integration_context(work_item_id)
+    if facts is None:
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' was not found.", None)
+    item = facts.work_item
+    if item.state == stored_state.StoredWorkItemState.DONE:
+        receipt = facts.closure_receipt
+        if receipt is None or receipt.action_kind != decision_models.ActionKind.COMPLETE:
+            return integration_candidate_unavailable(work_item_id, item.state, "the item was closed directly")
+        attempt = facts.closing_attempt
+        if attempt is None:
+            return integration_candidate_evidence_invalid(
+                AttemptId(str(receipt.subject_id)),
+                f"completion receipt {int(receipt.history_id)} closing attempt",
+                "The completion's closing attempt is missing.",
+            )
+        candidate_revision = _completion_candidate_revision(work_item_id, receipt, attempt.attempt_id)
+        if isinstance(candidate_revision, query_models.DamagedTransitionReceipt):
+            return candidate_revision
+        snapshot = facts.completion_candidate
+        if snapshot is None:
+            return integration_candidate_unavailable(
+                work_item_id,
+                item.state,
+                "the completed attempt has no retained candidate snapshot",
+            )
+        if snapshot.candidate_revision != candidate_revision:
+            return integration_candidate_evidence_invalid(
+                attempt.attempt_id,
+                snapshot.reference.selector,
+                "The closing receipt and retained candidate snapshot name different revisions.",
+            )
+        return query_models.CompletionIntegrationCandidate(
+            attempt.attempt_id,
+            work_item_id,
+            candidate_revision,
+            receipt,
+            snapshot,
+        )
+
+    attempt = facts.current_attempt
+    if attempt is None:
+        return integration_candidate_unavailable(work_item_id, item.state, "the item has no current attempt")
+    if attempt.state == work_models.AttemptState.REVIEW and attempt.candidate_revision is not None:
+        snapshot = facts.protected_candidate
+        if snapshot is None:
+            return integration_candidate_unavailable(
+                work_item_id,
+                item.state,
+                "the review candidate predates accepted snapshot evidence",
+            )
+        return query_models.ProtectedReviewIntegrationCandidate(snapshot)
+
+    checkpoint = facts.latest_checkpoint
+    if checkpoint is None:
+        return integration_candidate_unavailable(
+            work_item_id,
+            item.state,
+            "there is no protected candidate or accepted checkpoint candidate on the current attempt",
+        )
+    return _accepted_checkpoint_integration_candidate(
+        work_item_id,
+        checkpoint,
+        attempt.attempt_id,
     )
 
 

@@ -2,6 +2,7 @@
 
 import hashlib
 from collections.abc import Mapping
+from typing import assert_never
 
 import msgspec
 
@@ -9,6 +10,7 @@ from pinboard.application import (
     action_models,
     candidate_snapshots,
     checkpoint_compatibility_models,
+    query_models,
     stored_state,
     work_brief_compatibility_models,
     work_brief_models,
@@ -157,7 +159,7 @@ def _review_basis(
 
 
 def validate_selected_checkpoint_review_package(
-    receipt: stored_state.StoredTransitionReceipt,
+    receipt: stored_state.StoredTransitionReceipt | query_models.ConsumedTransitionReceipt,
     package_reference: stored_state.ArtifactReference,
     package_bytes: bytes,
     *,
@@ -167,12 +169,19 @@ def validate_selected_checkpoint_review_package(
     package = decode_canonical_checkpoint_review_package(package_bytes)
     if isinstance(package, work_brief_models.WorkBriefFailure):
         return package
+    match receipt:
+        case stored_state.StoredTransitionReceipt():
+            outcome_json = bytes(receipt.outcome_payload)
+        case query_models.ConsumedTransitionReceipt():
+            outcome_json = receipt.outcome_json.encode("utf-8")
+        case _ as unreachable:
+            assert_never(unreachable)
     try:
-        outcome = msgspec.json.decode(bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome)
+        outcome = msgspec.json.decode(outcome_json, type=history.CheckpointAcceptanceOutcome)
     except msgspec.DecodeError as error:
         return _invalid(f"Checkpoint acceptance history {int(receipt.history_id)} has an invalid outcome: {error}")
     if (
-        msgspec.json.encode(outcome, order="sorted") != bytes(receipt.outcome_payload)
+        msgspec.json.encode(outcome, order="sorted") != outcome_json
         or receipt.outcome_schema != "checkpoint-acceptance/v2"
         or receipt.action_kind != decision_models.ActionKind.ACCEPT_CHECKPOINT
         or receipt.authorization != decision_models.AuthorizationKind.PROJECT

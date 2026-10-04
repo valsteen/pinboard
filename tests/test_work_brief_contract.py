@@ -121,7 +121,9 @@ class WorkBriefContractTest(unittest.TestCase):
             for variant in choices[choice_id].variants:
                 payload = fill_variant_template(msgspec.json.decode(bytes(variant.template)), "")
                 decoded = msgspec.json.decode(msgspec.json.encode(payload), type=shape)
-                self.assertEqual(msgspec.json.encode(payload, order="sorted"), msgspec.json.encode(decoded, order="sorted"))
+                self.assertEqual(
+                    msgspec.json.encode(payload, order="sorted"), msgspec.json.encode(decoded, order="sorted")
+                )
         self.assertTrue(contract.local_structural_choices)
         for choice in choices.values():
             self.assertTrue(choice.selection_paths)

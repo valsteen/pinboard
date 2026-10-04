@@ -347,11 +347,18 @@ class McpBriefPreparationTest(unittest.TestCase):
         self.assertGreater(expected_size, brief_sources.MAX_PRESENTED_BATCH_BYTES)
         rejected = self.sources("plan", manifest=manifest, max_batch_bytes=brief_sources.MAX_PRESENTED_BATCH_BYTES)
         self.assertEqual("BRIEF_SOURCE_PLAN_INVALID", rejected["code"])
-        self.assertIn(f"{expected_size} presented bytes; limit is {brief_sources.MAX_PRESENTED_BATCH_BYTES}", str(rejected["message"]))
+        self.assertIn(
+            f"{expected_size} presented bytes; limit is {brief_sources.MAX_PRESENTED_BATCH_BYTES}",
+            str(rejected["message"]),
+        )
         self.assertIn("smaller source selections", str(rejected["message"]))
         for start in range(0, len(sources), 20):
             subset = sources[start : start + 20]
-            smaller = self.sources("plan", manifest={**manifest, "sources": subset}, max_batch_bytes=brief_sources.MAX_PRESENTED_BATCH_BYTES)
+            smaller = self.sources(
+                "plan",
+                manifest={**manifest, "sources": subset},
+                max_batch_bytes=brief_sources.MAX_PRESENTED_BATCH_BYTES,
+            )
             smaller_sources = smaller["sources"]
             assert isinstance(smaller_sources, (list, tuple))
             self.assertEqual(len(subset), len(smaller_sources))
@@ -379,7 +386,9 @@ class McpBriefPreparationTest(unittest.TestCase):
 
         native_plan = asyncio.run(plan_subset())
         assert isinstance(native_plan.structured_content, dict)
-        self.assertLessEqual(len(msgspec.json.encode(native_plan.structured_content)), brief_sources.MAX_PRESENTED_BATCH_BYTES)
+        self.assertLessEqual(
+            len(msgspec.json.encode(native_plan.structured_content)), brief_sources.MAX_PRESENTED_BATCH_BYTES
+        )
         self.assertLess(len(msgspec.json.encode(native_plan.model_dump(mode="json", by_alias=True))), 50_000)
 
     def test_native_read_only_plan_and_all_batches_complete_the_source(self) -> None:
@@ -423,7 +432,9 @@ class McpBriefPreparationTest(unittest.TestCase):
             planned, batches = asyncio.run(read())
         assert isinstance(planned.structured_content, dict)
         self.assertGreater(len(batches), 1)
-        self.assertLessEqual(len(msgspec.json.encode(planned.structured_content)), brief_sources.MAX_PRESENTED_BATCH_BYTES)
+        self.assertLessEqual(
+            len(msgspec.json.encode(planned.structured_content)), brief_sources.MAX_PRESENTED_BATCH_BYTES
+        )
         self.assertLess(len(msgspec.json.encode(planned.model_dump(mode="json", by_alias=True))), 50_000)
         selected = b"".join(
             match.group(1).encode()

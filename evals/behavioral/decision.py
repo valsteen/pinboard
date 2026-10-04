@@ -338,8 +338,8 @@ def qualification(
                 f"{key.display()} has {selected.scores} eligible scores; single-score selection is ambiguous"
             )
         record = layout.run_record(key)
-        if not isinstance(record, RunRecord):
-            reasons.append(f"{key.display()} lacks recorded scenario registration and byte identity")
+        if record is None:
+            reasons.append(f"linked source run is absent: {key.display()}")
             continue
         reasons.extend(run_qualification(layout, registration, record))
         exports[key.variant].add((record.evaluated.commit, record.evaluated.skills_sha256))

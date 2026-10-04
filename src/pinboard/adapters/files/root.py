@@ -144,7 +144,7 @@ def _ordinary_content_mismatch(diagnostic: str) -> bool:
     return any(line.startswith("error:") for line in lines) and all(
         re.fullmatch(
             r"error: (?:patch failed: .+:[0-9]+|.+: (?:patch does not apply|does not exist in index|"
-            r"already exists in index|binary patch does not apply)|the patch applies to '.+' "
+            r"already exists in index|binary patch does not apply|wrong type)|the patch applies to '.+' "
             r"\([0-9a-f]+\), which does not match the current contents\.)|"
             r"warning: .+ has type [0-7]{6}, expected [0-7]{6}",
             line,

@@ -320,6 +320,36 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         self.commit_all(fixture.project, "later content and mode edit")
         self.assert_presence(fixture, "HEAD", "content-not-present")
 
+    def test_committed_file_to_symlink_replacement_is_a_native_mismatch_without_writes(self) -> None:
+        fixture = self.fixture("current-head")
+        self.assert_presence(fixture, "HEAD", "content-present")
+        tracked = fixture.project / "tracked.txt"
+        tracked.unlink()
+        tracked.symlink_to("elsewhere")
+        self.commit_all(fixture.project, "replace reviewed file with symlink")
+        before = {
+            str(path.relative_to(fixture.project)): (
+                path.lstat().st_mode,
+                os.fsencode(path.readlink()) if path.is_symlink() else path.read_bytes(),
+            )
+            for path in fixture.project.rglob("*")
+            if path.is_symlink() or path.is_file()
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch("tempfile.tempdir", temporary):
+                result = self.assert_presence(fixture, "HEAD", "content-not-present")
+            self.assertEqual([], list(Path(temporary).iterdir()))
+        self.assertEqual(fixture.brief.base_revision, self.json_object(result["source"])["compared_from_revision"])
+        after = {
+            str(path.relative_to(fixture.project)): (
+                path.lstat().st_mode,
+                os.fsencode(path.readlink()) if path.is_symlink() else path.read_bytes(),
+            )
+            for path in fixture.project.rglob("*")
+            if path.is_symlink() or path.is_file()
+        }
+        self.assertEqual(before, after)
+
     def test_checkpoint_remains_source_after_resume_rebind_and_return_until_submission(self) -> None:
         fixture = self.fixture()
         accepted = self.transition(

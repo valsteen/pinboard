@@ -185,24 +185,22 @@ def _proposal_created(
     )
     if isinstance(committed, DecisionFailure):
         return _proposal_failure(committed)
+    effect = committed.effect
     view_result = common._refresh_affected_views(
         durable,
         store,
-        AffectedViews(committed.work_item_ids, committed.attempt_ids, (committed.receipt.history_id,)),
+        AffectedViews(effect.work_item_ids, effect.attempt_ids, (effect.receipt.history_id,)),
         now,
     )
-    status = store.read_item_status(WorkItemId(decoded.proposal_id))
-    if status is None or status.work_item.queue_position is None:
-        raise RuntimeError("Committed proposal status did not reload exactly.")
     warning = view_result.warning
     content: dict[str, JsonValue] = {
         "schema": "pinboard-mcp-proposal-result/v2",
         "status": "committed" if warning is None else "committed-with-warning",
         "proposal_id": decoded.proposal_id,
-        "position": status.work_item.queue_position,
-        "item_state": status.work_item.state.value,
-        "committed_revision": committed.receipt.project_revision,
-        "history_id": int(committed.receipt.history_id),
+        "position": committed.item.queue_position,
+        "item_state": committed.item.state.value,
+        "committed_revision": effect.receipt.project_revision,
+        "history_id": int(effect.receipt.history_id),
         "state_changed": True,
         "effect": EffectDisposition.COMMITTED.value,
         "retry": RetryDisposition.DO_NOT_RETRY.value,
@@ -211,7 +209,7 @@ def _proposal_created(
         "warning": None if warning is None else {"message": warning.message, "recovery": warning.repair},
     }
     return execution.OperationResult(
-        content, "committed" if warning is None else "committed-warning", str(committed.receipt.project_revision)
+        content, "committed" if warning is None else "committed-warning", str(effect.receipt.project_revision)
     )
 
 

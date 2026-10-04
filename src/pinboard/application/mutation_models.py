@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from pinboard.application import stored_state
+from pinboard.application import query_models, stored_state
 from pinboard.application.artifacts import EvidenceArtifactRef, ResultArtifactRef
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.identifiers import (
@@ -63,6 +63,24 @@ class CommittedEffect:
 class PreparationStart:
     effect: CommittedEffect
     authority: authority_models.PreparationLeaseAuthority
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptAuthorityMutationResult:
+    effect: CommittedEffect
+    authority: query_models.AttemptAuthorityStatus
+
+
+@dataclass(frozen=True, slots=True)
+class PreparationAuthorityMutationResult:
+    effect: CommittedEffect
+    authority: query_models.PreparationAuthorityStatus
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalCreationResult:
+    effect: CommittedEffect
+    item: query_models.CreatedProposalItem
 
 
 @dataclass(frozen=True, slots=True)

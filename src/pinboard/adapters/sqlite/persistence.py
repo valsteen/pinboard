@@ -1021,6 +1021,12 @@ class SQLiteWorkTransaction:
             raise StorageError(StorageErrorCode.INVALID_STATE, "Live queue allocation is unavailable.")
         return decode_row(row, LiveItemCountRow).live_item_count
 
+    def read_created_proposal_item(self, work_item_id: WorkItemId) -> query_models.CreatedProposalItem | None:
+        row = self.connection.execute(
+            "SELECT item_id, state, queue_position FROM work_items WHERE item_id = ?", (work_item_id,)
+        ).fetchone()
+        return None if row is None else decode_row(row, query_models.CreatedProposalItem)
+
     def read_attempt_authority_status(self, attempt_id: AttemptId) -> query_models.AttemptAuthorityStatus | None:
         return read_attempt_authority_status(self.connection, attempt_id)
 

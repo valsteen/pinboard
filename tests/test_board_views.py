@@ -822,7 +822,7 @@ class BoardProjectionTest(unittest.TestCase):
         )
         assert not isinstance(committed, DecisionFailure)
 
-        refreshed = work_views.refresh_effect(roots, store, committed, SQLITE_NOW)
+        refreshed = work_views.refresh_effect(roots, store, committed.effect, SQLITE_NOW)
 
         self.assertIsNone(refreshed.warning)
         markdown, html = self._board(roots)

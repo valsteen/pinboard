@@ -19,7 +19,7 @@ from pinboard.application.artifacts import (
     ResultArtifactRef,
     WorkBriefIdentity,
 )
-from pinboard.application.mutation_models import CommittedEffect
+from pinboard.application.mutation_models import CommittedEffect, ProposalCreationResult
 from pinboard.application.service import (
     create_proposal,
     decide_and_commit_attempt_authority_change,
@@ -141,7 +141,7 @@ class ServiceTest(unittest.TestCase):
 
     def _create_proposal(
         self, store: SQLiteWorkStore, operation: CreateProposalOperation, now: datetime
-    ) -> DecisionFailure | CommittedEffect:
+    ) -> DecisionFailure | ProposalCreationResult:
         return create_proposal(
             store,
             operation,

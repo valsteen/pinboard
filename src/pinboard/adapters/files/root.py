@@ -568,7 +568,3 @@ def ensure_git_exclude(shared_repository_root: Path, entry: bytes, *, require_re
             f"Repository-local Git exclude could not be updated: {exclude}",
         ) from error
     return exclude
-
-
-def ensure_default_git_exclude(shared_repository_root: Path) -> Path | None:
-    return ensure_git_exclude(shared_repository_root, b"/.pinboard/", require_repository=False)

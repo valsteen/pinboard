@@ -1,10 +1,13 @@
 import fcntl
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import BinaryIO
 
 from pinboard.adapters.files.errors import RootError, RootErrorCode
+from pinboard.application import item_integration
 from pinboard.application.candidate_identity import working_tree_identity
 from pinboard.domain import work_models
 
@@ -126,14 +129,18 @@ def classify_checkout(cwd: Path) -> work_models.CheckoutSelection:
     )
 
 
-def _git_text(cwd: Path, *arguments: str) -> str:
-    result = subprocess.run(
+def _git_read(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         ["git", *arguments],
         cwd=cwd,
         text=True,
         capture_output=True,
         check=False,
     )
+
+
+def _git_text(cwd: Path, *arguments: str) -> str:
+    result = _git_read(cwd, *arguments)
     value = result.stdout.strip()
     if result.returncode != 0 or not value:
         raise RootError(
@@ -442,3 +449,78 @@ def ensure_git_exclude(shared_repository_root: Path, entry: bytes) -> Path | Non
 
 def ensure_default_git_exclude(shared_repository_root: Path) -> Path | None:
     return ensure_git_exclude(shared_repository_root, b"/.pinboard/")
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationTargetUnresolved:
+    target: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationContentObservation:
+    target_revision: str
+    presence: item_integration.ContentPresence
+
+
+def read_integration_content(
+    cwd: Path, target: str, diff: bytes
+) -> IntegrationContentObservation | IntegrationTargetUnresolved:
+    """Resolve a local commit and reverse-check accepted bytes using only a private index.
+
+    Unresolvable revisions are observations; other Git failures raise RootError.
+    The repository, including its object database and real index, remains read-only.
+    """
+    _git_text(cwd, "rev-parse", "--git-dir")
+    resolved = _git_read(cwd, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{target}^{{commit}}")
+    if resolved.returncode == 1:
+        return IntegrationTargetUnresolved(target)
+    revision = resolved.stdout.strip()
+    if resolved.returncode != 0 or not revision:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            resolved.stderr.strip() or f"Cannot resolve Git target at '{cwd}'.",
+        )
+    if not diff:
+        return IntegrationContentObservation(revision, item_integration.ContentPresence.NO_CHANGE)
+    with TemporaryDirectory(prefix="pinboard-integration-") as temporary:
+        environment = os.environ | {"GIT_INDEX_FILE": str(Path(temporary) / "index")}
+        loaded = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "read-tree", revision],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            check=False,
+        )
+        if loaded.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, loaded.stderr.decode(errors="replace").strip()
+            )
+        checked = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.splitIndex=false",
+                "-c",
+                "apply.ignoreWhitespace=false",
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "--whitespace=nowarn",
+            ],
+            cwd=cwd,
+            env=environment,
+            input=diff,
+            capture_output=True,
+            check=False,
+        )
+        if checked.returncode not in (0, 1):
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, checked.stderr.decode(errors="replace").strip()
+            )
+        presence = (
+            item_integration.ContentPresence.PRESENT
+            if checked.returncode == 0
+            else item_integration.ContentPresence.NOT_PRESENT
+        )
+        return IntegrationContentObservation(revision, presence)

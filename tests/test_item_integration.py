@@ -160,6 +160,19 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         self.commit_all(project, "overlapping")
         self.assert_presence(fixture, "target", "content-not-present", "protected-review")
 
+    def test_nested_project_directory_checks_changes_outside_that_directory(self) -> None:
+        fixture = self.fixture("current-head")
+        nested = fixture.project / "sub"
+        nested.mkdir()
+        for target, presence in (
+            (fixture.brief.base_revision, "content-not-present"),
+            (fixture.candidate_revision, "content-present"),
+        ):
+            with self.subTest(target=target):
+                expected = self.assert_presence(fixture, target, presence, "protected-review")
+                observed = self.assert_presence(replace(fixture, project=nested), target, presence, "protected-review")
+                self.assertEqual(expected, observed)
+
     def test_checkpoint_source_survives_resume_and_rebind_and_new_review_wins(self) -> None:
         fixture = self.fixture("working-tree")
         checkpoint = fixture.brief.checkpoint.checkpoint_id

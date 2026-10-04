@@ -26,7 +26,11 @@ from pinboard.adapters.files.errors import (
 )
 from pinboard.adapters.files.file_io import DurableRoots, create_immutable
 from pinboard.adapters.files.models import AffectedViews
-from pinboard.adapters.files.root import IntegrationTargetUnresolved, resolve_source_checkout_root
+from pinboard.adapters.files.root import (
+    IntegrationTargetUnresolved,
+    resolve_shared_repository_root,
+    resolve_source_checkout_root,
+)
 from pinboard.application import (
     action_models,
     actions,
@@ -141,7 +145,9 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
     try:
-        durable = common._resolve_durable(request.project_root, request.work_root)
+        source_checkout = resolve_source_checkout_root(Path(request.project_root))
+        shared_repository = resolve_shared_repository_root(source_checkout)
+        durable = common._require_initialized_durable(shared_repository, Path(request.work_root))
     except RootError as error:
         if isinstance(request, contracts.ItemStatusIntegrationRequest):
             return _integration_git_failure(request, error)
@@ -163,7 +169,7 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
                 return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", projected)
             selected: query_models.ItemStatus | query_models.BranchOwners = projected
         case contracts.ItemStatusIntegrationRequest():
-            return _read_integration(request, durable, store)
+            return _read_integration(request, source_checkout, durable, store)
         case contracts.ItemStatusBranchRequest():
             owners = queries.project_branch_owners(store, request.branch)
             if owners is None:
@@ -219,6 +225,7 @@ def _integration_git_failure(
 
 def _read_integration(
     request: contracts.ItemStatusIntegrationRequest,
+    source_checkout: Path,
     durable: DurableRoots,
     store: WorkStore,
 ) -> execution.OperationResult:
@@ -233,7 +240,7 @@ def _read_integration(
     else:
         try:
             result = candidate_evidence.observe_integration(
-                Path(request.project_root),
+                source_checkout,
                 durable.work_root,
                 store,
                 selected,

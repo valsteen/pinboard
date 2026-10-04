@@ -27,22 +27,21 @@ If evidence cannot settle a consequential retention or naming decision, record t
 
 ## Check what the evidence proves
 
-When a candidate's support or a validation claim depends on relationships across owners, trace one representative value through the actual supported path. Keep the trace within the accepted claim and choose the cheapest observation that could disprove it.
+For a cross-owner support or validation claim, first name the decision, its independently owned expected outcome, and the available evidence. Supplied snippets support an assessment of the described path; unrelated repository reads cannot establish that path's execution.
 
-Record the relevant parts of that path:
+Trace one representative value from the supported entry point and actual producer to the consuming decision. Name the relevant effect owner and phase. Include the saved representation and fresh reader when the claim depends on persistence or later consumption. Keep the trace within the accepted claim.
 
-- the claim or decision and its independently owned expected outcome;
-- the actual producer and supported entry point;
-- the effect owner and phase the claim concerns;
-- the saved representation and fresh reader, when persistence or later consumption is part of the claim;
-- the consuming decision and the relationships it needs.
+Choose the cheapest opposing observation that could change the decision:
 
-State what the current test or analyzer bypasses. A caller mock may prove how the caller handles a supplied result while leaving the real effect owner's failure contract untested. A reconstructed fixture can prove decoding or arithmetic while bypassing the producer. Individually valid records do not prove that their composition names the same run, input, scenario or other required relationship.
+| Available evidence | What it establishes | What it bypasses / cheapest falsifier |
+| --- | --- | --- |
+| Caller mock | Caller handling of a supplied result | Actual effect contract: control the external effect through its phase owner and inspect surviving evidence at the consumer. |
+| Reconstructed fixture, strict decoder or pure arithmetic | Its declared shape or independently expected calculation | Producer and cross-owner agreement: exercise the actual producer only when the claim needs that relationship. Deliberate historical fixtures remain valid for their narrower claims. |
+| Individually valid records | Each record's validity | Composition: combine valid inputs whose run, input, scenario or other required identities disagree. |
+| Equal replies or summaries | Equal presentation | Observation projection: hold the reply equal while varying the relevant observation, then inspect the consuming input. |
+| Returned paid response followed by publication failure | A paid effect already occurred | Contrast setup failure before any paid call. Follow known, unknown and absent usage through the supported accounting consumer. |
+| Reader without a current writer | No new production values | Supported retained data or external contract may still require the reader. Retire only when governing authority releases that responsibility; test-only seeding does not decide it. |
 
-Choose one opposing or mixed-evidence counterexample that could change the claimed decision. For a relationship claim, combine independently valid inputs whose identities disagree. For a projection claim, hold the reply or summary equal while varying the relevant observation. For an effect-failure claim, control the external effect through the actual phase owner and follow the surviving evidence to its consumer. A returned paid call followed by publication failure must be distinguished from setup failure before any paid call; inspect known, unknown and absent evidence according to the supported accounting contract.
+Use an existing regression when its actual path and assertion cover the distinction. Classify evidence as constructed boundary evidence, actual-path controlled evidence, runtime observation, or unresolved. Keep expected effects independent and control external work. This method grants no live effect, new guarantee, whole-repository scan or paid evaluation.
 
-Classify the resulting evidence precisely: constructed boundary evidence, actual-path controlled evidence, runtime observation, or an unresolved claim. Use existing regressions when their actual path and assertion already cover the distinction. Keep independent expected effects and control external work; this method does not authorize a live effect, new guarantee, whole-repository scan or paid evaluation.
-
-Pure arithmetic, strict decoder tests and deliberate historical fixtures remain valid for their narrower claims. Require producer, persistence and fresh-reader evidence only when the claim depends on that relationship. A reader needed by supported retained data or an external contract remains supported without a current writer. Retire it only when the governing authority releases that responsibility; a test-only writer or the absence of new production values does not decide retention.
-
-Stop when the named claim is either supported by its actual owners, falsified, or explicitly unresolved. Route a reproduced defect to its implementation owner and a consequential missing product decision to the human. Do not compensate for a known defect with more guidance or turn a narrower passing check into assurance for an unexercised path.
+Stop when the named claim is supported by its actual owners, falsified, or explicitly unresolved. Route a reproduced defect to its implementation owner and a consequential missing product decision to the human. Do not compensate for a known defect with more guidance or extend a narrower passing check into assurance for an unexercised path.

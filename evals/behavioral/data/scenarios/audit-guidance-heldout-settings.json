@@ -1,0 +1,14 @@
+{
+  "id": "audit-guidance-heldout-settings",
+  "title": "Fixed protocol constant and archive support",
+  "world": "minimal",
+  "world_extra": null,
+  "source": "Accepted bounded guidance trials definition7/brief11; supplied synthetic interpretation and no-live-effect controls.",
+  "ground_truth": "Consolidate copied batch inputs/inventory at canonical behavior owner; derive independent expected behavior rather than production list. Fixed 64-byte protocol is separately owned and must not couple to batch size. Generated help is projection, not separate setting. Archive reader retained by human until migration decision; absence of writer/version label does not release support. Correct obsolete/equal-value assumptions. Read-only supplied-source scope; no deletion/migration/whole-repo claim.",
+  "turns": [
+    {
+      "human": "$slop-cleanup: review only these snippets; no edits or tracker changes. Can we remove the obsolete decoder and replace all repeated 64s with MAX_BATCH? batch.py selects MAX_BATCH=64; test_batch.py hardcodes 64 to choose the upper-bound batch input and copies batch.py's current implementation list into its expected value. protocol.py validates an externally specified 64-byte signature; its protocol conformance test independently expects length 64. archived_decoder.py has no writer and accepts a retired wire tag, but the human explicitly retained support for known archived exports until a separate migration decision. A generated help page prints MAX_BATCH from batch.py. Give specific dispositions and uncertainty. These supplied fragments do not show repository reachability.",
+      "before": null
+    }
+  ]
+}

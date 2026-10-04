@@ -1,0 +1,23 @@
+{
+  "name": "audit-guidance-heldout",
+  "scenarios": [
+    {
+      "id": "audit-guidance-heldout-settings",
+      "sha256": "deeb1e7939298f5a28ed1d1f7dfe283edb2baa696a513971bf220e047f8dfa2f"
+    },
+    {
+      "id": "audit-guidance-heldout-evidence",
+      "sha256": "e848f4057fb888b3ccbea9ee2d6b4f765865f9f411869f4f775806337ad9fc88"
+    },
+    {
+      "id": "audit-guidance-heldout-origin",
+      "sha256": "bc5d0b39aca1af19773559ef8dd7e311a58296f86eb8ca4a02c8619266c62fb1"
+    }
+  ],
+  "targeted_rules": [
+    "P7",
+    "P8",
+    "P11",
+    "P12"
+  ]
+}

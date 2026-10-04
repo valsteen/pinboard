@@ -62,6 +62,101 @@ from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 
 
 class CandidateSnapshotTest(unittest.TestCase):
+    def test_candidate_patches_ignore_external_and_presentation_config_and_restore_exact_bytes(self) -> None:
+        source, base = self.repository()
+        (source / "binary.dat").write_bytes(b"\0base")
+        (source / ".gitattributes").write_text("tracked.txt diff=custom\n", encoding="utf-8")
+        self.git(source, "add", "binary.dat", ".gitattributes")
+        self.git(
+            source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "binary and driver"
+        )
+        base = self.git(source, "rev-parse", "HEAD")
+        (source / "tracked.txt").write_text("candidate\n", encoding="utf-8")
+        (source / "binary.dat").write_bytes(b"\0candidate")
+        expected = read_working_tree_candidate(source)
+        self.assertTrue(expected.diff)
+        for config in (
+            (("diff.external", "/usr/bin/true"),),
+            (("diff.custom.command", "/usr/bin/true"), ("diff.custom.textconv", "/usr/bin/true")),
+            (
+                ("diff.noprefix", "true"),
+                ("color.diff", "always"),
+                ("diff.outputIndicatorNew", ">"),
+                ("diff.outputIndicatorOld", "<"),
+            ),
+        ):
+            with self.subTest(config=config):
+                for key, value in config:
+                    self.git(source, "config", key, value)
+                changed = read_working_tree_candidate(source)
+                for key, _value in config:
+                    self.git(source, "config", "--unset", key)
+                self.assertEqual(expected, changed)
+        self.git(source, "config", "diff.external", "/usr/bin/true")
+        snapshot = WorkingTreeCandidateSnapshot(
+            "pinboard-candidate-snapshot/v2",
+            "attempt-1",
+            "item-1",
+            expected.identity,
+            "main",
+            base,
+            base,
+            SQLITE_NOW.isoformat(),
+            expected.diff,
+        )
+        snapshot = decode_candidate_snapshot(canonical_candidate_snapshot_bytes(snapshot))
+        _unused, context, _encoded = self.snapshot_context()
+        evidence = CandidateSnapshotEvidence(snapshot, context.reference, context.receipt)
+        self.assertEqual(
+            query_models.CandidateLineage.WORKING_TREE_CURRENT,
+            candidate_evidence.observe_candidate_lineage(source, evidence),
+        )
+        target = self.clone(source)
+        self.git(target, "config", "diff.external", "/usr/bin/true")
+        self.assertEqual(
+            CandidateRestoreSuccess(True, expected.identity),
+            restore_working_tree_candidate(
+                target,
+                expected_branch="main",
+                preimage_revision=base,
+                candidate=expected.identity,
+                diff=expected.diff,
+                excluded_untracked_paths=(),
+            ),
+        )
+        self.assertEqual((source / "binary.dat").read_bytes(), (target / "binary.dat").read_bytes())
+        self.assertEqual((source / "tracked.txt").read_bytes(), (target / "tracked.txt").read_bytes())
+        self.git(source, "add", "tracked.txt", "binary.dat")
+        self.git(source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "candidate")
+        head = self.git(source, "rev-parse", "HEAD")
+        observed = read_current_head_candidate(source, head, base, excluded_untracked_paths=())
+        self.assertEqual(CurrentHeadCandidate(head, expected.diff), observed)
+        self.assertEqual(
+            query_models.CandidateLineage.COMMIT_CURRENT, candidate_evidence.observe_candidate_lineage(source, evidence)
+        )
+        self.assertEqual(b"", read_working_tree_candidate(source).diff)
+        self.assertEqual(
+            CurrentHeadCandidate(head, b""),
+            read_current_head_candidate(source, head, head, excluded_untracked_paths=()),
+        )
+        committed_target = self.clone(source)
+        self.git(committed_target, "reset", "--hard", base)
+        self.git(committed_target, "config", "diff.external", "/usr/bin/true")
+        self.assertEqual(
+            CandidateRestoreSuccess(True, head),
+            restore_commit_candidate(
+                committed_target,
+                expected_branch="main",
+                preimage_revision=base,
+                accepted_base_revision=base,
+                candidate=head,
+                diff=expected.diff,
+                excluded_untracked_paths=(),
+            ),
+        )
+        self.assertEqual((source / "binary.dat").read_bytes(), (committed_target / "binary.dat").read_bytes())
+        self.assertEqual((source / "tracked.txt").read_bytes(), (committed_target / "tracked.txt").read_bytes())
+
     def test_candidate_reader_uses_exact_preimage_and_binary_test_changes(self) -> None:
         checkout, base = self.repository()
         (checkout / "test_example.py").write_text("assert True\n", encoding="utf-8")

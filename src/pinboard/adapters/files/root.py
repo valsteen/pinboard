@@ -225,17 +225,34 @@ def observe_candidate_checkout_identity(cwd: Path) -> tuple[str | None, str]:
     return branch, revision
 
 
-def read_working_tree_candidate(cwd: Path) -> WorkingTreeCandidate:
-    """Read actual full HEAD and its exact binary diff without changing Git state."""
-
-    diff = _git_bytes(
+def _read_candidate_diff(cwd: Path, *revisions: str, unavailable_message: str) -> bytes:
+    """Read an applicable binary patch independently of external drivers and presentation settings."""
+    return _git_bytes(
         cwd,
         "-c",
         "diff.autoRefreshIndex=false",
         "diff",
         "--binary",
-        "HEAD",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--output-indicator-new=+",
+        "--output-indicator-old=-",
+        "--output-indicator-context= ",
+        *revisions,
         "--",
+        unavailable_message=unavailable_message,
+    )
+
+
+def read_working_tree_candidate(cwd: Path) -> WorkingTreeCandidate:
+    """Read actual full HEAD and its exact binary diff without changing Git state."""
+
+    diff = _read_candidate_diff(
+        cwd,
+        "HEAD",
         unavailable_message=f"Cannot read the working-tree diff at '{cwd}'.",
     )
     head = _git_text(cwd, "rev-parse", "--verify", "HEAD")
@@ -352,13 +369,10 @@ def read_current_head_candidate(
         return DifferentHeadCandidate(candidate_revision, current_head)
     if _has_unexcluded_changes(_working_tree_status(cwd), excluded_untracked_paths):
         return DirtyHeadCandidate(candidate_revision)
-    diff = _git_bytes(
+    diff = _read_candidate_diff(
         cwd,
-        "diff",
-        "--binary",
         comparison_revision,
         candidate_revision,
-        "--",
         unavailable_message=f"Cannot compare candidate '{candidate_revision}' with comparison revision '{comparison_revision}'.",
     )
     return CurrentHeadCandidate(candidate_revision, diff)
@@ -454,13 +468,10 @@ def restore_commit_candidate(
     )
     if exists.returncode != 0:
         return CandidateRestoreRejection("missing-commit", branch, head)
-    observed = _git_bytes(
+    observed = _read_candidate_diff(
         cwd,
-        "diff",
-        "--binary",
         accepted_base_revision,
         candidate,
-        "--",
         unavailable_message=f"Cannot compare accepted base '{accepted_base_revision}' with '{candidate}'.",
     )
     if observed != diff:

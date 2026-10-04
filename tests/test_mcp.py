@@ -24,7 +24,7 @@ from mcp.shared.message import SessionMessage
 from mcp_types import CallToolResult, TextContent, Tool
 from msgspec.structs import replace as replace_struct
 
-from pinboard.adapters import lifecycle_artifacts
+from pinboard.adapters import candidate_evidence, lifecycle_artifacts
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode, RootError, RootErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
@@ -1836,6 +1836,7 @@ class McpTransportTest(unittest.TestCase):
             ).stdout.strip()
 
         (project / ".git" / "info" / "exclude").write_text(".pinboard/\n", encoding="utf-8")
+        git("config", "diff.external", "/usr/bin/true")
         (project / "product.txt").write_text("Accepted base\n", encoding="utf-8")
         git("add", "product.txt", "architecture.md")
         git("commit", "-m", "Accepted base")
@@ -2010,6 +2011,18 @@ class McpTransportTest(unittest.TestCase):
                     row for row in snapshot.lifecycle.attempts if row.attempt_id == AttemptId("proposal-1-1")
                 )
                 self.assertEqual(candidate, attempt.candidate_revision)
+                evidence = candidate_evidence.read_candidate_evidence(
+                    roots.work_root,
+                    SQLiteWorkStore(roots.database_path),
+                    AttemptId("proposal-1-1"),
+                    candidate,
+                )
+                assert not isinstance(evidence, DecisionFailure)
+                self.assertIn(b"+Observable candidate", evidence.snapshot.diff)
+                self.assertEqual(
+                    query_models.CandidateLineage.COMMIT_CURRENT,
+                    candidate_evidence.observe_candidate_lineage(project, evidence),
+                )
                 inspected = await call(
                     mcp_server.ATTEMPT_INSPECT_TOOL,
                     {"attempt_id": "proposal-1-1", "reconciliation": None},

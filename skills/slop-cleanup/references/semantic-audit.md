@@ -40,7 +40,7 @@ Choose the cheapest opposing observation that could change the decision:
 | Individually valid records | Each record's validity | Composition: combine valid inputs whose run, input, scenario or other required identities disagree. |
 | Equal replies or summaries | Equal presentation | Observation projection: hold the reply equal while varying the relevant observation, then inspect the consuming input. |
 | Returned paid response followed by publication failure | A paid effect already occurred | Contrast setup failure before any paid call. Follow known, unknown and absent usage through the supported accounting consumer. |
-| Reader without a current writer | No new production values | Supported retained data or external contract may still require the reader. Retire only when governing authority releases that responsibility; test-only seeding does not decide it. |
+| Reader without a current writer | No current writer identified in the assessed path | Supported retained data or external contract may still require the reader. Retire only when governing authority releases that responsibility; test-only seeding does not decide it. |
 
 Use an existing regression when its actual path and assertion cover the distinction. Classify evidence as constructed boundary evidence, actual-path controlled evidence, runtime observation, or unresolved. Keep expected effects independent and control external work. This method grants no live effect, new guarantee, whole-repository scan or paid evaluation.
 

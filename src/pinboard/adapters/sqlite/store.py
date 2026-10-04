@@ -497,10 +497,6 @@ def _read_item_integration_context_facts(
     connection: sqlite3.Connection,
     work_item_id: WorkItemId,
 ) -> query_models.ItemIntegrationFacts | None:
-    project_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
-    if project_row is None:
-        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
-    project_revision = decode_row(project_row, ProjectRevisionRow).revision
     item_row = connection.execute(
         """
         SELECT item_id AS work_item_id, state, timing, outcome_evidence, next_action, source, notes, queue_position,
@@ -568,7 +564,6 @@ def _read_item_integration_context_facts(
                 )
 
     return query_models.ItemIntegrationFacts(
-        project_revision,
         item,
         current_attempt,
         protected_candidate,

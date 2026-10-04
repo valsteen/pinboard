@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import tempfile
 from collections.abc import Generator
+from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import assert_never
@@ -199,7 +200,17 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         present = self.integration_leaf(fixture, "main")
         self.assertEqual("pinboard-item-integration/v1", present["schema"], present)
         self.assertEqual("content-present", present["presence"])
-        self.assertEqual(self.run_git(fixture.project, "rev-parse", "HEAD"), present["target_revision"])
+        target_revision = self.run_git(fixture.project, "rev-parse", "HEAD")
+        self.assertEqual(target_revision, present["target_revision"])
+        self.assertEqual(
+            {
+                "kind": "protected-review",
+                "attempt_id": "work-a-1",
+                "candidate_revision": candidate,
+                "compared_from_revision": base_revision,
+            },
+            self.json_object(present["source"]),
+        )
 
         tracked_lines = (fixture.project / "tracked.txt").read_text(encoding="utf-8").splitlines()
         tracked_lines[0] = "later non-overlapping line"
@@ -214,12 +225,76 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         overlapping = self.integration_leaf(fixture, "main")
         self.assertEqual("content-not-present", overlapping["presence"], overlapping)
 
+    def test_integration_leaf_reports_working_tree_rename_and_binary_after_squash(self) -> None:
+        fixture = self.checkpoint_fixture(native_submission=True, candidate_context=True)
+        tracked = fixture.project / "tracked.txt"
+        renamed = fixture.project / "renamed.txt"
+        tracked.replace(renamed)
+        binary = fixture.project / "assets" / "sample.bin"
+        binary.parent.mkdir()
+        binary.write_bytes(bytes(range(256)))
+        observed = call_native_tool(
+            mcp_server.CANDIDATE_OBSERVE_TOOL,
+            {**self.roots(fixture), "attempt_id": "work-a-1"},
+        )
+        candidate = observed["candidate"]
+        assert isinstance(candidate, str)
+        fixture = dataclass_replace(fixture, candidate_revision=candidate)
+        self.assertEqual(candidate, self.submit_native_candidate(fixture))
+        base_revision = self.run_git(fixture.project, "rev-parse", "main")
+
+        self.run_git(fixture.project, "add", "--all")
+        self.run_git(
+            fixture.project,
+            "-c",
+            "user.name=Pinboard Tests",
+            "-c",
+            "user.email=pinboard@example.invalid",
+            "commit",
+            "-m",
+            "renamed and binary candidate",
+        )
+        self.run_git(fixture.project, "switch", "main")
+        self.run_git(fixture.project, "merge", "--squash", "codex/work-a")
+        self.run_git(
+            fixture.project,
+            "-c",
+            "user.name=Pinboard Tests",
+            "-c",
+            "user.email=pinboard@example.invalid",
+            "commit",
+            "-m",
+            "squash renamed and binary candidate",
+        )
+
+        result = self.integration_leaf(fixture, "main")
+        self.assertEqual("pinboard-item-integration/v1", result["schema"], result)
+        self.assertEqual("content-present", result["presence"], result)
+        self.assertEqual("main", result["target"])
+        self.assertEqual(self.run_git(fixture.project, "rev-parse", "main"), result["target_revision"])
+        self.assertEqual(
+            {
+                "kind": "protected-review",
+                "attempt_id": "work-a-1",
+                "candidate_revision": candidate,
+                "compared_from_revision": base_revision,
+            },
+            self.json_object(result["source"]),
+        )
+        self.assertFalse((fixture.project / "tracked.txt").exists())
+        self.assertEqual(renamed.read_bytes(), (fixture.project / "renamed.txt").read_bytes())
+        self.assertEqual(bytes(range(256)), (fixture.project / "assets" / "sample.bin").read_bytes())
+
     def test_integration_leaf_recognizes_merge_commit_rebase_and_squash_content(self) -> None:
-        for strategy in ("merge-commit", "rebase", "squash"):
+        for strategy in ("fast-forward", "merge-commit", "rebase", "squash"):
             with self.subTest(strategy=strategy):
                 fixture = self.checkpoint_fixture(native_submission=True, candidate_form="current-head")
                 candidate = self.submit_native_candidate(fixture)
-                if strategy == "rebase":
+                base_revision = self.run_git(fixture.project, "rev-parse", "main")
+                if strategy == "fast-forward":
+                    self.run_git(fixture.project, "switch", "main")
+                    self.run_git(fixture.project, "merge", "--ff-only", "codex/work-a")
+                elif strategy == "rebase":
                     self.run_git(fixture.project, "switch", "main")
                     (fixture.project / "independent.txt").write_text("target-only change\n", encoding="utf-8")
                     self.commit_all(fixture.project, "target change")
@@ -270,7 +345,15 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                 result = self.integration_leaf(fixture, "main")
                 self.assertEqual("pinboard-item-integration/v1", result["schema"], result)
                 self.assertEqual("content-present", result["presence"], result)
-                self.assertEqual(candidate, self.json_object(result["source"])["candidate_revision"])
+                self.assertEqual(
+                    {
+                        "kind": "protected-review",
+                        "attempt_id": "work-a-1",
+                        "candidate_revision": candidate,
+                        "compared_from_revision": base_revision,
+                    },
+                    self.json_object(result["source"]),
+                )
                 target_revision = self.run_git(fixture.project, "rev-parse", "main")
                 self.assertEqual(target_revision, result["target_revision"])
                 self.run_git(fixture.project, "update-ref", "refs/remotes/origin/main", target_revision)
@@ -409,7 +492,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
 
         self.assertEqual("pinboard-item-integration/v1", result["schema"], result)
         self.assertEqual("content-not-present", result["presence"])
-        self.assertEqual({"artifact_refs", "attempts", "project_meta", "transition_history", "work_items"}, read_tables)
+        self.assertEqual({"artifact_refs", "attempts", "transition_history", "work_items"}, read_tables)
         self.assertNotIn("unrelated-attempt", str(result))
         self.assertNotIn("unrelated-package", str(result))
         self.assert_keyed_item_status_reads(fixture, statements)
@@ -654,6 +737,21 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         invalid_target = self.integration_leaf(direct_closed, "-main")
         self.assertEqual("ITEM_STATUS_INVALID", invalid_target["code"], invalid_target)
         self.assertEqual("pinboard-mcp-item-status-result/v3", invalid_target["schema"])
+        self.assertFalse(invalid_target["state_changed"])
+        self.assertEqual(
+            ("unchanged", "correct-input", [], [], []),
+            (
+                invalid_target["effect"],
+                invalid_target["retry"],
+                invalid_target["changed_surfaces"],
+                invalid_target["observed"],
+                invalid_target["mismatches"],
+            ),
+        )
+        invalid_target_message = invalid_target["message"]
+        assert isinstance(invalid_target_message, str)
+        self.assertIn("Cannot read item status", invalid_target_message)
+        self.assertIn("target", invalid_target_message)
 
         outside_git = Path(tempfile.mkdtemp()).resolve()
         git_failure = call_advertised_tool(

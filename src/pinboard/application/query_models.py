@@ -821,7 +821,6 @@ class IntegrationCheckpointFacts:
 
 @dataclass(frozen=True, slots=True)
 class ItemIntegrationFacts:
-    project_revision: int
     work_item: ItemStatusItemFacts
     current_attempt: IntegrationAttemptFacts | None
     protected_candidate: CandidateSnapshotContextFacts | None

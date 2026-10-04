@@ -100,23 +100,25 @@ def _observe_or_create_settings_file(path: Path) -> SettingEffects:
     except FileNotFoundError:
         missing = True
     except OSError as error:
-        raise SettingResolutionError(str(error), path, effects, error) from error
+        raise SettingResolutionError(str(error), path, effects, error, "read", path) from error
     if missing:
         try:
             effects = SettingEffects("none", "confirmed" if create_immutable(path, b"") else "none", "none")
         except ImmutableFilePublishedError as error:
             raise SettingResolutionError(
-                str(error), path, SettingEffects("none", "confirmed", "none"), error
+                str(error), path, SettingEffects("none", "confirmed", "none"), error, "create", path
             ) from error
         except FileIOError as error:
             if error.code != FileIOErrorCode.FILE_ALREADY_EXISTS:
-                raise SettingResolutionError(str(error), path, effects, error) from error
+                raise SettingResolutionError(str(error), path, effects, error, "create", path) from error
     return effects
 
 
 def _settings(data_root: Path) -> SettingResolution[ContributorTraceSettings]:
     path = data_root / SETTINGS_NAME
     effects = _observe_or_create_settings_file(path)
+    operation: Literal["read", "stage", "publish"] = "read"
+    resource = path
     try:
         settings = _read_settings(path, effects)
         if settings is not None:
@@ -124,13 +126,21 @@ def _settings(data_root: Path) -> SettingResolution[ContributorTraceSettings]:
         # Git writers and the pre-runtime launcher honor this same exclusive lock.
         # Recheck while holding it; a stale absence cannot replace an explicit choice.
         lock = path.with_name(f"{path.name}.lock")
+        operation, resource = "stage", lock
         with lock.open("xb") as staged:
+            published = False
             try:
-                os.fchmod(staged.fileno(), stat.S_IMODE(path.stat().st_mode))
+                operation, resource = "read", path
+                mode = stat.S_IMODE(path.stat().st_mode)
+                operation, resource = "stage", lock
+                os.fchmod(staged.fileno(), mode)
                 settings = _read_settings(path, effects)
                 if settings is not None:
                     return SettingResolution(path, settings, effects)
-                staged.write(path.read_bytes())
+                operation, resource = "read", path
+                content = path.read_bytes()
+                operation, resource = "stage", lock
+                staged.write(content)
                 staged.flush()
                 written = git_config.add(lock, "pinboard.unsafe_persist_exact_pinboard_traces.mode", "off")
                 if isinstance(written, git_config.WriteUnconfirmed):
@@ -139,11 +149,17 @@ def _settings(data_root: Path) -> SettingResolution[ContributorTraceSettings]:
                         path,
                         effects,
                         written,
+                        "stage",
+                        lock,
                     )
+                operation, resource = "publish", path
                 lock.replace(path)
+                published = True
                 effects = SettingEffects(effects.parent_creation, effects.file_creation, "acknowledged")
             finally:
-                lock.unlink(missing_ok=True)
+                if not published:
+                    lock.unlink(missing_ok=True)
+        operation, resource = "read", path
         settings = _read_settings(path, effects)
         if settings is None:
             raise ValueError("Contributor trace settings must declare the project mode.")
@@ -151,17 +167,22 @@ def _settings(data_root: Path) -> SettingResolution[ContributorTraceSettings]:
     except (ValueError, OSError) as error:
         if isinstance(error, SettingResolutionError):
             raise
-        raise SettingResolutionError(str(error), path, effects, error) from error
+        raise SettingResolutionError(str(error), path, effects, error, operation, resource) from error
 
 
 def _read_settings(path: Path, effects: SettingEffects) -> ContributorTraceSettings | None:
-    settings = _decode_settings(path)
+    try:
+        settings = _decode_settings(path)
+    except (ValueError, OSError) as error:
+        raise SettingResolutionError(str(error), path, effects, error, "read", path) from error
     if isinstance(settings, git_config.ReadFailed):
         raise SettingResolutionError(
             f"Cannot read Contributor trace settings at {path}: {settings.cause.diagnostic}",
             path,
             effects,
             settings,
+            "read",
+            path,
         )
     return settings
 

@@ -512,94 +512,107 @@ select_unprepared_cli_capture() (
         printf 'Contributor trace settings must be a regular file: %s. The target did not run.\n' "$settings" >&2
         return 1
     fi
-    settings_destination=$settings
-    settings_lock="$settings.lock"
-    if ! (umask 077; set -C; : > "$settings_lock") 2>/dev/null; then
-        printf 'Contributor trace settings are being edited at %s. Retry after that edit finishes; the target did not run.\n' "$settings" >&2
-        return 1
-    fi
-    trap 'rm -f "$settings_lock"' EXIT
-    if ! cp -p "$settings" "$settings_lock"; then
-        printf 'Cannot stage Contributor trace settings at %s. Inspect file access; the target did not run.\n' "$settings" >&2
-        return 1
-    fi
-    listing=$(git config --file "$settings_lock" --list) || {
-        printf 'Contributor trace settings are invalid or unreadable: %s. The target did not run.\n' "$settings" >&2
-        return 1
-    }
-    listed_lines=$(git config --file "$settings_lock" --list | wc -l)
-    key_lines=$(git config --file "$settings_lock" --name-only --list | wc -l)
-    if [ "$listed_lines" -ne "$key_lines" ]; then
-        printf 'Contributor trace settings contain a multiline value: %s. The target did not run.\n' "$settings" >&2
-        return 1
-    fi
-    project_mode=
-    item_mode=inherit
-    seen_keys=
-    while IFS= read -r entry; do
-        [ -n "$entry" ] || continue
-        key=${entry%%=*}
-        value=${entry#*=}
-        if [ "$entry" = "$key" ] || printf '%s\n' "$seen_keys" | grep -Fxq -- "$key"; then
-            printf 'Contributor trace settings are invalid or duplicated: %s. The target did not run.\n' "$settings" >&2
+    read_trace_settings() {
+        settings_read_path=$1
+        listing=$(git config --file "$settings_read_path" --list) || {
+            printf 'Contributor trace settings are invalid or unreadable: %s. The target did not run.\n' "$settings" >&2
+            return 1
+        }
+        listed_lines=$(git config --file "$settings_read_path" --list | wc -l)
+        key_lines=$(git config --file "$settings_read_path" --name-only --list | wc -l)
+        if [ "$listed_lines" -ne "$key_lines" ]; then
+            printf 'Contributor trace settings contain a multiline value: %s. The target did not run.\n' "$settings" >&2
             return 1
         fi
-        seen_keys="$seen_keys
-$key"
-        case "$key" in
-            pinboard.unsafe_persist_exact_pinboard_traces.mode)
-                case "$value" in
-                    on|off) project_mode=$value ;;
-                    *) printf 'Contributor trace project mode is invalid in %s. Correct it; the target did not run.\n' "$settings" >&2; return 1 ;;
-                esac
-                ;;
-            item.*.mode)
-                case "$value" in
-                    on|off|inherit) : ;;
-                    *) printf 'Contributor trace item mode is invalid in %s. Correct it; the target did not run.\n' "$settings" >&2; return 1 ;;
-                esac
-                if [ "$key" = item..mode ]; then
-                    printf 'Contributor trace item ID is missing in %s. Correct it; the target did not run.\n' "$settings" >&2
-                    return 1
-                fi
-                if [ -n "$selected_item" ] && [ "$key" = "item.$selected_item.mode" ]; then item_mode=$value; fi
-                ;;
-            *)
-                printf 'Contributor trace settings contain an unknown key: %s. The target did not run.\n' "$settings" >&2
+        project_mode=
+        item_mode=inherit
+        seen_keys=
+        while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            key=${entry%%=*}
+            value=${entry#*=}
+            if [ "$entry" = "$key" ] || printf '%s\n' "$seen_keys" | grep -Fxq -- "$key"; then
+                printf 'Contributor trace settings are invalid or duplicated: %s. The target did not run.\n' "$settings" >&2
                 return 1
-                ;;
-        esac
-    done <<EOF
+            fi
+            seen_keys="$seen_keys
+$key"
+            case "$key" in
+                pinboard.unsafe_persist_exact_pinboard_traces.mode)
+                    case "$value" in
+                        on|off) project_mode=$value ;;
+                        *) printf 'Contributor trace project mode is invalid in %s. Correct it; the target did not run.\n' "$settings" >&2; return 1 ;;
+                    esac
+                    ;;
+                item.*.mode)
+                    case "$value" in
+                        on|off|inherit) : ;;
+                        *) printf 'Contributor trace item mode is invalid in %s. Correct it; the target did not run.\n' "$settings" >&2; return 1 ;;
+                    esac
+                    if [ "$key" = item..mode ]; then
+                        printf 'Contributor trace item ID is missing in %s. Correct it; the target did not run.\n' "$settings" >&2
+                        return 1
+                    fi
+                    if [ -n "$selected_item" ] && [ "$key" = "item.$selected_item.mode" ]; then item_mode=$value; fi
+                    ;;
+                *)
+                    printf 'Contributor trace settings contain an unknown key: %s. The target did not run.\n' "$settings" >&2
+                    return 1
+                    ;;
+            esac
+        done <<EOF
 $listing
 EOF
+    }
+    read_trace_settings "$settings" || return 1
+    settings_destination=$settings
+    settings_lock="$settings.lock"
     if [ -z "$project_mode" ]; then
-        git config --file "$settings_lock" --add pinboard.unsafe_persist_exact_pinboard_traces.mode off || {
-            printf 'Cannot write Contributor trace project mode in %s. Grant write access to the selected work root; the target did not run.\n' "$settings" >&2
-            return 1
-        }
-        project_mode=$(git config --file "$settings_lock" --get-all pinboard.unsafe_persist_exact_pinboard_traces.mode) || {
-            printf 'Cannot verify Contributor trace project mode in %s. Inspect it; the target did not run.\n' "$settings" >&2
-            return 1
-        }
-        if [ "$project_mode" != off ]; then
-            printf 'Contributor trace project mode in %s changed unexpectedly. Inspect it; the target did not run.\n' "$settings" >&2
+        if ! (umask 077; set -C; : > "$settings_lock") 2>/dev/null; then
+            if [ -e "$settings_lock" ] || [ -L "$settings_lock" ]; then
+                printf 'Contributor trace settings are being edited at %s. Retry after that edit finishes; the target did not run.\n' "$settings_lock" >&2
+            else
+                printf 'Cannot create Contributor trace settings lock at %s. Grant write access to the selected work root; the target did not run.\n' "$settings_lock" >&2
+            fi
             return 1
         fi
-        if ! mv "$settings_lock" "$settings_destination"; then
-            printf 'Cannot publish Contributor trace project mode in %s. Inspect the stored settings; the target did not run.\n' "$settings_destination" >&2
+        trap 'rm -f "$settings_lock"' EXIT
+        if ! cp -p "$settings" "$settings_lock"; then
+            printf 'Cannot stage Contributor trace settings at %s. Inspect file access; the target did not run.\n' "$settings" >&2
             return 1
         fi
-        project_mode=$(git config --file "$settings" --get-all pinboard.unsafe_persist_exact_pinboard_traces.mode) || {
-            printf 'Cannot verify published Contributor trace project mode in %s. Inspect the stored settings; the target did not run.\n' "$settings" >&2
-            return 1
-        }
-        case "$project_mode" in
-            on|off) : ;;
-            *) printf 'Published Contributor trace project mode in %s is invalid. Inspect the stored settings; the target did not run.\n' "$settings" >&2; return 1 ;;
-        esac
+        read_trace_settings "$settings_lock" || return 1
+        if [ -z "$project_mode" ]; then
+            git config --file "$settings_lock" --add pinboard.unsafe_persist_exact_pinboard_traces.mode off || {
+                printf 'Cannot write Contributor trace project mode in %s. Grant write access to the selected work root; the target did not run.\n' "$settings" >&2
+                return 1
+            }
+            project_mode=$(git config --file "$settings_lock" --get-all pinboard.unsafe_persist_exact_pinboard_traces.mode) || {
+                printf 'Cannot verify Contributor trace project mode in %s. Inspect it; the target did not run.\n' "$settings" >&2
+                return 1
+            }
+            if [ "$project_mode" != off ]; then
+                printf 'Contributor trace project mode in %s changed unexpectedly. Inspect it; the target did not run.\n' "$settings" >&2
+                return 1
+            fi
+            if ! mv "$settings_lock" "$settings_destination"; then
+                printf 'Cannot publish Contributor trace project mode in %s. Inspect the stored settings; the target did not run.\n' "$settings_destination" >&2
+                return 1
+            fi
+            trap - EXIT
+            project_mode=$(git config --file "$settings" --get-all pinboard.unsafe_persist_exact_pinboard_traces.mode) || {
+                printf 'Cannot verify published Contributor trace project mode in %s. Inspect the stored settings; the target did not run.\n' "$settings" >&2
+                return 1
+            }
+            case "$project_mode" in
+                on|off) : ;;
+                *) printf 'Published Contributor trace project mode in %s is invalid. Inspect the stored settings; the target did not run.\n' "$settings" >&2; return 1 ;;
+            esac
+        else
+            rm -f "$settings_lock"
+            trap - EXIT
+        fi
     fi
-    rm -f "$settings_lock"
-    trap - EXIT
     settings=$settings_destination
     effective_mode=$project_mode
     if [ "$item_mode" != inherit ]; then effective_mode=$item_mode; fi

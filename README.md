@@ -71,7 +71,7 @@ claude plugin marketplace add valsteen/pinboard
 claude plugin install pinboard@pinboard
 ```
 
-On Claude Code's first session, reconnect the `pinboard` server with `/mcp` or restart once after its runtime preparation finishes. See [Claude Code setup](INSTALL.md#claude-code) for preparation and context settings.
+On Claude Code's first session, MCP startup or the SessionStart hook can prepare the runtime automatically. If Pinboard remains unavailable after preparation, reconnect the `pinboard` server with `/mcp` or restart. See [Claude Code setup](INSTALL.md#claude-code) for preparation and context settings.
 
 Start a task in your project and ask:
 

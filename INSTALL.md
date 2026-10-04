@@ -34,7 +34,7 @@ In a Codex task, invoke `$investigation-focus` for a substantial investigation. 
 
 For an inquiry that needs later sessions, choose a local home outside the evidence-source repositories. The skill maintains a human-readable note there, and a later task reads it before revising direction or producing another audience output. The note is optional for a bounded request. Keep original sources and private locators under your control.
 
-On the first connection for an unprepared installed version, when uv is available, the launcher runs `<launcher-root>/scripts/pinboard --prepare-runtime`, which owns the version-local preparation lock, and starts Pinboard only after the ready marker and entry point are valid. Request write access only to that version's `.pinboard-runtime` when needed. If uv is missing or another preparation is in progress, the launcher writes an unchanged `pinboard-launcher-result/v1` recovery result to stderr; if preparation starts and fails, the result reports the runtime as potentially changed. In both cases MCP stdout stays empty and the result names the same `--prepare-runtime` retry. Reconnect through the client's supported MCP reconnect mechanism after preparation succeeds. Codex does not use plugin data or a SessionStart hook for this boundary; those alternatives remain outside this contract.
+On the first connection for an unprepared installed version, when uv is available, the launcher runs `<launcher-root>/scripts/pinboard --prepare-runtime`, which owns the version-local preparation lock, and starts Pinboard only after the ready marker and entry point are valid. Request write access only to that version's `.pinboard-runtime` when needed. If uv is missing or another preparation is in progress, the launcher writes an unchanged `pinboard-launcher-result/v1` recovery result to stderr; if preparation starts and fails, the result reports the runtime as potentially changed. In both cases MCP stdout stays empty and the result names the same `--prepare-runtime` retry. After preparation succeeds, reconnect through the client's supported MCP reconnect mechanism if the connection remains unavailable. Codex does not use plugin data or a SessionStart hook for this boundary; those alternatives remain outside this contract.
 
 Closing a saved item runs through `pinboard_close`, which requires your close decision in your own words; an agent without them should ask you instead of closing. Codex ignores the Claude Code metadata that makes Claude Code v2.1.199 or later confirm each close, so Codex adds no extra close prompt: your Codex approval settings decide whether that call runs without asking.
 
@@ -108,7 +108,7 @@ Run the migration only while no other Pinboard command is accessing that project
 
 **Context setting:** `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` disables MCP tool search, loading all connected MCP tool schemas up front and potentially using a large part of the context window. Leave it unset if your gateway supports tool search; if your gateway requires this setting, connect fewer MCP servers. See [Claude Code environment variables](https://code.claude.com/docs/en/env-vars).
 
-Choose a persistent installation or a one-session load. Both need one runtime preparation per installed version before Pinboard's MCP server can start; with uv available, the plugin's SessionStart hook performs it during the first session.
+Choose a persistent installation or a one-session load. Both need one runtime preparation per installed version before Pinboard's MCP server can start. With uv available, MCP startup and the plugin's SessionStart hook can perform that preparation through the same version-local lock.
 
 ### Persistent installation
 
@@ -119,9 +119,9 @@ claude plugin marketplace add valsteen/pinboard
 claude plugin install pinboard@pinboard
 ```
 
-Start Claude Code in the target project. On the first session of an unprepared version, the SessionStart hook runs the same `scripts/pinboard --prepare-runtime` path with uv, which takes a moment and writes only that version's `.pinboard-runtime`. The `pinboard` MCP server starts before the hook finishes, so that first session reports it as failed (`Connection closed`) and the hook tells the agent to reconnect. Reconnect with `/mcp` or restart Claude Code once, then ask Claude Code to set up Pinboard there.
+Start Claude Code in the target project. On the first session of an unprepared version, MCP startup can prepare the runtime and start the server automatically. The SessionStart hook can also run the same `scripts/pinboard --prepare-runtime` path with uv; both use the preparation lock and write only that version's `.pinboard-runtime`. Hook preparation alone does not establish whether the MCP connection succeeded. If Pinboard remains unavailable after preparation, reconnect with `/mcp` or restart Claude Code, then ask Claude Code to set up Pinboard there.
 
-To avoid that one reconnect, or when uv is not on Claude Code's PATH, prepare the version yourself before the first session:
+To prepare before the first connection, or when uv is not on Claude Code's PATH, prepare the version yourself before the first session:
 
 ```sh
 ~/.claude/plugins/cache/pinboard/pinboard/*/scripts/pinboard --prepare-runtime
@@ -189,7 +189,7 @@ cd /path/to/your-project
 claude --plugin-dir /path/to/pinboard
 ```
 
-The explicit preparation lets the single session connect immediately; without it, the SessionStart hook prepares the checkout and the session needs one `/mcp` reconnect. A checkout already prepared for Pinboard development by `scripts/prepare-worktree` uses its `.venv` instead, so neither step is needed there.
+The explicit preparation makes the runtime available before the single session starts. Without it, MCP startup or the SessionStart hook can prepare the checkout automatically; use `/mcp` to reconnect only if the connection remains unavailable afterward. A checkout already prepared for Pinboard development by `scripts/prepare-worktree` uses its `.venv` instead, so neither step is needed there.
 
 The free Claude chat plan and Claude Code access are separate product surfaces. Check [Anthropic's current authentication options](https://code.claude.com/docs/en/authentication) before an authenticated smoke test because access can change.
 

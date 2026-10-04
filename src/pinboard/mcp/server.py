@@ -63,6 +63,8 @@ LOCAL_AUTHORITY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
     idempotentHint=False,
     openWorldHint=False,
 )
+# Full-invocation read-only hints exclude auxiliary settings and trace writes.
+# The two source tools bypass capture; ordinary ledger reads may use it.
 READ_ONLY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
     readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False
 )

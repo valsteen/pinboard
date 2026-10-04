@@ -64,6 +64,8 @@ An action names its subject once; its payload supplies the change specific to th
 
 The complete surface also contains focused project and definition reads, priority and parallel planning, and status operations. Action decisions accumulate legal choices in local lists and hand ordered tuples to their callers; snapshot lookups expose read-only maps. Preparation and attempt authority are time-limited claims identifying which agent may prepare or work on an item. They prevent a former worker from acting after replacement; they do not authorize a change to the agreed goal. Each operation has one advertised data scope and effect, so an agent cannot treat a convenient read, prompt publication, or stale receipt as mutation authority.
 
+Status reads leave the saved ledger and lifecycle unchanged. Their invocations may still initialize local contributor-trace settings or, when enabled, write private traces in the selected work root. The two source tools bypass capture: `brief_sources` reads without writing, while `brief_source_plan_output` writes only its selected plan destination. [Contributor guidance](CONTRIBUTING.md#diagnose-pinboard-invocations-during-contributor-work) explains tracing and its privacy tradeoff.
+
 ## Work survives its current execution
 
 A **work item** is the durable project decision. An **attempt** is one execution of that work. Keeping them separate allows the decision to survive a pause, correction, replacement worker, or later revision without treating every execution detail as part of the product request.

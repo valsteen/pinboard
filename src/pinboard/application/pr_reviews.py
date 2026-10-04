@@ -115,7 +115,7 @@ class ReviewClose(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
             raise ValueError("A review without a round has no findings to dispose of.")
         if (self.newer_observed_head is None) != (self.newer_observation_source is None):
             raise ValueError("A newer observed head requires its observation source.")
-        if self.newer_observed_head == self.last_reviewed_head:
+        if self.newer_observed_head is not None and self.newer_observed_head == self.last_reviewed_head:
             raise ValueError("The newer observed head must differ from the last reviewed head.")
         ids = tuple(value.finding_id for value in self.final_dispositions)
         if len(set(ids)) != len(ids):

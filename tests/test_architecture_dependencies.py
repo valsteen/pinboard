@@ -1,7 +1,9 @@
 import ast
+import re
 import tempfile
 import tomllib
 import unittest
+from importlib.metadata import distribution
 from importlib.util import resolve_name
 from pathlib import Path
 
@@ -115,18 +117,18 @@ def _database_location_literals(source_root: Path = SOURCE_ROOT) -> tuple[Path, 
 class ArchitectureDependencyTest(unittest.TestCase):
     def test_package_exposes_declared_process_entrypoints(self) -> None:
         metadata = tomllib.loads((SOURCE_ROOT.parents[1] / "pyproject.toml").read_text())
-        self.assertEqual(
-            {
-                "pinboard": "pinboard.cli.entrypoint:main",
-                "pinboard-mcp": "pinboard.mcp.server:main",
-                "pinboard-claude-subagent-start": "pinboard.claude_hook:main",
-                "pinboard-claude-session-start": "pinboard.claude_hook:session_start_main",
-                "pinboard-claude-pre-tool-use": "pinboard.claude_hook:pre_tool_use_main",
-            },
-            metadata["project"]["scripts"],
-        )
-        self.assertIn("mcp==2.2.0", metadata["project"]["dependencies"])
-        self.assertNotIn("mcp==2.2.0", metadata["dependency-groups"]["dev"])
+        installed = {
+            entry.name: entry for entry in distribution("pinboard").entry_points if entry.group == "console_scripts"
+        }
+        self.assertEqual(metadata["project"]["scripts"], {name: entry.value for name, entry in installed.items()})
+        for entry in installed.values():
+            self.assertTrue(callable(entry.load()))
+
+        def dependency_names(values: list[str]) -> set[str]:
+            return {re.split(r"[<>=!~\[; ]", value, maxsplit=1)[0].lower().replace("_", "-") for value in values}
+
+        self.assertIn("mcp", dependency_names(metadata["project"]["dependencies"]))
+        self.assertNotIn("mcp", dependency_names(metadata["dependency-groups"]["dev"]))
 
     def test_outward_relative_import_cannot_bypass_dependency_direction(self) -> None:
         source_root = Path(tempfile.mkdtemp()) / "src" / "pinboard"

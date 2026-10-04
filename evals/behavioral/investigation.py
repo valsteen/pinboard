@@ -7,7 +7,6 @@ result.
 """
 
 import hashlib
-from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Literal
@@ -105,14 +104,6 @@ class InvestigationKey(Record, frozen=True):
     human_choice: str
     unavailable_fact: str
     valid_alternatives: list[str]
-
-
-class SessionObservation(Record, frozen=True):
-    turn: Annotated[int, msgspec.Meta(ge=1)]
-    mode: SessionMode
-    runtime_identity: str
-    saved_evidence_read: bool
-    compaction_event: str | None
 
 
 class Measure(Enum):
@@ -216,45 +207,6 @@ def build_world(root: Path, case: InvestigationScenario, window: processes.Windo
         "The inventory may be incomplete; record inaccessible and unsearched facts separately.\n"
     )
     return home
-
-
-def record_sessions(case: InvestigationScenario, observations: list[SessionObservation]) -> str:
-    """Validate identity evidence; a resumed turn cannot prove fresh recovery or compaction."""
-    if [o.turn for o in observations] != list(range(1, len(case.turns) + 1)):
-        raise ValueError("one ordered runtime observation is required per turn")
-    seen: set[str] = set()
-    current = ""
-    for turn, observed in zip(case.turns, observations, strict=True):
-        if observed.mode is not turn.mode or not observed.runtime_identity:
-            raise ValueError("runtime observation disagrees with scripted continuation")
-        match observed.mode:
-            case SessionMode.START | SessionMode.FRESH:
-                if observed.runtime_identity in seen:
-                    raise ValueError("fresh-session recovery reused a runtime identity")
-                if observed.mode is SessionMode.FRESH and not observed.saved_evidence_read:
-                    raise ValueError("fresh session did not read saved inquiry evidence")
-                current = observed.runtime_identity
-                seen.add(current)
-            case SessionMode.CONTINUE:
-                if observed.runtime_identity != current:
-                    raise ValueError("continued turn changed runtime identity")
-            case _ as unreachable:
-                raise AssertionError(unreachable)
-    return "observed" if any(o.compaction_event for o in observations) else "unobserved"
-
-
-def exercise_sessions(
-    case: InvestigationScenario,
-    send: Callable[[str, str | None], tuple[str, bool, str | None]],
-) -> tuple[list[SessionObservation], str]:
-    """Send a fresh turn with no prior runtime identity; continuation receives the current one."""
-    observations: list[SessionObservation] = []
-    current: str | None = None
-    for index, turn in enumerate(case.turns, start=1):
-        previous = current if turn.mode is SessionMode.CONTINUE else None
-        current, saved_read, compaction_event = send(turn.human, previous)
-        observations.append(SessionObservation(index, turn.mode, current, saved_read, compaction_event))
-    return observations, record_sessions(case, observations)
 
 
 def assessment_prompt(case: InvestigationScenario, key: InvestigationKey, answer: str) -> str:

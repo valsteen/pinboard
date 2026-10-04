@@ -17,26 +17,19 @@ class HowItWorksDocumentationTests(unittest.TestCase):
     def test_source_model_builds_the_complete_visitor_guide(self) -> None:
         outputs = render.build_outputs()
 
-        self.assertEqual(
-            {
-                Path("HOW_IT_WORKS.md"),
-                Path("assets/how-it-works/ambiguity-closure.svg"),
-                Path("assets/how-it-works/product.svg"),
-                Path("assets/how-it-works/journey.svg"),
-                Path("assets/how-it-works/brief.svg"),
-                Path("assets/how-it-works/ambiguity-closure-dark.svg"),
-                Path("assets/how-it-works/product-dark.svg"),
-                Path("assets/how-it-works/journey-dark.svg"),
-                Path("assets/how-it-works/brief-dark.svg"),
-            },
-            outputs.keys(),
-        )
-        guide = outputs[Path("HOW_IT_WORKS.md")]
-        self.assertEqual(4, guide.count("<picture>"))
-        self.assertEqual(4, guide.count('media="(prefers-color-scheme: dark)"'))
-        for slug in ("ambiguity-closure", "brief", "product", "journey"):
-            self.assertIn(f'srcset="assets/how-it-works/{slug}-dark.svg"', guide)
-            self.assertIn(f'src="assets/how-it-works/{slug}.svg"', guide)
+        self.assertEqual(set(render.OUTPUT_PATHS.values()) | set(render.DARK_OUTPUT_PATHS.values()), outputs.keys())
+        guide = outputs[render.OUTPUT_PATHS["guide"]]
+        pictures = re.findall(r"<picture>(.*?)</picture>", guide, re.DOTALL)
+        self.assertTrue(pictures)
+        referenced = set()
+        for picture in pictures:
+            paths = re.findall(r'(?:src|srcset)="([^"]+)"', picture)
+            self.assertEqual(2, len(paths))
+            self.assertIn('media="(prefers-color-scheme: dark)"', picture)
+            for path in paths:
+                self.assertIn(Path(path), outputs)
+                referenced.add(Path(path))
+        self.assertEqual({path for path in outputs if path.suffix == ".svg"}, referenced)
 
     def test_guide_orders_workflow_detail_and_code_path(self) -> None:
         guide = render.build_outputs()[Path("HOW_IT_WORKS.md")]
@@ -71,9 +64,9 @@ class HowItWorksDocumentationTests(unittest.TestCase):
                 self.assertNotIn("linearGradient", svg)
                 self.assertNotIn("feDropShadow", svg)
 
-        for slug in ("ambiguity-closure", "brief", "product", "journey"):
-            day = outputs[Path(f"assets/how-it-works/{slug}.svg")]
-            night = outputs[Path(f"assets/how-it-works/{slug}-dark.svg")]
+        for slug in render.DARK_OUTPUT_PATHS:
+            day = outputs[render.OUTPUT_PATHS[slug]]
+            night = outputs[render.DARK_OUTPUT_PATHS[slug]]
             with self.subTest(slug=slug):
                 self.assertEqual(
                     re.sub(r"#[0-9a-fA-F]{3,6}\b", "#COLOR", day),

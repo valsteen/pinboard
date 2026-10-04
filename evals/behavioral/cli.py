@@ -38,12 +38,11 @@ from evals.behavioral.records import (
     CoverageResult,
     CoverageWindow,
     RegisteredScenario,
-    ScenarioId,
     Scored,
     ScorerInput,
     write_new,
 )
-from evals.behavioral.scenarios import RegisteredSet, load_set, scenario_path
+from evals.behavioral.scenarios import RegisteredSet, load_set
 
 
 @dataclass(frozen=True)
@@ -497,8 +496,7 @@ def dispatch(command: Command) -> int:  # noqa: C901, PLR0912
             print(substance.summarize(Layout(c.out)), end="")
         case Compare() as c:
             registered = load_set(c.scenario_set)
-            ids = [scenario.id for scenario in registered.scenarios]
-            print(decision.compare(Layout(c.out), ids, registered.targeted_rules, c.baseline, c.candidate), end="")
+            print(decision.compare(Layout(c.out), registered.registration, c.baseline, c.candidate), end="")
         case Report() as c:
             ids = [scenario.id for scenario in load_set(c.scenario_set).scenarios]
             print(decision.report(Layout(c.out), ids, c.variant), end="")
@@ -690,7 +688,7 @@ def coverage_codex(c: CoverageCodex) -> int:
     """Export, prove isolation, then alternate one run/score/assessment under one immutable deadline."""
     registered = load_set(c.scenario_set)
     targets = tuple(s for s in registered.scenarios if s.id in {"s14-motivating-replay", "s16-reviewed-not-shipped"})
-    if len(targets) != 2 or registered.targeted_rules:
+    if len(targets) != 2 or registered.registration.targeted_rules:
         raise ValueError("coverage requires the unchanged registered s14/s16 and targeted_rules=[]")
     runner.require_codex_world_location(c.worlds)
     c.out.mkdir(parents=True, exist_ok=False)
@@ -707,10 +705,7 @@ def coverage_codex(c: CoverageCodex) -> int:
             maximum_runs=2 * c.runs_per_target,
             candidate_revision=c.revision,
             scenario_sha256=[
-                RegisteredScenario(
-                    id=s.id, sha256=hashlib.sha256(scenario_path(ScenarioId(s.id)).read_bytes()).hexdigest()
-                )
-                for s in targets
+                RegisteredScenario(id=s.id, sha256=hashlib.sha256(registered.content(s)).hexdigest()) for s in targets
             ],
             targeted_rules=[],
             known_price_cap_usd=c.cap_usd,
@@ -737,7 +732,11 @@ def coverage_codex(c: CoverageCodex) -> int:
                     worlds=c.worlds,
                     export=evaluated,
                     variant=c.variant,
-                    scenarios=RegisteredSet(registered.name, (scenario,), registered.targeted_rules),
+                    scenarios=RegisteredSet(
+                        (scenario,),
+                        registered.registration,
+                        registered.scenario_sources,
+                    ),
                     first_index=index,
                     runs=1,
                     model=c.model,

@@ -1,5 +1,6 @@
 """Codex output reading: replies, commentary, refusals and token pricing from synthetic event text."""
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -8,7 +9,18 @@ from unittest.mock import patch
 
 from evals.behavioral import codex_driver, processes, runner, world
 from evals.behavioral.layout import Layout
-from evals.behavioral.records import Completed, ExportRecord, RunKey, Scenario, Stopped, Turn, WorldKind
+from evals.behavioral.records import (
+    Completed,
+    ExportRecord,
+    RegisteredScenario,
+    RunKey,
+    Scenario,
+    ScenarioSet,
+    Stopped,
+    Turn,
+    WorldKind,
+    encode,
+)
 from evals.behavioral.scenarios import RegisteredSet
 
 type Json = str | int | bool | list[Json] | dict[str, Json] | None
@@ -300,7 +312,17 @@ class RecoveryRunTest(unittest.TestCase):
                     plugin_root="/plugin",
                 ),
                 "candidate",
-                RegisteredSet("native", (scenario,), ()),
+                RegisteredSet(
+                    (scenario,),
+                    ScenarioSet(
+                        name="native",
+                        scenarios=[
+                            RegisteredScenario(id=scenario.id, sha256=hashlib.sha256(encode(scenario)).hexdigest())
+                        ],
+                        targeted_rules=[],
+                    ),
+                    (encode(scenario),),
+                ),
                 1,
                 1,
                 "gpt-6-sol",

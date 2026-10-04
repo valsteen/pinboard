@@ -27,7 +27,11 @@ Resolve `../scripts/inventory.py` relative to this reference. Run it through the
 
 Write each full report once to private scratch space with `--output`. The command prints a compact receipt containing the input digest, summary, and candidate counts. Query the saved JSON for individual candidate families instead of printing the complete report or rerunning the helper to extract another section.
 
-The report's `semantic_disposition` contract names the eight semantic candidate categories, their mechanical candidate sources when available, and the required semantic fallback. It also names the only terminal dispositions. The generic and Python-AST reports must carry identical ordered roots, input digest, and semantic disposition contract. A candidate collection is not a defect list.
+The report's `semantic_disposition` contract names semantic candidate categories, their mechanical candidate sources when available, and the required semantic fallback. It also names the only terminal dispositions. The generic and Python-AST reports must carry identical ordered roots, input digest, and semantic disposition contract. A candidate collection is not a defect list.
+
+`copied_test_settings` and `hardcoded_settings` retain the canonical source selector, normalized value, exact expression, consumer selector, and consuming call or text quantity. Generic mode recognizes one-line uppercase assignments; Python AST adds annotated and multiline settings and complete consumer expressions. Both normalize bounded literal arithmetic and numeric quantities with units. Import-linked equality narrows the search but cannot prove semantic coupling, resolve runtime calls or indirect re-exports, or follow transitive fixture dataflow. Complete that pass through assertions, constructor inputs, cardinalities, enums, versions, structured settings, and derived totals. Preserve independently owned contracts and deliberate fixture values. The helper adds no defect verdict or count threshold.
+
+When Python syntax cannot be parsed, generic mode preserves its lexical declarations, families and recognized setting declarations. Its `extraction_limitations` names each affected file, failure line and parser reason; that file's import-linked consuming expressions are unavailable. Resolve those selectors through a compatible existing analyzer or direct semantic source review before claiming coverage. Python-AST mode still requires syntax supported by the selected Python runtime.
 
 For a repository containing production Python, run the same tracked revision and roots twice:
 

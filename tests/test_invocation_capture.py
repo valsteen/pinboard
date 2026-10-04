@@ -783,7 +783,7 @@ class McpCaptureTest(unittest.TestCase):
                     asyncio.run(registered.fn(**kwargs))
                     expected = {"request": kwargs["request"]} if tuple(kwargs) == ("request",) else kwargs
                     self.assertEqual(expected, observed[tool.name])
-            self.assertEqual(24, len(observed))
+            self.assertEqual({tool.name for tool in asyncio.run(transport.list_tools())}, observed.keys())
             for tool in asyncio.run(transport.list_tools()):
                 self.assertNotIn("capture_evidence", tool.input_schema["properties"])
 

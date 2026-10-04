@@ -1,7 +1,6 @@
 """Observable fixture, registration, recovery and assessment contracts for fictional inquiries."""
 
 import hashlib
-import json
 import os
 import shutil
 import tempfile
@@ -11,7 +10,7 @@ from unittest.mock import patch
 
 import msgspec
 
-from evals.behavioral import claude_driver, codex_driver, investigation, processes
+from evals.behavioral import investigation, processes
 
 
 class InvestigationWorldTests(unittest.TestCase):
@@ -91,119 +90,6 @@ class InvestigationWorldTests(unittest.TestCase):
             self.assertEqual(investigation.load_key(path, case, hashlib.sha256(content).hexdigest()), key)
             with self.assertRaisesRegex(ValueError, "digest changed"):
                 investigation.load_key(path, case, "0" * 64)
-
-    def test_fresh_recovery_requires_new_identity_and_saved_evidence(self) -> None:
-        case = investigation.load_set(investigation.DATA / "sets" / "heldout.json")[1][0]
-        requested: list[str | None] = []
-        with tempfile.TemporaryDirectory() as temporary:
-            home = investigation.build_world(Path(temporary) / "world", case, processes.Window(None))
-            finding = home / "finding.md"
-
-            def controlled_send(_human: str, previous: str | None) -> tuple[str, bool, str | None]:
-                requested.append(previous)
-                if len(requested) == 2:
-                    finding.write_text("Worker w9 changed tags only; Nia dismissed the flush lead.\n")
-                if len(requested) == 3:
-                    self.assertIsNone(previous)
-                    saved = finding.read_text()
-                    self.assertIn("Nia dismissed the flush lead", saved)
-                    return "thread-b", bool(saved), None
-                return "thread-a", False, None
-
-            exercised, coverage = investigation.exercise_sessions(case, controlled_send)
-        self.assertEqual(requested, [None, "thread-a", None])
-        self.assertEqual([turn.runtime_identity for turn in exercised], ["thread-a", "thread-a", "thread-b"])
-        self.assertEqual(coverage, "unobserved")
-        observations = [
-            investigation.SessionObservation(1, investigation.SessionMode.START, "thread-a", False, None),
-            investigation.SessionObservation(2, investigation.SessionMode.CONTINUE, "thread-a", False, None),
-            investigation.SessionObservation(3, investigation.SessionMode.FRESH, "thread-b", True, None),
-        ]
-        self.assertEqual(investigation.record_sessions(case, observations), "unobserved")
-        with self.assertRaisesRegex(ValueError, "reused a runtime identity"):
-            investigation.record_sessions(
-                case,
-                [
-                    *observations[:2],
-                    investigation.SessionObservation(3, investigation.SessionMode.FRESH, "thread-a", True, None),
-                ],
-            )
-        with self.assertRaisesRegex(ValueError, "did not read saved"):
-            investigation.record_sessions(
-                case,
-                [
-                    *observations[:2],
-                    investigation.SessionObservation(3, investigation.SessionMode.FRESH, "thread-b", False, None),
-                ],
-            )
-
-    def test_controlled_runtime_commands_start_fresh_sessions(self) -> None:
-        case = investigation.load_set(investigation.DATA / "sets" / "heldout.json")[1][0]
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            claude_calls: list[list[str]] = []
-            session: claude_driver.ClaudeSession | None = None
-
-            def fake_claude(_tool: processes.Tool, arguments: list[str], **_kwargs: object) -> processes.Completed:
-                claude_calls.append(arguments)
-                identity = (
-                    arguments[arguments.index("--session-id") + 1]
-                    if "--session-id" in arguments
-                    else arguments[arguments.index("--resume") + 1]
-                )
-                denials: list[dict[str, str]] = []
-                event = {
-                    "type": "result",
-                    "subtype": "success",
-                    "session_id": identity,
-                    "is_error": False,
-                    "total_cost_usd": 0.0,
-                    "usage": {
-                        "input_tokens": 0,
-                        "cache_read_input_tokens": 0,
-                        "cache_creation_input_tokens": 0,
-                        "output_tokens": 0,
-                    },
-                    "permission_denials": denials,
-                    "result": "saved",
-                }
-                return processes.Completed(0, json.dumps(event) + "\n", "", False)
-
-            def send_claude(human: str, previous: str | None) -> tuple[str, bool, str | None]:
-                nonlocal session
-                if previous is None:
-                    session = claude_driver.ClaudeSession.start(root, "test-model", root, ("default",))
-                assert session is not None
-                session.turn(1 if previous is None else 2, human, None, root / "claude.jsonl")
-                return session.session_id, previous is None and len(claude_calls) > 1, None
-
-            with patch.object(claude_driver.processes, "run_tool", side_effect=fake_claude):
-                observations, coverage = investigation.exercise_sessions(case, send_claude)
-            self.assertEqual(coverage, "unobserved")
-            self.assertEqual(["--session-id" in args for args in claude_calls], [True, False, True])
-            self.assertNotEqual(observations[0].runtime_identity, observations[2].runtime_identity)
-
-            codex_calls: list[list[str]] = []
-
-            def fake_codex(arguments: list[str], **_kwargs: object) -> processes.Completed:
-                codex_calls.append(arguments)
-                identity = f"codex-{len([a for a in codex_calls if a[1] != 'resume'])}"
-                return processes.Completed(
-                    0, json.dumps({"type": "thread.started", "thread_id": identity}) + "\n", "", False
-                )
-
-            def send_codex(human: str, previous: str | None) -> tuple[str, bool, str | None]:
-                _, reading = codex_driver.run_turn(
-                    root, root, previous, human, root / "codex.jsonl", processes.Window(None)
-                )
-                assert reading.thread_id is not None
-                return reading.thread_id, previous is None and len(codex_calls) > 1, None
-
-            with patch.object(codex_driver, "codex", side_effect=fake_codex):
-                observations, coverage = investigation.exercise_sessions(case, send_codex)
-            self.assertEqual(coverage, "unobserved")
-            self.assertEqual([args[1] == "resume" for args in codex_calls], [False, True, False])
-            self.assertNotEqual(observations[0].runtime_identity, observations[2].runtime_identity)
 
     def test_assessment_keeps_decision_measures_separate(self) -> None:
         case = investigation.load_set(investigation.DATA / "sets" / "heldout.json")[1][0]

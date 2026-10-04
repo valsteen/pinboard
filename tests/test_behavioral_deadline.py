@@ -29,6 +29,7 @@ from evals.behavioral import (
     spend,
     substance,
 )
+from evals.behavioral.compatibility_records import CompatibilityRunRecord
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
     Assessed,
@@ -47,6 +48,7 @@ from evals.behavioral.records import (
     RunRecord,
     Runtime,
     Scored,
+    ScoreRecord,
     ScorerInput,
     ScorerSession,
     ScoringFailure,
@@ -57,6 +59,7 @@ from evals.behavioral.records import (
     write_new,
 )
 from evals.behavioral.scenarios import RegisteredSet, load_set
+from tests.test_behavioral_scoring import answer
 
 
 class EffectDeadlineTest(unittest.TestCase):
@@ -766,7 +769,11 @@ class ClaudeCompatibilityTest(unittest.TestCase):
             root = Path(directory)
             layout = Layout(root / "out")
             registered = load_set(Path("evals/behavioral/data/scenario-sets/s13-s17.json"))
-            selected = RegisteredSet(registered.name, registered.scenarios[:2], registered.targeted_rules)
+            selected = RegisteredSet(
+                registered.scenarios[:2],
+                registered.registration,
+                registered.scenario_sources,
+            )
             evaluated = ExportRecord(
                 schema="pinboard-behavioral-export/v1",
                 commit="0" * 40,
@@ -809,7 +816,11 @@ class ClaudeCompatibilityTest(unittest.TestCase):
             root = Path(directory)
             layout = Layout(root / "out")
             registered = load_set(Path("evals/behavioral/data/scenario-sets/s13-s17.json"))
-            selected = RegisteredSet(registered.name, registered.scenarios[:2], registered.targeted_rules)
+            selected = RegisteredSet(
+                registered.scenarios[:2],
+                registered.registration,
+                registered.scenario_sources,
+            )
             evaluated = ExportRecord(
                 schema="pinboard-behavioral-export/v1",
                 commit="0" * 40,
@@ -1296,7 +1307,7 @@ class CoverageDeadlineTest(unittest.TestCase):
             )
             write_new(
                 directory / "run.json",
-                RunRecord(
+                CompatibilityRunRecord(
                     schema="pinboard-behavioral-run/v2",
                     run=key,
                     runtime=Runtime.CODEX,
@@ -1344,8 +1355,8 @@ class CoverageDeadlineTest(unittest.TestCase):
                 ScorerSession(
                     schema="pinboard-behavioral-scorer-session/v1",
                     label="T1",
-                    scorer_model="test",
-                    checklist_sha256="0" * 64,
+                    scorer_model=scoring.SCORER_MODEL,
+                    checklist_sha256=scoring.CHECKLIST_SHA256,
                     cost_usd=0.01,
                     outcome=Scored(),
                 ),
@@ -1354,6 +1365,9 @@ class CoverageDeadlineTest(unittest.TestCase):
                 session.layout.label_file("T1"),
                 LabelMapping(schema="pinboard-behavioral-label/v1", label="T1", run=source.run),
             )
+            decoded = scoring.decode_score(answer("T1", [1]), "T1", 1)
+            assert isinstance(decoded, ScoreRecord)
+            write_new(session.layout.score_directory("T1") / "score.json", decoded)
             return Scored()
 
         def assess(layout: Layout, budget: spend.Budget) -> list[str]:

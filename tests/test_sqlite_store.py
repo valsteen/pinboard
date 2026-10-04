@@ -696,17 +696,9 @@ class SQLiteStoreTest(unittest.TestCase):
             self.assertEqual(FileIOErrorCode.FILE_ALREADY_EXISTS, collision.exception.code)
 
     def test_complete_stored_state_and_relational_contract_matrix(self) -> None:
-        path, store = self._store()
+        _path, store = self._store()
         state = complete_sqlite_state()
         self.assertEqual(state, store.validated_snapshot())
-        connection = sqlite3.connect(path)
-        try:
-            table_count = connection.execute(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-            ).fetchone()[0]
-        finally:
-            connection.close()
-        self.assertEqual(19, table_count)
         review_items = list(state.lifecycle.work_items)
         review_items[1] = replace(review_items[1], state=stored_state.StoredWorkItemState.REVIEW)
         review_attempt = replace(state.lifecycle.attempts[0], state=work_models.AttemptState.REVIEW)

@@ -62,7 +62,7 @@ from pinboard.domain.errors import (
 )
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, LeaseId, TaskId, WorkItemId
 from pinboard.mcp import common as mcp_common
-from pinboard.mcp import contract_schemas, contracts
+from pinboard.mcp import contract_schemas, contracts, tool_names
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import mutation_operations as mcp_mutations
 from pinboard.mcp import read_operations as mcp_reads
@@ -823,7 +823,9 @@ class McpTransportTest(unittest.TestCase):
 
         async def scenario() -> None:
             tools = await server.list_tools()
-            self.assertEqual(24, len(tools))
+            declared = {value for name, value in vars(tool_names).items() if name.endswith("_TOOL")}
+            self.assertEqual(declared, {tool.name for tool in tools})
+            self.assertEqual(len(declared), len(tools))
             for tool in tools:
                 with self.subTest(tool=tool.name):
                     self.assertEqual("object", tool.input_schema["type"])
@@ -3981,6 +3983,11 @@ class McpTransportTest(unittest.TestCase):
             executor.shutdown()
 
         path = "$.brief.checkpoint.architecture_impact.kind"
+        selections = sorted(
+            value
+            for definition in msgspec.json.schema(work_brief_models.ArchitectureImpact)["$defs"].values()
+            for value in definition["properties"]["kind"]["enum"]
+        )
         for selection, actionable_result in (("unsupported", actionable), ("", empty)):
             with self.subTest(selection=selection):
                 self.assertEqual(
@@ -3997,11 +4004,11 @@ class McpTransportTest(unittest.TestCase):
                         "mismatches": [
                             {
                                 "field": path,
-                                "expected": "none | read-only | update-required",
+                                "expected": " | ".join(selections),
                                 "observed": selection,
                             }
                         ],
-                        "allowed_selections": ["none", "read-only", "update-required"],
+                        "allowed_selections": selections,
                         "recovery": {
                             "tool": "pinboard_brief_contract",
                             "arguments": {

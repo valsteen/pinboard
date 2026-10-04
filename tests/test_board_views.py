@@ -673,7 +673,9 @@ class BoardProjectionTest(unittest.TestCase):
 
         markdown, html = self._board(roots)
         data = _page_data(html)
-        self.assertEqual(["paused", "review", "active", "ready", "blocked", "deferred"], data["states"])
+        states = data["states"]
+        assert isinstance(states, list)
+        self.assertEqual({state.value for state in work_models.WorkState}, set(states))
         items = {str(value["item_id"]): value for value in _page_items(html)}
         for item_id, value in items.items():
             self.assertNotIn("prompt", value)

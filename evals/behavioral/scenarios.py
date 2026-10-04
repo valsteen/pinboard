@@ -11,7 +11,7 @@ from pathlib import Path
 
 import msgspec
 
-from evals.behavioral.records import ChecklistItem, Scenario, ScenarioId, ScenarioSet, WorldKind
+from evals.behavioral.records import Scenario, ScenarioId, ScenarioSet, WorldKind
 
 DATA = Path(__file__).parent / "data"
 CHECKLIST = DATA / "checklist.md"
@@ -26,9 +26,20 @@ class DataIntegrityError(Exception):
 
 @dataclass(frozen=True)
 class RegisteredSet:
-    name: str
     scenarios: tuple[Scenario, ...]
-    targeted_rules: tuple[ChecklistItem, ...]
+    registration: ScenarioSet
+    scenario_sources: tuple[bytes, ...]
+
+    def content(self, scenario: Scenario) -> bytes:
+        """The verified raw bytes for a selected member, independent of selection subsets."""
+        for member, content in zip(self.registration.scenarios, self.scenario_sources, strict=True):
+            if member.id == scenario.id:
+                if hashlib.sha256(content).hexdigest() != member.sha256:
+                    raise DataIntegrityError(f"registered scenario bytes changed: {scenario.id}")
+                if msgspec.json.decode(content, type=Scenario) != scenario:
+                    raise DataIntegrityError(f"selected scenario differs from registered bytes: {scenario.id}")
+                return content
+        raise DataIntegrityError(f"selected scenario is unregistered: {scenario.id}")
 
 
 def checklist_text() -> str:
@@ -63,10 +74,16 @@ def load_set(path: Path) -> RegisteredSet:
     """Load a scenario set file and verify every member against its registered digest."""
     scenario_set = msgspec.json.decode(path.read_bytes(), type=ScenarioSet)
     scenarios = []
+    sources = []
     for member in scenario_set.scenarios:
         file = scenario_path(ScenarioId(member.id))
-        actual = hashlib.sha256(file.read_bytes()).hexdigest()
+        content = file.read_bytes()
+        actual = hashlib.sha256(content).hexdigest()
         if actual != member.sha256:
             raise DataIntegrityError(f"{file} has SHA-256 {actual}, but {path} registers {member.sha256}")
-        scenarios.append(load_scenario(ScenarioId(member.id)))
-    return RegisteredSet(scenario_set.name, tuple(scenarios), tuple(scenario_set.targeted_rules))
+        scenario = msgspec.json.decode(content, type=Scenario)
+        if scenario.id != member.id:
+            raise DataIntegrityError(f"{file} declares id {scenario.id}")
+        scenarios.append(scenario)
+        sources.append(content)
+    return RegisteredSet(tuple(scenarios), scenario_set, tuple(sources))

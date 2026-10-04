@@ -48,7 +48,7 @@ Use runtime observations and real stores when they cheaply distinguish a require
 
 After establishing production truth, inspect the exact semantic candidate categories owned by the supported-reality and canonical-naming method in `DESIGN_PRINCIPLES.md` when that authority exists:
 
-- synonymous representations of one fact;
+- synonymous representations of one fact, including copied settings, test inventories, and route or classification decisions;
 - colliding complete names for different facts;
 - detached relational roles;
 - missing or misused nominal identifiers;
@@ -60,6 +60,10 @@ After establishing production truth, inspect the exact semantic candidate catego
 For every candidate selector, trace the supported root, production producer and consumer, retained data or external protocol, accepted authority, and cheapest falsifying observation. A mechanical match generates a candidate only. Shared words, equal atom sets, low reference counts, repeated syntax, line totals, compatibility labels, and obligation keywords never establish a defect by themselves.
 
 Use one terminal disposition per selector: `supported-root`, `boundary`, `retained-exception`, `removal`, or `consolidation`. A retained exception must name its exact current reason and reopening condition. The supported reasons are an independently required boundary translation, supported retained data, an independently changing external consumer or protocol, or an accepted product or assurance obligation with a current consequence.
+
+Audit settings through their assertion and fixture consumers, including constructor inputs, complete inventories, exact versions and cardinalities, derived totals, equivalent expressions, and quantities in text. Consume the canonical setting and compute expected behavior independently. Preserve separately owned scientific, spending, external, historical, and fixture contracts with their reason; equality alone does not prove coupling. Use the existing optional inventory's settings candidates as leads and complete the unsupported dataflow by tracing the actual consumers.
+
+For amplification, follow one supported route to its effect and simulate one sibling or setting change. Count discover-and-edit sites, repeated decisions, and required boundary conversions separately from imports and source size. Test the proposed consolidation with the cheapest counterexample: a real consumer whose responsibility differs. Remove copied decisions recursively, then stop when the remaining owners distinguish real product facts or another fold would add more conversion machinery than it removes.
 
 Keep relational role names distinct when the relationship distinguishes them. Keep nominal identifiers when identity travels independently across a boundary. Consolidate same-meaning representations at one canonical owner, with one explicit exhaustive conversion for each independently required external or persisted shape. Remove repeated validation only when the earlier owner already guarantees the same fact; retain checks that combine independent sources or current external state.
 

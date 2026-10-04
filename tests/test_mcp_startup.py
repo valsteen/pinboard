@@ -32,7 +32,7 @@ class McpStartupTest(unittest.TestCase):
             path.write_text(historical)
             legacy = asyncio.run(advertised())
             self.assertEqual(historical, path.read_text())
-            self.assertEqual(24, len(current))
+            self.assertTrue(current)
             self.assertEqual(
                 [(tool.name, tool.input_schema, tool.output_schema) for tool in current],
                 [(tool.name, tool.input_schema, tool.output_schema) for tool in legacy],

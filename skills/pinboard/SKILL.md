@@ -17,6 +17,10 @@ Classify the current request before entering delivery. When the human asks only 
 
 A missing required tool stops that operation; it never invites shell commands or temporary payload files. A Claude, Codex, or other client reachable through computer control is not part of the current session's tool surface and cannot act for it: ask the human to restore the current client's connection or explicitly authorize diagnosis, and use another client only as the subject of an accepted compatibility run against its named target. Workers and reviewers launched through an exact returned `native_launch` recipe remain valid participants but cannot replace a coordinator capability missing from this session. Static CLI contract discovery, full validation, initialization, project export, and view repair remain CLI-only. Never infer an unadvertised tool from a neighboring name.
 
+Before the first implementation write, read the actual human invocation and identify its requested effect, selected route, checkout, and exact destinations for source changes, private evidence, and any external effect. Skill access, intake, status, and later registration supply context rather than implementation authority. Follow the chosen route through its owning caller before editing; when a proposed change propagates across owners, trace the concrete producer and consumer only as far as needed to expose a genuine product or scope choice. Reuse settled authority and decide routine reversible details yourself.
+
+If implementation already began before that classification, recover the actual prior effects and changed surfaces from available invocation and repository evidence. State what was observed and what remains unknown; a later item or brief does not retroactively authorize the earlier effects or make a narrower recorded file list truthful. Continue only the effects the current request authorizes.
+
 ## Phase index
 
 Use only the phase needed now. A reference supplies concrete mechanics; this core remains the conversation owner.

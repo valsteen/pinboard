@@ -7,17 +7,22 @@ redacted; the label-to-run map is stored apart from the scores. A malformed answ
 ``ScoringFailure`` and never counted as a score.
 """
 
+import hashlib
 import re
 import secrets
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import msgspec
 
 from evals.behavioral import oneshot, processes
-from evals.behavioral.layout import Layout
+from evals.behavioral.layout import SCENARIO_RECORD, Layout, RecordedRun
 from evals.behavioral.records import (
+    Completed,
     LabelMapping,
     Redaction,
+    RunKey,
+    RunRecord,
     Scenario,
     ScenarioId,
     Scored,
@@ -28,7 +33,7 @@ from evals.behavioral.records import (
     ScoringOutcome,
     write_new,
 )
-from evals.behavioral.scenarios import CHECKLIST_SHA256, checklist_text, load_scenario, world_facts
+from evals.behavioral.scenarios import CHECKLIST_SHA256, DataIntegrityError, checklist_text, load_scenario, world_facts
 from evals.behavioral.spend import Budget, Category
 
 SCORER_MODEL = "claude-opus-5-5"
@@ -100,11 +105,11 @@ class ScoringRun:
 
     def score(self, source: ScorerInput) -> ScoringOutcome | None:
         """Score one run once; return None when the cap leaves no room for another scorer session."""
+        scenario = scoring_scenario(self.layout, source)
         projected = self.budget.reserve(Category.SCORER)
         if projected is None:
             return None
         try:
-            scenario = load_scenario(ScenarioId(source.run.scenario_id))
             label = f"T{secrets.token_hex(4)}"
             directory = self.layout.score_directory(label)
             directory.mkdir(parents=True)
@@ -166,11 +171,85 @@ class ScoringRun:
             self.budget.release(projected)
 
 
-def valid_score_counts(layout: Layout) -> dict[str, int]:
-    """Number of valid scores per run, keyed by the run's display name."""
-    valid = {session.label for session in layout.scorer_sessions() if isinstance(session.outcome, Scored)}
-    counts: dict[str, int] = {}
+@dataclass(frozen=True)
+class EligibleScore:
+    run: RunKey
+    score: ScoreRecord
+
+
+@dataclass(frozen=True)
+class IneligibleScore:
+    run: RunKey | None
+    reason: str
+
+
+def eligibility(
+    session: ScorerSession, mapping: LabelMapping, score: ScoreRecord, run: RecordedRun | None
+) -> str | None:
+    """Score-level eligibility does not depend on aggregate identity or spending completeness."""
+    if session.scorer_model != SCORER_MODEL:
+        return "scorer model differs from the pinned scorer"
+    if session.checklist_sha256 != CHECKLIST_SHA256:
+        return "scorer checklist digest differs from the frozen checklist"
+    if session.label != mapping.label or score.label != mapping.label:
+        return "score/session/label identities disagree"
+    if run is None:
+        return "linked source run is absent"
+    if run.run != mapping.run or not isinstance(run.outcome, Completed):
+        return "linked source run differs or did not complete"
+    if sorted(reply.turn for reply in score.replies) != [turn.index for turn in run.turns]:
+        return "score does not cover the recorded run's turns exactly once"
+    return None
+
+
+def score_evidence(layout: Layout) -> Iterator[EligibleScore | IneligibleScore]:
+    mappings: dict[str, list[LabelMapping]] = {}
     for mapping in layout.labels():
-        if mapping.label in valid:
-            counts[mapping.run.display()] = counts.get(mapping.run.display(), 0) + 1
+        mappings.setdefault(mapping.label, []).append(mapping)
+    for session in layout.scorer_sessions():
+        if not isinstance(session.outcome, Scored):
+            continue
+        linked = mappings.get(session.label, [])
+        if len(linked) != 1:
+            if linked:
+                yield IneligibleScore(None, "scored session has conflicting linked labels")
+                continue
+            yield IneligibleScore(None, "scored session has no linked label")
+            continue
+        mapping = linked[0]
+        try:
+            score = layout.score(session.label)
+            reason = eligibility(session, mapping, score, layout.run_record(mapping.run))
+        except (OSError, msgspec.DecodeError, ValueError) as error:
+            yield IneligibleScore(mapping.run, f"linked score/run evidence is unavailable: {error}")
+            continue
+        yield IneligibleScore(mapping.run, reason) if reason is not None else EligibleScore(mapping.run, score)
+
+
+def scoring_scenario(layout: Layout, source: ScorerInput) -> Scenario:
+    """Current runs judge their saved raw scenario bytes; old evidence keeps its descriptive scoring route."""
+    run = layout.run_record(source.run)
+    if isinstance(run, RunRecord):
+        content = (layout.run_directory(source.run) / SCENARIO_RECORD).read_bytes()
+        if hashlib.sha256(content).hexdigest() != run.scenario_sha256:
+            raise DataIntegrityError(f"saved scenario bytes differ from run {source.run.display()}")
+        members = [member for member in run.registration.scenarios if member.id == source.run.scenario_id]
+        if len(members) != 1 or members[0].sha256 != run.scenario_sha256:
+            raise DataIntegrityError(f"run registration differs from saved scenario {source.run.display()}")
+        scenario = msgspec.json.decode(content, type=Scenario)
+        if scenario.id != source.run.scenario_id or source.run != run.run:
+            raise DataIntegrityError("scorer input and saved scenario name different runs")
+        if source.replies != [turn.final_reply for turn in run.turns]:
+            raise DataIntegrityError("scorer input differs from recorded replies")
+        return scenario
+    return load_scenario(ScenarioId(source.run.scenario_id))
+
+
+def valid_score_counts(layout: Layout) -> dict[str, int]:
+    """Eligible score count, including readable legacy runs with unknown aggregate comparison facts."""
+    counts: dict[str, int] = {}
+    for evidence in score_evidence(layout):
+        if isinstance(evidence, EligibleScore):
+            name = evidence.run.display()
+            counts[name] = counts.get(name, 0) + 1
     return counts

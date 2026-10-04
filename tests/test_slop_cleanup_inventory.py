@@ -399,22 +399,13 @@ def test_helper() -> None:
             },
             set(self.json_strings(semantic_disposition["terminal_dispositions"])),
         )
-        self.assertEqual(
-            {
-                "cartesian-variant-growth",
-                "colliding-complete-names",
-                "detached-relational-roles",
-                "missing-or-misused-nominal-identifiers",
-                "repeated-invariant-enforcement",
-                "speculative-obligations",
-                "synonymous-representations",
-                "unsupported-compatibility",
-            },
-            {
-                self.json_string(category["category"])
-                for category in self.json_objects(semantic_disposition["categories"])
-            },
-        )
+        categories = self.json_objects(semantic_disposition["categories"])
+        self.assertTrue(categories)
+        self.assertEqual(len(categories), len({self.json_string(category["category"]) for category in categories}))
+        for category in categories:
+            self.assertTrue(category["disposition_method"])
+            for name in self.json_strings(category["candidate_sources"]):
+                self.assertIn(name, candidates)
         self.assertEqual([], candidates["trivial_callable_bodies"])
         self.assertEqual([], candidates["equivalent_match_arms"])
         self.assertEqual([], candidates["duplicated_match_structures"])
@@ -511,6 +502,63 @@ def test_helper() -> None:
 
         self.assertNotEqual(0, result.returncode)
         self.assertIn("inventory root does not exist: missing", result.stderr)
+
+    def test_settings_candidates_include_equivalent_quantities_and_imported_inventories(self) -> None:
+        self.write("src/settings.py", 'LIMIT = 272_000\nMODES = ("fresh", "resume")\n')
+        self.write(
+            "tests/test_settings.py",
+            """from settings import LIMIT as cap, MODES
+import settings as cfg
+
+def test_threshold():
+    usage(272 * 1000 + 1)
+    assert_result(("fresh", "resume"), cfg.MODES)
+    usage(cap + 1)
+
+def test_fixture():
+    usage(31)
+""",
+        )
+        self.write("tests/test_unrelated.py", "def test_wire():\n    assert_result(272_000)\n")
+        self.write("quantity.md", "A prompt above 272K tokens uses the alternate tier.\n")
+        for mode in ("generic", "python-ast"):
+            with self.subTest(mode=mode):
+                report = self.inventory(mode)
+                candidates = self.json_object(report["candidates"])
+                copies = self.json_objects(candidates["copied_test_settings"])
+                self.assertTrue(any(item["consumer_expression"] == "272 * 1000" for item in copies))
+                self.assertTrue(any(item["kind"] == "literal-inventory" for item in copies))
+                self.assertFalse(
+                    any(item["consumer_selector"] == "tests/test_unrelated.py::test_wire" for item in copies)
+                )
+                self.assertFalse(any(item["consumer_expression"] == "31" for item in copies))
+                quantities = self.json_objects(candidates["hardcoded_settings"])
+                self.assertTrue(any(item["consumer_expression"] == "272K tokens" for item in quantities))
+                for item in (*copies, *quantities):
+                    self.assertTrue(item["source_selector"] and item["consumer_selector"])
+                    self.assertTrue(item["source_expression"] and item["consuming_call"])
+
+    def test_generic_mode_keeps_lexical_evidence_and_reports_unsupported_python_syntax(self) -> None:
+        self.write("src/legacy.py", "LIMIT = 120\nprint 'legacy'\n")
+        self.write("tests/test_legacy.py", "from legacy import LIMIT\nprint 'legacy test'\n")
+        self.write("quantity.md", "The limit is 120 tokens.\n")
+        report = self.inventory("generic")
+        self.assertIn(
+            "src/legacy.py::LIMIT",
+            {item["selector"] for item in self.json_objects(report["declarations"])},
+        )
+        candidates = self.json_object(report["candidates"])
+        self.assertTrue(
+            any(
+                item["source_selector"] == "src/legacy.py::LIMIT"
+                for item in self.json_objects(candidates["hardcoded_settings"])
+            )
+        )
+        limitations = self.json_objects(report["extraction_limitations"])
+        self.assertEqual({"src/legacy.py", "tests/test_legacy.py"}, {item["selector"] for item in limitations})
+        self.assertTrue(
+            all(item["line"] == 2 and item["reason"] and item["disposition_method"] for item in limitations)
+        )
 
     def test_output_file_keeps_full_report_and_prints_only_a_compact_receipt(self) -> None:
         output = self.repository / "generic-report.json"

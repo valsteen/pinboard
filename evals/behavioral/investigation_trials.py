@@ -29,6 +29,9 @@ from evals.behavioral.records import (
 from evals.behavioral.spend import Budget, Category
 
 ARMS = Path(__file__).parent / "data" / "investigation" / "arms"
+INVESTIGATION_MODEL = "gpt-6-luna"
+INVESTIGATION_EFFORT = "high"
+ASSESSOR_MODEL = "claude-opus-5-5"
 BOUNDED_HELDOUT_SET_SHA256 = "2b7cd37995ea2e842ee3a033fb2a2579d04ba34bdb52e952ced8565035b8cb77"
 READ_COMMAND = re.compile(
     r"\b(cat|sed|rg|head|tail)\b.*(inquiry(?:-[\w-]+)?\.md|notes(?:-[\w-]+)?\.md|kiosk-brief\.md|evidence\.json)",
@@ -234,7 +237,6 @@ def run_claude(  # noqa: C901, PLR0912, PLR0915
         (directory / "prompt-input.txt").write_text(human)
         started_at = now()
         start = time.monotonic()
-        observed: claude_driver.ClaudeTurn | None = None
         problem: str | None = None
         raw_path = directory / "turn.jsonl"
         try:
@@ -251,7 +253,7 @@ def run_claude(  # noqa: C901, PLR0912, PLR0915
             problem = str(error)
         except Exception as error:
             problem = str(error)
-        evidence = observed.evidence if observed is not None else None
+        evidence = session.turn_evidence
         if evidence is not None and (
             evidence.cost_usd is None
             or evidence.uncached_input_tokens is None
@@ -280,7 +282,7 @@ def run_claude(  # noqa: C901, PLR0912, PLR0915
                 duration_seconds=time.monotonic() - start,
                 saved_evidence_read=saved_read,
                 compaction_event=None,
-                record_valid=valid_note(inquiry / "evidence.json") if arm == "structured" else None,
+                record_valid=None,
             )
             if evidence is not None
             else None
@@ -328,7 +330,7 @@ def run(
     """Run one whole scripted case after a reservation; caller stages separate 15 USD batches."""
     if arm not in {"ordinary", "guidance", "structured"}:
         raise ValueError(f"unsupported investigation arm: {arm}")
-    codex_driver.price("gpt-6-luna")
+    codex_driver.price(INVESTIGATION_MODEL)
     runner.require_codex_world_location(worlds)
     _, cases = investigation.load_set(scenario_set)
     case = next((member for member in cases if member.id == case_id), None)
@@ -369,7 +371,7 @@ def _run_reserved(  # noqa: PLR0915
     try:
         with credentials.isolated_home(credentials.default_source(), None, budget.window) as home:
             codex_driver.write_config(
-                home.path, Path(exported.plugin_root), "gpt-6-luna", "high", "user", budget.window
+                home.path, Path(exported.plugin_root), INVESTIGATION_MODEL, INVESTIGATION_EFFORT, "user", budget.window
             )
             context = codex_driver.loaded_context(home.path, inquiry, budget.window)
             (directory / "prompt-input.txt").write_text(context.prompt_text)
@@ -402,7 +404,9 @@ def _run_reserved(  # noqa: PLR0915
                             final_reply=reading.messages[-1] if reading.messages else "",
                             commentary=reading.messages[:-1],
                             cost_usd=(
-                                codex_driver.turn_cost("gpt-6-luna", own_usage) if own_usage is not None else None
+                                codex_driver.turn_cost(INVESTIGATION_MODEL, own_usage)
+                                if own_usage is not None
+                                else None
                             ),
                             input_tokens=own_usage.input_tokens if own_usage is not None else None,
                             output_tokens=own_usage.output_tokens if own_usage is not None else None,
@@ -426,7 +430,7 @@ def _run_reserved(  # noqa: PLR0915
             rollout = credentials.without_login(codex_driver.rollout_text(home.path), home.copied)
             (directory / "rollout.jsonl").write_text(rollout)
             accounting = codex_driver.rollout_accounting(
-                rollout, "gpt-6-luna", problem is None and len(turns) == len(case.turns)
+                rollout, INVESTIGATION_MODEL, problem is None and len(turns) == len(case.turns)
             )
             if accounting.reviewer_usage:
                 problem = "unknown-priced reviewer usage"
@@ -444,8 +448,8 @@ def _run_reserved(  # noqa: PLR0915
         arm=arm,
         arm_sha256=arm_sha,
         export_commit=exported.commit,
-        model="gpt-6-luna",
-        reasoning_effort="high",
+        model=INVESTIGATION_MODEL,
+        reasoning_effort=INVESTIGATION_EFFORT,
         cli_version=version,
         started_at=started_at,
         finished_at=now(),
@@ -508,13 +512,13 @@ def _assess_locked(
         return None
     directory = layout.root / "investigation-assessments" / case_id / f"{arm}-{index}"
     directory.mkdir(parents=True, exist_ok=False)
-    answer_text = "\n\n".join(f"Turn {turn.index}: {turn.final_reply}" for turn in run.turns)
+    answer_text = assessment_evidence(run)
     prompt = investigation.assessment_prompt(case, key, answer_text)
     (directory / "prompt.txt").write_text(prompt)
     answer: oneshot.Answer | None = None
     problem: str | None = None
     try:
-        answer = oneshot.ask(prompt, "claude-opus-5-5", budget.window)
+        answer = oneshot.ask(prompt, ASSESSOR_MODEL, budget.window)
         (directory / "raw.json").write_text(answer.stdout)
         if answer.cost_usd is None:
             problem = answer.problem or "assessor cost unknown"
@@ -536,9 +540,28 @@ def _assess_locked(
             case_id=case_id,
             arm=arm,
             index=index,
-            assessor_model="claude-opus-5-5",
+            assessor_model=ASSESSOR_MODEL,
             cost_usd=answer.cost_usd if answer is not None else None,
             problem=problem,
         )
         write_new(directory / "session.json", session)
     return session
+
+
+def assessment_evidence(run: InvestigationRunRecord) -> str:
+    """Preserve recovery relationships under stable anonymous labels, without runtime/model/arm metadata."""
+    identities: dict[str, str] = {}
+    parts = []
+    for turn in run.turns:
+        identity = (
+            identities.setdefault(turn.runtime_identity, f"session-{len(identities) + 1}")
+            if turn.runtime_identity
+            else "unreported"
+        )
+        compaction = "event recorded" if turn.compaction_event else "no event recorded"
+        parts.append(
+            f"Turn {turn.index}: recorded mode={turn.mode}; anonymous identity={identity}; "
+            f"successful saved-evidence read observed={turn.saved_evidence_read}; compaction={compaction}\n"
+            f"Human: {turn.human}\nReply: {turn.final_reply}"
+        )
+    return "\n\n".join(parts)

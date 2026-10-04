@@ -325,12 +325,12 @@ class McpBriefPreparationTest(unittest.TestCase):
         with patch.object(capture, "resolve", side_effect=AssertionError("read tool started write preflight")):
             result = asyncio.run(emit())
         assert isinstance(result.structured_content, dict)
-        self.assertLessEqual(result.structured_content["presented_byte_count"], 16_000)
+        self.assertLessEqual(result.structured_content["presented_byte_count"], brief_sources.MAX_PRESENTED_BATCH_BYTES)
         self.assertLess(len(msgspec.json.encode(result.model_dump(mode="json", by_alias=True))), 50_000)
 
     def test_many_source_inline_plan_rejects_with_complete_size_and_read_only_route(self) -> None:
         sources: list[contracts.JsonValue] = []
-        for index in range(100):
+        for index in range(brief_sources.MAX_PRESENTED_BATCH_BYTES // 100 + 1):
             name = f"source-{index}.md"
             (self.project / name).write_text(f"# Source {index}\nbody\n", encoding="utf-8")
             sources.append({"authority_id": f"source-{index}", "selector": name, "families": ["contract"]})
@@ -338,24 +338,24 @@ class McpBriefPreparationTest(unittest.TestCase):
         complete = brief_sources.plan_brief_sources(
             lambda selector, require_utf8: mcp_reads.select_checkout_brief_source(self.project, selector, require_utf8),
             msgspec.convert(manifest, type=brief_source_models.BriefSourceManifest),
-            16_000,
+            brief_sources.MAX_PRESENTED_BATCH_BYTES,
         )
         assert not isinstance(complete, brief_source_models.BriefSourceFailure)
         expected_size = len(
             msgspec.json.encode(msgspec.to_builtins(brief_source_codec.project_brief_source_plan(complete)))
         )
-        self.assertGreater(expected_size, 16_000)
-        rejected = self.sources("plan", manifest=manifest, max_batch_bytes=16_000)
+        self.assertGreater(expected_size, brief_sources.MAX_PRESENTED_BATCH_BYTES)
+        rejected = self.sources("plan", manifest=manifest, max_batch_bytes=brief_sources.MAX_PRESENTED_BATCH_BYTES)
         self.assertEqual("BRIEF_SOURCE_PLAN_INVALID", rejected["code"])
-        self.assertIn(f"{expected_size} presented bytes; limit is 16000", str(rejected["message"]))
+        self.assertIn(f"{expected_size} presented bytes; limit is {brief_sources.MAX_PRESENTED_BATCH_BYTES}", str(rejected["message"]))
         self.assertIn("smaller source selections", str(rejected["message"]))
         for start in range(0, len(sources), 20):
             subset = sources[start : start + 20]
-            smaller = self.sources("plan", manifest={**manifest, "sources": subset}, max_batch_bytes=16_000)
+            smaller = self.sources("plan", manifest={**manifest, "sources": subset}, max_batch_bytes=brief_sources.MAX_PRESENTED_BATCH_BYTES)
             smaller_sources = smaller["sources"]
             assert isinstance(smaller_sources, (list, tuple))
             self.assertEqual(len(subset), len(smaller_sources))
-            self.assertLessEqual(len(msgspec.json.encode(smaller)), 16_000)
+            self.assertLessEqual(len(msgspec.json.encode(smaller)), brief_sources.MAX_PRESENTED_BATCH_BYTES)
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
         transport = server.create_server(
@@ -370,7 +370,7 @@ class McpBriefPreparationTest(unittest.TestCase):
                         **self.roots,
                         "operation": "plan",
                         "manifest": {**manifest, "sources": sources[:20]},
-                        "max_batch_bytes": 16_000,
+                        "max_batch_bytes": brief_sources.MAX_PRESENTED_BATCH_BYTES,
                     }
                 },
             )
@@ -379,7 +379,7 @@ class McpBriefPreparationTest(unittest.TestCase):
 
         native_plan = asyncio.run(plan_subset())
         assert isinstance(native_plan.structured_content, dict)
-        self.assertLessEqual(len(msgspec.json.encode(native_plan.structured_content)), 16_000)
+        self.assertLessEqual(len(msgspec.json.encode(native_plan.structured_content)), brief_sources.MAX_PRESENTED_BATCH_BYTES)
         self.assertLess(len(msgspec.json.encode(native_plan.model_dump(mode="json", by_alias=True))), 50_000)
 
     def test_native_read_only_plan_and_all_batches_complete_the_source(self) -> None:
@@ -423,7 +423,7 @@ class McpBriefPreparationTest(unittest.TestCase):
             planned, batches = asyncio.run(read())
         assert isinstance(planned.structured_content, dict)
         self.assertGreater(len(batches), 1)
-        self.assertLessEqual(len(msgspec.json.encode(planned.structured_content)), 16_000)
+        self.assertLessEqual(len(msgspec.json.encode(planned.structured_content)), brief_sources.MAX_PRESENTED_BATCH_BYTES)
         self.assertLess(len(msgspec.json.encode(planned.model_dump(mode="json", by_alias=True))), 50_000)
         selected = b"".join(
             match.group(1).encode()

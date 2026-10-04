@@ -8,6 +8,16 @@ This is the reusable design method for maintainers and coding agents evolving Pi
 
 When a rule blocks apparently valid work, first verify that the information reaching it accurately represents the situation. Trace what changed, what the decision considers, and what relevant information was omitted or lost.
 
+When a consequential constraint or surprising change footprint shapes the explanation, establish its provenance before proposing a larger remedy. Use the smallest source, invocation, history, or observation that can settle the relevant relationship:
+
+- Identify the actually selected value, executing invocation, resource, and scope: one operation, one turn, or the whole workflow may have different constraints.
+- Locate the owner that enforces the constraint and trace how the selected value reaches that effect. A declared setting or instruction alone does not establish actual enforcement.
+- Recover where the policy was introduced. Reused execution components do not make a wrapper's added policy inherited; Git addition status and equal values do not establish origin either.
+- Identify the accepted human, project, or runtime authority for that policy. Apply the same check to human and agent decisions; an earlier summary is a claim to verify, not substitute authority.
+- Separate the configured constraint from its observed consequence. A process exit near a timer is correlation until causal evidence connects them. A prepared patch or packaged candidate establishes no change to the executing destination until application is verified.
+
+Keep unavailable origin, authority, enforcement, or cause unknown. Once the premise is corrected, use existing authority for the supported next step and surface only a remaining consequential choice, such as an unapproved cutoff that would truncate the agreed outcome. Stop tracing when the evidence settles that decision; this is not a general history inventory or runtime-tracing requirement.
+
 Correct an incomplete or misleading representation at its owner. Change the rule only when the accurately represented situation demonstrates that the rule itself is wrong.
 
 Include the information needed for the decision—not everything indiscriminately. A checksum, label, or status is evidence about what it represents, not proof that the representation is sufficient.

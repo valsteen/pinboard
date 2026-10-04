@@ -267,6 +267,105 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertEqual(64, rejected.returncode)
             self.assertEqual(invalid, settings.read_text())
 
+    def test_missing_mode_rechecks_another_initializer_or_explicit_choice(self) -> None:
+        for writer in ("python", "launcher", "explicit"):
+            with self.subTest(writer=writer):
+                self._assert_missing_mode_rechecks(writer)
+
+    def _assert_missing_mode_rechecks(self, writer: str) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, _ = self.project(Path(temporary))
+            settings = primary / ".pinboard" / contributor_traces.SETTINGS_NAME
+            settings.write_text('[item "one"]\n\tmode = on\n')
+            original_decode = contributor_traces._decode_settings
+            launcher_root = Path(temporary) / "unprepared-plugin"
+            (launcher_root / "scripts").mkdir(parents=True)
+            launcher = launcher_root / "scripts" / "pinboard"
+            shutil.copyfile(ROOT / "scripts" / "pinboard", launcher)
+            launcher.chmod(0o755)
+            observed = False
+
+            def stale_observation(
+                path: Path,
+            ) -> contributor_traces.ContributorTraceSettings | git_config.ReadFailed | None:
+                nonlocal observed
+                value = original_decode(path)
+                if not observed and value is None:
+                    observed = True
+                    if writer == "python":
+                        contributor_traces.read_project_trace_settings(primary, None)
+                    elif writer == "launcher":
+                        result = subprocess.run(
+                            [str(launcher), "--project-root", str(primary), "root"],
+                            capture_output=True,
+                            check=False,
+                        )
+                        self.assertEqual(78, result.returncode)
+                    else:
+                        self.assertIsInstance(
+                            git_config.add(path, "pinboard.unsafe_persist_exact_pinboard_traces.mode", "on"),
+                            git_config.WriteAcknowledged,
+                        )
+                return value
+
+            with patch.object(contributor_traces, "_decode_settings", side_effect=stale_observation):
+                state = contributor_traces.read_project_trace_settings(primary, None)
+            assert state is not None
+            self.assertEqual(
+                "on" if writer == "explicit" else "off", state[1].value.unsafe_persist_exact_pinboard_traces
+            )
+            self.assertEqual({"one": "on"}, state[1].value.item_overrides)
+            self.assertEqual("none", state[1].effects.key_write)
+            listed = git_config.list_entries(settings)
+            assert isinstance(listed, git_config.Entries)
+            self.assertEqual(2, len(listed.entries))
+
+    def test_settings_lock_rejects_overlapping_python_launcher_and_git_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            settings = work_root / contributor_traces.SETTINGS_NAME
+            original = '[item "one"]\n\tmode = on\n'
+            settings.write_text(original)
+            launcher_root = Path(temporary) / "unprepared-plugin"
+            (launcher_root / "scripts").mkdir(parents=True)
+            launcher = launcher_root / "scripts" / "pinboard"
+            shutil.copyfile(ROOT / "scripts" / "pinboard", launcher)
+            launcher.chmod(0o755)
+            real_add = git_config.add
+
+            def overlapping_edit(
+                path: Path,
+                key: str,
+                value: str,
+            ) -> git_config.WriteAcknowledged | git_config.WriteUnconfirmed:
+                self.assertEqual(f"{settings.name}.lock", path.name)
+                rejected = self.preflight_result(worktree, work_root)
+                self.assertEqual("unchanged", rejected["effect"])
+                self.assertFalse(rejected["target_ran"])
+                self.assertEqual("retry-same-input", rejected["retry"])
+                self.assertIn(".lock", str(rejected["resource"]))
+                shell = subprocess.run(
+                    [str(launcher), "--project-root", str(worktree), "root"], capture_output=True, check=False
+                )
+                self.assertEqual(64, shell.returncode)
+                self.assertIn(b"being edited", shell.stderr)
+                self.assertIsInstance(real_add(settings, key, "on"), git_config.WriteUnconfirmed)
+                self.assertEqual(original, settings.read_text())
+                return real_add(path, key, value)
+
+            with patch.object(git_config, "add", side_effect=overlapping_edit):
+                state = contributor_traces.read_project_trace_settings(primary, None)
+            assert state is not None
+            self.assertEqual("off", state[1].value.unsafe_persist_exact_pinboard_traces)
+            self.assertEqual({"one": "on"}, state[1].value.item_overrides)
+            self.assertEqual("acknowledged", state[1].effects.key_write)
+            self.assertFalse(settings.with_name(f"{settings.name}.lock").exists())
+            reread = contributor_traces.read_project_trace_settings(worktree, None)
+            assert reread is not None
+            self.assertEqual(state[1].value, reread[1].value)
+            self.assertEqual("none", reread[1].effects.key_write)
+
     def test_explicit_off_and_item_overrides_follow_two_worktrees_and_next_call(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             primary, worktree = self.project(Path(temporary))
@@ -344,7 +443,7 @@ class ContributorTraceTest(unittest.TestCase):
                 contributor_traces.read_project_trace_settings(primary, None)
             self.assertEqual(path.resolve(), failed.exception.path)
             self.assertEqual(
-                ("confirmed", "unconfirmed"),
+                ("confirmed", "none"),
                 (failed.exception.effects.file_creation, failed.exception.effects.key_write),
             )
             self.assertEqual(0o600, stat.S_IMODE(path.stat().st_mode))
@@ -356,6 +455,7 @@ class ContributorTraceTest(unittest.TestCase):
                     git_config,
                     "list_entries",
                     side_effect=[
+                        git_config.Entries(path.resolve(), ()),
                         git_config.Entries(path.resolve(), ()),
                         git_config.ReadFailed(
                             path.resolve(), "list-entries", None, git_config.ProcessFailed(128, "reread failed")
@@ -590,7 +690,7 @@ class ContributorTraceTest(unittest.TestCase):
             primary, worktree = self.project(Path(temporary))
             work_root = primary / ".pinboard"
             with patch.object(
-                contributor_traces, "_decode_settings", side_effect=[None, ValueError("invalid setting")]
+                contributor_traces, "_decode_settings", side_effect=[None, None, ValueError("invalid setting")]
             ):
                 result = self.preflight_result(worktree, work_root)
             self.assertEqual("TRACE_PREFLIGHT_FAILED", result["code"])
@@ -767,16 +867,13 @@ class ContributorTraceTest(unittest.TestCase):
                 self.assertIn("Restart or reconnect", str(result["repair"]))
                 self.assertEqual("retry-same-input", result["retry"])
                 self.assertEqual("none", result["settings_file_creation"])
-                self.assertEqual("unconfirmed" if launched else "none", result["settings_mode_write"])
-                self.assertEqual("unconfirmed" if launched else "unchanged", result["effect"])
-                self.assertEqual(None if launched else False, result["state_changed"])
+                self.assertEqual("none", result["settings_mode_write"])
+                self.assertEqual("unchanged", result["effect"])
+                self.assertFalse(result["state_changed"])
                 self.assertEqual([], result["changed_surfaces"])
-                if launched:
-                    self.assertIn("Inspect the stored settings", str(result["repair"]))
-                    self.assertEqual("off", contributor_traces.read_configured_project_trace_mode(work_root))
-                else:
-                    self.assertNotIn("Inspect the stored settings", str(result["repair"]))
-                    self.assertEqual("", setting.read_text())
+                self.assertNotIn("Inspect the stored settings", str(result["repair"]))
+                self.assertEqual("", setting.read_text())
+                self.assertFalse(setting.with_name(f"{setting.name}.lock").exists())
 
     def test_preflight_keeps_acknowledged_write_when_readback_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -787,6 +884,7 @@ class ContributorTraceTest(unittest.TestCase):
                 git_config,
                 "list_entries",
                 side_effect=[
+                    git_config.Entries(setting, ()),
                     git_config.Entries(setting, ()),
                     git_config.ReadFailed(
                         setting, "list-entries", None, git_config.ProcessFailed(128, "reread failed")
@@ -815,7 +913,7 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertEqual("unconfirmed", result["capture_probe_effect"])
             self.assertEqual(False, result["target_ran"])
 
-    def test_preflight_keeps_confirmed_creation_and_uncertain_mode_write_separate(self) -> None:
+    def test_preflight_keeps_confirmed_creation_and_failed_staging_separate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             primary, worktree = self.project(Path(temporary))
             work_root = primary / ".pinboard"
@@ -831,11 +929,11 @@ class ContributorTraceTest(unittest.TestCase):
             ):
                 result = self.preflight_result(worktree, work_root)
             self.assertTrue(setting.exists())
-            self.assertEqual("unconfirmed", result["effect"])
-            self.assertIsNone(result["state_changed"])
+            self.assertEqual("committed", result["effect"])
+            self.assertTrue(result["state_changed"])
             self.assertEqual(["work-root"], result["changed_surfaces"])
             self.assertEqual("confirmed", result["settings_file_creation"])
-            self.assertEqual("unconfirmed", result["settings_mode_write"])
+            self.assertEqual("none", result["settings_mode_write"])
             self.assertEqual(False, result["target_ran"])
 
     def test_preflight_names_malformed_settings_and_symlinked_work_root(self) -> None:

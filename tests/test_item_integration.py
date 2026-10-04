@@ -350,6 +350,44 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         }
         self.assertEqual(before, after)
 
+    def test_mode_only_candidate_is_absent_at_base_and_present_at_candidate_without_writes(self) -> None:
+        fixture = self.fixture("current-head")
+        self.transition(fixture, "return-for-correction:work-a-1", {"reason": "Review a mode-only candidate."})
+        self.git(fixture, "reset", "--hard", fixture.brief.base_revision)
+        (fixture.project / "tracked.txt").chmod(0o755)
+        candidate = self.commit_all(fixture.project, "review executable mode")
+        lease = self.native_attempt_acquire(fixture, "mode-only-worker")
+        submitted = self.transition_result(
+            fixture,
+            self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease),
+            {"candidate": candidate},
+        )
+        self.assertEqual("committed", submitted["status"], submitted)
+        fixture = replace(fixture, candidate_revision=candidate)
+        before = {
+            str(path.relative_to(fixture.project)): (path.lstat().st_mode, path.read_bytes())
+            for path in fixture.project.rglob("*")
+            if path.is_file()
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch("tempfile.tempdir", temporary):
+                for target, expected in (
+                    (fixture.brief.base_revision, "content-not-present"),
+                    (candidate, "content-present"),
+                ):
+                    with self.subTest(target=target):
+                        result = self.assert_presence(fixture, target, expected)
+                        self.assertEqual(
+                            fixture.brief.base_revision, self.json_object(result["source"])["compared_from_revision"]
+                        )
+            self.assertEqual([], list(Path(temporary).iterdir()))
+        after = {
+            str(path.relative_to(fixture.project)): (path.lstat().st_mode, path.read_bytes())
+            for path in fixture.project.rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(before, after)
+
     def test_checkpoint_remains_source_after_resume_rebind_and_return_until_submission(self) -> None:
         fixture = self.fixture()
         accepted = self.transition(

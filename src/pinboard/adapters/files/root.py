@@ -122,14 +122,15 @@ def read_target_content(cwd: Path, target: str, diff: bytes) -> TargetContentObs
                 check=False,
             )
             diagnostic = applied.stderr.decode(errors="replace").strip()
-            if applied.returncode != 0 and not (applied.returncode == 1 and _ordinary_content_mismatch(diagnostic)):
+            mismatch = _ordinary_content_mismatch(diagnostic)
+            if applied.returncode != 0 and not (applied.returncode == 1 and mismatch):
                 raise RootError(
                     RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
                     diagnostic or "Cannot compare the target content.",
                 )
             presence = (
                 IntegrationPresence.CONTENT_PRESENT
-                if applied.returncode == 0
+                if applied.returncode == 0 and not mismatch
                 else IntegrationPresence.CONTENT_NOT_PRESENT
             )
             return TargetContentObservation(revision, presence)
@@ -141,7 +142,7 @@ def _ordinary_content_mismatch(diagnostic: str) -> bool:
     """Recognize only mismatch diagnostics; mixed or unknown failures retain Git's error."""
 
     lines = diagnostic.splitlines()
-    return any(line.startswith("error:") for line in lines) and all(
+    return bool(lines) and all(
         re.fullmatch(
             r"error: (?:patch failed: .+:[0-9]+|.+: (?:patch does not apply|does not exist in index|"
             r"already exists in index|binary patch does not apply|wrong type)|the patch applies to '.+' "

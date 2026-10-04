@@ -504,16 +504,19 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
     arguments: dict[str, JsonValue],
     capture: SemanticCapture | AutomaticCapture | None,
 ) -> dict[str, JsonValue]:
-    if isinstance(capture, AutomaticCapture):
-        selected_capture = capture.resolve(project_root, arguments)
-        if isinstance(selected_capture, OperationResult):
-            return contract_schemas.validate_result(operation, selected_capture.content)
-        capture = selected_capture
-    captured_arguments = deepcopy(arguments) if capture is not None else arguments
     project_id = hashlib.sha256(project_root.encode()).hexdigest()[:12]
     started = time.monotonic_ns()
+    cancellation_reported = False
+    cancellation_reporting = threading.Lock()
 
     def emit_request_event(event: TraceEvent, classification: str, commit_reference: str | None) -> None:
+        nonlocal cancellation_reported
+        if classification == "cancelled":
+            # Transport cancellation can overlap the worker's cooperative checkpoint.
+            with cancellation_reporting:
+                if cancellation_reported:
+                    return
+                cancellation_reported = True
         diagnostics.emit(
             event=event,
             request_id=request_id,
@@ -525,31 +528,97 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
             capture_selector=None,
         )
 
-    def capture_effect(
-        effect: Callable[[SemanticCapture], None],
-        classification: str,
-        commit_reference: str | None,
-    ) -> None:
-        if capture is None:
-            return
+    def complete(token: CancellationToken) -> dict[str, JsonValue]:
+        selected_capture = capture
+        token.checkpoint()
+        if isinstance(selected_capture, AutomaticCapture):
+            resolved_capture = selected_capture.resolve(project_root, arguments)
+            if isinstance(resolved_capture, OperationResult):
+                return contract_schemas.validate_result(operation, resolved_capture.content)
+            selected_capture = resolved_capture
+        captured_arguments = deepcopy(arguments) if selected_capture is not None else arguments
+
+        def capture_effect(
+            effect: Callable[[SemanticCapture], None],
+            classification: str,
+            commit_reference: str | None,
+        ) -> None:
+            if selected_capture is None:
+                return
+            try:
+                effect(selected_capture)
+            except ImmutableFilePublishedError as error:
+                diagnostics.emit(
+                    event=TraceEvent.CAPTURE_COMMITTED_WITH_WARNING,
+                    request_id=None,
+                    operation=None,
+                    project_id=None,
+                    duration_ms=None,
+                    classification=classification,
+                    commit_reference=commit_reference,
+                    capture_selector=error.path.name,
+                )
+            except FileIOError:
+                emit_request_event(TraceEvent.CAPTURE_UNAVAILABLE, classification, commit_reference)
+
         try:
-            effect(capture)
-        except ImmutableFilePublishedError as error:
-            diagnostics.emit(
-                event=TraceEvent.CAPTURE_COMMITTED_WITH_WARNING,
-                request_id=None,
-                operation=None,
-                project_id=None,
-                duration_ms=None,
-                classification=classification,
-                commit_reference=commit_reference,
-                capture_selector=error.path.name,
+            token.checkpoint()
+            result = callback(token)
+        except OperationCancelled as error:
+            capture_effect(
+                lambda selected: selected.unavailable(operation, captured_arguments, "interrupted", "cancelled", None),
+                "cancelled",
+                None,
             )
-        except FileIOError:
-            emit_request_event(TraceEvent.CAPTURE_UNAVAILABLE, classification, commit_reference)
+            emit_request_event(TraceEvent.RESULT, "cancelled", None)
+            raise ToolError(
+                "The request was cancelled at a cooperative checkpoint. Its effect is unknown; inspect current "
+                "item or attempt state before deciding whether another call is safe."
+            ) from error
+        except ToolError:
+            capture_effect(
+                lambda selected: selected.unavailable(
+                    operation, captured_arguments, "callback-rejected", "rejected", None
+                ),
+                "rejected",
+                None,
+            )
+            emit_request_event(TraceEvent.RESULT, "rejected", None)
+            raise
+        except Exception:
+            capture_effect(
+                lambda selected: selected.unavailable(operation, captured_arguments, "callback-error", "error", None),
+                "error",
+                None,
+            )
+            emit_request_event(TraceEvent.RESULT, "error", None)
+            raise
+        try:
+            validated = contract_schemas.validate_result(operation, result.content)
+        except Exception:
+            capture_effect(
+                lambda selected: selected.unavailable(
+                    operation,
+                    captured_arguments,
+                    "result-validation-error",
+                    result.classification,
+                    result.commit_reference,
+                ),
+                result.classification,
+                result.commit_reference,
+            )
+            emit_request_event(TraceEvent.RESULT_VALIDATION_ERROR, result.classification, result.commit_reference)
+            raise
+        capture_effect(
+            lambda selected: selected.available(operation, captured_arguments, validated),
+            result.classification,
+            result.commit_reference,
+        )
+        emit_request_event(TraceEvent.RESULT, result.classification, result.commit_reference)
+        return validated
 
     try:
-        execution = executor.submit(callback)
+        execution = executor.submit(complete)
     except ExecutorBusy:
         emit_request_event(TraceEvent.RESULT, "busy", None)
         busy: dict[str, JsonValue] = {
@@ -564,70 +633,15 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
             "observed": [],
             "mismatches": [],
         }
-        validated_busy = contract_schemas.validate_result(operation, busy)
-        capture_effect(
-            lambda selected: selected.available(operation, captured_arguments, validated_busy),
-            "busy",
-            None,
-        )
-        return validated_busy
+        return contract_schemas.validate_result(operation, busy)
     try:
-        result = await execution.result()
+        return await execution.result()
     except asyncio.CancelledError:
-        capture_effect(
-            lambda selected: selected.unavailable(operation, captured_arguments, "interrupted", "cancelled", None),
-            "cancelled",
-            None,
-        )
         emit_request_event(TraceEvent.RESULT, "cancelled", None)
         raise
     except OperationCancelled as error:
-        capture_effect(
-            lambda selected: selected.unavailable(operation, captured_arguments, "interrupted", "cancelled", None),
-            "cancelled",
-            None,
-        )
         emit_request_event(TraceEvent.RESULT, "cancelled", None)
         raise ToolError(
             "The request was cancelled at a cooperative checkpoint. Its effect is unknown; inspect current "
             "item or attempt state before deciding whether another call is safe."
         ) from error
-    except ToolError:
-        capture_effect(
-            lambda selected: selected.unavailable(operation, captured_arguments, "callback-rejected", "rejected", None),
-            "rejected",
-            None,
-        )
-        emit_request_event(TraceEvent.RESULT, "rejected", None)
-        raise
-    except Exception:
-        capture_effect(
-            lambda selected: selected.unavailable(operation, captured_arguments, "callback-error", "error", None),
-            "error",
-            None,
-        )
-        emit_request_event(TraceEvent.RESULT, "error", None)
-        raise
-    try:
-        validated = contract_schemas.validate_result(operation, result.content)
-    except Exception:
-        capture_effect(
-            lambda selected: selected.unavailable(
-                operation,
-                captured_arguments,
-                "result-validation-error",
-                result.classification,
-                result.commit_reference,
-            ),
-            result.classification,
-            result.commit_reference,
-        )
-        emit_request_event(TraceEvent.RESULT_VALIDATION_ERROR, result.classification, result.commit_reference)
-        raise
-    capture_effect(
-        lambda selected: selected.available(operation, captured_arguments, validated),
-        result.classification,
-        result.commit_reference,
-    )
-    emit_request_event(TraceEvent.RESULT, result.classification, result.commit_reference)
-    return validated

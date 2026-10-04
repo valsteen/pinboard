@@ -20,7 +20,7 @@ from msgspec.structs import replace as replace_struct
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import persistence as sqlite_persistence
 from pinboard.adapters.sqlite import store as sqlite_store
-from pinboard.adapters.sqlite.database import initialize_database
+from pinboard.adapters.sqlite.database import SCHEMA_VERSION, initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -556,7 +556,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual("explicit", diagnosis["work_root_selection"])
         self.assertEqual("unobserved", diagnosis["trace_project_mode"])
         self.assertIn("missing", str(diagnosis["trace_configuration_error"]))
-        self.assertEqual(7, diagnosis["schema_version"])
+        self.assertEqual(SCHEMA_VERSION, diagnosis["schema_version"])
         self.assertEqual("explicit-project-wide", self.json_object(diagnosis["validation"])["scope"])
         self.assertEqual("invalid", self.json_object(diagnosis["validation"])["status"])
         self.assertEqual(

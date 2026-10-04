@@ -192,8 +192,9 @@ class SeededItem(Record, frozen=True):
     state: NonEmpty
 
 
-class RunRecord(Record, frozen=True):
-    schema: Literal["pinboard-behavioral-run/v2"]
+class RunEvidence(Record, frozen=True):
+    """Fields shared by current runs and the exact retained v2 format."""
+
     run: RunKey
     runtime: Runtime
     cli_version: NonEmpty
@@ -212,6 +213,12 @@ class RunRecord(Record, frozen=True):
 
     def cost_usd(self) -> float:
         return sum(turn.cost_usd for turn in self.turns if turn.cost_usd is not None)
+
+
+class RunRecord(RunEvidence, frozen=True):
+    schema: Literal["pinboard-behavioral-run/v3"]
+    registration: ScenarioSet
+    scenario_sha256: Sha256
 
 
 class ObservedState(Record, frozen=True):

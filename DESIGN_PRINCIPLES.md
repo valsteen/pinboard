@@ -46,7 +46,7 @@ Give one durable concept one canonical owner and name. Preserve different comple
 
 A semantic maintenance-cost pass inspects these exact candidate categories:
 
-- synonymous representations of one fact;
+- synonymous representations of one fact, including copied settings, test inventories, and route or classification decisions;
 - colliding complete names for different facts;
 - relational roles detached from the relationship that gives them meaning;
 - missing or misused nominal identifiers;
@@ -56,6 +56,10 @@ A semantic maintenance-cost pass inspects these exact candidate categories:
 - performance, security, concurrency, or deployment machinery without an observed supported-path consequence or accepted obligation.
 
 For each candidate, record the exact selector, supported root, production producer and consumer, persisted-data or protocol responsibility, accepted authority, and cheapest falsifying observation. Give it one terminal disposition: `supported-root`, `boundary`, `retained-exception`, `removal`, or `consolidation`. Apply removals and consolidations recursively through production, tests, documentation, packaging, dependencies, and tooling.
+
+For a settings candidate, distinguish a copied implementation value from independently owned scientific criteria, spending obligations, external contracts, historical compatibility, and deliberate fixture inputs. Construct threshold cases from the canonical setting and calculate expected effects independently; do not call the implementation under test to manufacture its expectation. Trace assertions, constructor inputs, version and cardinality checks, complete inventories, and derived totals, including equivalent expressions and quantities embedded in prose. Equal values are only leads.
+
+For change amplification, trace one supported value from entry to effect and simulate one sibling or setting change. Record the places a developer must discover and edit, the repeated decisions, and independently required conversions separately from imports and source size. Remove a repeat only when one owner already carries its meaning; stop when another fold would erase a product distinction or cost more conversion machinery than it removes. The cheapest falsifier is a concrete route, consumer, or boundary that still needs the proposed owner.
 
 A retained exception must name its present reason and a falsifiable reopening condition. Valid reasons are an independently required boundary translation, supported retained data, an independently changing external consumer or protocol, or an accepted product or assurance obligation with a current consequence. Historical intent, possible future use, mechanical analyzer limits, and test-only reachability are not retained-exception reasons.
 

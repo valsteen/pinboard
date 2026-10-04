@@ -7,6 +7,7 @@ runs may run in parallel; Codex runs are always sequential, each in its own isol
 either runtime, an interrupt or a harness defect stops every run of the batch that has not started yet.
 """
 
+import hashlib
 import subprocess
 import tempfile
 import threading
@@ -22,7 +23,7 @@ from evals.behavioral import claude_driver, codex_driver, credentials, processes
 from evals.behavioral.board import SEEDED_HOST_ID
 from evals.behavioral.claude_driver import ClaudeSession, now
 from evals.behavioral.export import SeedFailure
-from evals.behavioral.layout import RUN_RECORD, SCORER_INPUT, Layout
+from evals.behavioral.layout import RUN_RECORD, SCENARIO_RECORD, SCORER_INPUT, Layout
 from evals.behavioral.processes import GitError
 from evals.behavioral.records import (
     Completed,
@@ -100,7 +101,9 @@ class RunState:
         outcome: RunOutcome,
     ) -> RunRecord:
         record = RunRecord(
-            schema="pinboard-behavioral-run/v2",
+            schema="pinboard-behavioral-run/v3",
+            registration=self.plan.scenarios.registration,
+            scenario_sha256=hashlib.sha256(self.plan.scenarios.content(self.scenario)).hexdigest(),
             run=self.key,
             runtime=runtime,
             cli_version=cli_version,
@@ -148,8 +151,10 @@ class RunState:
 
 
 def start(plan: RunPlan, scenario: Scenario, key: RunKey) -> RunState:
+    content = plan.scenarios.content(scenario)
     directory = plan.layout.run_directory(key)
     directory.mkdir(parents=True, exist_ok=False)
+    (directory / SCENARIO_RECORD).write_bytes(content)
     return RunState(plan, scenario, key, directory, now(), [], [], [], [])
 
 
@@ -231,33 +236,22 @@ def claude_run(plan: RunPlan, scenario: Scenario, key: RunKey) -> RunRecord:
 
 
 def claude_turns(state: RunState, built: world.World, session: ClaudeSession) -> RunOutcome:
-    """Send every scripted turn; a turn Claude reports as failed, or an isolation finding, ends the run unscored."""
+    """Persist the session-owned spending evidence even when a started turn fails before returning a reply."""
     for index, turn in enumerate(state.scenario.turns, start=1):
         state.run_hook(built, index)
-        started = now()
         raw_path = state.directory / f"turn-{index}.jsonl"
         try:
             sent = session.turn(index, turn.human, turn.before, raw_path)
-        except (processes.ProcessIncomplete, processes.CleanupUnconfirmed) as failure:
-            state.turns.append(
-                TurnEvidence(
-                    index=index,
-                    human=turn.human,
-                    hook_ran=turn.before,
-                    session_id=session.session_id,
-                    final_reply="",
-                    commentary=[],
-                    started_at=started,
-                    finished_at=now(),
-                    cost_usd=None,
-                    uncached_input_tokens=None,
-                    cached_input_tokens=None,
-                    cache_write_input_tokens=None,
-                    output_tokens=None,
-                    reasoning_output_tokens=None,
-                    permission_denials=[],
-                )
-            )
+        except (
+            processes.ProcessIncomplete,
+            processes.CleanupUnconfirmed,
+            claude_driver.StreamError,
+            msgspec.DecodeError,
+            subprocess.SubprocessError,
+            OSError,
+        ) as failure:
+            if not isinstance(failure, (processes.ProcessIncomplete, processes.CleanupUnconfirmed)):
+                return Failed(stage=f"turn {index}", reason=str(failure) or type(failure).__name__)
             try:
                 raw_path.write_text(failure.stdout)
                 raw_path.with_suffix(".stderr").write_text(failure.stderr)
@@ -266,7 +260,9 @@ def claude_turns(state: RunState, built: world.World, session: ClaudeSession) ->
                 evidence_failure.__cause__ = failure.__cause__
                 raise failure from evidence_failure
             raise
-        state.turns.append(sent.evidence)
+        finally:
+            if session.turn_evidence is not None:
+                state.turns.append(session.turn_evidence)
         state.snapshot(built)
         if index == 1 and (findings := session.isolation_findings()):
             return Stopped(reason=ISOLATION_FAILED + "; ".join(findings) + "; ask the human")

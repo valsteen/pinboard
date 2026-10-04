@@ -19,6 +19,7 @@ from functools import cache
 from hashlib import sha256
 from itertools import batched
 from pathlib import Path
+from typing import Final
 from urllib.parse import quote
 
 import msgspec
@@ -30,8 +31,8 @@ from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.application import stored_state
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 
-APPLICATION = "pinboard"
-SCHEMA_VERSION = 7
+APPLICATION: Final = "pinboard"
+SCHEMA_VERSION: Final = 7
 SCHEMA_ID = "sqlite-v7"
 BUSY_TIMEOUT_MS = 2_000
 

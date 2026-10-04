@@ -31,6 +31,7 @@ DEFAULT_PROJECTION_USD = {
     Category.SUBSTANCE_ASSESSMENT: 0.40,
     Category.PROBE: 1.00,
 }
+COMPARISON_CAP_USD = 120.0
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,42 @@ def main_usage_unknown(layout: Layout) -> bool:
     )
 
 
+def comparison_reasons(layout: Layout) -> list[str]:
+    """The caller-named output directory is the spending home, including unsuccessful and orphan sessions."""
+    recorded = items(layout)
+    reasons = []
+    if total(recorded) > COMPARISON_CAP_USD:
+        reasons.append(f"comparison spending exceeds {COMPARISON_CAP_USD:g} USD")
+    if main_usage_unknown(layout):
+        reasons.append("comparison spending has incomplete main/scorer/assessor usage")
+    if any(accounting.reviewer_usage for _, accounting in layout.codex_accounting()) or any(
+        run.accounting is not None and run.accounting.reviewer_usage
+        for run in layout.investigation_runs()
+        if not isinstance(run, ClaudeInvestigationRunRecord)
+    ):
+        reasons.append("comparison reviewer dollar cost is unknown")
+    reasons.extend(
+        f"comparison Codex accounting is missing for {run.run}"
+        for run in layout.run_records()
+        if run.runtime is Runtime.CODEX and not (layout.run_directory(run.run) / "accounting.json").is_file()
+    )
+    # A prepared private session directory without its final record cannot prove that paid work never started.
+    for pattern, record_name in (
+        ("runs/*/*", "run.json"),
+        ("scores/*", "session.json"),
+        ("assessments/*/*", "assessment.json"),
+        ("probes/*", "probe.json"),
+        ("investigations/*/*", "run.json"),
+        ("investigation-assessments/*/*", "session.json"),
+    ):
+        reasons.extend(
+            f"incomplete session evidence in {directory.relative_to(layout.root)}"
+            for directory in layout.root.glob(pattern)
+            if directory.is_dir() and not (directory / record_name).is_file()
+        )
+    return reasons
+
+
 def total(recorded: list[Item]) -> float:
     return sum(item.usd for item in recorded)
 
@@ -187,7 +224,3 @@ class Budget:
     def release(self, projected: float) -> None:
         with self.lock:
             self.reserved -= projected
-
-    def remaining(self) -> float:
-        with self.lock:
-            return self.cap_usd - total(items(self.layout)) - self.reserved

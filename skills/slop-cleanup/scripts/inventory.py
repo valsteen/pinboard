@@ -214,6 +214,27 @@ class MatchSite:
 
 
 @dataclass(frozen=True)
+class SettingCopy:
+    source_selector: str
+    source_line: int
+    source_expression: str
+    consumer_selector: str
+    consumer_line: int
+    consumer_expression: str
+    consuming_call: str
+    kind: str
+    normalized_value: str
+
+
+@dataclass(frozen=True)
+class ExtractionLimitation:
+    selector: str
+    line: int
+    reason: str
+    disposition_method: str
+
+
+@dataclass(frozen=True)
 class DuplicatedMatchStructure:
     selectors: tuple[str, ...]
     lines: tuple[int, ...]
@@ -1184,6 +1205,16 @@ def coverage(mode: str) -> tuple[Coverage, ...]:
             "validation, effects, typing, or boundary conversion.",
         ),
         Coverage(
+            "copied-settings-and-test-inventories",
+            "partial",
+            "import-linked literal settings, bounded equivalent arithmetic, literal inventories and text quantities; "
+            "generic single-line assignments, AST annotated/multiline settings; no call evaluation, indirect "
+            "re-export resolution or transitive fixture dataflow",
+            "Inspect source and consuming-call selectors, then distinguish coupled settings from independently "
+            "owned scientific, spending, external, historical and fixture contracts. Extend the semantic sweep "
+            "to generated values, cardinalities, constructors, enum inventories and derived expected totals.",
+        ),
+        Coverage(
             "semantic-producer-consumer",
             "unsupported",
             "requires product authority and code-path inspection",
@@ -1212,9 +1243,19 @@ def semantic_disposition() -> SemanticDisposition:
             SemanticCategory(
                 "synonymous-representations",
                 "partial",
-                ("duplicated_closed_vocabularies", "exhaustive_passthrough_matches"),
+                (
+                    "duplicated_closed_vocabularies",
+                    "exhaustive_passthrough_matches",
+                    "copied_test_settings",
+                    "hardcoded_settings",
+                ),
                 "Trace each representation to its durable concept and independently required wire, storage, or "
-                "presentation owner; consolidate only same-meaning ownership.",
+                "presentation owner; consolidate only same-meaning ownership. For copied settings and test "
+                "inventories, trace the imported setting and assertion or fixture consumer, consume canonical "
+                "selections and calculate behavior independently; retain independently owned scientific, spending, "
+                "external and historical contracts. For amplification, simulate one sibling or setting change; "
+                "count edit sites and repeated decisions separately from required conversions, imports and source "
+                "size. Stop when a concrete consumer falsifies the proposed shared responsibility.",
             ),
             SemanticCategory(
                 "colliding-complete-names",
@@ -1269,6 +1310,207 @@ def semantic_disposition() -> SemanticDisposition:
     )
 
 
+type SettingValue = (
+    str
+    | int
+    | float
+    | bool
+    | list[SettingValue]
+    | tuple[SettingValue, ...]
+    | dict[str, SettingValue]
+    | set[str | int | float]
+    | None
+)
+
+
+def setting_value(node: ast.expr) -> SettingValue:
+    """Evaluate only bounded literal arithmetic and containers; never execute source calls or names."""
+    try:
+        return ast.literal_eval(node)
+    except ValueError, TypeError:
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+            left, right = setting_value(node.left), setting_value(node.right)
+            if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+                raise ValueError("not literal arithmetic") from None
+            match node.op:
+                case ast.Add():
+                    return left + right
+                case ast.Sub():
+                    return left - right
+                case ast.Mult():
+                    return left * right
+                case ast.Div():
+                    if right == 0:
+                        raise ValueError("division by zero") from None
+                    return left / right
+                case _:
+                    raise AssertionError("unsupported arithmetic") from None
+        raise ValueError("not a literal setting") from None
+
+
+def setting_key(value: SettingValue) -> str | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return f"number:{value:g}" if abs(value) >= 16 or 0 < abs(value) < 1 else None
+    if isinstance(value, str):
+        return f"text:{value}" if len(value) > 3 else None
+    if isinstance(value, (dict, list, tuple, set)) and len(value) > 1:
+        try:
+            return "inventory:" + json.dumps(sorted(value) if isinstance(value, set) else value, sort_keys=True)
+        except TypeError:
+            return None
+    return None
+
+
+def setting_module(path: str) -> str:
+    return path.removeprefix("src/").removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+
+
+def imported_setting_modules(tree: ast.Module, path: str) -> set[str]:
+    modules: set[str] = set()
+    package = setting_module(path).rsplit(".", 1)[0]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level:
+                parts = package.split(".")
+                module = ".".join((*parts[: len(parts) - node.level + 1], module)).rstrip(".")
+            modules.add(module)
+            modules.update(f"{module}.{alias.name}" for alias in node.names)
+    return modules
+
+
+def copied_settings(  # noqa: C901, PLR0912, PLR0915
+    sources: tuple[SourceFile, ...], mode: str
+) -> tuple[list[SettingCopy], list[SettingCopy], list[ExtractionLimitation]]:
+    """Import-linked equality leads, with exact source and consumer context rather than a defect verdict.
+
+    Generic mode recognizes single-line uppercase assignments and numeric/string/collection expression tokens.
+    AST enrichment adds annotated/multiline assignments and complete consumer expressions. Neither resolves
+    calls, runtime values, generated settings, indirect re-exports or transitive fixture dataflow.
+    """
+    settings: dict[str, list[tuple[SourceFile, str, int, str]]] = {}
+    python_sources = [source for source in sources if source.language == "python" and source.text is not None]
+    for source in python_sources:
+        if source.role != "production":
+            continue
+        assert source.text is not None
+        if mode == "python-ast":
+            assignments = [
+                (node.target.id, node.lineno, node.value)
+                for node in ast.parse(source.text).body
+                if isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id.isupper()
+                and node.value is not None
+            ]
+            assignments.extend(
+                (node.targets[0].id, node.lineno, node.value)
+                for node in ast.parse(source.text).body
+                if isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id.isupper()
+            )
+        else:
+            assignments = []
+            for match in re.finditer(r"^([A-Z][A-Z0-9_]*)\s*(?::[^=\n]+)?=\s*([^\n]+)", source.text, re.MULTILINE):
+                try:
+                    expression = ast.parse(match.group(2), mode="eval").body
+                except SyntaxError:
+                    continue
+                assignments.append((match.group(1), line_number(source.text, match.start()), expression))
+        for name, line, expression in assignments:
+            try:
+                key = setting_key(setting_value(expression))
+            except ValueError:
+                continue
+            if key is not None:
+                settings.setdefault(key, []).append((source, name, line, ast.unparse(expression)))
+    tests: list[SettingCopy] = []
+    hardcoded: list[SettingCopy] = []
+    limitations: list[ExtractionLimitation] = []
+    for source in python_sources:
+        assert source.text is not None
+        try:
+            tree = ast.parse(source.text, filename=source.path)
+        except SyntaxError as error:
+            limitations.append(
+                ExtractionLimitation(
+                    source.path,
+                    error.lineno or 1,
+                    error.msg,
+                    "Retain generic lexical evidence; inspect imports and consuming expressions with a compatible "
+                    "existing analyzer or direct semantic source review before disposition.",
+                )
+            )
+            continue
+        modules = imported_setting_modules(tree, source.path)
+        parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.expr) or isinstance(node, (ast.Name, ast.Attribute)):
+                continue
+            try:
+                key = setting_key(setting_value(node))
+            except ValueError:
+                continue
+            if key not in settings:
+                continue
+            current: ast.AST = node
+            owner, call = "<module>", ""
+            while current in parents:
+                current = parents[current]
+                if not call and isinstance(current, ast.Call):
+                    call = ast.unparse(current.func)
+                if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    owner = current.name
+                    break
+            if not call:
+                continue  # Declarations and unrelated bare fixture values are not consuming-call evidence.
+            for setting_source, name, line, expression in settings[key]:
+                if setting_source.path == source.path or setting_module(setting_source.path) not in modules:
+                    continue
+                candidate = SettingCopy(
+                    f"{setting_source.path}::{name}",
+                    line,
+                    expression,
+                    f"{source.path}::{owner}",
+                    node.lineno,
+                    ast.unparse(node),
+                    call,
+                    "literal-inventory" if key.startswith("inventory:") else "literal-or-equivalent-expression",
+                    key,
+                )
+                (tests if source.role == "test" else hardcoded).append(candidate)
+    # Human-facing quantities are lexical leads only; units and scope still require semantic ownership review.
+    for source in sources:
+        if source.text is None or source.language != "other" or not source.path.endswith(".md"):
+            continue
+        for match in re.finditer(r"\b(\d[\d,_]*(?:\.\d+)?)\s*([Kk]?(?:\s*(?:USD|tokens|bytes)))\b", source.text):
+            quantity = float(match.group(1).replace(",", "").replace("_", ""))
+            if match.group(2).strip().lower().startswith("k"):
+                quantity *= 1000
+            key = setting_key(quantity)
+            for setting_source, name, line, expression in settings.get(key or "", []):
+                hardcoded.append(
+                    SettingCopy(
+                        f"{setting_source.path}::{name}",
+                        line,
+                        expression,
+                        source.path,
+                        line_number(source.text, match.start()),
+                        match.group(0),
+                        "text quantity",
+                        "quantity-with-unit",
+                        key or "",
+                    )
+                )
+    return tests, hardcoded, limitations
+
+
 def main() -> None:
     arguments = parse_arguments()
     repository = arguments.repository.resolve()
@@ -1303,7 +1545,10 @@ def main() -> None:
     declarations.sort(key=declaration_sort_key)
     families.sort(key=family_sort_key)
     schema_objects.sort(key=schema_object_sort_key)
+    copied_test_settings, hardcoded_settings, extraction_limitations = copied_settings(sources, arguments.mode)
     candidates = {
+        "copied_test_settings": [asdict(item) for item in copied_test_settings],
+        "hardcoded_settings": [asdict(item) for item in hardcoded_settings],
         "test_only_definitions": [
             asdict(item)
             for item in declarations
@@ -1354,6 +1599,7 @@ def main() -> None:
             "test": [str(root) for root in test_roots],
         },
         "coverage": [asdict(item) for item in coverage(arguments.mode)],
+        "extraction_limitations": [asdict(item) for item in extraction_limitations],
         "semantic_disposition": asdict(semantic_disposition()),
         "summary": {
             "repository_files": len(sources),

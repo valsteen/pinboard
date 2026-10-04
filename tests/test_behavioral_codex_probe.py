@@ -11,6 +11,7 @@ from evals.behavioral.layout import Layout
 from evals.behavioral.processes import Completed as ProcessResult
 from evals.behavioral.processes import Window
 from evals.behavioral.records import Completed, ExportRecord, InventoryEntry, ProbeRecord, RunKey, Runtime, write_new
+from evals.behavioral.scenarios import RegisteredSet, load_set
 from evals.behavioral.spend import Budget
 
 
@@ -129,7 +130,8 @@ class PriorProbeTest(unittest.TestCase):
                 paid = stack.enter_context(mock.patch.object(runner, "codex_turns", return_value=Completed()))
                 if condition == "budget":
                     self.assertEqual(
-                        ["probe/test-1"], runner.run_codex(plan, Budget(plan.run.layout, 0, Window(None), False))
+                        [f"{plan.run.scenarios.scenarios[0].id}/test-1"],
+                        runner.run_codex(plan, Budget(plan.run.layout, 0, Window(None), False)),
                     )
                 else:
                     with (
@@ -153,22 +155,26 @@ class PriorProbeTest(unittest.TestCase):
                 codex_driver.codex_version(Window(None))
 
     def plan(self, root: Path, runs: int) -> runner.CodexPlan:
-        plan = mock.Mock(spec=runner.RunPlan)
-        plan.layout = Layout(root / "out")
-        plan.worlds = root / "worlds"
-        plan.worlds.mkdir()
-        plan.model = "gpt-6-sol"
-        plan.window = Window(None)
-        plan.variant = "test"
-        plan.export = ExportRecord(
+        worlds = root / "worlds"
+        worlds.mkdir()
+        export = ExportRecord(
             schema="pinboard-behavioral-export/v1",
             commit="1" * 40,
             skills_sha256="2" * 64,
             plugin_root=str(root / "plugin"),
         )
-        plan.planned.side_effect = lambda: [
-            (mock.Mock(), RunKey(scenario_id="probe", variant=plan.variant, index=i)) for i in range(1, runs + 1)
-        ]
+        registered = load_set(Path("evals/behavioral/data/scenario-sets/s13-s17.json"))
+        plan = runner.RunPlan(
+            layout=Layout(root / "out"),
+            worlds=worlds,
+            export=export,
+            variant="test",
+            scenarios=RegisteredSet(registered.scenarios[:1], registered.registration, registered.scenario_sources),
+            first_index=1,
+            runs=runs,
+            model="gpt-6-sol",
+            window=Window(None),
+        )
         return runner.CodexPlan(plan, "high", root / "auth.json")
 
     def fake_effects(self, stack: ExitStack, root: Path) -> None:

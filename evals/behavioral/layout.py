@@ -14,6 +14,7 @@ from pathlib import Path
 
 import msgspec
 
+from evals.behavioral.compatibility_records import CompatibilityRunRecord
 from evals.behavioral.records import (
     AssessmentRecord,
     ClaudeInvestigationRunRecord,
@@ -31,6 +32,8 @@ from evals.behavioral.records import (
 
 RUN_RECORD = "run.json"
 SCORER_INPUT = "scorer-input.json"
+SCENARIO_RECORD = "scenario.json"
+type RecordedRun = RunRecord | CompatibilityRunRecord
 
 
 class InvestigationSchema(msgspec.Struct, frozen=True):
@@ -56,9 +59,13 @@ class Layout:
     def probe_file(self, name: str) -> Path:
         return self.root / "probes" / name / "probe.json"
 
-    def run_records(self) -> Iterator[RunRecord]:
+    def run_records(self) -> Iterator[RecordedRun]:
         for path in sorted((self.root / "runs").glob(f"*/*/{RUN_RECORD}")):
-            yield msgspec.json.decode(path.read_bytes(), type=RunRecord)
+            yield decode_run(path.read_bytes())
+
+    def run_record(self, key: RunKey) -> RecordedRun | None:
+        path = self.run_directory(key) / RUN_RECORD
+        return decode_run(path.read_bytes()) if path.is_file() else None
 
     def scorer_inputs(self) -> Iterator[ScorerInput]:
         for path in sorted((self.root / "runs").glob(f"*/*/{SCORER_INPUT}")):
@@ -104,3 +111,15 @@ class Layout:
     def investigation_assessments(self) -> Iterator[InvestigationAssessmentRecord]:
         for path in sorted((self.root / "investigation-assessments").glob("*/*/session.json")):
             yield msgspec.json.decode(path.read_bytes(), type=InvestigationAssessmentRecord)
+
+
+def decode_run(content: bytes) -> RecordedRun:
+    """Select an exact current or retained schema before decoding its complete shape."""
+    schema = msgspec.json.decode(content, type=InvestigationSchema).schema
+    match schema:
+        case "pinboard-behavioral-run/v3":
+            return msgspec.json.decode(content, type=RunRecord)
+        case "pinboard-behavioral-run/v2":
+            return msgspec.json.decode(content, type=CompatibilityRunRecord)
+        case _:
+            raise ValueError(f"unsupported behavioral run schema: {schema}")

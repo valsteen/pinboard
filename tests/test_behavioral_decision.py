@@ -1,26 +1,53 @@
 """The behavioral harness's comparison arithmetic and improved / no worse / inconclusive decision rule."""
 
+import hashlib
+import json
 import tempfile
 import unittest
+from functools import partial
 from pathlib import Path
+from unittest.mock import Mock, patch
 
-from evals.behavioral import decision
+import msgspec
+
+from evals.behavioral import claude_driver, decision, processes, runner, scoring, spend
+from evals.behavioral.compatibility_records import CompatibilityRunRecord
 from evals.behavioral.decision import Classification, Criteria, Estimate, RunFailures
-from evals.behavioral.layout import Layout
+from evals.behavioral.export import SeedFailure
+from evals.behavioral.layout import SCORER_INPUT, Layout
 from evals.behavioral.records import (
     ChecklistItem,
+    ClaudeRunDetails,
+    CodexAccounting,
+    CodexRunDetails,
+    Completed,
+    ExportRecord,
+    Failed,
     ItemVerdict,
     ItemVerdicts,
     LabelMapping,
+    RegisteredScenario,
     ReplyScore,
     RunKey,
+    RunRecord,
+    Runtime,
+    Scenario,
+    ScenarioSet,
     Scored,
     ScoreRecord,
     ScorerSession,
     ScoringFailure,
+    SeededItem,
+    Stopped,
+    Turn,
     Verdict,
+    WorldKind,
+    encode,
     write_new,
 )
+from evals.behavioral.scenarios import CHECKLIST_SHA256, DataIntegrityError, RegisteredSet
+from tests.test_behavioral_claude_stream import result_event
+from tests.test_behavioral_spend import turn
 
 CRITERIA = Criteria(
     minimum_runs_per_scenario=3,
@@ -66,6 +93,38 @@ def verdicts(failing: set[str]) -> ItemVerdicts:
 
 
 def record_score(layout: Layout, label: str, run: RunKey, replies: list[set[str]], valid: bool) -> None:
+    if layout.run_record(run) is None:
+        selected = fixture_set([f"s{number}" for number in range(1, 6)], len(replies), (ChecklistItem.P9,))
+        scenario = next(member for member in selected.scenarios if member.id == run.scenario_id)
+        plan = runner.RunPlan(
+            layout,
+            layout.root / "worlds",
+            ExportRecord(
+                schema="pinboard-behavioral-export/v1",
+                commit=("a" if run.variant == "base" else "b") * 40,
+                skills_sha256="c" * 64,
+                plugin_root=str(layout.root / run.display() / "export"),
+            ),
+            run.variant,
+            selected,
+            run.index,
+            1,
+            "controlled-model",
+            processes.Window(None),
+        )
+        state = runner.start(plan, scenario, run)
+        state.turns.extend(
+            msgspec.structs.replace(turn(index, 0.01), human=scripted.human, final_reply="reply")
+            for index, scripted in enumerate(scenario.turns, start=1)
+        )
+        state.finish(
+            runner.Runtime.CLAUDE_CODE,
+            "controlled-clean",
+            ClaudeRunDetails(permission_mode="bypassPermissions", cost_basis="claude total_cost_usd"),
+            [],
+            [],
+            Completed(),
+        )
     score = ScoreRecord(
         label=label,
         replies=[ReplyScore(turn=turn, items=verdicts(failing)) for turn, failing in enumerate(replies, start=1)],
@@ -80,13 +139,38 @@ def record_score(layout: Layout, label: str, run: RunKey, replies: list[set[str]
         ScorerSession(
             schema="pinboard-behavioral-scorer-session/v1",
             label=label,
-            scorer_model="scorer",
-            checklist_sha256="0" * 64,
+            scorer_model=scoring.SCORER_MODEL,
+            checklist_sha256=CHECKLIST_SHA256,
             cost_usd=0.0,
             outcome=Scored() if valid else ScoringFailure(reason="malformed"),
         ),
     )
     write_new(layout.label_file(label), LabelMapping(schema="pinboard-behavioral-label/v1", label=label, run=run))
+
+
+def fixture_set(ids: list[str], turns: int, targeted: tuple[ChecklistItem, ...]) -> RegisteredSet:
+    scenarios = tuple(
+        Scenario(
+            id=name,
+            title="controlled scenario",
+            world=WorldKind.MINIMAL,
+            world_extra=None,
+            source="independent fixture",
+            ground_truth="controlled answer",
+            turns=[Turn(human=f"question {index}", before=None) for index in range(1, turns + 1)],
+        )
+        for name in ids
+    )
+    contents = tuple(encode(scenario) for scenario in scenarios)
+    registered = ScenarioSet(
+        name="controlled",
+        scenarios=[
+            RegisteredScenario(id=scenario.id, sha256=hashlib.sha256(content).hexdigest())
+            for scenario, content in zip(scenarios, contents, strict=True)
+        ],
+        targeted_rules=list(targeted),
+    )
+    return RegisteredSet(scenarios, registered, contents)
 
 
 class EstimateTest(unittest.TestCase):
@@ -178,6 +262,25 @@ class OverallTest(unittest.TestCase):
 
 
 class CompareTest(unittest.TestCase):
+    def test_unlinked_scores_cannot_qualify_a_comparison(self) -> None:
+        scenarios = [f"s{number}" for number in range(1, 6)]
+        with tempfile.TemporaryDirectory() as directory:
+            layout = Layout(Path(directory))
+            for scenario in scenarios:
+                for index in range(1, decision.required_runs(decision.CRITERIA, len(scenarios)) + 1):
+                    for variant in ("base", "cand"):
+                        record_score(
+                            layout,
+                            f"{variant}-{scenario}-{index}",
+                            RunKey(scenario_id=scenario, variant=variant, index=index),
+                            [set()],
+                            True,
+                        )
+            for record in layout.run_records():
+                (layout.run_directory(record.run) / "run.json").unlink()
+            output = decision.compare(layout, fixture_set(scenarios, 1, ()).registration, "base", "cand")
+        self.assertIn("decision: inconclusive", output)
+
     def test_rates_count_failing_replies_per_run_average_repeat_scores_and_skip_failed_scoring(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             layout = Layout(Path(directory))
@@ -212,7 +315,9 @@ class CompareTest(unittest.TestCase):
                         [set() if index > 1 else {"P9"}],
                         True,
                     )
-                outputs.append(decision.compare(layout, ["s1"], (ChecklistItem.P9,), "base", "cand"))
+                outputs.append(
+                    decision.compare(layout, fixture_set(["s1"], 1, (ChecklistItem.P9,)).registration, "base", "cand")
+                )
         self.assertEqual(outputs[0], outputs[1])
 
     def test_an_advisory_item_warns_without_deciding_while_targeted_rules_and_total_decide(self) -> None:
@@ -225,7 +330,9 @@ class CompareTest(unittest.TestCase):
                     cand = RunKey(scenario_id=scenario, variant="cand", index=index)
                     record_score(layout, f"B-{scenario}-{index}", base, [{"P9"}], valid=True)
                     record_score(layout, f"C-{scenario}-{index}", cand, [{"P5"}], valid=True)
-            output = decision.compare(layout, scenarios, (ChecklistItem.P9,), "base", "cand")
+            output = decision.compare(
+                layout, fixture_set(scenarios, 1, (ChecklistItem.P9,)).registration, "base", "cand"
+            )
         lines = output.splitlines()
         rows = {line.split("\t")[0]: line.split("\t") for line in lines}
         self.assertEqual("targeted", rows["P9"][1])
@@ -240,7 +347,7 @@ class CompareTest(unittest.TestCase):
             layout = Layout(Path(directory))
             record_score(layout, "T1", RunKey(scenario_id="s1", variant="base", index=1), [{"P3"}], valid=True)
             report = decision.report(layout, ["s1", "s2"], "base")
-            comparison = decision.compare(layout, ["s1", "s2"], (), "base", "cand")
+            comparison = decision.compare(layout, fixture_set(["s1", "s2"], 1, ()).registration, "base", "cand")
         rows = {line.split("\t")[0]: line.split("\t") for line in report.splitlines()}
         self.assertEqual(["P3", "1", "1", "none"], rows["P3"])
         self.assertIn("no scored runs: s2", report)
@@ -252,6 +359,267 @@ class CompareTest(unittest.TestCase):
         self.assertEqual("1.3", decision.number(13 / 10))
         self.assertEqual("10", decision.number(10.0))
         self.assertEqual("0.13", decision.number(0.125))
+
+
+class QualificationTest(unittest.TestCase):
+    def prepare(self, layout: Layout) -> ScenarioSet:
+        ids = [f"s{number}" for number in range(1, 6)]
+        for name in ids:
+            for index in range(1, decision.required_runs(decision.CRITERIA, len(ids)) + 1):
+                for variant in ("base", "cand"):
+                    record_score(layout, f"{variant}-{name}-{index}", RunKey(name, variant, index), [set()], True)
+        return fixture_set(ids, 1, (ChecklistItem.P9,)).registration
+
+    def test_fresh_producer_records_reload_and_qualify_different_exports_and_per_run_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            layout = Layout(Path(directory))
+            registration = self.prepare(layout)
+            fresh = Layout(layout.root)
+            reloaded = list(fresh.run_records())
+            self.assertTrue(all(isinstance(run, RunRecord) for run in reloaded))
+            first = reloaded[0]
+            assert isinstance(first, RunRecord)
+            self.assertEqual(registration, first.registration)
+            self.assertIn("decision: no worse", decision.compare(fresh, registration, "base", "cand"))
+
+    def test_claude_effect_failures_preserve_started_spending_and_distinguish_prepaid_failures(self) -> None:
+        known = json.dumps(result_event(1.25, subtype="success", is_error=False))
+        expensive = json.dumps(result_event(spend.COMPARISON_CAP_USD + 1, subtype="success", is_error=False))
+        cases = (
+            (None, None, False, None),
+            ('{"type":"assistant"}\n', None, True, None),
+            ('{"type":', None, True, None),
+            ('{"type":"assistant"}\n', "turn-1.jsonl", True, None),
+            (known, "turn-1.jsonl", True, 1.25),
+            (known, "turn-1.stderr", True, 1.25),
+            (expensive, "turn-1.jsonl", True, spend.COMPARISON_CAP_USD + 1),
+            (known, "launch", False, None),
+        )
+        original_write = Path.write_text
+
+        def write(failure_at: str | None, path: Path, data: str) -> int:
+            if path.name == failure_at:
+                raise OSError("controlled raw-evidence write failure after paid process")
+            return original_write(path, data)
+
+        for output, failure_at, started, cost in cases:
+            with self.subTest(failure_at=failure_at, output=output), tempfile.TemporaryDirectory() as directory:
+                layout = Layout(Path(directory))
+                registration = self.prepare(layout)
+                first = layout.run_record(RunKey("s1", "base", 1))
+                assert isinstance(first, RunRecord)
+                selected = fixture_set(
+                    [member.id for member in registration.scenarios], 1, tuple(registration.targeted_rules)
+                )
+                plan = runner.RunPlan(
+                    layout,
+                    layout.root / "worlds",
+                    first.evaluated,
+                    "base",
+                    selected,
+                    99,
+                    1,
+                    first.model,
+                    processes.Window(None),
+                )
+                seeded: list[SeededItem] = []
+                with (
+                    patch.object(claude_driver, "claude_version", return_value=first.cli_version),
+                    patch.object(
+                        runner.world,
+                        "build_world",
+                        return_value=(Mock(), seeded),
+                        side_effect=None if output is not None else SeedFailure("failed before paid work"),
+                    ),
+                    patch.object(runner.RunState, "snapshot"),
+                    patch.object(
+                        claude_driver.processes,
+                        "run_tool",
+                        return_value=processes.Completed(0, output or "", "", False),
+                        side_effect=OSError("failed before process start") if failure_at == "launch" else None,
+                    ) as paid,
+                    patch.object(Path, "write_text", partial(write, failure_at)),
+                ):
+                    failed = runner.claude_run(plan, selected.scenarios[0], RunKey("s1", "base", 99))
+                reloaded = Layout(layout.root).run_record(failed.run)
+                assert isinstance(reloaded, RunRecord)
+                self.assertEqual(failed, reloaded)
+                assert isinstance(reloaded.outcome, Failed)
+                self.assertEqual(1 if output is not None else 0, paid.call_count)
+                self.assertEqual(1 if started else 0, len(reloaded.turns))
+                if started:
+                    self.assertEqual(cost, reloaded.turns[0].cost_usd)
+                    self.assertIn("turn 1", reloaded.outcome.stage)
+                fresh = Layout(layout.root)
+                if started and cost is None:
+                    self.assertIn("incomplete main/scorer/assessor", "; ".join(spend.comparison_reasons(fresh)))
+                    self.assertIn("decision: inconclusive", decision.compare(fresh, registration, "base", "cand"))
+                elif cost is not None and cost > spend.COMPARISON_CAP_USD:
+                    self.assertIn("spending exceeds", "; ".join(spend.comparison_reasons(fresh)))
+                    self.assertIn("decision: inconclusive", decision.compare(fresh, registration, "base", "cand"))
+                else:
+                    self.assertEqual([], spend.comparison_reasons(fresh))
+                    self.assertIn("decision: no worse", decision.compare(fresh, registration, "base", "cand"))
+                self.assertEqual(1, scoring.valid_score_counts(Layout(layout.root))[first.run.display()])
+
+    def test_each_qualification_defect_alone_is_inconclusive_with_its_reason(self) -> None:  # noqa: C901, PLR0912, PLR0915
+        # The explicit matrix keeps each independently varied qualification failure visible.
+        cases = (
+            ("scorer", "pinned scorer"),
+            ("checklist", "checklist digest"),
+            ("missing-run", "source run is absent"),
+            ("stopped", "did not complete"),
+            ("model", "inconsistent runtime/model/reasoning"),
+            ("version", "inconsistent runtime/model/reasoning"),
+            ("export", "single identified evaluated export"),
+            ("registration", "another scenario registration"),
+            ("targets", "targeted rules"),
+            ("raw-bytes", "saved scenario bytes"),
+            ("replies", "recorded replies"),
+            ("input-link", "scorer input names another run"),
+            ("unknown-cost", "incomplete main/scorer/assessor"),
+            ("overspend", "spending exceeds"),
+            ("failed-unknown-session", "incomplete main/scorer/assessor"),
+            ("orphan", "incomplete session evidence"),
+            ("repeated-score", "single-score selection is ambiguous"),
+            ("legacy", "lacks recorded scenario registration"),
+            ("malformed-run", "spending evidence is unavailable"),
+            ("conflicting-labels", "conflicting linked labels"),
+        )
+        for defect, expected in cases:
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as directory:
+                layout = Layout(Path(directory))
+                registration = self.prepare(layout)
+                key = RunKey("s1", "base", 1)
+                run_file = layout.run_directory(key) / "run.json"
+                record = layout.run_record(key)
+                assert isinstance(record, RunRecord)
+                session_file = layout.score_directory("base-s1-1") / "session.json"
+                session = msgspec.json.decode(session_file.read_bytes(), type=ScorerSession)
+                match defect:
+                    case "malformed-run":
+                        run_file.write_bytes(b"{}")
+                    case "conflicting-labels":
+                        mapping = msgspec.json.decode(layout.label_file(session.label).read_bytes(), type=LabelMapping)
+                        write_new(layout.root / "labels" / "another-file.json", mapping)
+                    case "scorer":
+                        session_file.write_bytes(encode(msgspec.structs.replace(session, scorer_model="other")))
+                    case "checklist":
+                        session_file.write_bytes(encode(msgspec.structs.replace(session, checklist_sha256="0" * 64)))
+                    case "missing-run":
+                        run_file.unlink()
+                    case "stopped":
+                        run_file.write_bytes(encode(msgspec.structs.replace(record, outcome=Stopped("decision"))))
+                    case "model" | "version":
+                        changed = (
+                            msgspec.structs.replace(record, model="other")
+                            if defect == "model"
+                            else msgspec.structs.replace(record, cli_version="other")
+                        )
+                        run_file.write_bytes(encode(changed))
+                    case "export":
+                        changed = msgspec.structs.replace(record.evaluated, commit="d" * 40)
+                        run_file.write_bytes(encode(msgspec.structs.replace(record, evaluated=changed)))
+                    case "registration" | "targets":
+                        changed = (
+                            msgspec.structs.replace(record.registration, name="other")
+                            if defect == "registration"
+                            else msgspec.structs.replace(record.registration, targeted_rules=[])
+                        )
+                        run_file.write_bytes(encode(msgspec.structs.replace(record, registration=changed)))
+                    case "raw-bytes":
+                        path = layout.run_directory(key) / "scenario.json"
+                        path.write_bytes(path.read_bytes() + b" ")
+                    case "replies":
+                        path = layout.run_directory(key) / "scorer-input.json"
+                        source = msgspec.json.decode(path.read_bytes(), type=scoring.ScorerInput)
+                        path.write_bytes(encode(msgspec.structs.replace(source, replies=["another reply"])))
+                    case "input-link":
+                        path = layout.run_directory(key) / SCORER_INPUT
+                        source = msgspec.json.decode(path.read_bytes(), type=scoring.ScorerInput)
+                        path.write_bytes(encode(msgspec.structs.replace(source, run=RunKey("s1", "base", 2))))
+                    case "unknown-cost":
+                        changed = msgspec.structs.replace(record.turns[0], cost_usd=None)
+                        run_file.write_bytes(encode(msgspec.structs.replace(record, turns=[changed])))
+                    case "overspend" | "failed-unknown-session":
+                        write_new(
+                            layout.score_directory("paid-failure") / "session.json",
+                            ScorerSession(
+                                schema="pinboard-behavioral-scorer-session/v1",
+                                label="paid-failure",
+                                scorer_model=scoring.SCORER_MODEL,
+                                checklist_sha256=CHECKLIST_SHA256,
+                                cost_usd=spend.COMPARISON_CAP_USD + 1 if defect == "overspend" else None,
+                                outcome=ScoringFailure("interrupted paid session"),
+                            ),
+                        )
+                    case "orphan":
+                        path = layout.root / "scores" / "interrupted"
+                        path.mkdir()
+                        (path / "raw.json").write_text("partial paid answer")
+                    case "repeated-score":
+                        record_score(layout, "second", key, [set()], True)
+                        self.assertEqual(2, scoring.valid_score_counts(layout)[key.display()])
+                    case "legacy":
+                        fields = json.loads(run_file.read_text())
+                        fields.pop("registration")
+                        fields.pop("scenario_sha256")
+                        fields["schema"] = "pinboard-behavioral-run/v2"
+                        run_file.write_text(json.dumps(fields))
+                        self.assertIsInstance(Layout(layout.root).run_record(key), CompatibilityRunRecord)
+                        self.assertEqual(1, scoring.valid_score_counts(layout)[key.display()])
+                    case _:
+                        raise AssertionError(defect)
+                output = decision.compare(Layout(layout.root), registration, "base", "cand")
+                self.assertIn("decision: inconclusive", output)
+                self.assertIn(expected, output)
+
+    def test_actual_scoring_uses_saved_bytes_and_rejects_changed_bytes_before_a_paid_call(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            layout = Layout(Path(directory))
+            self.prepare(layout)
+            source = next(layout.scorer_inputs())
+            scenario = scoring.scoring_scenario(layout, source)
+            self.assertEqual("controlled answer", scenario.ground_truth)
+            with patch.object(scoring, "load_scenario", side_effect=AssertionError("current file read")):
+                self.assertEqual(scenario, scoring.scoring_scenario(Layout(layout.root), source))
+            path = layout.run_directory(source.run) / "scenario.json"
+            path.write_bytes(path.read_bytes() + b"\n")
+            with patch.object(scoring.oneshot, "ask") as paid, self.assertRaises(DataIntegrityError):
+                scoring.ScoringRun(layout, spend.Budget(layout, 120, processes.Window(None), False)).score(source)
+            paid.assert_not_called()
+
+    def test_codex_conditions_require_common_effort_and_complete_reviewer_accounting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            layout = Layout(Path(directory))
+            registration = self.prepare(layout)
+            for record in list(layout.run_records()):
+                details = CodexRunDetails(
+                    "controlled-effort",
+                    "profile",
+                    "workspace-write",
+                    "on-request",
+                    [str(layout.run_directory(record.run))],
+                    "controlled-price",
+                    False,
+                )
+                changed = msgspec.structs.replace(record, runtime=Runtime.CODEX, details=details)
+                (layout.run_directory(record.run) / "run.json").write_bytes(encode(changed))
+                write_new(
+                    layout.run_directory(record.run) / "accounting.json",
+                    CodexAccounting("pinboard-behavioral-codex-accounting/v1", 0.01, True, [], None),
+                )
+            self.assertIn("decision: no worse", decision.compare(Layout(layout.root), registration, "base", "cand"))
+            key = RunKey("s1", "base", 1)
+            record = layout.run_record(key)
+            assert isinstance(record, RunRecord) and isinstance(record.details, CodexRunDetails)
+            changed = msgspec.structs.replace(
+                record, details=msgspec.structs.replace(record.details, reasoning_effort="other")
+            )
+            (layout.run_directory(key) / "run.json").write_bytes(encode(changed))
+            output = decision.compare(Layout(layout.root), registration, "base", "cand")
+            self.assertIn("decision: inconclusive", output)
+            self.assertIn("inconsistent runtime/model/reasoning", output)
 
 
 if __name__ == "__main__":

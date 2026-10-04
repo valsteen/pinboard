@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import override
 
 from evals.behavioral import processes, spend
+from evals.behavioral.compatibility_records import CompatibilityRunRecord
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
     ClaudeRunDetails,
@@ -15,7 +16,6 @@ from evals.behavioral.records import (
     ProbeRecord,
     ReviewerUsage,
     RunKey,
-    RunRecord,
     Runtime,
     Scored,
     ScorerSession,
@@ -49,7 +49,7 @@ def record_run(layout: Layout, variant: str, index: int, costs: list[float]) -> 
     run = RunKey(scenario_id="s1", variant=variant, index=index)
     write_new(
         layout.run_directory(run) / "run.json",
-        RunRecord(
+        CompatibilityRunRecord(
             schema="pinboard-behavioral-run/v2",
             run=run,
             runtime=Runtime.CLAUDE_CODE,
@@ -135,8 +135,9 @@ class SpendTest(unittest.TestCase):
         projected = budget.reserve(Category.CLAUDE_AGENT_RUN)
         assert projected is not None
         budget.release(projected)
+        self.assertEqual(projected, budget.reserve(Category.CLAUDE_AGENT_RUN))
+        budget.release(projected)
         record_run(self.layout, "repeat", 2, [3.0])
-        self.assertAlmostEqual(1.0, budget.remaining())
         self.assertIsNone(budget.reserve(Category.CLAUDE_AGENT_RUN))
 
     def test_interrupted_probe_keeps_known_spend_and_blocks_further_paid_work(self) -> None:
@@ -182,6 +183,38 @@ class SpendTest(unittest.TestCase):
         self.assertIsNotNone(Budget(self.layout, 120, processes.Window(None), True).reserve(Category.SCORER))
         self.assertIn("price unknown", spend.report(self.layout))
         self.assertIn("total dollars unknown", spend.report(self.layout))
+        self.assertIn("comparison reviewer dollar cost is unknown", spend.comparison_reasons(self.layout))
+
+    def test_comparison_spend_counts_orphan_accounting_and_incomplete_session_directories(self) -> None:
+        # The 120 USD cap is the independently accepted CRITERIA.md spending contract.
+        for family, record in (
+            ("runs", "run.json"),
+            ("scores", "session.json"),
+            ("assessments", "assessment.json"),
+            ("probes", "probe.json"),
+            ("investigations", "run.json"),
+            ("investigation-assessments", "session.json"),
+        ):
+            with self.subTest(family=family), tempfile.TemporaryDirectory() as temporary:
+                layout = Layout(Path(temporary))
+                path = (
+                    layout.root / family / "case" / "session"
+                    if family not in {"scores", "probes"}
+                    else layout.root / family / "session"
+                )
+                path.mkdir(parents=True)
+                self.assertFalse((path / record).exists())
+                self.assertTrue(
+                    any("incomplete session evidence" in reason for reason in spend.comparison_reasons(layout))
+                )
+        write_new(
+            self.layout.probe_file("orphan").parent / "accounting.json",
+            CodexAccounting("pinboard-behavioral-codex-accounting/v1", 120.01, True, [], None),
+        )
+        self.assertEqual(120.01, spend.total(spend.items(self.layout)))
+        reasons = spend.comparison_reasons(self.layout)
+        self.assertIn("comparison spending exceeds 120 USD", reasons)
+        self.assertTrue(any("incomplete session evidence" in reason for reason in reasons))
 
     def test_without_a_recorded_session_the_projection_is_the_category_default(self) -> None:
         budget = Budget(

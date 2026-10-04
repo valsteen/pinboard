@@ -15,8 +15,23 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 
-from evals.behavioral.layout import Layout
-from evals.behavioral.records import ChecklistItem, ItemVerdicts, RunKey, Scored, ScoreRecord, Verdict
+import msgspec
+
+from evals.behavioral import scoring, spend
+from evals.behavioral.layout import SCORER_INPUT, Layout
+from evals.behavioral.records import (
+    ChecklistItem,
+    ClaudeRunDetails,
+    CodexRunDetails,
+    ItemVerdicts,
+    RunKey,
+    RunRecord,
+    ScenarioSet,
+    ScoreRecord,
+    ScorerInput,
+    Verdict,
+)
+from evals.behavioral.scenarios import DataIntegrityError
 
 ITEMS_BY_NAME = tuple(ChecklistItem[name] for name in sorted(item.value for item in ChecklistItem))
 
@@ -95,13 +110,14 @@ class RunFailures:
 
 
 def collect(layout: Layout, scenario_ids: frozenset[str], variant: str) -> list[RunFailures]:
-    valid = {session.label for session in layout.scorer_sessions() if isinstance(session.outcome, Scored)}
     by_run: dict[str, tuple[RunKey, list[dict[ChecklistItem, int]]]] = {}
-    for mapping in layout.labels():
-        run = mapping.run
-        if mapping.label not in valid or run.variant != variant or run.scenario_id not in scenario_ids:
+    for evidence in scoring.score_evidence(layout):
+        if not isinstance(evidence, scoring.EligibleScore):
             continue
-        by_run.setdefault(run.display(), (run, []))[1].append(score_failures(layout.score(mapping.label)))
+        run = evidence.run
+        if run.variant != variant or run.scenario_id not in scenario_ids:
+            continue
+        by_run.setdefault(run.display(), (run, []))[1].append(score_failures(evidence.score))
     return [
         RunFailures(
             run=run,
@@ -228,14 +244,18 @@ def role(item: ChecklistItem | None, targeted: tuple[ChecklistItem, ...]) -> str
 
 def compare(
     layout: Layout,
-    scenarios: list[str],
-    targeted: tuple[ChecklistItem, ...],
+    registration: ScenarioSet,
     baseline_variant: str,
     candidate_variant: str,
 ) -> str:
+    scenarios = [member.id for member in registration.scenarios]
+    targeted = tuple(registration.targeted_rules)
     selected = frozenset(scenarios)
-    baseline = collect(layout, selected, baseline_variant)
-    candidate = collect(layout, selected, candidate_variant)
+    try:
+        baseline = collect(layout, selected, baseline_variant)
+        candidate = collect(layout, selected, candidate_variant)
+    except (OSError, msgspec.DecodeError, ValueError) as error:
+        return f"decision: inconclusive (comparison evidence is unavailable or conflicting: {error})\n"
     targets = ",".join(item.value for item in ITEMS_BY_NAME if item in targeted) or "none"
     lines = [
         f"baseline={baseline_variant}\tcandidate={candidate_variant}\tscenarios={','.join(scenarios)}\t"
@@ -263,10 +283,94 @@ def compare(
     lines.append("per-run failed items:")
     lines.extend(failed_items_line(run) for run in [*baseline, *candidate])
     verdict, reason = overall(targeted_estimates, total_estimate)
+    reasons = qualification(layout, registration, baseline_variant, candidate_variant, [*baseline, *candidate])
+    if reasons:
+        verdict, reason = Classification.INCONCLUSIVE, "; ".join(reasons)
     lines.append(f"decision: {verdict.value} ({reason})")
     lines.append(f"advisory warnings: {'; '.join(warnings) if warnings else 'none'}")
     lines.append(criteria_line(len(scenarios)))
     return "\n".join(lines) + "\n"
+
+
+def conditions(record: RunRecord) -> tuple[str, ...]:
+    """Declared consequential settings; per-run paths and settlement effects are not execution settings."""
+    common = (record.runtime.value, record.cli_version, record.model)
+    match record.details:
+        case ClaudeRunDetails(permission_mode=mode, cost_basis=basis):
+            return (*common, mode, basis)
+        case CodexRunDetails() as details:
+            return (
+                *common,
+                details.reasoning_effort,
+                details.permission_profile,
+                details.sandbox_mode,
+                details.approval_policy,
+                details.price_source,
+            )
+        case _ as unreachable:
+            raise AssertionError(unreachable)
+
+
+def qualification(
+    layout: Layout, registration: ScenarioSet, baseline: str, candidate: str, selected_runs: list[RunFailures]
+) -> list[str]:
+    """Aggregate coverage, identity and full-dollar accounting qualify the frozen single-score arithmetic."""
+    try:
+        reasons = spend.comparison_reasons(layout)
+    except (OSError, msgspec.DecodeError, ValueError) as error:
+        return [f"comparison spending evidence is unavailable or conflicting: {error}"]
+    scenario_ids = {member.id for member in registration.scenarios}
+    selected_variants = {baseline, candidate}
+    if baseline == candidate:
+        reasons.append("baseline and candidate identify the same variant")
+    for evidence in scoring.score_evidence(layout):
+        if isinstance(evidence, scoring.IneligibleScore) and (
+            evidence.run is None
+            or (evidence.run.variant in selected_variants and evidence.run.scenario_id in scenario_ids)
+        ):
+            reasons.append(evidence.reason)
+    exports: dict[str, set[tuple[str, str]]] = {variant: set() for variant in selected_variants}
+    settings: set[tuple[str, ...]] = set()
+    for selected in selected_runs:
+        key = selected.run
+        if selected.scores != 1:
+            reasons.append(
+                f"{key.display()} has {selected.scores} eligible scores; single-score selection is ambiguous"
+            )
+        record = layout.run_record(key)
+        if not isinstance(record, RunRecord):
+            reasons.append(f"{key.display()} lacks recorded scenario registration and byte identity")
+            continue
+        reasons.extend(run_qualification(layout, registration, record))
+        exports[key.variant].add((record.evaluated.commit, record.evaluated.skills_sha256))
+        settings.add(conditions(record))
+    for variant, identities in exports.items():
+        if len(identities) != 1:
+            reasons.append(f"{variant} has no single identified evaluated export")
+    if len(settings) != 1:
+        reasons.append("selected runs have absent or inconsistent runtime/model/reasoning conditions")
+    return sorted(set(reasons))
+
+
+def run_qualification(layout: Layout, registration: ScenarioSet, record: RunRecord) -> list[str]:
+    """Reconcile the recorded registration with the exact saved bytes later judging consumes."""
+    key = record.run
+    reasons = []
+    if record.registration != registration:
+        reasons.append(f"{key.display()} used another scenario registration or targeted rules")
+    members = [member for member in registration.scenarios if member.id == key.scenario_id]
+    if len(members) != 1 or members[0].sha256 != record.scenario_sha256:
+        reasons.append(f"{key.display()} scenario byte identity differs from registration")
+    try:
+        source = msgspec.json.decode((layout.run_directory(key) / SCORER_INPUT).read_bytes(), type=ScorerInput)
+        if source.run != key:
+            return [*reasons, f"{key.display()} scorer input names another run"]
+        scenario = scoring.scoring_scenario(layout, source)
+        if [turn.human for turn in record.turns] != [turn.human for turn in scenario.turns]:
+            reasons.append(f"{key.display()} recorded turns differ from the registered scenario")
+    except (OSError, msgspec.DecodeError, ValueError, DataIntegrityError) as error:
+        reasons.append(f"{key.display()} saved scoring evidence is unavailable or conflicting: {error}")
+    return reasons
 
 
 def criteria_line(scenario_count: int) -> str:

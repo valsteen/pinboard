@@ -4,6 +4,7 @@ import json
 import tempfile
 import tomllib
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,9 +26,200 @@ from evals.behavioral.records import (
     InvestigationRunRecord,
     write_new,
 )
+from tests.test_behavioral_claude_stream import result_event
 
 
 class InvestigationTrialTests(unittest.TestCase):
+    def test_actual_codex_trial_retains_opposite_recovery_observations_for_blind_assessment(self) -> None:
+        prompts: list[str] = []
+        for recovered in (True, False):
+            with self.subTest(recovered=recovered), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                layout = Layout(root / "out")
+                source = root / "auth.fixture"
+                source.write_bytes(b"controlled credential")
+                world = root / "world"
+                (world / "inquiry").mkdir(parents=True)
+                requested: list[str | None] = []
+
+                def turn(
+                    _home: Path,
+                    _inquiry: Path,
+                    previous: str | None,
+                    _human: str,
+                    raw_path: Path,
+                    _window: processes.Window,
+                    requested: list[str | None] = requested,
+                    recovered: bool = recovered,
+                ) -> tuple[processes.Completed, codex_driver.TurnReading]:
+                    requested.append(previous)
+                    identity = "private-new-id" if recovered and len(requested) == 3 else "private-old-id"
+                    raw = (
+                        json.dumps(
+                            {
+                                "type": "item.completed",
+                                "item": {
+                                    "type": "command_execution",
+                                    "command": "cat inquiry-note.md",
+                                    "aggregated_output": "saved facts",
+                                    "exit_code": 0 if recovered else 1,
+                                    "status": "completed",
+                                },
+                            }
+                        )
+                        + "\n"
+                    )
+                    raw_path.write_text(raw)
+                    usage = codex_driver.Usage(100 * (2 if previous else 1), 0, 0, 10, 0)
+                    return processes.Completed(0, raw, "", False), codex_driver.TurnReading(
+                        identity,
+                        ["identical final reply"],
+                        usage,
+                        [],
+                        False,
+                        False,
+                        [],
+                        [],
+                    )
+
+                exported = ExportRecord("pinboard-behavioral-export/v1", "1" * 40, "2" * 64, str(root))
+                scenario_set = investigation.DATA / "sets" / "heldout.json"
+                case = investigation.load_set(scenario_set)[1][0]
+                accounting = CodexAccounting("pinboard-behavioral-codex-accounting/v1", 0.1, True, [], None)
+                selected_model, selected_effort = "gpt-6-sol", "controlled-effort"
+                with (
+                    patch.object(investigation_trials, "INVESTIGATION_MODEL", selected_model),
+                    patch.object(investigation_trials, "INVESTIGATION_EFFORT", selected_effort),
+                    patch.object(investigation_trials.runner, "require_codex_world_location"),
+                    patch.object(
+                        investigation_trials.credentials, "exclusive_codex_session", return_value=nullcontext()
+                    ),
+                    patch.object(investigation_trials.credentials, "default_source", return_value=source),
+                    patch.object(investigation_trials, "prepare_world", return_value=(world, "3" * 64, "4" * 64)),
+                    patch.object(codex_driver, "codex_version", return_value="controlled-version"),
+                    patch.object(codex_driver, "write_config") as config,
+                    patch.object(
+                        codex_driver,
+                        "loaded_context",
+                        return_value=codex_driver.LoadedContext([], "test", "test", [], "context"),
+                    ),
+                    patch.object(codex_driver, "isolation_findings", return_value=[]),
+                    patch.object(codex_driver, "run_turn", side_effect=turn),
+                    patch.object(codex_driver, "rollout_text", return_value=""),
+                    patch.object(codex_driver, "rollout_accounting", return_value=accounting) as price,
+                ):
+                    record = investigation_trials.run(
+                        layout,
+                        spend.Budget(layout, 15, processes.Window(None), False),
+                        exported,
+                        scenario_set,
+                        case.id,
+                        "guidance",
+                        1,
+                        root / "worlds",
+                    )
+                self.assertIsNotNone(record)
+                assert record is not None
+                self.assertEqual("completed", record.outcome)
+                self.assertEqual([None, "private-old-id", None], requested)
+                self.assertEqual(selected_model, record.model)
+                self.assertEqual(selected_effort, record.reasoning_effort)
+                self.assertEqual(record.model, config.call_args.args[2])
+                self.assertEqual(record.reasoning_effort, config.call_args.args[3])
+                self.assertEqual(record.model, price.call_args.args[1])
+                reloaded = next(iter(Layout(layout.root).investigation_runs()))
+                self.assertEqual(record, reloaded)
+                self.assertEqual(recovered, record.turns[-1].saved_evidence_read)
+                self.assertTrue(all(turn.compaction_event is None for turn in record.turns))
+
+                key = investigation.InvestigationKey(
+                    "pinboard-investigation-key/v1", case.id, [], "impact", "lead", "choose", "gap", []
+                )
+                keys = root / "private-keys"
+                write_new(
+                    keys / "registry.json",
+                    investigation_trials.PrivateKeys("pinboard-investigation-private-registry/v1", {case.id: "5" * 64}),
+                )
+
+                def assessor(
+                    prompt: str, model: str, _window: processes.Window, record: InvestigationRunRecord = record
+                ) -> oneshot.Answer:
+                    prompts.append(prompt)
+                    self.assertEqual(investigation_trials.ASSESSOR_MODEL, model)
+                    for private in (
+                        record.model,
+                        record.reasoning_effort,
+                        record.arm,
+                        "private-old-id",
+                        "private-new-id",
+                    ):
+                        self.assertNotIn(private, prompt)
+                    return oneshot.Answer(0.05, "not JSON", "controlled raw", None)
+
+                with (
+                    patch.object(investigation_trials, "ASSESSOR_MODEL", "controlled-assessor"),
+                    patch.object(
+                        investigation_trials.credentials, "exclusive_codex_session", return_value=nullcontext()
+                    ),
+                    patch.object(investigation, "load_key", return_value=key),
+                    patch.object(oneshot, "ask", side_effect=assessor),
+                ):
+                    assessed = investigation_trials.assess(
+                        layout,
+                        spend.Budget(layout, 15, processes.Window(None), False),
+                        scenario_set,
+                        keys,
+                        case.id,
+                        "guidance",
+                        1,
+                    )
+                assert assessed is not None
+                self.assertEqual("controlled-assessor", assessed.assessor_model)
+        self.assertNotEqual(prompts[0], prompts[1])
+        self.assertIn("session-2", prompts[0])
+        self.assertNotIn("session-2", prompts[1])
+
+    def test_haiku_raw_publication_failure_retains_known_session_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layout = Layout(root / "out")
+            exported = ExportRecord("pinboard-behavioral-export/v1", "0" * 40, "0" * 64, str(root))
+            original_write = Path.write_text
+
+            def write(path: Path, data: str) -> int:
+                if path.name == "turn.jsonl":
+                    raise OSError("controlled raw-evidence write failure after paid process")
+                return original_write(path, data)
+
+            with (
+                patch.object(investigation_trials, "prepare_world", return_value=(root / "world", "3" * 64, "4" * 64)),
+                patch.object(claude_driver, "claude_version", return_value="controlled"),
+                patch.object(
+                    processes,
+                    "run_tool",
+                    return_value=processes.Completed(
+                        0, json.dumps(result_event(0.5, subtype="success", is_error=False)), "", False
+                    ),
+                ) as paid,
+                patch.object(Path, "write_text", write),
+            ):
+                records = investigation_trials.run_claude(
+                    layout,
+                    spend.Budget(layout, 15, processes.Window(None), False),
+                    exported,
+                    investigation.DATA / "sets" / "heldout.json",
+                    "bounded-heldout",
+                    "guidance",
+                    1,
+                    root / "worlds",
+                )
+            paid.assert_called_once()
+            self.assertEqual(1, len(records))
+            self.assertEqual("failed", records[0].outcome)
+            self.assertEqual(0.5, records[0].cost_usd)
+            self.assertEqual(records[0], next(iter(Layout(layout.root).investigation_runs())))
+            self.assertAlmostEqual(0.5, spend.total(spend.items(Layout(layout.root))))
+
     def test_haiku_route_uses_two_fresh_sessions_one_world_and_records_actual_cost(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -211,10 +403,17 @@ class InvestigationTrialTests(unittest.TestCase):
                     self.assertEqual(reviewer, config["approvals_reviewer"])
 
     def test_luna_pricing_uses_the_conservative_long_context_tier(self) -> None:
-        short = codex_driver.Usage(272_000, 0, 0, 1_000, 0)
-        long = codex_driver.Usage(272_001, 0, 0, 1_000, 0)
-        self.assertAlmostEqual(0.0277, codex_driver.turn_cost("gpt-6-luna", short))
-        self.assertAlmostEqual(0.0551502, codex_driver.turn_cost("gpt-6-luna", long))
+        for offset, rates in ((0, codex_driver.price("gpt-6-luna")), (1, codex_driver.LUNA_LONG_CONTEXT)):
+            with self.subTest(offset=offset):
+                tokens = codex_driver.LUNA_SHORT_CONTEXT_MAX_INPUT + offset
+                usage = codex_driver.Usage(tokens, 30, 20, 1_000, 40)
+                expected = (
+                    (tokens - 50) * rates.uncached_input
+                    + 30 * rates.cached_input
+                    + 20 * rates.cache_write
+                    + 1_000 * rates.output
+                ) / 1_000_000
+                self.assertAlmostEqual(expected, codex_driver.turn_cost("gpt-6-luna", usage))
 
     def test_unknown_primary_or_reviewer_cost_prevents_another_paid_session(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

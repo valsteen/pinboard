@@ -6,6 +6,8 @@ The agent loads only project settings (``--setting-sources project``), the expor
 externally owned protocol boundary whose final result record is the ``--output-format json`` result: each consumed
 field is validated and unrelated additive fields are ignored. Its result reports the session's cumulative cost, so a
 turn's cost is the difference from the previous turn's total, and a result that reports an error is a failed turn.
+The session retains known or unknown turn evidence once its process starts, including output-publication failure;
+setup or launch failure before a process starts retains no paid turn.
 
 The init event lists skill names without their source. The first turn therefore also writes Claude Code's debug log
 to a temporary file, and the driver reads the skill-loading summary lines from that captured text (searched with
@@ -182,6 +184,7 @@ class ClaudeSession:
     hooks: set[str]
     observed_host_ids: list[str]
     reported_cost_usd: float
+    turn_evidence: TurnEvidence | None
     environment: dict[str, str]
 
     @classmethod
@@ -197,6 +200,7 @@ class ClaudeSession:
             set(),
             [],
             0.0,
+            None,
             processes.claude_environment(),
         )
 
@@ -218,67 +222,93 @@ class ClaudeSession:
     def turn(self, index: int, human: str, hook_ran: Hook | None, raw_path: Path) -> ClaudeTurn:
         session = ["--session-id", self.session_id] if index == 1 else ["--resume", self.session_id]
         started = now()
-        with tempfile.TemporaryDirectory(prefix="pinboard-eval-claude-debug-") as scratch:
-            debug_file = Path(scratch) / "debug.log"
-            debug = ["--debug-file", str(debug_file)] if index == 1 else []
-            completed = processes.run_tool(
-                processes.Tool.CLAUDE,
-                [
-                    "-p",
-                    "--model",
-                    self.model,
-                    "--setting-sources",
-                    "project",
-                    "--plugin-dir",
-                    str(self.plugin_root),
-                    "--permission-mode",
-                    "bypassPermissions",
-                    *(["--tools", ",".join(self.available_tools)] if self.available_tools != ("default",) else []),
-                    "--output-format",
-                    "stream-json",
-                    "--verbose",
-                    "--include-hook-events",
-                    *debug,
-                    *session,
-                    human,
-                ],
-                cwd=self.project,
-                environment=self.environment,
-                stdin=None,
-                timeout_seconds=TURN_TIMEOUT_SECONDS,
-                window=processes.Window(None),
-            )
-            if index == 1:
-                self.provenance = skill_provenance(debug_file.read_text() if debug_file.is_file() else "")
-        raw_path.write_text(completed.stdout)
-        raw_path.with_suffix(".stderr").write_text(completed.stderr)
-        result, reply = self.read_stream(completed.stdout)
-        cost = result.total_cost_usd - self.reported_cost_usd
-        if cost < 0:
-            raise StreamError(
-                f"turn {index} reported a session cost total {result.total_cost_usd} below the previous turn's "
-                f"{self.reported_cost_usd}"
-            )
-        self.reported_cost_usd = result.total_cost_usd
-        evidence = TurnEvidence(
+        self.turn_evidence = None
+        unreported = TurnEvidence(
             index=index,
             human=human,
             hook_ran=hook_ran,
-            session_id=result.session_id,
-            final_reply=reply,
+            session_id=self.session_id,
+            final_reply="",
             commentary=[],
             started_at=started,
-            finished_at=now(),
-            cost_usd=cost,
-            uncached_input_tokens=result.usage.input_tokens,
-            cached_input_tokens=result.usage.cache_read_input_tokens,
-            cache_write_input_tokens=result.usage.cache_creation_input_tokens,
-            output_tokens=result.usage.output_tokens,
-            reasoning_output_tokens=0,
-            permission_denials=[
-                PermissionDenial(tool=denial.tool_name, detail="") for denial in result.permission_denials
-            ],
+            finished_at=started,
+            cost_usd=None,
+            uncached_input_tokens=None,
+            cached_input_tokens=None,
+            cache_write_input_tokens=None,
+            output_tokens=None,
+            reasoning_output_tokens=None,
+            permission_denials=[],
         )
+        with tempfile.TemporaryDirectory(prefix="pinboard-eval-claude-debug-") as scratch:
+            debug_file = Path(scratch) / "debug.log"
+            debug = ["--debug-file", str(debug_file)] if index == 1 else []
+            try:
+                completed = processes.run_tool(
+                    processes.Tool.CLAUDE,
+                    [
+                        "-p",
+                        "--model",
+                        self.model,
+                        "--setting-sources",
+                        "project",
+                        "--plugin-dir",
+                        str(self.plugin_root),
+                        "--permission-mode",
+                        "bypassPermissions",
+                        *(["--tools", ",".join(self.available_tools)] if self.available_tools != ("default",) else []),
+                        "--output-format",
+                        "stream-json",
+                        "--verbose",
+                        "--include-hook-events",
+                        *debug,
+                        *session,
+                        human,
+                    ],
+                    cwd=self.project,
+                    environment=self.environment,
+                    stdin=None,
+                    timeout_seconds=TURN_TIMEOUT_SECONDS,
+                    window=processes.Window(None),
+                )
+            except processes.ProcessIncomplete, processes.CleanupUnconfirmed:
+                self.turn_evidence = msgspec.structs.replace(unreported, finished_at=now())
+                raise
+            self.turn_evidence = msgspec.structs.replace(unreported, finished_at=now())
+            if index == 1:
+                self.provenance = skill_provenance(debug_file.read_text() if debug_file.is_file() else "")
+        try:
+            result, reply = self.read_stream(completed.stdout)
+            cost = result.total_cost_usd - self.reported_cost_usd
+            if cost < 0:
+                raise StreamError(
+                    f"turn {index} reported a session cost total {result.total_cost_usd} below the previous turn's "
+                    f"{self.reported_cost_usd}"
+                )
+            self.reported_cost_usd = result.total_cost_usd
+            evidence = TurnEvidence(
+                index=index,
+                human=human,
+                hook_ran=hook_ran,
+                session_id=result.session_id,
+                final_reply=reply,
+                commentary=[],
+                started_at=started,
+                finished_at=now(),
+                cost_usd=cost,
+                uncached_input_tokens=result.usage.input_tokens,
+                cached_input_tokens=result.usage.cache_read_input_tokens,
+                cache_write_input_tokens=result.usage.cache_creation_input_tokens,
+                output_tokens=result.usage.output_tokens,
+                reasoning_output_tokens=0,
+                permission_denials=[
+                    PermissionDenial(tool=denial.tool_name, detail="") for denial in result.permission_denials
+                ],
+            )
+            self.turn_evidence = evidence
+        finally:
+            raw_path.write_text(completed.stdout)
+            raw_path.with_suffix(".stderr").write_text(completed.stderr)
         return ClaudeTurn(evidence, turn_problem(result, completed))
 
     def read_stream(self, stdout: str) -> tuple[ResultEvent, str]:
